@@ -6,6 +6,7 @@ from pathlib import Path
 from time import monotonic, sleep as default_sleep
 from typing import Callable, Optional
 
+import cv2
 import numpy as np
 
 from auto_game_unified.core.matcher import Match, find_template, load_template
@@ -133,10 +134,29 @@ class ExpeditionStateMachine:
         template = getattr(self.templates, name)
         if template is None:
             return None
+        if name == "public_recruit":
+            return self._locate_bright_foreground(screen, template, name)
         return find_template(
             screen,
             template,
             self._THRESHOLD,
+            region=self._REGIONS[name],
+            reference_size=self._REFERENCE_SIZE,
+        )
+
+    def _locate_bright_foreground(
+        self, screen: np.ndarray, template: np.ndarray, name: str
+    ) -> Optional[Match]:
+        lower = np.array([0, 0, 145])
+        upper = np.array([179, 105, 255])
+        screen_mask = cv2.inRange(cv2.cvtColor(screen, cv2.COLOR_RGB2HSV), lower, upper)
+        template_mask = cv2.inRange(
+            cv2.cvtColor(template, cv2.COLOR_RGB2HSV), lower, upper
+        )
+        return find_template(
+            screen_mask,
+            template_mask,
+            0.85,
             region=self._REGIONS[name],
             reference_size=self._REFERENCE_SIZE,
         )

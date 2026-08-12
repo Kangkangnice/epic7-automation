@@ -294,6 +294,19 @@ class ExpeditionStateMachineTests(unittest.TestCase):
 
         self.assertEqual(ExpeditionAction("wake-campfire-ui", (1000, 600)), action)
 
+    def test_current_highlighted_public_recruit_button_is_recognized(self):
+        templates = build_expedition_templates(
+            ROOT / "games" / "epic7" / "templates" / "expedition"
+        )
+        machine = ExpeditionStateMachine(
+            templates, initial_state=ExpeditionState.OUTCOME
+        )
+
+        action = machine.next_action(recorded_screen("outcome_public_highlighted"))
+
+        self.assertEqual("public-recruit", action.name)
+        self.assertEqual(ExpeditionState.RECRUIT_CONFIRM, machine.state)
+
 
 if __name__ == "__main__":
     unittest.main()

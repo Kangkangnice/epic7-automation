@@ -245,6 +245,29 @@ class WindowViewportTests(unittest.TestCase):
             timeout=10,
         )
 
+    def test_campfire_wake_uses_a_real_desktop_mouse_click(self):
+        game = Epic7Window()
+
+        with (
+            patch.object(game, "activate"),
+            patch.object(
+                game,
+                "_instance_channel",
+                return_value=(Path("D:/epic7/ldconsole.exe"), "0", 456),
+            ),
+            patch.object(
+                game,
+                "_window_rect_from_handle",
+                return_value=WindowRect(100, 200, 1920, 1080),
+            ),
+            patch("auto_game_unified.core.window.pyautogui.click") as click,
+            patch.object(game, "_send_render_tap") as render_tap,
+        ):
+            game.wake((1000, 600))
+
+        click.assert_called_once_with(1100, 748)
+        render_tap.assert_not_called()
+
 
 class _FakeImage:
     def __init__(self, array: np.ndarray) -> None:
