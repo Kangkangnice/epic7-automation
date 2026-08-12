@@ -2,8 +2,9 @@ from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 from datetime import date
+import random
 from time import monotonic, sleep as default_sleep
-from typing import Callable, Optional
+from typing import Callable, Optional, Sequence
 
 import cv2
 import numpy as np
@@ -153,6 +154,13 @@ class ArenaStateMachine:
     }
 
     _REFERENCE_SIZE = (1982, 1132)
+    _OPPONENT_STATUS_REGIONS = (
+        (600, 320, 220, 135),
+        (600, 510, 220, 140),
+        (600, 705, 220, 140),
+    )
+    _FAILED_RED_MIN_RATIO = 0.50
+    _AVAILABLE_RED_MAX_RATIO = 0.05
     _REGIONS = {
         "list_ready": (700, 900, 520, 250),
         "challenge": (700, 930, 520, 202),
@@ -164,10 +172,12 @@ class ArenaStateMachine:
         "ticket_purchase_button": (900, 760, 500, 260),
     }
 
-    # First opponent row click point relative to the live ``list_ready`` anchor center.
-    # Derived from the original hard-coded coordinates (anchor center ~ (960, 1025),
-    # first opponent ~ (750, 386) -> offset (-210, -639)).
-    _FIRST_OPPONENT_OFFSET = (-210, -639)
+    _OPPONENT_OFFSETS = (
+        (-210, -639),
+        (-210, -448),
+        (-210, -256),
+    )
+    _REFRESH_OFFSET = (383, -823)
 
     _NEXT_STATE = {
         ArenaState.LIST: ArenaState.SELECTED,
@@ -183,17 +193,24 @@ class ArenaStateMachine:
         ArenaState.RESULT: "confirm",
     }
     _ACTION_NAME = {
-        ArenaState.LIST: "select-first-row",
         ArenaState.SELECTED: "challenge",
         ArenaState.TEAM: "battle-start",
         ArenaState.BATTLE: "enable-auto",
         ArenaState.RESULT: "confirm-result",
     }
 
-    def __init__(self, templates: ArenaTemplates, *, initial_state: ArenaState = ArenaState.LIST) -> None:
+    def __init__(
+        self,
+        templates: ArenaTemplates,
+        *,
+        initial_state: ArenaState = ArenaState.LIST,
+        choose_opponent: Callable[[Sequence[int]], int] = random.choice,
+    ) -> None:
         self.templates = templates
         self.state = initial_state
         self.completed_cycles = 0
+        self.choose_opponent = choose_opponent
+        self._selected_opponent: int | None = None
 
     def _locate(self, screen: np.ndarray, template_name: str) -> Optional[Match]:
         threshold = self._THRESHOLDS.get(template_name, self.templates.threshold)
@@ -207,6 +224,49 @@ class ArenaStateMachine:
 
     def _visible(self, screen: np.ndarray, template_name: str) -> bool:
         return self._locate(screen, template_name) is not None
+
+    @classmethod
+    def _scaled_region(
+        cls,
+        screen: np.ndarray,
+        region: tuple[int, int, int, int],
+    ) -> tuple[int, int, int, int]:
+        scale_x = screen.shape[1] / cls._REFERENCE_SIZE[0]
+        scale_y = screen.shape[0] / cls._REFERENCE_SIZE[1]
+        x, y, width, height = region
+        return (
+            round(x * scale_x),
+            round(y * scale_y),
+            round(width * scale_x),
+            round(height * scale_y),
+        )
+
+    def opponent_availability(
+        self,
+        screen: np.ndarray,
+    ) -> tuple[bool | None, bool | None, bool | None]:
+        availability: list[bool | None] = []
+        hsv = cv2.cvtColor(screen, cv2.COLOR_RGB2HSV)
+        for region in self._OPPONENT_STATUS_REGIONS:
+            x, y, width, height = self._scaled_region(screen, region)
+            roi = hsv[y : y + height, x : x + width]
+            red = (
+                ((roi[:, :, 0] <= 10) | (roi[:, :, 0] >= 170))
+                & (roi[:, :, 1] >= 60)
+                & (roi[:, :, 2] >= 35)
+            )
+            ratio = float(np.mean(red))
+            availability.append(
+                False
+                if ratio >= self._FAILED_RED_MIN_RATIO
+                else True
+                if ratio <= self._AVAILABLE_RED_MAX_RATIO
+                else None
+            )
+        return tuple(availability)
+
+    def has_safe_opponent(self, screen: np.ndarray) -> bool:
+        return any(value is True for value in self.opponent_availability(screen))
 
     def is_in_state(self, screen: np.ndarray, state: "ArenaState") -> bool:
         """True when the screen has actually settled into ``state``.
@@ -226,14 +286,43 @@ class ArenaStateMachine:
             return challenge.score >= list_ready.score
         return self._visible(screen, self._STATE_TEMPLATE[state])
 
-    def _first_opponent_point(self, screen: np.ndarray) -> tuple[int, int]:
+    def _opponent_point(
+        self,
+        screen: np.ndarray,
+        index: int,
+    ) -> tuple[int, int]:
         anchor = self._locate(screen, "list_ready")
         if anchor is None:
-            raise RuntimeError("list_ready anchor lost while selecting first opponent")
+            raise RuntimeError("list_ready anchor lost while selecting opponent")
+        offset = self._OPPONENT_OFFSETS[index]
         return (
-            anchor.center[0] + self._FIRST_OPPONENT_OFFSET[0],
-            anchor.center[1] + self._FIRST_OPPONENT_OFFSET[1],
+            anchor.center[0] + offset[0],
+            anchor.center[1] + offset[1],
         )
+
+    def _refresh_point(self, screen: np.ndarray) -> tuple[int, int]:
+        anchor = self._locate(screen, "list_ready")
+        if anchor is None:
+            raise RuntimeError("list_ready anchor lost while refreshing opponents")
+        return (
+            anchor.center[0] + self._REFRESH_OFFSET[0],
+            anchor.center[1] + self._REFRESH_OFFSET[1],
+        )
+
+    def _list_action(self, screen: np.ndarray) -> Action:
+        availability = self.opponent_availability(screen)
+        safe = [index for index, value in enumerate(availability) if value is True]
+        if safe:
+            self._selected_opponent = self.choose_opponent(safe)
+            self.state = ArenaState.SELECTED
+            return Action(
+                "select-opponent",
+                self._opponent_point(screen, self._selected_opponent),
+            )
+        if all(value is False for value in availability):
+            self._selected_opponent = None
+            return Action("refresh-opponents", self._refresh_point(screen))
+        raise RuntimeError("arena opponent rows could not be classified safely")
 
     def observe_battle(
         self,
@@ -279,8 +368,8 @@ class ArenaStateMachine:
         if self.state == ArenaState.CONFIRMING:
             if self._visible(screen, "list_ready"):
                 self.completed_cycles += 1
-                self.state = ArenaState.SELECTED
-                return Action("select-first-row", self._first_opponent_point(screen))
+                self.state = ArenaState.LIST
+                return self._list_action(screen)
             if self._visible(screen, "confirm"):
                 return Action("confirm-result", self._locate(screen, "confirm").center)
             rank_confirm = find_rank_promotion_confirm(
@@ -293,7 +382,13 @@ class ArenaStateMachine:
             raise RuntimeError("expected result confirmation to close into list")
 
         if self.state == ArenaState.SELECTED and not self.is_in_state(screen, ArenaState.SELECTED):
-            return Action("select-first-row", self._first_opponent_point(screen))
+            if self._selected_opponent is None:
+                self.state = ArenaState.LIST
+                return self._list_action(screen)
+            return Action(
+                "select-opponent",
+                self._opponent_point(screen, self._selected_opponent),
+            )
 
         template_name = self._STATE_TEMPLATE[self.state]
         match = self._locate(screen, template_name)
@@ -301,9 +396,7 @@ class ArenaStateMachine:
             raise RuntimeError(f"expected {self.state.value} screen was not recognized")
 
         if self.state == ArenaState.LIST:
-            action = Action("select-first-row", self._first_opponent_point(screen))
-            self.state = self._NEXT_STATE[self.state]
-            return action
+            return self._list_action(screen)
 
         name = self._ACTION_NAME[self.state]
         previous_state = self.state
@@ -311,12 +404,12 @@ class ArenaStateMachine:
         return Action(name, match.center)
 
     def preview(self, screen: np.ndarray):
-        snapshot = self.state, self.completed_cycles
+        snapshot = self.state, self.completed_cycles, self._selected_opponent
         try:
             action = self.next_action(screen)
             return action, (self.state, self.completed_cycles)
         finally:
-            self.state, self.completed_cycles = snapshot
+            self.state, self.completed_cycles, self._selected_opponent = snapshot
 
 
 class ArenaRunner:
@@ -447,6 +540,24 @@ class ArenaRunner:
                 stable.reset()
                 continue
 
+            if action.name == "refresh-opponents":
+                if not self._wait_until_safe_list():
+                    diagnostic = self.runtime.save_diagnostic(
+                        "refresh_opponents_failed",
+                    )
+                    self.runtime.log(
+                        "模式=竞技场 页面=list 动作=刷新对手 "
+                        f"停止=刷新后没有安全对手 现场={diagnostic}"
+                    )
+                    raise RuntimeError(
+                        "refresh did not produce a safe opponent list; "
+                        f"saved {diagnostic}"
+                    )
+                self.machine.state = ArenaState.LIST
+                state_started = monotonic()
+                stable.reset()
+                continue
+
             # Verify the click actually advanced the screen. Without this the machine
             # blindly advances state on every click; a click that lands during an
             # animation (e.g. challenge, right after opponent selection) is silently
@@ -489,6 +600,30 @@ class ArenaRunner:
             if self.runtime.diagnostic_dir is not None:
                 self.runtime.save_current_frame(screen)
             if self.machine.is_in_state(screen, state):
+                return True
+            if meaningful_change(previous, screen):
+                last_progress = monotonic()
+            previous = screen
+            if monotonic() - last_progress >= no_progress:
+                return False
+            self.sleep(self.poll_seconds)
+        return False
+
+    def _wait_until_safe_list(self) -> bool:
+        self.sleep(self._SETTLE_SECONDS)
+        started = monotonic()
+        last_progress = started
+        previous: Optional[np.ndarray] = None
+        absolute = min(180, self._TIMEOUT_SECONDS[ArenaState.LIST])
+        no_progress = min(45, self._TIMEOUT_SECONDS[ArenaState.LIST])
+        while monotonic() - started < absolute:
+            screen = self.runtime.capture()
+            if self.runtime.diagnostic_dir is not None:
+                self.runtime.save_current_frame(screen)
+            if (
+                self.machine.is_in_state(screen, ArenaState.LIST)
+                and self.machine.has_safe_opponent(screen)
+            ):
                 return True
             if meaningful_change(previous, screen):
                 last_progress = monotonic()
