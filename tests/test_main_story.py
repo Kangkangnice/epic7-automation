@@ -8,6 +8,17 @@ from auto_game_unified.games.epic7.modes import get_mode
 
 
 class MainStoryTests(unittest.TestCase):
+    def test_runtime_routes_only_campfire_wake_to_the_window_wake_channel(self):
+        window = unittest.mock.MagicMock()
+        with patch.object(main_module, "Epic7Window", return_value=window):
+            runtime = main_module._build_runtime("expedition", dry_run=False)
+
+        runtime.click((1000, 600), "wake-campfire-ui")
+        runtime.click((1062, 1045), "public-recruit")
+
+        window.wake.assert_called_once_with((1000, 600))
+        window.click.assert_called_once_with((1062, 1045))
+
     def test_live_run_returns_home_and_navigates_before_runner(self):
         runtime = object()
         lobby = object()

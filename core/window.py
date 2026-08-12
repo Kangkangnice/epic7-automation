@@ -135,6 +135,20 @@ class Epic7Window:
         self.activate()
         self._click_legacy(point)
 
+    def wake(self, point: tuple[int, int]) -> None:
+        """Wake LDPlayer's campfire idle layer with a real desktop mouse event."""
+
+        self.activate()
+        _, _, bind_handle = self._instance_channel()
+        rect = self._window_rect_from_handle(bind_handle)
+        render_point = point[0], point[1] - self._LEGACY_TOP
+        if not (
+            0 <= render_point[0] < self._RENDER_SIZE[0]
+            and 0 <= render_point[1] < self._RENDER_SIZE[1]
+        ):
+            raise RuntimeError(f"refusing wake outside Android render area: {point}")
+        pyautogui.click(rect.left + render_point[0], rect.top + render_point[1])
+
     def _click_legacy(self, point: tuple[int, int]) -> None:
         render_point = point[0], point[1] - self._LEGACY_TOP
         if not (

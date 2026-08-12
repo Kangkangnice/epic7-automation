@@ -22,6 +22,7 @@ class Runtime:
         capture: Callable[[], np.ndarray],
         click: Callable[[tuple[int, int]], None],
         *,
+        wake: Callable[[tuple[int, int]], None] | None = None,
         back: Callable[[], None] | None = None,
         dry_run: bool = False,
         diagnostic_dir: Path | None = None,
@@ -34,6 +35,7 @@ class Runtime:
     ) -> None:
         self._capture = capture
         self._click = click
+        self._wake = wake
         self._back = back
         self.dry_run = dry_run
         self.diagnostic_dir = diagnostic_dir
@@ -56,7 +58,10 @@ class Runtime:
         prefix = "DRY RUN " if self.dry_run else ""
         self.log(f"{prefix}action={action} point={point}")
         if not self.dry_run:
-            self._click(point)
+            if action == "wake-campfire-ui" and self._wake is not None:
+                self._wake(point)
+            else:
+                self._click(point)
 
     def back(self, action: str = "back") -> None:
         self._stop_if_requested()

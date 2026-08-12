@@ -27,6 +27,7 @@ def _build_runtime(mode: str, dry_run: bool) -> Runtime:
     return Runtime(
         capture=game_window.capture,
         click=game_window.click,
+        wake=game_window.wake,
         back=game_window.back,
         dry_run=dry_run,
         diagnostic_dir=ROOT / "runtime_diagnostics" / f"epic7_{mode}",
