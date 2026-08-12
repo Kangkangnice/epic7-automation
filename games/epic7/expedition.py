@@ -536,6 +536,7 @@ class ExpeditionRunner:
         progressed = started
         previous: Optional[np.ndarray] = None
         stable = StableObservation(required=2)
+        changing_battle_frames = 0
         while self.now() - started < self._TRANSITION_ABSOLUTE_SECONDS:
             screen = self.runtime.capture()
             if self.runtime.diagnostic_dir is not None:
@@ -548,8 +549,20 @@ class ExpeditionRunner:
             if stable.update("target" if is_target else "other"):
                 if is_target:
                     return True
-            if meaningful_change(previous, screen):
+            changed = meaningful_change(previous, screen)
+            if changed:
                 progressed = self.now()
+            if action_name == "battle-start" and state == ExpeditionState.BATTLE:
+                team_visible = self.machine.is_in_state(screen, ExpeditionState.TEAM)
+                if self._valid_game_frame(screen) and not team_visible and changed:
+                    changing_battle_frames += 1
+                    if changing_battle_frames >= 2:
+                        self.runtime.log(
+                            "模式=远征 页面=战斗中 状态=动态画面确认进入战斗 HUD暂时隐藏"
+                        )
+                        return True
+                elif team_visible or not self._valid_game_frame(screen):
+                    changing_battle_frames = 0
             previous = screen
             if self.now() - progressed >= self._TRANSITION_NO_PROGRESS_SECONDS:
                 return False
@@ -563,7 +576,6 @@ class ExpeditionRunner:
             ExpeditionState.POSTERS,
             ExpeditionState.DIFFICULTY,
             ExpeditionState.READY,
-            ExpeditionState.TEAM,
         }
 
     @staticmethod
