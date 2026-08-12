@@ -1,0 +1,881 @@
+from dataclasses import dataclass
+from enum import Enum
+from pathlib import Path
+from time import monotonic, sleep as default_sleep
+from typing import Callable, Optional
+
+import cv2
+import numpy as np
+
+from auto_game_unified.core.matcher import Match, find_template, load_template
+from auto_game_unified.core.runtime import Runtime, StaminaExhausted
+from auto_game_unified.core.supervisor import StableObservation
+
+
+_WATCH_STORY_REFERENCE_SIZE = (1982, 1132)
+_WATCH_STORY_REGION = (1450, 930, 470, 202)
+_FRIENDSHIP_POINTS_TITLE_REGION = (600, 150, 800, 180)
+_FRIENDSHIP_POINTS_CLOSE_REGION = (750, 840, 450, 190)
+
+
+def find_friendship_points_popup_close(
+    screen: np.ndarray,
+    title_template: np.ndarray,
+    close_template: np.ndarray,
+) -> Optional[Match]:
+    """Return the close anchor only when both friendship-popup anchors exist."""
+    lower = np.array([0, 0, 120])
+    upper = np.array([179, 110, 255])
+
+    def locate(template: np.ndarray, region: tuple[int, int, int, int]):
+        scale_x = screen.shape[1] / _WATCH_STORY_REFERENCE_SIZE[0]
+        scale_y = screen.shape[0] / _WATCH_STORY_REFERENCE_SIZE[1]
+        ref_x, ref_y, ref_width, ref_height = region
+        x, y, width, height = (
+            round(ref_x * scale_x),
+            round(ref_y * scale_y),
+            round(ref_width * scale_x),
+            round(ref_height * scale_y),
+        )
+        search_hsv = cv2.cvtColor(
+            screen[y : y + height, x : x + width], cv2.COLOR_RGB2HSV
+        )
+        template_hsv = cv2.cvtColor(template, cv2.COLOR_RGB2HSV)
+        match = find_template(
+            cv2.inRange(search_hsv, lower, upper),
+            cv2.inRange(template_hsv, lower, upper),
+            0.85,
+            reference_size=(ref_width, ref_height),
+        )
+        if match is None:
+            return None
+        return Match((x + match.center[0], y + match.center[1]), match.score)
+
+    title = locate(title_template, _FRIENDSHIP_POINTS_TITLE_REGION)
+    close = locate(close_template, _FRIENDSHIP_POINTS_CLOSE_REGION)
+    if title is None or close is None:
+        return None
+    return Match(close.center, min(title.score, close.score))
+
+
+def find_watch_story_button(
+    screen: np.ndarray, template: np.ndarray
+) -> Optional[Match]:
+    """Find the white watch-story glyph without depending on stage artwork."""
+    scale_x = screen.shape[1] / _WATCH_STORY_REFERENCE_SIZE[0]
+    scale_y = screen.shape[0] / _WATCH_STORY_REFERENCE_SIZE[1]
+    x, y, width, height = _WATCH_STORY_REGION
+    x, y, width, height = (
+        round(x * scale_x),
+        round(y * scale_y),
+        round(width * scale_x),
+        round(height * scale_y),
+    )
+    search_hsv = cv2.cvtColor(
+        screen[y : y + height, x : x + width], cv2.COLOR_RGB2HSV
+    )
+    template_hsv = cv2.cvtColor(template, cv2.COLOR_RGB2HSV)
+    lower = np.array([0, 0, 150])
+    upper = np.array([179, 90, 255])
+    match = find_template(
+        cv2.inRange(search_hsv, lower, upper),
+        cv2.inRange(template_hsv, lower, upper),
+        0.72,
+        reference_size=(_WATCH_STORY_REGION[2], _WATCH_STORY_REGION[3]),
+    )
+    if match is None:
+        return None
+    return Match((x + match.center[0], y + match.center[1]), match.score)
+
+
+def find_prepare_battle_button(
+    screen: np.ndarray,
+    primary_template: np.ndarray,
+    updated_template: np.ndarray,
+) -> Optional[Match]:
+    """Find the stable white button glyph without depending on stage artwork."""
+    scale_x = screen.shape[1] / _WATCH_STORY_REFERENCE_SIZE[0]
+    scale_y = screen.shape[0] / _WATCH_STORY_REFERENCE_SIZE[1]
+    x, y, width, height = _WATCH_STORY_REGION
+    x, y, width, height = (
+        round(x * scale_x),
+        round(y * scale_y),
+        round(width * scale_x),
+        round(height * scale_y),
+    )
+    search_hsv = cv2.cvtColor(
+        screen[y : y + height, x : x + width], cv2.COLOR_RGB2HSV
+    )
+    lower = np.array([0, 0, 150])
+    upper = np.array([179, 90, 255])
+    search_mask = cv2.inRange(search_hsv, lower, upper)
+    matches = []
+    for template in (primary_template, updated_template):
+        template_hsv = cv2.cvtColor(template, cv2.COLOR_RGB2HSV)
+        match = find_template(
+            search_mask,
+            cv2.inRange(template_hsv, lower, upper),
+            0.90,
+            reference_size=(_WATCH_STORY_REGION[2], _WATCH_STORY_REGION[3]),
+        )
+        if match is not None:
+            matches.append(match)
+    if not matches:
+        return None
+    best = max(matches, key=lambda candidate: candidate.score)
+    return Match((x + best.center[0], y + best.center[1]), best.score)
+
+
+class StoryState(Enum):
+    STAGE = "stage"
+    TEAM = "team"
+    WAIT_SKIP_CONFIRM = "wait_skip_confirm"
+    WAIT_BATTLE = "wait_battle"
+    ACTIVE = "active"
+    WAIT_RESULTS = "wait_results"
+    WAIT_COMPLETE = "wait_complete"
+    WAIT_NEXT_STAGE = "wait_next_stage"
+
+
+class BattleControls(Enum):
+    AUTO_CONTROLS = "auto_controls"
+    MANUAL_CONTROLS = "manual_controls"
+    TRANSITION = "transition"
+
+
+@dataclass(frozen=True)
+class StoryAction:
+    name: str
+    point: tuple[int, int]
+
+
+@dataclass(frozen=True)
+class StoryTemplates:
+    friendship_points_title: np.ndarray
+    friendship_points_close: np.ndarray
+    watch_story: np.ndarray
+    prepare_battle: np.ndarray
+    prepare_battle_updated: np.ndarray
+    select_team: np.ndarray
+    start_mission: np.ndarray
+    skip: np.ndarray
+    skip_confirm: np.ndarray
+    friend_request_title: np.ndarray
+    friend_request_cancel: np.ndarray
+    auto_off: np.ndarray
+    auto_on: np.ndarray
+    reward: np.ndarray
+    clear: np.ndarray
+    results_confirm: np.ndarray
+    complete: np.ndarray
+    bonus_reward: np.ndarray
+    next_stage: np.ndarray
+    threshold: float = 0.80
+    stamina_popup: Optional[np.ndarray] = None
+    stamina_material: Optional[np.ndarray] = None
+    stamina_confirm: Optional[np.ndarray] = None
+
+
+def _load_optional(template_dir: Path, name: str) -> Optional[np.ndarray]:
+    path = template_dir / f"{name}.png"
+    return load_template(str(path)) if path.exists() else None
+
+
+def build_story_templates(template_dir: Path) -> StoryTemplates:
+    global_templates = template_dir.parent / "global"
+    return StoryTemplates(
+        friendship_points_title=load_template(
+            str(global_templates / "friendship_points_title.png")
+        ),
+        friendship_points_close=load_template(
+            str(global_templates / "friendship_points_close.png")
+        ),
+        watch_story=load_template(str(template_dir / "watch_story.png")),
+        prepare_battle=load_template(str(template_dir / "prepare_battle.png")),
+        prepare_battle_updated=load_template(
+            str(template_dir / "prepare_battle_updated.png")
+        ),
+        select_team=load_template(str(template_dir / "select_team.png")),
+        start_mission=load_template(str(template_dir / "start_mission.png")),
+        skip=load_template(str(template_dir / "skip.png")),
+        skip_confirm=load_template(str(template_dir / "skip_confirm.png")),
+        friend_request_title=load_template(
+            str(template_dir / "friend_request_title.png")
+        ),
+        friend_request_cancel=load_template(
+            str(template_dir / "friend_request_cancel.png")
+        ),
+        auto_off=load_template(str(template_dir / "auto_off.png")),
+        auto_on=load_template(str(template_dir / "auto_on.png")),
+        reward=load_template(str(template_dir / "reward.png")),
+        clear=load_template(str(template_dir / "clear.png")),
+        results_confirm=load_template(str(template_dir / "results_confirm.png")),
+        complete=load_template(str(template_dir / "complete.png")),
+        bonus_reward=load_template(str(template_dir / "bonus_reward.png")),
+        next_stage=load_template(str(template_dir / "next_stage.png")),
+        stamina_popup=_load_optional(template_dir, "stamina_popup"),
+        stamina_material=_load_optional(template_dir, "stamina_material"),
+        stamina_confirm=_load_optional(template_dir, "stamina_confirm"),
+    )
+
+
+class StoryStateMachine:
+    """Story workflow in the game window's local coordinate space."""
+
+    _THRESHOLDS = {
+        "skip": 0.75,
+        "friend_request_title": 0.82,
+        "friend_request_cancel": 0.82,
+    }
+    _REFERENCE_SIZE = (1982, 1132)
+    _REGIONS = {
+        "watch_story": (1450, 930, 470, 202),
+        "select_team": (1400, 930, 520, 202),
+        "start_mission": (1400, 930, 520, 202),
+        "skip": (1700, 0, 240, 200),
+        "skip_confirm": (850, 600, 600, 300),
+        "friend_request_title": (650, 240, 700, 160),
+        "friend_request_cancel": (550, 720, 500, 230),
+        "auto_off": (1550, 0, 300, 200),
+        "auto_on": (1550, 0, 300, 200),
+        "reward": (700, 400, 650, 400),
+        "clear": (500, 150, 900, 700),
+        "results_confirm": (1500, 930, 420, 202),
+        "complete": (650, 150, 700, 500),
+        "bonus_reward": (350, 150, 1200, 850),
+        "next_stage": (1450, 930, 470, 202),
+        "stamina_popup": (400, 200, 1200, 700),
+        "stamina_material": (400, 200, 700, 700),
+        "stamina_confirm": (850, 750, 650, 250),
+    }
+    _BONUS_REWARD_CLOSE_OFFSET = (0, 312)
+    _AUTO_CLICK_POINT = (1690, 96)
+    _CONTROL_ROI = (1400, 940, 520, 192)
+    _AUTO_CONTROL_CENTERS = (1505, 1623, 1740, 1858)
+    _MANUAL_CONTROL_CENTERS = (1534, 1683, 1834)
+
+    def __init__(
+        self, templates: StoryTemplates, initial_state: StoryState = StoryState.STAGE
+    ) -> None:
+        self.templates = templates
+        self.state = initial_state
+        self.auto_enabled = False
+        self.auto_click_attempted = False
+        self.battle_controls = BattleControls.TRANSITION
+        self.completed_cycles = 0
+        self.stamina_replenished = 0
+        self.stamina_replenish_max: int | None = None
+        self._stamina_material_clicked = False
+
+    def _locate(self, screen: np.ndarray, name: str):
+        """Match only the expected local UI region; never the desktop."""
+        if name == "watch_story":
+            return find_watch_story_button(screen, self.templates.watch_story)
+        if name == "prepare_battle":
+            return find_prepare_battle_button(
+                screen,
+                self.templates.prepare_battle,
+                self.templates.prepare_battle_updated,
+            )
+        if name == "skip":
+            x, y, width, height = self._scaled_region(screen, name)
+            search_hsv = cv2.cvtColor(
+                screen[y : y + height, x : x + width], cv2.COLOR_RGB2HSV
+            )
+            template_hsv = cv2.cvtColor(self.templates.skip, cv2.COLOR_RGB2HSV)
+            lower = np.array([0, 0, 120])
+            upper = np.array([179, 70, 255])
+            match = find_template(
+                cv2.inRange(search_hsv, lower, upper),
+                cv2.inRange(template_hsv, lower, upper),
+                0.65,
+                reference_size=(self._REGIONS[name][2], self._REGIONS[name][3]),
+            )
+            if match is None:
+                return None
+            return Match((x + match.center[0], y + match.center[1]), match.score)
+        if name in ("auto_off", "auto_on"):
+            white = (np.array([180, 180, 180]), np.array([255, 255, 255]))
+            x, y, width, height = self._scaled_region(screen, name)
+            search_mask = cv2.inRange(screen[y : y + height, x : x + width], *white)
+            template_mask = cv2.inRange(getattr(self.templates, name), *white)
+            match = find_template(
+                search_mask,
+                template_mask,
+                0.80,
+                reference_size=(self._REGIONS[name][2], self._REGIONS[name][3]),
+            )
+            if match is None:
+                return None
+            return Match((x + match.center[0], y + match.center[1]), match.score)
+        match = find_template(
+            screen,
+            getattr(self.templates, name),
+            self._THRESHOLDS.get(name, self.templates.threshold),
+            region=self._REGIONS[name],
+            reference_size=self._REFERENCE_SIZE,
+        )
+        return match
+
+    def _scaled_region(self, screen: np.ndarray, name: str) -> tuple[int, int, int, int]:
+        scale_x = screen.shape[1] / self._REFERENCE_SIZE[0]
+        scale_y = screen.shape[0] / self._REFERENCE_SIZE[1]
+        x, y, width, height = self._REGIONS[name]
+        return (
+            round(x * scale_x), round(y * scale_y),
+            round(width * scale_x), round(height * scale_y),
+        )
+
+    def _scaled_point(
+        self, screen: np.ndarray, point: tuple[int, int]
+    ) -> tuple[int, int]:
+        return (
+            round(point[0] * screen.shape[1] / self._REFERENCE_SIZE[0]),
+            round(point[1] * screen.shape[0] / self._REFERENCE_SIZE[1]),
+        )
+
+    def observe_battle_controls(self, screen: np.ndarray) -> BattleControls:
+        """Classify stable lower-right battle controls, ignoring scene artwork."""
+        if screen.shape[:2] != (self._REFERENCE_SIZE[1], self._REFERENCE_SIZE[0]):
+            frame = cv2.resize(screen, self._REFERENCE_SIZE, interpolation=cv2.INTER_AREA)
+        else:
+            frame = screen
+
+        roi_x, roi_y, roi_width, roi_height = self._CONTROL_ROI
+        roi = frame[roi_y : roi_y + roi_height, roi_x : roi_x + roi_width]
+        gray = cv2.cvtColor(roi, cv2.COLOR_RGB2GRAY)
+        gray = cv2.GaussianBlur(gray, (5, 5), 1)
+        detected = cv2.HoughCircles(
+            gray,
+            cv2.HOUGH_GRADIENT,
+            dp=1.2,
+            minDist=80,
+            param1=120,
+            param2=40,
+            minRadius=40,
+            maxRadius=82,
+        )
+        circles: list[tuple[int, int, int]] = []
+        if detected is not None:
+            circles = [
+                (int(round(x)) + roi_x, int(round(y)) + roi_y, int(round(radius)))
+                for x, y, radius in detected[0]
+            ]
+
+        def aligned_count(
+            expected_xs: tuple[int, ...],
+            expected_y: int,
+            radius_range: tuple[int, int],
+            tolerance: int,
+        ) -> int:
+            return sum(
+                1
+                for expected_x in expected_xs
+                if any(
+                    abs(x - expected_x) <= tolerance
+                    and abs(y - expected_y) <= tolerance
+                    and radius_range[0] <= radius <= radius_range[1]
+                    for x, y, radius in circles
+                )
+            )
+
+        hsv = cv2.cvtColor(frame, cv2.COLOR_RGB2HSV)
+        blue_bases = []
+        for center_x in self._AUTO_CONTROL_CENTERS:
+            slot = hsv[1060:1132, center_x - 50 : center_x + 50]
+            blue = (
+                (slot[:, :, 0] >= 85)
+                & (slot[:, :, 0] <= 135)
+                & (slot[:, :, 1] >= 100)
+                & (slot[:, :, 2] >= 70)
+            )
+            blue_bases.append(float(np.mean(blue)) >= 0.40)
+
+        if all(blue_bases) and aligned_count(
+            self._AUTO_CONTROL_CENTERS, 1025, (40, 58), 28
+        ) >= 3:
+            return BattleControls.AUTO_CONTROLS
+        yy, xx = np.ogrid[: frame.shape[0], : frame.shape[1]]
+        manual_borders = []
+        for center_x in self._MANUAL_CONTROL_CENTERS:
+            distance_squared = (xx - center_x) ** 2 + (yy - 1040) ** 2
+            border = (distance_squared >= 55 ** 2) & (distance_squared <= 75 ** 2)
+            manual_borders.append(float(np.mean(hsv[:, :, 2][border] > 120)) >= 0.50)
+        if all(manual_borders) and aligned_count(
+            self._MANUAL_CONTROL_CENTERS, 1040, (55, 82), 38
+        ) == len(self._MANUAL_CONTROL_CENTERS):
+            return BattleControls.MANUAL_CONTROLS
+        return BattleControls.TRANSITION
+
+    def _action_point(self, screen: np.ndarray, name: str, match: Match) -> tuple[int, int]:
+        if name != "bonus_reward":
+            return match.center
+        scale_y = screen.shape[0] / self._REFERENCE_SIZE[1]
+        return match.center[0], match.center[1] + round(self._BONUS_REWARD_CLOSE_OFFSET[1] * scale_y)
+
+    def find_friend_request_cancel(self, screen: np.ndarray) -> Optional[Match]:
+        """Return Cancel only when both friend-request popup anchors are present."""
+        if self._locate(screen, "friend_request_title") is None:
+            return None
+        return self._locate(screen, "friend_request_cancel")
+
+    def _handle_stamina(self, screen: np.ndarray) -> Optional[StoryAction]:
+        """Detect the insufficient-stamina popup and refill via the left material.
+
+        Returns a StoryAction when something must be clicked, None otherwise.
+        Caps refills at stamina_replenish_max; once exhausted it raises
+        StaminaExhausted so the run stops cleanly instead of looping.
+        """
+        if self.templates.stamina_popup is None:
+            return None
+        popup = self._locate(screen, "stamina_popup")
+        if popup is None:
+            self._stamina_material_clicked = False
+            return None
+        if (
+            self.stamina_replenish_max is not None
+            and self.stamina_replenished >= self.stamina_replenish_max
+        ):
+            raise StaminaExhausted(
+                f"stamina refilled {self.stamina_replenished} times "
+                f"(max {self.stamina_replenish_max}); stopping"
+            )
+        if not self._stamina_material_clicked:
+            if self.templates.stamina_material is None:
+                raise RuntimeError("stamina popup present but stamina_material template missing")
+            mat = self._locate(screen, "stamina_material")
+            if mat is None:
+                raise RuntimeError(
+                    "stamina popup present but the selected leaf offer was not confirmed"
+                )
+            self._stamina_material_clicked = True
+            return StoryAction("stamina_material", mat.center)
+        mat = self._locate(screen, "stamina_material")
+        if mat is None:
+            raise RuntimeError(
+                "stamina popup present but the selected leaf offer was not confirmed"
+            )
+        if self.templates.stamina_confirm is None:
+            raise RuntimeError("stamina popup present but stamina_confirm template missing")
+        conf = self._locate(screen, "stamina_confirm")
+        if conf is None:
+            return None
+        self._stamina_material_clicked = False
+        self.stamina_replenished += 1
+        return StoryAction("stamina_confirm", conf.center)
+
+    def next_action(self, screen: np.ndarray) -> Optional[StoryAction]:
+        popup_close = find_friendship_points_popup_close(
+            screen,
+            self.templates.friendship_points_title,
+            self.templates.friendship_points_close,
+        )
+        if popup_close is not None:
+            return StoryAction("close_friendship_points_popup", popup_close.center)
+
+        stamina_action = self._handle_stamina(screen)
+        if stamina_action is not None:
+            return stamina_action
+
+        friend_cancel = self.find_friend_request_cancel(screen)
+        if friend_cancel is not None:
+            return StoryAction("cancel_friend_request", friend_cancel.center)
+
+        checks = [
+            ("reward", StoryState.WAIT_RESULTS),
+            ("clear", StoryState.WAIT_RESULTS),
+            ("results_confirm", StoryState.WAIT_COMPLETE),
+            ("complete", StoryState.WAIT_NEXT_STAGE),
+            ("bonus_reward", StoryState.WAIT_NEXT_STAGE),
+            ("skip_confirm", StoryState.ACTIVE),
+            ("skip", StoryState.WAIT_SKIP_CONFIRM),
+            ("watch_story", StoryState.WAIT_SKIP_CONFIRM),
+            ("select_team", StoryState.TEAM),
+            ("start_mission", StoryState.WAIT_BATTLE),
+        ]
+        for name, new_state in checks:
+            match = self._locate(screen, name)
+            if match is not None:
+                previous_state = self.state
+                self.state = new_state
+                if (
+                    name == "watch_story"
+                    and previous_state
+                    in (StoryState.WAIT_COMPLETE, StoryState.WAIT_NEXT_STAGE)
+                ):
+                    self.completed_cycles += 1
+                if name in ("select_team", "start_mission"):
+                    self.auto_enabled = False
+                if name == "start_mission":
+                    self.auto_click_attempted = False
+                    self.battle_controls = BattleControls.TRANSITION
+                return StoryAction(name, self._action_point(screen, name, match))
+        match = self._locate(screen, "prepare_battle")
+        if match is not None:
+            if self.state in (StoryState.WAIT_COMPLETE, StoryState.WAIT_NEXT_STAGE):
+                self.completed_cycles += 1
+            if self.state == StoryState.WAIT_NEXT_STAGE:
+                self.state = StoryState.STAGE
+                return None
+            self.state = StoryState.TEAM
+            self.auto_enabled = False
+            self.auto_click_attempted = False
+            self.battle_controls = BattleControls.TRANSITION
+            return StoryAction("prepare_battle", match.center)
+        if self.state in (StoryState.WAIT_BATTLE, StoryState.ACTIVE):
+            self.battle_controls = self.observe_battle_controls(screen)
+            if self.battle_controls == BattleControls.AUTO_CONTROLS:
+                self.state = StoryState.ACTIVE
+                self.auto_enabled = True
+                return None
+            if self.battle_controls == BattleControls.MANUAL_CONTROLS:
+                self.state = StoryState.WAIT_BATTLE
+                self.auto_enabled = False
+                if self.auto_click_attempted:
+                    return None
+                self.auto_click_attempted = True
+                match = self._locate(screen, "auto_off")
+                point = (
+                    match.center
+                    if match is not None
+                    else self._scaled_point(screen, self._AUTO_CLICK_POINT)
+                )
+                return StoryAction("enable_auto", point)
+        if self.state == StoryState.WAIT_NEXT_STAGE:
+            match = self._locate(screen, "bonus_reward")
+            if match is not None:
+                return StoryAction("bonus_reward", self._action_point(screen, "bonus_reward", match))
+            match = self._locate(screen, "next_stage")
+            if match is not None:
+                self.completed_cycles += 1
+                self.state = StoryState.STAGE
+                return None
+
+        if self.state == StoryState.WAIT_COMPLETE:
+            # Recovery: the screen may have already advanced to the map or is
+            # showing a bonus popup. Try forward templates instead of dead-
+            # ending on the (possibly stale) complete button.
+            match = self._locate(screen, "bonus_reward")
+            if match is not None:
+                return StoryAction("bonus_reward", self._action_point(screen, "bonus_reward", match))
+            match = self._locate(screen, "next_stage")
+            if match is not None:
+                self.completed_cycles += 1
+                self.state = StoryState.STAGE
+                return None
+            match = self._locate(screen, "prepare_battle")
+            if match is not None:
+                self.state = StoryState.TEAM
+                self.auto_enabled = False
+                return StoryAction("prepare_battle", match.center)
+
+        raise RuntimeError(f"expected {self.state.value} story screen was not recognized")
+
+    def preview(self, screen: np.ndarray):
+        """Observe a frame without committing optimistic state changes."""
+
+        snapshot = (
+            self.state,
+            self.auto_enabled,
+            self.auto_click_attempted,
+            self.battle_controls,
+            self.completed_cycles,
+            self.stamina_replenished,
+            self._stamina_material_clicked,
+        )
+        try:
+            action = self.next_action(screen)
+            outcome = (self.state, self.completed_cycles)
+            return action, outcome
+        finally:
+            (
+                self.state,
+                self.auto_enabled,
+                self.auto_click_attempted,
+                self.battle_controls,
+                self.completed_cycles,
+                self.stamina_replenished,
+                self._stamina_material_clicked,
+            ) = snapshot
+
+
+class StoryRunner:
+    """Short-polling, fail-closed runner for current-layout story stages."""
+
+    _ACTION_RETRY_SECONDS = 45
+    _AUTO_CONFIRM_SECONDS = 15
+
+    _TIMEOUT_SECONDS = {
+        StoryState.STAGE: 45,
+        StoryState.TEAM: 45,
+        StoryState.WAIT_SKIP_CONFIRM: 45,
+        StoryState.WAIT_BATTLE: 60,
+        StoryState.ACTIVE: 120,
+        StoryState.WAIT_RESULTS: 45,
+        StoryState.WAIT_COMPLETE: 45,
+        StoryState.WAIT_NEXT_STAGE: 45,
+    }
+
+    def __init__(
+        self,
+        machine: StoryStateMachine,
+        runtime: Runtime,
+        *,
+        sleep: Callable[[float], None] = default_sleep,
+        poll_seconds: float = 1.0,
+        recovery: Callable[[], None] | None = None,
+    ) -> None:
+        self.machine = machine
+        self.runtime = runtime
+        self.sleep = sleep
+        self.poll_seconds = poll_seconds
+        self.recovery = recovery
+        self.resource_exhausted = False
+
+    def run(self, max_cycles: int | None = None) -> int:
+        if self.runtime.dry_run:
+            screen = self.runtime.capture()
+            try:
+                action = self.machine.next_action(screen)
+            except RuntimeError as error:
+                diagnostic = self.runtime.save_diagnostic(
+                    f"dry_run_{self.machine.state.value}", screen
+                )
+                raise RuntimeError(
+                    f"dry-run did not recognize {self.machine.state.value}; saved {diagnostic}"
+                ) from error
+            if action is not None:
+                self.runtime.log(
+                    f"模式=主线 页面={self.machine.state.value} 动作={action.name} 状态=诊断"
+                )
+                self.runtime.click(action.point, action.name)
+            return self.machine.completed_cycles
+
+        state_started = monotonic()
+        absolute_started = state_started
+        heartbeat_at = state_started
+        active_frame: Optional[np.ndarray] = None
+        stable = StableObservation(required=2)
+        recovered = False
+        last_action_name: Optional[str] = None
+        last_action_clicked_at: Optional[float] = None
+        retry_wait_logged = False
+        action_attempts = 0
+        while max_cycles is None or self.machine.completed_cycles < max_cycles:
+            state_before = self.machine.state
+            cycles_before = self.machine.completed_cycles
+            screen = self.runtime.capture()
+            if self.runtime.diagnostic_dir is not None:
+                self.runtime.save_current_frame(screen)
+            try:
+                preview_action, outcome = self.machine.preview(screen)
+            except StaminaExhausted as error:
+                self.resource_exhausted = True
+                self.runtime.log(f"模式=主线 停止=生命之叶耗尽 详情={error}")
+                return self.machine.completed_cycles
+            except RuntimeError as error:
+                self._check_auto_confirmation_timeout(screen, state_started)
+                if (
+                    self.machine.state == StoryState.ACTIVE
+                    and self.machine.auto_enabled
+                    and self._valid_game_frame(screen)
+                    and self._has_active_progress(active_frame, screen)
+                ):
+                    state_started = monotonic()
+                    active_frame = screen
+                    if monotonic() - heartbeat_at >= 30:
+                        self.runtime.log(
+                            f"模式=主线 轮次={self.machine.completed_cycles + 1}/{max_cycles or '?'} "
+                            "页面=战斗中 状态=心跳"
+                        )
+                        heartbeat_at = monotonic()
+                    self.sleep(self.poll_seconds)
+                    continue
+                elapsed = monotonic() - state_started
+                if elapsed >= self._TIMEOUT_SECONDS[self.machine.state]:
+                    if self.recovery is not None and not recovered:
+                        recovered = True
+                        self.runtime.log(
+                            f"模式=主线 页面={self.machine.state.value} 恢复=回大厅重新导航"
+                        )
+                        self.recovery()
+                        self.machine.state = StoryState.STAGE
+                        self.machine.auto_enabled = False
+                        state_started = monotonic()
+                        absolute_started = state_started
+                        last_action_name = None
+                        last_action_clicked_at = None
+                        retry_wait_logged = False
+                        action_attempts = 0
+                        stable.reset()
+                        continue
+                    diagnostic = self.runtime.save_diagnostic(
+                        f"timeout_{self.machine.state.value}", screen
+                    )
+                    self.runtime.log(
+                        f"timeout state={self.machine.state.value} elapsed={elapsed:.1f}s diagnostic={diagnostic}"
+                    )
+                    raise RuntimeError(
+                        f"no progress: {error}; stopped safely, saved {diagnostic}"
+                    ) from error
+                self.sleep(self.poll_seconds)
+                continue
+
+            signature = (
+                preview_action.name if preview_action is not None
+                else f"settled:{outcome[0].value}:{outcome[1]}"
+            )
+            if not stable.update(signature):
+                self.sleep(self.poll_seconds)
+                continue
+            action = self.machine.next_action(screen)
+            stable.reset()
+
+            if (
+                state_before == StoryState.WAIT_BATTLE
+                and self.machine.state == StoryState.ACTIVE
+                and self.machine.auto_enabled
+            ):
+                self.runtime.log(
+                    "模式=主线 页面=战斗 识别=四头像控制条 自动战斗=已确认"
+                )
+
+            if self.machine.completed_cycles > cycles_before:
+                recovered = False
+                self.runtime.log(f"complete-story cycles={self.machine.completed_cycles}")
+                state_started = monotonic()
+                if max_cycles is not None and self.machine.completed_cycles >= max_cycles:
+                    return self.machine.completed_cycles
+
+            if self.machine.state == StoryState.ACTIVE:
+                if self._has_active_progress(active_frame, screen):
+                    state_started = monotonic()
+                active_frame = screen
+            else:
+                active_frame = None
+
+            if action is not None:
+                if action.name == last_action_name:
+                    since_click = (
+                        monotonic() - last_action_clicked_at
+                        if last_action_clicked_at is not None
+                        else self._ACTION_RETRY_SECONDS
+                    )
+                    if since_click < self._ACTION_RETRY_SECONDS:
+                        if not retry_wait_logged:
+                            remaining = self._ACTION_RETRY_SECONDS - since_click
+                            self.runtime.log(
+                                f"模式=主线 轮次={self.machine.completed_cycles + 1}/{max_cycles or '?'} "
+                                f"动作={action.name} 等待=点击后确认转场 剩余={remaining:.1f}秒"
+                            )
+                            retry_wait_logged = True
+                        self.sleep(self.poll_seconds)
+                        continue
+                    action_attempts += 1
+                else:
+                    last_action_name = action.name
+                    action_attempts = 1
+                if action_attempts > 2:
+                    if self.recovery is not None and not recovered:
+                        recovered = True
+                        self.runtime.log(
+                            f"模式=主线 动作={action.name} 恢复=两次点击未转场，回大厅重新导航"
+                        )
+                        self.recovery()
+                        self.machine.state = StoryState.STAGE
+                        self.machine.auto_enabled = False
+                        state_started = monotonic()
+                        absolute_started = state_started
+                        last_action_name = None
+                        last_action_clicked_at = None
+                        retry_wait_logged = False
+                        action_attempts = 0
+                        stable.reset()
+                        continue
+                    diagnostic = self.runtime.save_diagnostic(
+                        f"retry_exhausted_{action.name}", screen
+                    )
+                    raise RuntimeError(
+                        f"action {action.name} failed after 2 attempts; saved {diagnostic}"
+                    )
+                self.runtime.log(
+                    f"模式=主线 轮次={self.machine.completed_cycles + 1}/{max_cycles or '?'} "
+                    f"页面={state_before.value} 动作={action.name} 尝试={action_attempts}/2"
+                )
+                self.runtime.click(action.point, action.name)
+                last_action_clicked_at = monotonic()
+                state_started = last_action_clicked_at
+                absolute_started = last_action_clicked_at
+                retry_wait_logged = False
+            else:
+                last_action_name = None
+                last_action_clicked_at = None
+                retry_wait_logged = False
+                action_attempts = 0
+            if (
+                action is None
+                and monotonic() - state_started >= self._TIMEOUT_SECONDS[self.machine.state]
+            ):
+                diagnostic = self.runtime.save_diagnostic(
+                    f"timeout_{self.machine.state.value}", screen
+                )
+                self.runtime.log(
+                    f"timeout state={self.machine.state.value} no_progress "
+                    f"diagnostic={diagnostic}"
+                )
+                raise RuntimeError(
+                    f"no progress while waiting in {self.machine.state.value}; "
+                    f"stopped safely, saved {diagnostic}"
+                )
+
+            if action is None:
+                self._check_auto_confirmation_timeout(screen, state_started)
+
+            if self.machine.state != state_before:
+                state_started = monotonic()
+                absolute_started = state_started
+            absolute_limit = 900 if self.machine.state == StoryState.ACTIVE else 180
+            if monotonic() - absolute_started >= absolute_limit:
+                diagnostic = self.runtime.save_diagnostic(
+                    f"absolute_{self.machine.state.value}", screen
+                )
+                raise RuntimeError(
+                    f"absolute timeout in {self.machine.state.value}; stopped safely, saved {diagnostic}"
+                )
+            self.sleep(self.poll_seconds)
+
+        return self.machine.completed_cycles
+
+    def _check_auto_confirmation_timeout(
+        self, screen: np.ndarray, state_started: float
+    ) -> None:
+        if (
+            self.machine.state != StoryState.WAIT_BATTLE
+            or not self.machine.auto_click_attempted
+            or monotonic() - state_started < self._AUTO_CONFIRM_SECONDS
+        ):
+            return
+        diagnostic = self.runtime.save_diagnostic("auto_not_confirmed", screen)
+        self.runtime.log(
+            "模式=主线 页面=战斗 动作=开启自动 "
+            f"停止=未出现四头像自动控制条 现场={diagnostic}"
+        )
+        raise RuntimeError(
+            "auto battle was not confirmed after one click; "
+            f"stopped safely, saved {diagnostic}"
+        )
+
+    @staticmethod
+    def _has_active_progress(before: Optional[np.ndarray], after: np.ndarray) -> bool:
+        """True only for meaningful change in the battle area, not static HUD noise."""
+        if before is None or before.shape != after.shape:
+            return False
+        height, width = after.shape[:2]
+        battle_before = before[200 : height - 250, 100 : width - 100]
+        battle_after = after[200 : height - 250, 100 : width - 100]
+        return float(np.mean(np.abs(battle_after.astype(np.int16) - battle_before.astype(np.int16)))) >= 2.0
+
+    @staticmethod
+    def _valid_game_frame(screen: np.ndarray) -> bool:
+        content = screen[round(screen.shape[0] * 0.05) :, : round(screen.shape[1] * 0.97)]
+        return float(np.mean(content)) >= 3.0 and float(np.std(content)) >= 5.0
