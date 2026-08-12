@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Any
 
 from auto_game_unified.core.hotkey import WindowsPStopHotkey
+from auto_game_unified.core.recovery import RecoveryGate
 from auto_game_unified.core.runtime import ManualStop, Runtime
 from auto_game_unified.core.window import Epic7Window
 from auto_game_unified.games.epic7.modes import MODE_SPECS, ModeSpec, get_mode
@@ -55,11 +56,20 @@ def run_mode(
     )
     runner_options: dict[str, Any] = {}
     if navigator is not None:
-        def recover() -> None:
+        def recover_to_mode() -> None:
             lobby_screen = navigator.return_home()
             navigator.navigate(spec.name, lobby_screen=lobby_screen)
 
-        runner_options["recovery"] = recover
+        def report_blocked_recovery(message: str) -> None:
+            runtime.log(message)
+            runtime.save_diagnostic("recovery_blocked")
+
+        recovery_gate = RecoveryGate(
+            recover_to_mode,
+            on_blocked=report_blocked_recovery,
+        )
+        runner_options["recovery"] = recovery_gate.recover
+        runner_options["recovery_gate"] = recovery_gate
     if spec.name == "arena" and not dry_run:
         runner_options["purchase_stamp_path"] = ROOT / "runtime_logs" / "arena_ticket_purchase.txt"
     runner = spec.runner_type(machine, runtime, **runner_options)
