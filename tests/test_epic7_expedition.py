@@ -4,6 +4,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
+from auto_game_unified.core.battle_supervisor import AutoBattleState
 from auto_game_unified.games.epic7.expedition import (
     ExpeditionAction,
     ExpeditionState,
@@ -66,6 +67,40 @@ class ExpeditionStateMachineTests(unittest.TestCase):
             TEMPLATES,
             initial_state=state,
         )
+
+    def test_battle_adapter_maps_team_manual_and_result(self):
+        machine = ExpeditionStateMachine(
+            build_expedition_templates(
+                ROOT / "games" / "epic7" / "templates" / "expedition"
+            ),
+            initial_state=ExpeditionState.TEAM,
+        )
+
+        team = machine.observe_battle(recorded_screen("team"), None)
+        manual = machine.observe_battle(
+            recorded_screen("battle_manual_waiting_live"), None
+        )
+        result = machine.observe_battle(recorded_screen("result"), None)
+
+        self.assertTrue(team.pre_battle_visible)
+        self.assertEqual(AutoBattleState.MANUAL, manual.auto_state)
+        self.assertIsNotNone(manual.auto_point)
+        self.assertTrue(result.result_visible)
+
+    def test_battle_adapter_treats_dynamic_valid_frames_as_progress_without_hud(self):
+        machine = self.machine(ExpeditionState.BATTLE)
+        before = np.random.default_rng(1).integers(
+            0, 256, SIZE, dtype=np.uint8
+        )
+        after = np.random.default_rng(2).integers(
+            0, 256, SIZE, dtype=np.uint8
+        )
+
+        observation = machine.observe_battle(after, before)
+
+        self.assertTrue(observation.battle_visible)
+        self.assertTrue(observation.business_progress)
+        self.assertEqual(AutoBattleState.AUTO, observation.auto_state)
 
     def test_home_opens_my_wanted_posters(self):
         machine = self.machine()

@@ -1,9 +1,11 @@
 import unittest
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import cv2
 import numpy as np
 
+from auto_game_unified.core.battle_supervisor import BattleOutcome
 from auto_game_unified.core.runtime import ManualStop, Runtime
 from auto_game_unified.games.epic7.expedition import (
     ExpeditionAction,
@@ -69,11 +71,6 @@ class EmptyMachine(BattleMachine):
         raise PostersExhausted("empty")
 
 
-class HiddenHudBattleMachine(BattleMachine):
-    def preview(self, _screen):
-        raise RuntimeError("battle HUD is hidden by a skill animation")
-
-
 class BattleStartMachine:
     def __init__(self):
         self.state = ExpeditionState.TEAM
@@ -91,6 +88,26 @@ class BattleStartMachine:
 
 
 class ExpeditionRunnerTests(unittest.TestCase):
+    def test_battle_start_delegates_to_supervisor_and_returns_to_result_handling(self):
+        machine = MagicMock()
+        machine.state = ExpeditionState.BATTLE
+        supervisor = MagicMock()
+        supervisor.run.return_value = BattleOutcome.RESULT_REACHED
+        runner = ExpeditionRunner(
+            machine,
+            Runtime(
+                lambda: np.zeros((60, 100, 3), dtype=np.uint8),
+                lambda point: None,
+            ),
+            battle_supervisor=supervisor,
+            sleep=lambda seconds: None,
+        )
+
+        runner._run_committed_battle(cycle=1)
+
+        supervisor.run.assert_called_once_with(machine.observe_battle, cycle=1)
+        self.assertEqual(ExpeditionState.RESULT, machine.state)
+
     def test_action_requires_two_equal_observations_before_click(self):
         clock = Clock()
         clicks = []
@@ -113,56 +130,21 @@ class ExpeditionRunnerTests(unittest.TestCase):
         self.assertEqual(0, completed)
         self.assertTrue(runner.resource_exhausted)
 
-    def test_changing_battle_frames_emit_a_thirty_second_heartbeat(self):
-        clock = Clock()
-        logs = []
-        captures = 0
-
-        def capture():
-            nonlocal captures
-            captures += 1
-            if captures > 40:
-                raise ManualStop("stop test")
-            return np.full((120, 200, 3), captures * 3 % 255, dtype=np.uint8)
-
+    def test_default_supervisor_keeps_expedition_twenty_minute_limit(self):
         runner = ExpeditionRunner(
             BattleMachine(),
-            Runtime(capture, lambda _: None, emit=logs.append),
-            sleep=clock.sleep,
-            now=clock.now,
+            Runtime(
+                lambda: np.zeros((120, 200, 3), dtype=np.uint8),
+                lambda point: None,
+            ),
         )
 
-        with self.assertRaises(ManualStop):
-            runner.run(max_cycles=1)
-
-        self.assertTrue(any("心跳" in line and "战斗中" in line for line in logs))
-
-    def test_changing_battle_frames_remain_progress_when_hud_is_hidden(self):
-        clock = Clock()
-        logs = []
-        captures = 0
-
-        def capture():
-            nonlocal captures
-            captures += 1
-            if captures > 10:
-                raise ManualStop("stop test")
-            return np.random.default_rng(captures).integers(
-                0, 256, (120, 200, 3), dtype=np.uint8
-            )
-
-        runner = ExpeditionRunner(
-            HiddenHudBattleMachine(),
-            Runtime(capture, lambda _: None, emit=logs.append),
-            sleep=clock.sleep,
-            poll_seconds=10,
-            now=clock.now,
+        self.assertEqual(20 * 60, runner.battle_supervisor.config.absolute_seconds)
+        self.assertEqual(
+            20 * 60,
+            runner.battle_supervisor.config.no_business_progress_seconds,
         )
-
-        with self.assertRaises(ManualStop):
-            runner.run(max_cycles=1)
-
-        self.assertTrue(any("HUD暂时隐藏" in line for line in logs))
+        self.assertIs(runner.recovery_gate, runner.battle_supervisor.gate)
 
     def test_persistent_campfire_does_not_count_as_a_successful_wake(self):
         clock = Clock()
@@ -199,82 +181,13 @@ class ExpeditionRunnerTests(unittest.TestCase):
 
         self.assertEqual(2, len(clicks))
 
-    def test_brief_black_result_transition_is_timed_from_its_first_frame(self):
-        clock = Clock()
-        captures = 0
-
-        def capture():
-            nonlocal captures
-            captures += 1
-            if captures > 9:
-                raise ManualStop("transition remained under its own timeout")
-            if captures == 9:
-                return np.zeros((120, 200, 3), dtype=np.uint8)
-            return np.random.default_rng(captures).integers(
-                0, 256, (120, 200, 3), dtype=np.uint8
-            )
-
-        runner = ExpeditionRunner(
-            HiddenHudBattleMachine(),
-            Runtime(capture, lambda _: None),
-            sleep=clock.sleep,
-            poll_seconds=10,
-            now=clock.now,
-        )
-
-        with self.assertRaises(ManualStop):
-            runner.run(max_cycles=1)
-
-    def test_battle_start_accepts_changing_valid_frames_when_hud_is_hidden(self):
-        clock = Clock()
-        captures = 0
-
-        def capture():
-            nonlocal captures
-            captures += 1
-            return np.random.default_rng(captures).integers(
-                0, 256, (120, 200, 3), dtype=np.uint8
-            )
-
-        runner = ExpeditionRunner(
-            BattleStartMachine(),
-            Runtime(capture, lambda _: None),
-            sleep=clock.sleep,
-            now=clock.now,
-        )
-
-        self.assertTrue(
-            runner._wait_until_in_state(ExpeditionState.BATTLE, "battle-start")
-        )
-
-    def test_auto_enable_accepts_changing_battle_frames(self):
-        clock = Clock()
-        captures = 0
-
-        def capture():
-            nonlocal captures
-            captures += 1
-            return np.random.default_rng(captures).integers(
-                0, 256, (120, 200, 3), dtype=np.uint8
-            )
-
-        runner = ExpeditionRunner(
-            BattleStartMachine(),
-            Runtime(capture, lambda _: None),
-            sleep=clock.sleep,
-            now=clock.now,
-        )
-
-        self.assertTrue(
-            runner._wait_until_in_state(
-                ExpeditionState.BATTLE, "enable-auto-battle"
-            )
-        )
-
     def test_failed_battle_start_never_returns_to_lobby(self):
         clock = Clock()
         recoveries = []
         machine = BattleStartMachine()
+        machine.observe_battle = MagicMock()
+        supervisor = MagicMock()
+        supervisor.run.side_effect = RuntimeError("battle entry was not confirmed")
         runner = ExpeditionRunner(
             machine,
             Runtime(
@@ -285,46 +198,13 @@ class ExpeditionRunnerTests(unittest.TestCase):
             poll_seconds=60,
             now=clock.now,
             recovery=lambda: recoveries.append(True),
+            battle_supervisor=supervisor,
         )
 
-        with self.assertRaisesRegex(RuntimeError, "failed after 2 attempts"):
+        with self.assertRaisesRegex(RuntimeError, "battle entry was not confirmed"):
             runner.run(max_cycles=1)
 
         self.assertEqual([], recoveries)
-
-    def test_static_battle_fails_after_180_seconds_without_progress(self):
-        clock = Clock()
-        screen = np.full((120, 200, 3), 30, dtype=np.uint8)
-        runner = ExpeditionRunner(
-            BattleMachine(),
-            Runtime(lambda: screen, lambda _: None),
-            sleep=clock.sleep,
-            poll_seconds=60,
-            now=clock.now,
-        )
-
-        with self.assertRaisesRegex(RuntimeError, "no progress.*battle"):
-            runner.run(max_cycles=1)
-
-    def test_changing_battle_still_has_twenty_minute_absolute_limit(self):
-        clock = Clock()
-        captures = 0
-
-        def capture():
-            nonlocal captures
-            captures += 1
-            return np.full((120, 200, 3), captures * 7 % 255, dtype=np.uint8)
-
-        runner = ExpeditionRunner(
-            BattleMachine(),
-            Runtime(capture, lambda _: None),
-            sleep=clock.sleep,
-            poll_seconds=300,
-            now=clock.now,
-        )
-
-        with self.assertRaisesRegex(RuntimeError, "absolute timeout.*battle"):
-            runner.run(max_cycles=1)
 
     def test_failed_transition_clicks_twice_then_stops(self):
         clock = Clock()

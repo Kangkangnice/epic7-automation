@@ -9,6 +9,14 @@ from typing import Callable, Optional
 import cv2
 import numpy as np
 
+from auto_game_unified.core.battle_supervisor import (
+    AutoBattleState,
+    BattleConfig,
+    BattleObservation,
+    BattleOutcome,
+    BattleSupervisor,
+    valid_game_frame,
+)
 from auto_game_unified.core.matcher import Match, find_template, load_template
 from auto_game_unified.core.recovery import RecoveryGate
 from auto_game_unified.core.runtime import Runtime
@@ -276,6 +284,34 @@ class ExpeditionStateMachine:
     def is_campfire_idle(self, screen: np.ndarray) -> bool:
         return self._locate(screen, "campfire_idle") is not None
 
+    def observe_battle(
+        self,
+        screen: np.ndarray,
+        previous_screen: np.ndarray | None,
+    ) -> BattleObservation:
+        auto = self._locate(screen, "auto_off")
+        battle = self._locate(screen, "battle_anchor")
+        result = self._locate(screen, "result_confirm")
+        progressing = valid_game_frame(screen) and meaningful_change(
+            previous_screen,
+            screen,
+        )
+        return BattleObservation(
+            pre_battle_visible=self._locate(screen, "battle_start") is not None,
+            battle_visible=battle is not None or auto is not None or progressing,
+            result_visible=result is not None,
+            frame_valid=valid_game_frame(screen),
+            auto_state=(
+                AutoBattleState.MANUAL
+                if auto is not None
+                else AutoBattleState.AUTO
+                if progressing
+                else AutoBattleState.UNKNOWN
+            ),
+            auto_point=None if auto is None else auto.center,
+            business_progress=progressing,
+        )
+
     def next_action(self, screen: np.ndarray) -> Optional[ExpeditionAction]:
         if self.state in {
             ExpeditionState.OUTCOME,
@@ -391,8 +427,6 @@ class ExpeditionRunner:
     _STATE_TIMEOUT_SECONDS = 45
     _TRANSITION_NO_PROGRESS_SECONDS = 45
     _TRANSITION_ABSOLUTE_SECONDS = 180
-    _BATTLE_NO_PROGRESS_SECONDS = 180
-    _BATTLE_ABSOLUTE_SECONDS = 20 * 60
 
     def __init__(
         self,
@@ -404,6 +438,7 @@ class ExpeditionRunner:
         now: Callable[[], float] = monotonic,
         recovery: Callable[[], None] | None = None,
         recovery_gate: RecoveryGate | None = None,
+        battle_supervisor: BattleSupervisor | None = None,
     ) -> None:
         self.machine = machine
         self.runtime = runtime
@@ -412,7 +447,29 @@ class ExpeditionRunner:
         self.now = now
         self.recovery_gate = recovery_gate or RecoveryGate(recovery)
         self.recovery = self.recovery_gate.recover if recovery is not None else None
+        self.battle_supervisor = battle_supervisor or BattleSupervisor(
+            runtime,
+            self.recovery_gate,
+            BattleConfig(
+                mode="expedition",
+                absolute_seconds=20 * 60,
+                no_business_progress_seconds=20 * 60,
+            ),
+            now=now,
+            sleep=sleep,
+        )
         self.resource_exhausted = False
+
+    def _run_committed_battle(self, *, cycle: int) -> None:
+        outcome = self.battle_supervisor.run(
+            self.machine.observe_battle,
+            cycle=cycle,
+        )
+        if outcome is not BattleOutcome.RESULT_REACHED:
+            raise RuntimeError(
+                f"unexpected expedition battle outcome: {outcome.value}"
+            )
+        self.machine.state = ExpeditionState.RESULT
 
     def run(self, max_cycles: int | None = None) -> int:
         if self.runtime.dry_run:
@@ -427,11 +484,6 @@ class ExpeditionRunner:
 
         stable = StableObservation(required=2)
         state_started = self.now()
-        battle_started = state_started
-        battle_progressed = state_started
-        heartbeat_at = state_started
-        battle_frame: Optional[np.ndarray] = None
-        battle_unrecognized_since: Optional[float] = None
         recovered = False
         failed_action: Optional[str] = None
         action_attempts = 0
@@ -452,37 +504,6 @@ class ExpeditionRunner:
                 )
                 return self.machine.completed_cycles
             except RuntimeError as error:
-                if state_before == ExpeditionState.BATTLE and self._valid_game_frame(screen):
-                    battle_unrecognized_since = None
-                    current = self.now()
-                    if meaningful_change(battle_frame, screen):
-                        battle_progressed = current
-                    battle_frame = screen
-                    if current - heartbeat_at >= 30:
-                        self.runtime.log(
-                            f"模式=远征 轮次={self.machine.completed_cycles + 1}/{max_cycles or '?'} "
-                            f"页面=战斗中 状态=心跳 HUD暂时隐藏 已运行={current - battle_started:.0f}秒"
-                        )
-                        heartbeat_at = current
-                    if current - battle_started >= self._BATTLE_ABSOLUTE_SECONDS:
-                        diagnostic = self._diagnostic("absolute_battle", screen)
-                        raise RuntimeError(
-                            f"absolute timeout in battle; saved {diagnostic}"
-                        ) from error
-                    if current - battle_progressed >= self._BATTLE_NO_PROGRESS_SECONDS:
-                        diagnostic = self._diagnostic("no_progress_battle", screen)
-                        raise RuntimeError(
-                            f"no progress in battle; saved {diagnostic}"
-                        ) from error
-                    self.sleep(self.poll_seconds)
-                    continue
-                if state_before == ExpeditionState.BATTLE:
-                    current = self.now()
-                    if battle_unrecognized_since is None:
-                        battle_unrecognized_since = current
-                    if current - battle_unrecognized_since < self._STATE_TIMEOUT_SECONDS:
-                        self.sleep(self.poll_seconds)
-                        continue
                 if self.now() - state_started < self._STATE_TIMEOUT_SECONDS:
                     self.sleep(self.poll_seconds)
                     continue
@@ -502,25 +523,6 @@ class ExpeditionRunner:
                 raise RuntimeError(
                     f"no progress in {state_before.value}: {error}; saved {diagnostic}"
                 ) from error
-
-            if state_before == ExpeditionState.BATTLE and preview_action is None:
-                battle_unrecognized_since = None
-                current = self.now()
-                if meaningful_change(battle_frame, screen):
-                    battle_progressed = current
-                battle_frame = screen
-                if current - heartbeat_at >= 30:
-                    self.runtime.log(
-                        f"模式=远征 轮次={self.machine.completed_cycles + 1}/{max_cycles or '?'} "
-                        f"页面=战斗中 状态=心跳 已运行={current - battle_started:.0f}秒"
-                    )
-                    heartbeat_at = current
-                if current - battle_started >= self._BATTLE_ABSOLUTE_SECONDS:
-                    diagnostic = self._diagnostic("absolute_battle", screen)
-                    raise RuntimeError(f"absolute timeout in battle; saved {diagnostic}")
-                if current - battle_progressed >= self._BATTLE_NO_PROGRESS_SECONDS:
-                    diagnostic = self._diagnostic("no_progress_battle", screen)
-                    raise RuntimeError(f"no progress in battle; saved {diagnostic}")
 
             signature = (
                 preview_action.name
@@ -561,15 +563,19 @@ class ExpeditionRunner:
 
             if max_cycles is not None and self.machine.completed_cycles >= max_cycles:
                 return self.machine.completed_cycles
+            if action.name == "battle-start":
+                self._run_committed_battle(
+                    cycle=self.machine.completed_cycles + 1,
+                )
+                state_started = self.now()
+                failed_action = None
+                action_attempts = 0
+                stable.reset()
+                continue
             if self._wait_until_in_state(expected_state, action.name):
                 failed_action = None
                 action_attempts = 0
                 state_started = self.now()
-                if expected_state == ExpeditionState.BATTLE:
-                    battle_started = state_started
-                    battle_progressed = state_started
-                    heartbeat_at = state_started
-                    battle_frame = None
                 continue
 
             self.machine.state = state_before
@@ -602,7 +608,6 @@ class ExpeditionRunner:
         progressed = started
         previous: Optional[np.ndarray] = None
         stable = StableObservation(required=2)
-        changing_battle_frames = 0
         while self.now() - started < self._TRANSITION_ABSOLUTE_SECONDS:
             screen = self.runtime.capture()
             if self.runtime.diagnostic_dir is not None:
@@ -618,23 +623,6 @@ class ExpeditionRunner:
             changed = meaningful_change(previous, screen)
             if changed:
                 progressed = self.now()
-            if (
-                action_name in {"battle-start", "enable-auto-battle"}
-                and state == ExpeditionState.BATTLE
-            ):
-                team_visible = self.machine.is_in_state(screen, ExpeditionState.TEAM)
-                if self._valid_game_frame(screen) and not team_visible and changed:
-                    changing_battle_frames += 1
-                    if changing_battle_frames >= 2:
-                        status = (
-                            "动态画面确认自动战斗已继续"
-                            if action_name == "enable-auto-battle"
-                            else "动态画面确认进入战斗 HUD暂时隐藏"
-                        )
-                        self.runtime.log(f"模式=远征 页面=战斗中 状态={status}")
-                        return True
-                elif team_visible or not self._valid_game_frame(screen):
-                    changing_battle_frames = 0
             previous = screen
             if self.now() - progressed >= self._TRANSITION_NO_PROGRESS_SECONDS:
                 return False
@@ -649,11 +637,6 @@ class ExpeditionRunner:
             ExpeditionState.DIFFICULTY,
             ExpeditionState.READY,
         }
-
-    @staticmethod
-    def _valid_game_frame(screen: np.ndarray) -> bool:
-        content = screen[round(screen.shape[0] * 0.05) :, : round(screen.shape[1] * 0.97)]
-        return float(np.mean(content)) >= 3.0 and float(np.std(content)) >= 5.0
 
     def _diagnostic(self, label: str, screen: np.ndarray):
         if self.runtime.diagnostic_dir is None:
