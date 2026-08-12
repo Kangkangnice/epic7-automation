@@ -1,6 +1,7 @@
 from pathlib import Path
 import unittest
 
+import cv2
 import numpy as np
 from PIL import Image
 
@@ -26,6 +27,42 @@ def load_fixture(name: str) -> np.ndarray:
 
 
 class Epic7ArenaStateMachineTests(unittest.TestCase):
+    def test_failed_row_classifier_uses_background_color_only(self):
+        machine = ArenaStateMachine(build_templates(TEMPLATES))
+
+        failed = machine.opponent_availability(
+            load_fixture("failed_first_opponent")
+        )
+        normal = machine.opponent_availability(load_fixture("list"))
+
+        self.assertEqual((False, True, True), failed)
+        self.assertEqual((True, True, True), normal)
+
+    def test_ambiguous_row_is_not_exposed_as_a_safe_opponent(self):
+        machine = ArenaStateMachine(build_templates(TEMPLATES))
+        screen = load_fixture("list").copy()
+        x, y, width, height = machine._scaled_region(
+            screen,
+            machine._OPPONENT_STATUS_REGIONS[1],
+        )
+        failed_screen = load_fixture("failed_first_opponent")
+        failed_x, failed_y, failed_width, failed_height = machine._scaled_region(
+            failed_screen,
+            machine._OPPONENT_STATUS_REGIONS[0],
+        )
+        failed = failed_screen[
+            failed_y : failed_y + failed_height,
+            failed_x : failed_x + failed_width,
+        ]
+        screen[y : y + height // 4, x : x + width] = cv2.resize(
+            failed,
+            (width, height // 4),
+        )
+
+        availability = machine.opponent_availability(screen)
+
+        self.assertIsNone(availability[1])
+
     def test_battle_adapter_maps_team_manual_and_result(self):
         machine = ArenaStateMachine(
             build_templates(TEMPLATES),
