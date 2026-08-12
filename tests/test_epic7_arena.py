@@ -4,6 +4,7 @@ import unittest
 import numpy as np
 from PIL import Image
 
+from auto_game_unified.core.battle_supervisor import AutoBattleState
 from auto_game_unified.games.epic7.arena import (
     ArenaState,
     ArenaStateMachine,
@@ -25,6 +26,33 @@ def load_fixture(name: str) -> np.ndarray:
 
 
 class Epic7ArenaStateMachineTests(unittest.TestCase):
+    def test_battle_adapter_maps_team_manual_and_result(self):
+        machine = ArenaStateMachine(
+            build_templates(TEMPLATES),
+            initial_state=ArenaState.TEAM,
+        )
+
+        team = machine.observe_battle(load_fixture("team"), None)
+        manual = machine.observe_battle(load_fixture("battle"), None)
+        result = machine.observe_battle(load_fixture("result"), None)
+
+        self.assertTrue(team.pre_battle_visible)
+        self.assertEqual(AutoBattleState.MANUAL, manual.auto_state)
+        self.assertIsNotNone(manual.auto_point)
+        self.assertTrue(result.result_visible)
+
+    def test_ticket_popup_is_returned_as_pre_battle_business(self):
+        machine = ArenaStateMachine(
+            build_templates(TEMPLATES),
+            initial_state=ArenaState.BATTLE,
+        )
+
+        observation = machine.observe_battle(load_fixture("no_ticket"), None)
+
+        self.assertTrue(observation.pre_battle_business_visible)
+        self.assertEqual(AutoBattleState.UNKNOWN, observation.auto_state)
+        self.assertIsNone(observation.auto_point)
+
     def test_rank_promotion_requires_arrow_and_confirm_anchor(self):
         screen = load_fixture("rank_promotion_master")
         arrow = np.asarray(

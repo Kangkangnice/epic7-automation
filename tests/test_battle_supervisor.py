@@ -87,6 +87,25 @@ def test_committed_battle_locks_recovery_until_stable_result():
     assert diagnostics == []
 
 
+def test_known_pre_battle_business_popup_returns_control_without_clicking():
+    popup = BattleObservation(
+        False,
+        False,
+        False,
+        True,
+        AutoBattleState.UNKNOWN,
+        pre_battle_business_visible=True,
+    )
+    supervisor, gate, observe, clicks, logs, diagnostics = make_supervisor(
+        [popup, popup]
+    )
+
+    assert supervisor.run(observe, cycle=1) is BattleOutcome.PRE_BATTLE_BUSINESS
+    assert gate.locked is False
+    assert clicks == []
+    assert diagnostics == []
+
+
 def test_manual_auto_state_clicks_once_and_requires_confirmation():
     manual = BattleObservation(
         False, True, False, True, AutoBattleState.MANUAL, (900, 80)
