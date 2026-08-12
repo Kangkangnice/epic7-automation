@@ -2,8 +2,9 @@ from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 from datetime import date
+import random
 from time import monotonic, sleep as default_sleep
-from typing import Callable, Optional
+from typing import Callable, Optional, Sequence
 
 import cv2
 import numpy as np
@@ -171,10 +172,12 @@ class ArenaStateMachine:
         "ticket_purchase_button": (900, 760, 500, 260),
     }
 
-    # First opponent row click point relative to the live ``list_ready`` anchor center.
-    # Derived from the original hard-coded coordinates (anchor center ~ (960, 1025),
-    # first opponent ~ (750, 386) -> offset (-210, -639)).
-    _FIRST_OPPONENT_OFFSET = (-210, -639)
+    _OPPONENT_OFFSETS = (
+        (-210, -639),
+        (-210, -448),
+        (-210, -256),
+    )
+    _REFRESH_OFFSET = (383, -823)
 
     _NEXT_STATE = {
         ArenaState.LIST: ArenaState.SELECTED,
@@ -190,17 +193,24 @@ class ArenaStateMachine:
         ArenaState.RESULT: "confirm",
     }
     _ACTION_NAME = {
-        ArenaState.LIST: "select-first-row",
         ArenaState.SELECTED: "challenge",
         ArenaState.TEAM: "battle-start",
         ArenaState.BATTLE: "enable-auto",
         ArenaState.RESULT: "confirm-result",
     }
 
-    def __init__(self, templates: ArenaTemplates, *, initial_state: ArenaState = ArenaState.LIST) -> None:
+    def __init__(
+        self,
+        templates: ArenaTemplates,
+        *,
+        initial_state: ArenaState = ArenaState.LIST,
+        choose_opponent: Callable[[Sequence[int]], int] = random.choice,
+    ) -> None:
         self.templates = templates
         self.state = initial_state
         self.completed_cycles = 0
+        self.choose_opponent = choose_opponent
+        self._selected_opponent: int | None = None
 
     def _locate(self, screen: np.ndarray, template_name: str) -> Optional[Match]:
         threshold = self._THRESHOLDS.get(template_name, self.templates.threshold)
@@ -273,14 +283,43 @@ class ArenaStateMachine:
             return challenge.score >= list_ready.score
         return self._visible(screen, self._STATE_TEMPLATE[state])
 
-    def _first_opponent_point(self, screen: np.ndarray) -> tuple[int, int]:
+    def _opponent_point(
+        self,
+        screen: np.ndarray,
+        index: int,
+    ) -> tuple[int, int]:
         anchor = self._locate(screen, "list_ready")
         if anchor is None:
-            raise RuntimeError("list_ready anchor lost while selecting first opponent")
+            raise RuntimeError("list_ready anchor lost while selecting opponent")
+        offset = self._OPPONENT_OFFSETS[index]
         return (
-            anchor.center[0] + self._FIRST_OPPONENT_OFFSET[0],
-            anchor.center[1] + self._FIRST_OPPONENT_OFFSET[1],
+            anchor.center[0] + offset[0],
+            anchor.center[1] + offset[1],
         )
+
+    def _refresh_point(self, screen: np.ndarray) -> tuple[int, int]:
+        anchor = self._locate(screen, "list_ready")
+        if anchor is None:
+            raise RuntimeError("list_ready anchor lost while refreshing opponents")
+        return (
+            anchor.center[0] + self._REFRESH_OFFSET[0],
+            anchor.center[1] + self._REFRESH_OFFSET[1],
+        )
+
+    def _list_action(self, screen: np.ndarray) -> Action:
+        availability = self.opponent_availability(screen)
+        safe = [index for index, value in enumerate(availability) if value is True]
+        if safe:
+            self._selected_opponent = self.choose_opponent(safe)
+            self.state = ArenaState.SELECTED
+            return Action(
+                "select-opponent",
+                self._opponent_point(screen, self._selected_opponent),
+            )
+        if all(value is False for value in availability):
+            self._selected_opponent = None
+            return Action("refresh-opponents", self._refresh_point(screen))
+        raise RuntimeError("arena opponent rows could not be classified safely")
 
     def observe_battle(
         self,
@@ -326,8 +365,8 @@ class ArenaStateMachine:
         if self.state == ArenaState.CONFIRMING:
             if self._visible(screen, "list_ready"):
                 self.completed_cycles += 1
-                self.state = ArenaState.SELECTED
-                return Action("select-first-row", self._first_opponent_point(screen))
+                self.state = ArenaState.LIST
+                return self._list_action(screen)
             if self._visible(screen, "confirm"):
                 return Action("confirm-result", self._locate(screen, "confirm").center)
             rank_confirm = find_rank_promotion_confirm(
@@ -340,7 +379,13 @@ class ArenaStateMachine:
             raise RuntimeError("expected result confirmation to close into list")
 
         if self.state == ArenaState.SELECTED and not self.is_in_state(screen, ArenaState.SELECTED):
-            return Action("select-first-row", self._first_opponent_point(screen))
+            if self._selected_opponent is None:
+                self.state = ArenaState.LIST
+                return self._list_action(screen)
+            return Action(
+                "select-opponent",
+                self._opponent_point(screen, self._selected_opponent),
+            )
 
         template_name = self._STATE_TEMPLATE[self.state]
         match = self._locate(screen, template_name)
@@ -348,9 +393,7 @@ class ArenaStateMachine:
             raise RuntimeError(f"expected {self.state.value} screen was not recognized")
 
         if self.state == ArenaState.LIST:
-            action = Action("select-first-row", self._first_opponent_point(screen))
-            self.state = self._NEXT_STATE[self.state]
-            return action
+            return self._list_action(screen)
 
         name = self._ACTION_NAME[self.state]
         previous_state = self.state
@@ -358,12 +401,12 @@ class ArenaStateMachine:
         return Action(name, match.center)
 
     def preview(self, screen: np.ndarray):
-        snapshot = self.state, self.completed_cycles
+        snapshot = self.state, self.completed_cycles, self._selected_opponent
         try:
             action = self.next_action(screen)
             return action, (self.state, self.completed_cycles)
         finally:
-            self.state, self.completed_cycles = snapshot
+            self.state, self.completed_cycles, self._selected_opponent = snapshot
 
 
 class ArenaRunner:
