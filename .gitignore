@@ -5,4 +5,5 @@ runtime_logs/
 runtime_diagnostics/
 .tools/
 .workbuddy/
+.worktrees/
 *.log
