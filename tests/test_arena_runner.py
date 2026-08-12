@@ -140,6 +140,23 @@ class ArenaRunnerTests(unittest.TestCase):
         runner._wait_until_safe_list.assert_called_once_with()
         self.assertEqual(ArenaState.LIST, machine.state)
 
+    def test_safe_list_waiter_requires_both_list_and_available_opponent(self):
+        machine = MagicMock()
+        machine.is_in_state.return_value = True
+        machine.has_safe_opponent.side_effect = [False, True]
+        runner = ArenaRunner(
+            machine,
+            Runtime(
+                lambda: np.full((60, 100, 3), 30, dtype=np.uint8),
+                lambda point: None,
+                emit=lambda line: None,
+            ),
+            sleep=lambda seconds: None,
+        )
+
+        self.assertTrue(runner._wait_until_safe_list())
+        self.assertEqual(2, machine.has_safe_opponent.call_count)
+
     def test_refresh_that_never_produces_a_safe_opponent_stops_with_diagnostic(self):
         machine = MagicMock()
         machine.state = ArenaState.LIST
