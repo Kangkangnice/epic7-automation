@@ -1,0 +1,8 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+runtime_logs/
+runtime_diagnostics/
+.tools/
+.workbuddy/
+*.log
