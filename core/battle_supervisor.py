@@ -18,6 +18,7 @@ class AutoBattleState(Enum):
 
 class BattleOutcome(Enum):
     RESULT_REACHED = "result_reached"
+    PRE_BATTLE_BUSINESS = "pre_battle_business"
 
 
 @dataclass(frozen=True)
@@ -30,6 +31,7 @@ class BattleObservation:
     auto_point: tuple[int, int] | None = None
     business_progress: bool = False
     allowed_action: tuple[str, tuple[int, int]] | None = None
+    pre_battle_business_visible: bool = False
 
 
 @dataclass(frozen=True)
@@ -97,6 +99,7 @@ class BattleSupervisor:
         battle_stable = StableObservation(required=2)
         auto_stable = StableObservation(required=2)
         allowed_stable = StableObservation(required=2)
+        business_stable = StableObservation(required=2)
         result_stable = StableObservation(required=2)
         try:
             while True:
@@ -116,6 +119,22 @@ class BattleSupervisor:
                         "phase=result status=confirmed"
                     )
                     return BattleOutcome.RESULT_REACHED
+
+                business_signature = (
+                    "business"
+                    if observation.pre_battle_business_visible
+                    else "other"
+                )
+                if (
+                    business_stable.update(business_signature)
+                    and observation.pre_battle_business_visible
+                    and not entry_confirmed
+                ):
+                    self.runtime.log(
+                        f"mode={self.config.mode} cycle={cycle} "
+                        "phase=pre-battle status=business-handoff"
+                    )
+                    return BattleOutcome.PRE_BATTLE_BUSINESS
 
                 entered = observation.battle_visible or (
                     not observation.pre_battle_visible
@@ -153,6 +172,7 @@ class BattleSupervisor:
                     or observation.battle_visible
                     or observation.result_visible
                     or observation.allowed_action is not None
+                    or observation.pre_battle_business_visible
                 )
                 if observation.frame_valid and not recognized:
                     invalid_since = current if invalid_since is None else invalid_since

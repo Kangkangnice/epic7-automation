@@ -8,6 +8,14 @@ from typing import Callable, Optional
 import cv2
 import numpy as np
 
+from auto_game_unified.core.battle_supervisor import (
+    AutoBattleState,
+    BattleConfig,
+    BattleObservation,
+    BattleOutcome,
+    BattleSupervisor,
+    valid_game_frame,
+)
 from auto_game_unified.core.matcher import Match, find_template, load_template
 from auto_game_unified.core.recovery import RecoveryGate
 from auto_game_unified.core.runtime import Runtime
@@ -227,6 +235,36 @@ class ArenaStateMachine:
             anchor.center[1] + self._FIRST_OPPONENT_OFFSET[1],
         )
 
+    def observe_battle(
+        self,
+        screen: np.ndarray,
+        previous_screen: np.ndarray | None,
+    ) -> BattleObservation:
+        start = self._locate(screen, "battle_start")
+        manual = self._locate(screen, "auto_off")
+        result = self._locate(screen, "confirm")
+        no_ticket = self._locate(screen, "no_ticket")
+        progressing = valid_game_frame(screen) and meaningful_change(
+            previous_screen,
+            screen,
+        )
+        return BattleObservation(
+            pre_battle_visible=start is not None,
+            battle_visible=manual is not None or progressing,
+            result_visible=result is not None,
+            frame_valid=valid_game_frame(screen),
+            auto_state=(
+                AutoBattleState.MANUAL
+                if manual is not None
+                else AutoBattleState.AUTO
+                if progressing
+                else AutoBattleState.UNKNOWN
+            ),
+            auto_point=None if manual is None else manual.center,
+            business_progress=progressing,
+            pre_battle_business_visible=no_ticket is not None,
+        )
+
     def next_action(self, screen: np.ndarray) -> Action:
         if self.state == ArenaState.BATTLE and self._visible(screen, "no_ticket"):
             offer = self._locate(screen, "friendship_ticket_offer")
@@ -306,6 +344,7 @@ class ArenaRunner:
         poll_seconds: float = 1.0,
         recovery: Callable[[], None] | None = None,
         recovery_gate: RecoveryGate | None = None,
+        battle_supervisor: BattleSupervisor | None = None,
         purchase_stamp_path: Path | None = None,
     ) -> None:
         self.machine = machine
@@ -314,8 +353,27 @@ class ArenaRunner:
         self.poll_seconds = poll_seconds
         self.recovery_gate = recovery_gate or RecoveryGate(recovery)
         self.recovery = self.recovery_gate.recover if recovery is not None else None
+        self.battle_supervisor = battle_supervisor or BattleSupervisor(
+            runtime,
+            self.recovery_gate,
+            BattleConfig(mode="arena"),
+            now=lambda: monotonic(),
+            sleep=sleep,
+        )
         self.purchase_stamp_path = purchase_stamp_path
         self.resource_exhausted = False
+
+    def _run_committed_battle(self, *, cycle: int) -> None:
+        outcome = self.battle_supervisor.run(
+            self.machine.observe_battle,
+            cycle=cycle,
+        )
+        if outcome is BattleOutcome.PRE_BATTLE_BUSINESS:
+            self.machine.state = ArenaState.BATTLE
+            return
+        if outcome is not BattleOutcome.RESULT_REACHED:
+            raise RuntimeError(f"unexpected arena battle outcome: {outcome.value}")
+        self.machine.state = ArenaState.RESULT
 
     def run(self, max_cycles: int | None = None) -> int:
         state_started = monotonic()
@@ -381,6 +439,14 @@ class ArenaRunner:
             if self.runtime.dry_run:
                 return self.machine.completed_cycles
 
+            if action.name == "battle-start":
+                self._run_committed_battle(
+                    cycle=self.machine.completed_cycles + 1,
+                )
+                state_started = monotonic()
+                stable.reset()
+                continue
+
             # Verify the click actually advanced the screen. Without this the machine
             # blindly advances state on every click; a click that lands during an
             # animation (e.g. challenge, right after opponent selection) is silently
@@ -415,10 +481,9 @@ class ArenaRunner:
         self.sleep(self._SETTLE_SECONDS)
         started = monotonic()
         last_progress = started
-        last_heartbeat = started
         previous: Optional[np.ndarray] = None
-        absolute = 900 if state == ArenaState.RESULT else min(180, self._TIMEOUT_SECONDS[state])
-        no_progress = 180 if state == ArenaState.RESULT else min(45, self._TIMEOUT_SECONDS[state])
+        absolute = min(180, self._TIMEOUT_SECONDS[state])
+        no_progress = min(45, self._TIMEOUT_SECONDS[state])
         while monotonic() - started < absolute:
             screen = self.runtime.capture()
             if self.runtime.diagnostic_dir is not None:
@@ -428,9 +493,6 @@ class ArenaRunner:
             if meaningful_change(previous, screen):
                 last_progress = monotonic()
             previous = screen
-            if state == ArenaState.RESULT and monotonic() - last_heartbeat >= 30:
-                self.runtime.log("模式=竞技场 页面=战斗中 状态=心跳")
-                last_heartbeat = monotonic()
             if monotonic() - last_progress >= no_progress:
                 return False
             self.sleep(self.poll_seconds)
