@@ -397,6 +397,30 @@ class NavigationTests(unittest.TestCase):
 
         self.assertEqual([(1827, 531), (465, 220), (1080, 357)], clicks)
 
+    def test_expedition_navigation_accepts_remembered_season_tab(self):
+        clicks: list[tuple[int, int]] = []
+
+        def capture():
+            if len(clicks) == 1:
+                return fixture("expedition_season_menu")
+            return fixture("expedition_home")
+
+        navigator = Epic7Navigator(
+            build_navigation_templates(TEMPLATES),
+            Runtime(capture, clicks.append),
+            sleep=lambda _: None,
+            transition_frames=12,
+        )
+
+        error = None
+        try:
+            navigator.navigate("expedition", lobby_screen=fixture("lobby"))
+        except RuntimeError as caught:
+            error = caught
+
+        self.assertIsNone(error)
+        self.assertEqual([(1827, 531), (1080, 357)], clicks)
+
     def test_black_frames_never_trigger_click_or_back(self):
         import numpy as np
 

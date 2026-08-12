@@ -368,18 +368,21 @@ class Epic7Navigator:
         elif mode == "expedition":
             battle_menu = self._transition(
                 "lobby",
-                "battle_menu",
+                ("battle_menu", "season_menu"),
                 "lobby_battle",
                 "进入战斗菜单",
                 source_screen=lobby_screen,
             )
-            season_menu = self._transition(
-                "battle_menu",
-                "season_menu",
-                "expedition_season_tab",
-                "切换到赛季",
-                source_screen=battle_menu,
-            )
+            if self.observe(battle_menu).name == "season_menu":
+                season_menu = battle_menu
+            else:
+                season_menu = self._transition(
+                    "battle_menu",
+                    "season_menu",
+                    "expedition_season_tab",
+                    "切换到赛季",
+                    source_screen=battle_menu,
+                )
             self._transition(
                 "season_menu",
                 "expedition_home",
@@ -394,19 +397,21 @@ class Epic7Navigator:
     def _transition(
         self,
         source: str,
-        target: str,
+        target: str | tuple[str, ...],
         anchor: str,
         action: str,
         *,
         source_screen: Optional[np.ndarray] = None,
     ) -> np.ndarray:
         source_screen = source_screen if source_screen is not None else self._wait_for_page(source)
+        targets = (target,) if isinstance(target, str) else target
+        target_label = "/".join(targets)
         for attempt in range(1, 3):
             threshold = 0.80 if anchor == "lobby_story" else 0.82
             match = self._locate(source_screen, anchor, threshold)
             if match is None:
                 raise RuntimeError(f"{source} lost required navigation anchor {anchor}")
-            self.runtime.log(f"模式=导航 页面={source} 目标={target} 动作={action} 尝试={attempt}/2")
+            self.runtime.log(f"模式=导航 页面={source} 目标={target_label} 动作={action} 尝试={attempt}/2")
             offset = self._CLICK_OFFSETS.get(anchor, (0, 0))
             click_point = (match.center[0] + offset[0], match.center[1] + offset[1])
             self.runtime.click(click_point, action)
@@ -419,9 +424,9 @@ class Epic7Navigator:
                     stable.reset()
                     self.sleep(1.0)
                     continue
-                if is_stable and observation.name == target:
+                if is_stable and observation.name in targets:
                     self.runtime.log(
-                        f"模式=导航 页面={target} 置信度={observation.confidence:.3f} 状态=转场确认"
+                        f"模式=导航 页面={observation.name} 置信度={observation.confidence:.3f} 状态=转场确认"
                     )
                     return screen
                 if observation.name == source:
@@ -432,8 +437,8 @@ class Epic7Navigator:
                 self.runtime.log(f"模式=导航 页面={source} 等待=无转场 重试={attempt}/2")
                 continue
             break
-        diagnostic = self._diagnostic(f"navigation_{source}_to_{target}_failed")
-        raise RuntimeError(f"navigation {source} -> {target} failed safely; saved {diagnostic}")
+        diagnostic = self._diagnostic(f"navigation_{source}_to_{target_label}_failed")
+        raise RuntimeError(f"navigation {source} -> {target_label} failed safely; saved {diagnostic}")
 
     def _wait_for_page(self, expected: str) -> np.ndarray:
         stable = StableObservation(required=2)

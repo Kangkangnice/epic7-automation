@@ -49,8 +49,11 @@ class ExpeditionTemplates:
     difficulty_confirm: np.ndarray
     prepare_battle: np.ndarray
     battle_start: np.ndarray
+    auto_off: np.ndarray
     battle_anchor: np.ndarray
     result_confirm: np.ndarray
+    victory_title: np.ndarray
+    victory_close: np.ndarray
     defeated_confirm: Optional[np.ndarray]
     public_recruit: np.ndarray
     public_title: np.ndarray
@@ -78,8 +81,11 @@ def build_expedition_templates(template_dir: Path) -> ExpeditionTemplates:
         difficulty_confirm=load("difficulty_confirm"),
         prepare_battle=load("prepare_battle"),
         battle_start=load("battle_start"),
+        auto_off=load_template(str(template_dir.parent / "story" / "auto_off.png")),
         battle_anchor=load("battle_anchor"),
         result_confirm=load("result_confirm"),
+        victory_title=load("victory_title"),
+        victory_close=load("victory_close"),
         defeated_confirm=load_optional("defeated_confirm"),
         public_recruit=load("public_recruit"),
         public_title=load("public_title"),
@@ -104,8 +110,11 @@ class ExpeditionStateMachine:
         "difficulty_confirm": (800, 780, 500, 300),
         "prepare_battle": (1450, 850, 532, 282),
         "battle_start": (1300, 900, 682, 232),
+        "auto_off": (1550, 0, 300, 200),
         "battle_anchor": (1400, 0, 582, 320),
         "result_confirm": (1450, 850, 532, 282),
+        "victory_title": (750, 250, 500, 250),
+        "victory_close": (700, 650, 600, 300),
         "defeated_confirm": (650, 700, 700, 432),
         "public_recruit": (800, 900, 500, 232),
         "public_title": (700, 250, 600, 300),
@@ -129,11 +138,26 @@ class ExpeditionStateMachine:
         )
         self.state = initial_state
         self.completed_cycles = 0
+        self.auto_click_attempted = False
 
     def _locate(self, screen: np.ndarray, name: str) -> Optional[Match]:
         template = getattr(self.templates, name)
         if template is None:
             return None
+        if name == "auto_off":
+            x, y, width, height = self._scaled_region(screen, name)
+            white = (np.array([180, 180, 180]), np.array([255, 255, 255]))
+            search_mask = cv2.inRange(screen[y : y + height, x : x + width], *white)
+            template_mask = cv2.inRange(template, *white)
+            match = find_template(
+                search_mask,
+                template_mask,
+                0.80,
+                reference_size=(width, height),
+            )
+            if match is None:
+                return None
+            return Match((x + match.center[0], y + match.center[1]), match.score)
         if name == "public_recruit":
             return self._locate_bright_foreground(screen, template, name)
         return find_template(
@@ -142,6 +166,17 @@ class ExpeditionStateMachine:
             self._THRESHOLD,
             region=self._REGIONS[name],
             reference_size=self._REFERENCE_SIZE,
+        )
+
+    def _scaled_region(self, screen: np.ndarray, name: str) -> tuple[int, int, int, int]:
+        scale_x = screen.shape[1] / self._REFERENCE_SIZE[0]
+        scale_y = screen.shape[0] / self._REFERENCE_SIZE[1]
+        x, y, width, height = self._REGIONS[name]
+        return (
+            round(x * scale_x),
+            round(y * scale_y),
+            round(width * scale_x),
+            round(height * scale_y),
         )
 
     def _locate_bright_foreground(
@@ -203,7 +238,12 @@ class ExpeditionStateMachine:
         if state == ExpeditionState.OUTCOME:
             return any(
                 self._locate(screen, name) is not None
-                for name in ("defeated_confirm", "public_recruit", "campfire_idle")
+                for name in (
+                    "defeated_confirm",
+                    "victory_title",
+                    "public_recruit",
+                    "campfire_idle",
+                )
             )
         if state == ExpeditionState.RECRUIT_CONFIRM:
             return (
@@ -288,11 +328,24 @@ class ExpeditionStateMachine:
             if result is not None:
                 self.state = ExpeditionState.OUTCOME
                 return ExpeditionAction("confirm-result", result.center)
+            auto_off = self._locate(screen, "auto_off")
+            if auto_off is not None:
+                if self.auto_click_attempted:
+                    return None
+                self.auto_click_attempted = True
+                return ExpeditionAction("enable-auto-battle", auto_off.center)
             if self.state == ExpeditionState.BATTLE and self._locate(screen, "battle_anchor"):
                 return None
             raise RuntimeError("expedition battle/result screen was not recognized")
 
         if self.state == ExpeditionState.OUTCOME:
+            victory_title = self._locate(screen, "victory_title")
+            victory_close = self._locate(screen, "victory_close")
+            if victory_title is not None and victory_close is not None:
+                self.state = ExpeditionState.RETURNING
+                return ExpeditionAction(
+                    "close-expedition-victory", victory_close.center
+                )
             if self._locate(screen, "campfire_idle") is not None:
                 return ExpeditionAction("wake-campfire-ui", (1000, 600))
             recruit = self._required(screen, "public_recruit")
@@ -325,12 +378,12 @@ class ExpeditionStateMachine:
         raise RuntimeError(f"unsupported expedition state {self.state.value}")
 
     def preview(self, screen: np.ndarray):
-        snapshot = self.state, self.completed_cycles
+        snapshot = self.state, self.completed_cycles, self.auto_click_attempted
         try:
             action = self.next_action(screen)
             return action, (self.state, self.completed_cycles)
         finally:
-            self.state, self.completed_cycles = snapshot
+            self.state, self.completed_cycles, self.auto_click_attempted = snapshot
 
 
 class ExpeditionRunner:
@@ -375,6 +428,7 @@ class ExpeditionRunner:
         battle_progressed = state_started
         heartbeat_at = state_started
         battle_frame: Optional[np.ndarray] = None
+        battle_unrecognized_since: Optional[float] = None
         recovered = False
         failed_action: Optional[str] = None
         action_attempts = 0
@@ -396,6 +450,7 @@ class ExpeditionRunner:
                 return self.machine.completed_cycles
             except RuntimeError as error:
                 if state_before == ExpeditionState.BATTLE and self._valid_game_frame(screen):
+                    battle_unrecognized_since = None
                     current = self.now()
                     if meaningful_change(battle_frame, screen):
                         battle_progressed = current
@@ -418,6 +473,13 @@ class ExpeditionRunner:
                         ) from error
                     self.sleep(self.poll_seconds)
                     continue
+                if state_before == ExpeditionState.BATTLE:
+                    current = self.now()
+                    if battle_unrecognized_since is None:
+                        battle_unrecognized_since = current
+                    if current - battle_unrecognized_since < self._STATE_TIMEOUT_SECONDS:
+                        self.sleep(self.poll_seconds)
+                        continue
                 if self.now() - state_started < self._STATE_TIMEOUT_SECONDS:
                     self.sleep(self.poll_seconds)
                     continue
@@ -439,6 +501,7 @@ class ExpeditionRunner:
                 ) from error
 
             if state_before == ExpeditionState.BATTLE and preview_action is None:
+                battle_unrecognized_since = None
                 current = self.now()
                 if meaningful_change(battle_frame, screen):
                     battle_progressed = current
@@ -552,14 +615,20 @@ class ExpeditionRunner:
             changed = meaningful_change(previous, screen)
             if changed:
                 progressed = self.now()
-            if action_name == "battle-start" and state == ExpeditionState.BATTLE:
+            if (
+                action_name in {"battle-start", "enable-auto-battle"}
+                and state == ExpeditionState.BATTLE
+            ):
                 team_visible = self.machine.is_in_state(screen, ExpeditionState.TEAM)
                 if self._valid_game_frame(screen) and not team_visible and changed:
                     changing_battle_frames += 1
                     if changing_battle_frames >= 2:
-                        self.runtime.log(
-                            "模式=远征 页面=战斗中 状态=动态画面确认进入战斗 HUD暂时隐藏"
+                        status = (
+                            "动态画面确认自动战斗已继续"
+                            if action_name == "enable-auto-battle"
+                            else "动态画面确认进入战斗 HUD暂时隐藏"
                         )
+                        self.runtime.log(f"模式=远征 页面=战斗中 状态={status}")
                         return True
                 elif team_visible or not self._valid_game_frame(screen):
                     changing_battle_frames = 0
