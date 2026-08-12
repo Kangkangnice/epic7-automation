@@ -1,6 +1,7 @@
 from pathlib import Path
 import unittest
 
+import cv2
 import numpy as np
 from PIL import Image
 
@@ -25,7 +26,111 @@ def load_fixture(name: str) -> np.ndarray:
     return image[:1132, :1982]
 
 
+def make_all_failed_screen(machine: ArenaStateMachine) -> np.ndarray:
+    screen = load_fixture("failed_first_opponent").copy()
+    first_x, first_y, first_width, first_height = machine._scaled_region(
+        screen,
+        machine._OPPONENT_STATUS_REGIONS[0],
+    )
+    failed = screen[
+        first_y : first_y + first_height,
+        first_x : first_x + first_width,
+    ].copy()
+    for region in machine._OPPONENT_STATUS_REGIONS[1:]:
+        x, y, width, height = machine._scaled_region(screen, region)
+        screen[y : y + height, x : x + width] = cv2.resize(
+            failed,
+            (width, height),
+        )
+    return screen
+
+
 class Epic7ArenaStateMachineTests(unittest.TestCase):
+    def test_failed_row_classifier_uses_background_color_only(self):
+        machine = ArenaStateMachine(build_templates(TEMPLATES))
+
+        failed = machine.opponent_availability(
+            load_fixture("failed_first_opponent")
+        )
+        normal = machine.opponent_availability(load_fixture("list"))
+
+        self.assertEqual((False, True, True), failed)
+        self.assertEqual((True, True, True), normal)
+
+    def test_ambiguous_row_is_not_exposed_as_a_safe_opponent(self):
+        machine = ArenaStateMachine(build_templates(TEMPLATES))
+        screen = load_fixture("list").copy()
+        x, y, width, height = machine._scaled_region(
+            screen,
+            machine._OPPONENT_STATUS_REGIONS[1],
+        )
+        failed_screen = load_fixture("failed_first_opponent")
+        failed_x, failed_y, failed_width, failed_height = machine._scaled_region(
+            failed_screen,
+            machine._OPPONENT_STATUS_REGIONS[0],
+        )
+        failed = failed_screen[
+            failed_y : failed_y + failed_height,
+            failed_x : failed_x + failed_width,
+        ]
+        screen[y : y + height // 4, x : x + width] = cv2.resize(
+            failed,
+            (width, height // 4),
+        )
+
+        availability = machine.opponent_availability(screen)
+
+        self.assertIsNone(availability[1])
+
+    def test_failed_first_opponent_selects_from_the_other_two(self):
+        choices = []
+        machine = ArenaStateMachine(
+            build_templates(TEMPLATES),
+            choose_opponent=lambda safe: choices.append(tuple(safe)) or safe[-1],
+        )
+        screen = load_fixture("failed_first_opponent")
+
+        action = machine.next_action(screen)
+
+        self.assertEqual("select-opponent", action.name)
+        self.assertEqual((1, 2), choices[0])
+        self.assertEqual(machine._opponent_point(screen, 2), action.point)
+        self.assertEqual(ArenaState.SELECTED, machine.state)
+
+    def test_all_failed_opponents_trigger_refresh_without_advancing_state(self):
+        machine = ArenaStateMachine(build_templates(TEMPLATES))
+
+        action = machine.next_action(make_all_failed_screen(machine))
+
+        self.assertEqual("refresh-opponents", action.name)
+        self.assertEqual(ArenaState.LIST, machine.state)
+        self.assertEqual(0, machine.completed_cycles)
+
+    def test_selected_opponent_retry_uses_the_same_row(self):
+        machine = ArenaStateMachine(
+            build_templates(TEMPLATES),
+            choose_opponent=lambda safe: safe[1],
+        )
+        screen = load_fixture("list")
+        first = machine.next_action(screen)
+
+        retry = machine.next_action(screen)
+
+        self.assertEqual("select-opponent", retry.name)
+        self.assertEqual(first.point, retry.point)
+
+    def test_confirmed_result_counts_once_before_refresh_decision(self):
+        machine = ArenaStateMachine(
+            build_templates(TEMPLATES),
+            initial_state=ArenaState.CONFIRMING,
+        )
+
+        action = machine.next_action(make_all_failed_screen(machine))
+
+        self.assertEqual("refresh-opponents", action.name)
+        self.assertEqual(1, machine.completed_cycles)
+        self.assertEqual(ArenaState.LIST, machine.state)
+
     def test_battle_adapter_maps_team_manual_and_result(self):
         machine = ArenaStateMachine(
             build_templates(TEMPLATES),
@@ -96,7 +201,10 @@ class Epic7ArenaStateMachineTests(unittest.TestCase):
             machine.next_action(screen)
 
     def test_current_recorded_flow_has_only_expected_actions(self):
-        machine = ArenaStateMachine(build_templates(TEMPLATES))
+        machine = ArenaStateMachine(
+            build_templates(TEMPLATES),
+            choose_opponent=lambda safe: safe[0],
+        )
 
         observed = [
             machine.next_action(load_fixture("list")),
@@ -110,13 +218,13 @@ class Epic7ArenaStateMachineTests(unittest.TestCase):
 
         self.assertEqual(
             [
-                "select-first-row",
+                "select-opponent",
                 "challenge",
                 "battle-start",
                 "enable-auto",
                 "confirm-result",
                 "confirm-result",
-                "select-first-row",
+                "select-opponent",
             ],
             [action.name for action in observed],
         )
@@ -144,7 +252,7 @@ class Epic7ArenaStateMachineTests(unittest.TestCase):
         follow_up = machine.next_action(load_fixture("list"))
 
         self.assertEqual("confirm-rank", action.name)
-        self.assertEqual("select-first-row", follow_up.name)
+        self.assertEqual("select-opponent", follow_up.name)
         self.assertEqual(1, machine.completed_cycles)
 
     def test_retries_safe_row_click_when_list_is_still_visible(self):
@@ -153,7 +261,7 @@ class Epic7ArenaStateMachineTests(unittest.TestCase):
         retry = machine.next_action(load_fixture("list"))
         next_action = machine.next_action(load_fixture("selected"))
 
-        self.assertEqual("select-first-row", retry.name)
+        self.assertEqual("select-opponent", retry.name)
         self.assertEqual("challenge", next_action.name)
 
     def test_ticket_purchase_requires_title_offer_and_button(self):
