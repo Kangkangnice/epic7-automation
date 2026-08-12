@@ -7,10 +7,18 @@ from typing import Callable, Optional
 import cv2
 import numpy as np
 
+from auto_game_unified.core.battle_supervisor import (
+    AutoBattleState,
+    BattleConfig,
+    BattleObservation,
+    BattleOutcome,
+    BattleSupervisor,
+    valid_game_frame,
+)
 from auto_game_unified.core.matcher import Match, find_template, load_template
 from auto_game_unified.core.recovery import RecoveryGate
 from auto_game_unified.core.runtime import Runtime, StaminaExhausted
-from auto_game_unified.core.supervisor import StableObservation
+from auto_game_unified.core.supervisor import StableObservation, meaningful_change
 
 
 _WATCH_STORY_REFERENCE_SIZE = (1982, 1132)
@@ -408,6 +416,48 @@ class StoryStateMachine:
             return BattleControls.MANUAL_CONTROLS
         return BattleControls.TRANSITION
 
+    def observe_battle(
+        self,
+        screen: np.ndarray,
+        previous_screen: np.ndarray | None,
+    ) -> BattleObservation:
+        controls = self.observe_battle_controls(screen)
+        auto_state = {
+            BattleControls.AUTO_CONTROLS: AutoBattleState.AUTO,
+            BattleControls.MANUAL_CONTROLS: AutoBattleState.MANUAL,
+            BattleControls.TRANSITION: AutoBattleState.UNKNOWN,
+        }[controls]
+        auto_match = self._locate(screen, "auto_off")
+        allowed_action = None
+        for action_name in ("skip_confirm", "skip", "watch_story"):
+            match = self._locate(screen, action_name)
+            if match is not None:
+                allowed_action = (action_name, match.center)
+                break
+        progressing = (
+            auto_state is AutoBattleState.AUTO
+            and meaningful_change(previous_screen, screen)
+        )
+        return BattleObservation(
+            pre_battle_visible=self._locate(screen, "start_mission") is not None,
+            battle_visible=controls is not BattleControls.TRANSITION,
+            result_visible=any(
+                self._locate(screen, name) is not None
+                for name in ("reward", "clear", "results_confirm")
+            ),
+            frame_valid=valid_game_frame(screen),
+            auto_state=auto_state,
+            auto_point=(
+                auto_match.center
+                if auto_match is not None
+                else self._scaled_point(screen, self._AUTO_CLICK_POINT)
+                if auto_state is AutoBattleState.MANUAL
+                else None
+            ),
+            business_progress=progressing,
+            allowed_action=allowed_action,
+        )
+
     def _action_point(self, screen: np.ndarray, name: str, match: Match) -> tuple[int, int]:
         if name != "bonus_reward":
             return match.center
@@ -604,7 +654,6 @@ class StoryRunner:
     """Short-polling, fail-closed runner for current-layout story stages."""
 
     _ACTION_RETRY_SECONDS = 45
-    _AUTO_CONFIRM_SECONDS = 15
 
     _TIMEOUT_SECONDS = {
         StoryState.STAGE: 45,
@@ -626,6 +675,7 @@ class StoryRunner:
         poll_seconds: float = 1.0,
         recovery: Callable[[], None] | None = None,
         recovery_gate: RecoveryGate | None = None,
+        battle_supervisor: BattleSupervisor | None = None,
     ) -> None:
         self.machine = machine
         self.runtime = runtime
@@ -633,7 +683,23 @@ class StoryRunner:
         self.poll_seconds = poll_seconds
         self.recovery_gate = recovery_gate or RecoveryGate(recovery)
         self.recovery = self.recovery_gate.recover if recovery is not None else None
+        self.battle_supervisor = battle_supervisor or BattleSupervisor(
+            runtime,
+            self.recovery_gate,
+            BattleConfig(mode="story"),
+            now=lambda: monotonic(),
+            sleep=sleep,
+        )
         self.resource_exhausted = False
+
+    def _run_committed_battle(self, *, cycle: int) -> None:
+        outcome = self.battle_supervisor.run(
+            self.machine.observe_battle,
+            cycle=cycle,
+        )
+        if outcome is not BattleOutcome.RESULT_REACHED:
+            raise RuntimeError(f"unexpected story battle outcome: {outcome.value}")
+        self.machine.state = StoryState.WAIT_RESULTS
 
     def run(self, max_cycles: int | None = None) -> int:
         if self.runtime.dry_run:
@@ -656,8 +722,6 @@ class StoryRunner:
 
         state_started = monotonic()
         absolute_started = state_started
-        heartbeat_at = state_started
-        active_frame: Optional[np.ndarray] = None
         stable = StableObservation(required=2)
         recovered = False
         last_action_name: Optional[str] = None
@@ -677,23 +741,6 @@ class StoryRunner:
                 self.runtime.log(f"模式=主线 停止=生命之叶耗尽 详情={error}")
                 return self.machine.completed_cycles
             except RuntimeError as error:
-                self._check_auto_confirmation_timeout(screen, state_started)
-                if (
-                    self.machine.state == StoryState.ACTIVE
-                    and self.machine.auto_enabled
-                    and self._valid_game_frame(screen)
-                    and self._has_active_progress(active_frame, screen)
-                ):
-                    state_started = monotonic()
-                    active_frame = screen
-                    if monotonic() - heartbeat_at >= 30:
-                        self.runtime.log(
-                            f"模式=主线 轮次={self.machine.completed_cycles + 1}/{max_cycles or '?'} "
-                            "页面=战斗中 状态=心跳"
-                        )
-                        heartbeat_at = monotonic()
-                    self.sleep(self.poll_seconds)
-                    continue
                 elapsed = monotonic() - state_started
                 if elapsed >= self._TIMEOUT_SECONDS[self.machine.state]:
                     if self.recovery is not None and not recovered:
@@ -734,28 +781,12 @@ class StoryRunner:
             action = self.machine.next_action(screen)
             stable.reset()
 
-            if (
-                state_before == StoryState.WAIT_BATTLE
-                and self.machine.state == StoryState.ACTIVE
-                and self.machine.auto_enabled
-            ):
-                self.runtime.log(
-                    "模式=主线 页面=战斗 识别=四头像控制条 自动战斗=已确认"
-                )
-
             if self.machine.completed_cycles > cycles_before:
                 recovered = False
                 self.runtime.log(f"complete-story cycles={self.machine.completed_cycles}")
                 state_started = monotonic()
                 if max_cycles is not None and self.machine.completed_cycles >= max_cycles:
                     return self.machine.completed_cycles
-
-            if self.machine.state == StoryState.ACTIVE:
-                if self._has_active_progress(active_frame, screen):
-                    state_started = monotonic()
-                active_frame = screen
-            else:
-                active_frame = None
 
             if action is not None:
                 if action.name == last_action_name:
@@ -810,6 +841,17 @@ class StoryRunner:
                 state_started = last_action_clicked_at
                 absolute_started = last_action_clicked_at
                 retry_wait_logged = False
+                if action.name == "start_mission":
+                    self._run_committed_battle(
+                        cycle=self.machine.completed_cycles + 1,
+                    )
+                    state_started = monotonic()
+                    absolute_started = state_started
+                    last_action_name = None
+                    last_action_clicked_at = None
+                    action_attempts = 0
+                    stable.reset()
+                    continue
             else:
                 last_action_name = None
                 last_action_clicked_at = None
@@ -831,14 +873,10 @@ class StoryRunner:
                     f"stopped safely, saved {diagnostic}"
                 )
 
-            if action is None:
-                self._check_auto_confirmation_timeout(screen, state_started)
-
             if self.machine.state != state_before:
                 state_started = monotonic()
                 absolute_started = state_started
-            absolute_limit = 900 if self.machine.state == StoryState.ACTIVE else 180
-            if monotonic() - absolute_started >= absolute_limit:
+            if monotonic() - absolute_started >= 180:
                 diagnostic = self.runtime.save_diagnostic(
                     f"absolute_{self.machine.state.value}", screen
                 )
@@ -849,36 +887,3 @@ class StoryRunner:
 
         return self.machine.completed_cycles
 
-    def _check_auto_confirmation_timeout(
-        self, screen: np.ndarray, state_started: float
-    ) -> None:
-        if (
-            self.machine.state != StoryState.WAIT_BATTLE
-            or not self.machine.auto_click_attempted
-            or monotonic() - state_started < self._AUTO_CONFIRM_SECONDS
-        ):
-            return
-        diagnostic = self.runtime.save_diagnostic("auto_not_confirmed", screen)
-        self.runtime.log(
-            "模式=主线 页面=战斗 动作=开启自动 "
-            f"停止=未出现四头像自动控制条 现场={diagnostic}"
-        )
-        raise RuntimeError(
-            "auto battle was not confirmed after one click; "
-            f"stopped safely, saved {diagnostic}"
-        )
-
-    @staticmethod
-    def _has_active_progress(before: Optional[np.ndarray], after: np.ndarray) -> bool:
-        """True only for meaningful change in the battle area, not static HUD noise."""
-        if before is None or before.shape != after.shape:
-            return False
-        height, width = after.shape[:2]
-        battle_before = before[200 : height - 250, 100 : width - 100]
-        battle_after = after[200 : height - 250, 100 : width - 100]
-        return float(np.mean(np.abs(battle_after.astype(np.int16) - battle_before.astype(np.int16)))) >= 2.0
-
-    @staticmethod
-    def _valid_game_frame(screen: np.ndarray) -> bool:
-        content = screen[round(screen.shape[0] * 0.05) :, : round(screen.shape[1] * 0.97)]
-        return float(np.mean(content)) >= 3.0 and float(np.std(content)) >= 5.0

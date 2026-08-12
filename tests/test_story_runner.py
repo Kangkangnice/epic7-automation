@@ -2,10 +2,12 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
 from unittest.mock import patch
+from unittest.mock import MagicMock
 
 import numpy as np
 from PIL import Image
 
+from auto_game_unified.core.battle_supervisor import BattleOutcome
 from auto_game_unified.core.matcher import Match
 from auto_game_unified.core.runtime import Runtime
 from auto_game_unified.games.epic7.story import StoryAction, StoryRunner, StoryState, StoryStateMachine, build_story_templates
@@ -22,6 +24,26 @@ def fixture(name: str) -> np.ndarray:
 
 
 class StoryRunnerTests(unittest.TestCase):
+    def test_committed_battle_returns_control_to_results_state(self):
+        machine = MagicMock()
+        machine.state = StoryState.WAIT_BATTLE
+        supervisor = MagicMock()
+        supervisor.run.return_value = BattleOutcome.RESULT_REACHED
+        runner = StoryRunner(
+            machine,
+            Runtime(
+                lambda: np.zeros((60, 100, 3), dtype=np.uint8),
+                lambda point: None,
+            ),
+            battle_supervisor=supervisor,
+            sleep=lambda seconds: None,
+        )
+
+        runner._run_committed_battle(cycle=1)
+
+        supervisor.run.assert_called_once_with(machine.observe_battle, cycle=1)
+        self.assertEqual(StoryState.WAIT_RESULTS, machine.state)
+
     def test_recovery_resets_only_when_completed_cycle_count_increases(self):
         class FakeMachine:
             def __init__(self, next_cycles: int) -> None:
@@ -174,7 +196,11 @@ class StoryRunnerTests(unittest.TestCase):
             "battle_auto_off_live_20260809", "battle_auto_on_live_20260809",
             "reward", "clear", "friend_request", "results", "complete", "bonus_reward", "story_watch_next_ep4",
         ]
-        screens = iter(fixture(name) for name in names for _ in range(2))
+        screens = iter(
+            fixture(name)
+            for name in names
+            for _ in range(4 if name == "reward" else 2)
+        )
         clicks: list[tuple[int, int]] = []
         logs: list[str] = []
         runtime = Runtime(lambda: next(screens), clicks.append, emit=logs.append)
@@ -185,9 +211,13 @@ class StoryRunnerTests(unittest.TestCase):
         completed = runner.run(max_cycles=2)
 
         self.assertEqual(2, completed)
-        self.assertEqual(2, sum("action=enable_auto" in event for event in logs))
+        self.assertEqual(
+            2,
+            sum("action=enable-auto-battle" in event for event in logs),
+        )
         self.assertEqual(2, sum("action=cancel_friend_request" in event for event in logs))
-        self.assertEqual(2, sum("自动战斗=已确认" in event for event in logs))
+        self.assertEqual(2, sum("action=reward" in event for event in logs))
+        self.assertEqual(2, sum("status=auto-confirmed" in event for event in logs))
         self.assertEqual(24, len(clicks))
 
     def test_story_next_stage_at_target_is_counted_without_clicking_it(self):
@@ -209,39 +239,6 @@ class StoryRunnerTests(unittest.TestCase):
         self.assertEqual(1, completed)
         self.assertEqual([], clicks)
 
-    def test_auto_visible_without_any_progress_still_times_out(self):
-        screens = iter([
-            fixture("battle_auto_on_live_20260809"),
-            fixture("battle_auto_on_live_20260809"),
-            np.zeros((1132, 1982, 3), dtype=np.uint8),
-        ])
-        with TemporaryDirectory() as directory:
-            runtime = Runtime(
-                lambda: next(screens),
-                lambda _: None,
-                diagnostic_dir=Path(directory),
-            )
-            runner = StoryRunner(
-                StoryStateMachine(build_story_templates(TEMPLATES), initial_state=StoryState.WAIT_BATTLE),
-                runtime,
-                sleep=lambda _: None,
-            )
-            runner._TIMEOUT_SECONDS = {**runner._TIMEOUT_SECONDS, StoryState.ACTIVE: 0}
-
-            with self.assertRaisesRegex(RuntimeError, "no progress"):
-                runner.run(max_cycles=1)
-
-    def test_active_progress_ignores_static_controls_but_sees_battle_animation(self):
-        runner = StoryRunner(StoryStateMachine(build_story_templates(TEMPLATES)), Runtime(
-            lambda: np.zeros((1132, 1982, 3), dtype=np.uint8), lambda _: None
-        ))
-        before = np.zeros((1132, 1982, 3), dtype=np.uint8)
-        after = before.copy()
-        after[300:700, 500:1300] = 30
-
-        self.assertFalse(runner._has_active_progress(before, before))
-        self.assertTrue(runner._has_active_progress(before, after))
-
     def test_same_action_stops_after_two_failed_clicks(self):
         clicks: list[tuple[int, int]] = []
         with TemporaryDirectory() as directory:
@@ -262,69 +259,6 @@ class StoryRunnerTests(unittest.TestCase):
                 runner.run(max_cycles=1)
 
         self.assertEqual(2, len(clicks))
-
-    def test_unconfirmed_auto_click_stops_without_recovery_or_second_click(self):
-        now = [0.0]
-        clicks: list[tuple[int, int]] = []
-        recoveries: list[str] = []
-
-        def wait(_: float) -> None:
-            now[0] += 5.0
-
-        with TemporaryDirectory() as directory:
-            runner = StoryRunner(
-                StoryStateMachine(
-                    build_story_templates(TEMPLATES),
-                    initial_state=StoryState.WAIT_BATTLE,
-                ),
-                Runtime(
-                    lambda: fixture("battle_auto_off_live_20260809"),
-                    clicks.append,
-                    diagnostic_dir=Path(directory),
-                    emit=lambda _: None,
-                ),
-                sleep=wait,
-                recovery=lambda: recoveries.append("called"),
-            )
-            runner._AUTO_CONFIRM_SECONDS = 10
-
-            with patch(
-                "auto_game_unified.games.epic7.story.monotonic",
-                side_effect=lambda: now[0],
-            ):
-                with self.assertRaisesRegex(RuntimeError, "auto battle was not confirmed"):
-                    runner.run(max_cycles=1)
-
-        self.assertEqual(1, len(clicks))
-        self.assertEqual([], recoveries)
-
-    def test_long_battle_does_not_consume_results_absolute_timeout(self):
-        names = ["reward", "clear", "results", "complete", "next_stage"]
-        screens = iter(fixture(name) for name in names for _ in range(2))
-        machine = StoryStateMachine(
-            build_story_templates(TEMPLATES), initial_state=StoryState.ACTIVE
-        )
-        machine.auto_enabled = True
-        times = iter([0.0] + [200.0] * 100)
-
-        with TemporaryDirectory() as directory:
-            runner = StoryRunner(
-                machine,
-                Runtime(
-                    lambda: next(screens),
-                    lambda _: None,
-                    diagnostic_dir=Path(directory),
-                    emit=lambda _: None,
-                ),
-                sleep=lambda _: None,
-            )
-            with patch(
-                "auto_game_unified.games.epic7.story.monotonic",
-                side_effect=lambda: next(times),
-            ):
-                completed = runner.run(max_cycles=1)
-
-        self.assertEqual(1, completed)
 
     def test_complete_screen_takes_priority_over_a_false_skip_match(self):
         machine = StoryStateMachine(build_story_templates(TEMPLATES))
