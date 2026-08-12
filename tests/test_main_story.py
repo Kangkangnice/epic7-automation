@@ -1,13 +1,36 @@
 import unittest
+from dataclasses import replace
 from unittest.mock import patch
 
 from auto_game_unified import main as main_module
+from auto_game_unified.core.recovery import RecoveryGate
 from auto_game_unified.core.runtime import ManualStop
 from auto_game_unified.main import RunResult
 from auto_game_unified.games.epic7.modes import get_mode
 
 
 class MainStoryTests(unittest.TestCase):
+    def test_live_run_passes_one_recovery_gate_to_the_runner(self):
+        runtime = unittest.mock.MagicMock()
+        runner_type = unittest.mock.MagicMock()
+        runner_type.return_value.run.return_value = 0
+        spec = replace(get_mode("story"), runner_type=runner_type)
+
+        with (
+            patch.object(main_module, "_build_runtime", return_value=runtime),
+            patch.object(main_module, "Epic7Navigator"),
+        ):
+            main_module.run_mode(
+                spec=spec,
+                dry_run=False,
+                max_cycles=1,
+                start_state="stage",
+            )
+
+        options = runner_type.call_args.kwargs
+        self.assertIsInstance(options["recovery_gate"], RecoveryGate)
+        self.assertEqual(options["recovery"], options["recovery_gate"].recover)
+
     def test_runtime_routes_only_campfire_wake_to_the_window_wake_channel(self):
         window = unittest.mock.MagicMock()
         with patch.object(main_module, "Epic7Window", return_value=window):

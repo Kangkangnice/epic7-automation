@@ -9,6 +9,7 @@ import cv2
 import numpy as np
 
 from auto_game_unified.core.matcher import Match, find_template, load_template
+from auto_game_unified.core.recovery import RecoveryGate
 from auto_game_unified.core.runtime import Runtime
 from auto_game_unified.core.supervisor import StableObservation, meaningful_change
 
@@ -304,13 +305,15 @@ class ArenaRunner:
         sleep: Callable[[float], None] = default_sleep,
         poll_seconds: float = 1.0,
         recovery: Callable[[], None] | None = None,
+        recovery_gate: RecoveryGate | None = None,
         purchase_stamp_path: Path | None = None,
     ) -> None:
         self.machine = machine
         self.runtime = runtime
         self.sleep = sleep
         self.poll_seconds = poll_seconds
-        self.recovery = recovery
+        self.recovery_gate = recovery_gate or RecoveryGate(recovery)
+        self.recovery = self.recovery_gate.recover if recovery is not None else None
         self.purchase_stamp_path = purchase_stamp_path
         self.resource_exhausted = False
 
