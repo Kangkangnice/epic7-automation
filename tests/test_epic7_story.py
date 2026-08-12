@@ -5,6 +5,7 @@ import cv2
 import numpy as np
 from PIL import Image
 
+from auto_game_unified.core.battle_supervisor import AutoBattleState
 from auto_game_unified.games.epic7 import story as story_module
 from auto_game_unified.games.epic7.story import StoryState, StoryStateMachine, build_story_templates
 
@@ -21,6 +22,31 @@ def load_fixture(name: str) -> np.ndarray:
 
 
 class Epic7StoryStateMachineTests(unittest.TestCase):
+    def test_battle_adapter_uses_background_independent_control_classifier(self):
+        machine = StoryStateMachine(build_story_templates(TEMPLATES))
+
+        manual = machine.observe_battle(
+            load_fixture("battle_auto_off_live_20260809"), None
+        )
+        auto = machine.observe_battle(
+            load_fixture("battle_auto_on_live_20260809"), None
+        )
+        result = machine.observe_battle(load_fixture("results"), None)
+
+        self.assertEqual(AutoBattleState.MANUAL, manual.auto_state)
+        self.assertIsNotNone(manual.auto_point)
+        self.assertEqual(AutoBattleState.AUTO, auto.auto_state)
+        self.assertTrue(result.result_visible)
+
+    def test_battle_adapter_whitelists_post_start_story_actions(self):
+        machine = StoryStateMachine(build_story_templates(TEMPLATES))
+
+        story = machine.observe_battle(load_fixture("story"), None)
+        skip_confirm = machine.observe_battle(load_fixture("skip_confirm"), None)
+
+        self.assertEqual("skip", story.allowed_action[0])
+        self.assertEqual("skip_confirm", skip_confirm.allowed_action[0])
+
     def test_friendship_points_popup_requires_title_and_close_anchor(self):
         popup = load_fixture("friendship_points_popup")
         title = np.asarray(
