@@ -31,8 +31,11 @@ TEMPLATES = ExpeditionTemplates(
     difficulty_confirm=pattern(6),
     prepare_battle=pattern(7),
     battle_start=pattern(8),
+    auto_off=pattern(19),
     battle_anchor=pattern(9),
     result_confirm=pattern(10),
+    victory_title=pattern(20),
+    victory_close=pattern(21),
     defeated_confirm=pattern(11),
     public_recruit=pattern(12),
     public_title=pattern(13),
@@ -306,6 +309,51 @@ class ExpeditionStateMachineTests(unittest.TestCase):
 
         self.assertEqual("public-recruit", action.name)
         self.assertEqual(ExpeditionState.RECRUIT_CONFIRM, machine.state)
+
+    def test_manual_expedition_battle_enables_auto_once(self):
+        templates = build_expedition_templates(
+            ROOT / "games" / "epic7" / "templates" / "expedition"
+        )
+        machine = ExpeditionStateMachine(
+            templates, initial_state=ExpeditionState.BATTLE
+        )
+
+        action = machine.next_action(recorded_screen("battle_manual_waiting_live"))
+
+        self.assertEqual("enable-auto-battle", action.name)
+        self.assertTrue(1660 <= action.point[0] <= 1720)
+        self.assertTrue(70 <= action.point[1] <= 125)
+        self.assertIsNone(
+            machine.next_action(recorded_screen("battle_manual_waiting_live"))
+        )
+
+    def test_preview_does_not_consume_auto_battle_click(self):
+        templates = build_expedition_templates(
+            ROOT / "games" / "epic7" / "templates" / "expedition"
+        )
+        machine = ExpeditionStateMachine(
+            templates, initial_state=ExpeditionState.BATTLE
+        )
+        screen = recorded_screen("battle_manual_waiting_live")
+
+        preview, _ = machine.preview(screen)
+        action = machine.next_action(screen)
+
+        self.assertEqual("enable-auto-battle", preview.name)
+        self.assertEqual("enable-auto-battle", action.name)
+
+    def test_victory_popup_skips_public_recruitment(self):
+        templates = build_expedition_templates(
+            ROOT / "games" / "epic7" / "templates" / "expedition"
+        )
+        machine = ExpeditionStateMachine(
+            templates, initial_state=ExpeditionState.OUTCOME
+        )
+
+        action = machine.next_action(recorded_screen("victory_popup_live"))
+
+        self.assertEqual("close-expedition-victory", action.name)
+        self.assertEqual(ExpeditionState.RETURNING, machine.state)
 
 
 if __name__ == "__main__":

@@ -199,6 +199,32 @@ class ExpeditionRunnerTests(unittest.TestCase):
 
         self.assertEqual(2, len(clicks))
 
+    def test_brief_black_result_transition_is_timed_from_its_first_frame(self):
+        clock = Clock()
+        captures = 0
+
+        def capture():
+            nonlocal captures
+            captures += 1
+            if captures > 9:
+                raise ManualStop("transition remained under its own timeout")
+            if captures == 9:
+                return np.zeros((120, 200, 3), dtype=np.uint8)
+            return np.random.default_rng(captures).integers(
+                0, 256, (120, 200, 3), dtype=np.uint8
+            )
+
+        runner = ExpeditionRunner(
+            HiddenHudBattleMachine(),
+            Runtime(capture, lambda _: None),
+            sleep=clock.sleep,
+            poll_seconds=10,
+            now=clock.now,
+        )
+
+        with self.assertRaises(ManualStop):
+            runner.run(max_cycles=1)
+
     def test_battle_start_accepts_changing_valid_frames_when_hud_is_hidden(self):
         clock = Clock()
         captures = 0
@@ -219,6 +245,30 @@ class ExpeditionRunnerTests(unittest.TestCase):
 
         self.assertTrue(
             runner._wait_until_in_state(ExpeditionState.BATTLE, "battle-start")
+        )
+
+    def test_auto_enable_accepts_changing_battle_frames(self):
+        clock = Clock()
+        captures = 0
+
+        def capture():
+            nonlocal captures
+            captures += 1
+            return np.random.default_rng(captures).integers(
+                0, 256, (120, 200, 3), dtype=np.uint8
+            )
+
+        runner = ExpeditionRunner(
+            BattleStartMachine(),
+            Runtime(capture, lambda _: None),
+            sleep=clock.sleep,
+            now=clock.now,
+        )
+
+        self.assertTrue(
+            runner._wait_until_in_state(
+                ExpeditionState.BATTLE, "enable-auto-battle"
+            )
         )
 
     def test_failed_battle_start_never_returns_to_lobby(self):
