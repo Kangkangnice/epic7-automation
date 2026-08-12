@@ -8,6 +8,7 @@ from PIL import Image
 from auto_game_unified.core.battle_supervisor import BattleOutcome
 from auto_game_unified.core.runtime import Runtime
 from auto_game_unified.games.epic7.arena import (
+    Action,
     ArenaRunner,
     ArenaState,
     ArenaStateMachine,
@@ -66,7 +67,10 @@ class ArenaRunnerTests(unittest.TestCase):
         self.assertEqual(ArenaState.BATTLE, machine.state)
 
     def test_one_recorded_cycle_clicks_each_action_once(self):
-        machine = ArenaStateMachine(build_templates(TEMPLATES))
+        machine = ArenaStateMachine(
+            build_templates(TEMPLATES),
+            choose_opponent=lambda safe: safe[0],
+        )
         # Map each state to the fixture that represents its settled screen. The
         # runner now captures once per decision and again per transition check, so
         # the capture must reflect the machine's current state rather than a fixed
@@ -103,6 +107,60 @@ class ArenaRunnerTests(unittest.TestCase):
             [(750, 406), (960, 1045), (1257, 1040), (1692, 90), (1747, 1045)],
             clicks,
         )
+
+    def test_refresh_waits_for_a_list_with_a_safe_opponent(self):
+        machine = MagicMock()
+        machine.state = ArenaState.LIST
+        machine.completed_cycles = 0
+        refresh = Action("refresh-opponents", (1344, 225))
+        machine.preview.return_value = (refresh, None)
+        machine.next_action.return_value = refresh
+        machine.is_in_state.return_value = False
+        clicks = []
+        runner = ArenaRunner(
+            machine,
+            Runtime(
+                lambda: np.full((60, 100, 3), 30, dtype=np.uint8),
+                clicks.append,
+                emit=lambda line: None,
+            ),
+            sleep=lambda seconds: None,
+        )
+
+        def refreshed() -> bool:
+            machine.completed_cycles = 1
+            return True
+
+        runner._wait_until_safe_list = MagicMock(side_effect=refreshed)
+
+        completed = runner.run(max_cycles=1)
+
+        self.assertEqual(1, completed)
+        self.assertEqual([(1344, 225)], clicks)
+        runner._wait_until_safe_list.assert_called_once_with()
+        self.assertEqual(ArenaState.LIST, machine.state)
+
+    def test_refresh_that_never_produces_a_safe_opponent_stops_with_diagnostic(self):
+        machine = MagicMock()
+        machine.state = ArenaState.LIST
+        machine.completed_cycles = 0
+        refresh = Action("refresh-opponents", (1344, 225))
+        machine.preview.return_value = (refresh, None)
+        machine.next_action.return_value = refresh
+        machine.is_in_state.return_value = False
+        runtime = MagicMock()
+        runtime.dry_run = False
+        runtime.diagnostic_dir = Path("diagnostics")
+        runtime.capture.return_value = np.full((60, 100, 3), 30, dtype=np.uint8)
+        runtime.save_diagnostic.return_value = Path("refresh.png")
+        runner = ArenaRunner(machine, runtime, sleep=lambda seconds: None)
+        runner._TIMEOUT_SECONDS = {**runner._TIMEOUT_SECONDS, ArenaState.LIST: 0}
+        runner._wait_until_safe_list = MagicMock(return_value=False)
+
+        with self.assertRaisesRegex(RuntimeError, "refresh did not produce"):
+            runner.run(max_cycles=1)
+
+        runtime.save_diagnostic.assert_called_once()
 
 
 if __name__ == "__main__":

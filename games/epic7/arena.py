@@ -265,6 +265,9 @@ class ArenaStateMachine:
             )
         return tuple(availability)
 
+    def has_safe_opponent(self, screen: np.ndarray) -> bool:
+        return any(value is True for value in self.opponent_availability(screen))
+
     def is_in_state(self, screen: np.ndarray, state: "ArenaState") -> bool:
         """True when the screen has actually settled into ``state``.
 
@@ -537,6 +540,24 @@ class ArenaRunner:
                 stable.reset()
                 continue
 
+            if action.name == "refresh-opponents":
+                if not self._wait_until_safe_list():
+                    diagnostic = self.runtime.save_diagnostic(
+                        "refresh_opponents_failed",
+                    )
+                    self.runtime.log(
+                        "模式=竞技场 页面=list 动作=刷新对手 "
+                        f"停止=刷新后没有安全对手 现场={diagnostic}"
+                    )
+                    raise RuntimeError(
+                        "refresh did not produce a safe opponent list; "
+                        f"saved {diagnostic}"
+                    )
+                self.machine.state = ArenaState.LIST
+                state_started = monotonic()
+                stable.reset()
+                continue
+
             # Verify the click actually advanced the screen. Without this the machine
             # blindly advances state on every click; a click that lands during an
             # animation (e.g. challenge, right after opponent selection) is silently
@@ -579,6 +600,30 @@ class ArenaRunner:
             if self.runtime.diagnostic_dir is not None:
                 self.runtime.save_current_frame(screen)
             if self.machine.is_in_state(screen, state):
+                return True
+            if meaningful_change(previous, screen):
+                last_progress = monotonic()
+            previous = screen
+            if monotonic() - last_progress >= no_progress:
+                return False
+            self.sleep(self.poll_seconds)
+        return False
+
+    def _wait_until_safe_list(self) -> bool:
+        self.sleep(self._SETTLE_SECONDS)
+        started = monotonic()
+        last_progress = started
+        previous: Optional[np.ndarray] = None
+        absolute = min(180, self._TIMEOUT_SECONDS[ArenaState.LIST])
+        no_progress = min(45, self._TIMEOUT_SECONDS[ArenaState.LIST])
+        while monotonic() - started < absolute:
+            screen = self.runtime.capture()
+            if self.runtime.diagnostic_dir is not None:
+                self.runtime.save_current_frame(screen)
+            if (
+                self.machine.is_in_state(screen, ArenaState.LIST)
+                and self.machine.has_safe_opponent(screen)
+            ):
                 return True
             if meaningful_change(previous, screen):
                 last_progress = monotonic()
