@@ -153,6 +153,13 @@ class ArenaStateMachine:
     }
 
     _REFERENCE_SIZE = (1982, 1132)
+    _OPPONENT_STATUS_REGIONS = (
+        (600, 320, 220, 135),
+        (600, 510, 220, 140),
+        (600, 705, 220, 140),
+    )
+    _FAILED_RED_MIN_RATIO = 0.50
+    _AVAILABLE_RED_MAX_RATIO = 0.05
     _REGIONS = {
         "list_ready": (700, 900, 520, 250),
         "challenge": (700, 930, 520, 202),
@@ -207,6 +214,46 @@ class ArenaStateMachine:
 
     def _visible(self, screen: np.ndarray, template_name: str) -> bool:
         return self._locate(screen, template_name) is not None
+
+    @classmethod
+    def _scaled_region(
+        cls,
+        screen: np.ndarray,
+        region: tuple[int, int, int, int],
+    ) -> tuple[int, int, int, int]:
+        scale_x = screen.shape[1] / cls._REFERENCE_SIZE[0]
+        scale_y = screen.shape[0] / cls._REFERENCE_SIZE[1]
+        x, y, width, height = region
+        return (
+            round(x * scale_x),
+            round(y * scale_y),
+            round(width * scale_x),
+            round(height * scale_y),
+        )
+
+    def opponent_availability(
+        self,
+        screen: np.ndarray,
+    ) -> tuple[bool | None, bool | None, bool | None]:
+        availability: list[bool | None] = []
+        hsv = cv2.cvtColor(screen, cv2.COLOR_RGB2HSV)
+        for region in self._OPPONENT_STATUS_REGIONS:
+            x, y, width, height = self._scaled_region(screen, region)
+            roi = hsv[y : y + height, x : x + width]
+            red = (
+                ((roi[:, :, 0] <= 10) | (roi[:, :, 0] >= 170))
+                & (roi[:, :, 1] >= 60)
+                & (roi[:, :, 2] >= 35)
+            )
+            ratio = float(np.mean(red))
+            availability.append(
+                False
+                if ratio >= self._FAILED_RED_MIN_RATIO
+                else True
+                if ratio <= self._AVAILABLE_RED_MAX_RATIO
+                else None
+            )
+        return tuple(availability)
 
     def is_in_state(self, screen: np.ndarray, state: "ArenaState") -> bool:
         """True when the screen has actually settled into ``state``.
