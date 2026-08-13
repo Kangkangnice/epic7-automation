@@ -26,7 +26,7 @@ class FakeClock:
         self.value += seconds
 
 
-def make_supervisor(observations, *, changing_frames=True):
+def make_supervisor(observations, *, changing_frames=True, config_overrides=None):
     clock = FakeClock()
     frames = iter(
         np.full(
@@ -52,21 +52,24 @@ def make_supervisor(observations, *, changing_frames=True):
     )
     gate = RecoveryGate(lambda: None)
     iterator = iter(observations)
+    config = BattleConfig(
+        mode="test",
+        poll_seconds=1,
+        entry_absolute_seconds=5,
+        no_activity_seconds=5,
+        no_business_progress_seconds=15,
+        absolute_seconds=20,
+        unrecognized_seconds=3,
+        black_seconds=3,
+        auto_confirm_seconds=3,
+        heartbeat_seconds=2,
+    )
+    if config_overrides:
+        config = replace(config, **config_overrides)
     supervisor = BattleSupervisor(
         runtime,
         gate,
-        BattleConfig(
-            mode="test",
-            poll_seconds=1,
-            entry_absolute_seconds=5,
-            no_activity_seconds=5,
-            no_business_progress_seconds=15,
-            absolute_seconds=20,
-            unrecognized_seconds=3,
-            black_seconds=3,
-            auto_confirm_seconds=3,
-            heartbeat_seconds=2,
-        ),
+        config,
         now=clock.now,
         sleep=clock.sleep,
     )
@@ -138,6 +141,66 @@ def test_mode_whitelist_action_is_clicked_once_until_it_disappears():
 
     supervisor.run(observe, cycle=3)
     assert clicks == [((640, 80), "skip")]
+
+
+def test_network_retry_clicks_twice_then_safely_stops_if_popup_persists():
+    auto = BattleObservation(False, True, False, True, AutoBattleState.AUTO)
+    popup = BattleObservation(
+        False,
+        False,
+        False,
+        True,
+        AutoBattleState.UNKNOWN,
+        business_progress=True,
+        allowed_action=("retry-network", (960, 740)),
+    )
+    supervisor, gate, observe, clicks, logs, diagnostics = make_supervisor(
+        [auto, auto] + [popup] * 20,
+        config_overrides={
+            "network_retry_interval_seconds": 2,
+            "network_retry_failure_seconds": 3,
+        },
+    )
+
+    with pytest.raises(RuntimeError, match="network retry popup persisted"):
+        supervisor.run(observe, cycle=3)
+
+    assert clicks == [
+        ((960, 740), "retry-network"),
+        ((960, 740), "retry-network"),
+    ]
+    assert diagnostics == ["network_retry_failed"]
+    assert gate.locked is False
+
+
+def test_network_retry_allowance_resets_after_popup_disappears():
+    popup = BattleObservation(
+        False,
+        False,
+        False,
+        True,
+        AutoBattleState.UNKNOWN,
+        business_progress=True,
+        allowed_action=("retry-network", (960, 740)),
+    )
+    auto = BattleObservation(False, True, False, True, AutoBattleState.AUTO)
+    result = replace(auto, battle_visible=False, result_visible=True)
+    supervisor, gate, observe, clicks, logs, diagnostics = make_supervisor(
+        [popup, popup, popup, popup, auto, auto, popup, popup, popup, popup, result, result],
+        config_overrides={
+            "network_retry_interval_seconds": 2,
+            "network_retry_failure_seconds": 10,
+        },
+    )
+
+    assert supervisor.run(observe, cycle=4) is BattleOutcome.RESULT_REACHED
+    assert clicks == [
+        ((960, 740), "retry-network"),
+        ((960, 740), "retry-network"),
+        ((960, 740), "retry-network"),
+        ((960, 740), "retry-network"),
+    ]
+    assert diagnostics == []
 
 
 def test_two_dynamic_valid_frames_confirm_entry_after_prep_disappears():

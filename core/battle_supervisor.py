@@ -46,6 +46,8 @@ class BattleConfig:
     black_seconds: float = 45
     auto_confirm_seconds: float = 15
     heartbeat_seconds: float = 30
+    network_retry_interval_seconds: float = 3
+    network_retry_failure_seconds: float = 15
 
 
 BattleObserver = Callable[[np.ndarray, np.ndarray | None], BattleObservation]
@@ -94,6 +96,8 @@ class BattleSupervisor:
         previous = None
         auto_clicked = False
         last_allowed_action = None
+        network_retry_count = 0
+        network_retry_clicked_at = None
         entry_confirmed = False
         auto_confirmed = False
         battle_stable = StableObservation(required=2)
@@ -195,8 +199,38 @@ class BattleSupervisor:
                     )
                 )
                 allowed_confirmed = allowed_stable.update(allowed_signature)
+                network_retry = (
+                    observation.allowed_action is not None
+                    and observation.allowed_action[0] == "retry-network"
+                )
+                if not network_retry:
+                    network_retry_count = 0
+                    network_retry_clicked_at = None
                 if observation.allowed_action is None:
                     last_allowed_action = None
+                elif network_retry and allowed_confirmed:
+                    action_name, action_point = observation.allowed_action
+                    if network_retry_count == 0 or (
+                        network_retry_count == 1
+                        and network_retry_clicked_at is not None
+                        and current - network_retry_clicked_at
+                        >= self.config.network_retry_interval_seconds
+                    ):
+                        self.runtime.click(action_point, action_name)
+                        network_retry_count += 1
+                        network_retry_clicked_at = current
+                        business_at = current
+                    elif (
+                        network_retry_count >= 2
+                        and network_retry_clicked_at is not None
+                        and current - network_retry_clicked_at
+                        >= self.config.network_retry_failure_seconds
+                    ):
+                        self._fail(
+                            "network_retry_failed",
+                            "network retry popup persisted after 2 attempts",
+                            screen,
+                        )
                 elif (
                     allowed_confirmed
                     and observation.allowed_action != last_allowed_action
