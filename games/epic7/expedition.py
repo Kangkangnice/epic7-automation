@@ -3,7 +3,7 @@
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from time import monotonic, sleep as default_sleep
+from time import sleep as default_sleep
 from typing import Callable, Optional
 
 import cv2
@@ -21,11 +21,6 @@ from auto_game_unified.core.matcher import Match, find_template, load_template
 from auto_game_unified.core.recovery import RecoveryGate
 from auto_game_unified.core.runtime import Runtime
 from auto_game_unified.core.supervisor import StableObservation, meaningful_change
-from auto_game_unified.games.epic7.global_popups import (
-    NetworkReconnectTemplates,
-    find_network_retry,
-    load_network_reconnect_templates,
-)
 
 
 class ExpeditionState(Enum):
@@ -76,7 +71,6 @@ class ExpeditionTemplates:
     campfire_idle: np.ndarray
     expedition_list: np.ndarray
     back: np.ndarray
-    network_reconnect: NetworkReconnectTemplates | None = None
 
 
 def build_expedition_templates(template_dir: Path) -> ExpeditionTemplates:
@@ -109,7 +103,6 @@ def build_expedition_templates(template_dir: Path) -> ExpeditionTemplates:
         campfire_idle=load("campfire_idle"),
         expedition_list=load("expedition_list"),
         back=load("back"),
-        network_reconnect=load_network_reconnect_templates(template_dir.parent / "global"),
     )
 
 
@@ -297,11 +290,6 @@ class ExpeditionStateMachine:
         previous_screen: np.ndarray | None,
     ) -> BattleObservation:
         auto = self._locate(screen, "auto_off")
-        network_retry = (
-            find_network_retry(screen, self.templates.network_reconnect)
-            if self.templates.network_reconnect is not None
-            else None
-        )
         battle = self._locate(screen, "battle_anchor")
         result = self._locate(screen, "result_confirm")
         progressing = valid_game_frame(screen) and meaningful_change(
@@ -322,11 +310,6 @@ class ExpeditionStateMachine:
             ),
             auto_point=None if auto is None else auto.center,
             business_progress=progressing,
-            allowed_action=(
-                ("retry-network", network_retry.center)
-                if network_retry is not None
-                else None
-            ),
         )
 
     def next_action(self, screen: np.ndarray) -> Optional[ExpeditionAction]:
@@ -452,7 +435,7 @@ class ExpeditionRunner:
         *,
         sleep: Callable[[float], None] = default_sleep,
         poll_seconds: float = 1.0,
-        now: Callable[[], float] = monotonic,
+        now: Callable[[], float] | None = None,
         recovery: Callable[[], None] | None = None,
         recovery_gate: RecoveryGate | None = None,
         battle_supervisor: BattleSupervisor | None = None,
@@ -461,7 +444,7 @@ class ExpeditionRunner:
         self.runtime = runtime
         self.sleep = sleep
         self.poll_seconds = poll_seconds
-        self.now = now
+        self.now = now or runtime.now
         self.recovery_gate = recovery_gate or RecoveryGate(recovery)
         self.recovery = self.recovery_gate.recover if recovery is not None else None
         self.battle_supervisor = battle_supervisor or BattleSupervisor(
@@ -472,7 +455,7 @@ class ExpeditionRunner:
                 absolute_seconds=20 * 60,
                 no_business_progress_seconds=20 * 60,
             ),
-            now=now,
+            now=self.now,
             sleep=sleep,
         )
         self.resource_exhausted = False

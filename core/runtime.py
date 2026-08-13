@@ -1,9 +1,16 @@
 from pathlib import Path
 from datetime import datetime
-from typing import Callable
+from time import monotonic as default_monotonic
+from typing import Callable, Protocol
 
 import cv2
 import numpy as np
+
+
+class CaptureGuard(Protocol):
+    def __call__(
+        self, runtime: "Runtime", screen: np.ndarray
+    ) -> tuple[np.ndarray, bool]: ...
 
 
 class StaminaExhausted(RuntimeError):
@@ -32,6 +39,7 @@ class Runtime:
         diagnostic_limit: int = 30,
         max_log_bytes: int = 5 * 1024 * 1024,
         log_backups: int = 4,
+        monotonic: Callable[[], float] = default_monotonic,
     ) -> None:
         self._capture = capture
         self._click = click
@@ -46,12 +54,32 @@ class Runtime:
         self.diagnostic_limit = diagnostic_limit
         self.max_log_bytes = max_log_bytes
         self.log_backups = log_backups
+        self._monotonic = monotonic
+        self._paused_seconds = 0.0
+        self._capture_guard: CaptureGuard | None = None
 
     def capture(self) -> np.ndarray:
+        screen = self.capture_unguarded()
+        if self._capture_guard is None:
+            return screen
+        started = self._monotonic()
+        screen, paused = self._capture_guard(self, screen)
+        self._last_screen = screen
+        if paused:
+            self._paused_seconds += self._monotonic() - started
+        return screen
+
+    def capture_unguarded(self) -> np.ndarray:
         self._stop_if_requested()
         screen = self._capture()
         self._last_screen = screen
         return screen
+
+    def set_capture_guard(self, guard: CaptureGuard) -> None:
+        self._capture_guard = guard
+
+    def now(self) -> float:
+        return self._monotonic() - self._paused_seconds
 
     def click(self, point: tuple[int, int], action: str) -> None:
         self._stop_if_requested()

@@ -9,6 +9,10 @@ from auto_game_unified.core.runtime import ManualStop, Runtime
 from auto_game_unified.core.window import Epic7Window
 from auto_game_unified.games.epic7.modes import MODE_SPECS, ModeSpec, get_mode
 from auto_game_unified.games.epic7.navigation import Epic7Navigator, build_navigation_templates
+from auto_game_unified.games.epic7.global_popups import (
+    Epic7GlobalPopupGuard,
+    load_network_reconnect_templates,
+)
 
 
 ROOT = Path(__file__).resolve().parent
@@ -48,6 +52,11 @@ def run_mode(
     template_root = ROOT / "games" / "epic7" / "templates"
     navigator = None
     if not dry_run:
+        runtime.set_capture_guard(
+            Epic7GlobalPopupGuard(
+                load_network_reconnect_templates(template_root / "global")
+            )
+        )
         navigator = Epic7Navigator(build_navigation_templates(template_root), runtime)
         lobby_screen = navigator.return_home()
         navigator.navigate(spec.name, lobby_screen=lobby_screen)

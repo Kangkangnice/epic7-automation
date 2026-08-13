@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from time import monotonic, sleep as default_sleep
+from time import sleep as default_sleep
 from typing import Callable, Optional
 
 import cv2
@@ -19,11 +19,6 @@ from auto_game_unified.core.matcher import Match, find_template, load_template
 from auto_game_unified.core.recovery import RecoveryGate
 from auto_game_unified.core.runtime import Runtime, StaminaExhausted
 from auto_game_unified.core.supervisor import StableObservation, meaningful_change
-from auto_game_unified.games.epic7.global_popups import (
-    NetworkReconnectTemplates,
-    find_network_retry,
-    load_network_reconnect_templates,
-)
 
 
 _WATCH_STORY_REFERENCE_SIZE = (1982, 1132)
@@ -188,7 +183,6 @@ class StoryTemplates:
     stamina_popup: Optional[np.ndarray] = None
     stamina_material: Optional[np.ndarray] = None
     stamina_confirm: Optional[np.ndarray] = None
-    network_reconnect: NetworkReconnectTemplates | None = None
 
 
 def _load_optional(template_dir: Path, name: str) -> Optional[np.ndarray]:
@@ -231,7 +225,6 @@ def build_story_templates(template_dir: Path) -> StoryTemplates:
         stamina_popup=_load_optional(template_dir, "stamina_popup"),
         stamina_material=_load_optional(template_dir, "stamina_material"),
         stamina_confirm=_load_optional(template_dir, "stamina_confirm"),
-        network_reconnect=load_network_reconnect_templates(global_templates),
     )
 
 
@@ -429,28 +422,18 @@ class StoryStateMachine:
         previous_screen: np.ndarray | None,
     ) -> BattleObservation:
         controls = self.observe_battle_controls(screen)
-        network_retry = (
-            find_network_retry(screen, self.templates.network_reconnect)
-            if self.templates.network_reconnect is not None
-            else None
-        )
         auto_state = {
             BattleControls.AUTO_CONTROLS: AutoBattleState.AUTO,
             BattleControls.MANUAL_CONTROLS: AutoBattleState.MANUAL,
             BattleControls.TRANSITION: AutoBattleState.UNKNOWN,
         }[controls]
         auto_match = self._locate(screen, "auto_off")
-        allowed_action = (
-            ("retry-network", network_retry.center)
-            if network_retry is not None
-            else None
-        )
-        if allowed_action is None:
-            for action_name in ("skip_confirm", "skip", "watch_story"):
-                match = self._locate(screen, action_name)
-                if match is not None:
-                    allowed_action = (action_name, match.center)
-                    break
+        allowed_action = None
+        for action_name in ("skip_confirm", "skip", "watch_story"):
+            match = self._locate(screen, action_name)
+            if match is not None:
+                allowed_action = (action_name, match.center)
+                break
         progressing = (
             auto_state is AutoBattleState.AUTO
             and meaningful_change(previous_screen, screen)
@@ -697,6 +680,7 @@ class StoryRunner:
         self.machine = machine
         self.runtime = runtime
         self.sleep = sleep
+        self.now = runtime.now
         self.poll_seconds = poll_seconds
         self.recovery_gate = recovery_gate or RecoveryGate(recovery)
         self.recovery = self.recovery_gate.recover if recovery is not None else None
@@ -704,7 +688,7 @@ class StoryRunner:
             runtime,
             self.recovery_gate,
             BattleConfig(mode="story"),
-            now=lambda: monotonic(),
+            now=self.now,
             sleep=sleep,
         )
         self.resource_exhausted = False
@@ -737,7 +721,7 @@ class StoryRunner:
                 self.runtime.click(action.point, action.name)
             return self.machine.completed_cycles
 
-        state_started = monotonic()
+        state_started = self.now()
         absolute_started = state_started
         stable = StableObservation(required=2)
         recovered = False
@@ -758,7 +742,7 @@ class StoryRunner:
                 self.runtime.log(f"模式=主线 停止=生命之叶耗尽 详情={error}")
                 return self.machine.completed_cycles
             except RuntimeError as error:
-                elapsed = monotonic() - state_started
+                elapsed = self.now() - state_started
                 if elapsed >= self._TIMEOUT_SECONDS[self.machine.state]:
                     if self.recovery is not None and not recovered:
                         recovered = True
@@ -768,7 +752,7 @@ class StoryRunner:
                         self.recovery()
                         self.machine.state = StoryState.STAGE
                         self.machine.auto_enabled = False
-                        state_started = monotonic()
+                        state_started = self.now()
                         absolute_started = state_started
                         last_action_name = None
                         last_action_clicked_at = None
@@ -801,14 +785,14 @@ class StoryRunner:
             if self.machine.completed_cycles > cycles_before:
                 recovered = False
                 self.runtime.log(f"complete-story cycles={self.machine.completed_cycles}")
-                state_started = monotonic()
+                state_started = self.now()
                 if max_cycles is not None and self.machine.completed_cycles >= max_cycles:
                     return self.machine.completed_cycles
 
             if action is not None:
                 if action.name == last_action_name:
                     since_click = (
-                        monotonic() - last_action_clicked_at
+                        self.now() - last_action_clicked_at
                         if last_action_clicked_at is not None
                         else self._ACTION_RETRY_SECONDS
                     )
@@ -835,7 +819,7 @@ class StoryRunner:
                         self.recovery()
                         self.machine.state = StoryState.STAGE
                         self.machine.auto_enabled = False
-                        state_started = monotonic()
+                        state_started = self.now()
                         absolute_started = state_started
                         last_action_name = None
                         last_action_clicked_at = None
@@ -854,7 +838,7 @@ class StoryRunner:
                     f"页面={state_before.value} 动作={action.name} 尝试={action_attempts}/2"
                 )
                 self.runtime.click(action.point, action.name)
-                last_action_clicked_at = monotonic()
+                last_action_clicked_at = self.now()
                 state_started = last_action_clicked_at
                 absolute_started = last_action_clicked_at
                 retry_wait_logged = False
@@ -862,7 +846,7 @@ class StoryRunner:
                     self._run_committed_battle(
                         cycle=self.machine.completed_cycles + 1,
                     )
-                    state_started = monotonic()
+                    state_started = self.now()
                     absolute_started = state_started
                     last_action_name = None
                     last_action_clicked_at = None
@@ -876,7 +860,7 @@ class StoryRunner:
                 action_attempts = 0
             if (
                 action is None
-                and monotonic() - state_started >= self._TIMEOUT_SECONDS[self.machine.state]
+                and self.now() - state_started >= self._TIMEOUT_SECONDS[self.machine.state]
             ):
                 diagnostic = self.runtime.save_diagnostic(
                     f"timeout_{self.machine.state.value}", screen
@@ -891,9 +875,9 @@ class StoryRunner:
                 )
 
             if self.machine.state != state_before:
-                state_started = monotonic()
+                state_started = self.now()
                 absolute_started = state_started
-            if monotonic() - absolute_started >= 180:
+            if self.now() - absolute_started >= 180:
                 diagnostic = self.runtime.save_diagnostic(
                     f"absolute_{self.machine.state.value}", screen
                 )

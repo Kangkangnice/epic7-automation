@@ -10,6 +10,58 @@ from auto_game_unified.games.epic7.modes import get_mode
 
 
 class MainStoryTests(unittest.TestCase):
+    def test_live_modes_install_one_global_popup_guard_before_navigation(self):
+        for mode in ("story", "arena", "expedition"):
+            with self.subTest(mode=mode):
+                runtime = unittest.mock.MagicMock()
+                runner_type = unittest.mock.MagicMock()
+                runner_type.return_value.run.return_value = 0
+                spec = replace(get_mode(mode), runner_type=runner_type)
+                events = []
+                runtime.set_capture_guard.side_effect = lambda guard: events.append(
+                    "guard"
+                )
+
+                with (
+                    patch.object(main_module, "_build_runtime", return_value=runtime),
+                    patch.object(main_module, "Epic7GlobalPopupGuard") as guard_type,
+                    patch.object(main_module, "Epic7Navigator") as navigator_type,
+                ):
+                    navigator_type.return_value.return_home.side_effect = lambda: (
+                        events.append("navigation") or object()
+                    )
+                    main_module.run_mode(
+                        spec=spec,
+                        dry_run=False,
+                        max_cycles=1,
+                        start_state=spec.default_state,
+                    )
+
+                runtime.set_capture_guard.assert_called_once_with(
+                    guard_type.return_value
+                )
+                self.assertEqual(["guard", "navigation"], events)
+
+    def test_dry_run_does_not_install_global_popup_guard(self):
+        runtime = unittest.mock.MagicMock()
+        runner_type = unittest.mock.MagicMock()
+        runner_type.return_value.run.return_value = 0
+        spec = replace(get_mode("story"), runner_type=runner_type)
+
+        with (
+            patch.object(main_module, "_build_runtime", return_value=runtime),
+            patch.object(main_module, "Epic7GlobalPopupGuard") as guard_type,
+        ):
+            main_module.run_mode(
+                spec=spec,
+                dry_run=True,
+                max_cycles=1,
+                start_state=spec.default_state,
+            )
+
+        runtime.set_capture_guard.assert_not_called()
+        guard_type.assert_not_called()
+
     def test_live_run_passes_one_recovery_gate_to_the_runner(self):
         runtime = unittest.mock.MagicMock()
         runner_type = unittest.mock.MagicMock()
@@ -43,7 +95,7 @@ class MainStoryTests(unittest.TestCase):
         window.click.assert_called_once_with((1062, 1045))
 
     def test_live_run_returns_home_and_navigates_before_runner(self):
-        runtime = object()
+        runtime = unittest.mock.MagicMock()
         lobby = object()
         with (
             patch.object(main_module, "_build_runtime", return_value=runtime),

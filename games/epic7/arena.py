@@ -3,7 +3,7 @@ from enum import Enum
 from pathlib import Path
 from datetime import date
 import random
-from time import monotonic, sleep as default_sleep
+from time import sleep as default_sleep
 from typing import Callable, Optional, Sequence
 
 import cv2
@@ -21,11 +21,6 @@ from auto_game_unified.core.matcher import Match, find_template, load_template
 from auto_game_unified.core.recovery import RecoveryGate
 from auto_game_unified.core.runtime import Runtime
 from auto_game_unified.core.supervisor import StableObservation, meaningful_change
-from auto_game_unified.games.epic7.global_popups import (
-    NetworkReconnectTemplates,
-    find_network_retry,
-    load_network_reconnect_templates,
-)
 
 
 _RANK_PROMOTION_REFERENCE_SIZE = (1982, 1132)
@@ -118,7 +113,6 @@ class ArenaTemplates:
     friendship_ticket_offer: np.ndarray
     ticket_purchase_button: np.ndarray
     threshold: float = 0.98
-    network_reconnect: NetworkReconnectTemplates | None = None
 
 
 def build_templates(template_dir: Path) -> ArenaTemplates:
@@ -135,7 +129,6 @@ def build_templates(template_dir: Path) -> ArenaTemplates:
         no_ticket=load_template(str(template_dir / "no_ticket.png")),
         friendship_ticket_offer=load_template(str(template_dir / "friendship_ticket_offer.png")),
         ticket_purchase_button=load_template(str(template_dir / "ticket_purchase_button.png")),
-        network_reconnect=load_network_reconnect_templates(template_dir / "global"),
     )
 
 
@@ -337,11 +330,6 @@ class ArenaStateMachine:
         previous_screen: np.ndarray | None,
     ) -> BattleObservation:
         start = self._locate(screen, "battle_start")
-        network_retry = (
-            find_network_retry(screen, self.templates.network_reconnect)
-            if self.templates.network_reconnect is not None
-            else None
-        )
         manual = self._locate(screen, "auto_off")
         result = self._locate(screen, "confirm")
         no_ticket = self._locate(screen, "no_ticket")
@@ -363,11 +351,6 @@ class ArenaStateMachine:
             ),
             auto_point=None if manual is None else manual.center,
             business_progress=progressing,
-            allowed_action=(
-                ("retry-network", network_retry.center)
-                if network_retry is not None
-                else None
-            ),
             pre_battle_business_visible=no_ticket is not None,
         )
 
@@ -460,6 +443,7 @@ class ArenaRunner:
         self.machine = machine
         self.runtime = runtime
         self.sleep = sleep
+        self.now = runtime.now
         self.poll_seconds = poll_seconds
         self.recovery_gate = recovery_gate or RecoveryGate(recovery)
         self.recovery = self.recovery_gate.recover if recovery is not None else None
@@ -467,7 +451,7 @@ class ArenaRunner:
             runtime,
             self.recovery_gate,
             BattleConfig(mode="arena"),
-            now=lambda: monotonic(),
+            now=self.now,
             sleep=sleep,
         )
         self.purchase_stamp_path = purchase_stamp_path
@@ -486,7 +470,7 @@ class ArenaRunner:
         self.machine.state = ArenaState.RESULT
 
     def run(self, max_cycles: int | None = None) -> int:
-        state_started = monotonic()
+        state_started = self.now()
         stable = StableObservation(required=2)
         recovered = False
         while max_cycles is None or self.machine.completed_cycles < max_cycles:
@@ -513,7 +497,7 @@ class ArenaRunner:
                 return self.machine.completed_cycles
             except RuntimeError as error:
                 timeout = self._TIMEOUT_SECONDS[self.machine.state]
-                if monotonic() - state_started >= timeout:
+                if self.now() - state_started >= timeout:
                     if self.recovery is not None and not recovered:
                         recovered = True
                         self.runtime.log(
@@ -521,7 +505,7 @@ class ArenaRunner:
                         )
                         self.recovery()
                         self.machine.state = ArenaState.LIST
-                        state_started = monotonic()
+                        state_started = self.now()
                         stable.reset()
                         continue
                     diagnostic = self.runtime.save_diagnostic(
@@ -553,7 +537,7 @@ class ArenaRunner:
                 self._run_committed_battle(
                     cycle=self.machine.completed_cycles + 1,
                 )
-                state_started = monotonic()
+                state_started = self.now()
                 stable.reset()
                 continue
 
@@ -571,7 +555,7 @@ class ArenaRunner:
                         f"saved {diagnostic}"
                     )
                 self.machine.state = ArenaState.LIST
-                state_started = monotonic()
+                state_started = self.now()
                 stable.reset()
                 continue
 
@@ -594,7 +578,7 @@ class ArenaRunner:
                 self._record_purchase_today()
 
             if self.machine.state != state_before:
-                state_started = monotonic()
+                state_started = self.now()
             self.sleep(self.poll_seconds)
 
         return self.machine.completed_cycles
@@ -607,33 +591,33 @@ class ArenaRunner:
         clearly instead of cascading into a wrong state.
         """
         self.sleep(self._SETTLE_SECONDS)
-        started = monotonic()
+        started = self.now()
         last_progress = started
         previous: Optional[np.ndarray] = None
         absolute = min(180, self._TIMEOUT_SECONDS[state])
         no_progress = min(45, self._TIMEOUT_SECONDS[state])
-        while monotonic() - started < absolute:
+        while self.now() - started < absolute:
             screen = self.runtime.capture()
             if self.runtime.diagnostic_dir is not None:
                 self.runtime.save_current_frame(screen)
             if self.machine.is_in_state(screen, state):
                 return True
             if meaningful_change(previous, screen):
-                last_progress = monotonic()
+                last_progress = self.now()
             previous = screen
-            if monotonic() - last_progress >= no_progress:
+            if self.now() - last_progress >= no_progress:
                 return False
             self.sleep(self.poll_seconds)
         return False
 
     def _wait_until_safe_list(self) -> bool:
         self.sleep(self._SETTLE_SECONDS)
-        started = monotonic()
+        started = self.now()
         last_progress = started
         previous: Optional[np.ndarray] = None
         absolute = min(180, self._TIMEOUT_SECONDS[ArenaState.LIST])
         no_progress = min(45, self._TIMEOUT_SECONDS[ArenaState.LIST])
-        while monotonic() - started < absolute:
+        while self.now() - started < absolute:
             screen = self.runtime.capture()
             if self.runtime.diagnostic_dir is not None:
                 self.runtime.save_current_frame(screen)
@@ -643,9 +627,9 @@ class ArenaRunner:
             ):
                 return True
             if meaningful_change(previous, screen):
-                last_progress = monotonic()
+                last_progress = self.now()
             previous = screen
-            if monotonic() - last_progress >= no_progress:
+            if self.now() - last_progress >= no_progress:
                 return False
             self.sleep(self.poll_seconds)
         return False
