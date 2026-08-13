@@ -16,6 +16,7 @@ RESULT_FIXTURES = {
     "arena": "tests/fixtures/epic7_arena/result.png",
     "expedition": "tests/fixtures/epic7_expedition/result.png",
 }
+NETWORK_FIXTURE = "tests/fixtures/epic7_global/network_reconnect.png"
 
 
 @pytest.fixture
@@ -27,6 +28,8 @@ def adapter_case():
         if case == "result":
             path = ROOT / RESULT_FIXTURES[mode]
             image = np.asarray(Image.open(path).convert("RGB"))[:1132, :1982]
+        elif case == "network":
+            image = np.asarray(Image.open(ROOT / NETWORK_FIXTURE).convert("RGB"))
         else:
             image = np.zeros((1132, 1982, 3), dtype=np.uint8)
         return machine, image
@@ -70,6 +73,21 @@ def test_result_anchor_is_outside_the_committed_battle(mode, adapter_case):
     machine, screen = adapter_case(mode, "result")
     observation = machine.observe_battle(screen, None)
     assert observation.result_visible is True
+    assert observation.pre_battle_visible is False
+
+
+@pytest.mark.parametrize("mode", ["story", "arena", "expedition"])
+def test_network_reconnect_is_the_same_allowed_action_in_every_mode(
+    mode,
+    adapter_case,
+):
+    machine, screen = adapter_case(mode, "network")
+
+    observation = machine.observe_battle(screen, None)
+
+    assert observation.allowed_action is not None
+    assert observation.allowed_action[0] == "retry-network"
+    assert observation.result_visible is False
     assert observation.pre_battle_visible is False
 
 
