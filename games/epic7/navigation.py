@@ -2,7 +2,7 @@
 
 from dataclasses import dataclass
 from pathlib import Path
-from time import monotonic, sleep as default_sleep
+from time import sleep as default_sleep
 from typing import Callable, Optional
 
 import numpy as np
@@ -141,6 +141,7 @@ class Epic7Navigator:
         self.templates = templates
         self.runtime = runtime
         self.sleep = sleep
+        self.now = runtime.now
         self.poll_seconds = poll_seconds
         self.transition_frames = transition_frames
 
@@ -305,13 +306,13 @@ class Epic7Navigator:
                 if cancel is None:
                     raise RuntimeError("exit dialog lost its cancel anchor")
                 self.runtime.click(cancel.center, "取消退出游戏")
-                last_back_at = monotonic()
+                last_back_at = self.now()
                 back_wait_logged = False
                 stable.reset()
                 self.sleep(1.0)
                 continue
             if last_back_at is not None:
-                since_back = monotonic() - last_back_at
+                since_back = self.now() - last_back_at
                 if since_back < self._BACK_RETRY_SECONDS:
                     if not back_wait_logged:
                         remaining = self._BACK_RETRY_SECONDS - since_back
@@ -335,7 +336,7 @@ class Epic7Navigator:
                     f"retry={back_count}/8"
                 )
                 self.runtime.click(back.center, "click-story-back")
-                last_back_at = monotonic()
+                last_back_at = self.now()
                 back_wait_logged = False
                 stable.reset()
                 self.sleep(1.0)
@@ -343,7 +344,7 @@ class Epic7Navigator:
             back_count += 1
             self.runtime.log(f"模式=导航 页面={observation.name} 动作=受控返回 重试={back_count}/8")
             self.runtime.back("受控返回大厅")
-            last_back_at = monotonic()
+            last_back_at = self.now()
             back_wait_logged = False
             stable.reset()
             self.sleep(1.0)

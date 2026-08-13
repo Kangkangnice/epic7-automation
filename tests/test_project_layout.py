@@ -9,7 +9,7 @@ class ProjectLayoutTests(unittest.TestCase):
     def test_epic7_global_fixture_set_exists(self):
         fixture_dir = ROOT / "tests" / "fixtures" / "epic7_global"
         self.assertEqual(
-            {"network_reconnect.png"},
+            {"network_reconnect.png", "network_reconnect_navigation.png"},
             {path.name for path in fixture_dir.glob("*.png")},
         )
 

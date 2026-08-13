@@ -155,16 +155,17 @@ class StoryRunnerTests(unittest.TestCase):
 
         runner = StoryRunner(
             StoryStateMachine(build_story_templates(TEMPLATES)),
-            Runtime(lambda: next(screens), lambda _: None, emit=lambda _: None),
+            Runtime(
+                lambda: next(screens),
+                lambda _: None,
+                emit=lambda _: None,
+                monotonic=lambda: now[0],
+            ),
             sleep=wait,
             recovery=unexpected_recovery,
         )
 
-        with patch(
-            "auto_game_unified.games.epic7.story.monotonic",
-            side_effect=lambda: now[0],
-        ):
-            completed = runner.run(max_cycles=1)
+        completed = runner.run(max_cycles=1)
 
         self.assertEqual(1, completed)
 

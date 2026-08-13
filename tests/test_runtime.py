@@ -8,6 +8,25 @@ from auto_game_unified.core.runtime import ManualStop, Runtime
 
 
 class RuntimeTests(unittest.TestCase):
+    def test_capture_guard_time_is_excluded_from_runtime_clock(self):
+        clock = [10.0]
+        guarded = np.full((3, 4, 3), 127, dtype=np.uint8)
+        runtime = Runtime(
+            lambda: guarded,
+            lambda _: None,
+            monotonic=lambda: clock[0],
+        )
+
+        def guard(runtime, screen):
+            clock[0] += 7.0
+            return screen, True
+
+        runtime.set_capture_guard(guard)
+        before = runtime.now()
+
+        assert np.array_equal(runtime.capture(), guarded)
+        assert runtime.now() == before
+
     def test_p_stop_saves_last_frame_and_prevents_the_next_click(self):
         stop_states = iter([False, True])
         clicks: list[tuple[int, int]] = []
