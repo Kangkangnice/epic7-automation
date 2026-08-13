@@ -267,6 +267,26 @@ def test_unknown_auto_state_never_clicks_and_safely_stops():
     assert gate.locked is False
 
 
+def test_skill_animation_does_not_start_auto_click_confirmation_timeout():
+    transition = BattleObservation(
+        False, False, False, True, AutoBattleState.UNKNOWN
+    )
+    auto = BattleObservation(False, True, False, True, AutoBattleState.AUTO)
+    result = replace(auto, battle_visible=False, result_visible=True)
+    supervisor, gate, observe, clicks, logs, diagnostics = make_supervisor(
+        [transition] * 5 + [auto, auto, result, result],
+        config_overrides={
+            "auto_confirm_seconds": 3,
+            "unrecognized_seconds": 10,
+            "entry_absolute_seconds": 10,
+        },
+    )
+
+    assert supervisor.run(observe, cycle=5) is BattleOutcome.RESULT_REACHED
+    assert clicks == []
+    assert diagnostics == []
+
+
 def test_valid_but_unrecognized_frame_safely_stops_without_recovery():
     unknown = BattleObservation(False, False, False, True, AutoBattleState.UNKNOWN)
     supervisor, gate, observe, clicks, logs, diagnostics = make_supervisor(

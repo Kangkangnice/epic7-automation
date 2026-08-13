@@ -274,6 +274,7 @@ class BattleSupervisor:
                     entry_confirmed
                     and not auto_confirmed
                     and auto_wait_since is None
+                    and observation.battle_visible
                 ):
                     auto_wait_since = current
 
