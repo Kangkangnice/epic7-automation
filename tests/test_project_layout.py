@@ -6,6 +6,13 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class ProjectLayoutTests(unittest.TestCase):
+    def test_epic7_global_fixture_set_exists(self):
+        fixture_dir = ROOT / "tests" / "fixtures" / "epic7_global"
+        self.assertEqual(
+            {"network_reconnect.png"},
+            {path.name for path in fixture_dir.glob("*.png")},
+        )
+
     def test_epic7_arena_fixture_set_exists(self):
         expected = {
             "list.png",
