@@ -203,6 +203,38 @@ def test_network_retry_allowance_resets_after_popup_disappears():
     assert diagnostics == []
 
 
+def test_network_popup_pauses_auto_confirmation_timeout():
+    manual = BattleObservation(
+        False,
+        True,
+        False,
+        True,
+        AutoBattleState.MANUAL,
+        auto_point=(900, 80),
+    )
+    popup = BattleObservation(
+        False,
+        False,
+        False,
+        True,
+        AutoBattleState.UNKNOWN,
+        allowed_action=("retry-network", (960, 740)),
+    )
+    auto = BattleObservation(False, True, False, True, AutoBattleState.AUTO)
+    result = replace(auto, battle_visible=False, result_visible=True)
+    supervisor, gate, observe, clicks, logs, diagnostics = make_supervisor(
+        [manual, manual, popup, popup, popup, popup, auto, auto, result, result],
+        config_overrides={
+            "auto_confirm_seconds": 3,
+            "network_retry_interval_seconds": 2,
+            "network_retry_failure_seconds": 10,
+        },
+    )
+
+    assert supervisor.run(observe, cycle=5) is BattleOutcome.RESULT_REACHED
+    assert diagnostics == []
+
+
 def test_two_dynamic_valid_frames_confirm_entry_after_prep_disappears():
     transition = BattleObservation(
         False,

@@ -206,6 +206,8 @@ class BattleSupervisor:
                 if not network_retry:
                     network_retry_count = 0
                     network_retry_clicked_at = None
+                elif auto_wait_since is not None:
+                    auto_wait_since = current
                 if observation.allowed_action is None:
                     last_allowed_action = None
                 elif network_retry and allowed_confirmed:
