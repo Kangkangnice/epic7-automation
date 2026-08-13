@@ -25,6 +25,8 @@ _WATCH_STORY_REFERENCE_SIZE = (1982, 1132)
 _WATCH_STORY_REGION = (1450, 930, 470, 202)
 _FRIENDSHIP_POINTS_TITLE_REGION = (600, 150, 800, 180)
 _FRIENDSHIP_POINTS_CLOSE_REGION = (750, 840, 450, 190)
+_STORY_SKIP_REGION = (1700, 0, 240, 200)
+_STORY_SKIP_CONFIRM_REGION = (850, 600, 600, 300)
 
 
 def find_friendship_points_popup_close(
@@ -133,6 +135,49 @@ def find_prepare_battle_button(
         return None
     best = max(matches, key=lambda candidate: candidate.score)
     return Match((x + best.center[0], y + best.center[1]), best.score)
+
+
+def find_story_skip_button(
+    screen: np.ndarray, template: np.ndarray
+) -> Optional[Match]:
+    """Find the bright skip glyph without depending on story artwork."""
+    scale_x = screen.shape[1] / _WATCH_STORY_REFERENCE_SIZE[0]
+    scale_y = screen.shape[0] / _WATCH_STORY_REFERENCE_SIZE[1]
+    ref_x, ref_y, ref_width, ref_height = _STORY_SKIP_REGION
+    x, y, width, height = (
+        round(ref_x * scale_x),
+        round(ref_y * scale_y),
+        round(ref_width * scale_x),
+        round(ref_height * scale_y),
+    )
+    search_hsv = cv2.cvtColor(
+        screen[y : y + height, x : x + width], cv2.COLOR_RGB2HSV
+    )
+    template_hsv = cv2.cvtColor(template, cv2.COLOR_RGB2HSV)
+    lower = np.array([0, 0, 120])
+    upper = np.array([179, 70, 255])
+    match = find_template(
+        cv2.inRange(search_hsv, lower, upper),
+        cv2.inRange(template_hsv, lower, upper),
+        0.65,
+        reference_size=(ref_width, ref_height),
+    )
+    if match is None:
+        return None
+    return Match((x + match.center[0], y + match.center[1]), match.score)
+
+
+def find_story_skip_confirm(
+    screen: np.ndarray, template: np.ndarray
+) -> Optional[Match]:
+    """Find the explicit story-skip confirmation button."""
+    return find_template(
+        screen,
+        template,
+        0.80,
+        region=_STORY_SKIP_CONFIRM_REGION,
+        reference_size=_WATCH_STORY_REFERENCE_SIZE,
+    )
 
 
 class StoryState(Enum):
@@ -287,22 +332,9 @@ class StoryStateMachine:
                 self.templates.prepare_battle_updated,
             )
         if name == "skip":
-            x, y, width, height = self._scaled_region(screen, name)
-            search_hsv = cv2.cvtColor(
-                screen[y : y + height, x : x + width], cv2.COLOR_RGB2HSV
-            )
-            template_hsv = cv2.cvtColor(self.templates.skip, cv2.COLOR_RGB2HSV)
-            lower = np.array([0, 0, 120])
-            upper = np.array([179, 70, 255])
-            match = find_template(
-                cv2.inRange(search_hsv, lower, upper),
-                cv2.inRange(template_hsv, lower, upper),
-                0.65,
-                reference_size=(self._REGIONS[name][2], self._REGIONS[name][3]),
-            )
-            if match is None:
-                return None
-            return Match((x + match.center[0], y + match.center[1]), match.score)
+            return find_story_skip_button(screen, self.templates.skip)
+        if name == "skip_confirm":
+            return find_story_skip_confirm(screen, self.templates.skip_confirm)
         if name in ("auto_off", "auto_on"):
             white = (np.array([180, 180, 180]), np.array([255, 255, 255]))
             x, y, width, height = self._scaled_region(screen, name)

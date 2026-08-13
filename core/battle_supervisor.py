@@ -45,6 +45,8 @@ class BattleConfig:
     unrecognized_seconds: float = 45
     black_seconds: float = 45
     auto_confirm_seconds: float = 15
+    allowed_action_retry_seconds: float = 3
+    allowed_action_failure_seconds: float = 15
     heartbeat_seconds: float = 30
 
 
@@ -94,6 +96,8 @@ class BattleSupervisor:
         previous = None
         auto_clicked = False
         last_allowed_action = None
+        allowed_action_clicks = 0
+        allowed_action_clicked_at = None
         entry_confirmed = False
         auto_confirmed = False
         battle_stable = StableObservation(required=2)
@@ -197,14 +201,44 @@ class BattleSupervisor:
                 allowed_confirmed = allowed_stable.update(allowed_signature)
                 if observation.allowed_action is None:
                     last_allowed_action = None
-                elif (
-                    allowed_confirmed
-                    and observation.allowed_action != last_allowed_action
-                ):
-                    action_name, action_point = observation.allowed_action
-                    self.runtime.click(action_point, action_name)
+                    allowed_action_clicks = 0
+                    allowed_action_clicked_at = None
+                elif observation.allowed_action != last_allowed_action:
                     last_allowed_action = observation.allowed_action
-                    business_at = current
+                    allowed_action_clicks = 0
+                    allowed_action_clicked_at = None
+                if allowed_confirmed and observation.allowed_action is not None:
+                    action_name, action_point = observation.allowed_action
+                    since_click = (
+                        None
+                        if allowed_action_clicked_at is None
+                        else current - allowed_action_clicked_at
+                    )
+                    should_click = allowed_action_clicks == 0 or (
+                        allowed_action_clicks == 1
+                        and since_click is not None
+                        and since_click >= self.config.allowed_action_retry_seconds
+                    )
+                    if should_click:
+                        allowed_action_clicks += 1
+                        self.runtime.log(
+                            f"mode={self.config.mode} cycle={cycle} "
+                            f"phase=battle action={action_name} "
+                            f"attempt={allowed_action_clicks}/2"
+                        )
+                        self.runtime.click(action_point, action_name)
+                        allowed_action_clicked_at = current
+                        business_at = current
+                    elif (
+                        allowed_action_clicks >= 2
+                        and since_click is not None
+                        and since_click >= self.config.allowed_action_failure_seconds
+                    ):
+                        self._fail(
+                            f"allowed_action_{action_name}_failed",
+                            f"{action_name} remained visible after 2 clicks",
+                            screen,
+                        )
 
                 if (
                     stable_auto

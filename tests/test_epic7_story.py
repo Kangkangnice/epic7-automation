@@ -47,6 +47,15 @@ class Epic7StoryStateMachineTests(unittest.TestCase):
         self.assertEqual("skip", story.allowed_action[0])
         self.assertEqual("skip_confirm", skip_confirm.allowed_action[0])
 
+    def test_battle_adapter_recognizes_persisted_live_skip_confirmation(self):
+        machine = StoryStateMachine(build_story_templates(TEMPLATES))
+
+        observation = machine.observe_battle(
+            load_fixture("skip_confirm_persisted_live_20260813"), None
+        )
+
+        self.assertEqual("skip_confirm", observation.allowed_action[0])
+
     def test_friendship_points_popup_requires_title_and_close_anchor(self):
         popup = load_fixture("friendship_points_popup")
         title = np.asarray(

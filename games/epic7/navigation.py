@@ -14,6 +14,8 @@ from auto_game_unified.games.epic7.arena import find_rank_promotion_confirm
 from auto_game_unified.games.epic7.story import (
     find_friendship_points_popup_close,
     find_prepare_battle_button,
+    find_story_skip_button,
+    find_story_skip_confirm,
     find_watch_story_button,
 )
 
@@ -25,6 +27,12 @@ REFERENCE_SIZE = (1982, 1132)
 class PageObservation:
     name: str
     confidence: float
+
+
+@dataclass
+class _StoryRecoveryAttempts:
+    action: str | None = None
+    clicks: int = 0
 
 
 @dataclass(frozen=True)
@@ -45,6 +53,8 @@ class NavigationTemplates:
     novice_arena: np.ndarray
     story_back: np.ndarray
     story_watch: np.ndarray
+    story_skip: np.ndarray
+    story_skip_confirm: np.ndarray
     story_ready: np.ndarray
     story_ready_updated: np.ndarray
     arena_ready: np.ndarray
@@ -81,6 +91,10 @@ def build_navigation_templates(template_root: Path) -> NavigationTemplates:
         novice_arena=load_template(str(navigation / "novice_arena.png")),
         story_back=load_template(str(navigation / "story_back.png")),
         story_watch=load_template(str(template_root / "story" / "watch_story.png")),
+        story_skip=load_template(str(template_root / "story" / "skip.png")),
+        story_skip_confirm=load_template(
+            str(template_root / "story" / "skip_confirm.png")
+        ),
         story_ready=load_template(str(template_root / "story" / "prepare_battle.png")),
         story_ready_updated=load_template(
             str(template_root / "story" / "prepare_battle_updated.png")
@@ -175,17 +189,26 @@ class Epic7Navigator:
         if rank_confirm is not None:
             return PageObservation("arena_rank_promotion", rank_confirm.score)
 
-        exit_title = self._locate(screen, "exit_title")
+        exit_title = self._locate(screen, "exit_title", 0.90)
         exit_cancel = self._locate(screen, "exit_cancel")
         if exit_title and exit_cancel:
             return PageObservation("exit_dialog", min(exit_title.score, exit_cancel.score))
-        exit_title_updated = self._locate(screen, "exit_title_updated")
+        exit_title_updated = self._locate(screen, "exit_title_updated", 0.90)
         exit_cancel_updated = self._locate(screen, "exit_cancel_updated")
         if exit_title_updated and exit_cancel_updated:
             return PageObservation(
                 "exit_dialog",
                 min(exit_title_updated.score, exit_cancel_updated.score),
             )
+
+        story_skip_confirm = find_story_skip_confirm(
+            screen, self.templates.story_skip_confirm
+        )
+        if story_skip_confirm is not None:
+            return PageObservation("story_skip_confirm", story_skip_confirm.score)
+        story_skip = find_story_skip_button(screen, self.templates.story_skip)
+        if story_skip is not None:
+            return PageObservation("story_playing", story_skip.score)
 
         lobby = [
             self._locate(screen, "lobby_story", 0.80),
@@ -266,6 +289,40 @@ class Epic7Navigator:
         self.runtime.click(close.center, action)
         return True
 
+    def _recover_story(
+        self,
+        screen: np.ndarray,
+        observation: PageObservation,
+        attempts: _StoryRecoveryAttempts,
+    ) -> bool:
+        if observation.name == "story_playing":
+            match = find_story_skip_button(screen, self.templates.story_skip)
+            action = "skip-story-during-navigation"
+        elif observation.name == "story_skip_confirm":
+            match = find_story_skip_confirm(screen, self.templates.story_skip_confirm)
+            action = "confirm-story-skip-during-navigation"
+        else:
+            attempts.action = None
+            attempts.clicks = 0
+            return False
+        if match is None:
+            raise RuntimeError(f"{observation.name} lost its required action anchor")
+        if attempts.action != observation.name:
+            attempts.action = observation.name
+            attempts.clicks = 0
+        if attempts.clicks >= 2:
+            diagnostic = self._diagnostic(f"{observation.name}_recovery_failed")
+            raise RuntimeError(
+                f"{observation.name} remained visible after 2 clicks; saved {diagnostic}"
+            )
+        attempts.clicks += 1
+        self.runtime.log(
+            f"mode=navigation page={observation.name} action={action} "
+            f"attempt={attempts.clicks}/2 confidence={match.score:.3f}"
+        )
+        self.runtime.click(match.center, action)
+        return True
+
     def return_home(self) -> np.ndarray:
         self.runtime.log("模式=导航 目标=大厅 状态=开始")
         stable = StableObservation(required=2)
@@ -273,6 +330,7 @@ class Epic7Navigator:
         last_back_at: Optional[float] = None
         back_wait_logged = False
         invalid_count = 0
+        story_recovery = _StoryRecoveryAttempts()
         for _ in range(self.transition_frames * 4):
             screen, observation = self._capture()
             is_stable = stable.update(observation.name)
@@ -288,6 +346,12 @@ class Epic7Navigator:
                 self.sleep(self.poll_seconds)
                 continue
             if self._dismiss_global_popup(screen, observation):
+                last_back_at = None
+                back_wait_logged = False
+                stable.reset()
+                self.sleep(1.0)
+                continue
+            if self._recover_story(screen, observation, story_recovery):
                 last_back_at = None
                 back_wait_logged = False
                 stable.reset()
@@ -417,11 +481,18 @@ class Epic7Navigator:
             click_point = (match.center[0] + offset[0], match.center[1] + offset[1])
             self.runtime.click(click_point, action)
             stable = StableObservation(required=2)
+            story_recovery = _StoryRecoveryAttempts()
             last_source: Optional[np.ndarray] = None
             for _ in range(self.transition_frames):
                 screen, observation = self._capture()
                 is_stable = stable.update(observation.name)
                 if is_stable and self._dismiss_global_popup(screen, observation):
+                    stable.reset()
+                    self.sleep(1.0)
+                    continue
+                if is_stable and self._recover_story(
+                    screen, observation, story_recovery
+                ):
                     stable.reset()
                     self.sleep(1.0)
                     continue
@@ -443,10 +514,17 @@ class Epic7Navigator:
 
     def _wait_for_page(self, expected: str) -> np.ndarray:
         stable = StableObservation(required=2)
+        story_recovery = _StoryRecoveryAttempts()
         for _ in range(self.transition_frames):
             screen, observation = self._capture()
             is_stable = stable.update(observation.name)
             if is_stable and self._dismiss_global_popup(screen, observation):
+                stable.reset()
+                self.sleep(1.0)
+                continue
+            if is_stable and self._recover_story(
+                screen, observation, story_recovery
+            ):
                 stable.reset()
                 self.sleep(1.0)
                 continue

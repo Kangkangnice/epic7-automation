@@ -44,6 +44,7 @@ class ProjectLayoutTests(unittest.TestCase):
             "stage_prepare_battle_ep5.png",
             "friendship_points_popup.png",
             "skip_confirm.png",
+            "skip_confirm_persisted_live_20260813.png",
             "stamina_popup_live_20260809.png",
             "battle.png",
             "battle_variant.png",
