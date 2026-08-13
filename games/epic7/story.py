@@ -19,6 +19,11 @@ from auto_game_unified.core.matcher import Match, find_template, load_template
 from auto_game_unified.core.recovery import RecoveryGate
 from auto_game_unified.core.runtime import Runtime, StaminaExhausted
 from auto_game_unified.core.supervisor import StableObservation, meaningful_change
+from auto_game_unified.games.epic7.global_popups import (
+    NetworkReconnectTemplates,
+    find_network_retry,
+    load_network_reconnect_templates,
+)
 
 
 _WATCH_STORY_REFERENCE_SIZE = (1982, 1132)
@@ -183,6 +188,7 @@ class StoryTemplates:
     stamina_popup: Optional[np.ndarray] = None
     stamina_material: Optional[np.ndarray] = None
     stamina_confirm: Optional[np.ndarray] = None
+    network_reconnect: NetworkReconnectTemplates | None = None
 
 
 def _load_optional(template_dir: Path, name: str) -> Optional[np.ndarray]:
@@ -225,6 +231,7 @@ def build_story_templates(template_dir: Path) -> StoryTemplates:
         stamina_popup=_load_optional(template_dir, "stamina_popup"),
         stamina_material=_load_optional(template_dir, "stamina_material"),
         stamina_confirm=_load_optional(template_dir, "stamina_confirm"),
+        network_reconnect=load_network_reconnect_templates(global_templates),
     )
 
 
@@ -422,18 +429,28 @@ class StoryStateMachine:
         previous_screen: np.ndarray | None,
     ) -> BattleObservation:
         controls = self.observe_battle_controls(screen)
+        network_retry = (
+            find_network_retry(screen, self.templates.network_reconnect)
+            if self.templates.network_reconnect is not None
+            else None
+        )
         auto_state = {
             BattleControls.AUTO_CONTROLS: AutoBattleState.AUTO,
             BattleControls.MANUAL_CONTROLS: AutoBattleState.MANUAL,
             BattleControls.TRANSITION: AutoBattleState.UNKNOWN,
         }[controls]
         auto_match = self._locate(screen, "auto_off")
-        allowed_action = None
-        for action_name in ("skip_confirm", "skip", "watch_story"):
-            match = self._locate(screen, action_name)
-            if match is not None:
-                allowed_action = (action_name, match.center)
-                break
+        allowed_action = (
+            ("retry-network", network_retry.center)
+            if network_retry is not None
+            else None
+        )
+        if allowed_action is None:
+            for action_name in ("skip_confirm", "skip", "watch_story"):
+                match = self._locate(screen, action_name)
+                if match is not None:
+                    allowed_action = (action_name, match.center)
+                    break
         progressing = (
             auto_state is AutoBattleState.AUTO
             and meaningful_change(previous_screen, screen)

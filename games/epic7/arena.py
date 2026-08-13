@@ -21,6 +21,11 @@ from auto_game_unified.core.matcher import Match, find_template, load_template
 from auto_game_unified.core.recovery import RecoveryGate
 from auto_game_unified.core.runtime import Runtime
 from auto_game_unified.core.supervisor import StableObservation, meaningful_change
+from auto_game_unified.games.epic7.global_popups import (
+    NetworkReconnectTemplates,
+    find_network_retry,
+    load_network_reconnect_templates,
+)
 
 
 _RANK_PROMOTION_REFERENCE_SIZE = (1982, 1132)
@@ -113,6 +118,7 @@ class ArenaTemplates:
     friendship_ticket_offer: np.ndarray
     ticket_purchase_button: np.ndarray
     threshold: float = 0.98
+    network_reconnect: NetworkReconnectTemplates | None = None
 
 
 def build_templates(template_dir: Path) -> ArenaTemplates:
@@ -129,6 +135,7 @@ def build_templates(template_dir: Path) -> ArenaTemplates:
         no_ticket=load_template(str(template_dir / "no_ticket.png")),
         friendship_ticket_offer=load_template(str(template_dir / "friendship_ticket_offer.png")),
         ticket_purchase_button=load_template(str(template_dir / "ticket_purchase_button.png")),
+        network_reconnect=load_network_reconnect_templates(template_dir / "global"),
     )
 
 
@@ -330,6 +337,11 @@ class ArenaStateMachine:
         previous_screen: np.ndarray | None,
     ) -> BattleObservation:
         start = self._locate(screen, "battle_start")
+        network_retry = (
+            find_network_retry(screen, self.templates.network_reconnect)
+            if self.templates.network_reconnect is not None
+            else None
+        )
         manual = self._locate(screen, "auto_off")
         result = self._locate(screen, "confirm")
         no_ticket = self._locate(screen, "no_ticket")
@@ -351,6 +363,11 @@ class ArenaStateMachine:
             ),
             auto_point=None if manual is None else manual.center,
             business_progress=progressing,
+            allowed_action=(
+                ("retry-network", network_retry.center)
+                if network_retry is not None
+                else None
+            ),
             pre_battle_business_visible=no_ticket is not None,
         )
 
