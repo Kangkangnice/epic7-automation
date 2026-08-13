@@ -143,6 +143,62 @@ def test_mode_whitelist_action_is_clicked_once_until_it_disappears():
     assert clicks == [((640, 80), "skip")]
 
 
+def test_persisted_allowed_action_is_retried_once_before_result():
+    auto = BattleObservation(False, True, False, True, AutoBattleState.AUTO)
+    story = BattleObservation(
+        False,
+        False,
+        False,
+        True,
+        AutoBattleState.UNKNOWN,
+        business_progress=True,
+        allowed_action=("skip_confirm", (640, 500)),
+    )
+    result = BattleObservation(
+        False, False, True, True, AutoBattleState.UNKNOWN
+    )
+    supervisor, gate, observe, clicks, logs, diagnostics = make_supervisor(
+        [auto, auto] + [story] * 6 + [result, result],
+        config_overrides={"entry_absolute_seconds": 12},
+    )
+
+    assert supervisor.run(observe, cycle=3) is BattleOutcome.RESULT_REACHED
+    assert clicks == [
+        ((640, 500), "skip_confirm"),
+        ((640, 500), "skip_confirm"),
+    ]
+    assert diagnostics == []
+
+
+def test_persisted_allowed_action_stops_after_two_failed_clicks():
+    auto = BattleObservation(False, True, False, True, AutoBattleState.AUTO)
+    story = BattleObservation(
+        False,
+        False,
+        False,
+        True,
+        AutoBattleState.UNKNOWN,
+        business_progress=True,
+        allowed_action=("skip_confirm", (640, 500)),
+    )
+    supervisor, gate, observe, clicks, logs, diagnostics = make_supervisor(
+        [auto, auto] + [story] * 20,
+        config_overrides={
+            "entry_absolute_seconds": 20,
+            "allowed_action_retry_seconds": 1,
+            "allowed_action_failure_seconds": 2,
+        },
+    )
+
+    with pytest.raises(RuntimeError, match="remained visible after 2 clicks"):
+        supervisor.run(observe, cycle=3)
+    assert clicks == [
+        ((640, 500), "skip_confirm"),
+        ((640, 500), "skip_confirm"),
+    ]
+    assert diagnostics == ["allowed_action_skip_confirm_failed"]
+
+
 def test_two_dynamic_valid_frames_confirm_entry_after_prep_disappears():
     transition = BattleObservation(
         False,

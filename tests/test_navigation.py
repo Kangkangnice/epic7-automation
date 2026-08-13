@@ -188,6 +188,50 @@ class NavigationTests(unittest.TestCase):
 
         self.assertEqual("story_ready", observation.name)
 
+    def test_classifies_live_story_playback_during_startup_recovery(self):
+        navigator = self.navigator([])
+
+        observation = navigator.observe(fixture("story_playing_live_20260813"))
+
+        self.assertEqual("story_playing", observation.name)
+
+    def test_classifies_live_story_skip_confirmation_as_story_not_exit(self):
+        navigator = self.navigator([])
+
+        observation = navigator.observe(
+            story_fixture("skip_confirm_persisted_live_20260813")
+        )
+
+        self.assertEqual("story_skip_confirm", observation.name)
+
+    def test_return_home_finishes_story_skip_before_using_game_back(self):
+        clicks: list[tuple[int, int]] = []
+        backs: list[bool] = []
+        playing = fixture("story_playing_live_20260813")
+        confirm = story_fixture("skip_confirm_persisted_live_20260813")
+        navigator = self.navigator(
+            [
+                playing,
+                playing,
+                confirm,
+                confirm,
+                fixture("story_stage"),
+                fixture("story_stage"),
+                fixture("lobby"),
+                fixture("lobby"),
+            ],
+            clicks=clicks,
+            backs=backs,
+        )
+
+        navigator.return_home()
+
+        self.assertEqual(3, len(clicks))
+        self.assertGreater(clicks[0][0], 1700)
+        self.assertGreater(clicks[1][0], 850)
+        self.assertLess(clicks[2][0], 120)
+        self.assertEqual([], backs)
+
     def test_story_navigation_confirms_latest_episode4_destination(self):
         clicks: list[tuple[int, int]] = []
         navigator = self.navigator(
