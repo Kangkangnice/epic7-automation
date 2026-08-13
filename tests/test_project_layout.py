@@ -49,6 +49,7 @@ class ProjectLayoutTests(unittest.TestCase):
             "battle_variant.png",
             "battle_auto_off_live_20260809.png",
             "battle_auto_on_live_20260809.png",
+            "skill_animation_live_20260813.png",
             "friend_request.png",
             "reward.png",
             "clear.png",
