@@ -15,6 +15,7 @@ auto_game_unified/
 │  ├─ arena.py            # 竞技场状态机和 Runner
 │  ├─ story.py            # 主线状态机和 Runner
 │  ├─ expedition.py       # 远征状态机和 Runner
+│  ├─ fodder.py           # 狗粮 Episode 3-7 状态机和 Runner
 │  ├─ modes.py            # 模式注册、默认状态和构建器
 │  └─ templates/          # 线上识别使用的局部模板
 ├─ tests/
@@ -72,6 +73,7 @@ auto_game_unified/
 - 竞技场：回到对手列表。
 - 主线：处理完剧情、奖励、好友申请和结算，重新出现下一关入口。
 - 远征：回到远征主页并看到“我的通缉传单”。动态传单角标不参与识别。
+- 狗粮：结算确认后重新出现“重新进行”；达到目标轮数时不点击该按钮。
 
 这样可以避免点击未生效、加载卡住或额外弹窗出现时产生虚假计数。
 

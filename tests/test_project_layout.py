@@ -66,6 +66,23 @@ class ProjectLayoutTests(unittest.TestCase):
         fixture_dir = ROOT / "tests" / "fixtures" / "epic7_story"
         self.assertEqual(expected, {path.name for path in fixture_dir.glob("*.png")})
 
+    def test_epic7_fodder_fixture_set_exists(self):
+        expected = {
+            "side_story.png",
+            "special_book.png",
+            "episode_detail.png",
+            "stage_3_7.png",
+            "assistant.png",
+            "team.png",
+            "battle.png",
+            "clear.png",
+            "results.png",
+            "replay.png",
+            "replay_assistant.png",
+        }
+        fixture_dir = ROOT / "tests" / "fixtures" / "epic7_fodder"
+        self.assertEqual(expected, {path.name for path in fixture_dir.glob("*.png")})
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -22,6 +22,11 @@ def story_fixture(name: str):
     return cv2.cvtColor(cv2.imread(str(path)), cv2.COLOR_BGR2RGB)
 
 
+def fodder_fixture(name: str):
+    path = ROOT / "tests" / "fixtures" / "epic7_fodder" / f"{name}.png"
+    return cv2.cvtColor(cv2.imread(str(path)), cv2.COLOR_BGR2RGB)
+
+
 class NavigationTests(unittest.TestCase):
     def test_classifies_friendship_points_popup(self):
         navigator = self.navigator([])
@@ -464,6 +469,55 @@ class NavigationTests(unittest.TestCase):
 
         self.assertIsNone(error)
         self.assertEqual([(1827, 531), (1080, 357)], clicks)
+
+    def test_classifies_recorded_fodder_navigation_pages(self):
+        navigator = self.navigator([])
+
+        self.assertEqual("lobby", navigator.observe(fixture("lobby_fodder")).name)
+        self.assertEqual(
+            "fodder_side_story", navigator.observe(fodder_fixture("side_story")).name
+        )
+        self.assertEqual(
+            "fodder_special_book", navigator.observe(fodder_fixture("special_book")).name
+        )
+        self.assertEqual(
+            "fodder_episode_detail",
+            navigator.observe(fodder_fixture("episode_detail")).name,
+        )
+        self.assertEqual(
+            "fodder_stage", navigator.observe(fodder_fixture("stage_3_7")).name
+        )
+
+    def test_fodder_stage_requires_both_3_7_title_and_prepare_button(self):
+        navigator = self.navigator([])
+        without_title = fodder_fixture("stage_3_7").copy()
+        without_title[760:850, 850:1075] = 0
+
+        self.assertNotEqual("fodder_stage", navigator.observe(without_title).name)
+
+    def test_fodder_navigation_uses_verified_four_step_route(self):
+        clicks: list[tuple[int, int]] = []
+        navigator = self.navigator(
+            [
+                fodder_fixture("side_story"), fodder_fixture("side_story"),
+                fodder_fixture("special_book"), fodder_fixture("special_book"),
+                fodder_fixture("episode_detail"), fodder_fixture("episode_detail"),
+                fodder_fixture("stage_3_7"), fodder_fixture("stage_3_7"),
+            ],
+            clicks=clicks,
+        )
+
+        navigator.navigate("fodder", lobby_screen=fixture("lobby_fodder"))
+
+        self.assertEqual(4, len(clicks))
+        self.assertTrue(1700 <= clicks[0][0] <= 1915)
+        self.assertTrue(380 <= clicks[0][1] <= 500)
+        self.assertTrue(1520 <= clicks[1][0] <= 1905)
+        self.assertTrue(900 <= clicks[1][1] <= 1010)
+        self.assertTrue(790 <= clicks[2][0] <= 1290)
+        self.assertTrue(995 <= clicks[2][1] <= 1105)
+        self.assertTrue(1390 <= clicks[3][0] <= 1890)
+        self.assertTrue(990 <= clicks[3][1] <= 1105)
 
     def test_black_frames_never_trigger_click_or_back(self):
         import numpy as np
