@@ -84,6 +84,26 @@ class FodderStateMachineTests(unittest.TestCase):
         self.assertEqual(FodderState.REPLAY, machine.state)
         self.assertEqual(0, machine.completed_cycles)
 
+    def test_unchanged_forward_page_repeats_the_same_action(self):
+        machine = self.machine()
+
+        prepare = [
+            machine.next_action(fixture("stage_3_7")).name,
+            machine.next_action(fixture("stage_3_7")).name,
+        ]
+        select_team = [
+            machine.next_action(fixture("assistant")).name,
+            machine.next_action(fixture("assistant")).name,
+        ]
+        start_battle = [
+            machine.next_action(fixture("team")).name,
+            machine.next_action(fixture("team")).name,
+        ]
+
+        self.assertEqual(["prepare_battle", "prepare_battle"], prepare)
+        self.assertEqual(["select_team", "select_team"], select_team)
+        self.assertEqual(["start_battle", "start_battle"], start_battle)
+
     def test_battle_observation_reuses_shared_auto_controls_and_result_anchor(self):
         machine = self.machine()
 
@@ -95,17 +115,42 @@ class FodderStateMachineTests(unittest.TestCase):
         self.assertFalse(battle.result_visible)
         self.assertTrue(clear.result_visible)
 
+    def test_battle_supervisor_can_retry_start_and_handoff_stamina_popup(self):
+        machine = self.machine()
+
+        team = machine.observe_battle(fixture("team"), None)
+        stamina = machine.observe_battle(
+            story_fixture("stamina_popup_live_20260809"), None
+        )
+
+        self.assertTrue(team.pre_battle_visible)
+        self.assertEqual(
+            (
+                "start_battle",
+                machine._locate(fixture("team"), "battle_start").center,
+            ),
+            team.allowed_action,
+        )
+        self.assertTrue(stamina.pre_battle_business_visible)
+        self.assertIsNone(stamina.allowed_action)
+
     def test_stamina_popup_only_selects_leaf_then_confirms(self):
         machine = self.machine()
         popup = story_fixture("stamina_popup_live_20260809")
 
         first = machine.next_action(popup)
         second = machine.next_action(popup)
+        repeated = machine.next_action(popup)
 
         self.assertEqual("stamina_material", first.name)
         self.assertEqual("stamina_confirm", second.name)
+        self.assertEqual("stamina_confirm", repeated.name)
         self.assertLess(first.point[0], 1000)
         self.assertGreater(second.point[0], 900)
+        self.assertEqual(0, machine.stamina_replenished)
+
+        machine.next_action(fixture("stage_3_7"))
+
         self.assertEqual(1, machine.stamina_replenished)
 
     def test_missing_leaf_offer_is_resource_exhaustion_not_a_sky_stone_click(self):

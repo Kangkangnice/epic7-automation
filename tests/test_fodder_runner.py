@@ -9,6 +9,7 @@ import numpy as np
 from auto_game_unified.core.battle_supervisor import BattleOutcome
 from auto_game_unified.core.runtime import Runtime, StaminaExhausted
 from auto_game_unified.games.epic7.fodder import (
+    FodderAction,
     FodderRunner,
     FodderState,
     FodderStateMachine,
@@ -61,6 +62,55 @@ class FodderRunnerTests(unittest.TestCase):
         supervisor.run.assert_called_once_with(machine.observe_battle, cycle=1)
         self.assertEqual(FodderState.RESULTS, machine.state)
 
+    def test_pre_battle_stamina_handoff_keeps_battle_state(self):
+        machine = MagicMock()
+        machine.state = FodderState.BATTLE
+        supervisor = MagicMock()
+        supervisor.run.return_value = BattleOutcome.PRE_BATTLE_BUSINESS
+        runner = FodderRunner(
+            machine,
+            Runtime(
+                lambda: np.zeros((1132, 1982, 3), dtype=np.uint8),
+                lambda _: None,
+            ),
+            sleep=lambda _: None,
+            battle_supervisor=supervisor,
+        )
+
+        runner._run_committed_battle(cycle=1)
+
+        self.assertEqual(FodderState.BATTLE, machine.state)
+
+    def test_visible_battle_after_business_handoff_resumes_supervision_without_click(self):
+        machine = MagicMock()
+        machine.state = FodderState.BATTLE
+        machine.completed_cycles = 0
+        machine.preview.return_value = (None, (FodderState.BATTLE, 0))
+        machine.next_action.return_value = None
+        supervisor = MagicMock()
+
+        def finish_cycle(*args, **kwargs):
+            machine.completed_cycles = 1
+            return BattleOutcome.RESULT_REACHED
+
+        supervisor.run.side_effect = finish_cycle
+        clicks = []
+        runner = FodderRunner(
+            machine,
+            Runtime(
+                lambda: np.zeros((1132, 1982, 3), dtype=np.uint8),
+                clicks.append,
+            ),
+            sleep=lambda _: None,
+            battle_supervisor=supervisor,
+        )
+
+        completed = runner.run(max_cycles=1)
+
+        self.assertEqual(1, completed)
+        self.assertEqual([], clicks)
+        supervisor.run.assert_called_once_with(machine.observe_battle, cycle=1)
+
     def test_target_cycle_is_counted_without_clicking_replay(self):
         clicks: list[tuple[int, int]] = []
         logs: list[str] = []
@@ -76,7 +126,8 @@ class FodderRunnerTests(unittest.TestCase):
         completed = runner.run(max_cycles=1)
 
         self.assertEqual(1, completed)
-        self.assertEqual(5, len(clicks))
+        self.assertEqual(4, len(clicks))
+        self.assertFalse(any("action=start_battle point=" in line for line in logs))
         self.assertFalse(any("action=replay point=" in line for line in logs))
         supervisor.run.assert_called_once()
 
@@ -98,7 +149,7 @@ class FodderRunnerTests(unittest.TestCase):
         completed = runner.run(max_cycles=2)
 
         self.assertEqual(2, completed)
-        self.assertEqual(10, len(clicks))
+        self.assertEqual(8, len(clicks))
         self.assertEqual(1, sum("action=replay point=" in line for line in logs))
         self.assertEqual(2, supervisor.run.call_count)
 
@@ -121,6 +172,31 @@ class FodderRunnerTests(unittest.TestCase):
 
         self.assertEqual(0, completed)
         self.assertTrue(runner.resource_exhausted)
+
+    def test_stamina_confirm_persisting_after_two_clicks_is_resource_exhaustion(self):
+        machine = MagicMock()
+        machine.state = FodderState.BATTLE
+        machine.completed_cycles = 0
+        action = FodderAction("stamina_confirm", (1, 1))
+        machine.preview.return_value = (action, (FodderState.BATTLE, 0))
+        machine.next_action.return_value = action
+        clicks = []
+        runner = FodderRunner(
+            machine,
+            Runtime(
+                lambda: np.zeros((10, 10, 3), dtype=np.uint8),
+                clicks.append,
+                emit=lambda _: None,
+            ),
+            sleep=lambda _: None,
+        )
+        runner._ACTION_RETRY_SECONDS = 0
+
+        completed = runner.run(max_cycles=1)
+
+        self.assertEqual(0, completed)
+        self.assertTrue(runner.resource_exhausted)
+        self.assertEqual(2, len(clicks))
 
     def test_dry_run_rejects_unknown_screen_without_polling(self):
         sleeps: list[float] = []
