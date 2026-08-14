@@ -43,6 +43,8 @@ def observe_battle_controls(screen: np.ndarray) -> BattleControls:
             (int(round(x)) + roi_x, int(round(y)) + roi_y, int(round(radius)))
             for x, y, radius in detected[0]
         ]
+    if len(circles) > 8:
+        return BattleControls.TRANSITION
 
     def aligned_count(
         expected_xs: tuple[int, ...],
@@ -62,7 +64,7 @@ def observe_battle_controls(screen: np.ndarray) -> BattleControls:
         )
 
     hsv = cv2.cvtColor(frame, cv2.COLOR_RGB2HSV)
-    blue_bases = []
+    auto_bases = []
     for center_x in _AUTO_CONTROL_CENTERS:
         slot = hsv[1060:1132, center_x - 50 : center_x + 50]
         blue = (
@@ -71,10 +73,17 @@ def observe_battle_controls(screen: np.ndarray) -> BattleControls:
             & (slot[:, :, 1] >= 100)
             & (slot[:, :, 2] >= 70)
         )
-        blue_bases.append(float(np.mean(blue)) >= 0.40)
+        red = (
+            ((slot[:, :, 0] <= 10) | (slot[:, :, 0] >= 170))
+            & (slot[:, :, 1] >= 100)
+            & (slot[:, :, 2] >= 45)
+        )
+        auto_bases.append(
+            float(np.mean(blue)) >= 0.40 or float(np.mean(red)) >= 0.25
+        )
 
-    if all(blue_bases) and aligned_count(
-        _AUTO_CONTROL_CENTERS, 1025, (40, 58), 28
+    if all(auto_bases) and aligned_count(
+        _AUTO_CONTROL_CENTERS, 1047, (40, 60), 30
     ) >= 3:
         return BattleControls.AUTO_CONTROLS
 

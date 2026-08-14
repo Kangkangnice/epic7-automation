@@ -80,11 +80,14 @@ class ExpeditionStateMachineTests(unittest.TestCase):
         manual = machine.observe_battle(
             recorded_screen("battle_manual_waiting_live"), None
         )
+        automatic = machine.observe_battle(recorded_screen("battle"), None)
         result = machine.observe_battle(recorded_screen("result"), None)
 
         self.assertTrue(team.pre_battle_visible)
         self.assertEqual(AutoBattleState.MANUAL, manual.auto_state)
         self.assertIsNotNone(manual.auto_point)
+        self.assertEqual(AutoBattleState.AUTO, automatic.auto_state)
+        self.assertTrue(automatic.battle_visible)
         self.assertTrue(result.result_visible)
 
     def test_battle_adapter_treats_dynamic_valid_frames_as_progress_without_hud(self):
@@ -98,9 +101,9 @@ class ExpeditionStateMachineTests(unittest.TestCase):
 
         observation = machine.observe_battle(after, before)
 
-        self.assertTrue(observation.battle_visible)
+        self.assertFalse(observation.battle_visible)
         self.assertTrue(observation.business_progress)
-        self.assertEqual(AutoBattleState.AUTO, observation.auto_state)
+        self.assertEqual(AutoBattleState.UNKNOWN, observation.auto_state)
 
     def test_home_opens_my_wanted_posters(self):
         machine = self.machine()

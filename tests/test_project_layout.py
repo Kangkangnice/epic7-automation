@@ -19,6 +19,8 @@ class ProjectLayoutTests(unittest.TestCase):
             "selected.png",
             "team.png",
             "battle.png",
+            "battle_auto_dead_one_live_20260814.png",
+            "battle_auto_dead_three_live_20260814.png",
             "battle_manual_stuck_live_20260814.png",
             "result.png",
             "rank_confirm.png",

@@ -21,6 +21,10 @@ from auto_game_unified.core.matcher import Match, find_template, load_template
 from auto_game_unified.core.recovery import RecoveryGate
 from auto_game_unified.core.runtime import Runtime
 from auto_game_unified.core.supervisor import StableObservation, meaningful_change
+from auto_game_unified.games.epic7.battle_controls import (
+    BattleControls,
+    observe_battle_controls,
+)
 
 
 class ExpeditionState(Enum):
@@ -289,6 +293,12 @@ class ExpeditionStateMachine:
         screen: np.ndarray,
         previous_screen: np.ndarray | None,
     ) -> BattleObservation:
+        controls = observe_battle_controls(screen)
+        auto_state = {
+            BattleControls.AUTO_CONTROLS: AutoBattleState.AUTO,
+            BattleControls.MANUAL_CONTROLS: AutoBattleState.MANUAL,
+            BattleControls.TRANSITION: AutoBattleState.UNKNOWN,
+        }[controls]
         auto = self._locate(screen, "auto_off")
         battle = self._locate(screen, "battle_anchor")
         result = self._locate(screen, "result_confirm")
@@ -298,17 +308,18 @@ class ExpeditionStateMachine:
         )
         return BattleObservation(
             pre_battle_visible=self._locate(screen, "battle_start") is not None,
-            battle_visible=battle is not None or auto is not None or progressing,
+            battle_visible=(
+                battle is not None
+                or controls is not BattleControls.TRANSITION
+            ),
             result_visible=result is not None,
             frame_valid=valid_game_frame(screen),
-            auto_state=(
-                AutoBattleState.MANUAL
-                if auto is not None
-                else AutoBattleState.AUTO
-                if progressing
-                else AutoBattleState.UNKNOWN
+            auto_state=auto_state,
+            auto_point=(
+                auto.center
+                if auto is not None and auto_state is AutoBattleState.MANUAL
+                else None
             ),
-            auto_point=None if auto is None else auto.center,
             business_progress=progressing,
         )
 
