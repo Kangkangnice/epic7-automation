@@ -11,7 +11,7 @@ from auto_game_unified.games.epic7.modes import get_mode
 
 class MainStoryTests(unittest.TestCase):
     def test_live_modes_install_one_global_popup_guard_before_navigation(self):
-        for mode in ("story", "arena", "expedition"):
+        for mode in ("story", "arena", "expedition", "fodder"):
             with self.subTest(mode=mode):
                 runtime = unittest.mock.MagicMock()
                 runner_type = unittest.mock.MagicMock()
@@ -119,6 +119,17 @@ class MainStoryTests(unittest.TestCase):
         self.assertEqual(0, exit_code)
         self.assertEqual("story", call.kwargs["spec"].name)
         self.assertEqual(True, call.kwargs["dry_run"])
+        self.assertEqual(2, call.kwargs["max_cycles"])
+        self.assertEqual("stage", call.kwargs["start_state"])
+
+    def test_fodder_mode_dispatches_to_fodder_runner(self):
+        with patch.object(main_module, "run_mode", return_value=RunResult(0)) as run_fodder:
+            exit_code = main_module.main(["--mode", "fodder", "--max-cycles", "2"])
+
+        call = run_fodder.call_args
+        self.assertEqual(0, exit_code)
+        self.assertEqual("fodder", call.kwargs["spec"].name)
+        self.assertTrue(call.kwargs["dry_run"])
         self.assertEqual(2, call.kwargs["max_cycles"])
         self.assertEqual("stage", call.kwargs["start_state"])
 

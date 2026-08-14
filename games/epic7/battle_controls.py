@@ -82,7 +82,7 @@ def observe_battle_controls(screen: np.ndarray) -> BattleControls:
             float(np.mean(blue)) >= 0.40 or float(np.mean(red)) >= 0.25
         )
 
-    if all(auto_bases) and aligned_count(
+    if sum(auto_bases) >= 3 and aligned_count(
         _AUTO_CONTROL_CENTERS, 1047, (40, 60), 30
     ) >= 3:
         return BattleControls.AUTO_CONTROLS

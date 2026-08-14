@@ -63,6 +63,12 @@ class NavigationTemplates:
     expedition_season_active: np.ndarray
     expedition_entry: np.ndarray
     expedition_home: np.ndarray
+    lobby_side_story: np.ndarray
+    side_story_special_book: np.ndarray
+    special_book_episode: np.ndarray
+    episode_adventure: np.ndarray
+    fodder_stage_title: np.ndarray
+    fodder_prepare_battle: np.ndarray
 
 
 def build_navigation_templates(template_root: Path) -> NavigationTemplates:
@@ -111,6 +117,18 @@ def build_navigation_templates(template_root: Path) -> NavigationTemplates:
         ),
         expedition_entry=load_template(str(navigation / "expedition_entry.png")),
         expedition_home=load_template(str(navigation / "expedition_home.png")),
+        lobby_side_story=load_template(str(navigation / "lobby_side_story.png")),
+        side_story_special_book=load_template(
+            str(navigation / "side_story_special_book.png")
+        ),
+        special_book_episode=load_template(
+            str(navigation / "special_book_episode.png")
+        ),
+        episode_adventure=load_template(str(navigation / "episode_adventure.png")),
+        fodder_stage_title=load_template(str(navigation / "fodder_stage_title.png")),
+        fodder_prepare_battle=load_template(
+            str(template_root / "fodder" / "prepare_battle.png")
+        ),
     )
 
 
@@ -140,6 +158,12 @@ class Epic7Navigator:
         "expedition_season_active": (250, 140, 500, 200),
         "expedition_entry": (850, 240, 500, 260),
         "expedition_home": (1400, 880, 582, 252),
+        "lobby_side_story": (1700, 380, 215, 120),
+        "side_story_special_book": (1520, 900, 385, 110),
+        "special_book_episode": (790, 995, 500, 110),
+        "episode_adventure": (1390, 990, 500, 115),
+        "fodder_stage_title": (850, 760, 225, 90),
+        "fodder_prepare_battle": (1365, 990, 385, 120),
     }
     _CLICK_OFFSETS = {"lobby_story": (65, 11)}
 
@@ -239,6 +263,22 @@ class Epic7Navigator:
         novice = self._locate(screen, "novice_arena")
         if arena_title and novice:
             return PageObservation("arena_mode", min(arena_title.score, novice.score))
+
+        fodder_stage_title = self._locate(screen, "fodder_stage_title")
+        fodder_prepare = self._locate(screen, "fodder_prepare_battle")
+        if fodder_stage_title and fodder_prepare:
+            return PageObservation(
+                "fodder_stage", min(fodder_stage_title.score, fodder_prepare.score)
+            )
+        fodder_episode = self._locate(screen, "episode_adventure")
+        if fodder_episode:
+            return PageObservation("fodder_episode_detail", fodder_episode.score)
+        fodder_book = self._locate(screen, "special_book_episode")
+        if fodder_book:
+            return PageObservation("fodder_special_book", fodder_book.score)
+        fodder_side_story = self._locate(screen, "side_story_special_book")
+        if fodder_side_story:
+            return PageObservation("fodder_side_story", fodder_side_story.score)
 
         story = find_prepare_battle_button(
             screen,
@@ -454,6 +494,35 @@ class Epic7Navigator:
                 "expedition_entry",
                 "进入远征队",
                 source_screen=season_menu,
+            )
+        elif mode == "fodder":
+            side_story = self._transition(
+                "lobby",
+                "fodder_side_story",
+                "lobby_side_story",
+                "进入支线故事",
+                source_screen=lobby_screen,
+            )
+            special_book = self._transition(
+                "fodder_side_story",
+                "fodder_special_book",
+                "side_story_special_book",
+                "进入特别的时间之书",
+                source_screen=side_story,
+            )
+            episode_detail = self._transition(
+                "fodder_special_book",
+                "fodder_episode_detail",
+                "special_book_episode",
+                "进入Episode",
+                source_screen=special_book,
+            )
+            self._transition(
+                "fodder_episode_detail",
+                "fodder_stage",
+                "episode_adventure",
+                "进入冒险地图",
+                source_screen=episode_detail,
             )
         else:
             raise ValueError(f"unsupported navigation mode: {mode}")

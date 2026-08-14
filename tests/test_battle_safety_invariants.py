@@ -15,6 +15,7 @@ RESULT_FIXTURES = {
     "story": "tests/fixtures/epic7_story/results.png",
     "arena": "tests/fixtures/epic7_arena/result.png",
     "expedition": "tests/fixtures/epic7_expedition/result.png",
+    "fodder": "tests/fixtures/epic7_fodder/results.png",
 }
 
 
@@ -57,7 +58,7 @@ def runner_case(tmp_path):
     return build
 
 
-@pytest.mark.parametrize("mode", ["story", "arena", "expedition"])
+@pytest.mark.parametrize("mode", ["story", "arena", "expedition", "fodder"])
 def test_unknown_auto_state_never_exposes_a_click_point(mode, adapter_case):
     machine, screen = adapter_case(mode, "unknown")
     observation = machine.observe_battle(screen, None)
@@ -65,7 +66,7 @@ def test_unknown_auto_state_never_exposes_a_click_point(mode, adapter_case):
     assert observation.auto_point is None
 
 
-@pytest.mark.parametrize("mode", ["story", "arena", "expedition"])
+@pytest.mark.parametrize("mode", ["story", "arena", "expedition", "fodder"])
 def test_result_anchor_is_outside_the_committed_battle(mode, adapter_case):
     machine, screen = adapter_case(mode, "result")
     observation = machine.observe_battle(screen, None)
@@ -73,13 +74,13 @@ def test_result_anchor_is_outside_the_committed_battle(mode, adapter_case):
     assert observation.pre_battle_visible is False
 
 
-@pytest.mark.parametrize("mode", ["story", "arena", "expedition"])
+@pytest.mark.parametrize("mode", ["story", "arena", "expedition", "fodder"])
 def test_runner_uses_the_same_recovery_gate_as_its_supervisor(mode, runner_case):
     runner, _ = runner_case(mode)
     assert runner.battle_supervisor.gate is runner.recovery_gate
 
 
-@pytest.mark.parametrize("mode", ["story", "arena", "expedition"])
+@pytest.mark.parametrize("mode", ["story", "arena", "expedition", "fodder"])
 def test_committed_battle_blocks_every_mode_recovery_callback(mode, runner_case):
     runner, recoveries = runner_case(mode)
     runner.recovery_gate.lock(mode=mode, cycle=1)

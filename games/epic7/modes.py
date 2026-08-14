@@ -19,6 +19,12 @@ from auto_game_unified.games.epic7.expedition import (
     ExpeditionState,
     ExpeditionStateMachine,
 )
+from auto_game_unified.games.epic7.fodder import (
+    FodderRunner,
+    FodderState,
+    FodderStateMachine,
+    build_fodder_templates,
+)
 
 
 MachineFactory = Callable[[Path, str], Any]
@@ -60,6 +66,13 @@ def _build_expedition(template_root: Path, state: str) -> ExpeditionStateMachine
     )
 
 
+def _build_fodder(template_root: Path, state: str) -> FodderStateMachine:
+    return FodderStateMachine(
+        build_fodder_templates(template_root / "fodder"),
+        initial_state=FodderState(state),
+    )
+
+
 MODE_SPECS = {
     "arena": ModeSpec(
         name="arena",
@@ -81,6 +94,13 @@ MODE_SPECS = {
         states=frozenset(state.value for state in ExpeditionState),
         build_machine=_build_expedition,
         runner_type=ExpeditionRunner,
+    ),
+    "fodder": ModeSpec(
+        name="fodder",
+        default_state=FodderState.STAGE.value,
+        states=frozenset(state.value for state in FodderState),
+        build_machine=_build_fodder,
+        runner_type=FodderRunner,
     ),
 }
 
