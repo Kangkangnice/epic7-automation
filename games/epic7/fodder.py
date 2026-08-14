@@ -174,6 +174,8 @@ class FodderStateMachine:
     def _handle_stamina(self, screen: np.ndarray) -> Optional[FodderAction]:
         popup = self._locate(screen, "stamina_popup")
         if popup is None:
+            if self._stamina_material_clicked:
+                self.stamina_replenished += 1
             self._stamina_material_clicked = False
             return None
         material = self._locate(screen, "stamina_material")
@@ -185,8 +187,6 @@ class FodderStateMachine:
         confirm = self._locate(screen, "stamina_confirm")
         if confirm is None:
             raise StaminaExhausted("生命之叶购买按钮不可用")
-        self._stamina_material_clicked = False
-        self.stamina_replenished += 1
         return FodderAction("stamina_confirm", confirm.center)
 
     def observe_battle(
@@ -195,6 +195,8 @@ class FodderStateMachine:
         previous_screen: np.ndarray | None,
     ) -> BattleObservation:
         controls = observe_battle_controls(screen)
+        battle_start = self._locate(screen, "battle_start")
+        stamina_popup = self._locate(screen, "stamina_popup")
         auto_state = {
             BattleControls.AUTO_CONTROLS: AutoBattleState.AUTO,
             BattleControls.MANUAL_CONTROLS: AutoBattleState.MANUAL,
@@ -205,7 +207,7 @@ class FodderStateMachine:
             for name in ("clear", "results_confirm", "replay")
         )
         return BattleObservation(
-            pre_battle_visible=self._locate(screen, "battle_start") is not None,
+            pre_battle_visible=battle_start is not None,
             battle_visible=controls is not BattleControls.TRANSITION,
             result_visible=result_visible,
             frame_valid=valid_game_frame(screen),
@@ -219,6 +221,12 @@ class FodderStateMachine:
                 auto_state is AutoBattleState.AUTO
                 and meaningful_change(previous_screen, screen)
             ),
+            allowed_action=(
+                ("start_battle", battle_start.center)
+                if battle_start is not None
+                else None
+            ),
+            pre_battle_business_visible=stamina_popup is not None,
         )
 
     def next_action(self, screen: np.ndarray) -> Optional[FodderAction]:
@@ -255,23 +263,23 @@ class FodderStateMachine:
             self.state = FodderState.RESULTS
             return FodderAction("dismiss_clear", clear.center)
 
-        if self.state is FodderState.STAGE:
+        if self.state in (FodderState.STAGE, FodderState.ASSISTANT):
             title = self._locate(screen, "stage_title")
             prepare = self._locate(screen, "prepare_battle")
             if title is not None and prepare is not None:
                 self.state = FodderState.ASSISTANT
                 return FodderAction("prepare_battle", prepare.center)
-        elif self.state is FodderState.ASSISTANT:
+        if self.state in (FodderState.ASSISTANT, FodderState.TEAM):
             select_team = self._locate(screen, "select_team")
             if select_team is not None:
                 self.state = FodderState.TEAM
                 return FodderAction("select_team", select_team.center)
-        elif self.state is FodderState.TEAM:
+        if self.state in (FodderState.TEAM, FodderState.BATTLE):
             battle_start = self._locate(screen, "battle_start")
             if battle_start is not None:
                 self.state = FodderState.BATTLE
                 return FodderAction("start_battle", battle_start.center)
-        elif self.state is FodderState.BATTLE:
+        if self.state is FodderState.BATTLE:
             controls = observe_battle_controls(screen)
             if controls is not BattleControls.TRANSITION:
                 return None
@@ -342,6 +350,9 @@ class FodderRunner:
             self.machine.observe_battle,
             cycle=cycle,
         )
+        if outcome is BattleOutcome.PRE_BATTLE_BUSINESS:
+            self.machine.state = FodderState.BATTLE
+            return
         if outcome is not BattleOutcome.RESULT_REACHED:
             raise RuntimeError(f"unexpected fodder battle outcome: {outcome.value}")
         self.machine.state = FodderState.RESULTS
@@ -437,6 +448,37 @@ class FodderRunner:
                 if max_cycles is not None and self.machine.completed_cycles >= max_cycles:
                     return self.machine.completed_cycles
 
+            if action is None and self.machine.state is FodderState.BATTLE:
+                self._run_committed_battle(
+                    cycle=self.machine.completed_cycles + 1,
+                )
+                state_started = self.now()
+                absolute_started = state_started
+                last_action_name = None
+                last_action_clicked_at = None
+                retry_wait_logged = False
+                action_attempts = 0
+                stable.reset()
+                continue
+
+            if action is not None and action.name == "start_battle":
+                self.runtime.log(
+                    f"模式=狗粮 轮次={self.machine.completed_cycles + 1}/"
+                    f"{max_cycles or '?'} 页面={state_before.value} "
+                    "动作=start_battle 处理=交由战斗监督"
+                )
+                self._run_committed_battle(
+                    cycle=self.machine.completed_cycles + 1,
+                )
+                state_started = self.now()
+                absolute_started = state_started
+                last_action_name = None
+                last_action_clicked_at = None
+                retry_wait_logged = False
+                action_attempts = 0
+                stable.reset()
+                continue
+
             if action is not None:
                 if action.name == last_action_name:
                     since_click = (
@@ -461,6 +503,12 @@ class FodderRunner:
                     action_attempts = 1
 
                 if action_attempts > 2:
+                    if action.name == "stamina_confirm":
+                        self.resource_exhausted = True
+                        self.runtime.log(
+                            "模式=狗粮 停止=生命之叶确认两次未生效"
+                        )
+                        return self.machine.completed_cycles
                     if self.recovery is not None and not recovered:
                         recovered = True
                         self.runtime.log(
@@ -494,18 +542,6 @@ class FodderRunner:
                 state_started = last_action_clicked_at
                 absolute_started = last_action_clicked_at
                 retry_wait_logged = False
-
-                if action.name == "start_battle":
-                    self._run_committed_battle(
-                        cycle=self.machine.completed_cycles + 1,
-                    )
-                    state_started = self.now()
-                    absolute_started = state_started
-                    last_action_name = None
-                    last_action_clicked_at = None
-                    action_attempts = 0
-                    stable.reset()
-                    continue
             else:
                 last_action_name = None
                 last_action_clicked_at = None
