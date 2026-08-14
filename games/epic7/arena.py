@@ -26,6 +26,9 @@ from auto_game_unified.core.supervisor import StableObservation, meaningful_chan
 _RANK_PROMOTION_REFERENCE_SIZE = (1982, 1132)
 _RANK_PROMOTION_ARROW_REGION = (850, 760, 280, 170)
 _RANK_PROMOTION_CONFIRM_REGION = (700, 930, 520, 202)
+_FREE_REFRESH_TITLE_REGION = (700, 300, 550, 160)
+_FREE_REFRESH_OFFER_REGION = (850, 700, 350, 180)
+_FREE_REFRESH_CONFIRM_REGION = (1050, 700, 400, 180)
 
 
 def find_rank_promotion_confirm(
@@ -81,6 +84,71 @@ def find_rank_promotion_confirm(
     return Match(confirm.center, min(arrow.score, confirm.score))
 
 
+def find_free_refresh_confirm(
+    screen: np.ndarray,
+    title_template: np.ndarray,
+    free_template: np.ndarray,
+    confirm_template: np.ndarray,
+) -> Optional[Match]:
+    """Return Confirm only for the explicit free opponent-refresh offer."""
+
+    def locate(
+        template: np.ndarray,
+        region: tuple[int, int, int, int],
+        lower: np.ndarray,
+        upper: np.ndarray,
+    ) -> Optional[Match]:
+        scale_x = screen.shape[1] / _RANK_PROMOTION_REFERENCE_SIZE[0]
+        scale_y = screen.shape[0] / _RANK_PROMOTION_REFERENCE_SIZE[1]
+        ref_x, ref_y, ref_width, ref_height = region
+        x, y, width, height = (
+            round(ref_x * scale_x),
+            round(ref_y * scale_y),
+            round(ref_width * scale_x),
+            round(ref_height * scale_y),
+        )
+        search_hsv = cv2.cvtColor(
+            screen[y : y + height, x : x + width], cv2.COLOR_RGB2HSV
+        )
+        template_hsv = cv2.cvtColor(template, cv2.COLOR_RGB2HSV)
+        match = find_template(
+            cv2.inRange(search_hsv, lower, upper),
+            cv2.inRange(template_hsv, lower, upper),
+            0.90,
+            reference_size=(ref_width, ref_height),
+        )
+        if match is None:
+            return None
+        return Match((x + match.center[0], y + match.center[1]), match.score)
+
+    white_lower = np.array([0, 0, 140])
+    white_upper = np.array([179, 110, 255])
+    title = locate(
+        title_template,
+        _FREE_REFRESH_TITLE_REGION,
+        white_lower,
+        white_upper,
+    )
+    free_offer = locate(
+        free_template,
+        _FREE_REFRESH_OFFER_REGION,
+        np.array([15, 80, 100]),
+        np.array([45, 255, 255]),
+    )
+    confirm = locate(
+        confirm_template,
+        _FREE_REFRESH_CONFIRM_REGION,
+        white_lower,
+        white_upper,
+    )
+    if title is None or free_offer is None or confirm is None:
+        return None
+    return Match(
+        confirm.center,
+        min(title.score, free_offer.score, confirm.score),
+    )
+
+
 class ArenaState(Enum):
     LIST = "list"
     SELECTED = "selected"
@@ -112,6 +180,9 @@ class ArenaTemplates:
     no_ticket: np.ndarray
     friendship_ticket_offer: np.ndarray
     ticket_purchase_button: np.ndarray
+    refresh_title: np.ndarray
+    refresh_free: np.ndarray
+    refresh_confirm: np.ndarray
     threshold: float = 0.98
 
 
@@ -129,6 +200,9 @@ def build_templates(template_dir: Path) -> ArenaTemplates:
         no_ticket=load_template(str(template_dir / "no_ticket.png")),
         friendship_ticket_offer=load_template(str(template_dir / "friendship_ticket_offer.png")),
         ticket_purchase_button=load_template(str(template_dir / "ticket_purchase_button.png")),
+        refresh_title=load_template(str(template_dir / "arena_refresh_title.png")),
+        refresh_free=load_template(str(template_dir / "arena_refresh_free.png")),
+        refresh_confirm=load_template(str(template_dir / "arena_refresh_confirm.png")),
     )
 
 
@@ -267,6 +341,14 @@ class ArenaStateMachine:
 
     def has_safe_opponent(self, screen: np.ndarray) -> bool:
         return any(value is True for value in self.opponent_availability(screen))
+
+    def free_refresh_confirm(self, screen: np.ndarray) -> Optional[Match]:
+        return find_free_refresh_confirm(
+            screen,
+            self.templates.refresh_title,
+            self.templates.refresh_free,
+            self.templates.refresh_confirm,
+        )
 
     def is_in_state(self, screen: np.ndarray, state: "ArenaState") -> bool:
         """True when the screen has actually settled into ``state``.
@@ -617,6 +699,8 @@ class ArenaRunner:
         previous: Optional[np.ndarray] = None
         absolute = min(180, self._TIMEOUT_SECONDS[ArenaState.LIST])
         no_progress = min(45, self._TIMEOUT_SECONDS[ArenaState.LIST])
+        refresh_confirm_stable = StableObservation(required=2)
+        refresh_confirm_clicks = 0
         while self.now() - started < absolute:
             screen = self.runtime.capture()
             if self.runtime.diagnostic_dir is not None:
@@ -626,6 +710,24 @@ class ArenaRunner:
                 and self.machine.has_safe_opponent(screen)
             ):
                 return True
+            refresh_confirm = self.machine.free_refresh_confirm(screen)
+            signature = "free-refresh" if refresh_confirm is not None else "other"
+            if refresh_confirm_stable.update(signature) and refresh_confirm is not None:
+                if refresh_confirm_clicks >= 2:
+                    return False
+                refresh_confirm_clicks += 1
+                self.runtime.log(
+                    "妯″紡=绔炴妧鍦?椤甸潰=鍏嶈垂鍒锋柊纭 "
+                    f"鍔ㄤ綔=confirm-free-refresh 灏濊瘯={refresh_confirm_clicks}/2 "
+                    f"缃俊搴?{refresh_confirm.score:.3f}"
+                )
+                self.runtime.click(
+                    refresh_confirm.center,
+                    "confirm-free-refresh",
+                )
+                refresh_confirm_stable.reset()
+                self.sleep(self._SETTLE_SECONDS)
+                continue
             if meaningful_change(previous, screen):
                 last_progress = self.now()
             previous = screen

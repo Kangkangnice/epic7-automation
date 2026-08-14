@@ -46,6 +46,42 @@ def make_all_failed_screen(machine: ArenaStateMachine) -> np.ndarray:
 
 
 class Epic7ArenaStateMachineTests(unittest.TestCase):
+    def test_free_refresh_confirmation_requires_title_free_offer_and_button(self):
+        screen = load_fixture("free_refresh_confirm_live_20260814")
+        title = screen[335:415, 800:1140].copy()
+        free_offer = screen[770:830, 970:1090].copy()
+        confirm = screen[770:830, 1160:1300].copy()
+        match = arena_module.find_free_refresh_confirm(
+            screen, title, free_offer, confirm
+        )
+
+        self.assertIsNotNone(match)
+        self.assertTrue(1160 <= match.center[0] <= 1300)
+        self.assertTrue(770 <= match.center[1] <= 830)
+
+        for region in (
+            (800, 335, 340, 80),
+            (970, 770, 120, 60),
+            (1160, 770, 140, 60),
+        ):
+            without_anchor = screen.copy()
+            x, y, width, height = region
+            without_anchor[y : y + height, x : x + width] = 0
+            self.assertIsNone(
+                arena_module.find_free_refresh_confirm(
+                    without_anchor, title, free_offer, confirm
+                )
+            )
+
+    def test_machine_recognizes_live_free_refresh_confirmation(self):
+        machine = ArenaStateMachine(build_templates(TEMPLATES))
+        match = machine.free_refresh_confirm(
+            load_fixture("free_refresh_confirm_live_20260814")
+        )
+
+        self.assertIsNotNone(match)
+        self.assertTrue(1160 <= match.center[0] <= 1300)
+
     def test_failed_row_classifier_uses_background_color_only(self):
         machine = ArenaStateMachine(build_templates(TEMPLATES))
 

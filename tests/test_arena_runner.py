@@ -157,6 +157,43 @@ class ArenaRunnerTests(unittest.TestCase):
         self.assertTrue(runner._wait_until_safe_list())
         self.assertEqual(2, machine.has_safe_opponent.call_count)
 
+    def test_safe_list_waiter_confirms_free_refresh_then_accepts_new_list(self):
+        machine = ArenaStateMachine(build_templates(TEMPLATES))
+        confirmation = fixture("free_refresh_confirm_live_20260814")
+        screens = iter([confirmation, confirmation, fixture("list")])
+        clicks: list[tuple[int, int]] = []
+        runner = ArenaRunner(
+            machine,
+            Runtime(
+                lambda: next(screens),
+                clicks.append,
+                emit=lambda line: None,
+            ),
+            sleep=lambda seconds: None,
+        )
+
+        self.assertTrue(runner._wait_until_safe_list())
+        self.assertEqual(1, len(clicks))
+        self.assertTrue(1160 <= clicks[0][0] <= 1300)
+        self.assertTrue(770 <= clicks[0][1] <= 830)
+
+    def test_safe_list_waiter_clicks_persisted_free_confirmation_at_most_twice(self):
+        machine = ArenaStateMachine(build_templates(TEMPLATES))
+        confirmation = fixture("free_refresh_confirm_live_20260814")
+        clicks: list[tuple[int, int]] = []
+        runner = ArenaRunner(
+            machine,
+            Runtime(
+                lambda: confirmation,
+                clicks.append,
+                emit=lambda line: None,
+            ),
+            sleep=lambda seconds: None,
+        )
+
+        self.assertFalse(runner._wait_until_safe_list())
+        self.assertEqual(2, len(clicks))
+
     def test_refresh_that_never_produces_a_safe_opponent_stops_with_diagnostic(self):
         machine = MagicMock()
         machine.state = ArenaState.LIST
