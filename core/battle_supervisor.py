@@ -94,7 +94,8 @@ class BattleSupervisor:
         started = active_at = business_at = heartbeat = self.now()
         invalid_since = black_since = auto_wait_since = None
         previous = None
-        auto_clicked = False
+        auto_clicks = 0
+        auto_clicked_at = None
         last_allowed_action = None
         allowed_action_clicks = 0
         allowed_action_clicked_at = None
@@ -243,7 +244,6 @@ class BattleSupervisor:
                 if (
                     stable_auto
                     and observation.auto_state is AutoBattleState.MANUAL
-                    and not auto_clicked
                 ):
                     if observation.auto_point is None:
                         self._fail(
@@ -251,23 +251,56 @@ class BattleSupervisor:
                             "manual state had no auto point",
                             screen,
                         )
-                    self.runtime.click(
-                        observation.auto_point, "enable-auto-battle"
+                    auto_confirmed = False
+                    auto_wait_since = None
+                    since_auto_click = (
+                        None
+                        if auto_clicked_at is None
+                        else current - auto_clicked_at
                     )
-                    auto_clicked = True
-                    auto_wait_since = current
-                    auto_stable.reset()
+                    should_click_auto = auto_clicks == 0 or (
+                        auto_clicks == 1
+                        and since_auto_click is not None
+                        and since_auto_click
+                        >= self.config.allowed_action_retry_seconds
+                    )
+                    if should_click_auto:
+                        auto_clicks += 1
+                        self.runtime.log(
+                            f"mode={self.config.mode} cycle={cycle} "
+                            f"phase=battle auto-attempt={auto_clicks}/2"
+                        )
+                        self.runtime.click(
+                            observation.auto_point, "enable-auto-battle"
+                        )
+                        auto_clicked_at = current
+                        auto_stable.reset()
+                    elif (
+                        auto_clicks >= 2
+                        and since_auto_click is not None
+                        and since_auto_click
+                        >= self.config.allowed_action_failure_seconds
+                    ):
+                        self._fail(
+                            "auto_not_confirmed",
+                            "auto battle remained manual after 2 clicks",
+                            screen,
+                        )
                 elif (
                     stable_auto
                     and observation.auto_state is AutoBattleState.AUTO
-                ) or observation.business_progress:
+                ):
                     auto_wait_since = None
+                    auto_clicks = 0
+                    auto_clicked_at = None
                     if not auto_confirmed:
                         auto_confirmed = True
                         self.runtime.log(
                             f"mode={self.config.mode} cycle={cycle} "
                             "phase=battle status=auto-confirmed"
                         )
+                elif observation.auto_state is AutoBattleState.MANUAL:
+                    auto_wait_since = None
                 elif (
                     entry_confirmed
                     and not auto_confirmed

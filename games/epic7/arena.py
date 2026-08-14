@@ -21,6 +21,10 @@ from auto_game_unified.core.matcher import Match, find_template, load_template
 from auto_game_unified.core.recovery import RecoveryGate
 from auto_game_unified.core.runtime import Runtime
 from auto_game_unified.core.supervisor import StableObservation, meaningful_change
+from auto_game_unified.games.epic7.battle_controls import (
+    BattleControls,
+    observe_battle_controls,
+)
 
 
 _RANK_PROMOTION_REFERENCE_SIZE = (1982, 1132)
@@ -228,6 +232,7 @@ class ArenaStateMachine:
     }
 
     _REFERENCE_SIZE = (1982, 1132)
+    _AUTO_CLICK_POINT = (1690, 96)
     _OPPONENT_STATUS_REGIONS = (
         (600, 320, 220, 135),
         (600, 510, 220, 140),
@@ -412,26 +417,44 @@ class ArenaStateMachine:
         previous_screen: np.ndarray | None,
     ) -> BattleObservation:
         start = self._locate(screen, "battle_start")
-        manual = self._locate(screen, "auto_off")
+        controls = observe_battle_controls(screen)
+        auto_state = {
+            BattleControls.AUTO_CONTROLS: AutoBattleState.AUTO,
+            BattleControls.MANUAL_CONTROLS: AutoBattleState.MANUAL,
+            BattleControls.TRANSITION: AutoBattleState.UNKNOWN,
+        }[controls]
+        auto_match = self._locate(screen, "auto_off")
         result = self._locate(screen, "confirm")
         no_ticket = self._locate(screen, "no_ticket")
-        progressing = valid_game_frame(screen) and meaningful_change(
-            previous_screen,
-            screen,
+        progressing = (
+            auto_state is AutoBattleState.AUTO
+            and valid_game_frame(screen)
+            and meaningful_change(previous_screen, screen)
         )
         return BattleObservation(
             pre_battle_visible=start is not None,
-            battle_visible=manual is not None or progressing,
+            battle_visible=controls is not BattleControls.TRANSITION,
             result_visible=result is not None,
             frame_valid=valid_game_frame(screen),
-            auto_state=(
-                AutoBattleState.MANUAL
-                if manual is not None
-                else AutoBattleState.AUTO
-                if progressing
-                else AutoBattleState.UNKNOWN
+            auto_state=auto_state,
+            auto_point=(
+                auto_match.center
+                if auto_match is not None
+                else (
+                    round(
+                        self._AUTO_CLICK_POINT[0]
+                        * screen.shape[1]
+                        / self._REFERENCE_SIZE[0]
+                    ),
+                    round(
+                        self._AUTO_CLICK_POINT[1]
+                        * screen.shape[0]
+                        / self._REFERENCE_SIZE[1]
+                    ),
+                )
+                if auto_state is AutoBattleState.MANUAL
+                else None
             ),
-            auto_point=None if manual is None else manual.center,
             business_progress=progressing,
             pre_battle_business_visible=no_ticket is not None,
         )
