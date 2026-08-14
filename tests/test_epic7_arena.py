@@ -182,6 +182,16 @@ class Epic7ArenaStateMachineTests(unittest.TestCase):
         self.assertIsNotNone(manual.auto_point)
         self.assertTrue(result.result_visible)
 
+    def test_live_manual_battle_uses_controls_when_top_template_misses(self):
+        machine = ArenaStateMachine(build_templates(TEMPLATES))
+        screen = load_fixture("battle_manual_stuck_live_20260814")
+
+        observation = machine.observe_battle(screen, None)
+
+        self.assertIsNone(machine._locate(screen, "auto_off"))
+        self.assertEqual(AutoBattleState.MANUAL, observation.auto_state)
+        self.assertEqual(machine._AUTO_CLICK_POINT, observation.auto_point)
+
     def test_ticket_popup_is_returned_as_pre_battle_business(self):
         machine = ArenaStateMachine(
             build_templates(TEMPLATES),

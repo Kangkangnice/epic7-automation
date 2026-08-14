@@ -19,6 +19,10 @@ from auto_game_unified.core.matcher import Match, find_template, load_template
 from auto_game_unified.core.recovery import RecoveryGate
 from auto_game_unified.core.runtime import Runtime, StaminaExhausted
 from auto_game_unified.core.supervisor import StableObservation, meaningful_change
+from auto_game_unified.games.epic7.battle_controls import (
+    BattleControls,
+    observe_battle_controls,
+)
 
 
 _WATCH_STORY_REFERENCE_SIZE = (1982, 1132)
@@ -191,12 +195,6 @@ class StoryState(Enum):
     WAIT_NEXT_STAGE = "wait_next_stage"
 
 
-class BattleControls(Enum):
-    AUTO_CONTROLS = "auto_controls"
-    MANUAL_CONTROLS = "manual_controls"
-    TRANSITION = "transition"
-
-
 @dataclass(frozen=True)
 class StoryAction:
     name: str
@@ -304,9 +302,6 @@ class StoryStateMachine:
     }
     _BONUS_REWARD_CLOSE_OFFSET = (0, 312)
     _AUTO_CLICK_POINT = (1690, 96)
-    _CONTROL_ROI = (1400, 940, 520, 192)
-    _AUTO_CONTROL_CENTERS = (1505, 1623, 1740, 1858)
-    _MANUAL_CONTROL_CENTERS = (1534, 1683, 1834)
 
     def __init__(
         self, templates: StoryTemplates, initial_state: StoryState = StoryState.STAGE
@@ -376,77 +371,7 @@ class StoryStateMachine:
         )
 
     def observe_battle_controls(self, screen: np.ndarray) -> BattleControls:
-        """Classify stable lower-right battle controls, ignoring scene artwork."""
-        if screen.shape[:2] != (self._REFERENCE_SIZE[1], self._REFERENCE_SIZE[0]):
-            frame = cv2.resize(screen, self._REFERENCE_SIZE, interpolation=cv2.INTER_AREA)
-        else:
-            frame = screen
-
-        roi_x, roi_y, roi_width, roi_height = self._CONTROL_ROI
-        roi = frame[roi_y : roi_y + roi_height, roi_x : roi_x + roi_width]
-        gray = cv2.cvtColor(roi, cv2.COLOR_RGB2GRAY)
-        gray = cv2.GaussianBlur(gray, (5, 5), 1)
-        detected = cv2.HoughCircles(
-            gray,
-            cv2.HOUGH_GRADIENT,
-            dp=1.2,
-            minDist=80,
-            param1=120,
-            param2=40,
-            minRadius=40,
-            maxRadius=82,
-        )
-        circles: list[tuple[int, int, int]] = []
-        if detected is not None:
-            circles = [
-                (int(round(x)) + roi_x, int(round(y)) + roi_y, int(round(radius)))
-                for x, y, radius in detected[0]
-            ]
-
-        def aligned_count(
-            expected_xs: tuple[int, ...],
-            expected_y: int,
-            radius_range: tuple[int, int],
-            tolerance: int,
-        ) -> int:
-            return sum(
-                1
-                for expected_x in expected_xs
-                if any(
-                    abs(x - expected_x) <= tolerance
-                    and abs(y - expected_y) <= tolerance
-                    and radius_range[0] <= radius <= radius_range[1]
-                    for x, y, radius in circles
-                )
-            )
-
-        hsv = cv2.cvtColor(frame, cv2.COLOR_RGB2HSV)
-        blue_bases = []
-        for center_x in self._AUTO_CONTROL_CENTERS:
-            slot = hsv[1060:1132, center_x - 50 : center_x + 50]
-            blue = (
-                (slot[:, :, 0] >= 85)
-                & (slot[:, :, 0] <= 135)
-                & (slot[:, :, 1] >= 100)
-                & (slot[:, :, 2] >= 70)
-            )
-            blue_bases.append(float(np.mean(blue)) >= 0.40)
-
-        if all(blue_bases) and aligned_count(
-            self._AUTO_CONTROL_CENTERS, 1025, (40, 58), 28
-        ) >= 3:
-            return BattleControls.AUTO_CONTROLS
-        yy, xx = np.ogrid[: frame.shape[0], : frame.shape[1]]
-        manual_borders = []
-        for center_x in self._MANUAL_CONTROL_CENTERS:
-            distance_squared = (xx - center_x) ** 2 + (yy - 1040) ** 2
-            border = (distance_squared >= 55 ** 2) & (distance_squared <= 75 ** 2)
-            manual_borders.append(float(np.mean(hsv[:, :, 2][border] > 120)) >= 0.50)
-        if all(manual_borders) and aligned_count(
-            self._MANUAL_CONTROL_CENTERS, 1040, (55, 82), 38
-        ) == len(self._MANUAL_CONTROL_CENTERS):
-            return BattleControls.MANUAL_CONTROLS
-        return BattleControls.TRANSITION
+        return observe_battle_controls(screen)
 
     def observe_battle(
         self,

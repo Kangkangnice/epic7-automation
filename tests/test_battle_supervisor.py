@@ -123,6 +123,65 @@ def test_manual_auto_state_clicks_once_and_requires_confirmation():
     assert clicks == [((900, 80), "enable-auto-battle")]
 
 
+def test_manual_auto_state_retries_once_when_first_click_is_swallowed():
+    manual = BattleObservation(
+        False, True, False, True, AutoBattleState.MANUAL, (900, 80)
+    )
+    auto = replace(manual, auto_state=AutoBattleState.AUTO, auto_point=None)
+    result = replace(auto, battle_visible=False, result_visible=True)
+    supervisor, gate, observe, clicks, logs, diagnostics = make_supervisor(
+        [manual] * 5 + [auto, auto, result, result]
+    )
+
+    assert supervisor.run(observe, cycle=2) is BattleOutcome.RESULT_REACHED
+    assert clicks == [
+        ((900, 80), "enable-auto-battle"),
+        ((900, 80), "enable-auto-battle"),
+    ]
+    assert diagnostics == []
+
+
+def test_persisted_manual_auto_state_stops_after_two_clicks():
+    manual = BattleObservation(
+        False, True, False, True, AutoBattleState.MANUAL, (900, 80)
+    )
+    supervisor, gate, observe, clicks, logs, diagnostics = make_supervisor(
+        [manual] * 20,
+        config_overrides={
+            "auto_confirm_seconds": 20,
+            "allowed_action_retry_seconds": 1,
+            "allowed_action_failure_seconds": 2,
+        },
+    )
+
+    with pytest.raises(RuntimeError, match="remained manual after 2 clicks"):
+        supervisor.run(observe, cycle=2)
+    assert clicks == [
+        ((900, 80), "enable-auto-battle"),
+        ((900, 80), "enable-auto-battle"),
+    ]
+    assert diagnostics == ["auto_not_confirmed"]
+
+
+def test_business_progress_does_not_confirm_unknown_auto_state():
+    unknown = BattleObservation(
+        False,
+        True,
+        False,
+        True,
+        AutoBattleState.UNKNOWN,
+        business_progress=True,
+    )
+    supervisor, gate, observe, clicks, logs, diagnostics = make_supervisor(
+        [unknown] * 30
+    )
+
+    with pytest.raises(RuntimeError, match="auto battle was not confirmed"):
+        supervisor.run(observe, cycle=2)
+    assert not any("status=auto-confirmed" in line for line in logs)
+    assert diagnostics == ["auto_not_confirmed"]
+
+
 def test_mode_whitelist_action_is_clicked_once_until_it_disappears():
     story = BattleObservation(
         False,
