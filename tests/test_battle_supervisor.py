@@ -310,6 +310,22 @@ def test_skill_animation_does_not_start_auto_click_confirmation_timeout():
     assert diagnostics == []
 
 
+def test_confirmed_auto_tolerates_short_transition_and_resumes():
+    auto = BattleObservation(False, True, False, True, AutoBattleState.AUTO)
+    transition = BattleObservation(
+        False, False, False, True, AutoBattleState.UNKNOWN
+    )
+    result = replace(auto, battle_visible=False, result_visible=True)
+    supervisor, gate, observe, clicks, logs, diagnostics = make_supervisor(
+        [auto, auto] + [transition] * 5 + [auto, auto, result, result],
+        config_overrides={"unrecognized_seconds": 8},
+    )
+
+    assert supervisor.run(observe, cycle=13) is BattleOutcome.RESULT_REACHED
+    assert clicks == []
+    assert diagnostics == []
+
+
 def test_valid_but_unrecognized_frame_safely_stops_without_recovery():
     unknown = BattleObservation(False, False, False, True, AutoBattleState.UNKNOWN)
     supervisor, gate, observe, clicks, logs, diagnostics = make_supervisor(
