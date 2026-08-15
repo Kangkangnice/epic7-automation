@@ -44,6 +44,26 @@ class StoryRunnerTests(unittest.TestCase):
         supervisor.run.assert_called_once_with(machine.observe_battle, cycle=1)
         self.assertEqual(StoryState.WAIT_RESULTS, machine.state)
 
+    def test_committed_battle_hands_stamina_popup_back_to_wait_battle(self):
+        machine = MagicMock()
+        machine.state = StoryState.WAIT_BATTLE
+        supervisor = MagicMock()
+        supervisor.run.return_value = BattleOutcome.PRE_BATTLE_BUSINESS
+        runner = StoryRunner(
+            machine,
+            Runtime(
+                lambda: np.zeros((60, 100, 3), dtype=np.uint8),
+                lambda point: None,
+            ),
+            battle_supervisor=supervisor,
+            sleep=lambda seconds: None,
+        )
+
+        runner._run_committed_battle(cycle=12)
+
+        supervisor.run.assert_called_once_with(machine.observe_battle, cycle=12)
+        self.assertEqual(StoryState.WAIT_BATTLE, machine.state)
+
     def test_recovery_resets_only_when_completed_cycle_count_increases(self):
         class FakeMachine:
             def __init__(self, next_cycles: int) -> None:

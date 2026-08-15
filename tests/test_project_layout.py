@@ -54,6 +54,7 @@ class ProjectLayoutTests(unittest.TestCase):
             "skip_confirm.png",
             "skip_confirm_persisted_live_20260813.png",
             "stamina_popup_live_20260809.png",
+            "stamina_popup_after_start_live_20260815.png",
             "battle.png",
             "battle_variant.png",
             "battle_auto_off_live_20260809.png",

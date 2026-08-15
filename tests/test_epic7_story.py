@@ -322,6 +322,16 @@ class Epic7StoryStateMachineTests(unittest.TestCase):
         self.assertLess(select_leaf.point[0], 960)
         self.assertEqual("stamina_confirm", confirm.name)
 
+    def test_stamina_popup_after_start_is_handed_back_to_story_runner(self):
+        machine = StoryStateMachine(build_story_templates(TEMPLATES))
+
+        observation = machine.observe_battle(
+            load_fixture("stamina_popup_after_start_live_20260815"), None
+        )
+
+        self.assertTrue(observation.pre_battle_business_visible)
+        self.assertIsNone(observation.allowed_action)
+
     def test_stamina_purchase_stops_if_the_selected_leaf_offer_is_not_visible(self):
         machine = StoryStateMachine(build_story_templates(TEMPLATES))
         popup = load_fixture("stamina_popup_live_20260809")

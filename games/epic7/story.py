@@ -438,6 +438,11 @@ class StoryStateMachine:
             BattleControls.TRANSITION: AutoBattleState.UNKNOWN,
         }[controls]
         auto_match = self._locate(screen, "auto_off")
+        stamina_popup = (
+            self._locate(screen, "stamina_popup")
+            if self.templates.stamina_popup is not None
+            else None
+        )
         battle_guide = find_battle_guide_dont_show(
             screen,
             self.templates.battle_guide_title,
@@ -476,6 +481,7 @@ class StoryStateMachine:
             ),
             business_progress=progressing,
             allowed_action=allowed_action,
+            pre_battle_business_visible=stamina_popup is not None,
         )
 
     def _action_point(self, screen: np.ndarray, name: str, match: Match) -> tuple[int, int]:
@@ -724,6 +730,9 @@ class StoryRunner:
             self.machine.observe_battle,
             cycle=cycle,
         )
+        if outcome is BattleOutcome.PRE_BATTLE_BUSINESS:
+            self.machine.state = StoryState.WAIT_BATTLE
+            return
         if outcome is not BattleOutcome.RESULT_REACHED:
             raise RuntimeError(f"unexpected story battle outcome: {outcome.value}")
         self.machine.state = StoryState.WAIT_RESULTS
