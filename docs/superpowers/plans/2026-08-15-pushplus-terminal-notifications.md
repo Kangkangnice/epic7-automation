@@ -527,4 +527,3 @@ git -C auto_game_unified log --oneline --max-count=6
 ```
 
 Expected: no whitespace errors, only approved notification code/tests/docs plus the approved design and plan, and no uncommitted files.
-
