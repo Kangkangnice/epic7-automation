@@ -18,6 +18,10 @@ from auto_game_unified.games.epic7.story import (
     find_story_skip_confirm,
     find_watch_story_button,
 )
+from auto_game_unified.games.epic7.unknown_screen import (
+    UnknownScreenWake,
+    UnknownWakeResult,
+)
 
 
 REFERENCE_SIZE = (1982, 1132)
@@ -182,6 +186,7 @@ class Epic7Navigator:
         self.now = runtime.now
         self.poll_seconds = poll_seconds
         self.transition_frames = transition_frames
+        self.unknown_screen_wake = UnknownScreenWake(runtime)
 
     def _locate(self, screen: np.ndarray, name: str, threshold: float = 0.82) -> Optional[Match]:
         return find_template(
@@ -385,6 +390,8 @@ class Epic7Navigator:
             if not is_stable:
                 self.sleep(self.poll_seconds)
                 continue
+            if observation.name != "unknown":
+                self.unknown_screen_wake.reset()
             if self._dismiss_global_popup(screen, observation):
                 last_back_at = None
                 back_wait_logged = False
@@ -427,6 +434,17 @@ class Epic7Navigator:
                         back_wait_logged = True
                     self.sleep(self.poll_seconds)
                     continue
+            if observation.name == "unknown":
+                wake_result = self.unknown_screen_wake.handle(
+                    screen,
+                    context="navigation:return_home",
+                )
+                if wake_result in {
+                    UnknownWakeResult.WAITING,
+                    UnknownWakeResult.CLICKED,
+                }:
+                    self.sleep(self.poll_seconds)
+                    continue
             if back_count >= 8:
                 diagnostic = self._diagnostic("return_home_failed")
                 raise RuntimeError(f"could not return home after 8 controlled backs; saved {diagnostic}")
@@ -440,6 +458,7 @@ class Epic7Navigator:
                     f"retry={back_count}/8"
                 )
                 self.runtime.click(back.center, "click-story-back")
+                self.unknown_screen_wake.reset()
                 last_back_at = self.now()
                 back_wait_logged = False
                 stable.reset()
@@ -448,6 +467,7 @@ class Epic7Navigator:
             back_count += 1
             self.runtime.log(f"模式=导航 页面={observation.name} 动作=受控返回 重试={back_count}/8")
             self.runtime.back("受控返回大厅")
+            self.unknown_screen_wake.reset()
             last_back_at = self.now()
             back_wait_logged = False
             stable.reset()
@@ -537,6 +557,7 @@ class Epic7Navigator:
         *,
         source_screen: Optional[np.ndarray] = None,
     ) -> np.ndarray:
+        self.unknown_screen_wake.reset()
         source_screen = source_screen if source_screen is not None else self._wait_for_page(source)
         targets = (target,) if isinstance(target, str) else target
         target_label = "/".join(targets)
@@ -565,6 +586,19 @@ class Epic7Navigator:
                     stable.reset()
                     self.sleep(1.0)
                     continue
+                if is_stable and observation.name == "unknown":
+                    wake_result = self.unknown_screen_wake.handle(
+                        screen,
+                        context=f"navigation:{source}->{target_label}",
+                    )
+                    if wake_result in {
+                        UnknownWakeResult.WAITING,
+                        UnknownWakeResult.CLICKED,
+                    }:
+                        self.sleep(self.poll_seconds)
+                        continue
+                elif is_stable:
+                    self.unknown_screen_wake.reset()
                 if is_stable and observation.name in targets:
                     self.runtime.log(
                         f"模式=导航 页面={observation.name} 置信度={observation.confidence:.3f} 状态=转场确认"
@@ -582,6 +616,7 @@ class Epic7Navigator:
         raise RuntimeError(f"navigation {source} -> {target_label} failed safely; saved {diagnostic}")
 
     def _wait_for_page(self, expected: str) -> np.ndarray:
+        self.unknown_screen_wake.reset()
         stable = StableObservation(required=2)
         story_recovery = _StoryRecoveryAttempts()
         for _ in range(self.transition_frames):
@@ -597,6 +632,19 @@ class Epic7Navigator:
                 stable.reset()
                 self.sleep(1.0)
                 continue
+            if is_stable and observation.name == "unknown":
+                wake_result = self.unknown_screen_wake.handle(
+                    screen,
+                    context=f"navigation:wait-for-{expected}",
+                )
+                if wake_result in {
+                    UnknownWakeResult.WAITING,
+                    UnknownWakeResult.CLICKED,
+                }:
+                    self.sleep(self.poll_seconds)
+                    continue
+            elif is_stable:
+                self.unknown_screen_wake.reset()
             if is_stable and observation.name == expected:
                 return screen
             self.sleep(self.poll_seconds)

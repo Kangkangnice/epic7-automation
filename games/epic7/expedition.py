@@ -25,6 +25,11 @@ from auto_game_unified.games.epic7.battle_controls import (
     BattleControls,
     observe_battle_controls,
 )
+from auto_game_unified.games.epic7.unknown_screen import (
+    UnrecognizedScreen,
+    UnknownScreenWake,
+    UnknownWakeResult,
+)
 
 
 class ExpeditionState(Enum):
@@ -212,7 +217,9 @@ class ExpeditionStateMachine:
     def _required(self, screen: np.ndarray, name: str) -> Match:
         match = self._locate(screen, name)
         if match is None:
-            raise RuntimeError(f"expected expedition {name} anchor was not recognized")
+            raise UnrecognizedScreen(
+                f"expected expedition {name} anchor was not recognized"
+            )
         return match
 
     def _defeated_action(self, screen: np.ndarray) -> Optional[ExpeditionAction]:
@@ -384,7 +391,9 @@ class ExpeditionStateMachine:
                 return ExpeditionAction("enable-auto-battle", auto_off.center)
             if self.state == ExpeditionState.BATTLE and self._locate(screen, "battle_anchor"):
                 return None
-            raise RuntimeError("expedition battle/result screen was not recognized")
+            raise UnrecognizedScreen(
+                "expedition battle/result screen was not recognized"
+            )
 
         if self.state == ExpeditionState.OUTCOME:
             victory_title = self._locate(screen, "victory_title")
@@ -469,6 +478,10 @@ class ExpeditionRunner:
             now=self.now,
             sleep=sleep,
         )
+        self.unknown_screen_wake = UnknownScreenWake(
+            runtime,
+            recovery_gate=self.recovery_gate,
+        )
         self.resource_exhausted = False
 
     def _run_committed_battle(self, *, cycle: int) -> None:
@@ -515,6 +528,19 @@ class ExpeditionRunner:
                 )
                 return self.machine.completed_cycles
             except RuntimeError as error:
+                if isinstance(error, UnrecognizedScreen):
+                    wake_result = self.unknown_screen_wake.handle(
+                        screen,
+                        context=f"expedition:{state_before.value}",
+                    )
+                    if wake_result in {
+                        UnknownWakeResult.WAITING,
+                        UnknownWakeResult.CLICKED,
+                    }:
+                        if wake_result is UnknownWakeResult.CLICKED:
+                            state_started = self.now()
+                        self.sleep(self.poll_seconds)
+                        continue
                 if self.now() - state_started < self._STATE_TIMEOUT_SECONDS:
                     self.sleep(self.poll_seconds)
                     continue
@@ -535,6 +561,7 @@ class ExpeditionRunner:
                     f"no progress in {state_before.value}: {error}; saved {diagnostic}"
                 ) from error
 
+            self.unknown_screen_wake.reset()
             signature = (
                 preview_action.name
                 if preview_action is not None
