@@ -11,6 +11,7 @@ from auto_game_unified.games.epic7.modes import MODE_SPECS, ModeSpec, get_mode
 from auto_game_unified.games.epic7.navigation import Epic7Navigator, build_navigation_templates
 from auto_game_unified.games.epic7.global_popups import (
     Epic7GlobalPopupGuard,
+    load_intimacy_level_up_templates,
     load_network_reconnect_templates,
 )
 
@@ -54,7 +55,10 @@ def run_mode(
     if not dry_run:
         runtime.set_capture_guard(
             Epic7GlobalPopupGuard(
-                load_network_reconnect_templates(template_root / "global")
+                load_network_reconnect_templates(template_root / "global"),
+                intimacy_templates=load_intimacy_level_up_templates(
+                    template_root / "global"
+                ),
             )
         )
         navigator = Epic7Navigator(build_navigation_templates(template_root), runtime)

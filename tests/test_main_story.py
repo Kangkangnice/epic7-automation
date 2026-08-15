@@ -18,6 +18,8 @@ class MainStoryTests(unittest.TestCase):
                 runner_type.return_value.run.return_value = 0
                 spec = replace(get_mode(mode), runner_type=runner_type)
                 events = []
+                network_templates = object()
+                intimacy_templates = object()
                 runtime.set_capture_guard.side_effect = lambda guard: events.append(
                     "guard"
                 )
@@ -25,6 +27,16 @@ class MainStoryTests(unittest.TestCase):
                 with (
                     patch.object(main_module, "_build_runtime", return_value=runtime),
                     patch.object(main_module, "Epic7GlobalPopupGuard") as guard_type,
+                    patch.object(
+                        main_module,
+                        "load_network_reconnect_templates",
+                        return_value=network_templates,
+                    ),
+                    patch.object(
+                        main_module,
+                        "load_intimacy_level_up_templates",
+                        return_value=intimacy_templates,
+                    ),
                     patch.object(main_module, "Epic7Navigator") as navigator_type,
                 ):
                     navigator_type.return_value.return_home.side_effect = lambda: (
@@ -39,6 +51,10 @@ class MainStoryTests(unittest.TestCase):
 
                 runtime.set_capture_guard.assert_called_once_with(
                     guard_type.return_value
+                )
+                guard_type.assert_called_once_with(
+                    network_templates,
+                    intimacy_templates=intimacy_templates,
                 )
                 self.assertEqual(["guard", "navigation"], events)
 
