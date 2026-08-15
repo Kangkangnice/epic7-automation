@@ -1,9 +1,11 @@
 import argparse
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from auto_game_unified.core.hotkey import WindowsPStopHotkey
+from auto_game_unified.core.pushplus import send_pushplus
 from auto_game_unified.core.recovery import RecoveryGate
 from auto_game_unified.core.runtime import ManualStop, Runtime
 from auto_game_unified.core.window import Epic7Window
@@ -17,12 +19,58 @@ from auto_game_unified.games.epic7.global_popups import (
 
 
 ROOT = Path(__file__).resolve().parent
+MODE_LABELS = {
+    "story": "主线",
+    "arena": "竞技场",
+    "expedition": "远征",
+    "fodder": "狗粮",
+}
 
 
 @dataclass(frozen=True)
 class RunResult:
     completed_cycles: int
     resource_exhausted: bool = False
+
+
+def _elapsed_seconds(started_at: float) -> int:
+    return max(0, round(time.monotonic() - started_at))
+
+
+def _notify_live(
+    *,
+    live: bool,
+    mode: str,
+    status: str,
+    elapsed_seconds: int,
+    completed_cycles: int | None = None,
+    target_cycles: int | None = None,
+    error: Exception | None = None,
+) -> None:
+    if not live:
+        return
+
+    label = MODE_LABELS[mode]
+    titles = {
+        "completed": f"第七史诗：{label}已完成",
+        "resource": f"第七史诗：{label}资源不足",
+        "failed": f"第七史诗：{label}运行失败",
+    }
+    lines = [f"模式：{label}", f"耗时：{elapsed_seconds} 秒"]
+    if completed_cycles is not None and target_cycles is not None:
+        lines.insert(1, f"完成轮数：{completed_cycles}/{target_cycles}")
+    if error is not None:
+        lines.insert(1, f"原因：{error}")
+        lines.append(
+            f"诊断目录：{ROOT / 'runtime_diagnostics' / f'epic7_{mode}'}"
+        )
+    try:
+        send_pushplus(titles[status], "\n".join(lines))
+    except Exception as notification_error:
+        print(
+            f"PushPlus 通知失败：{type(notification_error).__name__}",
+            flush=True,
+        )
 
 
 def _build_runtime(mode: str, dry_run: bool) -> Runtime:
@@ -117,6 +165,7 @@ def main(argv: list[str] | None = None) -> int:
         start_state = spec.resolve_state(args.start_state)
     except ValueError as error:
         raise SystemExit(str(error)) from error
+    started_at = time.monotonic()
     try:
         result = run_mode(
             spec=spec,
@@ -128,8 +177,34 @@ def main(argv: list[str] | None = None) -> int:
         print(f"手动停止 mode={args.mode} reason={error}", flush=True)
         return 130
     except RuntimeError as error:
+        _notify_live(
+            live=args.live,
+            mode=args.mode,
+            status="failed",
+            elapsed_seconds=_elapsed_seconds(started_at),
+            error=error,
+        )
         print(f"运行失败 mode={args.mode} reason={error}", flush=True)
         return 1
+    except Exception as error:
+        _notify_live(
+            live=args.live,
+            mode=args.mode,
+            status="failed",
+            elapsed_seconds=_elapsed_seconds(started_at),
+            error=error,
+        )
+        raise
+
+    status = "resource" if result.resource_exhausted else "completed"
+    _notify_live(
+        live=args.live,
+        mode=args.mode,
+        status=status,
+        elapsed_seconds=_elapsed_seconds(started_at),
+        completed_cycles=result.completed_cycles,
+        target_cycles=args.max_cycles,
+    )
     print(f"完成 mode={args.mode} cycles={result.completed_cycles}", flush=True)
     return 2 if result.resource_exhausted else 0
 

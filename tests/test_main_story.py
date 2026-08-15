@@ -1,8 +1,10 @@
+import os
 import unittest
 from dataclasses import replace
 from unittest.mock import patch
 
 from auto_game_unified import main as main_module
+from auto_game_unified.core.pushplus import TOKEN_ENV
 from auto_game_unified.core.recovery import RecoveryGate
 from auto_game_unified.core.runtime import ManualStop
 from auto_game_unified.main import RunResult
@@ -10,6 +12,11 @@ from auto_game_unified.games.epic7.modes import get_mode
 
 
 class MainStoryTests(unittest.TestCase):
+    def setUp(self):
+        self.token_patch = patch.dict(os.environ, {TOKEN_ENV: ""}, clear=False)
+        self.token_patch.start()
+        self.addCleanup(self.token_patch.stop)
+
     def test_live_modes_install_one_global_popup_guard_before_navigation(self):
         for mode in ("story", "arena", "expedition", "fodder"):
             with self.subTest(mode=mode):
@@ -212,6 +219,156 @@ class MainStoryTests(unittest.TestCase):
             )
 
         self.assertEqual(130, exit_code)
+
+    def test_live_success_sends_one_completion_notification(self):
+        with (
+            patch.object(main_module, "run_mode", return_value=RunResult(2)),
+            patch.object(main_module, "send_pushplus") as send,
+            patch.object(main_module.time, "monotonic", side_effect=[100.0, 165.0]),
+        ):
+            exit_code = main_module.main(
+                [
+                    "--mode",
+                    "story",
+                    "--live",
+                    "--confirm",
+                    "RUN",
+                    "--max-cycles",
+                    "2",
+                ]
+            )
+
+        self.assertEqual(0, exit_code)
+        title, content = send.call_args.args
+        self.assertIn("主线已完成", title)
+        self.assertIn("完成轮数：2/2", content)
+        self.assertIn("耗时：65 秒", content)
+
+    def test_live_resource_stop_sends_one_resource_notification(self):
+        with (
+            patch.object(
+                main_module,
+                "run_mode",
+                return_value=RunResult(3, resource_exhausted=True),
+            ),
+            patch.object(main_module, "send_pushplus") as send,
+        ):
+            exit_code = main_module.main(
+                [
+                    "--mode",
+                    "story",
+                    "--live",
+                    "--confirm",
+                    "RUN",
+                    "--max-cycles",
+                    "5",
+                ]
+            )
+
+        self.assertEqual(2, exit_code)
+        title, content = send.call_args.args
+        self.assertIn("资源不足", title)
+        self.assertIn("完成轮数：3/5", content)
+
+    def test_live_runtime_failure_sends_one_failure_notification(self):
+        with (
+            patch.object(
+                main_module, "run_mode", side_effect=RuntimeError("unknown page")
+            ),
+            patch.object(main_module, "send_pushplus") as send,
+        ):
+            exit_code = main_module.main(
+                [
+                    "--mode",
+                    "arena",
+                    "--live",
+                    "--confirm",
+                    "RUN",
+                    "--max-cycles",
+                    "1",
+                ]
+            )
+
+        self.assertEqual(1, exit_code)
+        title, content = send.call_args.args
+        self.assertIn("竞技场运行失败", title)
+        self.assertIn("unknown page", content)
+        self.assertIn("runtime_diagnostics", content)
+
+    def test_unexpected_live_exception_notifies_then_preserves_exception(self):
+        with (
+            patch.object(main_module, "run_mode", side_effect=ValueError("bad state")),
+            patch.object(main_module, "send_pushplus") as send,
+            self.assertRaisesRegex(ValueError, "bad state"),
+        ):
+            main_module.main(
+                [
+                    "--mode",
+                    "fodder",
+                    "--live",
+                    "--confirm",
+                    "RUN",
+                    "--max-cycles",
+                    "1",
+                ]
+            )
+
+        send.assert_called_once()
+
+    def test_manual_stop_does_not_notify(self):
+        with (
+            patch.object(main_module, "run_mode", side_effect=ManualStop("P")),
+            patch.object(main_module, "send_pushplus") as send,
+        ):
+            exit_code = main_module.main(
+                [
+                    "--mode",
+                    "story",
+                    "--live",
+                    "--confirm",
+                    "RUN",
+                    "--max-cycles",
+                    "1",
+                ]
+            )
+
+        self.assertEqual(130, exit_code)
+        send.assert_not_called()
+
+    def test_dry_run_does_not_notify(self):
+        with (
+            patch.object(main_module, "run_mode", return_value=RunResult(1)),
+            patch.object(main_module, "send_pushplus") as send,
+        ):
+            exit_code = main_module.main(
+                ["--mode", "story", "--max-cycles", "1"]
+            )
+
+        self.assertEqual(0, exit_code)
+        send.assert_not_called()
+
+    def test_notification_bug_does_not_change_success_exit_code(self):
+        with (
+            patch.object(main_module, "run_mode", return_value=RunResult(1)),
+            patch.object(
+                main_module,
+                "send_pushplus",
+                side_effect=RuntimeError("notify bug"),
+            ),
+        ):
+            exit_code = main_module.main(
+                [
+                    "--mode",
+                    "expedition",
+                    "--live",
+                    "--confirm",
+                    "RUN",
+                    "--max-cycles",
+                    "1",
+                ]
+            )
+
+        self.assertEqual(0, exit_code)
 
 
 if __name__ == "__main__":
