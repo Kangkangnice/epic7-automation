@@ -134,6 +134,27 @@ python -u -m auto_game_unified.main --mode fodder --max-cycles 10 --live --confi
 
 运行日志和诊断图属于本机产物，已被 Git 忽略；离线回归使用的 `tests/fixtures/` 不能删除。
 
+## 安卓结束通知（PushPlus）
+
+实跑达到目标次数、因允许的资源耗尽停止或发生运行故障时，可以通过 PushPlus 向微信发送一条通知。离线诊断和按 `P` 手动停止不会通知。
+
+1. 登录 PushPlus，完成实名认证并取得用户 Token 或消息 Token。
+2. 仅对当前 PowerShell 窗口启用：
+
+   ```powershell
+   $env:EPIC7_PUSHPLUS_TOKEN = "你的 Token"
+   ```
+
+3. 永久保存到当前 Windows 用户环境变量：
+
+   ```powershell
+   setx EPIC7_PUSHPLUS_TOKEN "你的 Token"
+   ```
+
+   `setx` 后需要关闭并重新打开终端才会生效。
+
+Token 不要写进仓库文件、日志或聊天记录。未配置 Token 时，自动化仍会正常运行，终端会提示通知未启用。PushPlus 接口返回成功只代表平台接受了异步发送请求；手机最终投递仍取决于 PushPlus、微信和当前网络。
+
 ## 测试
 
 在仓库目录执行：
