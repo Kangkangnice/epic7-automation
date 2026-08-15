@@ -438,12 +438,22 @@ class StoryStateMachine:
             BattleControls.TRANSITION: AutoBattleState.UNKNOWN,
         }[controls]
         auto_match = self._locate(screen, "auto_off")
-        allowed_action = None
-        for action_name in ("skip_confirm", "skip", "watch_story"):
-            match = self._locate(screen, action_name)
-            if match is not None:
-                allowed_action = (action_name, match.center)
-                break
+        battle_guide = find_battle_guide_dont_show(
+            screen,
+            self.templates.battle_guide_title,
+            self.templates.battle_guide_dont_show,
+        )
+        allowed_action = (
+            ("dismiss-battle-guide-warning", battle_guide.center)
+            if battle_guide is not None
+            else None
+        )
+        if allowed_action is None:
+            for action_name in ("skip_confirm", "skip", "watch_story"):
+                match = self._locate(screen, action_name)
+                if match is not None:
+                    allowed_action = (action_name, match.center)
+                    break
         progressing = (
             auto_state is AutoBattleState.AUTO
             and meaningful_change(previous_screen, screen)

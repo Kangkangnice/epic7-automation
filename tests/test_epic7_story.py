@@ -60,6 +60,22 @@ class Epic7StoryStateMachineTests(unittest.TestCase):
                     )
                 )
 
+    def test_battle_adapter_exposes_battle_guide_dont_show_action(self):
+        machine = StoryStateMachine(build_story_templates(TEMPLATES))
+
+        observation = machine.observe_battle(
+            load_fixture("battle_guide_warning_live_20260815"), None
+        )
+
+        self.assertIsNotNone(observation.allowed_action)
+        self.assertEqual(
+            "dismiss-battle-guide-warning", observation.allowed_action[0]
+        )
+        self.assertTrue(1240 <= observation.allowed_action[1][0] <= 1300)
+        self.assertTrue(830 <= observation.allowed_action[1][1] <= 880)
+        self.assertFalse(observation.battle_visible)
+        self.assertFalse(observation.result_visible)
+
     def test_battle_adapter_uses_background_independent_control_classifier(self):
         machine = StoryStateMachine(build_story_templates(TEMPLATES))
 
