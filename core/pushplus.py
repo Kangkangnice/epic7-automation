@@ -49,6 +49,9 @@ def send_pushplus(
 
     code = result.get("code") if isinstance(result, dict) else None
     if code != 200:
+        if code == 905:
+            output("PushPlus 通知失败：返回码 905（账户未完成实名认证）")
+            return False
         output(f"PushPlus 通知失败：返回码 {code!r}")
         return False
     return True

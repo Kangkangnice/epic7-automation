@@ -96,6 +96,25 @@ class PushPlusTests(unittest.TestCase):
                 self.assertFalse(sent)
                 self.assertNotIn("secret-token", "\n".join(messages))
 
+    def test_real_name_verification_failure_is_explained(self):
+        def verification_failure(request, *, timeout):
+            return FakeResponse(b'{"code": 905, "msg": "not verified"}')
+
+        messages = []
+        sent = send_pushplus(
+            "title",
+            "content",
+            environ={TOKEN_ENV: "secret-token"},
+            opener=verification_failure,
+            output=messages.append,
+        )
+
+        self.assertFalse(sent)
+        self.assertEqual(
+            ["PushPlus 通知失败：返回码 905（账户未完成实名认证）"], messages
+        )
+        self.assertNotIn("secret-token", "\n".join(messages))
+
 
 if __name__ == "__main__":
     unittest.main()

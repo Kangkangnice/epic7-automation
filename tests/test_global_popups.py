@@ -74,16 +74,25 @@ def test_intimacy_level_up_requires_title_and_dismiss_anchors():
     assert 850 <= match.center[1] <= 970
 
 
-def test_intimacy_level_up_rejects_missing_title_or_dismiss_anchor():
+def test_intimacy_level_up_rejects_missing_title():
     screen = load_screen("intimacy_level_up_live_20260815.png")
     templates = load_intimacy_level_up_templates(TEMPLATES)
     without_title = screen.copy()
     without_title[230:370, 800:1450] = 0
+
+    assert find_intimacy_level_up_dismiss(without_title, templates) is None
+
+
+def test_intimacy_level_up_uses_safe_center_when_dismiss_prompt_is_animating():
+    screen = load_screen("intimacy_level_up_live_20260815.png")
+    templates = load_intimacy_level_up_templates(TEMPLATES)
     without_dismiss = screen.copy()
     without_dismiss[820:980, 900:1400] = 0
 
-    assert find_intimacy_level_up_dismiss(without_title, templates) is None
-    assert find_intimacy_level_up_dismiss(without_dismiss, templates) is None
+    match = find_intimacy_level_up_dismiss(without_dismiss, templates)
+
+    assert match is not None
+    assert match.center == (screen.shape[1] // 2, screen.shape[0] // 2)
 
 
 def test_intimacy_level_up_rejects_normal_result_pages():
