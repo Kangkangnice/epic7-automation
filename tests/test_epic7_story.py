@@ -200,6 +200,17 @@ class Epic7StoryStateMachineTests(unittest.TestCase):
             ),
         )
 
+    def test_manual_skill_variant_is_a_battle_and_requests_auto_enable(self):
+        machine = StoryStateMachine(build_story_templates(TEMPLATES))
+
+        observation = machine.observe_battle(
+            load_fixture("battle_manual_skill_variant_live_20260815"), None
+        )
+
+        self.assertTrue(observation.battle_visible)
+        self.assertEqual(AutoBattleState.MANUAL, observation.auto_state)
+        self.assertIsNotNone(observation.auto_point)
+
     def test_lower_right_control_classification_ignores_battle_background(self):
         machine = StoryStateMachine(build_story_templates(TEMPLATES))
         auto = load_fixture("battle_auto_on_live_20260809")

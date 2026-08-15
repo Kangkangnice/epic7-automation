@@ -93,8 +93,12 @@ def observe_battle_controls(screen: np.ndarray) -> BattleControls:
         distance_squared = (xx - center_x) ** 2 + (yy - 1040) ** 2
         border = (distance_squared >= 55 ** 2) & (distance_squared <= 75 ** 2)
         manual_borders.append(float(np.mean(hsv[:, :, 2][border] > 120)) >= 0.35)
-    if all(manual_borders) and aligned_count(
+    manual_circle_count = aligned_count(
         _MANUAL_CONTROL_CENTERS, 1040, (55, 82), 38
-    ) == len(_MANUAL_CONTROL_CENTERS):
+    )
+    legacy_canvas = not frame[:52].any() and not frame[:, 1920:].any()
+    if manual_circle_count == len(_MANUAL_CONTROL_CENTERS) and (
+        all(manual_borders) or legacy_canvas
+    ):
         return BattleControls.MANUAL_CONTROLS
     return BattleControls.TRANSITION

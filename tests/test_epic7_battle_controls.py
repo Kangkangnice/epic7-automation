@@ -52,6 +52,7 @@ class SharedBattleControlsTests(unittest.TestCase):
     def test_each_mode_manual_controls_remain_manual(self):
         for group, name in (
             ("epic7_story", "battle_auto_off_live_20260809"),
+            ("epic7_story", "battle_manual_skill_variant_live_20260815"),
             ("epic7_arena", "battle_manual_stuck_live_20260814"),
             ("epic7_expedition", "battle_manual_waiting_live"),
         ):
