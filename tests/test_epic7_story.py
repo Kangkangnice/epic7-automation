@@ -22,6 +22,44 @@ def load_fixture(name: str) -> np.ndarray:
 
 
 class Epic7StoryStateMachineTests(unittest.TestCase):
+    def test_battle_guide_warning_requires_title_and_dont_show_button(self):
+        popup = load_fixture("battle_guide_warning_live_20260815")
+        title = np.asarray(
+            Image.open(TEMPLATES / "battle_guide_title.png").convert("RGB")
+        )
+        dont_show = np.asarray(
+            Image.open(TEMPLATES / "battle_guide_dont_show.png").convert("RGB")
+        )
+
+        match = story_module.find_battle_guide_dont_show(
+            popup, title, dont_show
+        )
+        without_title = popup.copy()
+        without_title[250:430, 780:1200] = 0
+        without_button = popup.copy()
+        without_button[760:950, 1080:1500] = 0
+
+        self.assertIsNotNone(match)
+        self.assertTrue(1240 <= match.center[0] <= 1300)
+        self.assertTrue(830 <= match.center[1] <= 880)
+        self.assertIsNone(
+            story_module.find_battle_guide_dont_show(
+                without_title, title, dont_show
+            )
+        )
+        self.assertIsNone(
+            story_module.find_battle_guide_dont_show(
+                without_button, title, dont_show
+            )
+        )
+        for fixture in ("team", "battle_auto_on_live_20260809", "results"):
+            with self.subTest(fixture=fixture):
+                self.assertIsNone(
+                    story_module.find_battle_guide_dont_show(
+                        load_fixture(fixture), title, dont_show
+                    )
+                )
+
     def test_battle_adapter_uses_background_independent_control_classifier(self):
         machine = StoryStateMachine(build_story_templates(TEMPLATES))
 
