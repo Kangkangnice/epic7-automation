@@ -36,6 +36,8 @@ _FRIENDSHIP_POINTS_TITLE_REGION = (600, 150, 800, 180)
 _FRIENDSHIP_POINTS_CLOSE_REGION = (750, 840, 450, 190)
 _STORY_SKIP_REGION = (1700, 0, 240, 200)
 _STORY_SKIP_CONFIRM_REGION = (850, 600, 600, 300)
+_BATTLE_GUIDE_TITLE_REGION = (780, 250, 420, 180)
+_BATTLE_GUIDE_DONT_SHOW_REGION = (1080, 760, 420, 190)
 
 
 def find_friendship_points_popup_close(
@@ -76,6 +78,46 @@ def find_friendship_points_popup_close(
     if title is None or close is None:
         return None
     return Match(close.center, min(title.score, close.score))
+
+
+def find_battle_guide_dont_show(
+    screen: np.ndarray,
+    title_template: np.ndarray,
+    dont_show_template: np.ndarray,
+) -> Optional[Match]:
+    """Return Don't Show only when both battle-guide anchors exist."""
+    lower = np.array([0, 0, 150])
+    upper = np.array([179, 100, 255])
+
+    def locate(template: np.ndarray, region: tuple[int, int, int, int]):
+        scale_x = screen.shape[1] / _WATCH_STORY_REFERENCE_SIZE[0]
+        scale_y = screen.shape[0] / _WATCH_STORY_REFERENCE_SIZE[1]
+        ref_x, ref_y, ref_width, ref_height = region
+        x, y, width, height = (
+            round(ref_x * scale_x),
+            round(ref_y * scale_y),
+            round(ref_width * scale_x),
+            round(ref_height * scale_y),
+        )
+        search_hsv = cv2.cvtColor(
+            screen[y : y + height, x : x + width], cv2.COLOR_RGB2HSV
+        )
+        template_hsv = cv2.cvtColor(template, cv2.COLOR_RGB2HSV)
+        match = find_template(
+            cv2.inRange(search_hsv, lower, upper),
+            cv2.inRange(template_hsv, lower, upper),
+            0.85,
+            reference_size=(ref_width, ref_height),
+        )
+        if match is None:
+            return None
+        return Match((x + match.center[0], y + match.center[1]), match.score)
+
+    title = locate(title_template, _BATTLE_GUIDE_TITLE_REGION)
+    dont_show = locate(dont_show_template, _BATTLE_GUIDE_DONT_SHOW_REGION)
+    if title is None or dont_show is None:
+        return None
+    return Match(dont_show.center, min(title.score, dont_show.score))
 
 
 def find_watch_story_button(
@@ -210,6 +252,8 @@ class StoryAction:
 class StoryTemplates:
     friendship_points_title: np.ndarray
     friendship_points_close: np.ndarray
+    battle_guide_title: np.ndarray
+    battle_guide_dont_show: np.ndarray
     watch_story: np.ndarray
     prepare_battle: np.ndarray
     prepare_battle_updated: np.ndarray
@@ -246,6 +290,10 @@ def build_story_templates(template_dir: Path) -> StoryTemplates:
         ),
         friendship_points_close=load_template(
             str(global_templates / "friendship_points_close.png")
+        ),
+        battle_guide_title=load_template(str(template_dir / "battle_guide_title.png")),
+        battle_guide_dont_show=load_template(
+            str(template_dir / "battle_guide_dont_show.png")
         ),
         watch_story=load_template(str(template_dir / "watch_story.png")),
         prepare_battle=load_template(str(template_dir / "prepare_battle.png")),
