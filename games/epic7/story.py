@@ -23,6 +23,11 @@ from auto_game_unified.games.epic7.battle_controls import (
     BattleControls,
     observe_battle_controls,
 )
+from auto_game_unified.games.epic7.unknown_screen import (
+    UnrecognizedScreen,
+    UnknownScreenWake,
+    UnknownWakeResult,
+)
 
 
 _WATCH_STORY_REFERENCE_SIZE = (1982, 1132)
@@ -577,7 +582,9 @@ class StoryStateMachine:
                 self.auto_enabled = False
                 return StoryAction("prepare_battle", match.center)
 
-        raise RuntimeError(f"expected {self.state.value} story screen was not recognized")
+        raise UnrecognizedScreen(
+            f"expected {self.state.value} story screen was not recognized"
+        )
 
     def preview(self, screen: np.ndarray):
         """Observe a frame without committing optimistic state changes."""
@@ -648,6 +655,10 @@ class StoryRunner:
             now=self.now,
             sleep=sleep,
         )
+        self.unknown_screen_wake = UnknownScreenWake(
+            runtime,
+            recovery_gate=self.recovery_gate,
+        )
         self.resource_exhausted = False
 
     def _run_committed_battle(self, *, cycle: int) -> None:
@@ -699,6 +710,19 @@ class StoryRunner:
                 self.runtime.log(f"模式=主线 停止=生命之叶耗尽 详情={error}")
                 return self.machine.completed_cycles
             except RuntimeError as error:
+                if isinstance(error, UnrecognizedScreen):
+                    wake_result = self.unknown_screen_wake.handle(
+                        screen,
+                        context=f"story:{self.machine.state.value}",
+                    )
+                    if wake_result in {
+                        UnknownWakeResult.WAITING,
+                        UnknownWakeResult.CLICKED,
+                    }:
+                        if wake_result is UnknownWakeResult.CLICKED:
+                            state_started = self.now()
+                        self.sleep(self.poll_seconds)
+                        continue
                 elapsed = self.now() - state_started
                 if elapsed >= self._TIMEOUT_SECONDS[self.machine.state]:
                     if self.recovery is not None and not recovered:
@@ -729,6 +753,7 @@ class StoryRunner:
                 self.sleep(self.poll_seconds)
                 continue
 
+            self.unknown_screen_wake.reset()
             signature = (
                 preview_action.name if preview_action is not None
                 else f"settled:{outcome[0].value}:{outcome[1]}"

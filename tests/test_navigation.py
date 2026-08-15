@@ -348,18 +348,23 @@ class NavigationTests(unittest.TestCase):
 
         self.assertEqual([], backs)
 
-    def test_unknown_page_uses_controlled_back_then_confirms_lobby(self):
+    def test_unknown_page_wakes_twice_before_controlled_back(self):
+        clicks: list[tuple[int, int]] = []
         backs: list[bool] = []
         unknown = fixture("story_stage").copy()
         # Remove the known stage button so this remains a valid but unknown game frame.
         unknown[930:1132, 1450:1920] = 0
+        unknown[:52] = 0
+        unknown[:, 1920:] = 0
         navigator = self.navigator(
-            [unknown, unknown, fixture("lobby"), fixture("lobby")],
+            [unknown] * 7 + [fixture("lobby"), fixture("lobby")],
+            clicks=clicks,
             backs=backs,
         )
 
         navigator.return_home()
 
+        self.assertEqual([(991, 566), (991, 566)], clicks)
         self.assertEqual([True], backs)
 
     def test_story_ready_uses_the_visible_game_back_button(self):
@@ -403,6 +408,24 @@ class NavigationTests(unittest.TestCase):
         navigator.navigate("story")
 
         self.assertEqual([(1790, 326)], clicks)
+
+    def test_navigation_transition_wakes_static_unknown_before_target(self):
+        clicks: list[tuple[int, int]] = []
+        unknown = fixture("story_stage").copy()
+        unknown[930:1132, 1450:1920] = 0
+        unknown[:52] = 0
+        unknown[:, 1920:] = 0
+        navigator = self.navigator(
+            [unknown] * 7 + [fixture("story_stage"), fixture("story_stage")],
+            clicks=clicks,
+        )
+
+        navigator.navigate("story", lobby_screen=fixture("lobby"))
+
+        self.assertEqual(
+            [(1790, 326), (991, 566), (991, 566)],
+            clicks,
+        )
 
     def test_story_navigation_accepts_the_animated_updated_lobby_anchor(self):
         clicks: list[tuple[int, int]] = []

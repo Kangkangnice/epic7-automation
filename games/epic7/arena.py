@@ -25,6 +25,11 @@ from auto_game_unified.games.epic7.battle_controls import (
     BattleControls,
     observe_battle_controls,
 )
+from auto_game_unified.games.epic7.unknown_screen import (
+    UnrecognizedScreen,
+    UnknownScreenWake,
+    UnknownWakeResult,
+)
 
 
 _RANK_PROMOTION_REFERENCE_SIZE = (1982, 1132)
@@ -498,7 +503,9 @@ class ArenaStateMachine:
         template_name = self._STATE_TEMPLATE[self.state]
         match = self._locate(screen, template_name)
         if match is None:
-            raise RuntimeError(f"expected {self.state.value} screen was not recognized")
+            raise UnrecognizedScreen(
+                f"expected {self.state.value} screen was not recognized"
+            )
 
         if self.state == ArenaState.LIST:
             return self._list_action(screen)
@@ -559,6 +566,10 @@ class ArenaRunner:
             now=self.now,
             sleep=sleep,
         )
+        self.unknown_screen_wake = UnknownScreenWake(
+            runtime,
+            recovery_gate=self.recovery_gate,
+        )
         self.purchase_stamp_path = purchase_stamp_path
         self.resource_exhausted = False
 
@@ -601,6 +612,19 @@ class ArenaRunner:
                 )
                 return self.machine.completed_cycles
             except RuntimeError as error:
+                if isinstance(error, UnrecognizedScreen):
+                    wake_result = self.unknown_screen_wake.handle(
+                        screen,
+                        context=f"arena:{self.machine.state.value}",
+                    )
+                    if wake_result in {
+                        UnknownWakeResult.WAITING,
+                        UnknownWakeResult.CLICKED,
+                    }:
+                        if wake_result is UnknownWakeResult.CLICKED:
+                            state_started = self.now()
+                        self.sleep(self.poll_seconds)
+                        continue
                 timeout = self._TIMEOUT_SECONDS[self.machine.state]
                 if self.now() - state_started >= timeout:
                     if self.recovery is not None and not recovered:
@@ -621,6 +645,7 @@ class ArenaRunner:
                 self.sleep(self.poll_seconds)
                 continue
 
+            self.unknown_screen_wake.reset()
             if max_cycles is not None and self.machine.completed_cycles >= max_cycles:
                 return self.machine.completed_cycles
             if action.name == "purchase-friendship-ticket" and not self._purchase_allowed_today():

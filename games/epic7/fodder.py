@@ -26,6 +26,11 @@ from auto_game_unified.games.epic7.battle_controls import (
     observe_battle_controls,
 )
 from auto_game_unified.games.epic7.story import find_friendship_points_popup_close
+from auto_game_unified.games.epic7.unknown_screen import (
+    UnrecognizedScreen,
+    UnknownScreenWake,
+    UnknownWakeResult,
+)
 
 
 class FodderState(Enum):
@@ -284,7 +289,9 @@ class FodderStateMachine:
             if controls is not BattleControls.TRANSITION:
                 return None
 
-        raise RuntimeError(f"expected {self.state.value} fodder screen was not recognized")
+        raise UnrecognizedScreen(
+            f"expected {self.state.value} fodder screen was not recognized"
+        )
 
     def preview(self, screen: np.ndarray):
         snapshot = (
@@ -343,6 +350,10 @@ class FodderRunner:
             now=self.now,
             sleep=sleep,
         )
+        self.unknown_screen_wake = UnknownScreenWake(
+            runtime,
+            recovery_gate=self.recovery_gate,
+        )
         self.resource_exhausted = False
 
     def _run_committed_battle(self, *, cycle: int) -> None:
@@ -400,6 +411,19 @@ class FodderRunner:
                 self.runtime.log(f"模式=狗粮 停止=生命之叶耗尽 详情={error}")
                 return self.machine.completed_cycles
             except RuntimeError as error:
+                if isinstance(error, UnrecognizedScreen):
+                    wake_result = self.unknown_screen_wake.handle(
+                        screen,
+                        context=f"fodder:{self.machine.state.value}",
+                    )
+                    if wake_result in {
+                        UnknownWakeResult.WAITING,
+                        UnknownWakeResult.CLICKED,
+                    }:
+                        if wake_result is UnknownWakeResult.CLICKED:
+                            state_started = self.now()
+                        self.sleep(self.poll_seconds)
+                        continue
                 elapsed = self.now() - state_started
                 if elapsed >= self._TIMEOUT_SECONDS[self.machine.state]:
                     if self.recovery is not None and not recovered:
@@ -427,6 +451,7 @@ class FodderRunner:
                 self.sleep(self.poll_seconds)
                 continue
 
+            self.unknown_screen_wake.reset()
             signature = (
                 preview_action.name
                 if preview_action is not None
