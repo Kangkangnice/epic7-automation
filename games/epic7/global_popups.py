@@ -85,9 +85,11 @@ def find_intimacy_level_up_dismiss(
         return Match((x + match.center[0], y + match.center[1]), match.score)
 
     title = locate(templates.title, _INTIMACY_TITLE_REGION)
-    dismiss = locate(templates.dismiss, _INTIMACY_DISMISS_REGION)
-    if title is None or dismiss is None:
+    if title is None:
         return None
+    dismiss = locate(templates.dismiss, _INTIMACY_DISMISS_REGION)
+    if dismiss is None:
+        return Match((screen.shape[1] // 2, screen.shape[0] // 2), title.score)
     return Match(dismiss.center, min(title.score, dismiss.score))
 
 
