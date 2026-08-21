@@ -11,6 +11,7 @@ from auto_game_unified.games.epic7.hero_synthesis import (
     HeroSynthRunner,
     HeroSynthState,
     HeroSynthStateMachine,
+    UnrecognizedScreen,
     build_hero_templates,
     state_label,
 )
@@ -60,6 +61,8 @@ class TemplateTests(unittest.TestCase):
             "story_back",
         ):
             self.assertIsNotNone(getattr(templates, name))
+        self.assertIsNotNone(templates.imprint_result_title)
+        self.assertIsNotNone(templates.imprint_result_close)
 
 
 class HeroListDecisionTests(unittest.TestCase):
@@ -160,12 +163,28 @@ class ImprintDecisionTests(unittest.TestCase):
 
     def test_imprint_after_synth_backs_to_list(self):
         m = machine()
-        m.state = HeroSynthState.IMPRINT_CONFIRM
+        m.state = HeroSynthState.IMPRINT_REWARD
         action = m.next_action(fixture("imprint_after_synth"))
         self.assertEqual("back_to_list", action.name)
         self.assertLess(abs(action.point[0] - 30), 20)
         self.assertLess(abs(action.point[1] - 92), 20)
         self.assertIs(m.state, HeroSynthState.HERO_LIST)
+
+    def test_imprint_result_state_backs_to_list_after_popup_is_closed(self):
+        m = machine()
+        m.state = HeroSynthState.IMPRINT_REWARD
+        action = m.next_action(fixture("imprint_after_synth"))
+        self.assertEqual("back_to_list", action.name)
+        self.assertIs(m.state, HeroSynthState.HERO_LIST)
+
+    def test_incomplete_result_popup_never_clicks_underlying_back_arrow(self):
+        m = machine()
+        m.state = HeroSynthState.IMPRINT_CONFIRM
+        screen = fixture("imprint_result_popup").copy()
+        screen[180:480, 650:1350] = 0
+        screen[1020:1110, 900:1400] = fixture("imprint_added")[1020:1110, 900:1400]
+        with self.assertRaises(UnrecognizedScreen):
+            m.next_action(screen)
 
     def test_synth_confirm_popup_clicked(self):
         m = machine()
@@ -174,6 +193,15 @@ class ImprintDecisionTests(unittest.TestCase):
         self.assertLess(abs(action.point[0] - 1121), 15)
         self.assertLess(abs(action.point[1] - 775), 20)
         self.assertIs(m.state, HeroSynthState.IMPRINT_CONFIRM)
+
+    def test_imprint_result_popup_closes_before_returning_to_list(self):
+        m = machine()
+        m.state = HeroSynthState.IMPRINT_CONFIRM
+        action = m.next_action(fixture("imprint_result_popup"))
+        self.assertEqual("close_imprint_result", action.name)
+        self.assertLess(abs(action.point[0] - 991), 20)
+        self.assertLess(abs(action.point[1] - 850), 20)
+        self.assertIs(m.state, HeroSynthState.IMPRINT_REWARD)
 
     def test_blue_band_without_gold_is_not_confirm(self):
         """只有蓝色带（如列表动画误现）而无金色取消带时不得当作确认弹窗。"""
@@ -226,6 +254,12 @@ class TransmitDecisionTests(unittest.TestCase):
 
 
 class GuardTests(unittest.TestCase):
+    def test_card_fingerprint_distinguishes_recorded_cards(self):
+        m = machine(verify_filter=True)
+        first = m._detail_fingerprint(fixture("list_reddot"))
+        second = m._detail_fingerprint(fixture("list_grey_3s"))
+        self.assertNotEqual(first, second)
+
     def test_preview_restores_snapshot(self):
         m = machine(verify_filter=True)
         screen = fixture("list_reddot")
@@ -286,6 +320,59 @@ class NavigationTests(unittest.TestCase):
 
 
 class RunnerFlowTests(unittest.TestCase):
+    def test_multi_card_sequence_completes_one_simulator_cycle(self):
+        sequence = [
+            "list_reddot",          # 首次进列表 → 打开筛选
+            "filter_open",          # 三星已选 → 关闭筛选
+            "list_no_reddot",       # 普通卡 → 跳过
+            "list_grey_3s",         # SSS 卡 → 跳过
+            "list_reddot",          # 非 SSS 红点卡 → 进入刻印
+            "imprint_up_cards",     # 加材料1
+            "imprint_up_one_card",  # 加材料2
+            "imprint_added",        # 材料就位 → 开始合成
+            "synth_confirm",        # 确认合成
+            "imprint_result_popup", # 关闭结果覆盖层
+            "imprint_after_synth",  # 返回英雄列表
+            "list_end_of_cards",    # 无更多卡 → 完成一轮
+        ]
+        screens = iter(fixture(name) for name in sequence for _ in range(2))
+        clicks: list[tuple[int, int]] = []
+        logs: list[str] = []
+        runner = HeroSynthRunner(
+            HeroSynthStateMachine(build_hero_templates(TEMPLATES)),
+            Runtime(
+                lambda: next(screens),
+                clicks.append,
+                emit=logs.append,
+            ),
+            sleep=lambda _: None,
+        )
+
+        completed = runner.run(max_cycles=1)
+
+        names = [
+            line.split("动作=")[1].split()[0]
+            for line in logs
+            if "执行点击" in line and "动作=" in line
+        ]
+        self.assertEqual(1, completed)
+        self.assertEqual("open_filter", names[0])
+        self.assertEqual("close_filter", names[1])
+        self.assertTrue(names[2].startswith("next_card_"))
+        self.assertTrue(names[3].startswith("next_card_"))
+        self.assertEqual(
+            [
+                "open_imprint",
+                "add_material_2",
+                "add_material_1",
+                "start_synthesis",
+                "confirm_synthesis",
+                "close_imprint_result",
+                "back_to_list",
+            ],
+            names[4:],
+        )
+
     def test_full_synthesis_flow(self):
         sequence = [
             "list_reddot",       # 首次进列表 → 打开筛选
@@ -295,6 +382,7 @@ class RunnerFlowTests(unittest.TestCase):
             "imprint_up_one_card",  # 加材料2（剩一张Up）
             "imprint_added",     # 无Up → 点绿色合成
             "synth_confirm",     # 确认弹窗
+            "imprint_result_popup",  # 关闭合成结果覆盖层
             "imprint_after_synth",  # 返回列表
             "list_end_of_cards",  # 无更多卡 → 完成一轮
         ]
@@ -326,6 +414,7 @@ class RunnerFlowTests(unittest.TestCase):
                 "add_material_1",
                 "start_synthesis",
                 "confirm_synthesis",
+                "close_imprint_result",
                 "back_to_list",
             ],
             names,

@@ -5,11 +5,10 @@
 - 刻印按钮有红点且非 3S → 进入刻印界面，加入全部 Up 材料 → 合成 → 确认 → 返回；
 - 无红点 → 跳过；列表底部无更多卡片时完成一轮。
 
-安全护栏：紧邻的上一张卡是 3S（置灰）时，当前红点卡不合成（防止把
-3S 兄弟副本当材料消耗）；此类"冗余副本"的传送流程已实现，但缺少
-3S 材料界面模板，自动触发暂不启用（需要补采截图后接入）。
+当前规则只看当前卡：SSS 跳过，非 SSS 且有红点才合成。
 """
 
+import hashlib
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
@@ -30,6 +29,7 @@ class HeroSynthState(Enum):
     FILTER = "filter"
     IMPRINT_ADD = "imprint_add"
     IMPRINT_CONFIRM = "imprint_confirm"
+    IMPRINT_REWARD = "imprint_reward"
     TRANSMIT_SELECT = "transmit_select"
     TRANSMIT_CONFIRM = "transmit_confirm"
     TRANSMIT_REWARD = "transmit_reward"
@@ -40,6 +40,7 @@ STATE_LABELS = {
     HeroSynthState.FILTER: "筛选面板",
     HeroSynthState.IMPRINT_ADD: "刻印加材料",
     HeroSynthState.IMPRINT_CONFIRM: "合成确认",
+    HeroSynthState.IMPRINT_REWARD: "合成结果",
     HeroSynthState.TRANSMIT_SELECT: "传送选择",
     HeroSynthState.TRANSMIT_CONFIRM: "传送确认",
     HeroSynthState.TRANSMIT_REWARD: "传送奖励",
@@ -86,6 +87,8 @@ class HeroTemplates:
     auto_select_label: np.ndarray
     story_back: np.ndarray
     rating_sss: np.ndarray
+    imprint_result_title: Optional[np.ndarray] = None
+    imprint_result_close: Optional[np.ndarray] = None
     threshold: float = 0.80
     pc_client: bool = False
     assume_non_max_rating: bool = False
@@ -95,6 +98,8 @@ def build_hero_templates(template_root: Path) -> HeroTemplates:
     hero = template_root / "hero"
     navigation = template_root / "navigation"
     is_pc = template_root.name == "templates_pc"
+    result_title = hero / "imprint_result_title.png"
+    result_close = hero / "imprint_result_close.png"
     return HeroTemplates(
         filter_button=load_template(str(hero / "filter_button.png")),
         filter_level_label=load_template(str(hero / "filter_level_label.png")),
@@ -104,6 +109,8 @@ def build_hero_templates(template_root: Path) -> HeroTemplates:
         auto_select_label=load_template(str(hero / "auto_select_label.png")),
         story_back=load_template(str(navigation / "story_back.png")),
         rating_sss=load_template(str(hero / "rating_sss.png")),
+        imprint_result_title=(load_template(str(result_title)) if result_title.exists() else None),
+        imprint_result_close=(load_template(str(result_close)) if result_close.exists() else None),
         pc_client=is_pc,
         assume_non_max_rating=is_pc,
     )
@@ -141,6 +148,8 @@ class HeroSynthStateMachine:
     _BLUE_BAND_ZONE = (900, 700, 450, 120)
     _GOLD_BAND_ZONE = (650, 700, 330, 120)
     _REWARD_STRIP_ZONE = (880, 825, 160, 35)
+    _IMPRINT_RESULT_TITLE_REGION = (650, 180, 700, 300)
+    _IMPRINT_RESULT_CLOSE_REGION = (650, 730, 700, 300)
     _TRANSMIT_STRIP_ZONE = (1400, 200, 250, 800)
     _TRANSMIT_GRID_ZONE = (50, 305, 620, 405)
     _DETAIL_FP_ZONE = (150, 350, 550, 300)
@@ -156,6 +165,7 @@ class HeroSynthStateMachine:
     _TRANSMIT_CARD_X = 1720
     _TRANSMIT_GREEN_POINT = (1203, 1057)
     _REWARD_CLOSE_POINT = (960, 843)
+    _IMPRINT_RESULT_CLOSE_POINT = (991, 850)
     _BACK_OFFSET = (-26, -6)
     _PC_FUNNEL_POINT = (1612, 141)
     _PC_STAR3_POINT = (1148, 613)
@@ -433,6 +443,26 @@ class HeroSynthStateMachine:
         low, high = self._REWARD_STRIP_RANGE
         return low <= count <= high
 
+    def _imprint_result_present(self, screen: np.ndarray) -> bool:
+        if (
+            self.templates.imprint_result_title is None
+            or self.templates.imprint_result_close is None
+        ):
+            return False
+        title = self._locate(
+            screen,
+            "imprint_result_title",
+            0.82,
+            region_override=self._IMPRINT_RESULT_TITLE_REGION,
+        )
+        close = self._locate(
+            screen,
+            "imprint_result_close",
+            0.78,
+            region_override=self._IMPRINT_RESULT_CLOSE_REGION,
+        )
+        return title is not None and close is not None
+
     def _transmit_grid_filled(self, screen: np.ndarray) -> bool:
         gray = self._zone_gray(screen, self._TRANSMIT_GRID_ZONE)
         return int((gray > 120).sum()) > 5000
@@ -468,9 +498,11 @@ class HeroSynthStateMachine:
     # ---- 遍历决策 ----
 
     def _detail_fingerprint(self, screen: np.ndarray) -> str:
-        """左侧详情面板亮度指纹：不同英雄给出不同值，用于区分同名动作。"""
+        """左侧详情面板的稳定视觉指纹，用于区分连续翻到的英雄。"""
         gray = self._zone_gray(screen, self._DETAIL_FP_ZONE)
-        return str(int(gray.mean()) // 16)
+        small = cv2.resize(gray, (12, 8), interpolation=cv2.INTER_AREA)
+        quantized = (small // 32).astype(np.uint8)
+        return hashlib.sha1(quantized.tobytes()).hexdigest()[:8]
 
     def _advance_or_finish(self, screen: np.ndarray) -> Optional[HeroAction]:
         if not self._card_below_present(screen):
@@ -496,7 +528,15 @@ class HeroSynthStateMachine:
 
     def next_action(self, screen: np.ndarray) -> Optional[HeroAction]:
         self._last_screen = screen
-        # 1. 确认弹窗（合成/传送共用的蓝色按钮）
+        # 1. 合成结果覆盖层必须先关闭，不能点击覆盖层下的返回箭头。
+        if self._imprint_result_present(screen):
+            self.state = HeroSynthState.IMPRINT_REWARD
+            return HeroAction(
+                "close_imprint_result",
+                self._scaled_point(screen, self._IMPRINT_RESULT_CLOSE_POINT),
+            )
+
+        # 2. 确认弹窗（合成/传送共用的蓝色按钮）
         confirm = self._confirm_button(screen)
         if confirm is not None:
             transmit_ctx = self._locate(screen, "auto_select_label", 0.85) is not None
@@ -508,12 +548,12 @@ class HeroSynthStateMachine:
             self.state = HeroSynthState.IMPRINT_CONFIRM
             return HeroAction("confirm_synthesis", self._scaled_point(screen, confirm))
 
-        # 2. 传送奖励弹窗（仅在传送流程中判定，防止列表误触）
+        # 3. 传送奖励弹窗（仅在传送流程中判定，防止列表误触）
         if self.state.value.startswith("transmit") and self._reward_strip_present(screen):
             self.state = HeroSynthState.TRANSMIT_SELECT
             return HeroAction("close_reward", self._scaled_point(screen, self._REWARD_CLOSE_POINT))
 
-        # 3. 传送选择界面（自动选择标签为锚点，需先于绿钮判定）
+        # 4. 传送选择界面（自动选择标签为锚点，需先于绿钮判定）
         if self._locate(screen, "auto_select_label", 0.85):
             self.state = HeroSynthState.TRANSMIT_SELECT
             if (
@@ -537,7 +577,14 @@ class HeroSynthStateMachine:
                 return back
             raise UnrecognizedScreen("传送选择画面缺少可选卡片与返回箭头")
 
-        # 4. 刻印界面（绿色刻印按钮为锚点）
+        if (
+            self.state is HeroSynthState.IMPRINT_CONFIRM
+            and not self.templates.pc_client
+            and self._back_action(screen) is not None
+        ):
+            raise UnrecognizedScreen("合成结果覆盖层未完整识别，禁止点击底层返回")
+
+        # 5. 刻印界面（绿色刻印按钮为锚点）
         if self._green_button_present(screen):
             up = self._find_up_card(screen)
             if up is not None:
@@ -560,7 +607,7 @@ class HeroSynthStateMachine:
             self.state = HeroSynthState.HERO_LIST
             return back
 
-        # 5. 筛选面板（级别标签为锚点）
+        # 6. 筛选面板（级别标签为锚点）
         # 一次性入场：close_filter 后置 _filter_session_done=True，
         # 之后无论模板是否误识别 filter_level_label，都不再进此分支。
         filter_level = self._locate(screen, "filter_level_label")
@@ -612,7 +659,7 @@ class HeroSynthStateMachine:
             self.filter_verified = False
             self.state = HeroSynthState.HERO_LIST
 
-        # 6. 英雄列表：评级是唯一决策依据（SSS 满级 → 跳过，否则看是否有红点）
+        # 7. 英雄列表：评级是唯一决策依据（SSS 满级 → 跳过，否则看是否有红点）
         # 上一版靠"按钮灰/蓝颜色"和"上一张是不是 SSS"的双保险推断都被颜色变种击穿；
         # 直接看左侧详情面板上的评级字符更稳。
         self.state = HeroSynthState.HERO_LIST
@@ -710,6 +757,7 @@ class HeroSynthRunner(ModeRunnerBase):
         HeroSynthState.FILTER: 45,
         HeroSynthState.IMPRINT_ADD: 90,
         HeroSynthState.IMPRINT_CONFIRM: 60,
+        HeroSynthState.IMPRINT_REWARD: 45,
         HeroSynthState.TRANSMIT_SELECT: 60,
         HeroSynthState.TRANSMIT_CONFIRM: 45,
         HeroSynthState.TRANSMIT_REWARD: 45,
@@ -787,6 +835,8 @@ class HeroSynthRunner(ModeRunnerBase):
             return "合成结束 → 返回英雄列表"
         if action_name == "confirm_synthesis":
             return "确认材料无误 → 点合成按钮"
+        if action_name == "close_imprint_result":
+            return "合成结果已出现 → 先关闭结果覆盖层"
         if action_name == "start_synthesis":
             return "材料就位 → 启动合成"
         return ""
