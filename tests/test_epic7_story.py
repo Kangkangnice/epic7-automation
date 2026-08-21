@@ -137,47 +137,6 @@ class Epic7StoryStateMachineTests(unittest.TestCase):
             )
         )
 
-    def test_friendship_points_popup_closes_without_changing_story_state(self):
-        machine = StoryStateMachine(
-            build_story_templates(TEMPLATES),
-            initial_state=StoryState.WAIT_RESULTS,
-        )
-        machine.completed_cycles = 3
-        machine.auto_enabled = True
-
-        action = machine.next_action(load_fixture("friendship_points_popup"))
-
-        self.assertEqual("close_friendship_points_popup", action.name)
-        self.assertEqual(StoryState.WAIT_RESULTS, machine.state)
-        self.assertEqual(3, machine.completed_cycles)
-        self.assertTrue(machine.auto_enabled)
-
-    def test_friend_request_requires_title_and_cancel_button(self):
-        machine = StoryStateMachine(build_story_templates(TEMPLATES))
-        popup = load_fixture("friend_request")
-
-        full_match = machine.find_friend_request_cancel(popup)
-        without_title = popup.copy()
-        without_title[240:400, 650:1350] = 0
-        without_cancel = popup.copy()
-        without_cancel[720:950, 550:1050] = 0
-
-        self.assertIsNotNone(full_match)
-        self.assertTrue(650 <= full_match.center[0] <= 950)
-        self.assertTrue(790 <= full_match.center[1] <= 900)
-        self.assertIsNone(machine.find_friend_request_cancel(without_title))
-        self.assertIsNone(machine.find_friend_request_cancel(without_cancel))
-
-    def test_friend_request_cancel_has_priority_without_changing_result_state(self):
-        machine = StoryStateMachine(
-            build_story_templates(TEMPLATES), initial_state=StoryState.WAIT_RESULTS
-        )
-
-        action = machine.next_action(load_fixture("friend_request"))
-
-        self.assertEqual("cancel_friend_request", action.name)
-        self.assertEqual(StoryState.WAIT_RESULTS, machine.state)
-
     def test_lower_right_controls_distinguish_auto_manual_and_transition(self):
         machine = StoryStateMachine(build_story_templates(TEMPLATES))
 
@@ -515,7 +474,6 @@ class Epic7StoryStateMachineTests(unittest.TestCase):
             machine.next_action(load_fixture("battle_auto_on_live_20260809")),
             machine.next_action(load_fixture("reward")),
             machine.next_action(load_fixture("clear")),
-            machine.next_action(load_fixture("friend_request")),
             machine.next_action(load_fixture("results")),
             machine.next_action(load_fixture("complete")),
             machine.next_action(load_fixture("next_stage")),
@@ -530,7 +488,6 @@ class Epic7StoryStateMachineTests(unittest.TestCase):
                 "enable_auto",
                 "reward",
                 "clear",
-                "cancel_friend_request",
                 "results_confirm",
                 "complete",
             ],

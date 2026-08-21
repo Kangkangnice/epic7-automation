@@ -20,7 +20,11 @@ from auto_game_unified.core.battle_supervisor import (
 from auto_game_unified.core.matcher import Match, find_template, load_template
 from auto_game_unified.core.recovery import RecoveryGate
 from auto_game_unified.core.runtime import Runtime
-from auto_game_unified.core.supervisor import StableObservation, meaningful_change
+from auto_game_unified.core.supervisor import (
+    StableObservation,
+    meaningful_change,
+    wait_until_target,
+)
 from auto_game_unified.games.epic7.battle_controls import (
     BattleControls,
     observe_battle_controls,
@@ -165,6 +169,21 @@ class ArenaState(Enum):
     BATTLE = "battle"
     RESULT = "result"
     CONFIRMING = "confirming"
+
+
+# 日志用画面名：state.value -> 中文画面描述
+STATE_LABELS = {
+    ArenaState.LIST: "对手列表",
+    ArenaState.SELECTED: "对手详情",
+    ArenaState.TEAM: "队伍选择",
+    ArenaState.BATTLE: "战斗中",
+    ArenaState.RESULT: "战斗结果",
+    ArenaState.CONFIRMING: "结果确认中",
+}
+
+
+def state_label(state: ArenaState) -> str:
+    return STATE_LABELS.get(state, state.value)
 
 
 class TicketExhausted(RuntimeError):
@@ -385,7 +404,7 @@ class ArenaStateMachine:
     ) -> tuple[int, int]:
         anchor = self._locate(screen, "list_ready")
         if anchor is None:
-            raise RuntimeError("list_ready anchor lost while selecting opponent")
+            raise RuntimeError("选择对手时对手列表锚点丢失")
         offset = self._OPPONENT_OFFSETS[index]
         return (
             anchor.center[0] + offset[0],
@@ -395,7 +414,7 @@ class ArenaStateMachine:
     def _refresh_point(self, screen: np.ndarray) -> tuple[int, int]:
         anchor = self._locate(screen, "list_ready")
         if anchor is None:
-            raise RuntimeError("list_ready anchor lost while refreshing opponents")
+            raise RuntimeError("刷新对手时对手列表锚点丢失")
         return (
             anchor.center[0] + self._REFRESH_OFFSET[0],
             anchor.center[1] + self._REFRESH_OFFSET[1],
@@ -414,7 +433,7 @@ class ArenaStateMachine:
         if all(value is False for value in availability):
             self._selected_opponent = None
             return Action("refresh-opponents", self._refresh_point(screen))
-        raise RuntimeError("arena opponent rows could not be classified safely")
+        raise RuntimeError("竞技场对手行无法安全分类")
 
     def observe_battle(
         self,
@@ -489,7 +508,7 @@ class ArenaStateMachine:
             )
             if rank_confirm is not None:
                 return Action("confirm-rank", rank_confirm.center)
-            raise RuntimeError("expected result confirmation to close into list")
+            raise RuntimeError("结果确认后应回到对手列表")
 
         if self.state == ArenaState.SELECTED and not self.is_in_state(screen, ArenaState.SELECTED):
             if self._selected_opponent is None:
@@ -504,7 +523,7 @@ class ArenaStateMachine:
         match = self._locate(screen, template_name)
         if match is None:
             raise UnrecognizedScreen(
-                f"expected {self.state.value} screen was not recognized"
+                f"竞技场画面[{state_label(self.state)}]未识别"
             )
 
         if self.state == ArenaState.LIST:
@@ -562,7 +581,7 @@ class ArenaRunner:
         self.battle_supervisor = battle_supervisor or BattleSupervisor(
             runtime,
             self.recovery_gate,
-            BattleConfig(mode="arena"),
+            BattleConfig(mode="arena", mode_label="竞技场"),
             now=self.now,
             sleep=sleep,
         )
@@ -582,7 +601,7 @@ class ArenaRunner:
             self.machine.state = ArenaState.BATTLE
             return
         if outcome is not BattleOutcome.RESULT_REACHED:
-            raise RuntimeError(f"unexpected arena battle outcome: {outcome.value}")
+            raise RuntimeError(f"竞技场战斗出现意外结果：{outcome.value}")
         self.machine.state = ArenaState.RESULT
 
     def run(self, max_cycles: int | None = None) -> int:
@@ -615,7 +634,7 @@ class ArenaRunner:
                 if isinstance(error, UnrecognizedScreen):
                     wake_result = self.unknown_screen_wake.handle(
                         screen,
-                        context=f"arena:{self.machine.state.value}",
+                        context=f"竞技场:{state_label(self.machine.state)}",
                     )
                     if wake_result in {
                         UnknownWakeResult.WAITING,
@@ -630,7 +649,7 @@ class ArenaRunner:
                     if self.recovery is not None and not recovered:
                         recovered = True
                         self.runtime.log(
-                            f"模式=竞技场 页面={self.machine.state.value} 恢复=回大厅重新导航"
+                            f"模式=竞技场 页面={state_label(self.machine.state)} 恢复=回大厅重新导航"
                         )
                         self.recovery()
                         self.machine.state = ArenaState.LIST
@@ -640,8 +659,13 @@ class ArenaRunner:
                     diagnostic = self.runtime.save_diagnostic(
                         f"timeout_{self.machine.state.value}", screen
                     )
-                    self.runtime.log(f"timeout state={self.machine.state.value} diagnostic={diagnostic}")
-                    raise RuntimeError(f"{error}; stopped safely, saved {diagnostic}") from error
+                    self.runtime.log(
+                        f"模式=竞技场 页面={state_label(self.machine.state)} "
+                        f"状态=超时无进展 诊断={diagnostic}"
+                    )
+                    raise RuntimeError(
+                        f"页面无进展：{error}；已安全停止并保存诊断 {diagnostic}"
+                    ) from error
                 self.sleep(self.poll_seconds)
                 continue
 
@@ -657,7 +681,7 @@ class ArenaRunner:
                 return self.machine.completed_cycles
             self.runtime.log(
                 f"模式=竞技场 轮次={self.machine.completed_cycles + 1}/{max_cycles or '?'} "
-                f"页面={state_before.value} 动作={action.name}"
+                f"页面={state_label(state_before)} 动作={action.name}"
             )
             self.runtime.click(action.point, action.name)
             if self.runtime.dry_run:
@@ -677,12 +701,11 @@ class ArenaRunner:
                         "refresh_opponents_failed",
                     )
                     self.runtime.log(
-                        "模式=竞技场 页面=list 动作=刷新对手 "
+                        "模式=竞技场 页面=对手列表 动作=刷新对手 "
                         f"停止=刷新后没有安全对手 现场={diagnostic}"
                     )
                     raise RuntimeError(
-                        "refresh did not produce a safe opponent list; "
-                        f"saved {diagnostic}"
+                        f"刷新对手后未出现安全对手列表；已保存诊断 {diagnostic}"
                     )
                 self.machine.state = ArenaState.LIST
                 state_started = self.now()
@@ -699,10 +722,13 @@ class ArenaRunner:
                     f"no_transition_{state_before.value}_to_{new_state.value}", screen
                 )
                 self.runtime.log(
-                    f"transition failed {state_before.value} -> {new_state.value} diagnostic={diagnostic}"
+                    f"模式=竞技场 状态=转场失败 "
+                    f"从={state_label(state_before)} 到={state_label(new_state)} "
+                    f"诊断={diagnostic}"
                 )
                 raise RuntimeError(
-                    f"clicked {action.name} but screen did not advance to {new_state.value}; saved {diagnostic}"
+                    f"点击 {action.name} 后画面未推进到"
+                    f"[{state_label(new_state)}]；已保存诊断 {diagnostic}"
                 )
             if action.name == "purchase-friendship-ticket":
                 self._record_purchase_today()
@@ -714,31 +740,26 @@ class ArenaRunner:
         return self.machine.completed_cycles
 
     def _wait_until_in_state(self, state: ArenaState) -> bool:
-        """Poll until the screen settles into ``state``; return False on timeout.
+        """轮询直到画面进入目标状态；单帧命中即确认，超时返回 False。
 
-        Uses the per-state timeout as the deadline so a legitimately slow transition
-        (loading/animation) is still caught, while a click that did nothing fails
-        clearly instead of cascading into a wrong state.
+        以各状态超时表推算绝对/无进展上限：合法的慢转场（加载/动画）
+        仍可被捕获，而无效点击则清晰地失败而非级联进入错误状态。
         """
-        self.sleep(self._SETTLE_SECONDS)
-        started = self.now()
-        last_progress = started
-        previous: Optional[np.ndarray] = None
-        absolute = min(180, self._TIMEOUT_SECONDS[state])
-        no_progress = min(45, self._TIMEOUT_SECONDS[state])
-        while self.now() - started < absolute:
-            screen = self.runtime.capture()
-            if self.runtime.diagnostic_dir is not None:
-                self.runtime.save_current_frame(screen)
-            if self.machine.is_in_state(screen, state):
-                return True
-            if meaningful_change(previous, screen):
-                last_progress = self.now()
-            previous = screen
-            if self.now() - last_progress >= no_progress:
-                return False
-            self.sleep(self.poll_seconds)
-        return False
+        return wait_until_target(
+            capture=self.runtime.capture,
+            save_frame=self._save_frame,
+            is_target=lambda screen: self.machine.is_in_state(screen, state),
+            absolute_seconds=min(180, self._TIMEOUT_SECONDS[state]),
+            no_progress_seconds=min(45, self._TIMEOUT_SECONDS[state]),
+            poll_seconds=self.poll_seconds,
+            sleep=self.sleep,
+            now=self.now,
+            settle_seconds=self._SETTLE_SECONDS,
+        )
+
+    def _save_frame(self, screen: np.ndarray) -> None:
+        if self.runtime.diagnostic_dir is not None:
+            self.runtime.save_current_frame(screen)
 
     def _wait_until_safe_list(self) -> bool:
         self.sleep(self._SETTLE_SECONDS)
@@ -761,13 +782,13 @@ class ArenaRunner:
             refresh_confirm = self.machine.free_refresh_confirm(screen)
             signature = "free-refresh" if refresh_confirm is not None else "other"
             if refresh_confirm_stable.update(signature) and refresh_confirm is not None:
-                if refresh_confirm_clicks >= 2:
+                if refresh_confirm_clicks >= 4:
                     return False
                 refresh_confirm_clicks += 1
                 self.runtime.log(
-                    "妯″紡=绔炴妧鍦?椤甸潰=鍏嶈垂鍒锋柊纭 "
-                    f"鍔ㄤ綔=confirm-free-refresh 灏濊瘯={refresh_confirm_clicks}/2 "
-                    f"缃俊搴?{refresh_confirm.score:.3f}"
+                    "模式=竞技场 页面=免费刷新确认 "
+                    f"动作=confirm-free-refresh 尝试={refresh_confirm_clicks}/4 "
+                    f"置信度={refresh_confirm.score:.3f}"
                 )
                 self.runtime.click(
                     refresh_confirm.center,
@@ -793,6 +814,6 @@ class ArenaRunner:
 
     def _record_purchase_today(self) -> None:
         if self.purchase_stamp_path is None:
-            raise RuntimeError("purchase stamp path is not configured")
+            raise RuntimeError("旗帜购买记录路径未配置")
         self.purchase_stamp_path.parent.mkdir(parents=True, exist_ok=True)
         self.purchase_stamp_path.write_text(date.today().isoformat(), encoding="utf-8")

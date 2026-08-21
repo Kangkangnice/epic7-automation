@@ -27,6 +27,8 @@ class MainStoryTests(unittest.TestCase):
                 events = []
                 network_templates = object()
                 intimacy_templates = object()
+                friendship_templates = object()
+                friend_request_templates = object()
                 runtime.set_capture_guard.side_effect = lambda guard: events.append(
                     "guard"
                 )
@@ -43,6 +45,16 @@ class MainStoryTests(unittest.TestCase):
                         main_module,
                         "load_intimacy_level_up_templates",
                         return_value=intimacy_templates,
+                    ),
+                    patch.object(
+                        main_module,
+                        "load_friendship_points_templates",
+                        return_value=friendship_templates,
+                    ),
+                    patch.object(
+                        main_module,
+                        "load_friend_request_templates",
+                        return_value=friend_request_templates,
                     ),
                     patch.object(main_module, "Epic7Navigator") as navigator_type,
                 ):
@@ -62,6 +74,8 @@ class MainStoryTests(unittest.TestCase):
                 guard_type.assert_called_once_with(
                     network_templates,
                     intimacy_templates=intimacy_templates,
+                    friendship_templates=friendship_templates,
+                    friend_request_templates=friend_request_templates,
                 )
                 self.assertEqual(["guard", "navigation"], events)
 
@@ -168,7 +182,7 @@ class MainStoryTests(unittest.TestCase):
         self.assertFalse(hasattr(args, "difficulty"))
 
     def test_story_rejects_an_arena_resume_state(self):
-        with self.assertRaisesRegex(SystemExit, "not valid for story"):
+        with self.assertRaisesRegex(SystemExit, "不适用于模式 story"):
             main_module.main(["--mode", "story", "--start-state", "list"])
 
     def test_live_run_requires_a_positive_cycle_limit(self):
@@ -177,11 +191,11 @@ class MainStoryTests(unittest.TestCase):
             ["--mode", "story", "--live", "--confirm", "RUN", "--max-cycles", "0"],
         ):
             with self.subTest(arguments=arguments):
-                with self.assertRaisesRegex(SystemExit, "positive --max-cycles"):
+                with self.assertRaisesRegex(SystemExit, "--max-cycles 为正数"):
                     main_module.main(arguments)
 
     def test_live_run_rejects_manual_start_state(self):
-        with self.assertRaisesRegex(SystemExit, "dry-run diagnostics"):
+        with self.assertRaisesRegex(SystemExit, "空跑诊断模式"):
             main_module.main(
                 [
                     "--mode",

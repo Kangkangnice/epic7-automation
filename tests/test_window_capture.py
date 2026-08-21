@@ -39,7 +39,7 @@ class WindowViewportTests(unittest.TestCase):
             ),
             patch.object(game, "_window_process_name", return_value="notepad.exe"),
         ):
-            with self.assertRaisesRegex(RuntimeError, "expected one"):
+            with self.assertRaisesRegex(RuntimeError, "应恰好找到一个支持的雷电模拟器窗口"):
                 game._window()
 
     def test_multiple_supported_ldplayer_windows_are_rejected(self):
@@ -59,7 +59,7 @@ class WindowViewportTests(unittest.TestCase):
             ),
             patch.object(game, "_window_process_name", return_value="dnplayer.exe"),
         ):
-            with self.assertRaisesRegex(RuntimeError, "expected one"):
+            with self.assertRaisesRegex(RuntimeError, "应恰好找到一个支持的雷电模拟器窗口"):
                 game._window()
 
     def test_activate_does_not_reactivate_an_already_active_game_window(self):
@@ -143,10 +143,32 @@ class WindowViewportTests(unittest.TestCase):
     def test_rejects_a_window_with_a_different_aspect_ratio(self):
         viewport = WindowViewport(lambda: WindowRect(40, 30, 900, 900))
 
-        with self.assertRaisesRegex(RuntimeError, "aspect ratio"):
+        with self.assertRaisesRegex(RuntimeError, "游戏窗口宽高比发生变化"):
             viewport.scale_for((1982, 1132))
 
-    def test_live_capture_activates_the_game_before_taking_a_screenshot(self):
+    def test_live_capture_prefers_window_level_print(self):
+        game = Epic7Window()
+        render = np.full((1080, 1920, 3), 127, dtype=np.uint8)
+
+        with (
+            patch.object(game, "activate") as activate,
+            patch.object(
+                game,
+                "_instance_channel",
+                return_value=(Path("D:/epic7/ldconsole.exe"), "0", 456),
+            ),
+            patch.object(game, "_print_window_render", return_value=render) as print_window,
+            patch("auto_game_unified.core.window.pyautogui.screenshot") as screenshot,
+        ):
+            captured = game.capture()
+
+        print_window.assert_called_once_with(456)
+        activate.assert_not_called()
+        screenshot.assert_not_called()
+        self.assertEqual((1132, 1982, 3), captured.shape)
+        self.assertTrue(np.all(captured[52:, :1920] == 127))
+
+    def test_live_capture_falls_back_to_screen_capture_when_print_fails(self):
         game = Epic7Window()
         calls: list[str] = []
         fake_image = np.full((1080, 1920, 3), 127, dtype=np.uint8)
@@ -158,6 +180,7 @@ class WindowViewportTests(unittest.TestCase):
                 "_instance_channel",
                 return_value=(Path("D:/epic7/ldconsole.exe"), "0", 456),
             ),
+            patch.object(game, "_print_window_render", return_value=None),
             patch.object(
                 game,
                 "_window_rect_from_handle",
@@ -223,7 +246,7 @@ class WindowViewportTests(unittest.TestCase):
 
         for point in ((10, 20), (1950, 500)):
             with self.subTest(point=point):
-                with self.assertRaisesRegex(RuntimeError, "render area"):
+                with self.assertRaisesRegex(RuntimeError, "渲染区外点击"):
                     game._click_legacy(point)
 
     def test_render_tap_uses_ld_input(self):

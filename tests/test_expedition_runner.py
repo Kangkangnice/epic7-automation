@@ -164,7 +164,7 @@ class ExpeditionRunnerTests(unittest.TestCase):
         def capture():
             nonlocal captures
             captures += 1
-            if captures > 30:
+            if captures > 60:
                 raise ManualStop("wake was incorrectly accepted forever")
             return screen
 
@@ -176,10 +176,10 @@ class ExpeditionRunnerTests(unittest.TestCase):
             now=clock.now,
         )
 
-        with self.assertRaisesRegex(RuntimeError, "failed after 2 attempts"):
+        with self.assertRaisesRegex(RuntimeError, "点击4次后画面未推进"):
             runner.run(max_cycles=1)
 
-        self.assertEqual(2, len(clicks))
+        self.assertEqual(4, len(clicks))
 
     def test_failed_battle_start_never_returns_to_lobby(self):
         clock = Clock()
@@ -206,7 +206,7 @@ class ExpeditionRunnerTests(unittest.TestCase):
 
         self.assertEqual([], recoveries)
 
-    def test_failed_transition_clicks_twice_then_stops(self):
+    def test_failed_transition_clicks_four_times_then_stops(self):
         clock = Clock()
         clicks = []
         machine = ActionMachine(transition=False)
@@ -218,10 +218,10 @@ class ExpeditionRunnerTests(unittest.TestCase):
             now=clock.now,
         )
 
-        with self.assertRaisesRegex(RuntimeError, "failed after 2 attempts"):
+        with self.assertRaisesRegex(RuntimeError, "点击4次后画面未推进"):
             runner.run(max_cycles=1)
 
-        self.assertEqual(2, len(clicks))
+        self.assertEqual(4, len(clicks))
 
     def test_failed_transition_uses_only_one_recovery_for_a_poster(self):
         clock = Clock()
@@ -236,7 +236,7 @@ class ExpeditionRunnerTests(unittest.TestCase):
             recovery=lambda: recoveries.append(True),
         )
 
-        with self.assertRaisesRegex(RuntimeError, "failed after 2 attempts"):
+        with self.assertRaisesRegex(RuntimeError, "点击4次后画面未推进"):
             runner.run(max_cycles=1)
 
         self.assertEqual([True], recoveries)

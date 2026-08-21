@@ -243,7 +243,7 @@ class Epic7ArenaStateMachineTests(unittest.TestCase):
         screen = load_fixture("rank_promotion_master").copy()
         screen[760:930, 850:1130] = 0
 
-        with self.assertRaisesRegex(RuntimeError, "result confirmation"):
+        with self.assertRaisesRegex(RuntimeError, "结果确认后应回到对手列表"):
             machine.next_action(screen)
 
     def test_current_recorded_flow_has_only_expected_actions(self):
@@ -281,7 +281,7 @@ class Epic7ArenaStateMachineTests(unittest.TestCase):
     def test_unknown_image_is_rejected_before_any_click(self):
         machine = ArenaStateMachine(build_templates(TEMPLATES))
 
-        with self.assertRaisesRegex(RuntimeError, "expected list"):
+        with self.assertRaisesRegex(RuntimeError, r"竞技场画面\[对手列表\]未识别"):
             machine.next_action(np.zeros((1132, 1982, 3), dtype=np.uint8))
 
     def test_can_resume_from_a_confirmed_team_screen(self):

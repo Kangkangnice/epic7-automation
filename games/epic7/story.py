@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from enum import Enum
 from pathlib import Path
 from time import sleep as default_sleep
@@ -18,66 +18,30 @@ from auto_game_unified.core.battle_supervisor import (
 from auto_game_unified.core.matcher import Match, find_template, load_template
 from auto_game_unified.core.recovery import RecoveryGate
 from auto_game_unified.core.runtime import Runtime, StaminaExhausted
-from auto_game_unified.core.supervisor import StableObservation, meaningful_change
+from auto_game_unified.core.supervisor import meaningful_change
 from auto_game_unified.games.epic7.battle_controls import (
     BattleControls,
     observe_battle_controls,
 )
-from auto_game_unified.games.epic7.unknown_screen import (
-    UnrecognizedScreen,
-    UnknownScreenWake,
-    UnknownWakeResult,
+# 友情点数弹窗识别已迁至全局弹窗守卫（global_popups），此处保留导出以兼容旧引用。
+from auto_game_unified.games.epic7.global_popups import (
+    find_friendship_points_popup_close,
 )
+from auto_game_unified.games.epic7.stamina import (
+    STAMINA_REGIONS,
+    load_stamina_templates,
+    next_stamina_decision,
+)
+from auto_game_unified.games.epic7.runner_base import ModeRunnerBase
+from auto_game_unified.games.epic7.unknown_screen import UnrecognizedScreen
 
 
 _WATCH_STORY_REFERENCE_SIZE = (1982, 1132)
 _WATCH_STORY_REGION = (1450, 930, 470, 202)
-_FRIENDSHIP_POINTS_TITLE_REGION = (600, 150, 800, 180)
-_FRIENDSHIP_POINTS_CLOSE_REGION = (750, 840, 450, 190)
 _STORY_SKIP_REGION = (1700, 0, 240, 200)
 _STORY_SKIP_CONFIRM_REGION = (850, 600, 600, 300)
 _BATTLE_GUIDE_TITLE_REGION = (780, 250, 420, 180)
 _BATTLE_GUIDE_DONT_SHOW_REGION = (1080, 760, 420, 190)
-
-
-def find_friendship_points_popup_close(
-    screen: np.ndarray,
-    title_template: np.ndarray,
-    close_template: np.ndarray,
-) -> Optional[Match]:
-    """Return the close anchor only when both friendship-popup anchors exist."""
-    lower = np.array([0, 0, 120])
-    upper = np.array([179, 110, 255])
-
-    def locate(template: np.ndarray, region: tuple[int, int, int, int]):
-        scale_x = screen.shape[1] / _WATCH_STORY_REFERENCE_SIZE[0]
-        scale_y = screen.shape[0] / _WATCH_STORY_REFERENCE_SIZE[1]
-        ref_x, ref_y, ref_width, ref_height = region
-        x, y, width, height = (
-            round(ref_x * scale_x),
-            round(ref_y * scale_y),
-            round(ref_width * scale_x),
-            round(ref_height * scale_y),
-        )
-        search_hsv = cv2.cvtColor(
-            screen[y : y + height, x : x + width], cv2.COLOR_RGB2HSV
-        )
-        template_hsv = cv2.cvtColor(template, cv2.COLOR_RGB2HSV)
-        match = find_template(
-            cv2.inRange(search_hsv, lower, upper),
-            cv2.inRange(template_hsv, lower, upper),
-            0.85,
-            reference_size=(ref_width, ref_height),
-        )
-        if match is None:
-            return None
-        return Match((x + match.center[0], y + match.center[1]), match.score)
-
-    title = locate(title_template, _FRIENDSHIP_POINTS_TITLE_REGION)
-    close = locate(close_template, _FRIENDSHIP_POINTS_CLOSE_REGION)
-    if title is None or close is None:
-        return None
-    return Match(close.center, min(title.score, close.score))
 
 
 def find_battle_guide_dont_show(
@@ -242,6 +206,23 @@ class StoryState(Enum):
     WAIT_NEXT_STAGE = "wait_next_stage"
 
 
+# 日志用画面名：state.value -> 中文画面描述
+STATE_LABELS = {
+    StoryState.STAGE: "关卡入口",
+    StoryState.TEAM: "队伍选择",
+    StoryState.WAIT_SKIP_CONFIRM: "跳过确认",
+    StoryState.WAIT_BATTLE: "等待战斗",
+    StoryState.ACTIVE: "战斗进行中",
+    StoryState.WAIT_RESULTS: "等待结算",
+    StoryState.WAIT_COMPLETE: "等待通关",
+    StoryState.WAIT_NEXT_STAGE: "等待下一关",
+}
+
+
+def state_label(state: StoryState) -> str:
+    return STATE_LABELS.get(state, state.value)
+
+
 @dataclass(frozen=True)
 class StoryAction:
     name: str
@@ -250,8 +231,6 @@ class StoryAction:
 
 @dataclass(frozen=True)
 class StoryTemplates:
-    friendship_points_title: np.ndarray
-    friendship_points_close: np.ndarray
     battle_guide_title: np.ndarray
     battle_guide_dont_show: np.ndarray
     watch_story: np.ndarray
@@ -261,8 +240,6 @@ class StoryTemplates:
     start_mission: np.ndarray
     skip: np.ndarray
     skip_confirm: np.ndarray
-    friend_request_title: np.ndarray
-    friend_request_cancel: np.ndarray
     auto_off: np.ndarray
     auto_on: np.ndarray
     reward: np.ndarray
@@ -277,20 +254,8 @@ class StoryTemplates:
     stamina_confirm: Optional[np.ndarray] = None
 
 
-def _load_optional(template_dir: Path, name: str) -> Optional[np.ndarray]:
-    path = template_dir / f"{name}.png"
-    return load_template(str(path)) if path.exists() else None
-
-
 def build_story_templates(template_dir: Path) -> StoryTemplates:
-    global_templates = template_dir.parent / "global"
     return StoryTemplates(
-        friendship_points_title=load_template(
-            str(global_templates / "friendship_points_title.png")
-        ),
-        friendship_points_close=load_template(
-            str(global_templates / "friendship_points_close.png")
-        ),
         battle_guide_title=load_template(str(template_dir / "battle_guide_title.png")),
         battle_guide_dont_show=load_template(
             str(template_dir / "battle_guide_dont_show.png")
@@ -304,12 +269,6 @@ def build_story_templates(template_dir: Path) -> StoryTemplates:
         start_mission=load_template(str(template_dir / "start_mission.png")),
         skip=load_template(str(template_dir / "skip.png")),
         skip_confirm=load_template(str(template_dir / "skip_confirm.png")),
-        friend_request_title=load_template(
-            str(template_dir / "friend_request_title.png")
-        ),
-        friend_request_cancel=load_template(
-            str(template_dir / "friend_request_cancel.png")
-        ),
         auto_off=load_template(str(template_dir / "auto_off.png")),
         auto_on=load_template(str(template_dir / "auto_on.png")),
         reward=load_template(str(template_dir / "reward.png")),
@@ -318,9 +277,7 @@ def build_story_templates(template_dir: Path) -> StoryTemplates:
         complete=load_template(str(template_dir / "complete.png")),
         bonus_reward=load_template(str(template_dir / "bonus_reward.png")),
         next_stage=load_template(str(template_dir / "next_stage.png")),
-        stamina_popup=_load_optional(template_dir, "stamina_popup"),
-        stamina_material=_load_optional(template_dir, "stamina_material"),
-        stamina_confirm=_load_optional(template_dir, "stamina_confirm"),
+        **asdict(load_stamina_templates(template_dir)),
     )
 
 
@@ -329,8 +286,6 @@ class StoryStateMachine:
 
     _THRESHOLDS = {
         "skip": 0.75,
-        "friend_request_title": 0.82,
-        "friend_request_cancel": 0.82,
     }
     _REFERENCE_SIZE = (1982, 1132)
     _REGIONS = {
@@ -339,19 +294,15 @@ class StoryStateMachine:
         "start_mission": (1400, 930, 520, 202),
         "skip": (1700, 0, 240, 200),
         "skip_confirm": (850, 600, 600, 300),
-        "friend_request_title": (650, 240, 700, 160),
-        "friend_request_cancel": (550, 720, 500, 230),
         "auto_off": (1550, 0, 300, 200),
         "auto_on": (1550, 0, 300, 200),
         "reward": (700, 400, 650, 400),
         "clear": (500, 150, 900, 700),
         "results_confirm": (1500, 930, 420, 202),
-        "complete": (650, 150, 700, 500),
+        "complete": (650, 150, 700, 700),
         "bonus_reward": (350, 150, 1200, 850),
         "next_stage": (1450, 930, 470, 202),
-        "stamina_popup": (400, 200, 1200, 700),
-        "stamina_material": (400, 200, 700, 700),
-        "stamina_confirm": (850, 750, 650, 250),
+        **STAMINA_REGIONS,
     }
     _BONUS_REWARD_CLOSE_OFFSET = (0, 312)
     _AUTO_CLICK_POINT = (1690, 96)
@@ -490,23 +441,15 @@ class StoryStateMachine:
         scale_y = screen.shape[0] / self._REFERENCE_SIZE[1]
         return match.center[0], match.center[1] + round(self._BONUS_REWARD_CLOSE_OFFSET[1] * scale_y)
 
-    def find_friend_request_cancel(self, screen: np.ndarray) -> Optional[Match]:
-        """Return Cancel only when both friend-request popup anchors are present."""
-        if self._locate(screen, "friend_request_title") is None:
-            return None
-        return self._locate(screen, "friend_request_cancel")
-
     def _handle_stamina(self, screen: np.ndarray) -> Optional[StoryAction]:
-        """Detect the insufficient-stamina popup and refill via the left material.
+        """体力不足时用生命之叶补充；达到上限后抛 StaminaExhausted 干净收尾。
 
-        Returns a StoryAction when something must be clicked, None otherwise.
-        Caps refills at stamina_replenish_max; once exhausted it raises
-        StaminaExhausted so the run stops cleanly instead of looping.
+        与狗粮/辅助自动共用两段式决策（stamina.py），主线独有：
+        补充次数上限、确认按钮未渲染时等待（返回 None）而非报错。
         """
         if self.templates.stamina_popup is None:
             return None
-        popup = self._locate(screen, "stamina_popup")
-        if popup is None:
+        if self._locate(screen, "stamina_popup") is None:
             self._stamina_material_clicked = False
             return None
         if (
@@ -514,49 +457,30 @@ class StoryStateMachine:
             and self.stamina_replenished >= self.stamina_replenish_max
         ):
             raise StaminaExhausted(
-                f"stamina refilled {self.stamina_replenished} times "
-                f"(max {self.stamina_replenish_max}); stopping"
+                f"生命之叶已补充{self.stamina_replenished}次"
+                f"（上限{self.stamina_replenish_max}次），停止运行"
             )
-        if not self._stamina_material_clicked:
-            if self.templates.stamina_material is None:
-                raise RuntimeError("stamina popup present but stamina_material template missing")
-            mat = self._locate(screen, "stamina_material")
-            if mat is None:
-                raise RuntimeError(
-                    "stamina popup present but the selected leaf offer was not confirmed"
-                )
+        if (
+            self.templates.stamina_material is None
+            or self.templates.stamina_confirm is None
+        ):
+            raise RuntimeError("体力弹窗已出现但缺少生命之叶补充模板")
+        decision = next_stamina_decision(
+            screen, self._locate, material_clicked=self._stamina_material_clicked
+        )
+        if decision.status == "material":
             self._stamina_material_clicked = True
-            return StoryAction("stamina_material", mat.center)
-        mat = self._locate(screen, "stamina_material")
-        if mat is None:
-            raise RuntimeError(
-                "stamina popup present but the selected leaf offer was not confirmed"
-            )
-        if self.templates.stamina_confirm is None:
-            raise RuntimeError("stamina popup present but stamina_confirm template missing")
-        conf = self._locate(screen, "stamina_confirm")
-        if conf is None:
+            return StoryAction("stamina_material", decision.point)
+        if decision.status == "waiting":
             return None
         self._stamina_material_clicked = False
         self.stamina_replenished += 1
-        return StoryAction("stamina_confirm", conf.center)
+        return StoryAction("stamina_confirm", decision.point)
 
     def next_action(self, screen: np.ndarray) -> Optional[StoryAction]:
-        popup_close = find_friendship_points_popup_close(
-            screen,
-            self.templates.friendship_points_title,
-            self.templates.friendship_points_close,
-        )
-        if popup_close is not None:
-            return StoryAction("close_friendship_points_popup", popup_close.center)
-
         stamina_action = self._handle_stamina(screen)
         if stamina_action is not None:
             return stamina_action
-
-        friend_cancel = self.find_friend_request_cancel(screen)
-        if friend_cancel is not None:
-            return StoryAction("cancel_friend_request", friend_cancel.center)
 
         checks = [
             ("reward", StoryState.WAIT_RESULTS),
@@ -647,7 +571,7 @@ class StoryStateMachine:
                 return StoryAction("prepare_battle", match.center)
 
         raise UnrecognizedScreen(
-            f"expected {self.state.value} story screen was not recognized"
+            f"主线画面[{state_label(self.state)}]未识别"
         )
 
     def preview(self, screen: np.ndarray):
@@ -678,11 +602,10 @@ class StoryStateMachine:
             ) = snapshot
 
 
-class StoryRunner:
-    """Short-polling, fail-closed runner for current-layout story stages."""
+class StoryRunner(ModeRunnerBase):
+    """主线短轮询、失败即停 Runner（主循环协议见 ModeRunnerBase）。"""
 
-    _ACTION_RETRY_SECONDS = 45
-
+    _MODE_LABEL = "主线"
     _TIMEOUT_SECONDS = {
         StoryState.STAGE: 45,
         StoryState.TEAM: 45,
@@ -693,6 +616,7 @@ class StoryRunner:
         StoryState.WAIT_COMPLETE: 45,
         StoryState.WAIT_NEXT_STAGE: 45,
     }
+    _BATTLE_ENTRY_ACTION = "start_mission"
 
     def __init__(
         self,
@@ -705,25 +629,28 @@ class StoryRunner:
         recovery_gate: RecoveryGate | None = None,
         battle_supervisor: BattleSupervisor | None = None,
     ) -> None:
-        self.machine = machine
-        self.runtime = runtime
-        self.sleep = sleep
-        self.now = runtime.now
-        self.poll_seconds = poll_seconds
-        self.recovery_gate = recovery_gate or RecoveryGate(recovery)
-        self.recovery = self.recovery_gate.recover if recovery is not None else None
+        super().__init__(
+            machine,
+            runtime,
+            sleep=sleep,
+            poll_seconds=poll_seconds,
+            recovery=recovery,
+            recovery_gate=recovery_gate,
+        )
         self.battle_supervisor = battle_supervisor or BattleSupervisor(
             runtime,
             self.recovery_gate,
-            BattleConfig(mode="story"),
+            BattleConfig(mode="story", mode_label="主线"),
             now=self.now,
             sleep=sleep,
         )
-        self.unknown_screen_wake = UnknownScreenWake(
-            runtime,
-            recovery_gate=self.recovery_gate,
-        )
-        self.resource_exhausted = False
+
+    def _state_label(self, state: StoryState) -> str:
+        return state_label(state)
+
+    def _apply_recovery_state(self) -> None:
+        self.machine.state = StoryState.STAGE
+        self.machine.auto_enabled = False
 
     def _run_committed_battle(self, *, cycle: int) -> None:
         outcome = self.battle_supervisor.run(
@@ -734,206 +661,23 @@ class StoryRunner:
             self.machine.state = StoryState.WAIT_BATTLE
             return
         if outcome is not BattleOutcome.RESULT_REACHED:
-            raise RuntimeError(f"unexpected story battle outcome: {outcome.value}")
+            raise RuntimeError(f"主线战斗出现意外结果：{outcome.value}")
         self.machine.state = StoryState.WAIT_RESULTS
 
-    def run(self, max_cycles: int | None = None) -> int:
-        if self.runtime.dry_run:
-            screen = self.runtime.capture()
-            try:
-                action = self.machine.next_action(screen)
-            except RuntimeError as error:
-                diagnostic = self.runtime.save_diagnostic(
-                    f"dry_run_{self.machine.state.value}", screen
-                )
-                raise RuntimeError(
-                    f"dry-run did not recognize {self.machine.state.value}; saved {diagnostic}"
-                ) from error
-            if action is not None:
-                self.runtime.log(
-                    f"模式=主线 页面={self.machine.state.value} 动作={action.name} 状态=诊断"
-                )
-                self.runtime.click(action.point, action.name)
-            return self.machine.completed_cycles
+    def _log_cycle_completed(self) -> None:
+        self.runtime.log(
+            f"模式=主线 状态=完成一轮 累计完成={self.machine.completed_cycles}轮"
+        )
 
-        state_started = self.now()
-        absolute_started = state_started
-        stable = StableObservation(required=2)
-        recovered = False
-        last_action_name: Optional[str] = None
-        last_action_clicked_at: Optional[float] = None
-        retry_wait_logged = False
-        action_attempts = 0
-        while max_cycles is None or self.machine.completed_cycles < max_cycles:
-            state_before = self.machine.state
-            cycles_before = self.machine.completed_cycles
-            screen = self.runtime.capture()
-            if self.runtime.diagnostic_dir is not None:
-                self.runtime.save_current_frame(screen)
-            try:
-                preview_action, outcome = self.machine.preview(screen)
-            except StaminaExhausted as error:
-                self.resource_exhausted = True
-                self.runtime.log(f"模式=主线 停止=生命之叶耗尽 详情={error}")
-                return self.machine.completed_cycles
-            except RuntimeError as error:
-                if isinstance(error, UnrecognizedScreen):
-                    wake_result = self.unknown_screen_wake.handle(
-                        screen,
-                        context=f"story:{self.machine.state.value}",
-                    )
-                    if wake_result in {
-                        UnknownWakeResult.WAITING,
-                        UnknownWakeResult.CLICKED,
-                    }:
-                        if wake_result is UnknownWakeResult.CLICKED:
-                            state_started = self.now()
-                        self.sleep(self.poll_seconds)
-                        continue
-                elapsed = self.now() - state_started
-                if elapsed >= self._TIMEOUT_SECONDS[self.machine.state]:
-                    if self.recovery is not None and not recovered:
-                        recovered = True
-                        self.runtime.log(
-                            f"模式=主线 页面={self.machine.state.value} 恢复=回大厅重新导航"
-                        )
-                        self.recovery()
-                        self.machine.state = StoryState.STAGE
-                        self.machine.auto_enabled = False
-                        state_started = self.now()
-                        absolute_started = state_started
-                        last_action_name = None
-                        last_action_clicked_at = None
-                        retry_wait_logged = False
-                        action_attempts = 0
-                        stable.reset()
-                        continue
-                    diagnostic = self.runtime.save_diagnostic(
-                        f"timeout_{self.machine.state.value}", screen
-                    )
-                    self.runtime.log(
-                        f"timeout state={self.machine.state.value} elapsed={elapsed:.1f}s diagnostic={diagnostic}"
-                    )
-                    raise RuntimeError(
-                        f"no progress: {error}; stopped safely, saved {diagnostic}"
-                    ) from error
-                self.sleep(self.poll_seconds)
-                continue
+    def _log_state_timeout(self, state: StoryState, elapsed: float, diagnostic) -> None:
+        self.runtime.log(
+            f"模式=主线 页面={state_label(state)} "
+            f"状态=超时无进展 已耗时={elapsed:.1f}秒 诊断={diagnostic}"
+        )
 
-            self.unknown_screen_wake.reset()
-            signature = (
-                preview_action.name if preview_action is not None
-                else f"settled:{outcome[0].value}:{outcome[1]}"
-            )
-            if not stable.update(signature):
-                self.sleep(self.poll_seconds)
-                continue
-            action = self.machine.next_action(screen)
-            stable.reset()
-
-            if self.machine.completed_cycles > cycles_before:
-                recovered = False
-                self.runtime.log(f"complete-story cycles={self.machine.completed_cycles}")
-                state_started = self.now()
-                if max_cycles is not None and self.machine.completed_cycles >= max_cycles:
-                    return self.machine.completed_cycles
-
-            if action is not None:
-                if action.name == last_action_name:
-                    since_click = (
-                        self.now() - last_action_clicked_at
-                        if last_action_clicked_at is not None
-                        else self._ACTION_RETRY_SECONDS
-                    )
-                    if since_click < self._ACTION_RETRY_SECONDS:
-                        if not retry_wait_logged:
-                            remaining = self._ACTION_RETRY_SECONDS - since_click
-                            self.runtime.log(
-                                f"模式=主线 轮次={self.machine.completed_cycles + 1}/{max_cycles or '?'} "
-                                f"动作={action.name} 等待=点击后确认转场 剩余={remaining:.1f}秒"
-                            )
-                            retry_wait_logged = True
-                        self.sleep(self.poll_seconds)
-                        continue
-                    action_attempts += 1
-                else:
-                    last_action_name = action.name
-                    action_attempts = 1
-                if action_attempts > 2:
-                    if self.recovery is not None and not recovered:
-                        recovered = True
-                        self.runtime.log(
-                            f"模式=主线 动作={action.name} 恢复=两次点击未转场，回大厅重新导航"
-                        )
-                        self.recovery()
-                        self.machine.state = StoryState.STAGE
-                        self.machine.auto_enabled = False
-                        state_started = self.now()
-                        absolute_started = state_started
-                        last_action_name = None
-                        last_action_clicked_at = None
-                        retry_wait_logged = False
-                        action_attempts = 0
-                        stable.reset()
-                        continue
-                    diagnostic = self.runtime.save_diagnostic(
-                        f"retry_exhausted_{action.name}", screen
-                    )
-                    raise RuntimeError(
-                        f"action {action.name} failed after 2 attempts; saved {diagnostic}"
-                    )
-                self.runtime.log(
-                    f"模式=主线 轮次={self.machine.completed_cycles + 1}/{max_cycles or '?'} "
-                    f"页面={state_before.value} 动作={action.name} 尝试={action_attempts}/2"
-                )
-                self.runtime.click(action.point, action.name)
-                last_action_clicked_at = self.now()
-                state_started = last_action_clicked_at
-                absolute_started = last_action_clicked_at
-                retry_wait_logged = False
-                if action.name == "start_mission":
-                    self._run_committed_battle(
-                        cycle=self.machine.completed_cycles + 1,
-                    )
-                    state_started = self.now()
-                    absolute_started = state_started
-                    last_action_name = None
-                    last_action_clicked_at = None
-                    action_attempts = 0
-                    stable.reset()
-                    continue
-            else:
-                last_action_name = None
-                last_action_clicked_at = None
-                retry_wait_logged = False
-                action_attempts = 0
-            if (
-                action is None
-                and self.now() - state_started >= self._TIMEOUT_SECONDS[self.machine.state]
-            ):
-                diagnostic = self.runtime.save_diagnostic(
-                    f"timeout_{self.machine.state.value}", screen
-                )
-                self.runtime.log(
-                    f"timeout state={self.machine.state.value} no_progress "
-                    f"diagnostic={diagnostic}"
-                )
-                raise RuntimeError(
-                    f"no progress while waiting in {self.machine.state.value}; "
-                    f"stopped safely, saved {diagnostic}"
-                )
-
-            if self.machine.state != state_before:
-                state_started = self.now()
-                absolute_started = state_started
-            if self.now() - absolute_started >= 180:
-                diagnostic = self.runtime.save_diagnostic(
-                    f"absolute_{self.machine.state.value}", screen
-                )
-                raise RuntimeError(
-                    f"absolute timeout in {self.machine.state.value}; stopped safely, saved {diagnostic}"
-                )
-            self.sleep(self.poll_seconds)
-
-        return self.machine.completed_cycles
+    def _log_settled_timeout(self, state: StoryState, diagnostic) -> None:
+        self.runtime.log(
+            f"模式=主线 页面={state_label(state)} "
+            f"状态=等待超时无进展 诊断={diagnostic}"
+        )
 

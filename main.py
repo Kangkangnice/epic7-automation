@@ -9,10 +9,13 @@ from auto_game_unified.core.pushplus import send_pushplus
 from auto_game_unified.core.recovery import RecoveryGate
 from auto_game_unified.core.runtime import ManualStop, Runtime
 from auto_game_unified.core.window import Epic7Window
+from auto_game_unified.core.pc_window import Epic7PcWindow
 from auto_game_unified.games.epic7.modes import MODE_SPECS, ModeSpec, get_mode
 from auto_game_unified.games.epic7.navigation import Epic7Navigator, build_navigation_templates
 from auto_game_unified.games.epic7.global_popups import (
     Epic7GlobalPopupGuard,
+    load_friend_request_templates,
+    load_friendship_points_templates,
     load_intimacy_level_up_templates,
     load_network_reconnect_templates,
 )
@@ -24,6 +27,8 @@ MODE_LABELS = {
     "arena": "竞技场",
     "expedition": "远征",
     "fodder": "狗粮",
+    "assist_auto": "辅助自动",
+    "hero_synthesis": "英雄合成",
 }
 
 
@@ -73,9 +78,13 @@ def _notify_live(
         )
 
 
-def _build_runtime(mode: str, dry_run: bool) -> Runtime:
-    game_window = Epic7Window()
-    game_window.activate()
+def _build_runtime(mode: str, dry_run: bool, window_backend: str = "emulator") -> Runtime:
+    if window_backend == "pc":
+        game_window = Epic7PcWindow()
+        game_window.activate()
+    else:
+        game_window = Epic7Window()
+        game_window.activate()
     stop_hotkey = None if dry_run else WindowsPStopHotkey()
 
     return Runtime(
@@ -96,9 +105,17 @@ def run_mode(
     dry_run: bool,
     max_cycles: int | None,
     start_state: str,
+    window_backend: str = "emulator",
 ) -> RunResult:
-    runtime = _build_runtime(spec.name, dry_run)
-    template_root = ROOT / "games" / "epic7" / "templates"
+    runtime = _build_runtime(spec.name, dry_run, window_backend=window_backend)
+    # PC backend uses a PC-native template set (templates_pc/); emulator keeps
+    # the original templates/.  Both share the same structure and reference size.
+    template_subdir = "templates_pc" if window_backend == "pc" else "templates"
+    template_root = ROOT / "games" / "epic7" / template_subdir
+    if window_backend == "pc" and not template_root.exists():
+        raise RuntimeError(
+            f"PC 模板目录不存在：{template_root}；请先运行 tools/capture_pc_templates.py 采集 PC 模板"
+        )
     navigator = None
     if not dry_run:
         runtime.set_capture_guard(
@@ -107,11 +124,18 @@ def run_mode(
                 intimacy_templates=load_intimacy_level_up_templates(
                     template_root / "global"
                 ),
+                friendship_templates=load_friendship_points_templates(
+                    template_root / "global"
+                ),
+                friend_request_templates=load_friend_request_templates(
+                    template_root / "story"
+                ),
             )
         )
-        navigator = Epic7Navigator(build_navigation_templates(template_root), runtime)
-        lobby_screen = navigator.return_home()
-        navigator.navigate(spec.name, lobby_screen=lobby_screen)
+        if spec.needs_navigation:
+            navigator = Epic7Navigator(build_navigation_templates(template_root), runtime)
+            lobby_screen = navigator.return_home()
+            navigator.navigate(spec.name, lobby_screen=lobby_screen)
     machine: Any = spec.build_machine(
         template_root, start_state
     )
@@ -149,17 +173,26 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--confirm", default="", help="must be RUN when --live is used")
     parser.add_argument("--max-cycles", type=int, help="stop after this many completed cycles")
     parser.add_argument("--start-state", help="resume state; valid values depend on --mode")
+    parser.add_argument(
+        "--window-backend",
+        choices=["emulator", "pc"],
+        default="emulator",
+        help="capture/input backend: emulator (LDPlayer) or pc (Epic Seven PC client)",
+    )
     return parser.parse_args(argv)
 
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
+    if args.mode == "hero_synthesis" and args.max_cycles is None:
+        # 英雄合成固定跑一遍列表，无需指定次数
+        args.max_cycles = 1
     if args.live and args.confirm != "RUN":
-        raise SystemExit("live mode requires: --live --confirm RUN")
+        raise SystemExit("实跑模式需要附加参数：--live --confirm RUN")
     if args.live and (args.max_cycles is None or args.max_cycles <= 0):
-        raise SystemExit("live mode requires a positive --max-cycles")
+        raise SystemExit("实跑模式要求 --max-cycles 为正数")
     if args.live and args.start_state is not None:
-        raise SystemExit("--start-state is only available for dry-run diagnostics")
+        raise SystemExit("--start-state 仅在空跑诊断模式可用")
     spec = get_mode(args.mode)
     try:
         start_state = spec.resolve_state(args.start_state)
@@ -172,9 +205,10 @@ def main(argv: list[str] | None = None) -> int:
             dry_run=not args.live,
             max_cycles=args.max_cycles,
             start_state=start_state,
+            window_backend=args.window_backend,
         )
     except ManualStop as error:
-        print(f"手动停止 mode={args.mode} reason={error}", flush=True)
+        print(f"手动停止 模式={args.mode} 原因={error}", flush=True)
         return 130
     except RuntimeError as error:
         _notify_live(
@@ -184,7 +218,7 @@ def main(argv: list[str] | None = None) -> int:
             elapsed_seconds=_elapsed_seconds(started_at),
             error=error,
         )
-        print(f"运行失败 mode={args.mode} reason={error}", flush=True)
+        print(f"运行失败 模式={args.mode} 原因={error}", flush=True)
         return 1
     except Exception as error:
         _notify_live(
@@ -205,7 +239,7 @@ def main(argv: list[str] | None = None) -> int:
         completed_cycles=result.completed_cycles,
         target_cycles=args.max_cycles,
     )
-    print(f"完成 mode={args.mode} cycles={result.completed_cycles}", flush=True)
+    print(f"完成 模式={args.mode} 轮次={result.completed_cycles}", flush=True)
     return 2 if result.resource_exhausted else 0
 
 

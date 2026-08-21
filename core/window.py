@@ -18,6 +18,29 @@ import pyautogui
 import pygetwindow
 
 
+class _BITMAPINFOHEADER(ctypes.Structure):
+    _fields_ = [
+        ("biSize", wintypes.DWORD),
+        ("biWidth", wintypes.LONG),
+        ("biHeight", wintypes.LONG),
+        ("biPlanes", wintypes.WORD),
+        ("biBitCount", wintypes.WORD),
+        ("biCompression", wintypes.DWORD),
+        ("biSizeImage", wintypes.DWORD),
+        ("biXPelsPerMeter", wintypes.LONG),
+        ("biYPelsPerMeter", wintypes.LONG),
+        ("biClrUsed", wintypes.DWORD),
+        ("biClrImportant", wintypes.DWORD),
+    ]
+
+
+class _BITMAPINFO(ctypes.Structure):
+    _fields_ = [
+        ("bmiHeader", _BITMAPINFOHEADER),
+        ("bmiColors", wintypes.DWORD * 1),
+    ]
+
+
 @dataclass(frozen=True)
 class WindowRect:
     left: int
@@ -48,8 +71,8 @@ class WindowViewport:
         scale = rect.width / reference_size[0], rect.height / reference_size[1]
         if abs(scale[0] - scale[1]) > 0.02:
             raise RuntimeError(
-                f"game window aspect ratio changed: {rect.width}x{rect.height}; "
-                f"expected the {reference_size[0]}x{reference_size[1]} template ratio"
+                f"游戏窗口宽高比发生变化：{rect.width}x{rect.height}；"
+                f"模板基准为 {reference_size[0]}x{reference_size[1]}"
             )
         return round(scale[0], 6), round(scale[1], 6)
 
@@ -61,6 +84,7 @@ class Epic7Window:
     _RENDER_SIZE = (1920, 1080)
     _LEGACY_SIZE = (1982, 1132)
     _LEGACY_TOP = 52
+    _PW_RENDERFULLCONTENT = 0x00000002  # PrintWindow：含 DirectX 渲染内容
 
     def __init__(self, title: str = "第七史诗") -> None:
         self.title = title
@@ -75,10 +99,10 @@ class Epic7Window:
             and self._window_process_name(window) == "dnplayer.exe"
         ]
         if len(windows) != 1:
-            raise RuntimeError(f"expected one supported LDPlayer window, found {len(windows)}")
+            raise RuntimeError(f"应恰好找到一个支持的雷电模拟器窗口，实际找到 {len(windows)} 个")
         window = windows[0]
         if window.isMinimized:
-            raise RuntimeError(f"{window.title} window is minimized")
+            raise RuntimeError(f"窗口 {window.title} 处于最小化状态")
         return window
 
     @staticmethod
@@ -98,12 +122,22 @@ class Epic7Window:
         try:
             window.activate()
         except pygetwindow.PyGetWindowException:
-            if not self._wait_until_foreground(window._hWnd):
-                raise
-        else:
-            if not self._wait_until_foreground(window._hWnd):
-                raise RuntimeError(f"could not activate {window.title}")
+            # pygetwindow's SetForegroundWindow can fail with a Windows
+            # focus-lock error even when the window is visible. Taps go through
+            # LDPlayer's instance channel (ldconsole) by index, so foreground
+            # focus is not required for input — fall back instead of crashing.
+            self._best_effort_activate(window._hWnd)
+        if not self._wait_until_foreground(window._hWnd):
+            self._best_effort_activate(window._hWnd)
         sleep(0.3)
+
+    @staticmethod
+    def _best_effort_activate(handle: int) -> None:
+        try:
+            ctypes.windll.user32.ShowWindow(handle, 9)  # SW_RESTORE
+            ctypes.windll.user32.SetForegroundWindow(handle)
+        except Exception:
+            pass
 
     @staticmethod
     def _wait_until_foreground(handle: int, attempts: int = 10) -> bool:
@@ -125,11 +159,67 @@ class Epic7Window:
         return canvas
 
     def capture(self) -> np.ndarray:
-        self.activate()
         _, _, bind_handle = self._instance_channel()
+        render = self._print_window_render(bind_handle)
+        if render is not None:
+            return self._legacy_canvas(render)
+        # 窗口级截图不可用（老系统/驱动不支持）时回退屏幕截图，
+        # 该路径要求模拟器置前，被遮挡会截到其他窗口内容。
+        self.activate()
         rect = self._window_rect_from_handle(bind_handle)
         image = pyautogui.screenshot(region=(rect.left, rect.top, rect.width, rect.height))
         return self._legacy_canvas(np.asarray(image.convert("RGB")))
+
+    def _print_window_render(self, handle: int) -> np.ndarray | None:
+        """窗口级截图：模拟器被遮挡/失焦时仍能取到正确画面。
+
+        返回 None 表示窗口级截图不可用（失败或全黑），调用方回退屏幕截图。
+        """
+        user32 = ctypes.windll.user32
+        gdi32 = ctypes.windll.gdi32
+        rect = wintypes.RECT()
+        if not user32.GetClientRect(handle, ctypes.byref(rect)):
+            return None
+        width, height = rect.right - rect.left, rect.bottom - rect.top
+        if (width, height) != self._RENDER_SIZE:
+            return None
+        hwnd_dc = user32.GetDC(handle)
+        if not hwnd_dc:
+            return None
+        try:
+            mem_dc = gdi32.CreateCompatibleDC(hwnd_dc)
+            if not mem_dc:
+                return None
+            try:
+                bitmap = gdi32.CreateCompatibleBitmap(hwnd_dc, width, height)
+                if not bitmap:
+                    return None
+                try:
+                    gdi32.SelectObject(mem_dc, bitmap)
+                    if not user32.PrintWindow(handle, mem_dc, self._PW_RENDERFULLCONTENT):
+                        return None
+                    info = _BITMAPINFO()
+                    info.bmiHeader.biSize = ctypes.sizeof(_BITMAPINFOHEADER)
+                    info.bmiHeader.biWidth = width
+                    info.bmiHeader.biHeight = -height  # top-down
+                    info.bmiHeader.biPlanes = 1
+                    info.bmiHeader.biBitCount = 32
+                    buffer = ctypes.create_string_buffer(width * height * 4)
+                    if not gdi32.GetDIBits(
+                        mem_dc, bitmap, 0, height, buffer, ctypes.byref(info), 0
+                    ):
+                        return None
+                finally:
+                    gdi32.DeleteObject(bitmap)
+            finally:
+                gdi32.DeleteDC(mem_dc)
+        finally:
+            user32.ReleaseDC(handle, hwnd_dc)
+        render = np.frombuffer(buffer, dtype=np.uint8).reshape(height, width, 4)
+        rgb = np.ascontiguousarray(render[:, :, :3][:, :, ::-1])
+        if rgb.std() < 1.0:  # 全黑/纯色画面：PrintWindow 对该窗口无效
+            return None
+        return rgb
 
     def click(self, point: tuple[int, int]) -> None:
         self.activate()
@@ -146,7 +236,7 @@ class Epic7Window:
             0 <= render_point[0] < self._RENDER_SIZE[0]
             and 0 <= render_point[1] < self._RENDER_SIZE[1]
         ):
-            raise RuntimeError(f"refusing wake outside Android render area: {point}")
+            raise RuntimeError(f"拒绝在安卓渲染区外唤醒：{point}")
         pyautogui.click(rect.left + render_point[0], rect.top + render_point[1])
 
     def _click_legacy(self, point: tuple[int, int]) -> None:
@@ -155,7 +245,7 @@ class Epic7Window:
             0 <= render_point[0] < self._RENDER_SIZE[0]
             and 0 <= render_point[1] < self._RENDER_SIZE[1]
         ):
-            raise RuntimeError(f"refusing click outside Android render area: {point}")
+            raise RuntimeError(f"拒绝在安卓渲染区外点击：{point}")
         self._send_render_tap(render_point)
 
     def _send_render_tap(self, point: tuple[int, int]) -> None:
@@ -174,7 +264,7 @@ class Epic7Window:
     def _window_rect_from_handle(handle: int) -> WindowRect:
         rect = wintypes.RECT()
         if not ctypes.windll.user32.GetWindowRect(handle, ctypes.byref(rect)):
-            raise RuntimeError(f"could not read LDPlayer render window {handle}")
+            raise RuntimeError(f"无法读取雷电模拟器渲染窗口 {handle}")
         return WindowRect(
             rect.left,
             rect.top,
@@ -189,7 +279,7 @@ class Epic7Window:
         player_path = Path(psutil.Process(process_id.value).exe())
         console_path = player_path.with_name("ldconsole.exe")
         if not console_path.exists():
-            raise RuntimeError(f"LDPlayer console not found next to {player_path}")
+            raise RuntimeError(f"未在 {player_path} 旁找到雷电模拟器控制台")
         listed = subprocess.run(
             [str(console_path), "list2"],
             check=True,
@@ -203,7 +293,7 @@ class Epic7Window:
             fields = line.split(",")
             if len(fields) > 5 and fields[5].strip() == str(process_id.value):
                 return console_path, fields[0].strip(), int(fields[3].strip())
-        raise RuntimeError(f"could not map LDPlayer PID {process_id.value} to an instance")
+        raise RuntimeError(f"无法将雷电模拟器进程 {process_id.value} 对应到实例")
 
     def back(self) -> None:
         self.activate()

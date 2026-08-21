@@ -36,7 +36,7 @@ def find_template(
         scale_x = screen.shape[1] / reference_size[0]
         scale_y = screen.shape[0] / reference_size[1]
         if abs(scale_x - scale_y) > 0.02:
-            raise RuntimeError("screen aspect ratio does not match template reference size")
+            raise RuntimeError("画面宽高比与模板基准不一致")
         target_width = max(1, round(template.shape[1] * scale_x))
         target_height = max(1, round(template.shape[0] * scale_y))
         interpolation = cv2.INTER_AREA if scale_x < 1 else cv2.INTER_CUBIC

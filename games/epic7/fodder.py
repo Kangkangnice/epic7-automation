@@ -1,6 +1,6 @@
 """Fixed Episode 3-7 side-story farming workflow."""
 
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from enum import Enum
 from pathlib import Path
 from time import sleep as default_sleep
@@ -20,17 +20,18 @@ from auto_game_unified.core.battle_supervisor import (
 from auto_game_unified.core.matcher import Match, find_template, load_template
 from auto_game_unified.core.recovery import RecoveryGate
 from auto_game_unified.core.runtime import Runtime, StaminaExhausted
-from auto_game_unified.core.supervisor import StableObservation, meaningful_change
+from auto_game_unified.core.supervisor import meaningful_change
 from auto_game_unified.games.epic7.battle_controls import (
     BattleControls,
     observe_battle_controls,
 )
-from auto_game_unified.games.epic7.story import find_friendship_points_popup_close
-from auto_game_unified.games.epic7.unknown_screen import (
-    UnrecognizedScreen,
-    UnknownScreenWake,
-    UnknownWakeResult,
+from auto_game_unified.games.epic7.stamina import (
+    STAMINA_REGIONS,
+    load_stamina_templates,
+    next_stamina_decision,
 )
+from auto_game_unified.games.epic7.runner_base import ModeRunnerBase
+from auto_game_unified.games.epic7.unknown_screen import UnrecognizedScreen
 
 
 class FodderState(Enum):
@@ -40,6 +41,21 @@ class FodderState(Enum):
     BATTLE = "battle"
     RESULTS = "results"
     REPLAY = "replay"
+
+
+# 日志用画面名：state.value -> 中文画面描述
+STATE_LABELS = {
+    FodderState.STAGE: "关卡地图",
+    FodderState.ASSISTANT: "准备战斗",
+    FodderState.TEAM: "队伍选择",
+    FodderState.BATTLE: "战斗中",
+    FodderState.RESULTS: "结算",
+    FodderState.REPLAY: "重新进行",
+}
+
+
+def state_label(state: FodderState) -> str:
+    return STATE_LABELS.get(state, state.value)
 
 
 @dataclass(frozen=True)
@@ -57,10 +73,6 @@ class FodderTemplates:
     clear: np.ndarray
     results_confirm: np.ndarray
     replay: np.ndarray
-    friendship_points_title: np.ndarray
-    friendship_points_close: np.ndarray
-    friend_request_title: np.ndarray
-    friend_request_cancel: np.ndarray
     stamina_popup: np.ndarray
     stamina_material: np.ndarray
     stamina_confirm: np.ndarray
@@ -70,7 +82,6 @@ class FodderTemplates:
 def build_fodder_templates(template_dir: Path) -> FodderTemplates:
     template_root = template_dir.parent
     story = template_root / "story"
-    global_templates = template_root / "global"
     navigation = template_root / "navigation"
     return FodderTemplates(
         stage_title=load_template(str(navigation / "fodder_stage_title.png")),
@@ -80,17 +91,7 @@ def build_fodder_templates(template_dir: Path) -> FodderTemplates:
         clear=load_template(str(template_dir / "clear.png")),
         results_confirm=load_template(str(template_dir / "results_confirm.png")),
         replay=load_template(str(template_dir / "replay.png")),
-        friendship_points_title=load_template(
-            str(global_templates / "friendship_points_title.png")
-        ),
-        friendship_points_close=load_template(
-            str(global_templates / "friendship_points_close.png")
-        ),
-        friend_request_title=load_template(str(story / "friend_request_title.png")),
-        friend_request_cancel=load_template(str(story / "friend_request_cancel.png")),
-        stamina_popup=load_template(str(story / "stamina_popup.png")),
-        stamina_material=load_template(str(story / "stamina_material.png")),
-        stamina_confirm=load_template(str(story / "stamina_confirm.png")),
+        **asdict(load_stamina_templates(story)),
     )
 
 
@@ -106,11 +107,7 @@ class FodderStateMachine:
         "clear": (770, 420, 390, 130),
         "results_confirm": (1610, 990, 280, 120),
         "replay": (1625, 990, 275, 120),
-        "friend_request_title": (650, 240, 700, 160),
-        "friend_request_cancel": (550, 720, 500, 230),
-        "stamina_popup": (400, 200, 1200, 700),
-        "stamina_material": (400, 200, 700, 700),
-        "stamina_confirm": (850, 750, 650, 250),
+        **STAMINA_REGIONS,
     }
     _AUTO_CLICK_POINT = (1690, 96)
 
@@ -169,30 +166,21 @@ class FodderStateMachine:
             round(point[1] * screen.shape[0] / self._REFERENCE_SIZE[1]),
         )
 
-    def _friend_request_cancel(self, screen: np.ndarray) -> Optional[Match]:
-        title = self._locate(screen, "friend_request_title")
-        cancel = self._locate(screen, "friend_request_cancel")
-        if title is None or cancel is None:
-            return None
-        return Match(cancel.center, min(title.score, cancel.score))
-
     def _handle_stamina(self, screen: np.ndarray) -> Optional[FodderAction]:
-        popup = self._locate(screen, "stamina_popup")
-        if popup is None:
+        decision = next_stamina_decision(
+            screen, self._locate, material_clicked=self._stamina_material_clicked
+        )
+        if decision.status == "idle":
             if self._stamina_material_clicked:
                 self.stamina_replenished += 1
-            self._stamina_material_clicked = False
+                self._stamina_material_clicked = False
             return None
-        material = self._locate(screen, "stamina_material")
-        if material is None:
-            raise StaminaExhausted("生命之叶已耗尽或生命之叶选项不可用")
-        if not self._stamina_material_clicked:
+        if decision.status == "material":
             self._stamina_material_clicked = True
-            return FodderAction("stamina_material", material.center)
-        confirm = self._locate(screen, "stamina_confirm")
-        if confirm is None:
+            return FodderAction("stamina_material", decision.point)
+        if decision.status == "waiting":
             raise StaminaExhausted("生命之叶购买按钮不可用")
-        return FodderAction("stamina_confirm", confirm.center)
+        return FodderAction("stamina_confirm", decision.point)
 
     def observe_battle(
         self,
@@ -235,21 +223,9 @@ class FodderStateMachine:
         )
 
     def next_action(self, screen: np.ndarray) -> Optional[FodderAction]:
-        popup_close = find_friendship_points_popup_close(
-            screen,
-            self.templates.friendship_points_title,
-            self.templates.friendship_points_close,
-        )
-        if popup_close is not None:
-            return FodderAction("close_friendship_points_popup", popup_close.center)
-
         stamina = self._handle_stamina(screen)
         if stamina is not None:
             return stamina
-
-        friend_cancel = self._friend_request_cancel(screen)
-        if friend_cancel is not None:
-            return FodderAction("cancel_friend_request", friend_cancel.center)
 
         replay = self._locate(screen, "replay")
         if replay is not None:
@@ -290,7 +266,7 @@ class FodderStateMachine:
                 return None
 
         raise UnrecognizedScreen(
-            f"expected {self.state.value} fodder screen was not recognized"
+            f"狗粮画面[{state_label(self.state)}]未识别"
         )
 
     def preview(self, screen: np.ndarray):
@@ -312,10 +288,10 @@ class FodderStateMachine:
             ) = snapshot
 
 
-class FodderRunner:
-    """Two-frame-confirmed runner for the fixed Episode 3-7 cycle."""
+class FodderRunner(ModeRunnerBase):
+    """两帧确认的狗粮固定循环 Runner（主循环协议见 ModeRunnerBase）。"""
 
-    _ACTION_RETRY_SECONDS = 45
+    _MODE_LABEL = "狗粮"
     _TIMEOUT_SECONDS = {
         FodderState.STAGE: 45,
         FodderState.ASSISTANT: 45,
@@ -324,6 +300,9 @@ class FodderRunner:
         FodderState.RESULTS: 45,
         FodderState.REPLAY: 45,
     }
+    _BATTLE_ENTRY_ACTION = "start_battle"
+    _CLICK_BEFORE_BATTLE = False  # 战斗开始由 BattleSupervisor 代点
+    _SETTLED_BATTLE_STATE = FodderState.BATTLE
 
     def __init__(
         self,
@@ -336,25 +315,39 @@ class FodderRunner:
         recovery_gate: RecoveryGate | None = None,
         battle_supervisor: BattleSupervisor | None = None,
     ) -> None:
-        self.machine = machine
-        self.runtime = runtime
-        self.sleep = sleep
-        self.now = runtime.now
-        self.poll_seconds = poll_seconds
-        self.recovery_gate = recovery_gate or RecoveryGate(recovery)
-        self.recovery = self.recovery_gate.recover if recovery is not None else None
+        super().__init__(
+            machine,
+            runtime,
+            sleep=sleep,
+            poll_seconds=poll_seconds,
+            recovery=recovery,
+            recovery_gate=recovery_gate,
+        )
         self.battle_supervisor = battle_supervisor or BattleSupervisor(
             runtime,
             self.recovery_gate,
-            BattleConfig(mode="fodder"),
+            BattleConfig(mode="fodder", mode_label="狗粮"),
             now=self.now,
             sleep=sleep,
         )
-        self.unknown_screen_wake = UnknownScreenWake(
-            runtime,
-            recovery_gate=self.recovery_gate,
+
+    def _state_label(self, state: FodderState) -> str:
+        return state_label(state)
+
+    def _apply_recovery_state(self) -> None:
+        self.machine.state = FodderState.STAGE
+
+    def _on_battle_entry(
+        self,
+        action: FodderAction,
+        state_before: FodderState,
+        max_cycles: int | None,
+    ) -> None:
+        self.runtime.log(
+            f"模式=狗粮 轮次={self.machine.completed_cycles + 1}/"
+            f"{max_cycles or '?'} 页面={state_before.value} "
+            "动作=start_battle 处理=交由战斗监督"
         )
-        self.resource_exhausted = False
 
     def _run_committed_battle(self, *, cycle: int) -> None:
         outcome = self.battle_supervisor.run(
@@ -365,238 +358,12 @@ class FodderRunner:
             self.machine.state = FodderState.BATTLE
             return
         if outcome is not BattleOutcome.RESULT_REACHED:
-            raise RuntimeError(f"unexpected fodder battle outcome: {outcome.value}")
+            raise RuntimeError(f"狗粮战斗出现意外结果：{outcome.value}")
         self.machine.state = FodderState.RESULTS
 
-    def run(self, max_cycles: int | None = None) -> int:
-        if self.runtime.dry_run:
-            screen = self.runtime.capture()
-            try:
-                action = self.machine.next_action(screen)
-            except RuntimeError as error:
-                diagnostic = self.runtime.save_diagnostic(
-                    f"dry_run_{self.machine.state.value}", screen
-                )
-                raise RuntimeError(
-                    f"dry-run did not recognize {self.machine.state.value}; "
-                    f"saved {diagnostic}"
-                ) from error
-            if action is not None:
-                self.runtime.log(
-                    f"模式=狗粮 页面={self.machine.state.value} "
-                    f"动作={action.name} 状态=诊断"
-                )
-                self.runtime.click(action.point, action.name)
-            return self.machine.completed_cycles
-
-        state_started = self.now()
-        absolute_started = state_started
-        stable = StableObservation(required=2)
-        recovered = False
-        last_action_name: Optional[str] = None
-        last_action_clicked_at: Optional[float] = None
-        retry_wait_logged = False
-        action_attempts = 0
-
-        while max_cycles is None or self.machine.completed_cycles < max_cycles:
-            state_before = self.machine.state
-            cycles_before = self.machine.completed_cycles
-            screen = self.runtime.capture()
-            if self.runtime.diagnostic_dir is not None:
-                self.runtime.save_current_frame(screen)
-            try:
-                preview_action, outcome = self.machine.preview(screen)
-            except StaminaExhausted as error:
-                self.resource_exhausted = True
-                self.runtime.log(f"模式=狗粮 停止=生命之叶耗尽 详情={error}")
-                return self.machine.completed_cycles
-            except RuntimeError as error:
-                if isinstance(error, UnrecognizedScreen):
-                    wake_result = self.unknown_screen_wake.handle(
-                        screen,
-                        context=f"fodder:{self.machine.state.value}",
-                    )
-                    if wake_result in {
-                        UnknownWakeResult.WAITING,
-                        UnknownWakeResult.CLICKED,
-                    }:
-                        if wake_result is UnknownWakeResult.CLICKED:
-                            state_started = self.now()
-                        self.sleep(self.poll_seconds)
-                        continue
-                elapsed = self.now() - state_started
-                if elapsed >= self._TIMEOUT_SECONDS[self.machine.state]:
-                    if self.recovery is not None and not recovered:
-                        recovered = True
-                        self.runtime.log(
-                            f"模式=狗粮 页面={self.machine.state.value} "
-                            "恢复=回大厅重新导航"
-                        )
-                        self.recovery()
-                        self.machine.state = FodderState.STAGE
-                        state_started = self.now()
-                        absolute_started = state_started
-                        last_action_name = None
-                        last_action_clicked_at = None
-                        retry_wait_logged = False
-                        action_attempts = 0
-                        stable.reset()
-                        continue
-                    diagnostic = self.runtime.save_diagnostic(
-                        f"timeout_{self.machine.state.value}", screen
-                    )
-                    raise RuntimeError(
-                        f"no progress: {error}; stopped safely, saved {diagnostic}"
-                    ) from error
-                self.sleep(self.poll_seconds)
-                continue
-
-            self.unknown_screen_wake.reset()
-            signature = (
-                preview_action.name
-                if preview_action is not None
-                else f"settled:{outcome[0].value}:{outcome[1]}"
-            )
-            if not stable.update(signature):
-                self.sleep(self.poll_seconds)
-                continue
-
-            action = self.machine.next_action(screen)
-            stable.reset()
-
-            if self.machine.completed_cycles > cycles_before:
-                recovered = False
-                self.runtime.log(
-                    f"模式=狗粮 状态=完成一轮 cycles={self.machine.completed_cycles}"
-                )
-                state_started = self.now()
-                if max_cycles is not None and self.machine.completed_cycles >= max_cycles:
-                    return self.machine.completed_cycles
-
-            if action is None and self.machine.state is FodderState.BATTLE:
-                self._run_committed_battle(
-                    cycle=self.machine.completed_cycles + 1,
-                )
-                state_started = self.now()
-                absolute_started = state_started
-                last_action_name = None
-                last_action_clicked_at = None
-                retry_wait_logged = False
-                action_attempts = 0
-                stable.reset()
-                continue
-
-            if action is not None and action.name == "start_battle":
-                self.runtime.log(
-                    f"模式=狗粮 轮次={self.machine.completed_cycles + 1}/"
-                    f"{max_cycles or '?'} 页面={state_before.value} "
-                    "动作=start_battle 处理=交由战斗监督"
-                )
-                self._run_committed_battle(
-                    cycle=self.machine.completed_cycles + 1,
-                )
-                state_started = self.now()
-                absolute_started = state_started
-                last_action_name = None
-                last_action_clicked_at = None
-                retry_wait_logged = False
-                action_attempts = 0
-                stable.reset()
-                continue
-
-            if action is not None:
-                if action.name == last_action_name:
-                    since_click = (
-                        self.now() - last_action_clicked_at
-                        if last_action_clicked_at is not None
-                        else self._ACTION_RETRY_SECONDS
-                    )
-                    if since_click < self._ACTION_RETRY_SECONDS:
-                        if not retry_wait_logged:
-                            remaining = self._ACTION_RETRY_SECONDS - since_click
-                            self.runtime.log(
-                                f"模式=狗粮 轮次={self.machine.completed_cycles + 1}/"
-                                f"{max_cycles or '?'} 动作={action.name} "
-                                f"等待=点击后确认转场 剩余={remaining:.1f}秒"
-                            )
-                            retry_wait_logged = True
-                        self.sleep(self.poll_seconds)
-                        continue
-                    action_attempts += 1
-                else:
-                    last_action_name = action.name
-                    action_attempts = 1
-
-                if action_attempts > 2:
-                    if action.name == "stamina_confirm":
-                        self.resource_exhausted = True
-                        self.runtime.log(
-                            "模式=狗粮 停止=生命之叶确认两次未生效"
-                        )
-                        return self.machine.completed_cycles
-                    if self.recovery is not None and not recovered:
-                        recovered = True
-                        self.runtime.log(
-                            f"模式=狗粮 动作={action.name} "
-                            "恢复=两次点击未转场，回大厅重新导航"
-                        )
-                        self.recovery()
-                        self.machine.state = FodderState.STAGE
-                        state_started = self.now()
-                        absolute_started = state_started
-                        last_action_name = None
-                        last_action_clicked_at = None
-                        retry_wait_logged = False
-                        action_attempts = 0
-                        stable.reset()
-                        continue
-                    diagnostic = self.runtime.save_diagnostic(
-                        f"retry_exhausted_{action.name}", screen
-                    )
-                    raise RuntimeError(
-                        f"action {action.name} failed after 2 attempts; saved {diagnostic}"
-                    )
-
-                self.runtime.log(
-                    f"模式=狗粮 轮次={self.machine.completed_cycles + 1}/"
-                    f"{max_cycles or '?'} 页面={state_before.value} "
-                    f"动作={action.name} 尝试={action_attempts}/2"
-                )
-                self.runtime.click(action.point, action.name)
-                last_action_clicked_at = self.now()
-                state_started = last_action_clicked_at
-                absolute_started = last_action_clicked_at
-                retry_wait_logged = False
-            else:
-                last_action_name = None
-                last_action_clicked_at = None
-                retry_wait_logged = False
-                action_attempts = 0
-
-            if (
-                action is None
-                and self.now() - state_started
-                >= self._TIMEOUT_SECONDS[self.machine.state]
-            ):
-                diagnostic = self.runtime.save_diagnostic(
-                    f"timeout_{self.machine.state.value}", screen
-                )
-                raise RuntimeError(
-                    f"no progress while waiting in {self.machine.state.value}; "
-                    f"stopped safely, saved {diagnostic}"
-                )
-
-            if self.machine.state != state_before:
-                state_started = self.now()
-                absolute_started = state_started
-            if self.now() - absolute_started >= 180:
-                diagnostic = self.runtime.save_diagnostic(
-                    f"absolute_{self.machine.state.value}", screen
-                )
-                raise RuntimeError(
-                    f"absolute timeout in {self.machine.state.value}; "
-                    f"stopped safely, saved {diagnostic}"
-                )
-            self.sleep(self.poll_seconds)
-
-        return self.machine.completed_cycles
+    def _on_action_exhausted(self, action: FodderAction, screen) -> bool:
+        if action.name == "stamina_confirm":
+            self.resource_exhausted = True
+            self.runtime.log("模式=狗粮 停止=生命之叶确认多次未生效")
+            return True
+        return False

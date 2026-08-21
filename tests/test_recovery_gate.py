@@ -9,7 +9,7 @@ def test_recovery_runs_only_when_gate_is_unlocked():
 
     gate.recover("navigation timeout")
     gate.lock(mode="expedition", cycle=1)
-    with pytest.raises(RecoveryBlocked, match="committed battle"):
+    with pytest.raises(RecoveryBlocked, match="战斗进行中禁止回大厅恢复"):
         gate.recover("unknown battle frame")
     gate.unlock()
     gate.recover("result timeout")
@@ -31,5 +31,5 @@ def test_blocked_recovery_reports_lock_metadata_without_running_callback():
 
     assert calls == []
     assert blocked == [
-        "recovery blocked during committed battle mode=story cycle=4 reason=retry exhausted"
+        "战斗进行中禁止回大厅恢复 模式=story 轮次=4 原因=retry exhausted"
     ]

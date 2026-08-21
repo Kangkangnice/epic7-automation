@@ -33,7 +33,19 @@ tests/test_hunt_runner.py
 - `HuntAction`：动作名称与全局坐标。
 - `HuntTemplates` 和 `build_hunt_templates()`。
 - `HuntStateMachine.next_action(screen)`：纯视觉决策，不直接点击。
-- `HuntRunner.run(max_cycles)`：轮询、超时、日志和安全停止。
+- `HuntRunner(ModeRunnerBase)`：继承公共主循环，只实现钩子，禁止复制 `run()` 主循环。
+
+## 2.1 Runner 骨架约定
+
+页面流程为“点按钮 → 转场 → 新页面”的同构模式（主线、狗粮、辅助自动均属此类）必须继承 `runner_base.py` 的 `ModeRunnerBase`，只声明差异：
+
+- `_MODE_LABEL`：日志用模式名（中文）。
+- `_TIMEOUT_SECONDS`：每个状态的页面超时表。
+- `_BATTLE_ENTRY_ACTION` + `_CLICK_BEFORE_BATTLE`：战斗移交方式。
+- `_run_committed_battle(cycle)`：战斗监控实现（`BattleSupervisor` 或自带循环）。
+- 需要时覆写 `_apply_recovery_state`、`_after_battle`、`_state_label` 等钩子。
+
+禁止在新模式中复制粘贴主循环代码（两帧稳定、45 秒转场等待、2 次点击上限、恢复门控、超时熔断均已由基类实现）。只有交互模型根本不同时（如竞技场、远征的自定义流程）才允许独立 Runner，且状态轮询应复用 `core/supervisor.py` 的 `wait_until_target`。
 
 ## 3. 先写截图流程测试
 
@@ -78,6 +90,10 @@ tests/test_hunt_runner.py
 
 ## 6. 代码检查表
 
+- 同构模式继承 `ModeRunnerBase`，没有复制 `run()` 主循环。
+- 全局弹窗走 `Epic7GlobalPopupGuard`，没有在模式内加本地弹窗分支。
+- 体力弹窗委托 `stamina.py` 决策，没有自建补体力流程。
+- 日志使用中文键值对格式（`模式=`、`页面=`、`动作=`），页面名可读。
 - 模板搜索都有限定区域。
 - 点击坐标不位于头像、购买或其他高风险控件。
 - 动作名称可从日志直接理解。

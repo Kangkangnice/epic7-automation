@@ -127,8 +127,8 @@ class FodderRunnerTests(unittest.TestCase):
 
         self.assertEqual(1, completed)
         self.assertEqual(4, len(clicks))
-        self.assertFalse(any("action=start_battle point=" in line for line in logs))
-        self.assertFalse(any("action=replay point=" in line for line in logs))
+        self.assertFalse(any("动作=start_battle 坐标=" in line for line in logs))
+        self.assertFalse(any("动作=replay 坐标=" in line for line in logs))
         supervisor.run.assert_called_once()
 
     def test_two_cycles_click_replay_once_then_continue(self):
@@ -150,7 +150,7 @@ class FodderRunnerTests(unittest.TestCase):
 
         self.assertEqual(2, completed)
         self.assertEqual(8, len(clicks))
-        self.assertEqual(1, sum("action=replay point=" in line for line in logs))
+        self.assertEqual(1, sum("动作=replay 坐标=" in line for line in logs))
         self.assertEqual(2, supervisor.run.call_count)
 
     def test_stamina_exhaustion_is_a_normal_resource_stop(self):
@@ -173,7 +173,7 @@ class FodderRunnerTests(unittest.TestCase):
         self.assertEqual(0, completed)
         self.assertTrue(runner.resource_exhausted)
 
-    def test_stamina_confirm_persisting_after_two_clicks_is_resource_exhaustion(self):
+    def test_stamina_confirm_persisting_after_four_clicks_is_resource_exhaustion(self):
         machine = MagicMock()
         machine.state = FodderState.BATTLE
         machine.completed_cycles = 0
@@ -196,7 +196,7 @@ class FodderRunnerTests(unittest.TestCase):
 
         self.assertEqual(0, completed)
         self.assertTrue(runner.resource_exhausted)
-        self.assertEqual(2, len(clicks))
+        self.assertEqual(4, len(clicks))
 
     def test_dry_run_rejects_unknown_screen_without_polling(self):
         sleeps: list[float] = []
@@ -212,7 +212,7 @@ class FodderRunnerTests(unittest.TestCase):
                 sleep=sleeps.append,
             )
 
-            with self.assertRaisesRegex(RuntimeError, "dry-run"):
+            with self.assertRaisesRegex(RuntimeError, r"空跑未识别画面\[关卡地图\]"):
                 runner.run(max_cycles=1)
 
         self.assertEqual([], sleeps)
