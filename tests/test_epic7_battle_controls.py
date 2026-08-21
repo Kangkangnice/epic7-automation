@@ -49,6 +49,16 @@ class SharedBattleControlsTests(unittest.TestCase):
                     observe_battle_controls(load_fixture(group, name)),
                 )
 
+    def test_auto_with_dark_cooldown_slot_and_soul_skill_is_auto(self):
+        """实跑回归：AUTO 开启后出现 1 暗(冷却)+1 红(灵魂技) 技能槽，
+        霍夫圆漏检 1 颗时仍应识别为自动布局（2026-08-18 主线实机熔断）。"""
+        self.assertEqual(
+            BattleControls.AUTO_CONTROLS,
+            observe_battle_controls(
+                load_fixture("epic7_story", "battle_auto_skill_cooldown_live_20260818")
+            ),
+        )
+
     def test_each_mode_manual_controls_remain_manual(self):
         for group, name in (
             ("epic7_story", "battle_auto_off_live_20260809"),

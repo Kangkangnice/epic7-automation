@@ -36,8 +36,8 @@ class RecoveryGate:
     def recover(self, reason: str = "runner recovery") -> None:
         if self._lock is not None:
             message = (
-                "recovery blocked during committed battle "
-                f"mode={self._lock.mode} cycle={self._lock.cycle} reason={reason}"
+                "战斗进行中禁止回大厅恢复 "
+                f"模式={self._lock.mode} 轮次={self._lock.cycle} 原因={reason}"
             )
             if self._on_blocked is not None:
                 self._on_blocked(message)

@@ -35,7 +35,7 @@ def battle_screen() -> np.ndarray:
     return np.asarray(Image.open(path).convert("RGB"))[:1132, :1982]
 
 
-def test_static_unknown_clicks_center_twice_then_exhausts_with_diagnostics():
+def test_static_unknown_clicks_center_four_times_then_exhausts_with_diagnostics():
     screen = static_game_screen()
     clicks: list[tuple[int, int]] = []
     logs: list[str] = []
@@ -48,7 +48,7 @@ def test_static_unknown_clicks_center_twice_then_exhausts_with_diagnostics():
         )
         wake = UnknownScreenWake(runtime)
 
-        results = [wake.handle(screen, context="story:results") for _ in range(6)]
+        results = [wake.handle(screen, context="story:results") for _ in range(10)]
 
         diagnostics = sorted(path.name for path in Path(directory).glob("*.png"))
 
@@ -58,12 +58,51 @@ def test_static_unknown_clicks_center_twice_then_exhausts_with_diagnostics():
         UnknownWakeResult.WAITING,
         UnknownWakeResult.CLICKED,
         UnknownWakeResult.WAITING,
+        UnknownWakeResult.CLICKED,
+        UnknownWakeResult.WAITING,
+        UnknownWakeResult.CLICKED,
+        UnknownWakeResult.WAITING,
         UnknownWakeResult.EXHAUSTED,
     ]
-    assert clicks == [(991, 566), (991, 566)]
+    assert clicks == [(991, 566), (991, 566), (991, 566), (991, 566)]
     assert any(name.endswith("_unknown_before_wake.png") for name in diagnostics)
     assert any(name.endswith("_unknown_after_wake_failed.png") for name in diagnostics)
-    assert sum("action=wake-unknown-screen point=" in line for line in logs) == 2
+    assert sum("动作=wake-unknown-screen 坐标=" in line for line in logs) == 4
+
+
+def test_animated_unknown_page_stops_waiting_after_frame_limit():
+    """带动画的未知画面（如英雄详情立绘）不能无限等待唤醒。"""
+    base = static_game_screen()
+    frames = []
+    for i in range(20):
+        frame = base.copy()
+        frame[300:800, 300:1600] = 50 + i * 10
+        frames.append(frame)
+    clicks: list[tuple[int, int]] = []
+    logs: list[str] = []
+    with TemporaryDirectory() as directory:
+        runtime = Runtime(
+            lambda: frames[0],
+            clicks.append,
+            diagnostic_dir=Path(directory),
+            emit=logs.append,
+        )
+        wake = UnknownScreenWake(runtime)
+
+        results = [wake.handle(frame, context="hero:英雄列表") for frame in frames]
+
+        diagnostics = sorted(path.name for path in Path(directory).glob("*.png"))
+
+    # 画面始终在变：从未稳定，因此不应触发任何唤醒点击
+    # 第 max_waiting_frames 帧起持续 EXHAUSTED
+    waiting_count = sum(1 for r in results if r is UnknownWakeResult.WAITING)
+    exhausted_count = sum(1 for r in results if r is UnknownWakeResult.EXHAUSTED)
+    assert waiting_count == 14
+    assert exhausted_count == 6
+    assert waiting_count + exhausted_count == len(frames)
+    assert clicks == []
+    assert any(name.endswith("_unknown_animated_page.png") for name in diagnostics)
+    assert any("画面持续变化" in line for line in logs)
 
 
 def test_black_dynamic_and_battle_frames_are_never_clicked():
@@ -141,6 +180,10 @@ def test_unsafe_intermediate_frame_does_not_restore_click_budget():
     assert wake.handle(screen, context="fodder:results") is UnknownWakeResult.CLICKED
     assert wake.handle(battle_screen(), context="fodder:results") is UnknownWakeResult.SKIPPED
     assert wake.handle(screen, context="fodder:results") is UnknownWakeResult.WAITING
+    assert wake.handle(screen, context="fodder:results") is UnknownWakeResult.CLICKED
+    assert wake.handle(screen, context="fodder:results") is UnknownWakeResult.WAITING
+    assert wake.handle(screen, context="fodder:results") is UnknownWakeResult.CLICKED
+    assert wake.handle(screen, context="fodder:results") is UnknownWakeResult.WAITING
     assert wake.handle(screen, context="fodder:results") is UnknownWakeResult.EXHAUSTED
 
-    assert clicks == [(991, 566), (991, 566)]
+    assert clicks == [(991, 566), (991, 566), (991, 566), (991, 566)]

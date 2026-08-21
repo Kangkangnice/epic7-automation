@@ -177,7 +177,7 @@ class ArenaRunnerTests(unittest.TestCase):
         self.assertTrue(1160 <= clicks[0][0] <= 1300)
         self.assertTrue(770 <= clicks[0][1] <= 830)
 
-    def test_safe_list_waiter_clicks_persisted_free_confirmation_at_most_twice(self):
+    def test_safe_list_waiter_clicks_persisted_free_confirmation_at_most_four_times(self):
         machine = ArenaStateMachine(build_templates(TEMPLATES))
         confirmation = fixture("free_refresh_confirm_live_20260814")
         clicks: list[tuple[int, int]] = []
@@ -192,7 +192,7 @@ class ArenaRunnerTests(unittest.TestCase):
         )
 
         self.assertFalse(runner._wait_until_safe_list())
-        self.assertEqual(2, len(clicks))
+        self.assertEqual(4, len(clicks))
 
     def test_refresh_that_never_produces_a_safe_opponent_stops_with_diagnostic(self):
         machine = MagicMock()
@@ -211,7 +211,7 @@ class ArenaRunnerTests(unittest.TestCase):
         runner._TIMEOUT_SECONDS = {**runner._TIMEOUT_SECONDS, ArenaState.LIST: 0}
         runner._wait_until_safe_list = MagicMock(return_value=False)
 
-        with self.assertRaisesRegex(RuntimeError, "refresh did not produce"):
+        with self.assertRaisesRegex(RuntimeError, "刷新对手后未出现安全对手列表"):
             runner.run(max_cycles=1)
 
         runtime.save_diagnostic.assert_called_once()

@@ -67,7 +67,7 @@ class RuntimeTests(unittest.TestCase):
         runtime.back("return-home")
 
         self.assertEqual([], backs)
-        self.assertTrue(any("action=return-home" in line for line in lines))
+        self.assertTrue(any("执行返回 动作=return-home" in line for line in lines))
 
     def test_dry_run_streams_but_does_not_click(self):
         clicks: list[tuple[int, int]] = []
@@ -82,7 +82,7 @@ class RuntimeTests(unittest.TestCase):
         runtime.click((12, 34), "select-first-row")
 
         self.assertEqual([], clicks)
-        self.assertTrue(any("DRY RUN" in message and "select-first-row" in message for message in messages))
+        self.assertTrue(any("空跑" in message and "动作=select-first-row" in message for message in messages))
 
     def test_live_run_clicks_and_diagnostic_is_saved(self):
         clicks: list[tuple[int, int]] = []

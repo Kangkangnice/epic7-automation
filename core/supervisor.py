@@ -65,3 +65,44 @@ def meaningful_change(before: Optional[np.ndarray], after: np.ndarray) -> bool:
     current = after[y1:y2, x1:x2]
     difference = np.abs(current.astype(np.int16) - previous.astype(np.int16))
     return float(np.mean(difference)) >= 2.0
+
+
+def wait_until_target(
+    *,
+    capture: Callable[[], np.ndarray],
+    save_frame: Callable[[np.ndarray], None],
+    is_target: Callable[[np.ndarray], bool],
+    absolute_seconds: float,
+    no_progress_seconds: float,
+    poll_seconds: float,
+    sleep: Callable[[float], None],
+    now: Callable[[], float],
+    settle_seconds: float = 0.0,
+    two_frame: bool = False,
+) -> bool:
+    """轮询直到画面进入目标状态。
+
+    返回 True 表示确认进入目标状态；绝对超时或无进展超时返回 False。
+    two_frame=True 时要求目标状态连续两帧出现（避免转场动画误判）。
+    """
+    if settle_seconds:
+        sleep(settle_seconds)
+    started = progressed = now()
+    previous: Optional[np.ndarray] = None
+    stable = StableObservation(required=2) if two_frame else None
+    while now() - started < absolute_seconds:
+        screen = capture()
+        save_frame(screen)
+        reached = is_target(screen)
+        if stable is not None:
+            if stable.update("target" if reached else "other") and reached:
+                return True
+        elif reached:
+            return True
+        if meaningful_change(previous, screen):
+            progressed = now()
+        previous = screen
+        if now() - progressed >= no_progress_seconds:
+            return False
+        sleep(poll_seconds)
+    return False

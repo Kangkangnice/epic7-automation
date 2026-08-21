@@ -83,8 +83,8 @@ class Runtime:
 
     def click(self, point: tuple[int, int], action: str) -> None:
         self._stop_if_requested()
-        prefix = "DRY RUN " if self.dry_run else ""
-        self.log(f"{prefix}action={action} point={point}")
+        prefix = "空跑 " if self.dry_run else ""
+        self.log(f"{prefix}执行点击 动作={action} 坐标={point}")
         if not self.dry_run:
             if action == "wake-campfire-ui" and self._wake is not None:
                 self._wake(point)
@@ -93,11 +93,11 @@ class Runtime:
 
     def back(self, action: str = "back") -> None:
         self._stop_if_requested()
-        prefix = "DRY RUN " if self.dry_run else ""
-        self.log(f"{prefix}action={action} key=ESC")
+        prefix = "空跑 " if self.dry_run else ""
+        self.log(f"{prefix}执行返回 动作={action} 按键=ESC")
         if not self.dry_run:
             if self._back is None:
-                raise RuntimeError("back action is not configured")
+                raise RuntimeError("未配置返回键动作")
             self._back()
 
     def _stop_if_requested(self) -> None:
@@ -123,18 +123,18 @@ class Runtime:
 
     def save_diagnostic(self, label: str, screen: np.ndarray | None = None) -> Path:
         if self.diagnostic_dir is None:
-            raise RuntimeError("diagnostic_dir is not configured")
+            raise RuntimeError("未配置诊断截图目录")
         self.diagnostic_dir.mkdir(parents=True, exist_ok=True)
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
         path = self.diagnostic_dir / f"{timestamp}_{label}.png"
         self._write_image(path, self.capture() if screen is None else screen)
         self._prune_diagnostics()
-        self.log(f"diagnostic={path}")
+        self.log(f"已保存诊断 {path}")
         return path
 
     def save_current_frame(self, screen: np.ndarray | None = None) -> Path:
         if self.diagnostic_dir is None:
-            raise RuntimeError("diagnostic_dir is not configured")
+            raise RuntimeError("未配置诊断截图目录")
         self.diagnostic_dir.mkdir(parents=True, exist_ok=True)
         path = self.diagnostic_dir / "current.png"
         self._write_image(path, self.capture() if screen is None else screen)
@@ -143,7 +143,7 @@ class Runtime:
     def _write_image(self, path: Path, screen: np.ndarray) -> None:
         image = cv2.cvtColor(screen, cv2.COLOR_RGB2BGR)
         if not cv2.imwrite(str(path), image):
-            raise RuntimeError(f"could not save diagnostic: {path}")
+            raise RuntimeError(f"诊断截图保存失败：{path}")
 
     def _prune_diagnostics(self) -> None:
         if self.diagnostic_dir is None or self.diagnostic_limit < 1:

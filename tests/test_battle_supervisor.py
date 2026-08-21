@@ -141,22 +141,25 @@ def test_manual_auto_state_retries_once_when_first_click_is_swallowed():
     assert diagnostics == []
 
 
-def test_persisted_manual_auto_state_stops_after_two_clicks():
+def test_persisted_manual_auto_state_stops_after_four_clicks():
     manual = BattleObservation(
         False, True, False, True, AutoBattleState.MANUAL, (900, 80)
     )
     supervisor, gate, observe, clicks, logs, diagnostics = make_supervisor(
-        [manual] * 20,
+        [manual] * 40,
         config_overrides={
             "auto_confirm_seconds": 20,
             "allowed_action_retry_seconds": 1,
             "allowed_action_failure_seconds": 2,
+            "no_business_progress_seconds": 30,
         },
     )
 
-    with pytest.raises(RuntimeError, match="remained manual after 2 clicks"):
+    with pytest.raises(RuntimeError, match="点击4次后仍为手动战斗"):
         supervisor.run(observe, cycle=2)
     assert clicks == [
+        ((900, 80), "enable-auto-battle"),
+        ((900, 80), "enable-auto-battle"),
         ((900, 80), "enable-auto-battle"),
         ((900, 80), "enable-auto-battle"),
     ]
@@ -176,9 +179,9 @@ def test_business_progress_does_not_confirm_unknown_auto_state():
         [unknown] * 30
     )
 
-    with pytest.raises(RuntimeError, match="auto battle was not confirmed"):
+    with pytest.raises(RuntimeError, match="自动战斗开启未能确认"):
         supervisor.run(observe, cycle=2)
-    assert not any("status=auto-confirmed" in line for line in logs)
+    assert not any("状态=自动战斗已开启" in line for line in logs)
     assert diagnostics == ["auto_not_confirmed"]
 
 
@@ -229,7 +232,7 @@ def test_persisted_allowed_action_is_retried_once_before_result():
     assert diagnostics == []
 
 
-def test_persisted_allowed_action_stops_after_two_failed_clicks():
+def test_persisted_allowed_action_stops_after_four_failed_clicks():
     auto = BattleObservation(False, True, False, True, AutoBattleState.AUTO)
     story = BattleObservation(
         False,
@@ -241,17 +244,20 @@ def test_persisted_allowed_action_stops_after_two_failed_clicks():
         allowed_action=("skip_confirm", (640, 500)),
     )
     supervisor, gate, observe, clicks, logs, diagnostics = make_supervisor(
-        [auto, auto] + [story] * 20,
+        [auto, auto] + [story] * 40,
         config_overrides={
             "entry_absolute_seconds": 20,
             "allowed_action_retry_seconds": 1,
             "allowed_action_failure_seconds": 2,
+            "absolute_seconds": 40,
         },
     )
 
-    with pytest.raises(RuntimeError, match="remained visible after 2 clicks"):
+    with pytest.raises(RuntimeError, match="允许动作 skip_confirm 点击4次后画面未推进"):
         supervisor.run(observe, cycle=3)
     assert clicks == [
+        ((640, 500), "skip_confirm"),
+        ((640, 500), "skip_confirm"),
         ((640, 500), "skip_confirm"),
         ((640, 500), "skip_confirm"),
     ]
@@ -273,7 +279,7 @@ def test_two_dynamic_valid_frames_confirm_entry_after_prep_disappears():
     )
 
     assert supervisor.run(observe, cycle=4) is BattleOutcome.RESULT_REACHED
-    assert any("status=entry-confirmed" in line for line in logs)
+    assert any("阶段=战斗 状态=已进入" in line for line in logs)
     assert diagnostics == []
 
 
@@ -283,7 +289,7 @@ def test_unknown_auto_state_never_clicks_and_safely_stops():
         [unknown] * 10
     )
 
-    with pytest.raises(RuntimeError, match="auto battle was not confirmed"):
+    with pytest.raises(RuntimeError, match="自动战斗开启未能确认"):
         supervisor.run(observe, cycle=5)
     assert clicks == []
     assert diagnostics == ["auto_not_confirmed"]
@@ -332,7 +338,7 @@ def test_valid_but_unrecognized_frame_safely_stops_without_recovery():
         [unknown] * 10
     )
 
-    with pytest.raises(RuntimeError, match="unrecognized battle frame"):
+    with pytest.raises(RuntimeError, match="战斗画面持续无法识别超时"):
         supervisor.run(observe, cycle=6)
     assert diagnostics == ["battle_unrecognized"]
     assert gate.locked is False
@@ -342,7 +348,7 @@ def test_black_transition_uses_first_black_frame_timeout():
     black = BattleObservation(False, False, False, False, AutoBattleState.UNKNOWN)
     supervisor, gate, observe, clicks, logs, diagnostics = make_supervisor([black] * 10)
 
-    with pytest.raises(RuntimeError, match="black frame timeout"):
+    with pytest.raises(RuntimeError, match="战斗画面持续黑屏超时"):
         supervisor.run(observe, cycle=7)
     assert diagnostics == ["battle_black_timeout"]
 
@@ -369,7 +375,7 @@ def test_heartbeat_is_emitted_while_battle_progresses():
     )
 
     supervisor.run(observe, cycle=9)
-    assert any("status=heartbeat" in line for line in logs)
+    assert any("状态=心跳" in line for line in logs)
 
 
 def test_static_valid_battle_stops_on_no_activity_without_recovery():
@@ -378,7 +384,7 @@ def test_static_valid_battle_stops_on_no_activity_without_recovery():
         [auto] * 10, changing_frames=False
     )
 
-    with pytest.raises(RuntimeError, match="no activity"):
+    with pytest.raises(RuntimeError, match="战斗画面无变化超时"):
         supervisor.run(observe, cycle=10)
     assert diagnostics == ["battle_no_activity"]
 
@@ -389,7 +395,7 @@ def test_dynamic_battle_still_has_an_absolute_limit():
     )
     supervisor, gate, observe, clicks, logs, diagnostics = make_supervisor([auto] * 30)
 
-    with pytest.raises(RuntimeError, match="absolute timeout"):
+    with pytest.raises(RuntimeError, match="战斗绝对超时"):
         supervisor.run(observe, cycle=11)
     assert diagnostics == ["battle_absolute_timeout"]
 

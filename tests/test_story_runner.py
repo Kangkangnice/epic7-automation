@@ -112,7 +112,9 @@ class StoryRunnerTests(unittest.TestCase):
                 with patch.object(
                     runtime, "save_diagnostic", return_value=Path("diagnostic.png")
                 ):
-                    with self.assertRaisesRegex(RuntimeError, "failed after 2 attempts"):
+                    with self.assertRaisesRegex(
+                        RuntimeError, r"动作 stuck 点击4次后画面未推进"
+                    ):
                         runner.run(max_cycles=2)
 
                 self.assertEqual(expected_recoveries, recoveries)
@@ -152,7 +154,9 @@ class StoryRunnerTests(unittest.TestCase):
             completed = runner.run(max_cycles=1)
 
         self.assertEqual(1, completed)
-        self.assertEqual(1, sum("action=prepare_battle point=" in event for event in logs))
+        self.assertEqual(
+            1, sum("执行点击 动作=prepare_battle 坐标=" in event for event in logs)
+        )
 
     def test_retry_click_gets_a_fresh_transition_timeout(self):
         names = [
@@ -202,7 +206,7 @@ class StoryRunnerTests(unittest.TestCase):
                 StoryStateMachine(build_story_templates(TEMPLATES)), runtime, sleep=sleeps.append
             )
 
-            with self.assertRaisesRegex(RuntimeError, "dry-run"):
+            with self.assertRaisesRegex(RuntimeError, r"空跑未识别画面\[关卡入口\]"):
                 runner.run(max_cycles=1)
 
         self.assertEqual([], sleeps)
@@ -212,10 +216,10 @@ class StoryRunnerTests(unittest.TestCase):
             "stage", "assistant", "team", "story", "skip_confirm",
             "battle_auto_off_live_20260809", "battle_auto_on_live_20260809",
             "story", "skip_confirm", "battle_auto_on_live_20260809",
-            "reward", "clear", "friend_request", "results", "complete", "next_stage",
+            "reward", "clear", "results", "complete", "next_stage",
             "stage", "team", "story", "skip_confirm",
             "battle_auto_off_live_20260809", "battle_auto_on_live_20260809",
-            "reward", "clear", "friend_request", "results", "complete", "bonus_reward", "story_watch_next_ep4",
+            "reward", "clear", "results", "complete", "bonus_reward", "story_watch_next_ep4",
         ]
         screens = iter(
             fixture(name)
@@ -234,12 +238,11 @@ class StoryRunnerTests(unittest.TestCase):
         self.assertEqual(2, completed)
         self.assertEqual(
             2,
-            sum("action=enable-auto-battle" in event for event in logs),
+            sum("执行点击 动作=enable-auto-battle 坐标=" in event for event in logs),
         )
-        self.assertEqual(2, sum("action=cancel_friend_request" in event for event in logs))
-        self.assertEqual(2, sum("action=reward" in event for event in logs))
-        self.assertEqual(2, sum("status=auto-confirmed" in event for event in logs))
-        self.assertEqual(24, len(clicks))
+        self.assertEqual(2, sum("执行点击 动作=reward 坐标=" in event for event in logs))
+        self.assertEqual(2, sum("状态=自动战斗已开启" in event for event in logs))
+        self.assertEqual(22, len(clicks))
 
     def test_story_next_stage_at_target_is_counted_without_clicking_it(self):
         screens = iter(
@@ -260,7 +263,7 @@ class StoryRunnerTests(unittest.TestCase):
         self.assertEqual(1, completed)
         self.assertEqual([], clicks)
 
-    def test_same_action_stops_after_two_failed_clicks(self):
+    def test_same_action_stops_after_four_failed_clicks(self):
         clicks: list[tuple[int, int]] = []
         with TemporaryDirectory() as directory:
             runtime = Runtime(
@@ -276,10 +279,12 @@ class StoryRunnerTests(unittest.TestCase):
             )
             runner._ACTION_RETRY_SECONDS = 0
 
-            with self.assertRaisesRegex(RuntimeError, "failed after 2 attempts"):
+            with self.assertRaisesRegex(
+                RuntimeError, r"动作 prepare_battle 点击4次后画面未推进"
+            ):
                 runner.run(max_cycles=1)
 
-        self.assertEqual(2, len(clicks))
+        self.assertEqual(4, len(clicks))
 
     def test_complete_screen_takes_priority_over_a_false_skip_match(self):
         machine = StoryStateMachine(build_story_templates(TEMPLATES))

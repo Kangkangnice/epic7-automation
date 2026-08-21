@@ -30,7 +30,7 @@ def static_game_screen() -> np.ndarray:
         (FodderRunner, FodderState.STAGE, "_TIMEOUT_SECONDS"),
     ],
 )
-def test_every_live_runner_wakes_static_unknown_twice_before_safe_failure(
+def test_every_live_runner_wakes_static_unknown_four_times_before_safe_failure(
     runner_type, state, timeout_name
 ):
     screen = static_game_screen()
@@ -54,4 +54,4 @@ def test_every_live_runner_wakes_static_unknown_twice_before_safe_failure(
         with pytest.raises(RuntimeError, match="unknown page"):
             runner.run(max_cycles=1)
 
-    assert clicks == [(991, 566), (991, 566)]
+    assert clicks == [(991, 566), (991, 566), (991, 566), (991, 566)]

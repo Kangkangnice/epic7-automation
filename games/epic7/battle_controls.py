@@ -13,7 +13,9 @@ class BattleControls(Enum):
 _REFERENCE_SIZE = (1982, 1132)
 _CONTROL_ROI = (1400, 940, 520, 192)
 _AUTO_CONTROL_CENTERS = (1505, 1623, 1740, 1858)
+_PC_AUTO_CONTROL_CENTERS = (1553, 1674, 1795, 1918)
 _MANUAL_CONTROL_CENTERS = (1534, 1683, 1834)
+_PC_MANUAL_CONTROL_CENTERS = (1599, 1737, 1885)
 
 
 def observe_battle_controls(screen: np.ndarray) -> BattleControls:
@@ -64,41 +66,66 @@ def observe_battle_controls(screen: np.ndarray) -> BattleControls:
         )
 
     hsv = cv2.cvtColor(frame, cv2.COLOR_RGB2HSV)
-    auto_bases = []
-    for center_x in _AUTO_CONTROL_CENTERS:
-        slot = hsv[1060:1132, center_x - 50 : center_x + 50]
-        blue = (
-            (slot[:, :, 0] >= 85)
-            & (slot[:, :, 0] <= 135)
-            & (slot[:, :, 1] >= 100)
-            & (slot[:, :, 2] >= 70)
-        )
-        red = (
-            ((slot[:, :, 0] <= 10) | (slot[:, :, 0] >= 170))
-            & (slot[:, :, 1] >= 100)
-            & (slot[:, :, 2] >= 45)
-        )
-        auto_bases.append(
-            float(np.mean(blue)) >= 0.40 or float(np.mean(red)) >= 0.25
-        )
+    battle_canvas = cv2.cvtColor(frame[150:900, 100:1400], cv2.COLOR_RGB2GRAY)
+    pc_skill_animation = (
+        float(np.mean(battle_canvas < 30)) >= 0.90
+        or float(np.mean(battle_canvas > 220)) >= 0.20
+    )
 
-    if sum(auto_bases) >= 3 and aligned_count(
-        _AUTO_CONTROL_CENTERS, 1047, (40, 60), 30
-    ) >= 3:
+    def has_auto_layout(expected_xs: tuple[int, ...], expected_y: int) -> bool:
+        auto_bases = []
+        for center_x in expected_xs:
+            slot = hsv[1060:1132, center_x - 50 : center_x + 50]
+            blue = (
+                (slot[:, :, 0] >= 85)
+                & (slot[:, :, 0] <= 135)
+                & (slot[:, :, 1] >= 100)
+                & (slot[:, :, 2] >= 70)
+            )
+            red = (
+                ((slot[:, :, 0] <= 10) | (slot[:, :, 0] >= 170))
+                & (slot[:, :, 1] >= 100)
+                & (slot[:, :, 2] >= 45)
+            )
+            auto_bases.append(
+                float(np.mean(blue)) >= 0.40 or float(np.mean(red)) >= 0.25
+            )
+        return sum(auto_bases) >= 3 and aligned_count(
+            expected_xs, expected_y, (40, 60), 30
+        ) >= 2
+
+    # 底座颜色命中 >=3 槽即已排除手动布局（手动 3 钮最多擦到 2 个槽位）；
+    # 对齐圆放宽到 >=2：红底灵魂技/暗冷却槽上的图标会让霍夫圆漏检。
+    if has_auto_layout(_AUTO_CONTROL_CENTERS, 1047) or (
+        not pc_skill_animation
+        and has_auto_layout(_PC_AUTO_CONTROL_CENTERS, 1021)
+    ):
         return BattleControls.AUTO_CONTROLS
 
     yy, xx = np.ogrid[: frame.shape[0], : frame.shape[1]]
-    manual_borders = []
-    for center_x in _MANUAL_CONTROL_CENTERS:
-        distance_squared = (xx - center_x) ** 2 + (yy - 1040) ** 2
-        border = (distance_squared >= 55 ** 2) & (distance_squared <= 75 ** 2)
-        manual_borders.append(float(np.mean(hsv[:, :, 2][border] > 120)) >= 0.35)
+
+    def manual_borders(expected_xs: tuple[int, ...]) -> list[bool]:
+        borders = []
+        for center_x in expected_xs:
+            distance_squared = (xx - center_x) ** 2 + (yy - 1040) ** 2
+            border = (distance_squared >= 55 ** 2) & (distance_squared <= 75 ** 2)
+            borders.append(float(np.mean(hsv[:, :, 2][border] > 120)) >= 0.35)
+        return borders
+
+    emulator_manual_borders = manual_borders(_MANUAL_CONTROL_CENTERS)
     manual_circle_count = aligned_count(
         _MANUAL_CONTROL_CENTERS, 1040, (55, 82), 38
     )
     legacy_canvas = not frame[:52].any() and not frame[:, 1920:].any()
     if manual_circle_count == len(_MANUAL_CONTROL_CENTERS) and (
-        all(manual_borders) or legacy_canvas
+        all(emulator_manual_borders) or legacy_canvas
+    ):
+        return BattleControls.MANUAL_CONTROLS
+    pc_manual_circle_count = aligned_count(
+        _PC_MANUAL_CONTROL_CENTERS, 1040, (55, 82), 38
+    )
+    if pc_manual_circle_count == len(_PC_MANUAL_CONTROL_CENTERS) and all(
+        manual_borders(_PC_MANUAL_CONTROL_CENTERS)
     ):
         return BattleControls.MANUAL_CONTROLS
     return BattleControls.TRANSITION

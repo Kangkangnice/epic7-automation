@@ -129,7 +129,7 @@ class ExpeditionStateMachineTests(unittest.TestCase):
         machine = self.machine(ExpeditionState.POSTERS)
         screen = screen_with((TEMPLATES.poster_embark, (1760, 1010)))
 
-        with self.assertRaisesRegex(RuntimeError, "card area"):
+        with self.assertRaisesRegex(RuntimeError, "传单卡片区域内未找到远征队出发按钮"):
             machine.next_action(screen)
 
     def test_empty_poster_list_is_resource_exhaustion(self):

@@ -161,15 +161,6 @@ class FodderStateMachineTests(unittest.TestCase):
         with self.assertRaises(StaminaExhausted):
             machine.next_action(popup)
 
-    def test_shared_assistant_popups_are_closed_before_the_cycle_continues(self):
-        machine = self.machine()
-
-        friendship = machine.next_action(story_fixture("friendship_points_popup"))
-        friend_request = machine.next_action(story_fixture("friend_request"))
-
-        self.assertEqual("close_friendship_points_popup", friendship.name)
-        self.assertEqual("cancel_friend_request", friend_request.name)
-
     def test_black_and_wrong_stage_never_produce_an_action(self):
         machine = self.machine()
         black = np.zeros_like(fixture("stage_3_7"))

@@ -11,12 +11,17 @@ from auto_game_unified.core.matcher import Match, find_template, load_template
 from auto_game_unified.core.runtime import Runtime
 from auto_game_unified.core.supervisor import StableObservation
 from auto_game_unified.games.epic7.arena import find_rank_promotion_confirm
-from auto_game_unified.games.epic7.story import (
+from auto_game_unified.games.epic7.global_popups import (
     find_friendship_points_popup_close,
+)
+from auto_game_unified.games.epic7.story import (
     find_prepare_battle_button,
     find_story_skip_button,
     find_story_skip_confirm,
     find_watch_story_button,
+)
+from auto_game_unified.games.epic7.hero_synthesis import (
+    imprint_button_saturation,
 )
 from auto_game_unified.games.epic7.unknown_screen import (
     UnknownScreenWake,
@@ -31,6 +36,42 @@ REFERENCE_SIZE = (1982, 1132)
 class PageObservation:
     name: str
     confidence: float
+
+
+# 日志用画面名：observe() 的页面标识 -> 中文画面描述
+PAGE_LABELS = {
+    "invalid": "无效画面",
+    "friendship_points_popup": "友情点数弹窗",
+    "arena_rank_promotion": "竞技场段位晋升弹窗",
+    "exit_dialog": "退出确认框",
+    "story_skip_confirm": "跳过剧情确认",
+    "story_playing": "剧情播放中",
+    "lobby": "大厅",
+    "expedition_home": "远征主页",
+    "arena_mode": "竞技场模式选择",
+    "fodder_episode_detail": "支线详情",
+    "fodder_special_book": "特别之书",
+    "fodder_side_story": "支线故事",
+    "hero_list": "英雄列表",
+    "hero_equipment": "英雄装备子页",
+    "story_ready": "主线入口",
+    "arena_ready": "竞技场入口",
+    "unknown": "未知画面",
+}
+
+# 日志用模式名：模式标识 -> 中文模式名
+MODE_LABELS = {
+    "story": "主线",
+    "arena": "竞技场",
+    "expedition": "远征",
+    "fodder": "狗粮",
+    "assist_auto": "辅助自动",
+    "hero_synthesis": "英雄合成",
+}
+
+
+def page_label(name: str) -> str:
+    return PAGE_LABELS.get(name, name)
 
 
 @dataclass
@@ -49,6 +90,9 @@ class NavigationTemplates:
     lobby_story: np.ndarray
     lobby_arena: np.ndarray
     lobby_battle: np.ndarray
+    lobby_hero: np.ndarray
+    hero_equipment_tab_active: Optional[np.ndarray]
+    imprint_button_normal: np.ndarray
     exit_title: np.ndarray
     exit_cancel: np.ndarray
     exit_title_updated: np.ndarray
@@ -67,6 +111,7 @@ class NavigationTemplates:
     expedition_season_active: np.ndarray
     expedition_entry: np.ndarray
     expedition_home: np.ndarray
+    lobby_story_click_offset: tuple[int, int]
     lobby_side_story: np.ndarray
     side_story_special_book: np.ndarray
     special_book_episode: np.ndarray
@@ -93,6 +138,15 @@ def build_navigation_templates(template_root: Path) -> NavigationTemplates:
         lobby_story=load_template(str(navigation / "lobby_story.png")),
         lobby_arena=load_template(str(navigation / "lobby_arena.png")),
         lobby_battle=load_template(str(navigation / "lobby_battle.png")),
+        lobby_hero=load_template(str(navigation / "lobby_hero.png")),
+        hero_equipment_tab_active=(
+            load_template(str(navigation / "hero_equipment_tab_active.png"))
+            if (navigation / "hero_equipment_tab_active.png").exists()
+            else None
+        ),
+        imprint_button_normal=load_template(
+            str(template_root / "hero" / "imprint_button_normal.png")
+        ),
         exit_title=load_template(str(navigation / "exit_title.png")),
         exit_cancel=load_template(str(navigation / "exit_cancel.png")),
         exit_title_updated=load_template(str(navigation / "exit_title_updated.png")),
@@ -121,6 +175,9 @@ def build_navigation_templates(template_root: Path) -> NavigationTemplates:
         ),
         expedition_entry=load_template(str(navigation / "expedition_entry.png")),
         expedition_home=load_template(str(navigation / "expedition_home.png")),
+        lobby_story_click_offset=(120, -20)
+        if template_root.name == "templates_pc"
+        else (65, 11),
         lobby_side_story=load_template(str(navigation / "lobby_side_story.png")),
         side_story_special_book=load_template(
             str(navigation / "side_story_special_book.png")
@@ -140,12 +197,16 @@ class Epic7Navigator:
     """Return to the lobby, then follow a verified mode-specific route."""
 
     _BACK_RETRY_SECONDS = 15
+    _HERO_DETAIL_TAB_POINT = (65, 150)
 
     _REGIONS = {
         "lobby_profile": (0, 35, 500, 200),
         "lobby_story": (1450, 220, 480, 200),
         "lobby_arena": (1600, 520, 330, 220),
         "lobby_battle": (1650, 430, 332, 220),
+        "lobby_hero": (1400, 980, 180, 130),
+        "hero_equipment_tab_active": (0, 200, 130, 140),
+        "imprint_button_normal": (1000, 900, 250, 200),
         "exit_title": (650, 400, 700, 280),
         "exit_cancel": (550, 620, 500, 260),
         "exit_title_updated": (650, 400, 700, 280),
@@ -165,7 +226,7 @@ class Epic7Navigator:
         "lobby_side_story": (1700, 380, 215, 120),
         "side_story_special_book": (1520, 900, 385, 110),
         "special_book_episode": (790, 995, 500, 110),
-        "episode_adventure": (1390, 990, 500, 115),
+        "episode_adventure": (1595, 945, 338, 187),
         "fodder_stage_title": (850, 760, 225, 90),
         "fodder_prepare_battle": (1365, 990, 385, 120),
     }
@@ -196,6 +257,11 @@ class Epic7Navigator:
             region=self._REGIONS[name],
             reference_size=REFERENCE_SIZE,
         )
+
+    def _click_offset(self, anchor: str) -> tuple[int, int]:
+        if anchor == "lobby_story":
+            return self.templates.lobby_story_click_offset
+        return self._CLICK_OFFSETS.get(anchor, (0, 0))
 
     def observe(self, screen: np.ndarray) -> PageObservation:
         content = screen[round(screen.shape[0] * 0.05) :, : round(screen.shape[1] * 0.97)]
@@ -239,12 +305,18 @@ class Epic7Navigator:
         if story_skip is not None:
             return PageObservation("story_playing", story_skip.score)
 
-        lobby = [
-            self._locate(screen, "lobby_story", 0.80),
-            self._locate(screen, "lobby_arena"),
-        ]
-        if all(lobby):
-            return PageObservation("lobby", min(match.score for match in lobby if match))
+        lobby_story = self._locate(screen, "lobby_story", 0.80)
+        lobby_arena = self._locate(screen, "lobby_arena")
+        lobby_battle = self._locate(screen, "lobby_battle")
+        lobby_secondary = max(
+            (match for match in (lobby_arena, lobby_battle) if match is not None),
+            key=lambda match: match.score,
+            default=None,
+        )
+        if lobby_story and lobby_secondary:
+            return PageObservation(
+                "lobby", min(lobby_story.score, lobby_secondary.score)
+            )
 
         expedition_home = self._locate(screen, "expedition_home")
         if expedition_home:
@@ -284,6 +356,23 @@ class Epic7Navigator:
         fodder_side_story = self._locate(screen, "side_story_special_book")
         if fodder_side_story:
             return PageObservation("fodder_side_story", fodder_side_story.score)
+
+        hero_equipment = (
+            self._locate(screen, "hero_equipment_tab_active", 0.85)
+            if self.templates.hero_equipment_tab_active is not None
+            else None
+        )
+        if hero_equipment:
+            return PageObservation("hero_equipment", hero_equipment.score)
+
+        hero_list = self._locate(screen, "imprint_button_normal", 0.78)
+        if hero_list:
+            return PageObservation("hero_list", hero_list.score)
+        # 选中 3S 满级英雄时刻印按钮置灰（深/浅两种灰），正常模板高分失配；
+        # 结构匹配（图标轮廓仍在）+ 饱和度确认置灰状态，同样认定为英雄列表。
+        grey_button = self._locate(screen, "imprint_button_normal", 0.50)
+        if grey_button and imprint_button_saturation(screen) < 90:
+            return PageObservation("hero_list", grey_button.score)
 
         story = find_prepare_battle_button(
             screen,
@@ -327,9 +416,12 @@ class Epic7Navigator:
             )
             action = "关闭辅助英雄友情点数提示"
         if close is None:
-            raise RuntimeError(f"global popup {observation.name} lost a required anchor")
+            raise RuntimeError(
+                f"全局弹窗[{page_label(observation.name)}]缺少必需锚点"
+            )
         self.runtime.log(
-            f"模式=导航 页面={observation.name} 置信度={close.score:.3f} 动作={action}"
+            f"模式=导航 页面={page_label(observation.name)} "
+            f"置信度={close.score:.3f} 动作={action}"
         )
         self.runtime.click(close.center, action)
         return True
@@ -351,19 +443,22 @@ class Epic7Navigator:
             attempts.clicks = 0
             return False
         if match is None:
-            raise RuntimeError(f"{observation.name} lost its required action anchor")
+            raise RuntimeError(
+                f"页面[{page_label(observation.name)}]缺少必需动作锚点"
+            )
         if attempts.action != observation.name:
             attempts.action = observation.name
             attempts.clicks = 0
-        if attempts.clicks >= 2:
+        if attempts.clicks >= 4:
             diagnostic = self._diagnostic(f"{observation.name}_recovery_failed")
             raise RuntimeError(
-                f"{observation.name} remained visible after 2 clicks; saved {diagnostic}"
+                f"页面[{page_label(observation.name)}]点击4次后仍未消失；"
+                f"已保存诊断 {diagnostic}"
             )
         attempts.clicks += 1
         self.runtime.log(
-            f"mode=navigation page={observation.name} action={action} "
-            f"attempt={attempts.clicks}/2 confidence={match.score:.3f}"
+            f"模式=导航 页面={page_label(observation.name)} 动作={action} "
+            f"尝试={attempts.clicks}/4 置信度={match.score:.3f}"
         )
         self.runtime.click(match.center, action)
         return True
@@ -383,7 +478,9 @@ class Epic7Navigator:
                 invalid_count += 1
                 if invalid_count >= self.transition_frames:
                     diagnostic = self._diagnostic("black_or_non_game")
-                    raise RuntimeError(f"black or non-game frame persisted; saved {diagnostic}")
+                    raise RuntimeError(
+                        f"画面持续黑屏或非游戏帧；已保存诊断 {diagnostic}"
+                    )
                 self.sleep(self.poll_seconds)
                 continue
             invalid_count = 0
@@ -405,7 +502,8 @@ class Epic7Navigator:
                 self.sleep(1.0)
                 continue
             self.runtime.log(
-                f"模式=导航 页面={observation.name} 置信度={observation.confidence:.3f}"
+                f"模式=导航 页面={page_label(observation.name)} "
+                f"置信度={observation.confidence:.3f}"
             )
             if observation.name == "lobby":
                 self.runtime.log("模式=导航 页面=大厅 状态=已确认")
@@ -415,7 +513,7 @@ class Epic7Navigator:
                     screen, "exit_cancel_updated"
                 )
                 if cancel is None:
-                    raise RuntimeError("exit dialog lost its cancel anchor")
+                    raise RuntimeError("退出确认框缺少取消按钮锚点")
                 self.runtime.click(cancel.center, "取消退出游戏")
                 last_back_at = self.now()
                 back_wait_logged = False
@@ -428,7 +526,7 @@ class Epic7Navigator:
                     if not back_wait_logged:
                         remaining = self._BACK_RETRY_SECONDS - since_back
                         self.runtime.log(
-                            f"模式=导航 页面={observation.name} "
+                            f"模式=导航 页面={page_label(observation.name)} "
                             f"等待=返回后确认转场 剩余={remaining:.1f}秒"
                         )
                         back_wait_logged = True
@@ -437,7 +535,7 @@ class Epic7Navigator:
             if observation.name == "unknown":
                 wake_result = self.unknown_screen_wake.handle(
                     screen,
-                    context="navigation:return_home",
+                    context="导航:回大厅",
                 )
                 if wake_result in {
                     UnknownWakeResult.WAITING,
@@ -447,15 +545,17 @@ class Epic7Navigator:
                     continue
             if back_count >= 8:
                 diagnostic = self._diagnostic("return_home_failed")
-                raise RuntimeError(f"could not return home after 8 controlled backs; saved {diagnostic}")
+                raise RuntimeError(
+                    f"受控返回8次后仍未回到大厅；已保存诊断 {diagnostic}"
+                )
             if observation.name == "story_ready":
                 back = self._locate(screen, "story_back", 0.90)
                 if back is None:
-                    raise RuntimeError("story page lost its visible back button")
+                    raise RuntimeError("主线入口页面缺少可见的返回按钮")
                 back_count += 1
                 self.runtime.log(
-                    f"mode=navigation page=story_ready action=click-game-back "
-                    f"retry={back_count}/8"
+                    f"模式=导航 页面=主线入口 动作=点击游戏内返回 "
+                    f"重试={back_count}/8"
                 )
                 self.runtime.click(back.center, "click-story-back")
                 self.unknown_screen_wake.reset()
@@ -465,7 +565,10 @@ class Epic7Navigator:
                 self.sleep(1.0)
                 continue
             back_count += 1
-            self.runtime.log(f"模式=导航 页面={observation.name} 动作=受控返回 重试={back_count}/8")
+            self.runtime.log(
+                f"模式=导航 页面={page_label(observation.name)} "
+                f"动作=受控返回 重试={back_count}/8"
+            )
             self.runtime.back("受控返回大厅")
             self.unknown_screen_wake.reset()
             last_back_at = self.now()
@@ -473,7 +576,9 @@ class Epic7Navigator:
             stable.reset()
             self.sleep(1.0)
         diagnostic = self._diagnostic("return_home_timeout")
-        raise RuntimeError(f"return home exceeded 120-second observation budget; saved {diagnostic}")
+        raise RuntimeError(
+            f"返回大厅超过120秒观测预算；已保存诊断 {diagnostic}"
+        )
 
     def navigate(self, mode: str, *, lobby_screen: Optional[np.ndarray] = None) -> None:
         if mode == "story":
@@ -544,9 +649,14 @@ class Epic7Navigator:
                 "进入冒险地图",
                 source_screen=episode_detail,
             )
+        elif mode == "hero_synthesis":
+            self._transition(
+                "lobby", "hero_list", "lobby_hero", "进入英雄列表",
+                source_screen=lobby_screen,
+            )
         else:
-            raise ValueError(f"unsupported navigation mode: {mode}")
-        self.runtime.log(f"模式={mode} 状态=导航完成")
+            raise ValueError(f"导航不支持的模式：{mode}")
+        self.runtime.log(f"模式={MODE_LABELS.get(mode, mode)} 状态=导航完成")
 
     def _transition(
         self,
@@ -561,17 +671,23 @@ class Epic7Navigator:
         source_screen = source_screen if source_screen is not None else self._wait_for_page(source)
         targets = (target,) if isinstance(target, str) else target
         target_label = "/".join(targets)
-        for attempt in range(1, 3):
+        for attempt in range(1, 5):
             threshold = 0.80 if anchor == "lobby_story" else 0.82
             match = self._locate(source_screen, anchor, threshold)
             if match is None:
-                raise RuntimeError(f"{source} lost required navigation anchor {anchor}")
-            self.runtime.log(f"模式=导航 页面={source} 目标={target_label} 动作={action} 尝试={attempt}/2")
-            offset = self._CLICK_OFFSETS.get(anchor, (0, 0))
+                raise RuntimeError(
+                    f"页面[{page_label(source)}]缺少导航锚点 {anchor}"
+                )
+            self.runtime.log(
+                f"模式=导航 页面={page_label(source)} 目标={target_label} "
+                f"动作={action} 尝试={attempt}/4"
+            )
+            offset = self._click_offset(anchor)
             click_point = (match.center[0] + offset[0], match.center[1] + offset[1])
             self.runtime.click(click_point, action)
             stable = StableObservation(required=2)
             story_recovery = _StoryRecoveryAttempts()
+            hero_detail_tab_switched = False
             last_source: Optional[np.ndarray] = None
             for _ in range(self.transition_frames):
                 screen, observation = self._capture()
@@ -589,7 +705,7 @@ class Epic7Navigator:
                 if is_stable and observation.name == "unknown":
                     wake_result = self.unknown_screen_wake.handle(
                         screen,
-                        context=f"navigation:{source}->{target_label}",
+                        context=f"导航:{page_label(source)}→{target_label}",
                     )
                     if wake_result in {
                         UnknownWakeResult.WAITING,
@@ -599,9 +715,26 @@ class Epic7Navigator:
                         continue
                 elif is_stable:
                     self.unknown_screen_wake.reset()
+                if (
+                    is_stable
+                    and target == "hero_list"
+                    and observation.name == "hero_equipment"
+                    and not hero_detail_tab_switched
+                ):
+                    self.runtime.log(
+                        "模式=导航 页面=英雄装备子页 动作=切换英雄详情"
+                    )
+                    self.runtime.click(
+                        self._HERO_DETAIL_TAB_POINT, "切换英雄详情"
+                    )
+                    hero_detail_tab_switched = True
+                    stable.reset()
+                    self.sleep(self.poll_seconds)
+                    continue
                 if is_stable and observation.name in targets:
                     self.runtime.log(
-                        f"模式=导航 页面={observation.name} 置信度={observation.confidence:.3f} 状态=转场确认"
+                        f"模式=导航 页面={page_label(observation.name)} "
+                        f"置信度={observation.confidence:.3f} 状态=转场确认"
                     )
                     return screen
                 if observation.name == source:
@@ -609,11 +742,16 @@ class Epic7Navigator:
                 self.sleep(self.poll_seconds)
             if last_source is not None:
                 source_screen = last_source
-                self.runtime.log(f"模式=导航 页面={source} 等待=无转场 重试={attempt}/2")
+                self.runtime.log(
+                    f"模式=导航 页面={page_label(source)} 等待=无转场 "
+                    f"重试={attempt}/2"
+                )
                 continue
             break
         diagnostic = self._diagnostic(f"navigation_{source}_to_{target_label}_failed")
-        raise RuntimeError(f"navigation {source} -> {target_label} failed safely; saved {diagnostic}")
+        raise RuntimeError(
+            f"导航转场 {page_label(source)} → {target_label} 失败；已保存诊断 {diagnostic}"
+        )
 
     def _wait_for_page(self, expected: str) -> np.ndarray:
         self.unknown_screen_wake.reset()
@@ -635,7 +773,7 @@ class Epic7Navigator:
             if is_stable and observation.name == "unknown":
                 wake_result = self.unknown_screen_wake.handle(
                     screen,
-                    context=f"navigation:wait-for-{expected}",
+                    context=f"导航:等待{page_label(expected)}",
                 )
                 if wake_result in {
                     UnknownWakeResult.WAITING,
@@ -649,7 +787,9 @@ class Epic7Navigator:
                 return screen
             self.sleep(self.poll_seconds)
         diagnostic = self._diagnostic(f"expected_{expected}")
-        raise RuntimeError(f"expected {expected} before navigation; saved {diagnostic}")
+        raise RuntimeError(
+            f"导航开始前应处于[{page_label(expected)}]；已保存诊断 {diagnostic}"
+        )
 
     def _diagnostic(self, label: str):
         if self.runtime.diagnostic_dir is None:

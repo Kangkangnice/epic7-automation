@@ -149,6 +149,18 @@ class NavigationTests(unittest.TestCase):
             transition_frames=12,
         )
 
+    def test_classifies_hero_list_with_grey_imprint_button(self):
+        """选中 3S 满级英雄时刻印按钮置灰，英雄列表页仍须被识别。"""
+        navigator = self.navigator([])
+        hero_fixtures = ROOT / "tests" / "fixtures" / "epic7_hero"
+
+        for name in ("list_grey_3s", "list_grey_3s_reddot", "list_grey_3s_light"):
+            with self.subTest(fixture=name):
+                screen = cv2.cvtColor(
+                    cv2.imread(str(hero_fixtures / f"{name}.png")), cv2.COLOR_BGR2RGB
+                )
+                self.assertEqual("hero_list", navigator.observe(screen).name)
+
     def test_classifies_recorded_pages_with_required_anchors(self):
         navigator = self.navigator([])
 
@@ -348,7 +360,7 @@ class NavigationTests(unittest.TestCase):
 
         self.assertEqual([], backs)
 
-    def test_unknown_page_wakes_twice_before_controlled_back(self):
+    def test_unknown_page_wakes_four_times_before_controlled_back(self):
         clicks: list[tuple[int, int]] = []
         backs: list[bool] = []
         unknown = fixture("story_stage").copy()
@@ -357,14 +369,14 @@ class NavigationTests(unittest.TestCase):
         unknown[:52] = 0
         unknown[:, 1920:] = 0
         navigator = self.navigator(
-            [unknown] * 7 + [fixture("lobby"), fixture("lobby")],
+            [unknown] * 11 + [fixture("lobby"), fixture("lobby")],
             clicks=clicks,
             backs=backs,
         )
 
         navigator.return_home()
 
-        self.assertEqual([(991, 566), (991, 566)], clicks)
+        self.assertEqual([(991, 566)] * 4, clicks)
         self.assertEqual([True], backs)
 
     def test_story_ready_uses_the_visible_game_back_button(self):
@@ -423,7 +435,7 @@ class NavigationTests(unittest.TestCase):
         navigator.navigate("story", lobby_screen=fixture("lobby"))
 
         self.assertEqual(
-            [(1790, 326), (991, 566), (991, 566)],
+            [(1790, 326), (991, 566), (991, 566), (991, 566)],
             clicks,
         )
 
@@ -549,7 +561,7 @@ class NavigationTests(unittest.TestCase):
         backs: list[bool] = []
         navigator = self.navigator([np.zeros((1132, 1982, 3), dtype=np.uint8)] * 12, clicks, backs)
 
-        with self.assertRaisesRegex(RuntimeError, "black or non-game"):
+        with self.assertRaisesRegex(RuntimeError, "画面持续黑屏或非游戏帧"):
             navigator.return_home()
 
         self.assertEqual([], clicks)

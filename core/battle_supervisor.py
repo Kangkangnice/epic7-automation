@@ -37,6 +37,7 @@ class BattleObservation:
 @dataclass(frozen=True)
 class BattleConfig:
     mode: str
+    mode_label: str = ""
     poll_seconds: float = 1.0
     entry_absolute_seconds: float = 180
     no_activity_seconds: float = 180
@@ -74,6 +75,7 @@ class BattleSupervisor:
         self.runtime = runtime
         self.gate = gate
         self.config = config
+        self.label = config.mode_label or config.mode
         self.now = now
         self.sleep = sleep
 
@@ -84,10 +86,10 @@ class BattleSupervisor:
             else "not-configured"
         )
         self.runtime.log(
-            f"mode={self.config.mode} phase=battle status=safe-stop "
-            f"reason={message} diagnostic={path}"
+            f"模式={self.label} 阶段=战斗 状态=安全停止 "
+            f"原因={message} 诊断={path}"
         )
-        raise RuntimeError(f"{message}; saved {path}")
+        raise RuntimeError(f"{message}；已保存诊断 {path}")
 
     def run(self, observe: BattleObserver, *, cycle: int) -> BattleOutcome:
         self.gate.lock(mode=self.config.mode, cycle=cycle)
@@ -120,8 +122,7 @@ class BattleSupervisor:
                     and observation.result_visible
                 ):
                     self.runtime.log(
-                        f"mode={self.config.mode} cycle={cycle} "
-                        "phase=result status=confirmed"
+                        f"模式={self.label} 轮次={cycle} 阶段=结算 状态=已确认"
                     )
                     return BattleOutcome.RESULT_REACHED
 
@@ -136,8 +137,8 @@ class BattleSupervisor:
                     and not entry_confirmed
                 ):
                     self.runtime.log(
-                        f"mode={self.config.mode} cycle={cycle} "
-                        "phase=pre-battle status=business-handoff"
+                        f"模式={self.label} 轮次={cycle} "
+                        "阶段=战前 状态=交还业务处理"
                     )
                     return BattleOutcome.PRE_BATTLE_BUSINESS
 
@@ -154,8 +155,8 @@ class BattleSupervisor:
                 ):
                     entry_confirmed = True
                     self.runtime.log(
-                        f"mode={self.config.mode} cycle={cycle} "
-                        "phase=battle status=entry-confirmed"
+                        f"模式={self.label} 轮次={cycle} "
+                        "阶段=战斗 状态=已进入"
                     )
 
                 if meaningful_change(previous, screen):
@@ -167,7 +168,7 @@ class BattleSupervisor:
                     black_since = current if black_since is None else black_since
                     if current - black_since >= self.config.black_seconds:
                         self._fail(
-                            "battle_black_timeout", "black frame timeout", screen
+                            "battle_black_timeout", "战斗画面持续黑屏超时", screen
                         )
                 else:
                     black_since = None
@@ -184,7 +185,7 @@ class BattleSupervisor:
                     if current - invalid_since >= self.config.unrecognized_seconds:
                         self._fail(
                             "battle_unrecognized",
-                            "unrecognized battle frame timeout",
+                            "战斗画面持续无法识别超时",
                             screen,
                         )
                 else:
@@ -215,29 +216,32 @@ class BattleSupervisor:
                         if allowed_action_clicked_at is None
                         else current - allowed_action_clicked_at
                     )
-                    should_click = allowed_action_clicks == 0 or (
-                        allowed_action_clicks == 1
-                        and since_click is not None
-                        and since_click >= self.config.allowed_action_retry_seconds
+                    should_click = (
+                        allowed_action_clicked_at is None
+                        or (
+                            allowed_action_clicks < 4
+                            and since_click is not None
+                            and since_click >= self.config.allowed_action_retry_seconds
+                        )
                     )
                     if should_click:
                         allowed_action_clicks += 1
                         self.runtime.log(
-                            f"mode={self.config.mode} cycle={cycle} "
-                            f"phase=battle action={action_name} "
-                            f"attempt={allowed_action_clicks}/2"
+                            f"模式={self.label} 轮次={cycle} "
+                            f"阶段=战斗 动作={action_name} "
+                            f"尝试={allowed_action_clicks}/4"
                         )
                         self.runtime.click(action_point, action_name)
                         allowed_action_clicked_at = current
                         business_at = current
                     elif (
-                        allowed_action_clicks >= 2
+                        allowed_action_clicks >= 4
                         and since_click is not None
                         and since_click >= self.config.allowed_action_failure_seconds
                     ):
                         self._fail(
                             f"allowed_action_{action_name}_failed",
-                            f"{action_name} remained visible after 2 clicks",
+                            f"允许动作 {action_name} 点击4次后画面未推进",
                             screen,
                         )
 
@@ -248,7 +252,7 @@ class BattleSupervisor:
                     if observation.auto_point is None:
                         self._fail(
                             "auto_point_missing",
-                            "manual state had no auto point",
+                            "手动战斗状态下缺少自动开关坐标",
                             screen,
                         )
                     auto_confirmed = False
@@ -258,17 +262,21 @@ class BattleSupervisor:
                         if auto_clicked_at is None
                         else current - auto_clicked_at
                     )
-                    should_click_auto = auto_clicks == 0 or (
-                        auto_clicks == 1
-                        and since_auto_click is not None
-                        and since_auto_click
-                        >= self.config.allowed_action_retry_seconds
+                    should_click_auto = (
+                        auto_clicked_at is None
+                        or (
+                            auto_clicks < 4
+                            and since_auto_click is not None
+                            and since_auto_click
+                            >= self.config.allowed_action_retry_seconds
+                        )
                     )
                     if should_click_auto:
                         auto_clicks += 1
                         self.runtime.log(
-                            f"mode={self.config.mode} cycle={cycle} "
-                            f"phase=battle auto-attempt={auto_clicks}/2"
+                            f"模式={self.label} 轮次={cycle} "
+                            f"阶段=战斗 动作=开启自动战斗 "
+                            f"尝试={auto_clicks}/4"
                         )
                         self.runtime.click(
                             observation.auto_point, "enable-auto-battle"
@@ -276,14 +284,14 @@ class BattleSupervisor:
                         auto_clicked_at = current
                         auto_stable.reset()
                     elif (
-                        auto_clicks >= 2
+                        auto_clicks >= 4
                         and since_auto_click is not None
                         and since_auto_click
                         >= self.config.allowed_action_failure_seconds
                     ):
                         self._fail(
                             "auto_not_confirmed",
-                            "auto battle remained manual after 2 clicks",
+                            "点击4次后仍为手动战斗",
                             screen,
                         )
                 elif (
@@ -296,8 +304,8 @@ class BattleSupervisor:
                     if not auto_confirmed:
                         auto_confirmed = True
                         self.runtime.log(
-                            f"mode={self.config.mode} cycle={cycle} "
-                            "phase=battle status=auto-confirmed"
+                            f"模式={self.label} 轮次={cycle} "
+                            "阶段=战斗 状态=自动战斗已开启"
                         )
                 elif observation.auto_state is AutoBattleState.MANUAL:
                     auto_wait_since = None
@@ -316,7 +324,7 @@ class BattleSupervisor:
                 ):
                     self._fail(
                         "auto_not_confirmed",
-                        "auto battle was not confirmed",
+                        "自动战斗开启未能确认",
                         screen,
                     )
                 if (
@@ -325,13 +333,13 @@ class BattleSupervisor:
                 ):
                     self._fail(
                         "battle_entry_timeout",
-                        "battle entry was not confirmed",
+                        "战斗进入未能确认",
                         screen,
                     )
                 if current - active_at >= self.config.no_activity_seconds:
                     self._fail(
                         "battle_no_activity",
-                        "battle screen had no activity",
+                        "战斗画面无变化超时",
                         screen,
                     )
                 if (
@@ -340,22 +348,22 @@ class BattleSupervisor:
                 ):
                     self._fail(
                         "battle_no_business_progress",
-                        "battle made no business progress",
+                        "战斗业务无进展超时",
                         screen,
                     )
                 if current - started >= self.config.absolute_seconds:
                     self._fail(
                         "battle_absolute_timeout",
-                        "battle absolute timeout",
+                        "战斗绝对超时",
                         screen,
                     )
                 if current - heartbeat >= self.config.heartbeat_seconds:
                     self.runtime.log(
-                        f"mode={self.config.mode} cycle={cycle} "
-                        "phase=battle status=heartbeat "
-                        f"elapsed={current - started:.0f}s "
-                        f"activity_age={current - active_at:.0f}s "
-                        f"business_age={current - business_at:.0f}s"
+                        f"模式={self.label} 轮次={cycle} "
+                        "阶段=战斗 状态=心跳 "
+                        f"已耗时={current - started:.0f}秒 "
+                        f"距上次画面变化={current - active_at:.0f}秒 "
+                        f"距上次业务进展={current - business_at:.0f}秒"
                     )
                     heartbeat = current
 
