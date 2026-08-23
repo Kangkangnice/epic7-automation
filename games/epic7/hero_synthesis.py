@@ -267,6 +267,9 @@ class HeroSynthStateMachine:
         self._list_end_observations = 0
         self._list_end_fingerprint: Optional[str] = None
 
+    def _confirm_page(self, label: str) -> None:
+        self._confirmed_page = label
+
     def _mask_dot(self, template: np.ndarray) -> np.ndarray:
         """把模板上红点角标区置零，匹配时与画面同区域一起忽略。"""
         masked = template.copy()
@@ -844,6 +847,7 @@ class HeroSynthStateMachine:
         self._last_screen = screen
         # 1. 合成结果覆盖层必须先关闭，不能点击覆盖层下的返回箭头。
         if self._imprint_result_present(screen):
+            self._confirm_page("合成结果")
             self.state = HeroSynthState.IMPRINT_REWARD
             return HeroAction(
                 "close_imprint_result",
@@ -855,15 +859,18 @@ class HeroSynthStateMachine:
         if confirm is not None:
             transmit_ctx = self._locate(screen, "auto_select_label", 0.85) is not None
             if transmit_ctx or self.state.value.startswith("transmit"):
+                self._confirm_page("传送确认")
                 self.state = HeroSynthState.TRANSMIT_CONFIRM
                 return HeroAction(
                     "confirm_transmit", self._scaled_point(screen, confirm)
                 )
+            self._confirm_page("合成确认")
             self.state = HeroSynthState.IMPRINT_CONFIRM
             return HeroAction("confirm_synthesis", self._scaled_point(screen, confirm))
 
         # 3. 传送奖励弹窗（仅在传送流程中判定，防止列表误触）
         if self.state.value.startswith("transmit") and self._reward_strip_present(screen):
+            self._confirm_page("传送奖励")
             self.state = HeroSynthState.TRANSMIT_RETURNING
             return HeroAction("close_reward", self._scaled_point(screen, self._REWARD_CLOSE_POINT))
 
@@ -881,6 +888,7 @@ class HeroSynthStateMachine:
 
         if self.state is HeroSynthState.TRANSMIT_RETURNING:
             if self._locate(screen, "auto_select_label", 0.85):
+                self._confirm_page("传送选择")
                 back = self._back_action(screen)
                 if back is not None:
                     return back
@@ -892,6 +900,7 @@ class HeroSynthStateMachine:
 
         # 5. 传送选择界面（自动选择标签为锚点，需先于绿钮判定）
         if self._locate(screen, "auto_select_label", 0.85):
+            self._confirm_page("传送选择")
             self.pending_transmit_target = False
             self.state = HeroSynthState.TRANSMIT_SELECT
             card = self._transmit_target_card(screen)
@@ -924,7 +933,13 @@ class HeroSynthStateMachine:
         ):
             raise UnrecognizedScreen("合成结果覆盖层未完整识别，禁止点击底层返回")
 
-        # 6. 刻印界面（绿色刻印按钮为锚点）
+        # 6. 刻印界面（绿色刻印按钮与完整材料槽共同作为页面证据）
+        if self._green_button_present(screen) and self._imprint_slots_present(screen):
+            if self._sss_material_present(screen):
+                self._confirm_page("刻印SSS材料")
+            else:
+                self._confirm_page("刻印加材料")
+
         if self.state is HeroSynthState.IMPRINT_ADD and self._sss_material_present(screen):
             self._imprint_empty_observations = 0
             self.pending_transmit_target = True
