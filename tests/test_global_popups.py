@@ -31,7 +31,11 @@ def load_screen(name: str = "network_reconnect.png") -> np.ndarray:
 
 @pytest.mark.parametrize(
     "fixture_name",
-    ["network_reconnect.png", "network_reconnect_navigation.png"],
+    [
+        "network_reconnect.png",
+        "network_reconnect_navigation.png",
+        "network_disconnected.png",
+    ],
 )
 def test_network_retry_requires_message_and_retry_anchors(fixture_name):
     screen = load_screen(fixture_name)

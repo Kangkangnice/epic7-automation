@@ -16,6 +16,8 @@ if TYPE_CHECKING:
 class NetworkReconnectTemplates:
     message: np.ndarray
     retry: np.ndarray
+    message_alt: np.ndarray | None = None
+    retry_alt: np.ndarray | None = None
 
 
 @dataclass(frozen=True)
@@ -50,9 +52,13 @@ _FRIEND_REQUEST_CANCEL_REGION = (550, 720, 500, 230)
 def load_network_reconnect_templates(
     template_dir: Path,
 ) -> NetworkReconnectTemplates:
+    alt_message = template_dir / "network_disconnected_message.png"
+    alt_retry = template_dir / "network_disconnected_retry.png"
     return NetworkReconnectTemplates(
         message=load_template(str(template_dir / "network_message.png")),
         retry=load_template(str(template_dir / "network_retry.png")),
+        message_alt=(load_template(str(alt_message)) if alt_message.exists() else None),
+        retry_alt=(load_template(str(alt_retry)) if alt_retry.exists() else None),
     )
 
 
@@ -131,25 +137,31 @@ def find_network_retry(
     screen: np.ndarray,
     templates: NetworkReconnectTemplates,
 ) -> Match | None:
-    message = find_template(
-        screen,
-        templates.message,
-        0.88,
-        region=_MESSAGE_REGION,
-        reference_size=_REFERENCE_SIZE,
-    )
-    if message is None:
-        return None
-    retry = find_template(
-        screen,
-        templates.retry,
-        0.88,
-        region=_RETRY_REGION,
-        reference_size=_REFERENCE_SIZE,
-    )
-    if retry is None:
-        return None
-    return Match(retry.center, min(message.score, retry.score))
+    for message_template, retry_template in (
+        (templates.message, templates.retry),
+        (templates.message_alt, templates.retry_alt),
+    ):
+        if message_template is None or retry_template is None:
+            continue
+        message = find_template(
+            screen,
+            message_template,
+            0.88,
+            region=_MESSAGE_REGION,
+            reference_size=_REFERENCE_SIZE,
+        )
+        if message is None:
+            continue
+        retry = find_template(
+            screen,
+            retry_template,
+            0.88,
+            region=_RETRY_REGION,
+            reference_size=_REFERENCE_SIZE,
+        )
+        if retry is not None:
+            return Match(retry.center, min(message.score, retry.score))
+    return None
 
 
 def find_friendship_points_popup_close(
