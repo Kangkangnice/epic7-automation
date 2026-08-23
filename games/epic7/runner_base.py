@@ -433,12 +433,17 @@ class ModeRunnerBase:
                     if since_click < retry_seconds:
                         if not retry_wait_logged:
                             remaining = retry_seconds - since_click
+                            target_pages = getattr(action, "target_pages", ())
+                            target_text = (
+                                f" 目标页面={'/'.join(target_pages)}"
+                                if target_pages
+                                else ""
+                            )
                             self.runtime.log(
                                 f"模式={self._MODE_LABEL} "
                                 f"轮次={self.machine.completed_cycles + 1}/"
                                 f"{max_cycles or '?'} 动作={action.name} "
-                                f"等待=点击后确认转场 "
-                                f"目标页面={'/'.join(getattr(action, 'target_pages', ())) or '?'} "
+                                f"等待=点击后确认转场{target_text} "
                                 f"剩余={remaining:.1f}秒"
                             )
                             retry_wait_logged = True

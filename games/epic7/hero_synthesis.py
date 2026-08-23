@@ -224,6 +224,8 @@ class HeroSynthStateMachine:
     _CARD_BELOW_BRIGHT_MIN = 2000
     _REWARD_STRIP_RANGE = (300, 1500)
     _SSS_MATERIAL_MIN = 0.80  # 材料卡保留少量背景，阈值略低于评级模板
+    _FILTER_ATTRIBUTE_MIN = 0.82
+    _FILTER_ATTRIBUTE_SMALL_MIN = 0.75
     _UP_BADGE_MIN_PIXELS = 300
     _FILLED_SLOT_ORANGE_MIN = 5000
     _NONZERO_COST_YELLOW_MIN = 300
@@ -687,8 +689,17 @@ class HeroSynthStateMachine:
         ):
             return FilterObservation.UNKNOWN
 
+        scale = min(
+            screen.shape[1] / self._REFERENCE_SIZE[0],
+            screen.shape[0] / self._REFERENCE_SIZE[1],
+        )
+        attribute_min = (
+            self._FILTER_ATTRIBUTE_SMALL_MIN
+            if scale <= 0.55
+            else self._FILTER_ATTRIBUTE_MIN
+        )
         level = self._locate(screen, "filter_level_label", 0.80)
-        attribute = self._locate(screen, "filter_attribute_label", 0.82)
+        attribute = self._locate(screen, "filter_attribute_label", attribute_min)
         panel_open = level is not None and attribute is not None
         if panel_open:
             if self._locate(screen, "filter_star3_selected", 0.90) is not None:
@@ -750,6 +761,9 @@ class HeroSynthStateMachine:
                 self.state = HeroSynthState.HERO_LIST
                 return True, None
             if not self.filter_verified:
+                # 记录“正在等待筛选面板”；半加载 UNKNOWN 只能等待，
+                # 不能落回英雄列表分支再次点击漏斗。
+                self.state = HeroSynthState.FILTER
                 return True, HeroAction(
                     "open_filter",
                     self._scaled_point(screen, self._FUNNEL_POINT),
@@ -1196,7 +1210,7 @@ class HeroSynthRunner(ModeRunnerBase):
         return state_label(state)
 
     def _action_retry_seconds(self, action_name: str) -> float:
-        if action_name in self._FILTER_ACTIONS:
+        if not self.machine.templates.pc_client and action_name in self._FILTER_ACTIONS:
             return 5
         if action_name.startswith("add_material"):
             return self._MATERIAL_RETRY_SECONDS
@@ -1227,7 +1241,7 @@ class HeroSynthRunner(ModeRunnerBase):
         return super()._stable_next_action(screen, stable)
 
     def _is_instant_action(self, action_name: Optional[str]) -> bool:
-        return False
+        return self.machine.templates.pc_client and action_name == "close_filter"
 
     def _decision_hint(self, action_name: str, state: Any) -> str:
         """让日志解释当前动作的决策原因（评级/红点/选星/状态切换）。"""

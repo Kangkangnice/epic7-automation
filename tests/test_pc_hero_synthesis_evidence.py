@@ -54,6 +54,35 @@ def test_pc_filter_with_current_selected_star3_evidence_closes():
     assert (action.name, action.point) == ("close_filter", (1612, 141))
 
 
+def test_pc_runner_keeps_legacy_filter_retry_interval():
+    runner = HeroSynthRunner(
+        machine(),
+        Runtime(lambda: fixture("03_filter_open"), lambda _: None),
+        sleep=lambda _: None,
+    )
+
+    for name in ("open_filter", "select_star3", "close_filter"):
+        assert runner._action_retry_seconds(name) == 45
+
+
+def test_pc_close_filter_remains_an_instant_action():
+    clicks = []
+    runner = HeroSynthRunner(
+        machine(),
+        Runtime(lambda: fixture("04_filter_star3_selected"), clicks.append),
+        sleep=lambda _: None,
+    )
+    runner._needs_navigation_settle = False
+    stable = StableObservation(required=2)
+
+    result = runner._stable_next_action(
+        fixture("04_filter_star3_selected"), stable
+    )
+
+    assert result.__class__.__name__ == "_NotStable"
+    assert clicks == [(1612, 141)]
+
+
 def test_pc_filter_does_not_reopen_before_star3_selection_is_confirmed():
     value = machine()
     assert value.next_action(fixture("03_filter_open")).name == "select_star3"

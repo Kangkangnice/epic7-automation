@@ -142,6 +142,28 @@ class FilterObservationTests(unittest.TestCase):
             m._observe_filter(fixture("filter_open_star3_unselected")),
         )
 
+    def test_scaled_selected_panel_preserves_selected_state(self):
+        m = machine()
+        screen = cv2.resize(
+            fixture("filter_open"), (991, 566), interpolation=cv2.INTER_AREA
+        )
+        self.assertIs(
+            FilterObservation.FILTER_OPEN_STAR3_SELECTED,
+            m._observe_filter(screen),
+        )
+
+    def test_scaled_unselected_panel_preserves_unselected_state(self):
+        m = machine()
+        screen = cv2.resize(
+            fixture("filter_open_star3_unselected"),
+            (991, 566),
+            interpolation=cv2.INTER_AREA,
+        )
+        self.assertIs(
+            FilterObservation.FILTER_OPEN_STAR3_UNSELECTED,
+            m._observe_filter(screen),
+        )
+
     def test_panel_missing_either_permanent_anchor_is_unknown(self):
         m = machine()
         for anchor in ("filter_level_label", "filter_attribute_label"):
@@ -162,6 +184,25 @@ class FilterObservationTests(unittest.TestCase):
             path.name
             for path in FIXTURES.glob("*.png")
             if m._observe_filter(fixture(path.stem)) in open_observations
+        }
+        self.assertEqual(expected, actual)
+
+    def test_only_scaled_filter_fixtures_are_classified_as_open_panel(self):
+        m = machine()
+        open_observations = {
+            FilterObservation.FILTER_OPEN_STAR3_SELECTED,
+            FilterObservation.FILTER_OPEN_STAR3_UNSELECTED,
+        }
+        expected = {"filter_open.png", "filter_open_star3_unselected.png"}
+        actual = {
+            path.name
+            for path in FIXTURES.glob("*.png")
+            if m._observe_filter(
+                cv2.resize(
+                    fixture(path.stem), (991, 566), interpolation=cv2.INTER_AREA
+                )
+            )
+            in open_observations
         }
         self.assertEqual(expected, actual)
 
@@ -280,6 +321,18 @@ class FilterDecisionTests(unittest.TestCase):
         second = m.next_action(fixture("list_unfiltered"))
         self.assertEqual("open_filter", first.name)
         self.assertEqual("open_filter", second.name)
+        self.assertFalse(m.filter_verified)
+
+    def test_partial_panel_after_open_waits_without_another_action(self):
+        m = machine()
+        action = m.next_action(fixture("list_unfiltered"))
+        partial = fixture("filter_open_star3_unselected").copy()
+        x, y, w, h = m._REGIONS["filter_attribute_label"]
+        partial[y : y + h, x : x + w] = 0
+
+        self.assertEqual("open_filter", action.name)
+        self.assertIs(m.state, HeroSynthState.FILTER)
+        self.assertIsNone(m.next_action(partial))
         self.assertFalse(m.filter_verified)
 
     def test_select_star3_keeps_same_action_when_click_is_swallowed(self):
@@ -655,6 +708,39 @@ class RunnerFlowTests(unittest.TestCase):
         for name in ("open_filter", "select_star3", "close_filter"):
             self.assertEqual(5, runner._action_retry_seconds(name))
 
+    def test_partial_panel_does_not_retry_until_closed_source_returns(self):
+        clock = FakeClock()
+        m = machine()
+        partial = fixture("filter_open_star3_unselected").copy()
+        x, y, w, h = m._REGIONS["filter_attribute_label"]
+        partial[y : y + h, x : x + w] = 0
+        screens = iter(
+            [fixture("list_unfiltered")] * 2
+            + [partial] * 8
+            + [fixture("list_unfiltered")] * 4
+        )
+        clicks = []
+        logs = []
+        runner = HeroSynthRunner(
+            m,
+            Runtime(
+                lambda: next(screens),
+                clicks.append,
+                emit=logs.append,
+                monotonic=clock,
+            ),
+            sleep=clock.sleep,
+        )
+
+        with self.assertRaises(StopIteration):
+            runner.run(max_cycles=1)
+
+        self.assertEqual(2, len(clicks))
+        self.assertIn(
+            "重试=open_filter 原因=原页面仍存在且目标页面未出现",
+            "\n".join(logs),
+        )
+
     def test_unchanged_selected_panel_clicks_close_exactly_four_times(self):
         clock = FakeClock()
         clicks = []
@@ -738,6 +824,30 @@ class RunnerFlowTests(unittest.TestCase):
         output = "\n".join(logs)
         self.assertEqual(1, output.count("动作=close_filter 尝试=1/4"))
         self.assertIn("动作=close_filter 尝试=2/4", output)
+
+    def test_action_without_transition_metadata_keeps_existing_wait_log(self):
+        clock = FakeClock()
+        screens = iter([fixture("imprint_up_cards_no_sss")] * 4)
+        logs = []
+        m = machine()
+        m.state = HeroSynthState.IMPRINT_ADD
+        runner = HeroSynthRunner(
+            m,
+            Runtime(
+                lambda: next(screens),
+                lambda _: None,
+                emit=logs.append,
+                monotonic=clock,
+            ),
+            sleep=clock.sleep,
+        )
+
+        with self.assertRaises(StopIteration):
+            runner.run(max_cycles=1)
+
+        output = "\n".join(logs)
+        self.assertIn("等待=点击后确认转场", output)
+        self.assertNotIn("目标页面=?", output)
 
     def test_next_card_retry_window_is_short(self):
         runner = HeroSynthRunner(
