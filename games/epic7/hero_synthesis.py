@@ -1142,6 +1142,7 @@ class HeroSynthRunner(ModeRunnerBase):
     _NEXT_CARD_RETRY_SECONDS = 10
     _MATERIAL_RETRY_SECONDS = 5
     _FILTER_ACTIONS = {"open_filter", "select_star3", "close_filter"}
+    _BLACK_SCREEN_TIMEOUT_SECONDS = 60.0
     _TIMEOUT_SECONDS = {
         HeroSynthState.HERO_LIST: 60,
         HeroSynthState.FILTER: 45,
@@ -1179,6 +1180,17 @@ class HeroSynthRunner(ModeRunnerBase):
             recovery_gate=recovery_gate,
         )
         self._needs_navigation_settle = machine.templates.pc_client
+        # 本次安全策略只作用于模拟器；PC 保持既有未知画面唤醒行为。
+        if machine.templates.pc_client:
+            self._BLACK_SCREEN_TIMEOUT_SECONDS = None
+        self._ALLOW_UNKNOWN_SCREEN_WAKE = machine.templates.pc_client
+
+    def _is_black_screen(self, screen: np.ndarray) -> bool:
+        if self.machine.templates.pc_client:
+            return False
+        render = screen[52:] if screen.shape[:2] == (1132, 1982) else screen
+        gray = cv2.cvtColor(render, cv2.COLOR_RGB2GRAY)
+        return float(gray.mean()) <= 8.0 and float((gray <= 12).mean()) >= 0.985
 
     def _state_label(self, state: HeroSynthState) -> str:
         return state_label(state)
