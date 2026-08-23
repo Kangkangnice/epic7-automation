@@ -67,6 +67,14 @@ class TemplateTests(unittest.TestCase):
         self.assertIsNotNone(templates.imprint_result_title)
         self.assertIsNotNone(templates.imprint_result_close)
 
+    def test_sss_templates_use_tight_user_crops_and_strict_rating_threshold(self):
+        templates = build_hero_templates(TEMPLATES)
+        self.assertEqual((90, 124), templates.rating_sss.shape[:2])
+        self.assertEqual((38, 64), templates.sss_material.shape[:2])
+        machine_value = HeroSynthStateMachine(templates)
+        self.assertGreaterEqual(machine_value._RATING_SSS_MIN, 0.90)
+        self.assertEqual(0.80, machine_value._SSS_MATERIAL_MIN)
+
 
 class HeroListDecisionTests(unittest.TestCase):
     def test_list_first_visit_opens_filter(self):

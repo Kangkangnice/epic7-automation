@@ -141,8 +141,8 @@ class HeroSynthStateMachine:
     _BUTTON_DISC_RADIUS = 58
     _BUTTON_STRUCT_MIN = 0.50  # 结构匹配下限：确认按钮存在（不限颜色）
     # 评级字符 SSS 在左侧详情面板的中部位置（参考坐标）
-    _RATING_REGION = (90, 460, 200, 130)
-    _RATING_SSS_MIN = 0.82  # 满级 SSS 模板匹配阈值：超过即认定为满级
+    _RATING_REGION = (130, 435, 180, 130)
+    _RATING_SSS_MIN = 0.90  # 紧裁剪 SSS 模板：避免把 SS 误判为 SSS
     _REDDOT_ZONE = (1030, 935, 50, 50)  # 刻印按钮左上角红点角标区（不与觉醒按钮重叠）
     _MATERIAL_SSS_REGION = (1750, 350, 230, 650)
     _CARD_BELOW_ZONE = (1450, 537, 520, 83)
@@ -182,6 +182,7 @@ class HeroSynthStateMachine:
     _PC_BACK_OFFSET = (11, -4)
     _CARD_BELOW_BRIGHT_MIN = 2000
     _REWARD_STRIP_RANGE = (300, 1500)
+    _SSS_MATERIAL_MIN = 0.80  # 材料卡保留少量背景，阈值略低于评级模板
 
     def __init__(
         self,
@@ -381,7 +382,7 @@ class HeroSynthStateMachine:
         return self._locate(
             screen,
             "sss_material",
-            0.78,
+            self._SSS_MATERIAL_MIN,
             region_override=self._MATERIAL_SSS_REGION,
         ) is not None
 
