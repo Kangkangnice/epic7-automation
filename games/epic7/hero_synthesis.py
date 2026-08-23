@@ -37,6 +37,13 @@ class HeroSynthState(Enum):
     TRANSMIT_RETURNING = "transmit_returning"
 
 
+class FilterObservation(Enum):
+    HERO_LIST_FILTER_CLOSED = "hero_list_filter_closed"
+    FILTER_OPEN_STAR3_SELECTED = "filter_open_star3_selected"
+    FILTER_OPEN_STAR3_UNSELECTED = "filter_open_star3_unselected"
+    UNKNOWN = "unknown"
+
+
 STATE_LABELS = {
     HeroSynthState.HERO_LIST: "英雄列表",
     HeroSynthState.FILTER: "筛选面板",
@@ -665,6 +672,32 @@ class HeroSynthStateMachine:
         return bool(
             best is not None and best.score >= self._BUTTON_STRUCT_MIN
         ) or self._is_max_rating(screen) or self._red_dot_present(screen)
+
+    def _observe_filter(self, screen: np.ndarray) -> FilterObservation:
+        """Classify only filter states backed by explicit simulator evidence."""
+        if (
+            self.templates.filter_attribute_label is None
+            or self.templates.filter_star3_unselected is None
+        ):
+            return FilterObservation.UNKNOWN
+
+        level = self._locate(screen, "filter_level_label", 0.80)
+        attribute = self._locate(screen, "filter_attribute_label", 0.82)
+        panel_open = level is not None and attribute is not None
+        if panel_open:
+            if self._locate(screen, "filter_star3_selected", 0.90) is not None:
+                return FilterObservation.FILTER_OPEN_STAR3_SELECTED
+            if self._locate(screen, "filter_star3_unselected", 0.90) is not None:
+                return FilterObservation.FILTER_OPEN_STAR3_UNSELECTED
+            return FilterObservation.UNKNOWN
+        if level is not None or attribute is not None:
+            return FilterObservation.UNKNOWN
+        if (
+            self._locate(screen, "filter_button", 0.80) is not None
+            and self._hero_list_ready(screen)
+        ):
+            return FilterObservation.HERO_LIST_FILTER_CLOSED
+        return FilterObservation.UNKNOWN
 
     def _back_action(self, screen: np.ndarray) -> Optional[HeroAction]:
         back = self._locate(screen, "story_back", 0.90)
