@@ -9,6 +9,7 @@ import cv2
 import numpy as np
 from auto_game_unified.core.matcher import Match
 from auto_game_unified.core.runtime import Runtime
+from auto_game_unified.core.supervisor import StableObservation
 from auto_game_unified.games.epic7.hero_synthesis import (
     FilterObservation,
     HeroSynthRunner,
@@ -23,6 +24,7 @@ from auto_game_unified.games.epic7.navigation import (
     Epic7Navigator,
     build_navigation_templates,
 )
+from auto_game_unified.games.epic7.runner_base import NOT_STABLE
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -61,6 +63,17 @@ def imprint_one_remaining_after_add():
     screen[y : y + h, x : x + w] = added[y : y + h, x : x + w]
     screen[530:650, 1370:1465] = 0
     return screen
+
+
+class FakeClock:
+    def __init__(self):
+        self.value = 0.0
+
+    def __call__(self):
+        return self.value
+
+    def sleep(self, seconds):
+        self.value += seconds
 
 
 class TemplateTests(unittest.TestCase):
@@ -614,6 +627,88 @@ class NavigationTests(unittest.TestCase):
 
 
 class RunnerFlowTests(unittest.TestCase):
+    def test_close_filter_uses_normal_stability_path(self):
+        clicks = []
+        runner = HeroSynthRunner(
+            machine(),
+            Runtime(lambda: fixture("filter_open"), clicks.append),
+            sleep=lambda _: None,
+        )
+        stable = StableObservation(required=2)
+
+        first = runner._stable_next_action(fixture("filter_open"), stable)
+        second = runner._stable_next_action(fixture("filter_open"), stable)
+
+        self.assertIs(first, NOT_STABLE)
+        self.assertEqual("close_filter", second.name)
+        self.assertEqual([], clicks)
+
+    def test_filter_retry_interval_is_five_seconds(self):
+        runner = HeroSynthRunner(
+            machine(),
+            Runtime(lambda: fixture("list_unfiltered"), lambda _: None),
+            sleep=lambda _: None,
+        )
+        for name in ("open_filter", "select_star3", "close_filter"):
+            self.assertEqual(5, runner._action_retry_seconds(name))
+
+    def test_unchanged_selected_panel_clicks_close_exactly_four_times(self):
+        clock = FakeClock()
+        clicks = []
+        screens = iter([fixture("filter_open")] * 50)
+        with TemporaryDirectory() as tmp:
+            runtime = Runtime(
+                lambda: next(screens),
+                lambda point: clicks.append(point),
+                emit=lambda _: None,
+                diagnostic_dir=Path(tmp),
+                monotonic=clock,
+            )
+            runner = HeroSynthRunner(machine(), runtime, sleep=clock.sleep)
+            with self.assertRaisesRegex(RuntimeError, "点击4次"):
+                runner.run(max_cycles=1)
+        self.assertEqual(4, len(clicks))
+
+    def test_filter_logs_source_target_retry_and_completion(self):
+        clock = FakeClock()
+        screens = iter(
+            [
+                fixture("filter_open"),
+                fixture("filter_open"),
+                fixture("filter_open"),
+                fixture("filter_open"),
+                fixture("filter_open"),
+                fixture("filter_open"),
+                fixture("filter_open"),
+                fixture("filter_open"),
+                fixture("list_unfiltered"),
+                fixture("list_unfiltered"),
+            ]
+        )
+        logs = []
+        runner = HeroSynthRunner(
+            machine(),
+            Runtime(
+                lambda: next(screens),
+                lambda _: None,
+                emit=logs.append,
+                monotonic=clock,
+            ),
+            sleep=clock.sleep,
+        )
+
+        with self.assertRaises(StopIteration):
+            runner.run(max_cycles=1)
+
+        output = "\n".join(logs)
+        self.assertIn("当前页面=筛选面板（三星已选中）", output)
+        self.assertIn("目标页面=英雄列表", output)
+        self.assertIn(
+            "重试=close_filter 原因=原页面仍存在且目标页面未出现",
+            output,
+        )
+        self.assertIn("完成=close_filter 目标页面=英雄列表", output)
+
     def test_next_card_retry_window_is_short(self):
         runner = HeroSynthRunner(
             HeroSynthStateMachine(build_hero_templates(TEMPLATES)),
@@ -634,8 +729,8 @@ class RunnerFlowTests(unittest.TestCase):
         sequence = [
             fixture("list_reddot"),          # 首次进列表 → 打开筛选
             fixture("filter_open"),          # 三星已选 → 关闭筛选
+            fixture("list_grey_3s"),         # 筛选关闭目标 + SSS 卡 → 跳过
             fixture("list_no_reddot"),       # 普通卡 → 跳过
-            fixture("list_grey_3s"),         # SSS 卡 → 跳过
             fixture("list_reddot"),          # 非 SSS 红点卡 → 进入刻印
             fixture("imprint_up_cards_no_sss"),  # 加材料1
             imprint_one_remaining_after_add(),    # 已入槽1张，还剩1张Up
@@ -648,7 +743,7 @@ class RunnerFlowTests(unittest.TestCase):
         screens = iter(
             screen
             for index, screen in enumerate(sequence)
-            for _ in range(4 if index in {7, 11} else 2)
+            for _ in range(4 if index in {2, 7, 11} else 2)
         )
         clicks: list[tuple[int, int]] = []
         logs: list[str] = []
@@ -672,7 +767,7 @@ class RunnerFlowTests(unittest.TestCase):
         self.assertEqual(1, completed)
         self.assertEqual("open_filter", names[0])
         self.assertEqual("close_filter", names[1])
-        self.assertTrue(names[2].startswith("next_card_"))
+        self.assertTrue(names[2].startswith("next_card_"), names)
         self.assertTrue(names[3].startswith("next_card_"))
         self.assertEqual(
             [
@@ -703,7 +798,7 @@ class RunnerFlowTests(unittest.TestCase):
         screens = iter(
             screen
             for index, screen in enumerate(sequence)
-            for _ in range(4 if index in {5, 9} else 2)
+            for _ in range(4 if index in {2, 5, 9} else 2)
         )
         clicks: list[tuple[int, int]] = []
         logs: list[str] = []

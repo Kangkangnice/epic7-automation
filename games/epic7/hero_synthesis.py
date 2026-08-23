@@ -1141,6 +1141,7 @@ class HeroSynthRunner(ModeRunnerBase):
     _MODE_LABEL = "英雄合成"
     _NEXT_CARD_RETRY_SECONDS = 10
     _MATERIAL_RETRY_SECONDS = 5
+    _FILTER_ACTIONS = {"open_filter", "select_star3", "close_filter"}
     _TIMEOUT_SECONDS = {
         HeroSynthState.HERO_LIST: 60,
         HeroSynthState.FILTER: 45,
@@ -1183,6 +1184,8 @@ class HeroSynthRunner(ModeRunnerBase):
         return state_label(state)
 
     def _action_retry_seconds(self, action_name: str) -> float:
+        if action_name in self._FILTER_ACTIONS:
+            return 5
         if action_name.startswith("add_material"):
             return self._MATERIAL_RETRY_SECONDS
         if action_name.startswith("next_card"):
@@ -1210,10 +1213,7 @@ class HeroSynthRunner(ModeRunnerBase):
         return super()._stable_next_action(screen, stable)
 
     def _is_instant_action(self, action_name: Optional[str]) -> bool:
-        """close_filter 是一次性副作用，状态机决定关就立刻关——跳过 stable 2 帧确认。
-        否则稳定窗口会让 close_filter 与 open_filter 的动作名不同而被取消，关闭永远失败。
-        """
-        return action_name == "close_filter"
+        return False
 
     def _decision_hint(self, action_name: str, state: Any) -> str:
         """让日志解释当前动作的决策原因（评级/红点/选星/状态切换）。"""
