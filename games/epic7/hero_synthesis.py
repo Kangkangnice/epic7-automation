@@ -159,7 +159,9 @@ class HeroSynthStateMachine:
         (600, 845, 370, 110),
         (970, 845, 370, 110),
     )
+    _UP_BADGE_ZONE = (1370, 390, 95, 600)
     _UP_STRIP_ZONE = (1880, 380, 50, 620)
+    _IMPRINT_COST_ZONE = (1020, 1025, 75, 50)
     _GREEN_BTN_ZONE = (900, 1020, 500, 90)
     _TRANSMIT_GREEN_ZONE = (1000, 1000, 400, 110)
     _BLUE_BAND_ZONE = (900, 700, 450, 120)
@@ -196,6 +198,9 @@ class HeroSynthStateMachine:
     _CARD_BELOW_BRIGHT_MIN = 2000
     _REWARD_STRIP_RANGE = (300, 1500)
     _SSS_MATERIAL_MIN = 0.80  # 材料卡保留少量背景，阈值略低于评级模板
+    _UP_BADGE_MIN_PIXELS = 300
+    _FILLED_SLOT_ORANGE_MIN = 5000
+    _NONZERO_COST_YELLOW_MIN = 300
     _TRANSMIT_HIGHLIGHT_ZONE = (1600, 200, 380, 800)
     _READINESS_OBSERVATIONS = 2
 
@@ -428,7 +433,39 @@ class HeroSynthStateMachine:
         gray = self._zone_gray(screen, self._CARD_BELOW_ZONE)
         return int((gray > 120).sum()) > self._CARD_BELOW_BRIGHT_MIN
 
+    def _up_badge_rows(self, screen: np.ndarray) -> list[tuple[int, int]]:
+        """返回右侧材料卡左边真实 Up! 标记的纵向范围。
+
+        卡片最右侧会被不同角色立绘遮住，不能用于判断。Up! 标记位于卡片
+        左侧固定窄区；同一标记的橙色像素可能被文字间隙分成数段，因此按
+        纵向间隔聚类。
+        """
+        hsv = self._zone_hsv(screen, self._UP_BADGE_ZONE)
+        mask = cv2.inRange(hsv, (0, 110, 140), (30, 255, 255))
+        row_counts = (mask > 0).sum(axis=1)
+        active_rows = np.flatnonzero(row_counts >= 3)
+        if active_rows.size == 0:
+            return []
+
+        groups: list[tuple[int, int]] = []
+        start = previous = int(active_rows[0])
+        for value in active_rows[1:]:
+            current = int(value)
+            if current - previous > 30:
+                groups.append((start, previous + 1))
+                start = current
+            previous = current
+        groups.append((start, previous + 1))
+
+        zone_y = self._UP_BADGE_ZONE[1]
+        return [
+            (start + zone_y, end + zone_y)
+            for start, end in groups
+            if int((mask[start:end] > 0).sum()) >= self._UP_BADGE_MIN_PIXELS
+        ]
+
     def _up_strip_blobs(self, screen: np.ndarray) -> list[tuple[int, int, int, int]]:
+        """PC 版右侧卡片条；其布局不会与中间材料槽重叠。"""
         blobs = self._blobs(
             screen,
             self._UP_STRIP_ZONE,
@@ -437,15 +474,22 @@ class HeroSynthStateMachine:
             min_area=100,
             morph=5,
         )
-        return [b for b in blobs if b[3] >= 60]
+        return [blob for blob in blobs if blob[3] >= 60]
 
     def _find_up_card(self, screen: np.ndarray) -> Optional[tuple[int, int, str]]:
         """返回最上方的 Up 材料卡（点击点, 带计数的动作指纹）。"""
-        tall = self._up_strip_blobs(screen)
-        if not tall:
+        if self.templates.pc_client:
+            cards = self._up_strip_blobs(screen)
+            if not cards:
+                return None
+            top = min(cards, key=lambda blob: blob[1])
+            return (self._UP_CARD_X, top[1] + top[3] // 2, str(len(cards)))
+
+        rows = self._up_badge_rows(screen)
+        if not rows:
             return None
-        top = min(tall, key=lambda b: b[1])
-        return (self._UP_CARD_X, top[1] + top[3] // 2, str(len(tall)))
+        top = min(rows)
+        return (self._UP_CARD_X, top[0] + 4, str(len(rows)))
 
     def _green_button_present(self, screen: np.ndarray) -> bool:
         blobs = self._blobs(
@@ -465,6 +509,22 @@ class HeroSynthStateMachine:
             if int((edges > 0).sum()) < 700:
                 return False
         return True
+
+    def _imprint_filled_slot_count(self, screen: np.ndarray) -> int:
+        """统计中间真正放入材料卡的槽位；空槽轮廓不算材料。"""
+        filled = 0
+        for zone in self._IMPRINT_SLOT_ZONES:
+            hsv = self._zone_hsv(screen, zone)
+            orange = cv2.inRange(hsv, (5, 100, 120), (30, 255, 255))
+            if int((orange > 0).sum()) >= self._FILLED_SLOT_ORANGE_MIN:
+                filled += 1
+        return filled
+
+    def _imprint_cost_nonzero(self, screen: np.ndarray) -> bool:
+        """费用由 0 变为 900/1800…，作为材料已入槽的第二个独立证据。"""
+        hsv = self._zone_hsv(screen, self._IMPRINT_COST_ZONE)
+        yellow = cv2.inRange(hsv, (15, 100, 150), (40, 255, 255))
+        return int((yellow > 0).sum()) >= self._NONZERO_COST_YELLOW_MIN
 
     def _transmit_green_present(self, screen: np.ndarray) -> bool:
         blobs = self._blobs(
@@ -750,15 +810,22 @@ class HeroSynthStateMachine:
             self._imprint_empty_observations = 0
             return None
         if self._green_button_present(screen):
+            filled_slots = self._imprint_filled_slot_count(screen)
             up = self._find_up_card(screen)
             if up is not None:
                 self._imprint_empty_observations = 0
                 self.state = HeroSynthState.IMPRINT_ADD
                 x, y, tag = up
                 return HeroAction(
-                    f"add_material_{tag}", self._scaled_point(screen, (x, y))
+                    f"add_material_{filled_slots}_{tag}",
+                    self._scaled_point(screen, (x, y)),
                 )
             if self.state is HeroSynthState.IMPRINT_ADD:
+                # “没看到 Up”只表示识别结果为空，不表示材料已加完。必须看到
+                # 中间槽内已有材料，且费用从 0 变为非 0，才允许进入合成。
+                if filled_slots == 0 or not self._imprint_cost_nonzero(screen):
+                    self._imprint_empty_observations = 0
+                    return None
                 self._imprint_empty_observations += 1
                 if (
                     self._imprint_empty_observations
@@ -940,6 +1007,7 @@ class HeroSynthRunner(ModeRunnerBase):
 
     _MODE_LABEL = "英雄合成"
     _NEXT_CARD_RETRY_SECONDS = 10
+    _MATERIAL_RETRY_SECONDS = 5
     _TIMEOUT_SECONDS = {
         HeroSynthState.HERO_LIST: 60,
         HeroSynthState.FILTER: 45,
@@ -982,6 +1050,8 @@ class HeroSynthRunner(ModeRunnerBase):
         return state_label(state)
 
     def _action_retry_seconds(self, action_name: str) -> float:
+        if action_name.startswith("add_material"):
+            return self._MATERIAL_RETRY_SECONDS
         if action_name.startswith("next_card"):
             return self._NEXT_CARD_RETRY_SECONDS
         return super()._action_retry_seconds(action_name)
