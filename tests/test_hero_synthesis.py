@@ -88,6 +88,8 @@ class TemplateTests(unittest.TestCase):
             "auto_select_label",
             "story_back",
             "sss_material",
+            "sss_material_warning_title",
+            "sss_material_warning_close",
         ):
             self.assertIsNotNone(getattr(templates, name))
         self.assertIsNotNone(templates.imprint_result_title)
@@ -617,6 +619,19 @@ class ImprintDecisionTests(unittest.TestCase):
         m.state = HeroSynthState.IMPRINT_ADD
         action = m.next_action(fixture("imprint_sss_material"))
         self.assertEqual("abort_imprint_to_transmit", action.name)
+
+    def test_sss_material_warning_is_closed_before_resuming_imprint(self):
+        m = machine()
+        m.state = HeroSynthState.IMPRINT_ADD
+        action = m.next_action(fixture("imprint_sss_warning_popup"))
+
+        self.assertEqual("close_sss_material_warning", action.name)
+        self.assertEqual("刻印SSS警告", action.source_page)
+        self.assertEqual(("刻印加材料", "刻印SSS材料"), action.target_pages)
+        self.assertIn("提示层标题与关闭控件", action.reason)
+
+        repeated = m.next_action(fixture("imprint_sss_warning_popup"))
+        self.assertEqual("close_sss_material_warning", repeated.name)
 
     def test_pending_transmit_opens_transmit_for_current_card(self):
         m = machine(verify_filter=True)
