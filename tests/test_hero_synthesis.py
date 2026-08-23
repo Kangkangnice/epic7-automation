@@ -10,6 +10,7 @@ import numpy as np
 from auto_game_unified.core.matcher import Match
 from auto_game_unified.core.runtime import Runtime
 from auto_game_unified.games.epic7.hero_synthesis import (
+    FilterObservation,
     HeroSynthRunner,
     HeroSynthState,
     HeroSynthStateMachine,
@@ -104,6 +105,49 @@ class TemplateTests(unittest.TestCase):
             m._locate(unselected, "filter_star3_unselected", 0.90)
         )
         self.assertIsNone(m._locate(unselected, "filter_star3_selected", 0.90))
+
+
+class FilterObservationTests(unittest.TestCase):
+    def test_closed_hero_list_requires_list_anchors_and_no_panel_anchors(self):
+        m = machine()
+        self.assertIs(
+            FilterObservation.HERO_LIST_FILTER_CLOSED,
+            m._observe_filter(fixture("list_unfiltered")),
+        )
+
+    def test_real_selected_panel_is_selected(self):
+        m = machine()
+        self.assertIs(
+            FilterObservation.FILTER_OPEN_STAR3_SELECTED,
+            m._observe_filter(fixture("filter_open")),
+        )
+
+    def test_real_unselected_panel_is_unselected(self):
+        m = machine()
+        self.assertIs(
+            FilterObservation.FILTER_OPEN_STAR3_UNSELECTED,
+            m._observe_filter(fixture("filter_open_star3_unselected")),
+        )
+
+    def test_panel_missing_either_permanent_anchor_is_unknown(self):
+        m = machine()
+        screen = fixture("filter_open_star3_unselected").copy()
+        screen[265:313, 657:747] = 0
+        self.assertIs(FilterObservation.UNKNOWN, m._observe_filter(screen))
+
+    def test_only_filter_fixtures_are_classified_as_open_panel(self):
+        m = machine()
+        open_observations = {
+            FilterObservation.FILTER_OPEN_STAR3_SELECTED,
+            FilterObservation.FILTER_OPEN_STAR3_UNSELECTED,
+        }
+        expected = {"filter_open.png", "filter_open_star3_unselected.png"}
+        actual = {
+            path.name
+            for path in FIXTURES.glob("*.png")
+            if m._observe_filter(fixture(path.stem)) in open_observations
+        }
+        self.assertEqual(expected, actual)
 
 
 class HeroListDecisionTests(unittest.TestCase):
