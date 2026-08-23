@@ -104,6 +104,8 @@ class HeroTemplates:
     filter_attribute_label: Optional[np.ndarray] = None
     filter_star3_unselected: Optional[np.ndarray] = None
     sss_material: Optional[np.ndarray] = None
+    sss_material_warning_title: Optional[np.ndarray] = None
+    sss_material_warning_close: Optional[np.ndarray] = None
     imprint_result_title: Optional[np.ndarray] = None
     imprint_result_close: Optional[np.ndarray] = None
     threshold: float = 0.80
@@ -118,6 +120,8 @@ def build_hero_templates(template_root: Path) -> HeroTemplates:
     result_title = hero / "imprint_result_title.png"
     result_close = hero / "imprint_result_close.png"
     sss_material = hero / "sss_material.png"
+    sss_material_warning_title = hero / "sss_material_warning_title.png"
+    sss_material_warning_close = hero / "sss_material_warning_close.png"
     filter_attribute = hero / "filter_attribute_label.png"
     filter_star3_unselected = hero / "filter_star3_unselected.png"
     return HeroTemplates(
@@ -140,6 +144,16 @@ def build_hero_templates(template_root: Path) -> HeroTemplates:
             else None
         ),
         sss_material=(load_template(str(sss_material)) if sss_material.exists() else None),
+        sss_material_warning_title=(
+            load_template(str(sss_material_warning_title))
+            if not is_pc and sss_material_warning_title.exists()
+            else None
+        ),
+        sss_material_warning_close=(
+            load_template(str(sss_material_warning_close))
+            if not is_pc and sss_material_warning_close.exists()
+            else None
+        ),
         imprint_result_title=(load_template(str(result_title)) if result_title.exists() else None),
         imprint_result_close=(load_template(str(result_close)) if result_close.exists() else None),
         pc_client=is_pc,
@@ -195,6 +209,8 @@ class HeroSynthStateMachine:
     _REWARD_STRIP_ZONE = (880, 825, 160, 35)
     _IMPRINT_RESULT_TITLE_REGION = (650, 180, 700, 300)
     _IMPRINT_RESULT_CLOSE_REGION = (650, 730, 700, 300)
+    _SSS_WARNING_TITLE_REGION = (500, 420, 1000, 250)
+    _SSS_WARNING_CLOSE_REGION = (700, 650, 550, 220)
     _TRANSMIT_STRIP_ZONE = (1400, 200, 250, 800)
     _TRANSMIT_GRID_ZONE = (50, 305, 620, 405)
     _DETAIL_FP_ZONE = (150, 350, 550, 300)
@@ -477,6 +493,28 @@ class HeroSynthStateMachine:
             self._SSS_MATERIAL_MIN,
             region_override=self._MATERIAL_SSS_REGION,
         ) is not None
+
+    def _sss_material_warning_close(self, screen: np.ndarray) -> Optional[Match]:
+        """返回 SSS 材料风险提示层的关闭控件，避免点击覆盖层下的按钮。"""
+        if (
+            self.templates.pc_client
+            or self.templates.sss_material_warning_title is None
+            or self.templates.sss_material_warning_close is None
+        ):
+            return None
+        title = self._locate(
+            screen,
+            "sss_material_warning_title",
+            0.82,
+            region_override=self._SSS_WARNING_TITLE_REGION,
+        )
+        close = self._locate(
+            screen,
+            "sss_material_warning_close",
+            0.82,
+            region_override=self._SSS_WARNING_CLOSE_REGION,
+        )
+        return close if title is not None and close is not None else None
 
     def _card_below_present(self, screen: np.ndarray) -> bool:
         gray = self._zone_gray(screen, self._CARD_BELOW_ZONE)
@@ -874,7 +912,19 @@ class HeroSynthStateMachine:
 
     def next_action(self, screen: np.ndarray) -> Optional[HeroAction]:
         self._last_screen = screen
-        # 1. 合成结果覆盖层必须先关闭，不能点击覆盖层下的返回箭头。
+        # 1. SSS 材料风险提示层必须先关闭，不能点击覆盖层下的按钮。
+        warning_close = self._sss_material_warning_close(screen)
+        if warning_close is not None:
+            self._confirm_page("刻印SSS警告")
+            return self._simulator_transition_action(
+                "close_sss_material_warning",
+                warning_close.center,
+                source_page="刻印SSS警告",
+                target_pages=("刻印加材料", "刻印SSS材料"),
+                reason="提示层标题与关闭控件同时存在，先关闭提示再继续观察刻印页",
+            )
+
+        # 2. 合成结果覆盖层必须先关闭，不能点击覆盖层下的返回箭头。
         if self._imprint_result_present(screen):
             self._confirm_page("合成结果")
             self.state = HeroSynthState.IMPRINT_REWARD
@@ -887,7 +937,7 @@ class HeroSynthStateMachine:
                 reason="结果标题与关闭控件同时存在",
             )
 
-        # 2. 确认弹窗（合成/传送共用的蓝色按钮）
+        # 3. 确认弹窗（合成/传送共用的蓝色按钮）
         confirm = self._confirm_button(screen)
         if confirm is not None:
             transmit_ctx = self._locate(screen, "auto_select_label", 0.85) is not None
@@ -1382,6 +1432,8 @@ class HeroSynthRunner(ModeRunnerBase):
 
     def _decision_hint(self, action_name: str, state: Any) -> str:
         """让日志解释当前动作的决策原因（评级/红点/选星/状态切换）。"""
+        if action_name == "close_sss_material_warning":
+            return "刻印页出现 SSS 材料风险提示 → 点关闭后重新观察当前页面"
         if action_name.startswith("open_filter"):
             return "筛选面板未开 → 点漏斗打开"
         if action_name == "select_star3":
