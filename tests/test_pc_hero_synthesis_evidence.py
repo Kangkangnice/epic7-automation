@@ -107,6 +107,7 @@ def test_pc_list_red_dot_opens_imprint():
 
 def test_pc_imprint_without_up_starts_synthesis_at_button_center():
     value = machine(filter_verified=True, state=HeroSynthState.IMPRINT_ADD)
+    assert value.next_action(fixture("09_imprint_all_materials")) is None
     action = value.next_action(fixture("09_imprint_all_materials"))
     assert (action.name, action.point) == ("start_synthesis", (1200, 1041))
 

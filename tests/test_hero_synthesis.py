@@ -159,6 +159,11 @@ class HeroListDecisionTests(unittest.TestCase):
 
     def test_end_of_cards_completes_cycle(self):
         m = machine(verify_filter=True)
+        first = fixture("list_end_of_cards").copy()
+        first[350:650, 150:700] = 0
+        self.assertIsNone(m.next_action(first))
+        self.assertIsNone(m.next_action(fixture("list_end_of_cards")))
+        self.assertEqual(0, m.completed_cycles)
         self.assertIsNone(m.next_action(fixture("list_end_of_cards")))
         self.assertEqual(1, m.completed_cycles)
         self.assertFalse(m.filter_verified)
@@ -183,6 +188,36 @@ class FilterDecisionTests(unittest.TestCase):
 
 
 class ImprintDecisionTests(unittest.TestCase):
+    def test_imprint_loading_frame_waits_without_falling_back_to_list(self):
+        m = machine()
+        m.state = HeroSynthState.IMPRINT_ADD
+        loading = np.zeros_like(fixture("imprint_added"))
+
+        self.assertIsNone(m.next_action(loading))
+        self.assertIs(m.state, HeroSynthState.IMPRINT_ADD)
+
+    def test_imprint_empty_materials_need_consecutive_confirmation(self):
+        m = machine()
+        m.state = HeroSynthState.IMPRINT_ADD
+        screen = fixture("imprint_added")
+
+        self.assertIsNone(m.next_action(screen))
+        action = m.next_action(screen)
+
+        self.assertIsNotNone(action)
+        self.assertEqual("start_synthesis", action.name)
+
+    def test_imprint_button_without_material_slots_never_starts_synthesis(self):
+        m = machine()
+        m.state = HeroSynthState.IMPRINT_ADD
+        loading = fixture("imprint_added").copy()
+        for x, y, w, h in m._IMPRINT_SLOT_ZONES:
+            loading[y : y + h, x : x + w] = 0
+
+        self.assertIsNone(m.next_action(loading))
+        self.assertIsNone(m.next_action(loading))
+        self.assertIs(m.state, HeroSynthState.IMPRINT_ADD)
+
     def test_sss_material_aborts_imprint_before_clicking_material(self):
         m = machine()
         m.state = HeroSynthState.IMPRINT_ADD
@@ -229,6 +264,7 @@ class ImprintDecisionTests(unittest.TestCase):
     def test_imprint_without_up_starts_synthesis(self):
         m = machine()
         m.state = HeroSynthState.IMPRINT_ADD
+        self.assertIsNone(m.next_action(fixture("imprint_added")))
         action = m.next_action(fixture("imprint_added"))
         self.assertEqual("start_synthesis", action.name)
         self.assertEqual((1149, 1078), action.point)
@@ -286,6 +322,16 @@ class ImprintDecisionTests(unittest.TestCase):
 
 
 class TransmitDecisionTests(unittest.TestCase):
+    def test_transmit_missing_highlight_waits_before_returning(self):
+        m = machine()
+        with patch.object(m, "_transmit_target_card", return_value=None), patch.object(
+            m, "_transmit_green_present", return_value=False
+        ):
+            self.assertIsNone(m.next_action(fixture("transmit_select")))
+            self.assertIsNone(m.next_action(fixture("transmit_select")))
+
+        self.assertIs(m.state, HeroSynthState.TRANSMIT_SELECT)
+
     def test_transmit_strip_locator_clicks_inside_highlighted_card(self):
         m = machine()
         card = m._transmit_target_card(fixture("transmit_select"))
@@ -456,7 +502,11 @@ class RunnerFlowTests(unittest.TestCase):
             "imprint_after_synth",  # 返回英雄列表
             "list_end_of_cards",    # 无更多卡 → 完成一轮
         ]
-        screens = iter(fixture(name) for name in sequence for _ in range(2))
+        screens = iter(
+            fixture(name)
+            for name in sequence
+            for _ in range(4 if name in {"imprint_added", "list_end_of_cards"} else 2)
+        )
         clicks: list[tuple[int, int]] = []
         logs: list[str] = []
         runner = HeroSynthRunner(
@@ -507,7 +557,11 @@ class RunnerFlowTests(unittest.TestCase):
             "imprint_after_synth",  # 返回列表
             "list_end_of_cards",  # 无更多卡 → 完成一轮
         ]
-        screens = iter(fixture(name) for name in sequence for _ in range(2))
+        screens = iter(
+            fixture(name)
+            for name in sequence
+            for _ in range(4 if name in {"imprint_added", "list_end_of_cards"} else 2)
+        )
         clicks: list[tuple[int, int]] = []
         logs: list[str] = []
         runner = HeroSynthRunner(

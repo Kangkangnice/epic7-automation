@@ -151,6 +151,14 @@ class HeroSynthStateMachine:
     _PC_REDDOT_ZONE = (1030, 935, 50, 50)  # PC 保留原红点区
     _MATERIAL_SSS_REGION = (1750, 350, 230, 650)
     _CARD_BELOW_ZONE = (1450, 537, 520, 83)
+    _IMPRINT_SLOT_ZONES = (
+        (600, 605, 370, 110),
+        (970, 605, 370, 110),
+        (600, 725, 370, 110),
+        (970, 725, 370, 110),
+        (600, 845, 370, 110),
+        (970, 845, 370, 110),
+    )
     _UP_STRIP_ZONE = (1880, 380, 50, 620)
     _GREEN_BTN_ZONE = (900, 1020, 500, 90)
     _TRANSMIT_GREEN_ZONE = (1000, 1000, 400, 110)
@@ -189,6 +197,7 @@ class HeroSynthStateMachine:
     _REWARD_STRIP_RANGE = (300, 1500)
     _SSS_MATERIAL_MIN = 0.80  # 材料卡保留少量背景，阈值略低于评级模板
     _TRANSMIT_HIGHLIGHT_ZONE = (1600, 200, 380, 800)
+    _READINESS_OBSERVATIONS = 2
 
     def __init__(
         self,
@@ -218,6 +227,9 @@ class HeroSynthStateMachine:
         # 已点击 3 星后，必须先从截图确认选中态；确认前禁止回点筛选漏斗。
         self._awaiting_star3_confirmation: bool = False
         self.pending_transmit_target = False
+        self._imprint_empty_observations = 0
+        self._list_end_observations = 0
+        self._list_end_fingerprint: Optional[str] = None
 
     def _mask_dot(self, template: np.ndarray) -> np.ndarray:
         """把模板上红点角标区置零，匹配时与画面同区域一起忽略。"""
@@ -445,6 +457,15 @@ class HeroSynthStateMachine:
         )
         return any(w > 300 for _, _, w, _ in blobs)
 
+    def _imprint_slots_present(self, screen: np.ndarray) -> bool:
+        """确认刻印页的六个材料槽已经渲染，避免绿按钮先出现时误判。"""
+        for zone in self._IMPRINT_SLOT_ZONES:
+            gray = self._zone_gray(screen, zone)
+            edges = cv2.Canny(gray, 50, 150)
+            if int((edges > 0).sum()) < 700:
+                return False
+        return True
+
     def _transmit_green_present(self, screen: np.ndarray) -> bool:
         blobs = self._blobs(
             screen,
@@ -592,12 +613,27 @@ class HeroSynthStateMachine:
 
     def _advance_or_finish(self, screen: np.ndarray) -> Optional[HeroAction]:
         if not self._card_below_present(screen):
+            if not self._hero_list_ready(screen):
+                self._list_end_fingerprint = None
+                self._list_end_observations = 0
+                return None
+            fingerprint = self._detail_fingerprint(screen)
+            if self._list_end_fingerprint != fingerprint:
+                self._list_end_fingerprint = fingerprint
+                self._list_end_observations = 0
+            self._list_end_observations += 1
+            if self._list_end_observations < self._READINESS_OBSERVATIONS:
+                return None
             self.completed_cycles += 1
+            self._list_end_observations = 0
+            self._list_end_fingerprint = None
             self.filter_verified = False  # 新一轮 cycle 重新筛选
             self._filter_session_done = False  # 新一轮允许重新进入筛选面板
             self._awaiting_star3_confirmation = False
             self.prev_card_grey = False
             return None
+        self._list_end_observations = 0
+        self._list_end_fingerprint = None
 
         # Runner 会用动作名做两帧确认；指纹用于让动画过渡中的不同英雄
         # 产生不同动作名，从而不会被误判为稳定。
@@ -675,7 +711,7 @@ class HeroSynthStateMachine:
                     raise UnrecognizedScreen("传送高亮卡为 SSS 且缺少返回箭头")
                 self.state = HeroSynthState.TRANSMIT_RETURNING
                 return HeroAction("abort_transmit_sss_target", back.point)
-            if (
+            if card is not None and (
                 self._transmit_green_present(screen)
                 and self._transmit_grid_filled(screen)
             ):
@@ -689,11 +725,7 @@ class HeroSynthStateMachine:
                     f"select_transmit_card_{tag}",
                     self._scaled_point(screen, (x, y)),
                 )
-            back = self._back_action(screen)
-            if back is not None:
-                self.state = HeroSynthState.HERO_LIST
-                return back
-            raise UnrecognizedScreen("传送选择画面缺少可选卡片与返回箭头")
+            return None
 
         if (
             self.state is HeroSynthState.IMPRINT_CONFIRM
@@ -704,21 +736,36 @@ class HeroSynthStateMachine:
 
         # 6. 刻印界面（绿色刻印按钮为锚点）
         if self.state is HeroSynthState.IMPRINT_ADD and self._sss_material_present(screen):
+            self._imprint_empty_observations = 0
             self.pending_transmit_target = True
             back = self._back_action(screen)
             if back is None:
                 raise UnrecognizedScreen("发现 SSS 材料但刻印页面缺少返回箭头")
             self.state = HeroSynthState.IMPRINT_ABORTING
             return HeroAction("abort_imprint_to_transmit", back.point)
+        if self.state is HeroSynthState.IMPRINT_ADD and (
+            not self._green_button_present(screen)
+            or not self._imprint_slots_present(screen)
+        ):
+            self._imprint_empty_observations = 0
+            return None
         if self._green_button_present(screen):
             up = self._find_up_card(screen)
             if up is not None:
+                self._imprint_empty_observations = 0
                 self.state = HeroSynthState.IMPRINT_ADD
                 x, y, tag = up
                 return HeroAction(
                     f"add_material_{tag}", self._scaled_point(screen, (x, y))
                 )
             if self.state is HeroSynthState.IMPRINT_ADD:
+                self._imprint_empty_observations += 1
+                if (
+                    self._imprint_empty_observations
+                    < self._READINESS_OBSERVATIONS
+                ):
+                    return None
+                self._imprint_empty_observations = 0
                 self.state = HeroSynthState.IMPRINT_CONFIRM
                 return HeroAction(
                     "start_synthesis",
@@ -818,6 +865,7 @@ class HeroSynthStateMachine:
             if self._red_dot_present(screen):
                 self.prev_card_grey = False
                 self.state = HeroSynthState.IMPRINT_ADD
+                self._imprint_empty_observations = 0
                 return HeroAction("open_imprint", best.center)
             self.prev_card_grey = False
             return self._advance_or_finish(screen)
@@ -838,6 +886,7 @@ class HeroSynthStateMachine:
                 return self._advance_or_finish(screen)
             self.prev_card_grey = False
             self.state = HeroSynthState.IMPRINT_ADD
+            self._imprint_empty_observations = 0
             return HeroAction(
                 "open_imprint",
                 self._scaled_point(
@@ -862,6 +911,9 @@ class HeroSynthStateMachine:
             self._filter_session_done,
             self._awaiting_star3_confirmation,
             self.pending_transmit_target,
+            self._imprint_empty_observations,
+            self._list_end_observations,
+            self._list_end_fingerprint,
             self._last_screen,
         )
         try:
@@ -876,6 +928,9 @@ class HeroSynthStateMachine:
                 self._filter_session_done,
                 self._awaiting_star3_confirmation,
                 self.pending_transmit_target,
+                self._imprint_empty_observations,
+                self._list_end_observations,
+                self._list_end_fingerprint,
                 self._last_screen,
             ) = snapshot
 

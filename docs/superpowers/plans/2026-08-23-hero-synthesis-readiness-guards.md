@@ -15,19 +15,19 @@
 **Files:**
 - Modify: `tests/test_hero_synthesis.py`
 
-- [ ] **Step 1: Add tests for imprint loading and absence confirmation**
+- [x] **Step 1: Add tests for imprint loading and absence confirmation**
 
 Add tests that call `next_action` with a synthetic loading frame or a fixture with the material strip temporarily hidden. The first empty observation must return `None`, the second consecutive empty observation must still not start synthesis unless the configured confirmation count is reached, and the existing `imprint_added` fixture must still produce `start_synthesis` after the required confirmations.
 
-- [ ] **Step 2: Add tests for transmit-card loading**
+- [x] **Step 2: Add tests for transmit-card loading**
 
 Start from `HeroSynthState.TRANSMIT_SELECT`, use `transmit_select` with the highlighted-card strip erased, and assert the first missing-card observation returns `None` rather than `back_to_list`. The normal `transmit_select` fixture must still produce `start_transmit`.
 
-- [ ] **Step 3: Add a test for list-end stability**
+- [x] **Step 3: Add a test for list-end stability**
 
 Use `list_end_of_cards` after a state that can advance and assert a single missing-next-card observation does not increment `completed_cycles`; repeated stable observations must still complete exactly one cycle.
 
-- [ ] **Step 4: Run the focused tests and verify RED**
+- [x] **Step 4: Run the focused tests and verify RED**
 
 Run:
 
@@ -42,28 +42,28 @@ Expected: the new tests fail because the current state machine advances immediat
 **Files:**
 - Modify: `games/epic7/hero_synthesis.py:140-180, 620-730`
 
-- [ ] **Step 1: Add bounded observation counters**
+- [x] **Step 1: Add bounded observation counters**
 
 Add private counters initialized in `HeroSynthStateMachine.__init__` for imprint-empty, transmit-card-missing, and list-end observations. Use a small constant of two consecutive semantic observations. Reset the relevant counter whenever the expected content is detected or an action/state transition leaves the screen.
 
-- [ ] **Step 2: Guard imprint completion**
+- [x] **Step 2: Guard imprint completion**
 
-Keep SSS-material detection first. When the green imprint button exists but no Up card is found, increment the imprint-empty counter and return `None` until the counter reaches the confirmation count. Only then set `IMPRINT_CONFIRM` and emit `start_synthesis`. A detected Up card resets the counter and continues to emit the existing `add_material_*` action.
+Keep SSS-material detection first. Require the green imprint button and all six material-slot outlines before treating the page as ready. When the ready page has no Up card, increment the imprint-empty counter and return `None` until the counter reaches the confirmation count. Only then set `IMPRINT_CONFIRM` and emit `start_synthesis`. A detected Up card resets the counter and continues to emit the existing `add_material_*` action.
 
-- [ ] **Step 3: Guard transmit missing-card fallback**
+- [x] **Step 3: Guard transmit missing-card fallback**
 
-When the auto-select label exists but no highlighted card is found, increment the missing-card counter and return `None` until it is confirmed. Do not emit the existing back action on the first missing observation. Reset the counter when a card or filled grid is detected.
+When the auto-select label exists but no highlighted card is found, return `None` without emitting a selection, transmission, or back action. Let the existing state timeout/recovery handle a page that never produces a target. Require a detected target before `start_transmit`.
 
-- [ ] **Step 4: Guard list completion**
+- [x] **Step 4: Guard list completion**
 
-In `_advance_or_finish`, if the below-card zone is absent, require the list’s existing readiness signals to be observed consecutively before incrementing `completed_cycles`. Preserve the current normal next-card action and cycle reset behavior.
+In `_advance_or_finish`, if the below-card zone is absent, require the existing list readiness signals plus an unchanged current-card detail fingerprint across consecutive observations before incrementing `completed_cycles`. Reset the fingerprint and counter when the next-card zone reappears or the detail changes. Preserve the current normal next-card action and cycle reset behavior.
 
 ### Task 3: Run green focused and full offline verification
 
 **Files:**
 - No new files.
 
-- [ ] **Step 1: Run focused hero tests**
+- [x] **Step 1: Run focused hero tests**
 
 Run:
 
@@ -73,7 +73,7 @@ python -m pytest tests/test_hero_synthesis.py -q
 
 Expected: all hero-synthesis tests pass, including new transient-loading regressions.
 
-- [ ] **Step 2: Run the full test suite**
+- [x] **Step 2: Run the full test suite**
 
 Run:
 
@@ -83,7 +83,7 @@ python -m pytest -q
 
 Expected: exit code 0 with no failures.
 
-- [ ] **Step 3: Review the diff and diagnostics**
+- [x] **Step 3: Review the diff and diagnostics**
 
 Run:
 
@@ -94,7 +94,7 @@ git status --short
 
 Confirm only the approved design/plan, test, and hero state-machine changes are present. Do not launch the emulator.
 
-- [ ] **Step 4: Commit the implementation**
+- [x] **Step 4: Commit the implementation**
 
 ```powershell
 git add games/epic7/hero_synthesis.py tests/test_hero_synthesis.py docs/superpowers/specs/2026-08-23-hero-synthesis-readiness-guards-design.md docs/superpowers/plans/2026-08-23-hero-synthesis-readiness-guards.md
