@@ -334,7 +334,7 @@ class HeroListDecisionTests(unittest.TestCase):
         m = machine(verify_filter=True)
         action = settled_next(m, fixture("list_no_reddot"))
         self.assertTrue(action.name.startswith("next_card"))
-        self.assertEqual((1559, 591), action.point)
+        self.assertEqual((1800, 591), action.point)
 
     def test_list_no_reddot_with_live_button_score_advances(self):
         """模拟器按钮轻微变体得分 0.537 时仍应按无红点卡跳过。"""

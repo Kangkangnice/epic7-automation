@@ -191,6 +191,7 @@ class HeroSynthStateMachine:
     _PC_REDDOT_ZONE = (1030, 935, 50, 50)  # PC 保留原红点区
     _MATERIAL_SSS_REGION = (1750, 350, 230, 650)
     _CARD_BELOW_ZONE = (1450, 537, 520, 83)
+    _DETAIL_CONTENT_ZONE = (150, 350, 550, 300)
     _IMPRINT_SLOT_ZONES = (
         (600, 605, 370, 110),
         (970, 605, 370, 110),
@@ -214,13 +215,15 @@ class HeroSynthStateMachine:
     _TRANSMIT_STRIP_ZONE = (1400, 200, 250, 800)
     _TRANSMIT_GRID_ZONE = (50, 305, 620, 405)
     _DETAIL_FP_ZONE = (150, 350, 550, 300)
+    _SIMULATOR_DETAIL_FP_ZONE = (150, 180, 550, 170)
+    _LIST_FP_ZONE = (1450, 200, 532, 780)
 
     # 点击点（参考尺寸坐标）
     _FUNNEL_POINT = (1540, 191)
     _STAR3_POINT = (1110, 636)
     # 模拟器截图是 1920x1080 渲染画面上方补 52px 的旧画布；
-    # 点击落在用户标出的下一张卡数值区域内，换算后为 (1559, 591)。
-    _NEXT_CARD_POINT = (1559, 591)
+    # 点击下一张卡的主体区域，不点击战力数字或卡片边界。
+    _NEXT_CARD_POINT = (1800, 591)
     _PC_NEXT_CARD_POINT = (1710, 570)
     _IMPRINT_BUTTON_POINT = (1098, 995)  # 刻印按钮硬编码坐标：模板匹配失败时的兜底
     _UP_CARD_X = 1710
@@ -238,6 +241,7 @@ class HeroSynthStateMachine:
     _PC_GREEN_BTN_POINT = (1200, 1041)
     _PC_BACK_OFFSET = (11, -4)
     _CARD_BELOW_BRIGHT_MIN = 2000
+    _DETAIL_CONTENT_BRIGHT_MIN = 5000
     _REWARD_STRIP_RANGE = (300, 1500)
     _SSS_MATERIAL_MIN = 0.80  # 材料卡保留少量背景，阈值略低于评级模板
     _FILTER_ATTRIBUTE_MIN = 0.82
@@ -520,6 +524,10 @@ class HeroSynthStateMachine:
         gray = self._zone_gray(screen, self._CARD_BELOW_ZONE)
         return int((gray > 120).sum()) > self._CARD_BELOW_BRIGHT_MIN
 
+    def _detail_content_present(self, screen: np.ndarray) -> bool:
+        gray = self._zone_gray(screen, self._DETAIL_CONTENT_ZONE)
+        return int((gray > 45).sum()) > self._DETAIL_CONTENT_BRIGHT_MIN
+
     def _up_badge_rows(self, screen: np.ndarray) -> list[tuple[int, int]]:
         """返回右侧材料卡左边真实 Up! 标记的纵向范围。
 
@@ -759,9 +767,12 @@ class HeroSynthStateMachine:
             key=lambda m: m.score,
             default=None,
         )
-        return bool(
+        base_ready = bool(
             best is not None and best.score >= self._BUTTON_STRUCT_MIN
         ) or self._is_max_rating(screen) or self._red_dot_present(screen)
+        return base_ready and (
+            self.templates.pc_client or self._detail_content_present(screen)
+        )
 
     def _observe_filter(self, screen: np.ndarray) -> FilterObservation:
         """Classify only filter states backed by explicit simulator evidence."""
@@ -876,14 +887,23 @@ class HeroSynthStateMachine:
     # ---- 遍历决策 ----
 
     def _detail_fingerprint(self, screen: np.ndarray) -> str:
-        """左侧详情面板的稳定视觉指纹，用于区分连续翻到的英雄。"""
-        gray = self._zone_gray(screen, self._DETAIL_FP_ZONE)
-        # 详情立绘存在轻微动态，直接对缩小后的原始像素做哈希会导致
-        # 同一张卡每帧得到不同指纹，Runner 因而永远无法确认 next_card 稳定。
-        gray = cv2.GaussianBlur(gray, (11, 11), 0)
-        small = cv2.resize(gray, (5, 3), interpolation=cv2.INTER_AREA)
-        quantized = (small // 32).astype(np.uint8)
-        return hashlib.sha1(quantized.tobytes()).hexdigest()[:8]
+        """模拟器用标题和选中卡列表确认确实翻到了下一张；PC 保持原指纹。"""
+        if self.templates.pc_client:
+            gray = self._zone_gray(screen, self._DETAIL_FP_ZONE)
+            gray = cv2.GaussianBlur(gray, (11, 11), 0)
+            small = cv2.resize(gray, (5, 3), interpolation=cv2.INTER_AREA)
+            return hashlib.sha1((small // 32).astype(np.uint8).tobytes()).hexdigest()[:8]
+
+        parts = []
+        for zone, size in (
+            (self._SIMULATOR_DETAIL_FP_ZONE, (8, 3)),
+            (self._LIST_FP_ZONE, (8, 10)),
+        ):
+            gray = self._zone_gray(screen, zone)
+            gray = cv2.GaussianBlur(gray, (11, 11), 0)
+            small = cv2.resize(gray, size, interpolation=cv2.INTER_AREA)
+            parts.append((small // 32).astype(np.uint8).tobytes())
+        return hashlib.sha1(b"".join(parts)).hexdigest()[:8]
 
     def _advance_or_finish(self, screen: np.ndarray) -> Optional[HeroAction]:
         if not self._card_below_present(screen):
