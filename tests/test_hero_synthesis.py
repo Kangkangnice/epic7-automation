@@ -6,6 +6,7 @@ from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 import cv2
+import numpy as np
 from auto_game_unified.core.matcher import Match
 from auto_game_unified.core.runtime import Runtime
 from auto_game_unified.games.epic7.hero_synthesis import (
@@ -87,6 +88,13 @@ class HeroListDecisionTests(unittest.TestCase):
                 cv2.imread(str(NAV_FIXTURES / f"{name}.png")), cv2.COLOR_BGR2RGB
             )
             self.assertFalse(m._red_dot_present(screen), name)
+
+    def test_red_dot_survives_brown_character_background(self):
+        m = machine()
+        screen = np.zeros((1132, 1982, 3), dtype=np.uint8)
+        screen[942:977, 1030:1062] = (116, 92, 72)
+        cv2.circle(screen, (1047, 959), 9, (219, 85, 11), -1)
+        self.assertTrue(m._red_dot_present(screen))
 
     def test_list_first_visit_opens_filter(self):
         m = machine()
