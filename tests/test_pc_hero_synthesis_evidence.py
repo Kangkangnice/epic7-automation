@@ -148,6 +148,16 @@ def test_pc_confirmation_click_is_inside_live_confirm_button():
     assert 676 <= action.point[1] <= 771
 
 
+def test_pc_synthesis_confirmation_does_not_publish_simulator_page_evidence():
+    value = machine()
+    value._confirmed_page = "PC既有页面"
+
+    action = value.next_action(fixture("10_synthesis_confirm"))
+
+    assert action.name == "confirm_synthesis"
+    assert value._confirmed_page == "PC既有页面"
+
+
 def test_pc_completed_imprint_uses_live_back_arrow_center():
     value = machine(filter_verified=True, state=HeroSynthState.IMPRINT_CONFIRM)
     action = value.next_action(fixture("13_imprint_result_closed"))

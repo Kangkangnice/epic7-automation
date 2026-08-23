@@ -264,6 +264,27 @@ class HeroPageEvidenceTests(unittest.TestCase):
 
         self.assertEqual("筛选面板（三星已选中）", m._confirmed_page)
 
+    def test_unknown_filter_observation_preserves_non_filter_page_evidence(self):
+        partial = fixture("filter_open_star3_unselected").copy()
+        x, y, w, h = machine()._REGIONS["filter_attribute_label"]
+        partial[y : y + h, x : x + w] = 0
+        cases = (
+            (HeroSynthState.IMPRINT_CONFIRM, "合成确认"),
+            (HeroSynthState.TRANSMIT_SELECT, "传送选择"),
+        )
+
+        for state, label in cases:
+            with self.subTest(state=state):
+                m = machine(verify_filter=True)
+                m.state = state
+                m._confirmed_page = label
+
+                handled, action = m._next_simulator_filter_action(partial)
+
+                self.assertFalse(handled)
+                self.assertIsNone(action)
+                self.assertEqual(label, m._confirmed_page)
+
 
 class HeroListDecisionTests(unittest.TestCase):
     def test_red_dot_zone_matches_tight_user_marked_region(self):
