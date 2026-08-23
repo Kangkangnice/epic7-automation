@@ -87,6 +87,7 @@ class HeroTemplates:
     auto_select_label: np.ndarray
     story_back: np.ndarray
     rating_sss: np.ndarray
+    sss_material: Optional[np.ndarray] = None
     imprint_result_title: Optional[np.ndarray] = None
     imprint_result_close: Optional[np.ndarray] = None
     threshold: float = 0.80
@@ -100,6 +101,7 @@ def build_hero_templates(template_root: Path) -> HeroTemplates:
     is_pc = template_root.name == "templates_pc"
     result_title = hero / "imprint_result_title.png"
     result_close = hero / "imprint_result_close.png"
+    sss_material = hero / "sss_material.png"
     return HeroTemplates(
         filter_button=load_template(str(hero / "filter_button.png")),
         filter_level_label=load_template(str(hero / "filter_level_label.png")),
@@ -109,6 +111,7 @@ def build_hero_templates(template_root: Path) -> HeroTemplates:
         auto_select_label=load_template(str(hero / "auto_select_label.png")),
         story_back=load_template(str(navigation / "story_back.png")),
         rating_sss=load_template(str(hero / "rating_sss.png")),
+        sss_material=(load_template(str(sss_material)) if sss_material.exists() else None),
         imprint_result_title=(load_template(str(result_title)) if result_title.exists() else None),
         imprint_result_close=(load_template(str(result_close)) if result_close.exists() else None),
         pc_client=is_pc,
@@ -141,6 +144,7 @@ class HeroSynthStateMachine:
     _RATING_REGION = (90, 460, 200, 130)
     _RATING_SSS_MIN = 0.82  # 满级 SSS 模板匹配阈值：超过即认定为满级
     _REDDOT_ZONE = (1030, 935, 50, 50)  # 刻印按钮左上角红点角标区（不与觉醒按钮重叠）
+    _MATERIAL_SSS_REGION = (1750, 350, 230, 650)
     _CARD_BELOW_ZONE = (1450, 537, 520, 83)
     _UP_STRIP_ZONE = (1880, 380, 50, 620)
     _GREEN_BTN_ZONE = (900, 1020, 500, 90)
@@ -166,6 +170,7 @@ class HeroSynthStateMachine:
     _TRANSMIT_GREEN_POINT = (1203, 1057)
     _REWARD_CLOSE_POINT = (960, 843)
     _IMPRINT_RESULT_CLOSE_POINT = (991, 850)
+    _TRANSMIT_ENTRY_POINT = (1735, 1060)
     _BACK_OFFSET = (-26, -6)
     _PC_FUNNEL_POINT = (1612, 141)
     _PC_STAR3_POINT = (1148, 613)
@@ -199,6 +204,7 @@ class HeroSynthStateMachine:
         self._filter_session_done: bool = False
         # 已点击 3 星后，必须先从截图确认选中态；确认前禁止回点筛选漏斗。
         self._awaiting_star3_confirmation: bool = False
+        self.pending_transmit_target = False
 
     def _mask_dot(self, template: np.ndarray) -> np.ndarray:
         """把模板上红点角标区置零，匹配时与画面同区域一起忽略。"""
@@ -365,6 +371,16 @@ class HeroSynthStateMachine:
             morph=3,
         )
         return bool(blobs or extra)
+
+    def _sss_material_present(self, screen: np.ndarray) -> bool:
+        if self.templates.pc_client or self.templates.sss_material is None:
+            return False
+        return self._locate(
+            screen,
+            "sss_material",
+            0.78,
+            region_override=self._MATERIAL_SSS_REGION,
+        ) is not None
 
     def _card_below_present(self, screen: np.ndarray) -> bool:
         gray = self._zone_gray(screen, self._CARD_BELOW_ZONE)
@@ -558,6 +574,7 @@ class HeroSynthStateMachine:
 
         # 4. 传送选择界面（自动选择标签为锚点，需先于绿钮判定）
         if self._locate(screen, "auto_select_label", 0.85):
+            self.pending_transmit_target = False
             self.state = HeroSynthState.TRANSMIT_SELECT
             if (
                 self._transmit_green_present(screen)
@@ -588,6 +605,13 @@ class HeroSynthStateMachine:
             raise UnrecognizedScreen("合成结果覆盖层未完整识别，禁止点击底层返回")
 
         # 5. 刻印界面（绿色刻印按钮为锚点）
+        if self.state is HeroSynthState.IMPRINT_ADD and self._sss_material_present(screen):
+            self.pending_transmit_target = True
+            back = self._back_action(screen)
+            if back is None:
+                raise UnrecognizedScreen("发现 SSS 材料但刻印页面缺少返回箭头")
+            self.state = HeroSynthState.HERO_LIST
+            return HeroAction("abort_imprint_to_transmit", back.point)
         if self._green_button_present(screen):
             up = self._find_up_card(screen)
             if up is not None:
@@ -666,6 +690,11 @@ class HeroSynthStateMachine:
         # 上一版靠"按钮灰/蓝颜色"和"上一张是不是 SSS"的双保险推断都被颜色变种击穿；
         # 直接看左侧详情面板上的评级字符更稳。
         self.state = HeroSynthState.HERO_LIST
+        if self.pending_transmit_target:
+            return HeroAction(
+                "open_transmit_for_current_card",
+                self._scaled_point(screen, self._TRANSMIT_ENTRY_POINT),
+            )
         struct_n = self._locate_button(screen, self._masked_normal, 0.0)
         struct_g = (
             None
@@ -734,6 +763,7 @@ class HeroSynthStateMachine:
             self.prev_card_grey,
             self._filter_session_done,
             self._awaiting_star3_confirmation,
+            self.pending_transmit_target,
             self._last_screen,
         )
         try:
@@ -747,6 +777,7 @@ class HeroSynthStateMachine:
                 self.prev_card_grey,
                 self._filter_session_done,
                 self._awaiting_star3_confirmation,
+                self.pending_transmit_target,
                 self._last_screen,
             ) = snapshot
 
@@ -800,6 +831,7 @@ class HeroSynthRunner(ModeRunnerBase):
         self.machine.prev_card_grey = False
         self.machine._filter_session_done = False  # 恢复后允许重新进入筛选流程
         self.machine._awaiting_star3_confirmation = False
+        self.machine.pending_transmit_target = False
         self._needs_navigation_settle = self.machine.templates.pc_client
 
     def _stable_next_action(self, screen: np.ndarray, stable: Any):
@@ -829,6 +861,10 @@ class HeroSynthRunner(ModeRunnerBase):
             return "筛选面板里 3 星已选中 → 点漏斗关闭"
         if action_name == "open_imprint":
             return "非满级 + 刻印按钮有红点 → 点刻印记忆按钮开始合成"
+        if action_name == "abort_imprint_to_transmit":
+            return "材料中发现 SSS → 中止合成，传送当前无等级副本"
+        if action_name == "open_transmit_for_current_card":
+            return "当前副本待传送 → 打开传送英雄"
         if action_name.startswith("next_card"):
             m = self.machine
             if m._is_max_rating_safe():
