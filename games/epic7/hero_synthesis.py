@@ -564,7 +564,7 @@ class HeroSynthStateMachine:
         return [blob for blob in blobs if blob[3] >= 60]
 
     def _find_up_card(self, screen: np.ndarray) -> Optional[tuple[int, int, str]]:
-        """返回最上方的 Up 材料卡（点击点, 带计数的动作指纹）。"""
+        """返回最上方的普通 Up 材料卡，SSS 材料永远不可点击。"""
         if self.templates.pc_client:
             cards = self._up_strip_blobs(screen)
             if not cards:
@@ -573,10 +573,36 @@ class HeroSynthStateMachine:
             return (self._UP_CARD_X, top[1] + top[3] // 2, str(len(cards)))
 
         rows = self._up_badge_rows(screen)
-        if not rows:
+        ordinary_rows = [
+            row for row in rows if not self._row_is_sss_material(screen, row)
+        ]
+        if not ordinary_rows:
             return None
-        top = min(rows)
-        return (self._UP_CARD_X, top[0] + 4, str(len(rows)))
+        top = min(ordinary_rows)
+        return (self._UP_CARD_X, top[0] + 4, str(len(ordinary_rows)))
+
+    def _row_is_sss_material(
+        self, screen: np.ndarray, row: tuple[int, int]
+    ) -> bool:
+        """在同一张材料卡的评级区检查 SSS，避免把其它卡的 SSS 串到当前卡。"""
+        start, end = row
+        region = (
+            self._MATERIAL_SSS_REGION[0],
+            max(self._MATERIAL_SSS_REGION[1], start - 45),
+            self._MATERIAL_SSS_REGION[2],
+            min(self._MATERIAL_SSS_REGION[3], end - start + 90),
+        )
+        return (
+            not self.templates.pc_client
+            and self.templates.sss_material is not None
+            and self._locate(
+                screen,
+                "sss_material",
+                self._SSS_MATERIAL_MIN,
+                region_override=region,
+            )
+            is not None
+        )
 
     def _green_button_present(self, screen: np.ndarray) -> bool:
         blobs = self._blobs(
@@ -1050,6 +1076,7 @@ class HeroSynthStateMachine:
             self.state = HeroSynthState.HERO_LIST
 
         sss_material_present = False
+        up = None
         if complete_imprint_page:
             if (
                 not self.templates.pc_client
@@ -1057,7 +1084,8 @@ class HeroSynthStateMachine:
             ):
                 self.state = HeroSynthState.IMPRINT_ADD
             sss_material_present = self._sss_material_present(screen)
-            if sss_material_present:
+            up = self._find_up_card(screen)
+            if sss_material_present and up is None:
                 self._confirm_page("刻印SSS材料")
             else:
                 self._confirm_page("刻印加材料")
@@ -1066,6 +1094,7 @@ class HeroSynthStateMachine:
             self.state is HeroSynthState.IMPRINT_ADD
             and complete_imprint_page
             and sss_material_present
+            and up is None
         ):
             self._imprint_empty_observations = 0
             self.pending_transmit_target = True
@@ -1087,7 +1116,6 @@ class HeroSynthStateMachine:
             self.templates.pc_client or complete_imprint_page
         ):
             filled_slots = self._imprint_filled_slot_count(screen)
-            up = self._find_up_card(screen)
             if up is not None:
                 self._imprint_empty_observations = 0
                 self.state = HeroSynthState.IMPRINT_ADD
