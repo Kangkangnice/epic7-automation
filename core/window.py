@@ -222,8 +222,13 @@ class Epic7Window:
         return rgb
 
     def click(self, point: tuple[int, int]) -> None:
-        self.activate()
-        self._click_legacy(point)
+        # ld.exe 通过实例通道发送点击，不依赖前台焦点；先直接发送，避免
+        # Windows 焦点锁导致 activate 长时间卡住。只有实例通道失败时才尝试激活。
+        try:
+            self._click_legacy(point)
+        except (RuntimeError, subprocess.SubprocessError):
+            self.activate()
+            self._click_legacy(point)
 
     def wake(self, point: tuple[int, int]) -> None:
         """Wake LDPlayer's campfire idle layer with a real desktop mouse event."""
@@ -296,8 +301,11 @@ class Epic7Window:
         raise RuntimeError(f"无法将雷电模拟器进程 {process_id.value} 对应到实例")
 
     def back(self) -> None:
-        self.activate()
-        self._send_android_back()
+        try:
+            self._send_android_back()
+        except (RuntimeError, subprocess.SubprocessError):
+            self.activate()
+            self._send_android_back()
 
     def _send_android_back(self) -> None:
         """Use LDPlayer's instance channel; keyboard Esc can be stolen by keymaps."""

@@ -433,6 +433,14 @@ class NavigationTests(unittest.TestCase):
 
 
 class RunnerFlowTests(unittest.TestCase):
+    def test_next_card_retry_window_is_short(self):
+        runner = HeroSynthRunner(
+            HeroSynthStateMachine(build_hero_templates(TEMPLATES)),
+            Runtime(lambda: None, lambda *_: None),
+            sleep=lambda _: None,
+        )
+        self.assertEqual(10, runner._action_retry_seconds("next_card_test"))
+
     def test_multi_card_sequence_completes_one_simulator_cycle(self):
         sequence = [
             "list_reddot",          # 首次进列表 → 打开筛选

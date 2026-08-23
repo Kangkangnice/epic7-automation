@@ -210,24 +210,67 @@ class WindowViewportTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "1920x1080"):
             Epic7Window._legacy_canvas(np.zeros((720, 1280, 3), dtype=np.uint8))
 
-    def test_back_activates_window_before_sending_android_back(self):
+    def test_back_uses_instance_command_without_foreground_activation(self):
         game = Epic7Window()
         calls: list[str] = []
 
         with (
-            patch.object(game, "activate", side_effect=lambda: calls.append("activate")),
+            patch.object(
+                game,
+                "activate",
+                side_effect=AssertionError("back must not wait for foreground focus"),
+            ),
             patch.object(game, "_send_android_back", side_effect=lambda: calls.append("android-back")),
         ):
             game.back()
 
-        self.assertEqual(["activate", "android-back"], calls)
+        self.assertEqual(["android-back"], calls)
 
-    def test_click_activates_before_using_the_legacy_mapping(self):
+    def test_back_activates_only_when_instance_command_fails(self):
+        game = Epic7Window()
+        calls: list[str] = []
+
+        def send_back() -> None:
+            if calls.count("back-attempt") == 0:
+                calls.append("back-attempt")
+                raise RuntimeError("back unavailable")
+            calls.append("android-back")
+
+        with (
+            patch.object(game, "activate", side_effect=lambda: calls.append("activate")),
+            patch.object(game, "_send_android_back", side_effect=send_back),
+        ):
+            game.back()
+
+        self.assertEqual(["back-attempt", "activate", "android-back"], calls)
+
+    def test_click_uses_instance_tap_without_foreground_activation(self):
         game = Epic7Window()
         calls: list[object] = []
         with (
-            patch.object(game, "activate", side_effect=lambda: calls.append("activate")),
+            patch.object(
+                game,
+                "activate",
+                side_effect=AssertionError("click must not wait for foreground focus"),
+            ),
             patch.object(game, "_click_legacy", side_effect=calls.append),
+        ):
+            game.click((1689, 1060))
+
+        self.assertEqual([(1689, 1060)], calls)
+
+    def test_click_activates_only_when_instance_tap_fails(self):
+        game = Epic7Window()
+        calls: list[object] = []
+
+        def click_legacy(point: tuple[int, int]) -> None:
+            if not calls or calls[-1] != "activate":
+                raise RuntimeError("tap unavailable")
+            calls.append(point)
+
+        with (
+            patch.object(game, "activate", side_effect=lambda: calls.append("activate")),
+            patch.object(game, "_click_legacy", side_effect=click_legacy),
         ):
             game.click((1689, 1060))
 
