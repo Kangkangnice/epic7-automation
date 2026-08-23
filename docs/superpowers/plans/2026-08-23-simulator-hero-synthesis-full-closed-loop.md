@@ -215,7 +215,7 @@ return HeroAction(
 Run:
 
 ```powershell
-python -m pytest tests/test_hero_synthesis.py::HeroListTransitionTests tests/test_hero_synthesis.py::HeroListDecisionTests tests/test_hero_synthesis.py::RunnerFlowTests::test_scaled_window_keeps_actions_and_points tests/test_hero_synthesis.py::RunnerFlowTests::test_multi_card_sequence_completes_one_simulator_cycle tests/test_hero_synthesis.py::RunnerFlowTests::test_full_synthesis_flow -q
+python -m pytest tests/test_hero_synthesis.py::HeroListTransitionTests tests/test_hero_synthesis.py::HeroListDecisionTests tests/test_hero_synthesis.py::GuardTests::test_scaled_window_keeps_actions_and_points tests/test_hero_synthesis.py::RunnerFlowTests::test_multi_card_sequence_completes_one_simulator_cycle tests/test_hero_synthesis.py::RunnerFlowTests::test_full_synthesis_flow -q
 ```
 
 Expected: all selected tests pass and existing click points stay unchanged.

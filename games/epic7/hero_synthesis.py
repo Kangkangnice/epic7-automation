@@ -954,13 +954,15 @@ class HeroSynthStateMachine:
         complete_imprint_page = (
             green_button_present and self._imprint_slots_present(screen)
         )
+        sss_material_present = False
         if complete_imprint_page:
             if (
                 not self.templates.pc_client
                 and self.state is HeroSynthState.HERO_LIST
             ):
                 self.state = HeroSynthState.IMPRINT_ADD
-            if self._sss_material_present(screen):
+            sss_material_present = self._sss_material_present(screen)
+            if sss_material_present:
                 self._confirm_page("刻印SSS材料")
             else:
                 self._confirm_page("刻印加材料")
@@ -968,7 +970,7 @@ class HeroSynthStateMachine:
         if (
             self.state is HeroSynthState.IMPRINT_ADD
             and complete_imprint_page
-            and self._sss_material_present(screen)
+            and sss_material_present
         ):
             self._imprint_empty_observations = 0
             self.pending_transmit_target = True
