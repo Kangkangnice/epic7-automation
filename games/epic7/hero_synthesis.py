@@ -139,7 +139,7 @@ class HeroSynthStateMachine:
     _PC_DOT_MASK = (1065, 935, 32, 32)
     _BUTTON_CENTER = (1098, 995)
     _BUTTON_DISC_RADIUS = 58
-    _BUTTON_STRUCT_MIN = 0.55  # 结构匹配下限：确认按钮存在（不限颜色）
+    _BUTTON_STRUCT_MIN = 0.50  # 结构匹配下限：确认按钮存在（不限颜色）
     # 评级字符 SSS 在左侧详情面板的中部位置（参考坐标）
     _RATING_REGION = (90, 460, 200, 130)
     _RATING_SSS_MIN = 0.82  # 满级 SSS 模板匹配阈值：超过即认定为满级
