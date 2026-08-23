@@ -867,3 +867,85 @@ class RunnerFlowTests(unittest.TestCase):
             runner = HeroSynthRunner(machine_, runtime, sleep=lambda _: None)
             with self.assertRaisesRegex(RuntimeError, "未知画面|无进展"):
                 runner.run(max_cycles=1)
+
+
+class BlackScreenTests(unittest.TestCase):
+    def runner(self, *, runtime=None, clock=None, recovery=None):
+        runtime = runtime or Runtime(lambda: None, lambda _: None)
+        return HeroSynthRunner(
+            machine(),
+            runtime,
+            sleep=(clock.sleep if clock is not None else (lambda _: None)),
+            recovery=recovery,
+        )
+
+    def test_simulator_black_classifier_ignores_legacy_top_padding(self):
+        runner = self.runner()
+        black = np.zeros((1132, 1982, 3), dtype=np.uint8)
+        self.assertTrue(runner._is_black_screen(black))
+
+    def test_every_recorded_hero_fixture_is_not_black(self):
+        runner = self.runner()
+        for path in FIXTURES.glob("*.png"):
+            self.assertFalse(runner._is_black_screen(fixture(path.stem)), path.name)
+
+    def test_black_screen_stops_at_sixty_seconds_without_input_or_recovery(self):
+        clock = FakeClock()
+        black = np.zeros((1132, 1982, 3), dtype=np.uint8)
+        clicks = []
+        wakes = []
+        recoveries = []
+        logs = []
+        with TemporaryDirectory() as tmp:
+            runtime = Runtime(
+                lambda: black,
+                clicks.append,
+                wake=wakes.append,
+                emit=logs.append,
+                diagnostic_dir=Path(tmp),
+                monotonic=clock,
+            )
+            runner = self.runner(
+                runtime=runtime,
+                clock=clock,
+                recovery=lambda: recoveries.append("recovered"),
+            )
+            runner._TIMEOUT_SECONDS = {
+                state: 5 for state in HeroSynthState
+            }
+
+            with self.assertRaisesRegex(RuntimeError, "黑屏时间过长（60秒）"):
+                runner.run(max_cycles=1)
+
+            self.assertTrue(list(Path(tmp).glob("*_black_screen_timeout.png")))
+        self.assertEqual([], clicks)
+        self.assertEqual([], wakes)
+        self.assertEqual([], recoveries)
+        self.assertIn("最长等待=60秒", "\n".join(logs))
+
+    def test_recovered_black_time_does_not_trigger_filter_retry(self):
+        clock = FakeClock()
+        black = np.zeros((1132, 1982, 3), dtype=np.uint8)
+        screens = iter(
+            [fixture("filter_open")] * 2
+            + [black] * 10
+            + [fixture("filter_open")] * 2
+        )
+        clicks = []
+        wakes = []
+        logs = []
+        runtime = Runtime(
+            lambda: next(screens),
+            clicks.append,
+            wake=wakes.append,
+            emit=logs.append,
+            monotonic=clock,
+        )
+        runner = self.runner(runtime=runtime, clock=clock)
+
+        with self.assertRaises(StopIteration):
+            runner.run(max_cycles=1)
+
+        self.assertEqual(1, len(clicks))
+        self.assertEqual([], wakes)
+        self.assertIn("黑屏已恢复", "\n".join(logs))

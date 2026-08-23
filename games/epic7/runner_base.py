@@ -40,6 +40,9 @@ class ModeRunnerBase:
     _BATTLE_ENTRY_ACTION: Optional[str] = None  # 触发战斗移交的动作名
     _CLICK_BEFORE_BATTLE = True  # True=先点击再移交；False=不点击直接移交（战斗监督代点）
     _SETTLED_BATTLE_STATE = None  # 停在该状态且无动作时直接移交战斗（狗粮 BATTLE）
+    _BLACK_SCREEN_TIMEOUT_SECONDS: Optional[float] = None
+    _BLACK_SCREEN_LOG_INTERVAL_SECONDS = 10.0
+    _ALLOW_UNKNOWN_SCREEN_WAKE = True
 
     def __init__(
         self,
@@ -103,6 +106,10 @@ class ModeRunnerBase:
 
     def _is_instant_action(self, action_name: Optional[str]) -> bool:
         """返回 True 表示该动作不需要 stable 2 帧确认（一次性副作用，必须立刻发）。"""
+        return False
+
+    def _is_black_screen(self, screen) -> bool:
+        """子模式可选择启用独立黑屏保护；默认不改变现有模式行为。"""
         return False
 
     def _stall_timeout_seconds(self) -> float:
@@ -194,6 +201,8 @@ class ModeRunnerBase:
         last_progress_at: float = self.now()  # 任意新动作发出即刷新
         retry_wait_logged = False
         action_attempts = 0
+        black_started: Optional[float] = None
+        last_black_log_at: Optional[float] = None
         # 动作循环检测：连续发出若干同前缀动作但状态未推进则触发回收
         recent_actions: list[str] = []
 
@@ -203,6 +212,58 @@ class ModeRunnerBase:
             screen = self.runtime.capture()
             if self.runtime.diagnostic_dir is not None:
                 self.runtime.save_current_frame(screen)
+
+            black_timeout = self._BLACK_SCREEN_TIMEOUT_SECONDS
+            if black_timeout is not None and self._is_black_screen(screen):
+                current = self.now()
+                if black_started is None:
+                    black_started = current
+                    last_black_log_at = current
+                    self.runtime.log(
+                        f"模式={self._MODE_LABEL} "
+                        f"最后确认页面={self._state_label(self.machine.state)} "
+                        f"黑屏=等待画面恢复 最长等待={black_timeout:.0f}秒"
+                    )
+                elapsed = current - black_started
+                if elapsed >= black_timeout:
+                    diagnostic = self.runtime.save_diagnostic(
+                        "black_screen_timeout", screen
+                    )
+                    message = (
+                        f"黑屏时间过长（{black_timeout:.0f}秒），程序已安全停止；"
+                        f"已保存诊断 {diagnostic}"
+                    )
+                    self.runtime.log(
+                        f"模式={self._MODE_LABEL} 停止=黑屏时间过长 "
+                        f"已等待={elapsed:.0f}秒"
+                    )
+                    raise RuntimeError(message)
+                if (
+                    last_black_log_at is not None
+                    and current - last_black_log_at
+                    >= self._BLACK_SCREEN_LOG_INTERVAL_SECONDS
+                ):
+                    self.runtime.log(
+                        f"模式={self._MODE_LABEL} 黑屏=继续等待 "
+                        f"已等待={elapsed:.0f}秒/{black_timeout:.0f}秒"
+                    )
+                    last_black_log_at = current
+                stable.reset()
+                self.sleep(self.poll_seconds)
+                continue
+
+            if black_started is not None:
+                black_duration = self.now() - black_started
+                state_started += black_duration
+                absolute_started += black_duration
+                if last_action_clicked_at is not None:
+                    last_action_clicked_at += black_duration
+                self.runtime.log(
+                    f"模式={self._MODE_LABEL} 黑屏已恢复 "
+                    f"持续={black_duration:.0f}秒 重新识别当前页面"
+                )
+                black_started = None
+                last_black_log_at = None
 
             # 动作循环检测：最近 15 次只发出 next_card 一种动作，
             # 但状态和 cycle 都没推进 → 切卡动画中同位置反复点击，
@@ -248,7 +309,10 @@ class ModeRunnerBase:
                 )
                 return self.machine.completed_cycles
             except RuntimeError as error:
-                if isinstance(error, UnrecognizedScreen):
+                if (
+                    isinstance(error, UnrecognizedScreen)
+                    and self._ALLOW_UNKNOWN_SCREEN_WAKE
+                ):
                     wake_result = self.unknown_screen_wake.handle(
                         screen,
                         context=f"{self._MODE_LABEL}:{self._state_label(self.machine.state)}",
