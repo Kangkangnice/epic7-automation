@@ -190,6 +190,7 @@ class ModeRunnerBase:
         consecutive_waiting = 0
         last_action_name: Optional[str] = None
         last_action_clicked_at: Optional[float] = None
+        last_transition_action: Any = None
         last_progress_at: float = self.now()  # 任意新动作发出即刷新
         retry_wait_logged = False
         action_attempts = 0
@@ -232,6 +233,7 @@ class ModeRunnerBase:
                 absolute_started = state_started
                 last_action_name = None
                 last_action_clicked_at = None
+                last_transition_action = None
                 retry_wait_logged = False
                 action_attempts = 0
                 stable.reset()
@@ -282,6 +284,7 @@ class ModeRunnerBase:
                         absolute_started = state_started
                         last_action_name = None
                         last_action_clicked_at = None
+                        last_transition_action = None
                         retry_wait_logged = False
                         action_attempts = 0
                         stable.reset()
@@ -301,6 +304,23 @@ class ModeRunnerBase:
             consecutive_waiting = 0
             stable.reset()
 
+            confirmed_page = getattr(self.machine, "_confirmed_page", "")
+            if (
+                last_transition_action is not None
+                and confirmed_page
+                and confirmed_page
+                in getattr(last_transition_action, "target_pages", ())
+                and (
+                    action is None
+                    or action.name != last_transition_action.name
+                )
+            ):
+                self.runtime.log(
+                    f"模式={self._MODE_LABEL} 完成={last_transition_action.name} "
+                    f"目标页面={confirmed_page}"
+                )
+                last_transition_action = None
+
             if self._check_cycle_completed(cycles_before, max_cycles):
                 return self.machine.completed_cycles
             state_started = self.now() if self.machine.completed_cycles > cycles_before else state_started
@@ -311,6 +331,7 @@ class ModeRunnerBase:
                 state_started = absolute_started = self.now()
                 last_action_name = None
                 last_action_clicked_at = None
+                last_transition_action = None
                 retry_wait_logged = False
                 action_attempts = 0
                 stable.reset()
@@ -327,6 +348,7 @@ class ModeRunnerBase:
                 state_started = absolute_started = self.now()
                 last_action_name = None
                 last_action_clicked_at = None
+                last_transition_action = None
                 retry_wait_logged = False
                 action_attempts = 0
                 stable.reset()
@@ -347,7 +369,9 @@ class ModeRunnerBase:
                                 f"模式={self._MODE_LABEL} "
                                 f"轮次={self.machine.completed_cycles + 1}/"
                                 f"{max_cycles or '?'} 动作={action.name} "
-                                f"等待=点击后确认转场 剩余={remaining:.1f}秒"
+                                f"等待=点击后确认转场 "
+                                f"目标页面={'/'.join(getattr(action, 'target_pages', ())) or '?'} "
+                                f"剩余={remaining:.1f}秒"
                             )
                             retry_wait_logged = True
                         self.sleep(self.poll_seconds)
@@ -372,6 +396,7 @@ class ModeRunnerBase:
                         absolute_started = state_started
                         last_action_name = None
                         last_action_clicked_at = None
+                        last_transition_action = None
                         retry_wait_logged = False
                         action_attempts = 0
                         stable.reset()
@@ -390,6 +415,25 @@ class ModeRunnerBase:
                     f"页面={self._state_label(state_before)} "
                     f"动作={action.name} 尝试={action_attempts}/4"
                 )
+                source_page = getattr(action, "source_page", "")
+                target_pages = getattr(action, "target_pages", ())
+                reason = getattr(action, "reason", "")
+                if source_page:
+                    self.runtime.log(
+                        f"模式={self._MODE_LABEL} 当前页面={source_page} "
+                        f"判断依据={reason}"
+                    )
+                if target_pages:
+                    self.runtime.log(
+                        f"模式={self._MODE_LABEL} 操作={action.name} "
+                        f"坐标={action.point} 目标页面={'/'.join(target_pages)}"
+                    )
+                if action_attempts > 1 and source_page:
+                    self.runtime.log(
+                        f"模式={self._MODE_LABEL} 重试={action.name} "
+                        "原因=原页面仍存在且目标页面未出现 "
+                        f"尝试={action_attempts}/4"
+                    )
                 # 子模式进度提示：让外部能从日志看到当前决策原因
                 decision_hint = self._decision_hint(action.name, state_before)
                 if decision_hint:
@@ -397,6 +441,7 @@ class ModeRunnerBase:
                         f"模式={self._MODE_LABEL} 决策={decision_hint}"
                     )
                 self.runtime.click(action.point, action.name)
+                last_transition_action = action if target_pages else None
                 last_action_clicked_at = self.now()
                 state_started = last_action_clicked_at
                 absolute_started = last_action_clicked_at
@@ -416,6 +461,7 @@ class ModeRunnerBase:
                     absolute_started = state_started
                     last_action_name = None
                     last_action_clicked_at = None
+                    last_transition_action = None
                     retry_wait_logged = False
                     action_attempts = 0
                     stable.reset()
@@ -423,6 +469,7 @@ class ModeRunnerBase:
             else:
                 last_action_name = None
                 last_action_clicked_at = None
+                last_transition_action = None
                 retry_wait_logged = False
                 action_attempts = 0
 
