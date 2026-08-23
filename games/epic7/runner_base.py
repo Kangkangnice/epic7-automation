@@ -219,9 +219,13 @@ class ModeRunnerBase:
                 if black_started is None:
                     black_started = current
                     last_black_log_at = current
+                    last_confirmed_page = (
+                        getattr(self.machine, "_confirmed_page", "")
+                        or self._state_label(self.machine.state)
+                    )
                     self.runtime.log(
                         f"模式={self._MODE_LABEL} "
-                        f"最后确认页面={self._state_label(self.machine.state)} "
+                        f"最后确认页面={last_confirmed_page} "
                         f"黑屏=等待画面恢复 最长等待={black_timeout:.0f}秒"
                     )
                 elapsed = current - black_started

@@ -144,9 +144,12 @@ class FilterObservationTests(unittest.TestCase):
 
     def test_panel_missing_either_permanent_anchor_is_unknown(self):
         m = machine()
-        screen = fixture("filter_open_star3_unselected").copy()
-        screen[265:313, 657:747] = 0
-        self.assertIs(FilterObservation.UNKNOWN, m._observe_filter(screen))
+        for anchor in ("filter_level_label", "filter_attribute_label"):
+            with self.subTest(anchor=anchor):
+                screen = fixture("filter_open_star3_unselected").copy()
+                x, y, w, h = m._REGIONS[anchor]
+                screen[y : y + h, x : x + w] = 0
+                self.assertIs(FilterObservation.UNKNOWN, m._observe_filter(screen))
 
     def test_only_filter_fixtures_are_classified_as_open_panel(self):
         m = machine()
@@ -979,4 +982,8 @@ class BlackScreenTests(unittest.TestCase):
 
         self.assertEqual(1, len(clicks))
         self.assertEqual([], wakes)
+        self.assertIn(
+            "最后确认页面=筛选面板（三星已选中）",
+            "\n".join(logs),
+        )
         self.assertIn("黑屏已恢复", "\n".join(logs))
