@@ -50,6 +50,18 @@ def settled_next(m: HeroSynthStateMachine, screen):
     return m.next_action(screen)
 
 
+def imprint_one_remaining_after_add():
+    """一张材料已入槽、右侧还剩一张 Up 的过渡画面。"""
+    screen = fixture("imprint_up_cards_no_sss").copy()
+    added = fixture("imprint_added")
+    x, y, w, h = HeroSynthStateMachine._IMPRINT_SLOT_ZONES[0]
+    screen[y : y + h, x : x + w] = added[y : y + h, x : x + w]
+    x, y, w, h = HeroSynthStateMachine._IMPRINT_COST_ZONE
+    screen[y : y + h, x : x + w] = added[y : y + h, x : x + w]
+    screen[530:650, 1370:1465] = 0
+    return screen
+
+
 class TemplateTests(unittest.TestCase):
     def test_all_templates_load(self):
         templates = build_hero_templates(TEMPLATES)
@@ -217,6 +229,32 @@ class ImprintDecisionTests(unittest.TestCase):
         self.assertIsNone(m.next_action(loading))
         self.assertIsNone(m.next_action(loading))
         self.assertIs(m.state, HeroSynthState.IMPRINT_ADD)
+
+    def test_up_badge_still_locates_card_when_right_edge_is_covered(self):
+        """角色立绘遮住卡片最右边时，仍应根据左侧 Up! 标记点材料。"""
+        m = machine()
+        m.state = HeroSynthState.IMPRINT_ADD
+        screen = fixture("imprint_up_cards_no_sss").copy()
+        x, y, w, h = m._UP_STRIP_ZONE
+        screen[y : y + h, x : x + w] = 0
+
+        action = m.next_action(screen)
+
+        self.assertIsNotNone(action)
+        self.assertTrue(action.name.startswith("add_material"))
+
+    def test_empty_slots_and_zero_cost_never_start_synthesis(self):
+        """即使漏掉 Up!，没有材料入槽、费用仍为 0 时也必须一直等待。"""
+        m = machine()
+        m.state = HeroSynthState.IMPRINT_ADD
+        screen = fixture("imprint_up_cards_no_sss").copy()
+        screen[390:990, 1370:1465] = 0
+        x, y, w, h = m._UP_STRIP_ZONE
+        screen[y : y + h, x : x + w] = 0
+
+        for _ in range(3):
+            self.assertIsNone(m.next_action(screen))
+            self.assertIs(m.state, HeroSynthState.IMPRINT_ADD)
 
     def test_sss_material_aborts_imprint_before_clicking_material(self):
         m = machine()
@@ -487,25 +525,33 @@ class RunnerFlowTests(unittest.TestCase):
         )
         self.assertEqual(10, runner._action_retry_seconds("next_card_test"))
 
+    def test_material_click_retry_window_is_short(self):
+        runner = HeroSynthRunner(
+            HeroSynthStateMachine(build_hero_templates(TEMPLATES)),
+            Runtime(lambda: None, lambda *_: None),
+            sleep=lambda _: None,
+        )
+        self.assertEqual(5, runner._action_retry_seconds("add_material_0_2"))
+
     def test_multi_card_sequence_completes_one_simulator_cycle(self):
         sequence = [
-            "list_reddot",          # 首次进列表 → 打开筛选
-            "filter_open",          # 三星已选 → 关闭筛选
-            "list_no_reddot",       # 普通卡 → 跳过
-            "list_grey_3s",         # SSS 卡 → 跳过
-            "list_reddot",          # 非 SSS 红点卡 → 进入刻印
-            "imprint_up_cards_no_sss",     # 加材料1
-            "imprint_up_one_card_no_sss",  # 加材料2
-            "imprint_added",        # 材料就位 → 开始合成
-            "synth_confirm",        # 确认合成
-            "imprint_result_popup", # 关闭结果覆盖层
-            "imprint_after_synth",  # 返回英雄列表
-            "list_end_of_cards",    # 无更多卡 → 完成一轮
+            fixture("list_reddot"),          # 首次进列表 → 打开筛选
+            fixture("filter_open"),          # 三星已选 → 关闭筛选
+            fixture("list_no_reddot"),       # 普通卡 → 跳过
+            fixture("list_grey_3s"),         # SSS 卡 → 跳过
+            fixture("list_reddot"),          # 非 SSS 红点卡 → 进入刻印
+            fixture("imprint_up_cards_no_sss"),  # 加材料1
+            imprint_one_remaining_after_add(),    # 已入槽1张，还剩1张Up
+            fixture("imprint_added"),        # 材料就位 → 开始合成
+            fixture("synth_confirm"),        # 确认合成
+            fixture("imprint_result_popup"), # 关闭结果覆盖层
+            fixture("imprint_after_synth"),  # 返回英雄列表
+            fixture("list_end_of_cards"),    # 无更多卡 → 完成一轮
         ]
         screens = iter(
-            fixture(name)
-            for name in sequence
-            for _ in range(4 if name in {"imprint_added", "list_end_of_cards"} else 2)
+            screen
+            for index, screen in enumerate(sequence)
+            for _ in range(4 if index in {7, 11} else 2)
         )
         clicks: list[tuple[int, int]] = []
         logs: list[str] = []
@@ -534,8 +580,8 @@ class RunnerFlowTests(unittest.TestCase):
         self.assertEqual(
             [
                 "open_imprint",
-                "add_material_2",
-                "add_material_1",
+                "add_material_0_2",
+                "add_material_1_1",
                 "start_synthesis",
                 "confirm_synthesis",
                 "close_imprint_result",
@@ -546,21 +592,21 @@ class RunnerFlowTests(unittest.TestCase):
 
     def test_full_synthesis_flow(self):
         sequence = [
-            "list_reddot",       # 首次进列表 → 打开筛选
-            "filter_open",       # 3星已选 → 关闭筛选（验证完成）
-            "list_reddot",       # 红点 → 打开刻印
-            "imprint_up_cards_no_sss",  # 加材料1（两张Up）
-            "imprint_up_one_card_no_sss",  # 加材料2（剩一张Up）
-            "imprint_added",     # 无Up → 点绿色合成
-            "synth_confirm",     # 确认弹窗
-            "imprint_result_popup",  # 关闭合成结果覆盖层
-            "imprint_after_synth",  # 返回列表
-            "list_end_of_cards",  # 无更多卡 → 完成一轮
+            fixture("list_reddot"),       # 首次进列表 → 打开筛选
+            fixture("filter_open"),       # 3星已选 → 关闭筛选（验证完成）
+            fixture("list_reddot"),       # 红点 → 打开刻印
+            fixture("imprint_up_cards_no_sss"),  # 加材料1（两张Up）
+            imprint_one_remaining_after_add(),    # 已入槽1张，还剩1张Up
+            fixture("imprint_added"),     # 无Up → 点绿色合成
+            fixture("synth_confirm"),     # 确认弹窗
+            fixture("imprint_result_popup"),  # 关闭合成结果覆盖层
+            fixture("imprint_after_synth"),  # 返回列表
+            fixture("list_end_of_cards"),  # 无更多卡 → 完成一轮
         ]
         screens = iter(
-            fixture(name)
-            for name in sequence
-            for _ in range(4 if name in {"imprint_added", "list_end_of_cards"} else 2)
+            screen
+            for index, screen in enumerate(sequence)
+            for _ in range(4 if index in {5, 9} else 2)
         )
         clicks: list[tuple[int, int]] = []
         logs: list[str] = []
@@ -585,8 +631,8 @@ class RunnerFlowTests(unittest.TestCase):
                 "open_filter",
                 "close_filter",
                 "open_imprint",
-                "add_material_2",
-                "add_material_1",
+                "add_material_0_2",
+                "add_material_1_1",
                 "start_synthesis",
                 "confirm_synthesis",
                 "close_imprint_result",
