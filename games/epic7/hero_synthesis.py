@@ -268,6 +268,8 @@ class HeroSynthStateMachine:
         self._list_end_fingerprint: Optional[str] = None
 
     def _confirm_page(self, label: str) -> None:
+        if self.templates.pc_client:
+            return
         self._confirmed_page = label
 
     def _mask_dot(self, template: np.ndarray) -> np.ndarray:
@@ -732,7 +734,9 @@ class HeroSynthStateMachine:
             FilterObservation.FILTER_OPEN_STAR3_SELECTED: "筛选面板（三星已选中）",
             FilterObservation.FILTER_OPEN_STAR3_UNSELECTED: "筛选面板（三星未选中）",
         }
-        self._confirmed_page = labels.get(observation, "")
+        label = labels.get(observation)
+        if label is not None:
+            self._confirm_page(label)
 
         if observation is FilterObservation.FILTER_OPEN_STAR3_UNSELECTED:
             self.state = HeroSynthState.FILTER
