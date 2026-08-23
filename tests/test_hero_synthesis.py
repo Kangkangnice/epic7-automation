@@ -87,6 +87,24 @@ class TemplateTests(unittest.TestCase):
         self.assertGreaterEqual(machine_value._RATING_SSS_MIN, 0.90)
         self.assertEqual(0.80, machine_value._SSS_MATERIAL_MIN)
 
+    def test_filter_templates_are_tight_control_only_crops(self):
+        templates = build_hero_templates(TEMPLATES)
+        self.assertEqual((48, 90), templates.filter_attribute_label.shape[:2])
+        self.assertEqual((72, 76), templates.filter_star3_selected.shape[:2])
+        self.assertEqual((72, 76), templates.filter_star3_unselected.shape[:2])
+
+    def test_selected_and_unselected_templates_do_not_cross_match(self):
+        m = machine()
+        selected = fixture("filter_open")
+        unselected = fixture("filter_open_star3_unselected")
+
+        self.assertIsNotNone(m._locate(selected, "filter_star3_selected", 0.90))
+        self.assertIsNone(m._locate(selected, "filter_star3_unselected", 0.90))
+        self.assertIsNotNone(
+            m._locate(unselected, "filter_star3_unselected", 0.90)
+        )
+        self.assertIsNone(m._locate(unselected, "filter_star3_selected", 0.90))
+
 
 class HeroListDecisionTests(unittest.TestCase):
     def test_red_dot_zone_matches_tight_user_marked_region(self):

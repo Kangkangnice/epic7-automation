@@ -91,6 +91,8 @@ class HeroTemplates:
     auto_select_label: np.ndarray
     story_back: np.ndarray
     rating_sss: np.ndarray
+    filter_attribute_label: Optional[np.ndarray] = None
+    filter_star3_unselected: Optional[np.ndarray] = None
     sss_material: Optional[np.ndarray] = None
     imprint_result_title: Optional[np.ndarray] = None
     imprint_result_close: Optional[np.ndarray] = None
@@ -106,6 +108,8 @@ def build_hero_templates(template_root: Path) -> HeroTemplates:
     result_title = hero / "imprint_result_title.png"
     result_close = hero / "imprint_result_close.png"
     sss_material = hero / "sss_material.png"
+    filter_attribute = hero / "filter_attribute_label.png"
+    filter_star3_unselected = hero / "filter_star3_unselected.png"
     return HeroTemplates(
         filter_button=load_template(str(hero / "filter_button.png")),
         filter_level_label=load_template(str(hero / "filter_level_label.png")),
@@ -115,6 +119,16 @@ def build_hero_templates(template_root: Path) -> HeroTemplates:
         auto_select_label=load_template(str(hero / "auto_select_label.png")),
         story_back=load_template(str(navigation / "story_back.png")),
         rating_sss=load_template(str(hero / "rating_sss.png")),
+        filter_attribute_label=(
+            load_template(str(filter_attribute))
+            if not is_pc and filter_attribute.exists()
+            else None
+        ),
+        filter_star3_unselected=(
+            load_template(str(filter_star3_unselected))
+            if not is_pc and filter_star3_unselected.exists()
+            else None
+        ),
         sss_material=(load_template(str(sss_material)) if sss_material.exists() else None),
         imprint_result_title=(load_template(str(result_title)) if result_title.exists() else None),
         imprint_result_close=(load_template(str(result_close)) if result_close.exists() else None),
@@ -131,7 +145,9 @@ class HeroSynthStateMachine:
     _REGIONS = {
         "filter_button": (1450, 160, 200, 60),
         "filter_level_label": (600, 500, 200, 120),
+        "filter_attribute_label": (630, 250, 220, 90),
         "filter_star3_selected": (1050, 590, 180, 90),
+        "filter_star3_unselected": (1050, 590, 180, 90),
         "auto_select_label": (780, 990, 260, 100),
         "story_back": (0, 40, 120, 160),
     }
