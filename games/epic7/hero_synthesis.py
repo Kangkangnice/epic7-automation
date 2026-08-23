@@ -147,7 +147,8 @@ class HeroSynthStateMachine:
     # 评级字符 SSS 在左侧详情面板的中部位置（参考坐标）
     _RATING_REGION = (130, 435, 180, 130)
     _RATING_SSS_MIN = 0.90  # 紧裁剪 SSS 模板：避免把 SS 误判为 SSS
-    _REDDOT_ZONE = (1030, 935, 50, 50)  # 刻印按钮左上角红点角标区（不与觉醒按钮重叠）
+    _REDDOT_ZONE = (1030, 942, 32, 35)  # 模拟器按用户标框收紧的刻印按钮红点区
+    _PC_REDDOT_ZONE = (1030, 935, 50, 50)  # PC 保留原红点区
     _MATERIAL_SSS_REGION = (1750, 350, 230, 650)
     _CARD_BELOW_ZONE = (1450, 537, 520, 83)
     _UP_STRIP_ZONE = (1880, 380, 50, 620)
@@ -201,6 +202,9 @@ class HeroSynthStateMachine:
         self.prev_card_grey = False
         self._button_tl = self._PC_BUTTON_TL if templates.pc_client else self._BUTTON_TL
         self._dot_mask = self._PC_DOT_MASK if templates.pc_client else self._DOT_MASK
+        self._reddot_zone = (
+            self._PC_REDDOT_ZONE if templates.pc_client else self._REDDOT_ZONE
+        )
         grey_template = (
             templates.imprint_normal
             if templates.assume_non_max_rating
@@ -361,25 +365,42 @@ class HeroSynthStateMachine:
 
     def _red_dot_present(self, screen: np.ndarray) -> bool:
         # 红点角标实际是橙红色（H 0~25 或 H 170~180），不是纯红
+        zone = self._reddot_zone
+        zx, zy, zw, zh = zone
+
+        def is_centered_dot(blob: tuple[int, int, int, int]) -> bool:
+            x, y, w, h = blob
+            local_x, local_y = x - zx, y - zy
+            return (
+                10 <= w <= 28
+                and 10 <= h <= 28
+                and 3 <= local_x
+                and local_x + w <= zw - 3
+                and 3 <= local_y
+                and local_y + h <= zh - 3
+            )
+
         blobs = self._blobs(
             screen,
-            self._REDDOT_ZONE,
+            zone,
             (0, 80, 100),
             (25, 255, 255),
-            min_area=20,
+            min_area=20 if self.templates.pc_client else 100,
             max_area=1200,
             morph=3,
         )
         extra = self._blobs(
             screen,
-            self._REDDOT_ZONE,
+            zone,
             (165, 80, 100),
             (180, 255, 255),
-            min_area=20,
+            min_area=20 if self.templates.pc_client else 100,
             max_area=1200,
             morph=3,
         )
-        return bool(blobs or extra)
+        if self.templates.pc_client:
+            return bool(blobs or extra)
+        return any(is_centered_dot(blob) for blob in (*blobs, *extra))
 
     def _sss_material_present(self, screen: np.ndarray) -> bool:
         if self.templates.pc_client or self.templates.sss_material is None:

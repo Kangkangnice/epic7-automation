@@ -76,6 +76,18 @@ class TemplateTests(unittest.TestCase):
 
 
 class HeroListDecisionTests(unittest.TestCase):
+    def test_red_dot_zone_matches_tight_user_marked_region(self):
+        m = machine()
+        self.assertEqual((1030, 942, 32, 35), m._REDDOT_ZONE)
+
+    def test_red_dot_ignores_unrelated_orange_pixels_in_navigation_screens(self):
+        m = machine()
+        for name in ("lobby", "story_stage"):
+            screen = cv2.cvtColor(
+                cv2.imread(str(NAV_FIXTURES / f"{name}.png")), cv2.COLOR_BGR2RGB
+            )
+            self.assertFalse(m._red_dot_present(screen), name)
+
     def test_list_first_visit_opens_filter(self):
         m = machine()
         action = m.next_action(fixture("list_reddot"))
