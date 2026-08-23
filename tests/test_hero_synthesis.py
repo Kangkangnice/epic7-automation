@@ -207,6 +207,64 @@ class FilterObservationTests(unittest.TestCase):
         self.assertEqual(expected, actual)
 
 
+class HeroPageEvidenceTests(unittest.TestCase):
+    def test_imprint_material_page_sets_confirmed_page(self):
+        m = machine(verify_filter=True)
+        m.state = HeroSynthState.IMPRINT_ADD
+
+        m.next_action(fixture("imprint_up_cards_no_sss"))
+
+        self.assertEqual("刻印加材料", m._confirmed_page)
+
+    def test_synthesis_confirm_sets_confirmed_page(self):
+        m = machine(verify_filter=True)
+        m.state = HeroSynthState.IMPRINT_ADD
+
+        m.next_action(fixture("synth_confirm"))
+
+        self.assertEqual("合成确认", m._confirmed_page)
+
+    def test_imprint_result_sets_confirmed_page(self):
+        m = machine(verify_filter=True)
+
+        m.next_action(fixture("imprint_result_popup"))
+
+        self.assertEqual("合成结果", m._confirmed_page)
+
+    def test_transmit_pages_set_confirmed_page(self):
+        m = machine(verify_filter=True)
+        m.state = HeroSynthState.TRANSMIT_SELECT
+
+        m.next_action(fixture("transmit_select"))
+        self.assertEqual("传送选择", m._confirmed_page)
+
+        m.next_action(fixture("transmit_confirm"))
+        self.assertEqual("传送确认", m._confirmed_page)
+
+        m.next_action(fixture("reward_popup"))
+        self.assertEqual("传送奖励", m._confirmed_page)
+
+    def test_sss_material_page_takes_precedence(self):
+        m = machine(verify_filter=True)
+        m.state = HeroSynthState.IMPRINT_ADD
+
+        m.next_action(fixture("imprint_sss_material"))
+
+        self.assertEqual("刻印SSS材料", m._confirmed_page)
+
+    def test_partial_imprint_page_does_not_set_confirmed_page(self):
+        m = machine(verify_filter=True)
+        m.state = HeroSynthState.IMPRINT_ADD
+        m._confirmed_page = "筛选面板（三星已选中）"
+        screen = fixture("imprint_up_cards_no_sss").copy()
+        x, y, w, h = m._IMPRINT_SLOT_ZONES[0]
+        screen[y : y + h, x : x + w] = 0
+
+        m.next_action(screen)
+
+        self.assertEqual("筛选面板（三星已选中）", m._confirmed_page)
+
+
 class HeroListDecisionTests(unittest.TestCase):
     def test_red_dot_zone_matches_tight_user_marked_region(self):
         m = machine()
