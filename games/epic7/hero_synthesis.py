@@ -838,11 +838,19 @@ class HeroSynthStateMachine:
         dot = "D" if self._red_dot_present(screen) else "N"
         fp = self._detail_fingerprint(screen)
         sig = f"{rating}{dot}{fp}"
+        skip_reason = (
+            "当前英雄为SSS，跳过"
+            if rating == "S"
+            else "当前英雄非SSS但刻印按钮无红点，跳过"
+        )
         return HeroAction(
             f"next_card_{sig}",
             self._scaled_point(
                 screen, self._point(self._NEXT_CARD_POINT, self._PC_NEXT_CARD_POINT)
             ),
+            source_page="英雄列表",
+            target_pages=("英雄列表",),
+            reason=f"{skip_reason}，详情指纹={fp}，等待下一英雄或列表末尾",
         )
 
     # ---- 主决策 ----
@@ -939,6 +947,11 @@ class HeroSynthStateMachine:
 
         # 6. 刻印界面（绿色刻印按钮与完整材料槽共同作为页面证据）
         if self._green_button_present(screen) and self._imprint_slots_present(screen):
+            if (
+                not self.templates.pc_client
+                and self.state is HeroSynthState.HERO_LIST
+            ):
+                self.state = HeroSynthState.IMPRINT_ADD
             if self._sss_material_present(screen):
                 self._confirm_page("刻印SSS材料")
             else:
@@ -1093,9 +1106,16 @@ class HeroSynthStateMachine:
                 return self._advance_or_finish(screen)
             if self._red_dot_present(screen):
                 self.prev_card_grey = False
-                self.state = HeroSynthState.IMPRINT_ADD
+                if self.templates.pc_client:
+                    self.state = HeroSynthState.IMPRINT_ADD
                 self._imprint_empty_observations = 0
-                return HeroAction("open_imprint", best.center)
+                return HeroAction(
+                    "open_imprint",
+                    best.center,
+                    source_page="英雄列表",
+                    target_pages=("刻印加材料", "刻印SSS材料"),
+                    reason="当前英雄非SSS且刻印按钮红点存在",
+                )
             self.prev_card_grey = False
             return self._advance_or_finish(screen)
 
@@ -1114,7 +1134,8 @@ class HeroSynthStateMachine:
                 self.prev_card_grey = True
                 return self._advance_or_finish(screen)
             self.prev_card_grey = False
-            self.state = HeroSynthState.IMPRINT_ADD
+            if self.templates.pc_client:
+                self.state = HeroSynthState.IMPRINT_ADD
             self._imprint_empty_observations = 0
             return HeroAction(
                 "open_imprint",
@@ -1124,6 +1145,9 @@ class HeroSynthStateMachine:
                         self._IMPRINT_BUTTON_POINT, self._PC_IMPRINT_BUTTON_POINT
                     ),
                 ),
+                source_page="英雄列表",
+                target_pages=("刻印加材料", "刻印SSS材料"),
+                reason="当前英雄非SSS且刻印按钮红点存在",
             )
         raise UnrecognizedScreen(
             f"英雄合成画面[{state_label(self.state)}]未识别"

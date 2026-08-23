@@ -318,7 +318,7 @@ class HeroListDecisionTests(unittest.TestCase):
         self.assertEqual("open_imprint", action.name)
         self.assertLess(abs(action.point[0] - 1098), 8)
         self.assertLess(abs(action.point[1] - 995), 8)
-        self.assertIs(m.state, HeroSynthState.IMPRINT_ADD)
+        self.assertIs(m.state, HeroSynthState.HERO_LIST)
 
     def test_list_no_reddot_advances(self):
         m = machine(verify_filter=True)
@@ -359,7 +359,7 @@ class HeroListDecisionTests(unittest.TestCase):
         m = machine(verify_filter=True)
         action = settled_next(m, fixture("list_reddot"))
         self.assertEqual("open_imprint", action.name)
-        self.assertIs(m.state, HeroSynthState.IMPRINT_ADD)
+        self.assertIs(m.state, HeroSynthState.HERO_LIST)
 
     def test_list_max_rating_with_reddot_still_skips(self):
         """满级 SSS + 红点（兄弟副本）也必须跳过，浪费材料。"""
@@ -377,6 +377,88 @@ class HeroListDecisionTests(unittest.TestCase):
         self.assertIsNone(m.next_action(fixture("list_end_of_cards")))
         self.assertEqual(1, m.completed_cycles)
         self.assertFalse(m.filter_verified)
+
+
+class HeroListTransitionTests(unittest.TestCase):
+    def test_open_imprint_retries_while_hero_list_remains(self):
+        m = machine(verify_filter=True)
+
+        first = m.next_action(fixture("list_reddot"))
+        second = m.next_action(fixture("list_reddot"))
+
+        self.assertIsNotNone(second)
+        self.assertEqual("open_imprint", first.name)
+        self.assertEqual("open_imprint", second.name)
+        for action in (first, second):
+            self.assertEqual("英雄列表", action.source_page)
+            self.assertIn("刻印加材料", action.target_pages)
+            self.assertIn("刻印SSS材料", action.target_pages)
+            self.assertIn("当前英雄非SSS", action.reason)
+            self.assertIn("红点存在", action.reason)
+        self.assertIs(m.state, HeroSynthState.HERO_LIST)
+        self.assertEqual("英雄列表", m._confirmed_page)
+
+    def test_fallback_open_imprint_has_transition_metadata(self):
+        m = machine(verify_filter=True)
+
+        with patch.object(m, "_locate_button", return_value=None):
+            action = m.next_action(fixture("list_reddot"))
+
+        self.assertEqual("open_imprint", action.name)
+        self.assertEqual("英雄列表", action.source_page)
+        self.assertEqual(("刻印加材料", "刻印SSS材料"), action.target_pages)
+        self.assertIn("当前英雄非SSS", action.reason)
+        self.assertIn("红点存在", action.reason)
+
+    def test_open_imprint_commits_only_after_complete_imprint_page_appears(self):
+        m = machine(verify_filter=True)
+        m.next_action(fixture("list_reddot"))
+        self.assertIs(m.state, HeroSynthState.HERO_LIST)
+
+        action = m.next_action(fixture("imprint_up_cards_no_sss"))
+
+        self.assertTrue(action.name.startswith("add_material_"))
+        self.assertIs(m.state, HeroSynthState.IMPRINT_ADD)
+        self.assertEqual("刻印加材料", m._confirmed_page)
+
+    def test_immediate_sss_imprint_page_is_recognized_before_material_action(self):
+        m = machine(verify_filter=True)
+        m.next_action(fixture("list_reddot"))
+        self.assertIs(m.state, HeroSynthState.HERO_LIST)
+
+        action = m.next_action(fixture("imprint_sss_material"))
+
+        self.assertEqual("刻印SSS材料", m._confirmed_page)
+        self.assertFalse(action.name.startswith("add_material_"))
+        self.assertEqual("abort_imprint_to_transmit", action.name)
+
+    def test_next_card_actions_explain_each_skip_with_detail_fingerprint(self):
+        cases = (
+            ("list_no_reddot", "无红点"),
+            ("list_grey_3s", "SSS"),
+        )
+        for fixture_name, skip_reason in cases:
+            with self.subTest(fixture_name=fixture_name):
+                m = machine(verify_filter=True)
+                screen = fixture(fixture_name)
+                fingerprint = m._detail_fingerprint(screen)
+
+                action = settled_next(m, screen)
+
+                self.assertTrue(action.name.startswith("next_card_"))
+                self.assertEqual("英雄列表", action.source_page)
+                self.assertEqual(("英雄列表",), action.target_pages)
+                self.assertIn(fingerprint, action.reason)
+                self.assertIn(skip_reason, action.reason)
+
+    def test_end_of_list_still_requires_two_stable_observations(self):
+        m = machine(verify_filter=True)
+        screen = fixture("list_end_of_cards")
+
+        self.assertIsNone(m.next_action(screen))
+        self.assertEqual(0, m.completed_cycles)
+        self.assertIsNone(m.next_action(screen))
+        self.assertEqual(1, m.completed_cycles)
 
 
 class FilterDecisionTests(unittest.TestCase):
