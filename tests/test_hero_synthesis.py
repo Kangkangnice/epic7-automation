@@ -65,6 +65,14 @@ def imprint_one_remaining_after_add():
     return screen
 
 
+def sss_only_material_page():
+    """从 SSS 材料实拍页移除普通材料的 Up! 标记，模拟只剩 SSS 材料。"""
+    screen = fixture("imprint_sss_material").copy()
+    x, y, w, h = HeroSynthStateMachine._UP_BADGE_ZONE
+    screen[y + 140 : y + 230, x : x + w] = 0
+    return screen
+
+
 class FakeClock:
     def __init__(self):
         self.value = 0.0
@@ -250,7 +258,7 @@ class HeroPageEvidenceTests(unittest.TestCase):
         m = machine(verify_filter=True)
         m.state = HeroSynthState.IMPRINT_ADD
 
-        m.next_action(fixture("imprint_sss_material"))
+        m.next_action(sss_only_material_page())
 
         self.assertEqual("刻印SSS材料", m._confirmed_page)
 
@@ -445,11 +453,22 @@ class HeroListTransitionTests(unittest.TestCase):
         m.next_action(fixture("list_reddot"))
         self.assertIs(m.state, HeroSynthState.HERO_LIST)
 
-        action = m.next_action(fixture("imprint_sss_material"))
+        action = m.next_action(sss_only_material_page())
 
         self.assertEqual("刻印SSS材料", m._confirmed_page)
         self.assertFalse(action.name.startswith("add_material_"))
         self.assertEqual("abort_imprint_to_transmit", action.name)
+
+    def test_normal_material_is_selected_before_sss_material(self):
+        """同屏有普通 Up 材料和 SSS 材料时，只允许点击普通材料。"""
+        m = machine()
+        m.state = HeroSynthState.IMPRINT_ADD
+
+        action = m.next_action(fixture("imprint_up_cards"))
+
+        self.assertTrue(action.name.startswith("add_material_"))
+        self.assertLess(abs(action.point[1] - 550), 15)
+        self.assertEqual("刻印加材料", m._confirmed_page)
 
     def test_complete_imprint_page_matches_sss_material_once(self):
         m = machine(verify_filter=True)
@@ -458,7 +477,7 @@ class HeroListTransitionTests(unittest.TestCase):
         with patch.object(
             m, "_sss_material_present", wraps=m._sss_material_present
         ) as sss_material_present:
-            action = m.next_action(fixture("imprint_sss_material"))
+            action = m.next_action(sss_only_material_page())
 
         self.assertEqual("abort_imprint_to_transmit", action.name)
         self.assertEqual(1, sss_material_present.call_count)
@@ -617,7 +636,7 @@ class ImprintDecisionTests(unittest.TestCase):
     def test_sss_material_aborts_imprint_before_clicking_material(self):
         m = machine()
         m.state = HeroSynthState.IMPRINT_ADD
-        action = m.next_action(fixture("imprint_sss_material"))
+        action = m.next_action(sss_only_material_page())
         self.assertEqual("abort_imprint_to_transmit", action.name)
 
     def test_sss_material_warning_is_closed_before_resuming_imprint(self):
@@ -643,7 +662,7 @@ class ImprintDecisionTests(unittest.TestCase):
     def test_sss_material_branch_enters_existing_transmit_flow(self):
         m = machine()
         m.state = HeroSynthState.IMPRINT_ADD
-        m.next_action(fixture("imprint_sss_material"))
+        m.next_action(sss_only_material_page())
         self.assertTrue(m.pending_transmit_target)
         self.assertIs(m.state, HeroSynthState.IMPRINT_ABORTING)
         self.assertIsNone(m.next_action(fixture("imprint_up_cards_no_sss")))
@@ -657,7 +676,7 @@ class ImprintDecisionTests(unittest.TestCase):
     def test_preview_restores_pending_transmit_context(self):
         m = machine()
         m.state = HeroSynthState.IMPRINT_ADD
-        action, _ = m.preview(fixture("imprint_sss_material"))
+        action, _ = m.preview(sss_only_material_page())
         self.assertEqual("abort_imprint_to_transmit", action.name)
         self.assertIs(m.state, HeroSynthState.IMPRINT_ADD)
         self.assertFalse(m.pending_transmit_target)
