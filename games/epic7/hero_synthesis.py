@@ -500,7 +500,10 @@ class HeroSynthStateMachine:
     def _detail_fingerprint(self, screen: np.ndarray) -> str:
         """左侧详情面板的稳定视觉指纹，用于区分连续翻到的英雄。"""
         gray = self._zone_gray(screen, self._DETAIL_FP_ZONE)
-        small = cv2.resize(gray, (12, 8), interpolation=cv2.INTER_AREA)
+        # 详情立绘存在轻微动态，直接对缩小后的原始像素做哈希会导致
+        # 同一张卡每帧得到不同指纹，Runner 因而永远无法确认 next_card 稳定。
+        gray = cv2.GaussianBlur(gray, (11, 11), 0)
+        small = cv2.resize(gray, (5, 3), interpolation=cv2.INTER_AREA)
         quantized = (small // 32).astype(np.uint8)
         return hashlib.sha1(quantized.tobytes()).hexdigest()[:8]
 
