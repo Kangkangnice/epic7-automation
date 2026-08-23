@@ -848,9 +848,13 @@ class HeroSynthStateMachine:
             self._scaled_point(
                 screen, self._point(self._NEXT_CARD_POINT, self._PC_NEXT_CARD_POINT)
             ),
-            source_page="英雄列表",
-            target_pages=("英雄列表",),
-            reason=f"{skip_reason}，详情指纹={fp}，等待下一英雄或列表末尾",
+            source_page="" if self.templates.pc_client else "英雄列表",
+            target_pages=() if self.templates.pc_client else ("英雄列表",),
+            reason=(
+                ""
+                if self.templates.pc_client
+                else f"{skip_reason}，详情指纹={fp}，等待下一英雄或列表末尾"
+            ),
         )
 
     # ---- 主决策 ----
@@ -946,7 +950,11 @@ class HeroSynthStateMachine:
             raise UnrecognizedScreen("合成结果覆盖层未完整识别，禁止点击底层返回")
 
         # 6. 刻印界面（绿色刻印按钮与完整材料槽共同作为页面证据）
-        if self._green_button_present(screen) and self._imprint_slots_present(screen):
+        green_button_present = self._green_button_present(screen)
+        complete_imprint_page = (
+            green_button_present and self._imprint_slots_present(screen)
+        )
+        if complete_imprint_page:
             if (
                 not self.templates.pc_client
                 and self.state is HeroSynthState.HERO_LIST
@@ -957,7 +965,11 @@ class HeroSynthStateMachine:
             else:
                 self._confirm_page("刻印加材料")
 
-        if self.state is HeroSynthState.IMPRINT_ADD and self._sss_material_present(screen):
+        if (
+            self.state is HeroSynthState.IMPRINT_ADD
+            and complete_imprint_page
+            and self._sss_material_present(screen)
+        ):
             self._imprint_empty_observations = 0
             self.pending_transmit_target = True
             back = self._back_action(screen)
@@ -965,13 +977,18 @@ class HeroSynthStateMachine:
                 raise UnrecognizedScreen("发现 SSS 材料但刻印页面缺少返回箭头")
             self.state = HeroSynthState.IMPRINT_ABORTING
             return HeroAction("abort_imprint_to_transmit", back.point)
-        if self.state is HeroSynthState.IMPRINT_ADD and (
-            not self._green_button_present(screen)
-            or not self._imprint_slots_present(screen)
-        ):
+        if self.state is HeroSynthState.IMPRINT_ADD and not complete_imprint_page:
             self._imprint_empty_observations = 0
             return None
-        if self._green_button_present(screen):
+        if (
+            not self.templates.pc_client
+            and green_button_present
+            and not complete_imprint_page
+        ):
+            return None
+        if green_button_present and (
+            self.templates.pc_client or complete_imprint_page
+        ):
             filled_slots = self._imprint_filled_slot_count(screen)
             up = self._find_up_card(screen)
             if up is not None:
@@ -1112,9 +1129,17 @@ class HeroSynthStateMachine:
                 return HeroAction(
                     "open_imprint",
                     best.center,
-                    source_page="英雄列表",
-                    target_pages=("刻印加材料", "刻印SSS材料"),
-                    reason="当前英雄非SSS且刻印按钮红点存在",
+                    source_page="" if self.templates.pc_client else "英雄列表",
+                    target_pages=(
+                        ()
+                        if self.templates.pc_client
+                        else ("刻印加材料", "刻印SSS材料")
+                    ),
+                    reason=(
+                        ""
+                        if self.templates.pc_client
+                        else "当前英雄非SSS且刻印按钮红点存在"
+                    ),
                 )
             self.prev_card_grey = False
             return self._advance_or_finish(screen)
@@ -1145,9 +1170,17 @@ class HeroSynthStateMachine:
                         self._IMPRINT_BUTTON_POINT, self._PC_IMPRINT_BUTTON_POINT
                     ),
                 ),
-                source_page="英雄列表",
-                target_pages=("刻印加材料", "刻印SSS材料"),
-                reason="当前英雄非SSS且刻印按钮红点存在",
+                source_page="" if self.templates.pc_client else "英雄列表",
+                target_pages=(
+                    ()
+                    if self.templates.pc_client
+                    else ("刻印加材料", "刻印SSS材料")
+                ),
+                reason=(
+                    ""
+                    if self.templates.pc_client
+                    else "当前英雄非SSS且刻印按钮红点存在"
+                ),
             )
         raise UnrecognizedScreen(
             f"英雄合成画面[{state_label(self.state)}]未识别"
