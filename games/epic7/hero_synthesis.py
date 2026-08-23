@@ -28,22 +28,26 @@ class HeroSynthState(Enum):
     HERO_LIST = "hero_list"
     FILTER = "filter"
     IMPRINT_ADD = "imprint_add"
+    IMPRINT_ABORTING = "imprint_aborting"
     IMPRINT_CONFIRM = "imprint_confirm"
     IMPRINT_REWARD = "imprint_reward"
     TRANSMIT_SELECT = "transmit_select"
     TRANSMIT_CONFIRM = "transmit_confirm"
     TRANSMIT_REWARD = "transmit_reward"
+    TRANSMIT_RETURNING = "transmit_returning"
 
 
 STATE_LABELS = {
     HeroSynthState.HERO_LIST: "英雄列表",
     HeroSynthState.FILTER: "筛选面板",
     HeroSynthState.IMPRINT_ADD: "刻印加材料",
+    HeroSynthState.IMPRINT_ABORTING: "中止刻印等待返回",
     HeroSynthState.IMPRINT_CONFIRM: "合成确认",
     HeroSynthState.IMPRINT_REWARD: "合成结果",
     HeroSynthState.TRANSMIT_SELECT: "传送选择",
     HeroSynthState.TRANSMIT_CONFIRM: "传送确认",
     HeroSynthState.TRANSMIT_REWARD: "传送奖励",
+    HeroSynthState.TRANSMIT_RETURNING: "传送后返回列表",
 }
 
 
@@ -183,6 +187,7 @@ class HeroSynthStateMachine:
     _CARD_BELOW_BRIGHT_MIN = 2000
     _REWARD_STRIP_RANGE = (300, 1500)
     _SSS_MATERIAL_MIN = 0.80  # 材料卡保留少量背景，阈值略低于评级模板
+    _TRANSMIT_HIGHLIGHT_ZONE = (1600, 200, 380, 800)
 
     def __init__(
         self,
@@ -488,8 +493,8 @@ class HeroSynthStateMachine:
         return int((gray > 120).sum()) > 5000
 
     def _transmit_target_card(self, screen: np.ndarray) -> Optional[tuple[int, int, str]]:
-        """传送选择界面：蓝色高亮竖条定位当前卡（行段 100-350px）。"""
-        hsv = self._zone_hsv(screen, self._TRANSMIT_STRIP_ZONE)
+        """传送选择界面：在卡片右侧的蓝色高亮行内定位当前卡。"""
+        hsv = self._zone_hsv(screen, self._TRANSMIT_HIGHLIGHT_ZONE)
         mask = cv2.inRange(hsv, (95, 120, 140), (125, 255, 255))
         rows = mask.sum(axis=1)
         segs, in_seg = [], False
@@ -497,14 +502,51 @@ class HeroSynthStateMachine:
             if v > 60 and not in_seg:
                 start, in_seg = i, True
             elif v <= 60 and in_seg:
-                if 100 <= i - start <= 350:
+                if 50 <= i - start <= 350:
                     segs.append((start, i))
                 in_seg = False
+        if in_seg and 50 <= len(rows) - start <= 350:
+            segs.append((start, len(rows)))
         if not segs:
             return None
-        start, end = segs[0]
-        y = self._TRANSMIT_STRIP_ZONE[1] + (start + end) // 2
+        start, end = max(segs, key=lambda segment: segment[1] - segment[0])
+        y = self._TRANSMIT_HIGHLIGHT_ZONE[1] + (start + end) // 2
         return (self._TRANSMIT_CARD_X, y, str(y))
+
+    def _transmit_target_is_sss(
+        self, screen: np.ndarray, card: tuple[int, int, str]
+    ) -> bool:
+        """只检查当前高亮行，禁止把其它列表卡片的 SSS 当成目标。"""
+        if self.templates.pc_client or self.templates.sss_material is None:
+            return False
+        _, y, _ = card
+        region = (1500, max(200, y - 70), 480, 140)
+        return (
+            self._locate(
+                screen,
+                "sss_material",
+                self._SSS_MATERIAL_MIN,
+                region_override=region,
+            )
+            is not None
+        )
+
+    def _hero_list_ready(self, screen: np.ndarray) -> bool:
+        """确认返回动画已结束，避免把刻印页过渡帧当成英雄列表。"""
+        struct_n = self._locate_button(screen, self._masked_normal, 0.0)
+        struct_g = (
+            None
+            if self.templates.assume_non_max_rating
+            else self._locate_button(screen, self._masked_grey, 0.0)
+        )
+        best = max(
+            (m for m in (struct_n, struct_g) if m is not None),
+            key=lambda m: m.score,
+            default=None,
+        )
+        return bool(
+            best is not None and best.score >= self._BUTTON_STRUCT_MIN
+        ) or self._is_max_rating(screen) or self._red_dot_present(screen)
 
     def _back_action(self, screen: np.ndarray) -> Optional[HeroAction]:
         back = self._locate(screen, "story_back", 0.90)
@@ -575,13 +617,43 @@ class HeroSynthStateMachine:
 
         # 3. 传送奖励弹窗（仅在传送流程中判定，防止列表误触）
         if self.state.value.startswith("transmit") and self._reward_strip_present(screen):
-            self.state = HeroSynthState.TRANSMIT_SELECT
+            self.state = HeroSynthState.TRANSMIT_RETURNING
             return HeroAction("close_reward", self._scaled_point(screen, self._REWARD_CLOSE_POINT))
 
-        # 4. 传送选择界面（自动选择标签为锚点，需先于绿钮判定）
+        # 4. 传送/刻印返回动画：只在确认列表已恢复后继续流程。
+        if self.state is HeroSynthState.IMPRINT_ABORTING:
+            if (
+                self._green_button_present(screen)
+                or self._sss_material_present(screen)
+                or self._find_up_card(screen) is not None
+            ):
+                return None
+            if not self._hero_list_ready(screen):
+                return None
+            self.state = HeroSynthState.HERO_LIST
+
+        if self.state is HeroSynthState.TRANSMIT_RETURNING:
+            if self._locate(screen, "auto_select_label", 0.85):
+                back = self._back_action(screen)
+                if back is not None:
+                    return back
+                return None
+            if not self._hero_list_ready(screen):
+                return None
+            self.pending_transmit_target = False
+            self.state = HeroSynthState.HERO_LIST
+
+        # 5. 传送选择界面（自动选择标签为锚点，需先于绿钮判定）
         if self._locate(screen, "auto_select_label", 0.85):
             self.pending_transmit_target = False
             self.state = HeroSynthState.TRANSMIT_SELECT
+            card = self._transmit_target_card(screen)
+            if card is not None and self._transmit_target_is_sss(screen, card):
+                back = self._back_action(screen)
+                if back is None:
+                    raise UnrecognizedScreen("传送高亮卡为 SSS 且缺少返回箭头")
+                self.state = HeroSynthState.TRANSMIT_RETURNING
+                return HeroAction("abort_transmit_sss_target", back.point)
             if (
                 self._transmit_green_present(screen)
                 and self._transmit_grid_filled(screen)
@@ -590,7 +662,6 @@ class HeroSynthStateMachine:
                 return HeroAction(
                     "start_transmit", self._scaled_point(screen, self._TRANSMIT_GREEN_POINT)
                 )
-            card = self._transmit_target_card(screen)
             if card is not None:
                 x, y, tag = card
                 return HeroAction(
@@ -610,13 +681,13 @@ class HeroSynthStateMachine:
         ):
             raise UnrecognizedScreen("合成结果覆盖层未完整识别，禁止点击底层返回")
 
-        # 5. 刻印界面（绿色刻印按钮为锚点）
+        # 6. 刻印界面（绿色刻印按钮为锚点）
         if self.state is HeroSynthState.IMPRINT_ADD and self._sss_material_present(screen):
             self.pending_transmit_target = True
             back = self._back_action(screen)
             if back is None:
                 raise UnrecognizedScreen("发现 SSS 材料但刻印页面缺少返回箭头")
-            self.state = HeroSynthState.HERO_LIST
+            self.state = HeroSynthState.IMPRINT_ABORTING
             return HeroAction("abort_imprint_to_transmit", back.point)
         if self._green_button_present(screen):
             up = self._find_up_card(screen)
@@ -640,7 +711,7 @@ class HeroSynthStateMachine:
             self.state = HeroSynthState.HERO_LIST
             return back
 
-        # 6. 筛选面板（级别标签为锚点）
+        # 7. 筛选面板（级别标签为锚点）
         # 一次性入场：close_filter 后置 _filter_session_done=True，
         # 之后无论模板是否误识别 filter_level_label，都不再进此分支。
         filter_level = self._locate(screen, "filter_level_label")
@@ -692,7 +763,7 @@ class HeroSynthStateMachine:
             self.filter_verified = False
             self.state = HeroSynthState.HERO_LIST
 
-        # 7. 英雄列表：评级是唯一决策依据（SSS 满级 → 跳过，否则看是否有红点）
+        # 8. 英雄列表：评级是唯一决策依据（SSS 满级 → 跳过，否则看是否有红点）
         # 上一版靠"按钮灰/蓝颜色"和"上一张是不是 SSS"的双保险推断都被颜色变种击穿；
         # 直接看左侧详情面板上的评级字符更稳。
         self.state = HeroSynthState.HERO_LIST
@@ -796,11 +867,13 @@ class HeroSynthRunner(ModeRunnerBase):
         HeroSynthState.HERO_LIST: 60,
         HeroSynthState.FILTER: 45,
         HeroSynthState.IMPRINT_ADD: 90,
+        HeroSynthState.IMPRINT_ABORTING: 45,
         HeroSynthState.IMPRINT_CONFIRM: 60,
         HeroSynthState.IMPRINT_REWARD: 45,
         HeroSynthState.TRANSMIT_SELECT: 60,
         HeroSynthState.TRANSMIT_CONFIRM: 45,
         HeroSynthState.TRANSMIT_REWARD: 45,
+        HeroSynthState.TRANSMIT_RETURNING: 45,
     }
     _SETTLE_AFTER_NAVIGATION_SECONDS = 3
 
@@ -869,6 +942,8 @@ class HeroSynthRunner(ModeRunnerBase):
             return "非满级 + 刻印按钮有红点 → 点刻印记忆按钮开始合成"
         if action_name == "abort_imprint_to_transmit":
             return "材料中发现 SSS → 中止合成，传送当前无等级副本"
+        if action_name == "abort_transmit_sss_target":
+            return "传送高亮卡检测为 SSS → 返回列表，禁止传送"
         if action_name == "open_transmit_for_current_card":
             return "当前副本待传送 → 打开传送英雄"
         if action_name.startswith("next_card"):

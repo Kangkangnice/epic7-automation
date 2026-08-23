@@ -6,7 +6,6 @@ from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 import cv2
-
 from auto_game_unified.core.matcher import Match
 from auto_game_unified.core.runtime import Runtime
 from auto_game_unified.games.epic7.hero_synthesis import (
@@ -182,6 +181,8 @@ class ImprintDecisionTests(unittest.TestCase):
         m.state = HeroSynthState.IMPRINT_ADD
         m.next_action(fixture("imprint_sss_material"))
         self.assertTrue(m.pending_transmit_target)
+        self.assertIs(m.state, HeroSynthState.IMPRINT_ABORTING)
+        self.assertIsNone(m.next_action(fixture("imprint_up_cards_no_sss")))
         self.assertEqual(
             "open_transmit_for_current_card",
             m.next_action(fixture("list_reddot")).name,
@@ -265,6 +266,27 @@ class ImprintDecisionTests(unittest.TestCase):
 
 
 class TransmitDecisionTests(unittest.TestCase):
+    def test_transmit_strip_locator_clicks_inside_highlighted_card(self):
+        m = machine()
+        card = m._transmit_target_card(fixture("transmit_select"))
+        self.assertIsNotNone(card)
+        _, y, _ = card
+        self.assertGreaterEqual(y, 460)
+        self.assertLessEqual(y, 520)
+        self.assertNotEqual(393, y)
+
+    def test_transmit_refuses_highlighted_sss_card(self):
+        screen = fixture("transmit_select")
+        sss = cv2.imread(
+            str(TEMPLATES / "hero" / "sss_material.png"), cv2.IMREAD_COLOR
+        )
+        sss = cv2.cvtColor(sss, cv2.COLOR_BGR2RGB)
+        screen[480:518, 1750:1814] = sss
+        m = machine()
+        action = m.next_action(screen)
+        self.assertEqual("abort_transmit_sss_target", action.name)
+        self.assertIs(m.state, HeroSynthState.TRANSMIT_RETURNING)
+
     def test_transmit_with_card_selected_starts_transmit(self):
         m = machine()
         action = m.next_action(fixture("transmit_select"))
@@ -296,6 +318,13 @@ class TransmitDecisionTests(unittest.TestCase):
         action = m.next_action(fixture("reward_popup"))
         self.assertEqual("close_reward", action.name)
         self.assertEqual((960, 843), action.point)
+        self.assertIs(m.state, HeroSynthState.TRANSMIT_RETURNING)
+
+    def test_transmit_reward_returns_to_list_instead_of_transmitting_again(self):
+        m = machine()
+        m.state = HeroSynthState.TRANSMIT_RETURNING
+        action = m.next_action(fixture("transmit_select"))
+        self.assertEqual("back_to_list", action.name)
 
     def test_reward_strip_ignored_outside_transmit(self):
         m = machine()
