@@ -161,7 +161,10 @@ class HeroSynthStateMachine:
     # 点击点（参考尺寸坐标）
     _FUNNEL_POINT = (1540, 191)
     _STAR3_POINT = (1110, 636)
-    _NEXT_CARD_POINT = (1710, 570)
+    # 模拟器截图是 1920x1080 渲染画面上方补 52px 的旧画布；
+    # 点击落在用户标出的下一张卡数值区域内，换算后为 (1559, 591)。
+    _NEXT_CARD_POINT = (1559, 591)
+    _PC_NEXT_CARD_POINT = (1710, 570)
     _IMPRINT_BUTTON_POINT = (1098, 995)  # 刻印按钮硬编码坐标：模板匹配失败时的兜底
     _UP_CARD_X = 1710
     _GREEN_BTN_POINT = (1149, 1078)
@@ -540,7 +543,9 @@ class HeroSynthStateMachine:
         sig = f"{rating}{dot}{fp}"
         return HeroAction(
             f"next_card_{sig}",
-            self._scaled_point(screen, self._NEXT_CARD_POINT),
+            self._scaled_point(
+                screen, self._point(self._NEXT_CARD_POINT, self._PC_NEXT_CARD_POINT)
+            ),
         )
 
     # ---- 主决策 ----
