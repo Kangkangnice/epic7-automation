@@ -66,6 +66,9 @@ def state_label(state: HeroSynthState) -> str:
 class HeroAction:
     name: str
     point: tuple[int, int]
+    source_page: str = ""
+    target_pages: tuple[str, ...] = ()
+    reason: str = ""
 
 
 def imprint_button_saturation(screen: np.ndarray) -> float:
@@ -254,6 +257,9 @@ class HeroSynthStateMachine:
         self._filter_session_done: bool = False
         # 已点击 3 星后，必须先从截图确认选中态；确认前禁止回点筛选漏斗。
         self._awaiting_star3_confirmation: bool = False
+        # 模拟器筛选关闭请求只表示“正在等待目标页”，不能代表筛选已完成。
+        self._filter_close_pending: bool = False
+        self._confirmed_page: str = ""
         self.pending_transmit_target = False
         self._imprint_empty_observations = 0
         self._list_end_observations = 0
@@ -699,6 +705,67 @@ class HeroSynthStateMachine:
             return FilterObservation.HERO_LIST_FILTER_CLOSED
         return FilterObservation.UNKNOWN
 
+    def _next_simulator_filter_action(
+        self, screen: np.ndarray
+    ) -> tuple[bool, Optional[HeroAction]]:
+        # SSS 材料中止后必须先处理当前待传送英雄；不能被首次筛选抢占。
+        if self.pending_transmit_target:
+            return False, None
+
+        observation = self._observe_filter(screen)
+        labels = {
+            FilterObservation.HERO_LIST_FILTER_CLOSED: "英雄列表",
+            FilterObservation.FILTER_OPEN_STAR3_SELECTED: "筛选面板（三星已选中）",
+            FilterObservation.FILTER_OPEN_STAR3_UNSELECTED: "筛选面板（三星未选中）",
+        }
+        self._confirmed_page = labels.get(observation, "")
+
+        if observation is FilterObservation.FILTER_OPEN_STAR3_UNSELECTED:
+            self.state = HeroSynthState.FILTER
+            self._filter_close_pending = False
+            return True, HeroAction(
+                "select_star3",
+                self._scaled_point(screen, self._STAR3_POINT),
+                source_page="筛选面板（三星未选中）",
+                target_pages=("筛选面板（三星已选中）",),
+                reason="级别与属性锚点存在，三星深色按钮存在",
+            )
+
+        if observation is FilterObservation.FILTER_OPEN_STAR3_SELECTED:
+            self.state = HeroSynthState.FILTER
+            self._filter_close_pending = True
+            return True, HeroAction(
+                "close_filter",
+                self._scaled_point(screen, self._FUNNEL_POINT),
+                source_page="筛选面板（三星已选中）",
+                target_pages=("英雄列表",),
+                reason="级别与属性锚点存在，三星白底按钮存在",
+            )
+
+        if observation is FilterObservation.HERO_LIST_FILTER_CLOSED:
+            if self._filter_close_pending:
+                self._filter_close_pending = False
+                self.filter_verified = True
+                self._filter_session_done = True
+                self.state = HeroSynthState.HERO_LIST
+                return True, None
+            if not self.filter_verified:
+                return True, HeroAction(
+                    "open_filter",
+                    self._scaled_point(screen, self._FUNNEL_POINT),
+                    source_page="英雄列表",
+                    target_pages=(
+                        "筛选面板（三星已选中）",
+                        "筛选面板（三星未选中）",
+                    ),
+                    reason="漏斗与刻印按钮存在，筛选面板锚点均消失",
+                )
+            return False, None
+
+        if self.state is HeroSynthState.FILTER or self._filter_close_pending:
+            return True, None
+        return False, None
+
     def _back_action(self, screen: np.ndarray) -> Optional[HeroAction]:
         back = self._locate(screen, "story_back", 0.90)
         if back is None:
@@ -898,9 +965,18 @@ class HeroSynthStateMachine:
         # 7. 筛选面板（级别标签为锚点）
         # 一次性入场：close_filter 后置 _filter_session_done=True，
         # 之后无论模板是否误识别 filter_level_label，都不再进此分支。
+        if not self.templates.pc_client:
+            handled, filter_action = self._next_simulator_filter_action(screen)
+            if handled:
+                return filter_action
+
         filter_level = self._locate(screen, "filter_level_label")
         star3_selected = self._locate(screen, "filter_star3_selected", 0.90)
-        if not self._filter_session_done and self._awaiting_star3_confirmation:
+        if (
+            self.templates.pc_client
+            and not self._filter_session_done
+            and self._awaiting_star3_confirmation
+        ):
             self.state = HeroSynthState.FILTER
             if star3_selected is not None:
                 self._awaiting_star3_confirmation = False
@@ -920,7 +996,11 @@ class HeroSynthStateMachine:
                     screen, self._point(self._STAR3_POINT, self._PC_STAR3_POINT)
                 ),
             )
-        if not self._filter_session_done and (filter_level or star3_selected):
+        if (
+            self.templates.pc_client
+            and not self._filter_session_done
+            and (filter_level or star3_selected)
+        ):
             self.state = HeroSynthState.FILTER
             if star3_selected is None:
                 self._awaiting_star3_confirmation = True
@@ -1026,6 +1106,8 @@ class HeroSynthStateMachine:
             self.prev_card_grey,
             self._filter_session_done,
             self._awaiting_star3_confirmation,
+            self._filter_close_pending,
+            self._confirmed_page,
             self.pending_transmit_target,
             self._imprint_empty_observations,
             self._list_end_observations,
@@ -1043,6 +1125,8 @@ class HeroSynthStateMachine:
                 self.prev_card_grey,
                 self._filter_session_done,
                 self._awaiting_star3_confirmation,
+                self._filter_close_pending,
+                self._confirmed_page,
                 self.pending_transmit_target,
                 self._imprint_empty_observations,
                 self._list_end_observations,
