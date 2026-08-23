@@ -59,6 +59,7 @@ class TemplateTests(unittest.TestCase):
             "imprint_grey",
             "auto_select_label",
             "story_back",
+            "sss_material",
         ):
             self.assertIsNotNone(getattr(templates, name))
         self.assertIsNotNone(templates.imprint_result_title)
@@ -145,13 +146,46 @@ class FilterDecisionTests(unittest.TestCase):
 
 
 class ImprintDecisionTests(unittest.TestCase):
+    def test_sss_material_aborts_imprint_before_clicking_material(self):
+        m = machine()
+        m.state = HeroSynthState.IMPRINT_ADD
+        action = m.next_action(fixture("imprint_sss_material"))
+        self.assertEqual("abort_imprint_to_transmit", action.name)
+
+    def test_pending_transmit_opens_transmit_for_current_card(self):
+        m = machine(verify_filter=True)
+        m.pending_transmit_target = True
+        action = m.next_action(fixture("list_reddot"))
+        self.assertEqual("open_transmit_for_current_card", action.name)
+        self.assertEqual((1735, 1060), action.point)
+
+    def test_sss_material_branch_enters_existing_transmit_flow(self):
+        m = machine()
+        m.state = HeroSynthState.IMPRINT_ADD
+        m.next_action(fixture("imprint_sss_material"))
+        self.assertTrue(m.pending_transmit_target)
+        self.assertEqual(
+            "open_transmit_for_current_card",
+            m.next_action(fixture("list_reddot")).name,
+        )
+        self.assertEqual("start_transmit", m.next_action(fixture("transmit_select")).name)
+        self.assertFalse(m.pending_transmit_target)
+
+    def test_preview_restores_pending_transmit_context(self):
+        m = machine()
+        m.state = HeroSynthState.IMPRINT_ADD
+        action, _ = m.preview(fixture("imprint_sss_material"))
+        self.assertEqual("abort_imprint_to_transmit", action.name)
+        self.assertIs(m.state, HeroSynthState.IMPRINT_ADD)
+        self.assertFalse(m.pending_transmit_target)
+
     def test_imprint_with_up_cards_adds_topmost(self):
         m = machine()
         m.state = HeroSynthState.IMPRINT_ADD
-        action = m.next_action(fixture("imprint_up_cards"))
+        action = m.next_action(fixture("imprint_up_cards_no_sss"))
         self.assertTrue(action.name.startswith("add_material"))
         self.assertEqual(1710, action.point[0])
-        self.assertLess(abs(action.point[1] - 467), 15)
+        self.assertLess(abs(action.point[1] - 451), 15)
 
     def test_imprint_without_up_starts_synthesis(self):
         m = machine()
@@ -339,8 +373,8 @@ class RunnerFlowTests(unittest.TestCase):
             "list_no_reddot",       # 普通卡 → 跳过
             "list_grey_3s",         # SSS 卡 → 跳过
             "list_reddot",          # 非 SSS 红点卡 → 进入刻印
-            "imprint_up_cards",     # 加材料1
-            "imprint_up_one_card",  # 加材料2
+            "imprint_up_cards_no_sss",     # 加材料1
+            "imprint_up_one_card_no_sss",  # 加材料2
             "imprint_added",        # 材料就位 → 开始合成
             "synth_confirm",        # 确认合成
             "imprint_result_popup", # 关闭结果覆盖层
@@ -390,8 +424,8 @@ class RunnerFlowTests(unittest.TestCase):
             "list_reddot",       # 首次进列表 → 打开筛选
             "filter_open",       # 3星已选 → 关闭筛选（验证完成）
             "list_reddot",       # 红点 → 打开刻印
-            "imprint_up_cards",  # 加材料1（两张Up）
-            "imprint_up_one_card",  # 加材料2（剩一张Up）
+            "imprint_up_cards_no_sss",  # 加材料1（两张Up）
+            "imprint_up_one_card_no_sss",  # 加材料2（剩一张Up）
             "imprint_added",     # 无Up → 点绿色合成
             "synth_confirm",     # 确认弹窗
             "imprint_result_popup",  # 关闭合成结果覆盖层
