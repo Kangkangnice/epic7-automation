@@ -383,7 +383,7 @@ class HeroSynthStateMachine:
         blobs = self._blobs(
             screen,
             zone,
-            (0, 80, 100),
+            (0, 120, 120),
             (25, 255, 255),
             min_area=20 if self.templates.pc_client else 100,
             max_area=1200,
@@ -392,7 +392,7 @@ class HeroSynthStateMachine:
         extra = self._blobs(
             screen,
             zone,
-            (165, 80, 100),
+            (165, 120, 120),
             (180, 255, 255),
             min_area=20 if self.templates.pc_client else 100,
             max_area=1200,
