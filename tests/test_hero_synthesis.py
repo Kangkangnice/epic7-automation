@@ -260,6 +260,18 @@ class GuardTests(unittest.TestCase):
         second = m._detail_fingerprint(fixture("list_grey_3s"))
         self.assertNotEqual(first, second)
 
+    def test_card_fingerprint_ignores_detail_animation_noise(self):
+        m = machine(verify_filter=True)
+        screen = fixture("list_reddot")
+        animated = screen.copy()
+        animated[350:650, 150:700] = cv2.GaussianBlur(
+            animated[350:650, 150:700], (3, 3), 0
+        )
+        self.assertEqual(
+            m._detail_fingerprint(screen),
+            m._detail_fingerprint(animated),
+        )
+
     def test_preview_restores_snapshot(self):
         m = machine(verify_filter=True)
         screen = fixture("list_reddot")
