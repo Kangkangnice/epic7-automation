@@ -421,6 +421,23 @@ class HeroListTransitionTests(unittest.TestCase):
         self.assertIs(m.state, HeroSynthState.IMPRINT_ADD)
         self.assertEqual("刻印加材料", m._confirmed_page)
 
+    def test_incomplete_imprint_slots_cannot_enter_material_processing(self):
+        m = machine(verify_filter=True)
+        m.next_action(fixture("list_reddot"))
+        screen = fixture("imprint_up_cards_no_sss").copy()
+        x, y, w, h = m._IMPRINT_SLOT_ZONES[0]
+        screen[y : y + h, x : x + w] = 0
+
+        self.assertTrue(m._green_button_present(screen))
+        self.assertIsNotNone(m._find_up_card(screen))
+        self.assertFalse(m._imprint_slots_present(screen))
+
+        action = m.next_action(screen)
+
+        self.assertIsNone(action)
+        self.assertIs(m.state, HeroSynthState.HERO_LIST)
+        self.assertEqual("英雄列表", m._confirmed_page)
+
     def test_immediate_sss_imprint_page_is_recognized_before_material_action(self):
         m = machine(verify_filter=True)
         m.next_action(fixture("list_reddot"))

@@ -107,9 +107,14 @@ def test_pc_selected_star3_closes_when_level_anchor_is_missed():
 
 
 def test_pc_list_without_red_dot_advances():
-    action = settled_next(machine(filter_verified=True), fixture("05_star3_list"))
+    value = machine(filter_verified=True)
+    action = settled_next(value, fixture("05_star3_list"))
     assert action.name.startswith("next_card_")
     assert action.point == (1710, 570)
+    assert action.source_page == ""
+    assert action.target_pages == ()
+    assert action.reason == ""
+    assert value.state is HeroSynthState.HERO_LIST
 
 
 def test_pc_runner_commits_next_card_after_two_matching_previews():
@@ -130,8 +135,45 @@ def test_pc_runner_commits_next_card_after_two_matching_previews():
 
 
 def test_pc_list_red_dot_opens_imprint():
-    action = machine(filter_verified=True).next_action(fixture("06_next_card_01"))
+    value = machine(filter_verified=True)
+    action = value.next_action(fixture("06_next_card_01"))
     assert (action.name, action.point) == ("open_imprint", (1115, 990))
+    assert action.source_page == ""
+    assert action.target_pages == ()
+    assert action.reason == ""
+    assert value.state is HeroSynthState.IMPRINT_ADD
+
+
+def test_pc_list_action_runner_logs_exclude_simulator_transition_metadata():
+    cases = (
+        ("05_star3_list", "next_card_", (1710, 570)),
+        ("06_next_card_01", "open_imprint", (1115, 990)),
+    )
+    for fixture_name, action_prefix, expected_point in cases:
+        screen = fixture(fixture_name)
+        screens = iter([screen] * 4)
+        clicks = []
+        logs = []
+        runner = HeroSynthRunner(
+            machine(filter_verified=True),
+            Runtime(lambda: next(screens), clicks.append, emit=logs.append),
+            sleep=lambda _: None,
+        )
+        runner._needs_navigation_settle = False
+
+        try:
+            runner.run(max_cycles=1)
+        except StopIteration:
+            pass
+        else:
+            raise AssertionError("PC 列表动作测试截图应已耗尽")
+
+        output = "\n".join(logs)
+        assert clicks == [expected_point]
+        assert f"动作={action_prefix}" in output
+        assert "当前页面=" not in output
+        assert "判断依据=" not in output
+        assert "目标页面=" not in output
 
 
 def test_pc_imprint_without_up_starts_synthesis_at_button_center():
