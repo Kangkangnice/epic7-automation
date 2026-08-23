@@ -11,6 +11,7 @@ class ProjectLayoutTests(unittest.TestCase):
         self.assertEqual(
             {
                 "intimacy_level_up_live_20260815.png",
+                "network_disconnected.png",
                 "network_reconnect.png",
                 "network_reconnect_navigation.png",
             },
