@@ -12,16 +12,16 @@
 
 ```text
 搜索区域：x=1750, y=350, w=230, h=650
-模板尺寸：100×40
-阈值：0.78
+模板尺寸：64×38
+阈值：0.80
 页面：刻印材料页
 ```
 
 ### 代码使用的 SSS 小模板
 
-![SSS 材料模板 100x40](hero_synthesis_crops/template_sss_material_100x40.png)
+![SSS 材料模板 64x38](hero_synthesis_crops/template_sss_material_64x38.png)
 
-文件：[template_sss_material_100x40.png](hero_synthesis_crops/template_sss_material_100x40.png)
+文件：[template_sss_material_64x38.png](hero_synthesis_crops/template_sss_material_64x38.png)
 
 ### 真实材料截图中的完整搜索区域
 
@@ -29,11 +29,11 @@
 
 文件：[source_sss_material_search_region_230x650.png](hero_synthesis_crops/source_sss_material_search_region_230x650.png)
 
-### 真实截图中实际命中的 100x40 区域
+### 真实截图中实际命中的 64x38 区域
 
-![真实命中的 SSS 材料 100x40](hero_synthesis_crops/source_sss_material_matched_100x40.png)
+![真实命中的 SSS 材料 64x38](hero_synthesis_crops/source_sss_material_matched_64x38.png)
 
-文件：[source_sss_material_matched_100x40.png](hero_synthesis_crops/source_sss_material_matched_100x40.png)
+文件：[source_sss_material_matched_64x38.png](hero_synthesis_crops/source_sss_material_matched_64x38.png)
 
 这张真实截图的命中位置是 `(1845,480)`，匹配分数为 `1.0`。请重点确认：这个小图是否确实只截到了材料卡上的 SSS，而没有依赖人物头像或整张卡背景。
 
@@ -58,22 +58,22 @@
 
 ```text
 搜索区域：x=90, y=460, w=200, h=130
-模板尺寸：200×130
-阈值：0.82
+模板尺寸：124×90
+阈值：0.90
 页面：英雄列表
 ```
 
 ### SSS 模板
 
-![评级 SSS 模板 200x130](hero_synthesis_crops/template_rating_sss_200x130.png)
+![评级 SSS 模板 124x90](hero_synthesis_crops/template_rating_sss_124x90.png)
 
-文件：[template_rating_sss_200x130.png](hero_synthesis_crops/template_rating_sss_200x130.png)
+文件：[template_rating_sss_124x90.png](hero_synthesis_crops/template_rating_sss_124x90.png)
 
 ### 真实英雄列表中代码实际搜索的区域
 
-![真实评级区域 200x130](hero_synthesis_crops/source_rating_region_list_grey_3s_200x130.png)
+![真实评级搜索区域 180x130](hero_synthesis_crops/source_rating_region_list_grey_3s_180x130.png)
 
-文件：[source_rating_region_list_grey_3s_200x130.png](hero_synthesis_crops/source_rating_region_list_grey_3s_200x130.png)
+文件：[source_rating_region_list_grey_3s_180x130.png](hero_synthesis_crops/source_rating_region_list_grey_3s_180x130.png)
 
 人工判断规则：
 
@@ -142,6 +142,16 @@ SSS                      → 跳过
 文件：[source_button_exact_reddot_140x140.png](hero_synthesis_crops/source_button_exact_reddot_140x140.png)
 
 当前结构匹配下限为 `0.50`，这是为了兼容模拟器实际按钮视觉变化；红点和 SSS 仍由独立区域判断。
+
+### 三个“按钮截图”到底分别是什么
+
+| 名称 | 文件 | 尺寸 | 运行时作用 | 当前阈值 |
+|---|---|---:|---|---:|
+| 正常按钮模板 | `templates/hero/imprint_button_normal.png` | 140×140 | 与当前画面匹配，作为按钮结构候选 | 最终结构分数 ≥ 0.50 |
+| 灰色按钮模板 | `templates/hero/imprint_button_grey.png` | 140×140 | 与当前画面匹配，作为按钮结构候选 | 最终结构分数 ≥ 0.50 |
+| 真实按钮局部截图 | `source_button_exact_reddot_140x140.png` | 140×140 | 仅用于人工核对当前按钮长什么样，不是第三个运行时模板 | 不参与判断 |
+
+实现细节：`_locate_button(..., 0.0)` 会先分别找正常模板和灰色模板的最高匹配分；随后 `best.score >= _BUTTON_STRUCT_MIN` 才认为按钮结构存在。红点不使用这两个模板的分数，而是在独立的 `50×50` 区域做 HSV 颜色识别。因此 `0.50` 不是“SSS 阈值”，也不是“红点阈值”。
 
 ## 5. 筛选面板判断
 
@@ -255,8 +265,8 @@ SSS                      → 跳过
 
 ## 10. 当前结论
 
-- SSS 材料小模板：`100×40`，实际截图中命中位置同尺寸，当前样本匹配分数 `1.0`。
-- SSS 评级区域：`200×130`，包含左侧评级和附近背景。
+- SSS 材料小模板：`64×38`，实际截图中命中位置同尺寸，当前样本匹配分数 `1.0`。
+- SSS 评级模板：`124×90`；搜索区域：`180×130`，只保留必要的左侧评级范围。
 - 红点区域：`50×50`，只取刻印按钮左上角红点附近。
 - 按钮结构区域：`250×200`，模板本身 `140×140`。
 - 当前真实测试已经确认新的“下一张”坐标 `(1559,591)` 被实际发出，但页面没有切换；因此下一步需要优先人工确认这些裁剪图和页面时机，而不是继续盲目改坐标。
