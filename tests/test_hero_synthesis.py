@@ -709,6 +709,33 @@ class RunnerFlowTests(unittest.TestCase):
         )
         self.assertIn("完成=close_filter 目标页面=英雄列表", output)
 
+    def test_transient_unknown_frame_keeps_filter_retry_attempt_count(self):
+        clock = FakeClock()
+        unknown = np.full_like(fixture("filter_open"), 30)
+        screens = iter(
+            [fixture("filter_open")] * 2
+            + [unknown] * 2
+            + [fixture("filter_open")] * 8
+        )
+        logs = []
+        runner = HeroSynthRunner(
+            machine(),
+            Runtime(
+                lambda: next(screens),
+                lambda _: None,
+                emit=logs.append,
+                monotonic=clock,
+            ),
+            sleep=clock.sleep,
+        )
+
+        with self.assertRaises(StopIteration):
+            runner.run(max_cycles=1)
+
+        output = "\n".join(logs)
+        self.assertEqual(1, output.count("动作=close_filter 尝试=1/4"))
+        self.assertIn("动作=close_filter 尝试=2/4", output)
+
     def test_next_card_retry_window_is_short(self):
         runner = HeroSynthRunner(
             HeroSynthStateMachine(build_hero_templates(TEMPLATES)),
@@ -838,12 +865,16 @@ class RunnerFlowTests(unittest.TestCase):
         m.state = HeroSynthState.IMPRINT_CONFIRM
         m.prev_card_grey = True
         m.filter_verified = True
+        m._filter_close_pending = True
+        m._confirmed_page = "筛选面板（三星已选中）"
         runtime = Runtime(lambda: None, lambda *_: None)
         runner = HeroSynthRunner(m, runtime, sleep=lambda _: None)
         runner._apply_recovery_state()
         self.assertIs(m.state, HeroSynthState.HERO_LIST)
         self.assertFalse(m.filter_verified)
         self.assertFalse(m.prev_card_grey)
+        self.assertFalse(m._filter_close_pending)
+        self.assertEqual("", m._confirmed_page)
 
     def test_changing_unknown_screen_times_out_instead_of_hanging(self):
         """持续变化的未识别画面（如带动画的列表）不能无限等待。"""

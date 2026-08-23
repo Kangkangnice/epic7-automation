@@ -1210,6 +1210,8 @@ class HeroSynthRunner(ModeRunnerBase):
         self.machine.prev_card_grey = False
         self.machine._filter_session_done = False  # 恢复后允许重新进入筛选流程
         self.machine._awaiting_star3_confirmation = False
+        self.machine._filter_close_pending = False
+        self.machine._confirmed_page = ""
         self.machine.pending_transmit_target = False
         self._needs_navigation_settle = self.machine.templates.pc_client
 

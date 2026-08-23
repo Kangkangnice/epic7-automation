@@ -531,11 +531,13 @@ class ModeRunnerBase:
                     stable.reset()
                     continue
             else:
-                last_action_name = None
-                last_action_clicked_at = None
-                last_transition_action = None
-                retry_wait_logged = False
-                action_attempts = 0
+                # 有目标契约的动作遇到短暂未知帧时保留同一重试账本；
+                # 只有目标已确认（上方已清空契约）或普通无动作状态才重置。
+                if last_transition_action is None:
+                    last_action_name = None
+                    last_action_clicked_at = None
+                    retry_wait_logged = False
+                    action_attempts = 0
 
             if (
                 action is None
