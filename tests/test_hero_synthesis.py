@@ -449,6 +449,18 @@ class HeroListTransitionTests(unittest.TestCase):
         self.assertFalse(action.name.startswith("add_material_"))
         self.assertEqual("abort_imprint_to_transmit", action.name)
 
+    def test_complete_imprint_page_matches_sss_material_once(self):
+        m = machine(verify_filter=True)
+        m.next_action(fixture("list_reddot"))
+
+        with patch.object(
+            m, "_sss_material_present", wraps=m._sss_material_present
+        ) as sss_material_present:
+            action = m.next_action(fixture("imprint_sss_material"))
+
+        self.assertEqual("abort_imprint_to_transmit", action.name)
+        self.assertEqual(1, sss_material_present.call_count)
+
     def test_next_card_actions_explain_each_skip_with_detail_fingerprint(self):
         cases = (
             ("list_no_reddot", "无红点"),
