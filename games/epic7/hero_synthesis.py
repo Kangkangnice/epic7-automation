@@ -884,6 +884,7 @@ class HeroSynthRunner(ModeRunnerBase):
     """两帧确认的英雄合成 Runner（主循环协议见 ModeRunnerBase）。"""
 
     _MODE_LABEL = "英雄合成"
+    _NEXT_CARD_RETRY_SECONDS = 10
     _TIMEOUT_SECONDS = {
         HeroSynthState.HERO_LIST: 60,
         HeroSynthState.FILTER: 45,
@@ -924,6 +925,11 @@ class HeroSynthRunner(ModeRunnerBase):
 
     def _state_label(self, state: HeroSynthState) -> str:
         return state_label(state)
+
+    def _action_retry_seconds(self, action_name: str) -> float:
+        if action_name.startswith("next_card"):
+            return self._NEXT_CARD_RETRY_SECONDS
+        return super()._action_retry_seconds(action_name)
 
     def _apply_recovery_state(self) -> None:
         self.machine.state = HeroSynthState.HERO_LIST

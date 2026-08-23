@@ -109,6 +109,10 @@ class ModeRunnerBase:
         """连续发出相同动作名超过此时长未进展则触发恢复。"""
         return 45.0
 
+    def _action_retry_seconds(self, action_name: str) -> float:
+        """返回同一动作再次尝试前的等待时间。"""
+        return self._ACTION_RETRY_SECONDS
+
     def _log_cycle_completed(self) -> None:
         self.runtime.log(
             f"模式={self._MODE_LABEL} 状态=完成一轮 cycles={self.machine.completed_cycles}"
@@ -333,11 +337,12 @@ class ModeRunnerBase:
                     since_click = (
                         self.now() - last_action_clicked_at
                         if last_action_clicked_at is not None
-                        else self._ACTION_RETRY_SECONDS
+                        else self._action_retry_seconds(action.name)
                     )
-                    if since_click < self._ACTION_RETRY_SECONDS:
+                    retry_seconds = self._action_retry_seconds(action.name)
+                    if since_click < retry_seconds:
                         if not retry_wait_logged:
-                            remaining = self._ACTION_RETRY_SECONDS - since_click
+                            remaining = retry_seconds - since_click
                             self.runtime.log(
                                 f"模式={self._MODE_LABEL} "
                                 f"轮次={self.machine.completed_cycles + 1}/"
