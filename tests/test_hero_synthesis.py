@@ -249,16 +249,51 @@ class FilterDecisionTests(unittest.TestCase):
         action = m.next_action(fixture("filter_open"))
         self.assertEqual("close_filter", action.name)
         self.assertEqual((1540, 191), action.point)
-        self.assertTrue(m.filter_verified)
+        self.assertFalse(m.filter_verified)
 
     def test_filter_open_without_selection_selects_star3(self):
-        img = fixture("filter_open")
-        img[590:682, 1050:1170] = 0  # 抹掉已选3星钮
         m = machine()
-        action = m.next_action(img)
+        action = m.next_action(fixture("filter_open_star3_unselected"))
         self.assertEqual("select_star3", action.name)
         self.assertEqual((1110, 636), action.point)
         self.assertFalse(m.filter_verified)
+
+    def test_open_filter_keeps_same_action_when_click_is_swallowed(self):
+        m = machine()
+        first = m.next_action(fixture("list_unfiltered"))
+        second = m.next_action(fixture("list_unfiltered"))
+        self.assertEqual("open_filter", first.name)
+        self.assertEqual("open_filter", second.name)
+        self.assertFalse(m.filter_verified)
+
+    def test_select_star3_keeps_same_action_when_click_is_swallowed(self):
+        m = machine()
+        first = m.next_action(fixture("filter_open_star3_unselected"))
+        second = m.next_action(fixture("filter_open_star3_unselected"))
+        self.assertEqual("select_star3", first.name)
+        self.assertEqual("select_star3", second.name)
+        self.assertFalse(m.filter_verified)
+
+    def test_close_filter_keeps_same_action_when_click_is_swallowed(self):
+        m = machine()
+        first = m.next_action(fixture("filter_open"))
+        second = m.next_action(fixture("filter_open"))
+        self.assertEqual("close_filter", first.name)
+        self.assertEqual("close_filter", second.name)
+        self.assertFalse(m.filter_verified)
+
+    def test_filter_is_committed_only_after_closed_list_target_is_seen(self):
+        m = machine()
+        m.next_action(fixture("filter_open"))
+
+        preview, outcome = m.preview(fixture("list_unfiltered"))
+
+        self.assertIsNone(preview)
+        self.assertIs(outcome[0], HeroSynthState.HERO_LIST)
+        self.assertFalse(m.filter_verified)
+        committed = m.next_action(fixture("list_unfiltered"))
+        self.assertIsNone(committed)
+        self.assertTrue(m.filter_verified)
 
 
 class ImprintDecisionTests(unittest.TestCase):
