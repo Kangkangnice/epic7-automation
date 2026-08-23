@@ -272,6 +272,19 @@ class HeroSynthStateMachine:
             return
         self._confirmed_page = label
 
+    def _simulator_transition_action(
+        self,
+        name: str,
+        point: tuple[int, int],
+        *,
+        source_page: str,
+        target_pages: tuple[str, ...],
+        reason: str,
+    ) -> HeroAction:
+        if self.templates.pc_client:
+            return HeroAction(name, point)
+        return HeroAction(name, point, source_page, target_pages, reason)
+
     def _mask_dot(self, template: np.ndarray) -> np.ndarray:
         """把模板上红点角标区置零，匹配时与画面同区域一起忽略。"""
         masked = template.copy()
@@ -865,9 +878,13 @@ class HeroSynthStateMachine:
         if self._imprint_result_present(screen):
             self._confirm_page("合成结果")
             self.state = HeroSynthState.IMPRINT_REWARD
-            return HeroAction(
+            self._imprint_empty_observations = 0
+            return self._simulator_transition_action(
                 "close_imprint_result",
                 self._scaled_point(screen, self._IMPRINT_RESULT_CLOSE_POINT),
+                source_page="合成结果",
+                target_pages=("合成后刻印页",),
+                reason="结果标题与关闭控件同时存在",
             )
 
         # 2. 确认弹窗（合成/传送共用的蓝色按钮）
@@ -882,7 +899,14 @@ class HeroSynthStateMachine:
                 )
             self._confirm_page("合成确认")
             self.state = HeroSynthState.IMPRINT_CONFIRM
-            return HeroAction("confirm_synthesis", self._scaled_point(screen, confirm))
+            self._imprint_empty_observations = 0
+            return self._simulator_transition_action(
+                "confirm_synthesis",
+                self._scaled_point(screen, confirm),
+                source_page="合成确认",
+                target_pages=("合成结果",),
+                reason="蓝色确认按钮带与金色内容带同时存在",
+            )
 
         # 3. 传送奖励弹窗（仅在传送流程中判定，防止列表误触）
         if self.state.value.startswith("transmit") and self._reward_strip_present(screen):
@@ -954,6 +978,27 @@ class HeroSynthStateMachine:
         complete_imprint_page = (
             green_button_present and self._imprint_slots_present(screen)
         )
+        if (
+            not self.templates.pc_client
+            and self.state is HeroSynthState.IMPRINT_REWARD
+        ):
+            if complete_imprint_page:
+                self._confirm_page("合成后刻印页")
+                back = self._back_action(screen)
+                if back is None:
+                    return None
+                return self._simulator_transition_action(
+                    "back_to_list",
+                    back.point,
+                    source_page="合成后刻印页",
+                    target_pages=("英雄列表",),
+                    reason="结果覆盖层消失且刻印页返回箭头存在",
+                )
+            if not self._hero_list_ready(screen):
+                return None
+            self._confirm_page("英雄列表")
+            self.state = HeroSynthState.HERO_LIST
+
         sss_material_present = False
         if complete_imprint_page:
             if (
@@ -997,9 +1042,14 @@ class HeroSynthStateMachine:
                 self._imprint_empty_observations = 0
                 self.state = HeroSynthState.IMPRINT_ADD
                 x, y, tag = up
-                return HeroAction(
+                return self._simulator_transition_action(
                     f"add_material_{filled_slots}_{tag}",
                     self._scaled_point(screen, (x, y)),
+                    source_page="刻印加材料",
+                    target_pages=("刻印加材料", "刻印SSS材料"),
+                    reason=(
+                        f"发现普通Up材料，已填槽位={filled_slots}，目标={tag}"
+                    ),
                 )
             if self.state is HeroSynthState.IMPRINT_ADD:
                 # “没看到 Up”只表示识别结果为空，不表示材料已加完。必须看到
@@ -1013,12 +1063,21 @@ class HeroSynthStateMachine:
                     < self._READINESS_OBSERVATIONS
                 ):
                     return None
-                self._imprint_empty_observations = 0
-                self.state = HeroSynthState.IMPRINT_CONFIRM
-                return HeroAction(
+                if self.templates.pc_client:
+                    self._imprint_empty_observations = 0
+                    self.state = HeroSynthState.IMPRINT_CONFIRM
+                else:
+                    self._imprint_empty_observations = self._READINESS_OBSERVATIONS
+                return self._simulator_transition_action(
                     "start_synthesis",
                     self._scaled_point(
                         screen, self._point(self._GREEN_BTN_POINT, self._PC_GREEN_BTN_POINT)
+                    ),
+                    source_page="刻印加材料",
+                    target_pages=("合成确认", "合成结果"),
+                    reason=(
+                        "Up材料已清空，"
+                        f"已填槽位={filled_slots}，费用非零，连续确认=2"
                     ),
                 )
             back = self._back_action(screen)

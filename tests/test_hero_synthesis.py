@@ -655,6 +655,53 @@ class ImprintDecisionTests(unittest.TestCase):
         self.assertEqual(1710, action.point[0])
         self.assertLess(abs(action.point[1] - 451), 15)
 
+    def test_normal_synthesis_actions_publish_transition_contracts(self):
+        cases = (
+            (
+                "imprint_up_cards_no_sss",
+                HeroSynthState.IMPRINT_ADD,
+                "add_material_0_2",
+                "刻印加材料",
+                ("刻印加材料", "刻印SSS材料"),
+                "发现普通Up材料，已填槽位=0，目标=2",
+            ),
+            (
+                "synth_confirm",
+                HeroSynthState.IMPRINT_ADD,
+                "confirm_synthesis",
+                "合成确认",
+                ("合成结果",),
+                "蓝色确认按钮带与金色内容带同时存在",
+            ),
+            (
+                "imprint_result_popup",
+                HeroSynthState.IMPRINT_CONFIRM,
+                "close_imprint_result",
+                "合成结果",
+                ("合成后刻印页",),
+                "结果标题与关闭控件同时存在",
+            ),
+            (
+                "imprint_after_synth",
+                HeroSynthState.IMPRINT_REWARD,
+                "back_to_list",
+                "合成后刻印页",
+                ("英雄列表",),
+                "结果覆盖层消失且刻印页返回箭头存在",
+            ),
+        )
+        for fixture_name, state, name, source, targets, reason in cases:
+            with self.subTest(fixture=fixture_name):
+                m = machine(verify_filter=True)
+                m.state = state
+
+                action = m.next_action(fixture(fixture_name))
+
+                self.assertEqual(name, action.name)
+                self.assertEqual(source, action.source_page)
+                self.assertEqual(targets, action.target_pages)
+                self.assertEqual(reason, action.reason)
+
     def test_imprint_without_up_starts_synthesis(self):
         m = machine()
         m.state = HeroSynthState.IMPRINT_ADD
@@ -662,7 +709,55 @@ class ImprintDecisionTests(unittest.TestCase):
         action = m.next_action(fixture("imprint_added"))
         self.assertEqual("start_synthesis", action.name)
         self.assertEqual((1149, 1078), action.point)
+        self.assertIs(m.state, HeroSynthState.IMPRINT_ADD)
+
+    def test_start_synthesis_retries_while_ready_material_page_remains(self):
+        m = machine(verify_filter=True)
+        m.state = HeroSynthState.IMPRINT_ADD
+        ready = fixture("imprint_added")
+
+        self.assertIsNone(m.next_action(ready))
+        first = m.next_action(ready)
+        second = m.next_action(ready)
+
+        for action in (first, second):
+            self.assertEqual("start_synthesis", action.name)
+            self.assertEqual("刻印加材料", action.source_page)
+            self.assertEqual(("合成确认", "合成结果"), action.target_pages)
+            self.assertEqual(
+                "Up材料已清空，已填槽位=1，费用非零，连续确认=2",
+                action.reason,
+            )
+        self.assertIs(m.state, HeroSynthState.IMPRINT_ADD)
+        self.assertEqual(m._READINESS_OBSERVATIONS, m._imprint_empty_observations)
+
+    def test_confirm_synthesis_retries_until_result_evidence_appears(self):
+        m = machine(verify_filter=True)
+        m.state = HeroSynthState.IMPRINT_ADD
+        m._imprint_empty_observations = m._READINESS_OBSERVATIONS
+        confirm = fixture("synth_confirm")
+
+        first = m.next_action(confirm)
+        second = m.next_action(confirm)
+
+        self.assertEqual("confirm_synthesis", first.name)
+        self.assertEqual("confirm_synthesis", second.name)
         self.assertIs(m.state, HeroSynthState.IMPRINT_CONFIRM)
+        self.assertEqual(0, m._imprint_empty_observations)
+
+    def test_close_result_retries_until_post_result_page_appears(self):
+        m = machine(verify_filter=True)
+        m.state = HeroSynthState.IMPRINT_CONFIRM
+        m._imprint_empty_observations = m._READINESS_OBSERVATIONS
+        result = fixture("imprint_result_popup")
+
+        first = m.next_action(result)
+        second = m.next_action(result)
+
+        self.assertEqual("close_imprint_result", first.name)
+        self.assertEqual("close_imprint_result", second.name)
+        self.assertIs(m.state, HeroSynthState.IMPRINT_REWARD)
+        self.assertEqual(0, m._imprint_empty_observations)
 
     def test_imprint_after_synth_backs_to_list(self):
         m = machine()
@@ -671,14 +766,40 @@ class ImprintDecisionTests(unittest.TestCase):
         self.assertEqual("back_to_list", action.name)
         self.assertLess(abs(action.point[0] - 30), 20)
         self.assertLess(abs(action.point[1] - 92), 20)
-        self.assertIs(m.state, HeroSynthState.HERO_LIST)
+        self.assertIs(m.state, HeroSynthState.IMPRINT_REWARD)
 
-    def test_imprint_result_state_backs_to_list_after_popup_is_closed(self):
-        m = machine()
+    def test_back_to_list_retries_until_hero_list_evidence_appears(self):
+        m = machine(verify_filter=True)
         m.state = HeroSynthState.IMPRINT_REWARD
-        action = m.next_action(fixture("imprint_after_synth"))
-        self.assertEqual("back_to_list", action.name)
+        post_result = fixture("imprint_after_synth")
+
+        first = m.next_action(post_result)
+        second = m.next_action(post_result)
+
+        self.assertEqual("back_to_list", first.name)
+        self.assertEqual("back_to_list", second.name)
+        self.assertIs(m.state, HeroSynthState.IMPRINT_REWARD)
+        self.assertEqual("合成后刻印页", m._confirmed_page)
+
+        m.next_action(fixture("list_reddot"))
+
         self.assertIs(m.state, HeroSynthState.HERO_LIST)
+        self.assertEqual("英雄列表", m._confirmed_page)
+
+    def test_partial_imprint_pages_never_start_add_or_back(self):
+        partial = fixture("imprint_after_synth").copy()
+        x, y, w, h = machine()._IMPRINT_SLOT_ZONES[0]
+        partial[y : y + h, x : x + w] = 0
+
+        for state in (HeroSynthState.IMPRINT_ADD, HeroSynthState.IMPRINT_REWARD):
+            with self.subTest(state=state):
+                m = machine(verify_filter=True)
+                m.state = state
+
+                action = m.next_action(partial)
+
+                self.assertIsNone(action)
+                self.assertIs(m.state, state)
 
     def test_incomplete_result_popup_never_clicks_underlying_back_arrow(self):
         m = machine()

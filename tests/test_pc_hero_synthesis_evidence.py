@@ -181,6 +181,7 @@ def test_pc_imprint_without_up_starts_synthesis_at_button_center():
     assert value.next_action(fixture("09_imprint_all_materials")) is None
     action = value.next_action(fixture("09_imprint_all_materials"))
     assert (action.name, action.point) == ("start_synthesis", (1200, 1041))
+    assert value.state is HeroSynthState.IMPRINT_CONFIRM
 
 
 def test_pc_confirmation_click_is_inside_live_confirm_button():
@@ -204,6 +205,25 @@ def test_pc_completed_imprint_uses_live_back_arrow_center():
     value = machine(filter_verified=True, state=HeroSynthState.IMPRINT_CONFIRM)
     action = value.next_action(fixture("13_imprint_result_closed"))
     assert (action.name, action.point) == ("back_to_list", (66, 50))
+
+
+def test_pc_synthesis_actions_keep_legacy_empty_transition_metadata():
+    cases = (
+        ("07_imprint_materials", HeroSynthState.IMPRINT_ADD, 1),
+        ("09_imprint_all_materials", HeroSynthState.IMPRINT_ADD, 2),
+        ("10_synthesis_confirm", HeroSynthState.IMPRINT_ADD, 1),
+        ("13_imprint_result_closed", HeroSynthState.IMPRINT_CONFIRM, 1),
+    )
+    for fixture_name, state, observations in cases:
+        value = machine(filter_verified=True, state=state)
+        action = None
+        for _ in range(observations):
+            action = value.next_action(fixture(fixture_name))
+
+        assert action is not None, fixture_name
+        assert action.source_page == "", fixture_name
+        assert action.target_pages == (), fixture_name
+        assert action.reason == "", fixture_name
 
 
 def test_pc_navigation_recognizes_live_hero_list():
