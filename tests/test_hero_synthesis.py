@@ -3,9 +3,11 @@
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 import cv2
 
+from auto_game_unified.core.matcher import Match
 from auto_game_unified.core.runtime import Runtime
 from auto_game_unified.games.epic7.hero_synthesis import (
     HeroSynthRunner,
@@ -86,6 +88,14 @@ class HeroListDecisionTests(unittest.TestCase):
         action = settled_next(m, fixture("list_no_reddot"))
         self.assertTrue(action.name.startswith("next_card"))
         self.assertEqual((1710, 570), action.point)
+
+    def test_list_no_reddot_with_live_button_score_advances(self):
+        """模拟器按钮轻微变体得分 0.537 时仍应按无红点卡跳过。"""
+        m = machine(verify_filter=True)
+        low_score = Match(center=(1098, 995), score=0.537)
+        with patch.object(m, "_locate_button", return_value=low_score):
+            action = m.next_action(fixture("list_no_reddot"))
+        self.assertTrue(action.name.startswith("next_card"))
 
     def test_list_grey_3s_advances_and_sets_guard(self):
         m = machine(verify_filter=True)
