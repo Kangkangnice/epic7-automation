@@ -124,6 +124,8 @@ class HeroTemplates:
     sss_material_warning_close: Optional[np.ndarray] = None
     imprint_result_title: Optional[np.ndarray] = None
     imprint_result_close: Optional[np.ndarray] = None
+    transmit_reward_title: Optional[np.ndarray] = None
+    transmit_reward_close: Optional[np.ndarray] = None
     threshold: float = 0.80
     pc_client: bool = False
     assume_non_max_rating: bool = False
@@ -140,6 +142,8 @@ def build_hero_templates(template_root: Path) -> HeroTemplates:
     sss_material_warning_close = hero / "sss_material_warning_close.png"
     filter_attribute = hero / "filter_attribute_label.png"
     filter_star3_unselected = hero / "filter_star3_unselected.png"
+    transmit_reward_title = hero / "transmit_reward_title.png"
+    transmit_reward_close = hero / "transmit_reward_close.png"
     return HeroTemplates(
         filter_button=load_template(str(hero / "filter_button.png")),
         filter_level_label=load_template(str(hero / "filter_level_label.png")),
@@ -172,6 +176,16 @@ def build_hero_templates(template_root: Path) -> HeroTemplates:
         ),
         imprint_result_title=(load_template(str(result_title)) if result_title.exists() else None),
         imprint_result_close=(load_template(str(result_close)) if result_close.exists() else None),
+        transmit_reward_title=(
+            load_template(str(transmit_reward_title))
+            if not is_pc and transmit_reward_title.exists()
+            else None
+        ),
+        transmit_reward_close=(
+            load_template(str(transmit_reward_close))
+            if not is_pc and transmit_reward_close.exists()
+            else None
+        ),
         pc_client=is_pc,
         assume_non_max_rating=is_pc,
     )
@@ -224,6 +238,8 @@ class HeroSynthStateMachine:
     _BLUE_BAND_ZONE = (900, 700, 450, 120)
     _GOLD_BAND_ZONE = (650, 700, 330, 120)
     _REWARD_STRIP_ZONE = (880, 825, 160, 35)
+    _REWARD_TITLE_REGION = (760, 220, 460, 170)
+    _REWARD_CLOSE_REGION = (760, 740, 460, 230)
     _IMPRINT_RESULT_TITLE_REGION = (650, 180, 700, 300)
     _IMPRINT_RESULT_CLOSE_REGION = (650, 730, 700, 300)
     _SSS_WARNING_TITLE_REGION = (500, 420, 1000, 250)
@@ -303,6 +319,7 @@ class HeroSynthStateMachine:
         self.transmit_phase = TransmitPhase.NONE
         self.transmit_target_observation: Optional[str] = None
         self._active_card_observation: Optional[str] = None
+        self._transmit_reward_confirmed = False
         self._imprint_empty_observations = 0
         self._list_end_observations = 0
         self._list_end_fingerprint: Optional[str] = None
@@ -783,6 +800,32 @@ class HeroSynthStateMachine:
         low, high = self._REWARD_STRIP_RANGE
         return low <= count <= high
 
+    def _transmit_reward_present(self, screen: np.ndarray) -> bool:
+        if self.templates.pc_client:
+            return self._reward_strip_present(screen)
+        if (
+            self.templates.transmit_reward_title is None
+            or self.templates.transmit_reward_close is None
+        ):
+            return False
+        title = self._locate(
+            screen,
+            "transmit_reward_title",
+            0.90,
+            region_override=self._REWARD_TITLE_REGION,
+        )
+        close = self._locate(
+            screen,
+            "transmit_reward_close",
+            0.92,
+            region_override=self._REWARD_CLOSE_REGION,
+        )
+        return (
+            title is not None
+            and close is not None
+            and self._reward_strip_present(screen)
+        )
+
     def _imprint_result_present(self, screen: np.ndarray) -> bool:
         if (
             self.templates.imprint_result_title is None
@@ -1135,9 +1178,13 @@ class HeroSynthStateMachine:
             )
 
         # 3. 传送奖励弹窗（仅在传送流程中判定，防止列表误触）
-        if self.state.value.startswith("transmit") and self._reward_strip_present(screen):
+        if (
+            self.transmit_phase is TransmitPhase.CONFIRMING
+            or self.state.value.startswith("transmit")
+        ) and self._transmit_reward_present(screen):
             self._confirm_page("传送奖励")
             self.transmit_phase = TransmitPhase.TRANSMITTED
+            self._transmit_reward_confirmed = True
             self.state = HeroSynthState.TRANSMIT_RETURNING
             self.transmit_phase = TransmitPhase.RETURNING
             return self._simulator_transition_action(
@@ -1160,7 +1207,11 @@ class HeroSynthStateMachine:
                 return None
             self.state = HeroSynthState.HERO_LIST
 
-        if self.state is HeroSynthState.TRANSMIT_RETURNING:
+        if (
+            self.transmit_phase is TransmitPhase.RETURNING
+            or self.state is HeroSynthState.TRANSMIT_RETURNING
+        ):
+            self.state = HeroSynthState.TRANSMIT_RETURNING
             if self._locate(screen, "auto_select_label", 0.85):
                 self._confirm_page("传送选择")
                 back = self._back_action(screen)
@@ -1177,6 +1228,7 @@ class HeroSynthStateMachine:
                 return None
             self.transmit_phase = TransmitPhase.NONE
             self.transmit_target_observation = None
+            self._transmit_reward_confirmed = False
             self.state = HeroSynthState.HERO_LIST
 
         # 5. 传送选择界面：四个锚点齐全才算真正进入。
@@ -1620,6 +1672,7 @@ class HeroSynthStateMachine:
             self.transmit_phase,
             self.transmit_target_observation,
             self._active_card_observation,
+            self._transmit_reward_confirmed,
             self._imprint_empty_observations,
             self._list_end_observations,
             self._list_end_fingerprint,
@@ -1642,6 +1695,7 @@ class HeroSynthStateMachine:
                 self.transmit_phase,
                 self.transmit_target_observation,
                 self._active_card_observation,
+                self._transmit_reward_confirmed,
                 self._imprint_empty_observations,
                 self._list_end_observations,
                 self._list_end_fingerprint,

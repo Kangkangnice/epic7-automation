@@ -354,6 +354,38 @@ class TransmitTransactionTests(unittest.TestCase):
             m.next_action(sss_only_material_page())
 
 
+class TransmitRewardEvidenceTests(unittest.TestCase):
+    def test_full_reward_popup_marks_transmitted(self):
+        m = machine(verify_filter=True)
+        m.transmit_phase = TransmitPhase.CONFIRMING
+
+        action = m.next_action(fixture("reward_popup"))
+
+        self.assertEqual("close_reward", action.name)
+        self.assertIs(m.transmit_phase, TransmitPhase.RETURNING)
+        self.assertTrue(m._transmit_reward_confirmed)
+
+    def test_bright_strip_without_title_items_and_close_hint_is_not_reward(self):
+        m = machine(verify_filter=True)
+        m.transmit_phase = TransmitPhase.CONFIRMING
+        weak = np.zeros_like(fixture("reward_popup"))
+        x, y, w, h = m._REWARD_STRIP_ZONE
+        weak[y : y + h, x : x + w] = 180
+
+        self.assertIsNone(m.next_action(weak))
+        self.assertFalse(m._transmit_reward_confirmed)
+
+    def test_returning_phase_never_selects_or_transmits_again(self):
+        m = machine(verify_filter=True)
+        m.transmit_phase = TransmitPhase.RETURNING
+        m._transmit_reward_confirmed = True
+
+        action = m.next_action(fixture("transmit_select"))
+
+        self.assertEqual("back_to_list", action.name)
+        self.assertNotIn("transmit", action.name)
+
+
 def test_sss_material_transmit_returns_once_and_continues_cycle():
     sequence = (
         [fixture("list_reddot")] * 2
@@ -413,6 +445,8 @@ class TemplateTests(unittest.TestCase):
             "sss_material",
             "sss_material_warning_title",
             "sss_material_warning_close",
+            "transmit_reward_title",
+            "transmit_reward_close",
         ):
             self.assertIsNotNone(getattr(templates, name))
         self.assertIsNotNone(templates.imprint_result_title)
@@ -425,6 +459,38 @@ class TemplateTests(unittest.TestCase):
         machine_value = HeroSynthStateMachine(templates)
         self.assertGreaterEqual(machine_value._RATING_SSS_MIN, 0.90)
         self.assertEqual(0.80, machine_value._SSS_MATERIAL_MIN)
+
+    def test_transmit_reward_templates_are_tight_and_do_not_cross_match(self):
+        templates = build_hero_templates(TEMPLATES)
+        self.assertEqual((90, 300), templates.transmit_reward_title.shape[:2])
+        self.assertEqual((140, 300), templates.transmit_reward_close.shape[:2])
+        m = HeroSynthStateMachine(templates)
+        screen = fixture("reward_popup")
+
+        self.assertIsNotNone(
+            m._locate(
+                screen,
+                "transmit_reward_title",
+                0.90,
+                region_override=m._REWARD_TITLE_REGION,
+            )
+        )
+        self.assertIsNotNone(
+            m._locate(
+                screen,
+                "transmit_reward_close",
+                0.92,
+                region_override=m._REWARD_CLOSE_REGION,
+            )
+        )
+        self.assertIsNone(
+            m._locate(
+                screen,
+                "transmit_reward_title",
+                0.90,
+                region_override=m._REWARD_CLOSE_REGION,
+            )
+        )
 
     def test_filter_templates_are_tight_control_only_crops(self):
         templates = build_hero_templates(TEMPLATES)
