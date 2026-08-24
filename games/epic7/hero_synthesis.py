@@ -1898,7 +1898,20 @@ class HeroSynthRunner(ModeRunnerBase):
             decision = (
                 "sss" if "当前英雄为SSS" in preview_action.reason else "non_sss"
             )
-            return f"next_card:{decision}"
+            return (
+                f"next_card:{decision}:"
+                f"{preview_action.source_observation}"
+            )
+        if (
+            not self.machine.templates.pc_client
+            and preview_action is not None
+            and preview_action.source_page == "英雄列表"
+            and preview_action.source_observation
+        ):
+            return (
+                f"{preview_action.name}:"
+                f"{preview_action.source_observation}"
+            )
         return super()._stable_action_signature(preview_action, outcome)
 
     def _after_action_click(self, action: HeroAction) -> None:
@@ -1963,10 +1976,16 @@ class HeroSynthRunner(ModeRunnerBase):
         )
 
     def _card_transition_completed(self, previous_action, current_action) -> bool:
-        completed = self._card_switch_motion_confirmed
-        if completed:
+        if self._card_switch_motion_confirmed:
             self._card_switch_motion_confirmed = False
-        return completed
+            return True
+        previous_observation = getattr(previous_action, "source_observation", "")
+        current_observation = getattr(current_action, "source_observation", "")
+        return bool(
+            previous_observation
+            and current_observation
+            and previous_observation != current_observation
+        )
 
     def _transition_completed(
         self, previous_action, current_action, confirmed_page: str
@@ -2005,8 +2024,14 @@ class HeroSynthRunner(ModeRunnerBase):
                 if current_action is not None
                 else getattr(self.machine, "_current_card_observation", None)
             )
+            evidence = (
+                "英雄身份变化后连续稳定"
+                if observation
+                and observation != previous_action.source_observation
+                else "右侧列表移动后重新稳定"
+            )
             return (
-                f"切换成功=右侧列表移动后重新稳定；卡片观察 "
+                f"切换成功={evidence}；卡片观察 "
                 f"{previous_action.source_observation} -> {observation}"
             )
         return super()._transition_success_detail(previous_action, current_action)
