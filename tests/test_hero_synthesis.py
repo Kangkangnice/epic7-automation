@@ -90,6 +90,25 @@ def shifted_list(screen, pixels):
 
 
 class CardSwitchMotionObserverTests(unittest.TestCase):
+    def test_motion_observer_records_decision_metrics_and_key_frames(self):
+        base = fixture("list_reddot")
+        moved = shifted_list(base, -16)
+        observer = CardSwitchMotionObserver(base)
+
+        self.assertFalse(observer.update(moved))
+        for _ in range(3):
+            observer.update(moved.copy())
+
+        sample = observer.samples[0]
+        self.assertEqual(1, sample.frame)
+        self.assertIs(sample.phase_before, MotionPhase.WAITING_DEPARTURE)
+        self.assertIs(sample.phase_after, MotionPhase.MOVING)
+        self.assertGreaterEqual(abs(sample.dy), observer.min_vertical_shift)
+        self.assertGreater(sample.baseline_difference, 0)
+        self.assertIsNotNone(observer.departure_screen)
+        self.assertIsNotNone(observer.peak_screen)
+        self.assertTrue(np.array_equal(moved, observer.last_screen))
+
     def test_vertical_list_motion_then_settling_confirms_switch(self):
         base = fixture("list_reddot")
         observer = CardSwitchMotionObserver(base)

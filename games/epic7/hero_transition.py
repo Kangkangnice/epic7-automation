@@ -20,6 +20,22 @@ class SafetyClass(Enum):
     UNKNOWN = "unknown"
 
 
+@dataclass(frozen=True)
+class MotionSample:
+    frame: int
+    phase_before: MotionPhase
+    phase_after: MotionPhase
+    dx: float
+    dy: float
+    response: float
+    difference: float
+    baseline_difference: float
+    accumulated_shift: float
+    settle_frames: int
+    vertical: bool
+    departed: bool
+
+
 @dataclass
 class CardSwitchMotionObserver:
     first_screen: np.ndarray
@@ -41,6 +57,11 @@ class CardSwitchMotionObserver:
         self.baseline = self.previous.copy()
         self.observed_vertical_motion = False
         self.observed_structural_departure = False
+        self.samples: list[MotionSample] = []
+        self.departure_screen: np.ndarray | None = None
+        self.peak_screen: np.ndarray | None = None
+        self.last_screen: np.ndarray | None = None
+        self._peak_score = -1.0
 
     def _gray(self, screen: np.ndarray) -> np.ndarray:
         x, y, w, h = self._LIST_ZONE
@@ -58,10 +79,12 @@ class CardSwitchMotionObserver:
 
     def update(self, screen: np.ndarray) -> bool:
         current = self._gray(screen)
+        phase_before = self.phase
         (dx, dy), response = cv2.phaseCorrelate(
             self.previous.astype(np.float32), current.astype(np.float32)
         )
         difference = float(cv2.absdiff(self.previous, current).mean())
+        baseline_difference = float(cv2.absdiff(self.baseline, current).mean())
         vertical = (
             response >= self.min_phase_response
             and abs(dy) >= self.min_vertical_shift
@@ -71,6 +94,7 @@ class CardSwitchMotionObserver:
         departed = vertical or difference >= self.departure_difference
         if self.phase is MotionPhase.WAITING_DEPARTURE and departed:
             self.phase = MotionPhase.MOVING
+            self.departure_screen = screen.copy()
             self.observed_vertical_motion = vertical
             self.observed_structural_departure = not vertical
             self.accumulated_shift += abs(dy) if vertical else 0.0
@@ -102,8 +126,31 @@ class CardSwitchMotionObserver:
                 )
             ):
                 self.phase = MotionPhase.SETTLED
-                self.previous = current
-                return True
+
+        score = max(
+            abs(dy) / self.min_vertical_shift,
+            difference / self.departure_difference,
+        )
+        if score > self._peak_score:
+            self._peak_score = score
+            self.peak_screen = screen.copy()
+        self.last_screen = screen.copy()
+        self.samples.append(
+            MotionSample(
+                frame=len(self.samples) + 1,
+                phase_before=phase_before,
+                phase_after=self.phase,
+                dx=float(dx),
+                dy=float(dy),
+                response=float(response),
+                difference=difference,
+                baseline_difference=baseline_difference,
+                accumulated_shift=self.accumulated_shift,
+                settle_frames=self.settle_frames,
+                vertical=vertical,
+                departed=departed,
+            )
+        )
 
         self.previous = current
-        return False
+        return self.phase is MotionPhase.SETTLED
