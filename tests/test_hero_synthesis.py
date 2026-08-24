@@ -23,6 +23,7 @@ from auto_game_unified.games.epic7.hero_synthesis import (
 from auto_game_unified.games.epic7.hero_transition import (
     CardSwitchMotionObserver,
     MotionPhase,
+    SafetyClass,
 )
 from auto_game_unified.games.epic7.modes import MODE_SPECS, get_mode
 from auto_game_unified.games.epic7.navigation import (
@@ -172,6 +173,84 @@ class CardSwitchRunnerTests(unittest.TestCase):
         runner._after_action_click(previous)
 
         self.assertFalse(runner._card_transition_completed(previous, current))
+
+
+class HeroSafetyClassificationTests(unittest.TestCase):
+    def test_current_sss_is_positive_sss(self):
+        self.assertIs(
+            machine(verify_filter=True)._classify_current_hero(
+                fixture("list_grey_3s")
+            ),
+            SafetyClass.SSS,
+        )
+
+    def test_blue_imprint_button_is_positive_non_sss(self):
+        self.assertIs(
+            machine(verify_filter=True)._classify_current_hero(
+                fixture("list_reddot")
+            ),
+            SafetyClass.NON_SSS,
+        )
+
+    def test_no_reddot_blue_button_is_positive_non_sss(self):
+        self.assertIs(
+            machine(verify_filter=True)._classify_current_hero(
+                fixture("list_no_reddot")
+            ),
+            SafetyClass.NON_SSS,
+        )
+
+    def test_ambiguous_grey_without_sss_is_unknown(self):
+        m = machine(verify_filter=True)
+        screen = fixture("list_grey_3s").copy()
+        x, y, w, h = m._RATING_REGION
+        screen[y : y + h, x : x + w] = 0
+
+        self.assertIs(m._classify_current_hero(screen), SafetyClass.UNKNOWN)
+
+    def test_material_score_margin_has_unknown_band(self):
+        m = machine()
+        row = m._up_badge_rows(fixture("imprint_up_cards_no_sss"))[0]
+        with patch.object(m, "_material_sss_score", return_value=0.70):
+            self.assertIs(
+                m._classify_material_row(
+                    fixture("imprint_up_cards_no_sss"), row
+                ),
+                SafetyClass.UNKNOWN,
+            )
+
+    def test_transmit_target_score_margin_has_unknown_band(self):
+        m = machine()
+        card = m._transmit_target_card(fixture("transmit_select"))
+        with patch.object(m, "_material_sss_score", return_value=0.70):
+            self.assertIs(
+                m._classify_transmit_target(fixture("transmit_select"), card),
+                SafetyClass.UNKNOWN,
+            )
+
+    def test_unknown_current_hero_does_not_click(self):
+        m = machine(verify_filter=True)
+        with patch.object(
+            m, "_classify_current_hero", return_value=SafetyClass.UNKNOWN
+        ):
+            self.assertIsNone(m.next_action(fixture("list_reddot")))
+
+    def test_unknown_material_row_does_not_click_or_start_synthesis(self):
+        m = machine()
+        m.state = HeroSynthState.IMPRINT_ADD
+        with patch.object(
+            m, "_classify_material_row", return_value=SafetyClass.UNKNOWN
+        ):
+            self.assertIsNone(
+                m.next_action(fixture("imprint_up_cards_no_sss"))
+            )
+
+    def test_unknown_transmit_target_does_not_click(self):
+        m = machine()
+        with patch.object(
+            m, "_classify_transmit_target", return_value=SafetyClass.UNKNOWN
+        ):
+            self.assertIsNone(m.next_action(fixture("transmit_select")))
 
 class FakeClock:
     def __init__(self):
