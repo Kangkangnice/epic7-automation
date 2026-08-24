@@ -48,6 +48,16 @@ class FilterObservation(Enum):
     UNKNOWN = "unknown"
 
 
+class TransmitPhase(Enum):
+    NONE = "none"
+    PENDING = "pending"
+    OPENING = "opening"
+    SELECTING = "selecting"
+    CONFIRMING = "confirming"
+    TRANSMITTED = "transmitted"
+    RETURNING = "returning"
+
+
 STATE_LABELS = {
     HeroSynthState.HERO_LIST: "英雄列表",
     HeroSynthState.FILTER: "筛选面板",
@@ -290,11 +300,25 @@ class HeroSynthStateMachine:
         # 模拟器筛选关闭请求只表示“正在等待目标页”，不能代表筛选已完成。
         self._filter_close_pending: bool = False
         self._confirmed_page: str = ""
-        self.pending_transmit_target = False
+        self.transmit_phase = TransmitPhase.NONE
+        self.transmit_target_observation: Optional[str] = None
+        self._active_card_observation: Optional[str] = None
         self._imprint_empty_observations = 0
         self._list_end_observations = 0
         self._list_end_fingerprint: Optional[str] = None
         self._current_card_observation: Optional[str] = None
+
+    @property
+    def pending_transmit_target(self) -> bool:
+        return self.transmit_phase is not TransmitPhase.NONE
+
+    @pending_transmit_target.setter
+    def pending_transmit_target(self, value: bool) -> None:
+        if value and self.transmit_phase is TransmitPhase.NONE:
+            self.transmit_phase = TransmitPhase.PENDING
+        elif not value:
+            self.transmit_phase = TransmitPhase.NONE
+            self.transmit_target_observation = None
 
     def _confirm_page(self, label: str) -> None:
         if self.templates.pc_client:
@@ -783,6 +807,18 @@ class HeroSynthStateMachine:
         gray = self._zone_gray(screen, self._TRANSMIT_GRID_ZONE)
         return int((gray > 120).sum()) > 5000
 
+    def _transmit_grid_present(self, screen: np.ndarray) -> bool:
+        gray = self._zone_gray(screen, self._TRANSMIT_GRID_ZONE)
+        return int((gray > 45).sum()) > 5000
+
+    def _transmit_page_ready(self, screen: np.ndarray) -> bool:
+        return bool(
+            self._locate(screen, "auto_select_label", 0.85)
+            and self._transmit_target_card(screen) is not None
+            and self._transmit_grid_present(screen)
+            and self._transmit_green_present(screen)
+        )
+
     def _transmit_target_card(self, screen: np.ndarray) -> Optional[tuple[int, int, str]]:
         """传送选择界面：在卡片右侧的蓝色高亮行内定位当前卡。"""
         hsv = self._zone_hsv(screen, self._TRANSMIT_HIGHLIGHT_ZONE)
@@ -1079,8 +1115,13 @@ class HeroSynthStateMachine:
             if transmit_ctx or self.state.value.startswith("transmit"):
                 self._confirm_page("传送确认")
                 self.state = HeroSynthState.TRANSMIT_CONFIRM
-                return HeroAction(
-                    "confirm_transmit", self._scaled_point(screen, confirm)
+                self.transmit_phase = TransmitPhase.CONFIRMING
+                return self._simulator_transition_action(
+                    "confirm_transmit",
+                    self._scaled_point(screen, confirm),
+                    source_page="传送确认",
+                    target_pages=("传送奖励",),
+                    reason="传送确认弹窗的蓝色确认按钮与金色内容带同时存在",
                 )
             self._confirm_page("合成确认")
             self.state = HeroSynthState.IMPRINT_CONFIRM
@@ -1096,8 +1137,16 @@ class HeroSynthStateMachine:
         # 3. 传送奖励弹窗（仅在传送流程中判定，防止列表误触）
         if self.state.value.startswith("transmit") and self._reward_strip_present(screen):
             self._confirm_page("传送奖励")
+            self.transmit_phase = TransmitPhase.TRANSMITTED
             self.state = HeroSynthState.TRANSMIT_RETURNING
-            return HeroAction("close_reward", self._scaled_point(screen, self._REWARD_CLOSE_POINT))
+            self.transmit_phase = TransmitPhase.RETURNING
+            return self._simulator_transition_action(
+                "close_reward",
+                self._scaled_point(screen, self._REWARD_CLOSE_POINT),
+                source_page="传送奖励",
+                target_pages=("传送选择",),
+                reason="传送奖励层已确认，关闭后只允许返回英雄列表",
+            )
 
         # 4. 传送/刻印返回动画：只在确认列表已恢复后继续流程。
         if self.state is HeroSynthState.IMPRINT_ABORTING:
@@ -1116,26 +1165,42 @@ class HeroSynthStateMachine:
                 self._confirm_page("传送选择")
                 back = self._back_action(screen)
                 if back is not None:
-                    return back
+                    return self._simulator_transition_action(
+                        "back_to_list",
+                        back.point,
+                        source_page="传送选择",
+                        target_pages=("英雄列表",),
+                        reason="传送已完成，选择页只允许返回英雄列表",
+                    )
                 return None
             if not self._hero_list_ready(screen):
                 return None
-            self.pending_transmit_target = False
+            self.transmit_phase = TransmitPhase.NONE
+            self.transmit_target_observation = None
             self.state = HeroSynthState.HERO_LIST
 
-        # 5. 传送选择界面（自动选择标签为锚点，需先于绿钮判定）
+        # 5. 传送选择界面：四个锚点齐全才算真正进入。
         if self._locate(screen, "auto_select_label", 0.85):
+            if not self._transmit_page_ready(screen):
+                return None
             self._confirm_page("传送选择")
-            self.pending_transmit_target = False
             self.state = HeroSynthState.TRANSMIT_SELECT
+            self.transmit_phase = TransmitPhase.SELECTING
             card = self._transmit_target_card(screen)
             target_class = self._classify_transmit_target(screen, card)
             if target_class is SafetyClass.SSS:
                 back = self._back_action(screen)
                 if back is None:
                     raise UnrecognizedScreen("传送高亮卡为 SSS 且缺少返回箭头")
+                self.transmit_phase = TransmitPhase.RETURNING
                 self.state = HeroSynthState.TRANSMIT_RETURNING
-                return HeroAction("abort_transmit_sss_target", back.point)
+                return self._simulator_transition_action(
+                    "abort_transmit_sss_target",
+                    back.point,
+                    source_page="传送选择",
+                    target_pages=("英雄列表",),
+                    reason="传送高亮目标为SSS，禁止传送并返回列表",
+                )
             if target_class is SafetyClass.UNKNOWN:
                 return None
             if card is not None and (
@@ -1143,14 +1208,24 @@ class HeroSynthStateMachine:
                 and self._transmit_grid_filled(screen)
             ):
                 self.state = HeroSynthState.TRANSMIT_CONFIRM
-                return HeroAction(
-                    "start_transmit", self._scaled_point(screen, self._TRANSMIT_GREEN_POINT)
+                return self._simulator_transition_action(
+                    "start_transmit",
+                    self._scaled_point(screen, self._TRANSMIT_GREEN_POINT),
+                    source_page="传送选择",
+                    target_pages=("传送确认",),
+                    reason="目标已进入传送格且绿色传送按钮存在",
+                    source_observation="grid=1",
                 )
             if card is not None:
                 x, y, tag = card
-                return HeroAction(
+                return self._simulator_transition_action(
                     f"select_transmit_card_{tag}",
                     self._scaled_point(screen, (x, y)),
+                    source_page="传送选择",
+                    target_pages=("传送选择",),
+                    reason="高亮目标已确认但传送格尚未填入",
+                    source_observation="grid=0",
+                    transition_kind="transmit_selection",
                 )
             return None
 
@@ -1212,12 +1287,40 @@ class HeroSynthStateMachine:
             and up is None
         ):
             self._imprint_empty_observations = 0
-            self.pending_transmit_target = True
+            target_observation = (
+                self._active_card_observation or self._current_card_observation
+            )
+            if target_observation is None:
+                raise UnrecognizedScreen("发现 SSS 材料但缺少当前英雄身份")
+            self.transmit_phase = TransmitPhase.PENDING
+            self.transmit_target_observation = target_observation
             back = self._back_action(screen)
             if back is None:
                 raise UnrecognizedScreen("发现 SSS 材料但刻印页面缺少返回箭头")
             self.state = HeroSynthState.IMPRINT_ABORTING
-            return HeroAction("abort_imprint_to_transmit", back.point)
+            return self._simulator_transition_action(
+                "abort_imprint_to_transmit",
+                back.point,
+                source_page="刻印SSS材料",
+                target_pages=("英雄列表",),
+                reason="发现SSS材料，保存当前英雄身份并中止刻印",
+            )
+        if (
+            self.state is HeroSynthState.IMPRINT_ABORTING
+            and complete_imprint_page
+            and sss_material_present
+            and up is None
+        ):
+            back = self._back_action(screen)
+            if back is None:
+                raise UnrecognizedScreen("发现 SSS 材料但刻印页面缺少返回箭头")
+            return self._simulator_transition_action(
+                "abort_imprint_to_transmit",
+                back.point,
+                source_page="刻印SSS材料",
+                target_pages=("英雄列表",),
+                reason="SSS材料页仍存在，继续请求返回英雄列表",
+            )
         if self.state is HeroSynthState.IMPRINT_ADD and not complete_imprint_page:
             self._imprint_empty_observations = 0
             return None
@@ -1357,22 +1460,31 @@ class HeroSynthStateMachine:
         # 直接看左侧详情面板上的评级字符更稳。
         self.state = HeroSynthState.HERO_LIST
         if self.pending_transmit_target:
+            if not self._hero_list_ready(screen):
+                return None
             card_observation = self._detail_fingerprint(screen)
             self._current_card_observation = card_observation
-            return HeroAction(
+            if self.transmit_phase not in (
+                TransmitPhase.PENDING,
+                TransmitPhase.OPENING,
+            ):
+                return None
+            if self.transmit_target_observation is None:
+                self.transmit_target_observation = card_observation
+            if card_observation != self.transmit_target_observation:
+                return None
+            self._active_card_observation = card_observation
+            self.transmit_phase = TransmitPhase.OPENING
+            return self._simulator_transition_action(
                 "open_transmit_for_current_card",
                 self._scaled_point(screen, self._TRANSMIT_ENTRY_POINT),
-                source_page="英雄列表" if not self.templates.pc_client else "",
-                target_pages=("传送选择",) if not self.templates.pc_client else (),
-                reason=(
-                    "当前副本待传送且英雄列表已恢复"
-                    if not self.templates.pc_client
-                    else ""
-                ),
-                source_observation=(
-                    card_observation if not self.templates.pc_client else ""
-                ),
+                source_page="英雄列表",
+                target_pages=("传送选择",),
+                reason="已恢复到保存的待传送英雄，打开传送选择页",
+                source_observation=card_observation,
             )
+        if not self.templates.pc_client and self._hero_list_ready(screen):
+            self._active_card_observation = self._detail_fingerprint(screen)
         struct_n = self._locate_button(screen, self._masked_normal, 0.0)
         struct_g = (
             None
@@ -1505,7 +1617,9 @@ class HeroSynthStateMachine:
             self._awaiting_star3_confirmation,
             self._filter_close_pending,
             self._confirmed_page,
-            self.pending_transmit_target,
+            self.transmit_phase,
+            self.transmit_target_observation,
+            self._active_card_observation,
             self._imprint_empty_observations,
             self._list_end_observations,
             self._list_end_fingerprint,
@@ -1525,7 +1639,9 @@ class HeroSynthStateMachine:
                 self._awaiting_star3_confirmation,
                 self._filter_close_pending,
                 self._confirmed_page,
-                self.pending_transmit_target,
+                self.transmit_phase,
+                self.transmit_target_observation,
+                self._active_card_observation,
                 self._imprint_empty_observations,
                 self._list_end_observations,
                 self._list_end_fingerprint,
@@ -1612,7 +1728,6 @@ class HeroSynthRunner(ModeRunnerBase):
         self.machine._awaiting_star3_confirmation = False
         self.machine._filter_close_pending = False
         self.machine._confirmed_page = ""
-        self.machine.pending_transmit_target = False
         self._needs_navigation_settle = self.machine.templates.pc_client
 
     def _stable_next_action(self, screen: np.ndarray, stable: Any):
@@ -1680,6 +1795,16 @@ class HeroSynthRunner(ModeRunnerBase):
             return True
         return bool(previous_rows and min(previous_rows) not in current_rows)
 
+    @staticmethod
+    def _transmit_selection_completed(
+        previous_action: HeroAction, current_action: HeroAction | None
+    ) -> bool:
+        return bool(
+            previous_action.source_observation == "grid=0"
+            and current_action is not None
+            and current_action.source_observation == "grid=1"
+        )
+
     def _card_transition_completed(self, previous_action, current_action) -> bool:
         completed = self._card_switch_motion_confirmed
         if completed:
@@ -1689,6 +1814,13 @@ class HeroSynthRunner(ModeRunnerBase):
     def _transition_completed(
         self, previous_action, current_action, confirmed_page: str
     ) -> bool:
+        if (
+            getattr(previous_action, "transition_kind", "")
+            == "transmit_selection"
+        ):
+            return self._transmit_selection_completed(
+                previous_action, current_action
+            )
         if getattr(previous_action, "transition_kind", "") == "material_change":
             return self._material_transition_completed(
                 previous_action, current_action

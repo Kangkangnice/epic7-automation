@@ -16,6 +16,7 @@ from auto_game_unified.games.epic7.hero_synthesis import (
     HeroSynthRunner,
     HeroSynthState,
     HeroSynthStateMachine,
+    TransmitPhase,
     UnrecognizedScreen,
     build_hero_templates,
     state_label,
@@ -292,6 +293,101 @@ class FrameScopedEvidenceTests(unittest.TestCase):
             runner._material_transition_completed(previous, changed)
         )
 
+
+class TransmitTransactionTests(unittest.TestCase):
+    def test_target_persists_until_reward_is_confirmed(self):
+        m = machine(verify_filter=True)
+        m._active_card_observation = "card-copy-7"
+        m.state = HeroSynthState.IMPRINT_ADD
+
+        m.next_action(sss_only_material_page())
+        self.assertIs(m.transmit_phase, TransmitPhase.PENDING)
+        self.assertEqual("card-copy-7", m.transmit_target_observation)
+
+        m.next_action(fixture("list_reddot"))
+        m.next_action(fixture("transmit_select"))
+        self.assertIsNot(m.transmit_phase, TransmitPhase.NONE)
+        self.assertEqual("card-copy-7", m.transmit_target_observation)
+
+    def test_entering_transmit_page_does_not_mark_target_transmitted(self):
+        m = machine(verify_filter=True)
+        m.transmit_phase = TransmitPhase.OPENING
+        m.transmit_target_observation = "card-copy-7"
+
+        m.next_action(fixture("transmit_select"))
+
+        self.assertIs(m.transmit_phase, TransmitPhase.SELECTING)
+        self.assertEqual("card-copy-7", m.transmit_target_observation)
+
+    def test_recovery_does_not_clear_unfinished_transmit_target(self):
+        m = machine(verify_filter=True)
+        m.transmit_phase = TransmitPhase.CONFIRMING
+        m.transmit_target_observation = "card-copy-7"
+        runner = HeroSynthRunner(m, Runtime(lambda: None, lambda *_: None))
+
+        runner._apply_recovery_state()
+
+        self.assertIs(m.transmit_phase, TransmitPhase.CONFIRMING)
+        self.assertEqual("card-copy-7", m.transmit_target_observation)
+
+    def test_saved_target_must_still_be_selected_before_opening_transmit(self):
+        m = machine(verify_filter=True)
+        m.transmit_phase = TransmitPhase.PENDING
+        m.transmit_target_observation = "different-card"
+
+        self.assertIsNone(m.next_action(fixture("list_reddot")))
+        self.assertIs(m.transmit_phase, TransmitPhase.PENDING)
+
+    def test_auto_select_label_alone_is_not_complete_transmit_page(self):
+        m = machine(verify_filter=True)
+        incomplete = fixture("transmit_select").copy()
+        x, y, w, h = m._TRANSMIT_GRID_ZONE
+        incomplete[y : y + h, x : x + w] = 0
+
+        self.assertFalse(m._transmit_page_ready(incomplete))
+
+    def test_sss_material_without_saved_current_hero_stops(self):
+        m = machine()
+        m.state = HeroSynthState.IMPRINT_ADD
+
+        with self.assertRaises(UnrecognizedScreen):
+            m.next_action(sss_only_material_page())
+
+
+def test_sss_material_transmit_returns_once_and_continues_cycle():
+    sequence = (
+        [fixture("list_reddot")] * 2
+        + [fixture("filter_open")] * 2
+        + [fixture("list_reddot")] * 2
+        + [sss_only_material_page()] * 2
+        + [fixture("list_reddot")] * 2
+        + [fixture("transmit_select")] * 2
+        + [fixture("transmit_confirm")] * 2
+        + [fixture("reward_popup")] * 2
+        + [fixture("transmit_select")] * 2
+        + [fixture("list_end_of_cards")] * 4
+    )
+    screens = iter(sequence)
+    clicks = []
+    logs = []
+    runner = HeroSynthRunner(
+        machine(),
+        Runtime(lambda: next(screens), clicks.append, emit=logs.append),
+        sleep=lambda _: None,
+    )
+
+    completed = runner.run(max_cycles=1)
+
+    names = [
+        line.split("动作=")[1].split()[0]
+        for line in logs
+        if "执行点击" in line and "动作=" in line
+    ]
+    assert completed == 1
+    assert names.count("confirm_transmit") == 1
+    assert names.count("close_reward") == 1
+    assert "back_to_list" in names
+
 class FakeClock:
     def __init__(self):
         self.value = 0.0
@@ -475,6 +571,7 @@ class HeroPageEvidenceTests(unittest.TestCase):
 
     def test_sss_material_page_takes_precedence(self):
         m = machine(verify_filter=True)
+        m._active_card_observation = "test-card"
         m.state = HeroSynthState.IMPRINT_ADD
 
         m.next_action(sss_only_material_page())
@@ -911,6 +1008,7 @@ class ImprintDecisionTests(unittest.TestCase):
 
     def test_sss_material_aborts_imprint_before_clicking_material(self):
         m = machine()
+        m._active_card_observation = "test-card"
         m.state = HeroSynthState.IMPRINT_ADD
         action = m.next_action(sss_only_material_page())
         self.assertEqual("abort_imprint_to_transmit", action.name)
@@ -937,6 +1035,9 @@ class ImprintDecisionTests(unittest.TestCase):
 
     def test_sss_material_branch_enters_existing_transmit_flow(self):
         m = machine()
+        m._active_card_observation = m._detail_fingerprint(
+            fixture("list_reddot")
+        )
         m.state = HeroSynthState.IMPRINT_ADD
         m.next_action(sss_only_material_page())
         self.assertTrue(m.pending_transmit_target)
@@ -947,10 +1048,11 @@ class ImprintDecisionTests(unittest.TestCase):
             m.next_action(fixture("list_reddot")).name,
         )
         self.assertEqual("start_transmit", m.next_action(fixture("transmit_select")).name)
-        self.assertFalse(m.pending_transmit_target)
+        self.assertTrue(m.pending_transmit_target)
 
     def test_preview_restores_pending_transmit_context(self):
         m = machine()
+        m._active_card_observation = "test-card"
         m.state = HeroSynthState.IMPRINT_ADD
         action, _ = m.preview(sss_only_material_page())
         self.assertEqual("abort_imprint_to_transmit", action.name)
@@ -1155,7 +1257,8 @@ class TransmitDecisionTests(unittest.TestCase):
             self.assertIsNone(m.next_action(fixture("transmit_select")))
             self.assertIsNone(m.next_action(fixture("transmit_select")))
 
-        self.assertIs(m.state, HeroSynthState.TRANSMIT_SELECT)
+        self.assertIs(m.state, HeroSynthState.HERO_LIST)
+        self.assertIs(m.transmit_phase, TransmitPhase.NONE)
 
     def test_transmit_strip_locator_clicks_inside_highlighted_card(self):
         m = machine()
