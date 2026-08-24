@@ -21,7 +21,10 @@ from auto_game_unified.core.matcher import Match, find_template, load_template
 from auto_game_unified.core.recovery import RecoveryGate
 from auto_game_unified.core.runtime import Runtime
 from auto_game_unified.games.epic7.runner_base import ModeRunnerBase
-from auto_game_unified.games.epic7.hero_transition import CardSwitchMotionObserver
+from auto_game_unified.games.epic7.hero_transition import (
+    CardSwitchMotionObserver,
+    SafetyClass,
+)
 from auto_game_unified.games.epic7.unknown_screen import UnrecognizedScreen
 
 
@@ -247,6 +250,8 @@ class HeroSynthStateMachine:
     _DETAIL_CONTENT_BRIGHT_MIN = 5000
     _REWARD_STRIP_RANGE = (300, 1500)
     _SSS_MATERIAL_MIN = 0.80  # 材料卡保留少量背景，阈值略低于评级模板
+    _SSS_MATERIAL_CLEAR_MAX = 0.56
+    _NON_SSS_BUTTON_SATURATION_MIN = 90.0
     _FILTER_ATTRIBUTE_MIN = 0.82
     _FILTER_ATTRIBUTE_SMALL_MIN = 0.75
     _UP_BADGE_MIN_PIXELS = 300
@@ -453,6 +458,18 @@ class HeroSynthStateMachine:
             return False
         return self._is_max_rating(self._last_screen)
 
+    def _classify_current_hero(self, screen: np.ndarray) -> SafetyClass:
+        if self.templates.assume_non_max_rating:
+            return SafetyClass.NON_SSS
+        if self._is_max_rating(screen):
+            return SafetyClass.SSS
+        if (
+            imprint_button_saturation(screen)
+            >= self._NON_SSS_BUTTON_SATURATION_MIN
+        ):
+            return SafetyClass.NON_SSS
+        return SafetyClass.UNKNOWN
+
     def _red_dot_present(self, screen: np.ndarray) -> bool:
         # 红点角标实际是橙红色（H 0~25 或 H 170~180），不是纯红
         zone = self._reddot_zone
@@ -586,7 +603,9 @@ class HeroSynthStateMachine:
 
         rows = self._up_badge_rows(screen)
         ordinary_rows = [
-            row for row in rows if not self._row_is_sss_material(screen, row)
+            row
+            for row in rows
+            if self._classify_material_row(screen, row) is SafetyClass.NON_SSS
         ]
         if not ordinary_rows:
             return None
@@ -597,23 +616,47 @@ class HeroSynthStateMachine:
         self, screen: np.ndarray, row: tuple[int, int]
     ) -> bool:
         """在同一张材料卡的评级区检查 SSS，避免把其它卡的 SSS 串到当前卡。"""
+        return self._classify_material_row(screen, row) is SafetyClass.SSS
+
+    def _material_sss_score(
+        self,
+        screen: np.ndarray,
+        row: tuple[int, int],
+        *,
+        region_override: tuple[int, int, int, int] | None = None,
+    ) -> float:
+        if self.templates.pc_client or self.templates.sss_material is None:
+            return -1.0
         start, end = row
-        region = (
+        region = region_override or (
             self._MATERIAL_SSS_REGION[0],
             max(self._MATERIAL_SSS_REGION[1], start - 45),
             self._MATERIAL_SSS_REGION[2],
             min(self._MATERIAL_SSS_REGION[3], end - start + 90),
         )
-        return (
-            not self.templates.pc_client
-            and self.templates.sss_material is not None
-            and self._locate(
-                screen,
-                "sss_material",
-                self._SSS_MATERIAL_MIN,
-                region_override=region,
-            )
-            is not None
+        match = find_template(
+            screen,
+            self.templates.sss_material,
+            -1.0,
+            region=region,
+            reference_size=self._REFERENCE_SIZE,
+        )
+        return match.score if match is not None else -1.0
+
+    def _classify_material_row(
+        self, screen: np.ndarray, row: tuple[int, int]
+    ) -> SafetyClass:
+        score = self._material_sss_score(screen, row)
+        if score >= self._SSS_MATERIAL_MIN:
+            return SafetyClass.SSS
+        if score <= self._SSS_MATERIAL_CLEAR_MAX:
+            return SafetyClass.NON_SSS
+        return SafetyClass.UNKNOWN
+
+    def _unknown_up_material_present(self, screen: np.ndarray) -> bool:
+        return any(
+            self._classify_material_row(screen, row) is SafetyClass.UNKNOWN
+            for row in self._up_badge_rows(screen)
         )
 
     def _green_button_present(self, screen: np.ndarray) -> bool:
@@ -744,19 +787,29 @@ class HeroSynthStateMachine:
         self, screen: np.ndarray, card: tuple[int, int, str]
     ) -> bool:
         """只检查当前高亮行，禁止把其它列表卡片的 SSS 当成目标。"""
-        if self.templates.pc_client or self.templates.sss_material is None:
-            return False
+        return self._classify_transmit_target(screen, card) is SafetyClass.SSS
+
+    def _classify_transmit_target(
+        self,
+        screen: np.ndarray,
+        card: tuple[int, int, str] | None,
+    ) -> SafetyClass:
+        if self.templates.pc_client:
+            return SafetyClass.NON_SSS
+        if card is None:
+            return SafetyClass.UNKNOWN
         _, y, _ = card
         region = (1500, max(200, y - 70), 480, 140)
-        return (
-            self._locate(
-                screen,
-                "sss_material",
-                self._SSS_MATERIAL_MIN,
-                region_override=region,
-            )
-            is not None
+        score = self._material_sss_score(
+            screen,
+            (y - 25, y + 25),
+            region_override=region,
         )
+        if score >= self._SSS_MATERIAL_MIN:
+            return SafetyClass.SSS
+        if score <= self._SSS_MATERIAL_CLEAR_MAX:
+            return SafetyClass.NON_SSS
+        return SafetyClass.UNKNOWN
 
     def _hero_list_ready(self, screen: np.ndarray) -> bool:
         """确认返回动画已结束，避免把刻印页过渡帧当成英雄列表。"""
@@ -1053,12 +1106,15 @@ class HeroSynthStateMachine:
             self.pending_transmit_target = False
             self.state = HeroSynthState.TRANSMIT_SELECT
             card = self._transmit_target_card(screen)
-            if card is not None and self._transmit_target_is_sss(screen, card):
+            target_class = self._classify_transmit_target(screen, card)
+            if target_class is SafetyClass.SSS:
                 back = self._back_action(screen)
                 if back is None:
                     raise UnrecognizedScreen("传送高亮卡为 SSS 且缺少返回箭头")
                 self.state = HeroSynthState.TRANSMIT_RETURNING
                 return HeroAction("abort_transmit_sss_target", back.point)
+            if target_class is SafetyClass.UNKNOWN:
+                return None
             if card is not None and (
                 self._transmit_green_present(screen)
                 and self._transmit_grid_filled(screen)
@@ -1118,6 +1174,9 @@ class HeroSynthStateMachine:
                 self.state = HeroSynthState.IMPRINT_ADD
             sss_material_present = self._sss_material_present(screen)
             up = self._find_up_card(screen)
+            if self._unknown_up_material_present(screen):
+                self._confirm_page("刻印加材料")
+                return None
             if sss_material_present and up is None:
                 self._confirm_page("刻印SSS材料")
             else:
@@ -1289,6 +1348,7 @@ class HeroSynthStateMachine:
             if self.templates.assume_non_max_rating
             else self._locate_button(screen, self._masked_grey, 0.0)
         )
+        hero_class = self._classify_current_hero(screen)
         best = max(
             (m for m in (struct_n, struct_g) if m is not None),
             key=lambda m: m.score,
@@ -1307,9 +1367,11 @@ class HeroSynthStateMachine:
                         else ""
                     ),
                 )
-            if self._is_max_rating(screen):
+            if hero_class is SafetyClass.SSS:
                 self.prev_card_grey = True
                 return self._advance_or_finish(screen)
+            if hero_class is SafetyClass.UNKNOWN:
+                return None
             if self._red_dot_present(screen):
                 self.prev_card_grey = False
                 if self.templates.pc_client:
@@ -1338,47 +1400,21 @@ class HeroSynthStateMachine:
             self.prev_card_grey = False
             return self._advance_or_finish(screen)
 
-        # 按钮结构匹配不上（视觉变种如绿色菱形）：
-        # 用"是否有任何线索"判定：只要红点或评级能识别，就按业务逻辑走；
-        # 都没有 → 当前画面根本不是英雄列表，抛 UnrecognizedScreen 让主循环回收。
-        if self._is_max_rating(screen) or self._red_dot_present(screen):
-            if not self.filter_verified:
-                return HeroAction(
-                    "open_filter",
-                    self._scaled_point(
-                        screen, self._point(self._FUNNEL_POINT, self._PC_FUNNEL_POINT)
-                    ),
-                    source_observation=(
-                        self._detail_fingerprint(screen)
-                        if not self.templates.pc_client
-                        else ""
-                    ),
-                )
-            if self._is_max_rating(screen):
-                self.prev_card_grey = True
-                return self._advance_or_finish(screen)
-            self.prev_card_grey = False
-            if self.templates.pc_client:
-                self.state = HeroSynthState.IMPRINT_ADD
-            self._imprint_empty_observations = 0
+        # 按钮结构匹配不上（视觉变种如绿色菱形）时，模拟器只接受明确
+        # 的 SSS/普通证据；未知帧停等。PC 保持原来的线索门槛。
+        if self.templates.pc_client and not (
+            self._is_max_rating(screen) or self._red_dot_present(screen)
+        ):
+            raise UnrecognizedScreen(
+                f"英雄合成画面[{state_label(self.state)}]未识别"
+            )
+        if hero_class is SafetyClass.UNKNOWN:
+            return None
+        if not self.filter_verified:
             return HeroAction(
-                "open_imprint",
+                "open_filter",
                 self._scaled_point(
-                    screen,
-                    self._point(
-                        self._IMPRINT_BUTTON_POINT, self._PC_IMPRINT_BUTTON_POINT
-                    ),
-                ),
-                source_page="" if self.templates.pc_client else "英雄列表",
-                target_pages=(
-                    ()
-                    if self.templates.pc_client
-                    else ("刻印加材料", "刻印SSS材料")
-                ),
-                reason=(
-                    ""
-                    if self.templates.pc_client
-                    else "当前英雄非SSS且刻印按钮红点存在"
+                    screen, self._point(self._FUNNEL_POINT, self._PC_FUNNEL_POINT)
                 ),
                 source_observation=(
                     self._detail_fingerprint(screen)
@@ -1386,8 +1422,40 @@ class HeroSynthStateMachine:
                     else ""
                 ),
             )
-        raise UnrecognizedScreen(
-            f"英雄合成画面[{state_label(self.state)}]未识别"
+        if hero_class is SafetyClass.SSS:
+            self.prev_card_grey = True
+            return self._advance_or_finish(screen)
+        if not self._red_dot_present(screen):
+            self.prev_card_grey = False
+            return self._advance_or_finish(screen)
+        self.prev_card_grey = False
+        if self.templates.pc_client:
+            self.state = HeroSynthState.IMPRINT_ADD
+        self._imprint_empty_observations = 0
+        return HeroAction(
+            "open_imprint",
+            self._scaled_point(
+                screen,
+                self._point(
+                    self._IMPRINT_BUTTON_POINT, self._PC_IMPRINT_BUTTON_POINT
+                ),
+            ),
+            source_page="" if self.templates.pc_client else "英雄列表",
+            target_pages=(
+                ()
+                if self.templates.pc_client
+                else ("刻印加材料", "刻印SSS材料")
+            ),
+            reason=(
+                ""
+                if self.templates.pc_client
+                else "当前英雄非SSS且刻印按钮红点存在"
+            ),
+            source_observation=(
+                self._detail_fingerprint(screen)
+                if not self.templates.pc_client
+                else ""
+            ),
         )
 
     def preview(self, screen: np.ndarray):
