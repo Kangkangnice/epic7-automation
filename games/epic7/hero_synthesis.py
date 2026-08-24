@@ -69,6 +69,8 @@ class HeroAction:
     source_page: str = ""
     target_pages: tuple[str, ...] = ()
     reason: str = ""
+    source_observation: str = ""
+    transition_kind: str = ""
 
 
 def imprint_button_saturation(screen: np.ndarray) -> float:
@@ -286,6 +288,7 @@ class HeroSynthStateMachine:
         self._imprint_empty_observations = 0
         self._list_end_observations = 0
         self._list_end_fingerprint: Optional[str] = None
+        self._current_card_observation: Optional[str] = None
 
     def _confirm_page(self, label: str) -> None:
         if self.templates.pc_client:
@@ -906,12 +909,15 @@ class HeroSynthStateMachine:
         return hashlib.sha1(b"".join(parts)).hexdigest()[:8]
 
     def _advance_or_finish(self, screen: np.ndarray) -> Optional[HeroAction]:
+        self._current_card_observation = self._detail_fingerprint(screen)
+        if not self._hero_list_ready(screen):
+            self._current_card_observation = None
+            self._list_end_fingerprint = None
+            self._list_end_observations = 0
+            return None
+        self._confirm_page("英雄列表")
         if not self._card_below_present(screen):
-            if not self._hero_list_ready(screen):
-                self._list_end_fingerprint = None
-                self._list_end_observations = 0
-                return None
-            fingerprint = self._detail_fingerprint(screen)
+            fingerprint = self._current_card_observation
             if self._list_end_fingerprint != fingerprint:
                 self._list_end_fingerprint = fingerprint
                 self._list_end_observations = 0
@@ -933,8 +939,12 @@ class HeroSynthStateMachine:
         # 产生不同动作名，从而不会被误判为稳定。
         rating = "S" if self._is_max_rating(screen) else "X"
         dot = "D" if self._red_dot_present(screen) else "N"
-        fp = self._detail_fingerprint(screen)
-        sig = f"{rating}{dot}{fp}"
+        fp = self._current_card_observation
+        if fp is None:
+            return None
+        # Runner 的翻卡身份只允许由稳定卡片指纹决定；评级/红点是当前
+        # 决策原因，识别抖动不能被当成“已经翻到下一张”。
+        sig = fp
         skip_reason = (
             "当前英雄为SSS，跳过"
             if rating == "S"
@@ -952,6 +962,8 @@ class HeroSynthStateMachine:
                 if self.templates.pc_client
                 else f"{skip_reason}，详情指纹={fp}，等待下一英雄或列表末尾"
             ),
+            source_observation="" if self.templates.pc_client else fp,
+            transition_kind="" if self.templates.pc_client else "card_change",
         )
 
     # ---- 主决策 ----
@@ -1254,9 +1266,21 @@ class HeroSynthStateMachine:
         # 直接看左侧详情面板上的评级字符更稳。
         self.state = HeroSynthState.HERO_LIST
         if self.pending_transmit_target:
+            card_observation = self._detail_fingerprint(screen)
+            self._current_card_observation = card_observation
             return HeroAction(
                 "open_transmit_for_current_card",
                 self._scaled_point(screen, self._TRANSMIT_ENTRY_POINT),
+                source_page="英雄列表" if not self.templates.pc_client else "",
+                target_pages=("传送选择",) if not self.templates.pc_client else (),
+                reason=(
+                    "当前副本待传送且英雄列表已恢复"
+                    if not self.templates.pc_client
+                    else ""
+                ),
+                source_observation=(
+                    card_observation if not self.templates.pc_client else ""
+                ),
             )
         struct_n = self._locate_button(screen, self._masked_normal, 0.0)
         struct_g = (
@@ -1275,6 +1299,11 @@ class HeroSynthStateMachine:
                     "open_filter",
                     self._scaled_point(
                         screen, self._point(self._FUNNEL_POINT, self._PC_FUNNEL_POINT)
+                    ),
+                    source_observation=(
+                        self._detail_fingerprint(screen)
+                        if not self.templates.pc_client
+                        else ""
                     ),
                 )
             if self._is_max_rating(screen):
@@ -1299,6 +1328,11 @@ class HeroSynthStateMachine:
                         if self.templates.pc_client
                         else "当前英雄非SSS且刻印按钮红点存在"
                     ),
+                    source_observation=(
+                        self._detail_fingerprint(screen)
+                        if not self.templates.pc_client
+                        else ""
+                    ),
                 )
             self.prev_card_grey = False
             return self._advance_or_finish(screen)
@@ -1312,6 +1346,11 @@ class HeroSynthStateMachine:
                     "open_filter",
                     self._scaled_point(
                         screen, self._point(self._FUNNEL_POINT, self._PC_FUNNEL_POINT)
+                    ),
+                    source_observation=(
+                        self._detail_fingerprint(screen)
+                        if not self.templates.pc_client
+                        else ""
                     ),
                 )
             if self._is_max_rating(screen):
@@ -1340,6 +1379,11 @@ class HeroSynthStateMachine:
                     if self.templates.pc_client
                     else "当前英雄非SSS且刻印按钮红点存在"
                 ),
+                source_observation=(
+                    self._detail_fingerprint(screen)
+                    if not self.templates.pc_client
+                    else ""
+                ),
             )
         raise UnrecognizedScreen(
             f"英雄合成画面[{state_label(self.state)}]未识别"
@@ -1361,6 +1405,7 @@ class HeroSynthStateMachine:
             self._imprint_empty_observations,
             self._list_end_observations,
             self._list_end_fingerprint,
+            self._current_card_observation,
             self._last_screen,
         )
         try:
@@ -1380,6 +1425,7 @@ class HeroSynthStateMachine:
                 self._imprint_empty_observations,
                 self._list_end_observations,
                 self._list_end_fingerprint,
+                self._current_card_observation,
                 self._last_screen,
             ) = snapshot
 
@@ -1477,6 +1523,52 @@ class HeroSynthRunner(ModeRunnerBase):
 
     def _is_instant_action(self, action_name: Optional[str]) -> bool:
         return self.machine.templates.pc_client and action_name == "close_filter"
+
+    def _card_transition_completed(self, previous_action, current_action) -> bool:
+        """卡片切换只接受卡片观察结果变化，不接受评级/红点抖动。"""
+        previous = getattr(previous_action, "source_observation", "")
+        current = (
+            getattr(current_action, "source_observation", "")
+            if current_action is not None
+            else getattr(self.machine, "_current_card_observation", None)
+        )
+        return bool(previous and current and previous != current)
+
+    def _transition_completed(
+        self, previous_action, current_action, confirmed_page: str
+    ) -> bool:
+        if getattr(previous_action, "transition_kind", "") == "card_change":
+            if current_action is not None:
+                if getattr(current_action, "source_page", "") != "英雄列表":
+                    return False
+            elif confirmed_page not in getattr(previous_action, "target_pages", ()):
+                return False
+            return self._card_transition_completed(previous_action, current_action)
+        return super()._transition_completed(
+            previous_action, current_action, confirmed_page
+        )
+
+    def _transition_retry_reason(self, previous_action, current_action) -> str:
+        if getattr(previous_action, "transition_kind", "") == "card_change":
+            observation = (
+                getattr(current_action, "source_observation", "")
+                or getattr(self.machine, "_current_card_observation", None)
+                or "未知"
+            )
+            return f"当前卡片观察仍为{observation}，未确认进入新卡片"
+        return super()._transition_retry_reason(previous_action, current_action)
+
+    def _transition_success_detail(self, previous_action, current_action) -> str:
+        if getattr(previous_action, "transition_kind", "") == "card_change":
+            observation = (
+                getattr(current_action, "source_observation", "")
+                if current_action is not None
+                else getattr(self.machine, "_current_card_observation", None)
+            )
+            return (
+                f"切换成功=卡片观察 {previous_action.source_observation} -> {observation}"
+            )
+        return super()._transition_success_detail(previous_action, current_action)
 
     def _decision_hint(self, action_name: str, state: Any) -> str:
         """让日志解释当前动作的决策原因（评级/红点/选星/状态切换）。"""

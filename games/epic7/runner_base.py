@@ -104,6 +104,28 @@ class ModeRunnerBase:
         """子模式可在覆写里给当前动作附加决策原因摘要。"""
         return ""
 
+    def _transition_completed(
+        self, previous_action: Any, current_action: Any, confirmed_page: str
+    ) -> bool:
+        """判断上一个带目标契约的动作是否已看到目标证据。"""
+        if (
+            not confirmed_page
+            or confirmed_page not in getattr(previous_action, "target_pages", ())
+        ):
+            return False
+        return (
+            current_action is None
+            or current_action.name != previous_action.name
+        )
+
+    def _transition_retry_reason(self, previous_action: Any, current_action: Any) -> str:
+        return "原页面仍存在且目标页面未出现"
+
+    def _transition_success_detail(
+        self, previous_action: Any, current_action: Any
+    ) -> str:
+        return ""
+
     def _is_instant_action(self, action_name: Optional[str]) -> bool:
         """返回 True 表示该动作不需要 stable 2 帧确认（一次性副作用，必须立刻发）。"""
         return False
@@ -373,19 +395,16 @@ class ModeRunnerBase:
             stable.reset()
 
             confirmed_page = getattr(self.machine, "_confirmed_page", "")
-            if (
-                last_transition_action is not None
-                and confirmed_page
-                and confirmed_page
-                in getattr(last_transition_action, "target_pages", ())
-                and (
-                    action is None
-                    or action.name != last_transition_action.name
-                )
+            if last_transition_action is not None and self._transition_completed(
+                last_transition_action, action, confirmed_page
             ):
+                detail = self._transition_success_detail(
+                    last_transition_action, action
+                )
                 self.runtime.log(
                     f"模式={self._MODE_LABEL} 完成={last_transition_action.name} "
                     f"目标页面={confirmed_page}"
+                    + (f" {detail}" if detail else "")
                 )
                 last_transition_action = None
 
@@ -502,9 +521,12 @@ class ModeRunnerBase:
                         f"坐标={action.point} 目标页面={'/'.join(target_pages)}"
                     )
                 if action_attempts > 1 and source_page:
+                    retry_reason = self._transition_retry_reason(
+                        last_transition_action, action
+                    )
                     self.runtime.log(
                         f"模式={self._MODE_LABEL} 重试={action.name} "
-                        "原因=原页面仍存在且目标页面未出现 "
+                        f"原因={retry_reason} "
                         f"尝试={action_attempts}/4"
                     )
                 # 子模式进度提示：让外部能从日志看到当前决策原因
