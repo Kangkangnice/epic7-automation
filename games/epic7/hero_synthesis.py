@@ -309,10 +309,20 @@ class HeroSynthStateMachine:
         source_page: str,
         target_pages: tuple[str, ...],
         reason: str,
+        source_observation: str = "",
+        transition_kind: str = "",
     ) -> HeroAction:
         if self.templates.pc_client:
             return HeroAction(name, point)
-        return HeroAction(name, point, source_page, target_pages, reason)
+        return HeroAction(
+            name,
+            point,
+            source_page,
+            target_pages,
+            reason,
+            source_observation,
+            transition_kind,
+        )
 
     def _mask_dot(self, template: np.ndarray) -> np.ndarray:
         """把模板上红点角标区置零，匹配时与画面同区域一起忽略。"""
@@ -601,16 +611,27 @@ class HeroSynthStateMachine:
             top = min(cards, key=lambda blob: blob[1])
             return (self._UP_CARD_X, top[1] + top[3] // 2, str(len(cards)))
 
-        rows = self._up_badge_rows(screen)
-        ordinary_rows = [
-            row
-            for row in rows
-            if self._classify_material_row(screen, row) is SafetyClass.NON_SSS
-        ]
+        ordinary_rows = self._ordinary_up_rows(screen)
         if not ordinary_rows:
             return None
         top = min(ordinary_rows)
         return (self._UP_CARD_X, top[0] + 4, str(len(ordinary_rows)))
+
+    def _ordinary_up_rows(
+        self, screen: np.ndarray
+    ) -> list[tuple[int, int]]:
+        return [
+            row
+            for row in self._up_badge_rows(screen)
+            if self._classify_material_row(screen, row) is SafetyClass.NON_SSS
+        ]
+
+    @staticmethod
+    def _material_observation(
+        filled_slots: int, rows: list[tuple[int, int]]
+    ) -> str:
+        centers = ",".join(str((start + end) // 2) for start, end in rows)
+        return f"slots={filled_slots};rows={centers}"
 
     def _row_is_sss_material(
         self, screen: np.ndarray, row: tuple[int, int]
@@ -1024,6 +1045,8 @@ class HeroSynthStateMachine:
 
     def next_action(self, screen: np.ndarray) -> Optional[HeroAction]:
         self._last_screen = screen
+        if not self.templates.pc_client:
+            self._confirmed_page = ""
         # 1. SSS 材料风险提示层必须先关闭，不能点击覆盖层下的按钮。
         warning_close = self._sss_material_warning_close(screen)
         if warning_close is not None:
@@ -1212,6 +1235,9 @@ class HeroSynthStateMachine:
                 self._imprint_empty_observations = 0
                 self.state = HeroSynthState.IMPRINT_ADD
                 x, y, tag = up
+                material_observation = self._material_observation(
+                    filled_slots, self._ordinary_up_rows(screen)
+                )
                 return self._simulator_transition_action(
                     f"add_material_{filled_slots}_{tag}",
                     self._scaled_point(screen, (x, y)),
@@ -1220,6 +1246,8 @@ class HeroSynthStateMachine:
                     reason=(
                         f"发现普通Up材料，已填槽位={filled_slots}，目标={tag}"
                     ),
+                    source_observation=material_observation,
+                    transition_kind="material_change",
                 )
             if self.state is HeroSynthState.IMPRINT_ADD:
                 # “没看到 Up”只表示识别结果为空，不表示材料已加完。必须看到
@@ -1248,6 +1276,9 @@ class HeroSynthStateMachine:
                     reason=(
                         "Up材料已清空，"
                         f"已填槽位={filled_slots}，费用非零，连续确认=2"
+                    ),
+                    source_observation=self._material_observation(
+                        filled_slots, []
                     ),
                 )
             back = self._back_action(screen)
@@ -1402,6 +1433,10 @@ class HeroSynthStateMachine:
 
         # 按钮结构匹配不上（视觉变种如绿色菱形）时，模拟器只接受明确
         # 的 SSS/普通证据；未知帧停等。PC 保持原来的线索门槛。
+        if not self.templates.pc_client and not self._hero_list_ready(screen):
+            raise UnrecognizedScreen(
+                f"英雄合成画面[{state_label(self.state)}]未识别"
+            )
         if self.templates.pc_client and not (
             self._is_max_rating(screen) or self._red_dot_present(screen)
         ):
@@ -1615,6 +1650,36 @@ class HeroSynthRunner(ModeRunnerBase):
             "模式=英雄合成 切换阶段=WAITING_DEPARTURE 结果=未确认"
         )
 
+    @staticmethod
+    def _parse_material_observation(
+        action: HeroAction | None,
+    ) -> tuple[int, tuple[int, ...]] | None:
+        observation = getattr(action, "source_observation", "")
+        if not observation.startswith("slots=") or ";rows=" not in observation:
+            return None
+        slots_text, rows_text = observation.split(";rows=", 1)
+        try:
+            slots = int(slots_text.removeprefix("slots="))
+            rows = tuple(
+                int(value) for value in rows_text.split(",") if value
+            )
+        except ValueError:
+            return None
+        return slots, rows
+
+    def _material_transition_completed(
+        self, previous_action: HeroAction, current_action: HeroAction | None
+    ) -> bool:
+        previous = self._parse_material_observation(previous_action)
+        current = self._parse_material_observation(current_action)
+        if previous is None or current is None:
+            return False
+        previous_slots, previous_rows = previous
+        current_slots, current_rows = current
+        if current_slots > previous_slots:
+            return True
+        return bool(previous_rows and min(previous_rows) not in current_rows)
+
     def _card_transition_completed(self, previous_action, current_action) -> bool:
         completed = self._card_switch_motion_confirmed
         if completed:
@@ -1624,6 +1689,10 @@ class HeroSynthRunner(ModeRunnerBase):
     def _transition_completed(
         self, previous_action, current_action, confirmed_page: str
     ) -> bool:
+        if getattr(previous_action, "transition_kind", "") == "material_change":
+            return self._material_transition_completed(
+                previous_action, current_action
+            )
         if getattr(previous_action, "transition_kind", "") == "card_change":
             if current_action is not None:
                 if getattr(current_action, "source_page", "") != "英雄列表":
