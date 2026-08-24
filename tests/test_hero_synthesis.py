@@ -191,6 +191,78 @@ class CardSwitchMotionObserverTests(unittest.TestCase):
 
 
 class CardSwitchRunnerTests(unittest.TestCase):
+    def test_same_identity_motion_saves_detailed_switch_evidence(self):
+        base = fixture("list_reddot")
+        moving = shifted_list(base, -16)
+        frames = iter([moving] + [base.copy()] * 4)
+        logs = []
+        with TemporaryDirectory() as tmp:
+            runtime = Runtime(
+                lambda: next(frames),
+                lambda *_: None,
+                diagnostic_dir=Path(tmp),
+                emit=logs.append,
+            )
+            runner = HeroSynthRunner(
+                machine(verify_filter=True), runtime, sleep=lambda _: None
+            )
+            identity = runner.machine._hero_identity_fingerprint(base)
+            action = HeroAction(
+                "next_card_same",
+                (1800, 591),
+                source_page="英雄列表",
+                target_pages=("英雄列表",),
+                source_observation=identity,
+                transition_kind="card_change",
+            )
+            runner.machine._last_screen = base
+
+            runner._after_action_click(action)
+
+            output = "\n".join(logs)
+            self.assertIn("切换开始", output)
+            self.assertIn("动态证据=候选", output)
+            self.assertIn("静态身份=未变化", output)
+            self.assertIn("切换证据帧=1", output)
+            self.assertIn("frame_diff=", output)
+            self.assertEqual(4, len(list(Path(tmp).glob("*switch_*.png"))))
+
+    def test_changed_identity_motion_keeps_only_summary(self):
+        base = fixture("list_reddot")
+        changed = base.copy()
+        x, y, w, h = HeroSynthStateMachine._HERO_IDENTITY_ZONE
+        changed[y : y + h, x : x + w] = 0
+        moving = shifted_list(base, -16)
+        frames = iter([moving] + [changed.copy()] * 4)
+        logs = []
+        with TemporaryDirectory() as tmp:
+            runtime = Runtime(
+                lambda: next(frames),
+                lambda *_: None,
+                diagnostic_dir=Path(tmp),
+                emit=logs.append,
+            )
+            runner = HeroSynthRunner(
+                machine(verify_filter=True), runtime, sleep=lambda _: None
+            )
+            action = HeroAction(
+                "next_card_changed",
+                (1800, 591),
+                source_page="英雄列表",
+                target_pages=("英雄列表",),
+                source_observation=runner.machine._hero_identity_fingerprint(base),
+                transition_kind="card_change",
+            )
+            runner.machine._last_screen = base
+
+            runner._after_action_click(action)
+
+            output = "\n".join(logs)
+            self.assertIn("动态证据=候选", output)
+            self.assertIn("静态身份=已变化", output)
+            self.assertNotIn("切换证据帧=", output)
+            self.assertEqual([], list(Path(tmp).glob("*switch_*.png")))
+
     def test_identical_final_card_completes_after_motion_sequence(self):
         base = fixture("list_reddot")
         frames = iter(
