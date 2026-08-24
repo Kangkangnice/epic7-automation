@@ -276,7 +276,8 @@ class HeroSynthStateMachine:
     _DETAIL_CONTENT_BRIGHT_MIN = 5000
     _REWARD_STRIP_RANGE = (300, 1500)
     _SSS_MATERIAL_MIN = 0.80  # 材料卡保留少量背景，阈值略低于评级模板
-    _SSS_MATERIAL_CLEAR_MAX = 0.56
+    _SSS_MATERIAL_CLEAR_MAX = 0.55
+    _SSS_TEMPLATE_INSET = 2
     _NON_SSS_BUTTON_SATURATION_MIN = 90.0
     _FILTER_ATTRIBUTE_MIN = 0.82
     _FILTER_ATTRIBUTE_SMALL_MIN = 0.75
@@ -696,9 +697,14 @@ class HeroSynthStateMachine:
             self._MATERIAL_SSS_REGION[2],
             min(self._MATERIAL_SSS_REGION[3], end - start + 90),
         )
+        inset = self._SSS_TEMPLATE_INSET
+        # 去掉模板边缘的卡片背景，避免普通传送卡在背景纹理上得到 0.55+。
+        template = self.templates.sss_material[
+            inset:-inset, inset:-inset
+        ]
         match = find_template(
             screen,
-            self.templates.sss_material,
+            template,
             -1.0,
             region=region,
             reference_size=self._REFERENCE_SIZE,
@@ -1006,6 +1012,7 @@ class HeroSynthStateMachine:
             )
 
         if observation is FilterObservation.HERO_LIST_FILTER_CLOSED:
+            self._active_card_observation = self._detail_fingerprint(screen)
             if self._filter_close_pending:
                 self._filter_close_pending = False
                 self.filter_verified = True
@@ -1156,6 +1163,11 @@ class HeroSynthStateMachine:
         if confirm is not None:
             transmit_ctx = self._locate(screen, "auto_select_label", 0.85) is not None
             if transmit_ctx or self.state.value.startswith("transmit"):
+                if (
+                    not self.templates.pc_client
+                    and self.transmit_phase is not TransmitPhase.SELECTING
+                ):
+                    return None
                 self._confirm_page("传送确认")
                 self.state = HeroSynthState.TRANSMIT_CONFIRM
                 self.transmit_phase = TransmitPhase.CONFIRMING
@@ -1233,6 +1245,12 @@ class HeroSynthStateMachine:
 
         # 5. 传送选择界面：四个锚点齐全才算真正进入。
         if self._locate(screen, "auto_select_label", 0.85):
+            if not self.templates.pc_client and (
+                self.transmit_phase
+                not in (TransmitPhase.OPENING, TransmitPhase.SELECTING)
+                or self.transmit_target_observation is None
+            ):
+                return None
             if not self._transmit_page_ready(screen):
                 return None
             self._confirm_page("传送选择")

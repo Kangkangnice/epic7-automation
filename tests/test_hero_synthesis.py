@@ -220,6 +220,21 @@ class HeroSafetyClassificationTests(unittest.TestCase):
                 SafetyClass.UNKNOWN,
             )
 
+    def test_material_score_boundaries_are_fail_closed(self):
+        m = machine()
+        screen = fixture("imprint_up_cards_no_sss")
+        row = m._up_badge_rows(screen)[0]
+        cases = (
+            (0.55, SafetyClass.NON_SSS),
+            (0.5501, SafetyClass.UNKNOWN),
+            (0.80, SafetyClass.SSS),
+        )
+        for score, expected in cases:
+            with self.subTest(score=score), patch.object(
+                m, "_material_sss_score", return_value=score
+            ):
+                self.assertIs(m._classify_material_row(screen, row), expected)
+
     def test_transmit_target_score_margin_has_unknown_band(self):
         m = machine()
         card = m._transmit_target_card(fixture("transmit_select"))
@@ -228,6 +243,23 @@ class HeroSafetyClassificationTests(unittest.TestCase):
                 m._classify_transmit_target(fixture("transmit_select"), card),
                 SafetyClass.UNKNOWN,
             )
+
+    def test_transmit_score_boundaries_are_fail_closed(self):
+        m = machine()
+        screen = fixture("transmit_select")
+        card = m._transmit_target_card(screen)
+        cases = (
+            (0.55, SafetyClass.NON_SSS),
+            (0.5501, SafetyClass.UNKNOWN),
+            (0.80, SafetyClass.SSS),
+        )
+        for score, expected in cases:
+            with self.subTest(score=score), patch.object(
+                m, "_material_sss_score", return_value=score
+            ):
+                self.assertIs(
+                    m._classify_transmit_target(screen, card), expected
+                )
 
     def test_unknown_current_hero_does_not_click(self):
         m = machine(verify_filter=True)
@@ -248,6 +280,8 @@ class HeroSafetyClassificationTests(unittest.TestCase):
 
     def test_unknown_transmit_target_does_not_click(self):
         m = machine()
+        m.transmit_phase = TransmitPhase.OPENING
+        m.transmit_target_observation = "saved-card"
         with patch.object(
             m, "_classify_transmit_target", return_value=SafetyClass.UNKNOWN
         ):
@@ -352,6 +386,30 @@ class TransmitTransactionTests(unittest.TestCase):
 
         with self.assertRaises(UnrecognizedScreen):
             m.next_action(sss_only_material_page())
+
+    def test_transmit_page_cannot_start_from_unbound_or_later_phases(self):
+        for phase in (
+            TransmitPhase.NONE,
+            TransmitPhase.PENDING,
+            TransmitPhase.CONFIRMING,
+        ):
+            with self.subTest(phase=phase):
+                m = machine(verify_filter=True)
+                m.transmit_phase = phase
+                m.transmit_target_observation = (
+                    None if phase is TransmitPhase.NONE else "saved-card"
+                )
+
+                self.assertIsNone(m.next_action(fixture("transmit_select")))
+                self.assertIs(m.transmit_phase, phase)
+
+    def test_confirm_popup_requires_selecting_phase(self):
+        m = machine(verify_filter=True)
+        m.transmit_phase = TransmitPhase.OPENING
+        m.transmit_target_observation = "saved-card"
+
+        self.assertIsNone(m.next_action(fixture("transmit_confirm")))
+        self.assertIs(m.transmit_phase, TransmitPhase.OPENING)
 
 
 class TransmitRewardEvidenceTests(unittest.TestCase):
@@ -625,6 +683,8 @@ class HeroPageEvidenceTests(unittest.TestCase):
     def test_transmit_pages_set_confirmed_page(self):
         m = machine(verify_filter=True)
         m.state = HeroSynthState.TRANSMIT_SELECT
+        m.transmit_phase = TransmitPhase.OPENING
+        m.transmit_target_observation = "saved-card"
 
         m.next_action(fixture("transmit_select"))
         self.assertEqual("传送选择", m._confirmed_page)
@@ -1317,6 +1377,8 @@ class ImprintDecisionTests(unittest.TestCase):
 class TransmitDecisionTests(unittest.TestCase):
     def test_transmit_missing_highlight_waits_before_returning(self):
         m = machine()
+        m.transmit_phase = TransmitPhase.OPENING
+        m.transmit_target_observation = "saved-card"
         with patch.object(m, "_transmit_target_card", return_value=None), patch.object(
             m, "_transmit_green_present", return_value=False
         ):
@@ -1324,7 +1386,7 @@ class TransmitDecisionTests(unittest.TestCase):
             self.assertIsNone(m.next_action(fixture("transmit_select")))
 
         self.assertIs(m.state, HeroSynthState.HERO_LIST)
-        self.assertIs(m.transmit_phase, TransmitPhase.NONE)
+        self.assertIs(m.transmit_phase, TransmitPhase.OPENING)
 
     def test_transmit_strip_locator_clicks_inside_highlighted_card(self):
         m = machine()
@@ -1343,12 +1405,16 @@ class TransmitDecisionTests(unittest.TestCase):
         sss = cv2.cvtColor(sss, cv2.COLOR_BGR2RGB)
         screen[480:518, 1750:1814] = sss
         m = machine()
+        m.transmit_phase = TransmitPhase.OPENING
+        m.transmit_target_observation = "saved-card"
         action = m.next_action(screen)
         self.assertEqual("abort_transmit_sss_target", action.name)
         self.assertIs(m.state, HeroSynthState.TRANSMIT_RETURNING)
 
     def test_transmit_with_card_selected_starts_transmit(self):
         m = machine()
+        m.transmit_phase = TransmitPhase.OPENING
+        m.transmit_target_observation = "saved-card"
         action = m.next_action(fixture("transmit_select"))
         self.assertEqual("start_transmit", action.name)
         self.assertEqual((1203, 1057), action.point)
@@ -1362,6 +1428,8 @@ class TransmitDecisionTests(unittest.TestCase):
 
     def test_transmit_selected_starts_transmit(self):
         m = machine()
+        m.transmit_phase = TransmitPhase.OPENING
+        m.transmit_target_observation = "saved-card"
         action = m.next_action(fixture("transmit_selected"))
         self.assertEqual("start_transmit", action.name)
         self.assertEqual((1203, 1057), action.point)
@@ -1369,12 +1437,16 @@ class TransmitDecisionTests(unittest.TestCase):
     def test_transmit_confirm_popup_clicked(self):
         m = machine()
         m.state = HeroSynthState.TRANSMIT_CONFIRM
+        m.transmit_phase = TransmitPhase.SELECTING
+        m.transmit_target_observation = "saved-card"
         action = m.next_action(fixture("transmit_confirm"))
         self.assertEqual("confirm_transmit", action.name)
 
     def test_reward_popup_closed_in_transmit_context(self):
         m = machine()
         m.state = HeroSynthState.TRANSMIT_CONFIRM
+        m.transmit_phase = TransmitPhase.CONFIRMING
+        m.transmit_target_observation = "saved-card"
         action = m.next_action(fixture("reward_popup"))
         self.assertEqual("close_reward", action.name)
         self.assertEqual((960, 843), action.point)
