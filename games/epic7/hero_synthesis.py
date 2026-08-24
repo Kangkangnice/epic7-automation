@@ -2116,14 +2116,15 @@ class HeroSynthRunner(ModeRunnerBase):
                 else getattr(self.machine, "_current_card_observation", None)
             )
             evidence = (
-                "英雄身份变化后连续稳定"
+                "静态身份变化并连续稳定"
                 if observation
                 and observation != previous_action.source_observation
-                else "右侧列表移动后重新稳定"
+                else "静态身份相同，仅由动态证据确认"
             )
             return (
-                f"切换成功={evidence}；卡片观察 "
-                f"{previous_action.source_observation} -> {observation}"
+                f"业务切换成功 证据={evidence}；"
+                f"旧身份={previous_action.source_observation} "
+                f"新身份={observation}"
             )
         return super()._transition_success_detail(previous_action, current_action)
 

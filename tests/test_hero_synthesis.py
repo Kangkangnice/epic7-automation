@@ -225,6 +225,8 @@ class CardSwitchRunnerTests(unittest.TestCase):
             self.assertIn("静态身份=未变化", output)
             self.assertIn("切换证据帧=1", output)
             self.assertIn("frame_diff=", output)
+            self.assertNotIn("结果=已确认", output)
+            self.assertNotIn("切换成功", output)
             self.assertEqual(4, len(list(Path(tmp).glob("*switch_*.png"))))
 
     def test_changed_identity_motion_keeps_only_summary(self):
@@ -262,6 +264,41 @@ class CardSwitchRunnerTests(unittest.TestCase):
             self.assertIn("静态身份=已变化", output)
             self.assertNotIn("切换证据帧=", output)
             self.assertEqual([], list(Path(tmp).glob("*switch_*.png")))
+
+    def test_transition_success_detail_distinguishes_static_identity(self):
+        runner = HeroSynthRunner(
+            machine(verify_filter=True), Runtime(lambda: None, lambda *_: None)
+        )
+        previous = HeroAction(
+            "next_card_old",
+            (0, 0),
+            source_observation="old",
+            transition_kind="card_change",
+        )
+        changed = HeroAction(
+            "next_card_new",
+            (0, 0),
+            source_observation="new",
+        )
+        same = HeroAction(
+            "next_card_same",
+            (0, 0),
+            source_observation="old",
+        )
+
+        changed_detail = runner._transition_success_detail(previous, changed)
+        same_detail = runner._transition_success_detail(previous, same)
+
+        self.assertEqual(
+            "业务切换成功 证据=静态身份变化并连续稳定；"
+            "旧身份=old 新身份=new",
+            changed_detail,
+        )
+        self.assertEqual(
+            "业务切换成功 证据=静态身份相同，仅由动态证据确认；"
+            "旧身份=old 新身份=old",
+            same_detail,
+        )
 
     def test_identical_final_card_completes_after_motion_sequence(self):
         base = fixture("list_reddot")
