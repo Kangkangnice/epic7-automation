@@ -21,6 +21,7 @@ from auto_game_unified.core.matcher import Match, find_template, load_template
 from auto_game_unified.core.recovery import RecoveryGate
 from auto_game_unified.core.runtime import Runtime
 from auto_game_unified.games.epic7.runner_base import ModeRunnerBase
+from auto_game_unified.games.epic7.hero_transition import CardSwitchMotionObserver
 from auto_game_unified.games.epic7.unknown_screen import UnrecognizedScreen
 
 
@@ -1434,7 +1435,7 @@ class HeroSynthRunner(ModeRunnerBase):
     """两帧确认的英雄合成 Runner（主循环协议见 ModeRunnerBase）。"""
 
     _MODE_LABEL = "英雄合成"
-    _NEXT_CARD_RETRY_SECONDS = 10
+    _NEXT_CARD_RETRY_SECONDS = 1
     _MATERIAL_RETRY_SECONDS = 5
     _FILTER_ACTIONS = {"open_filter", "select_star3", "close_filter"}
     _BLACK_SCREEN_TIMEOUT_SECONDS = 60.0
@@ -1475,6 +1476,7 @@ class HeroSynthRunner(ModeRunnerBase):
             recovery_gate=recovery_gate,
         )
         self._needs_navigation_settle = machine.templates.pc_client
+        self._card_switch_motion_confirmed = False
         # 本次安全策略只作用于模拟器；PC 保持既有未知画面唤醒行为。
         if machine.templates.pc_client:
             self._BLACK_SCREEN_TIMEOUT_SECONDS = None
@@ -1524,15 +1526,32 @@ class HeroSynthRunner(ModeRunnerBase):
     def _is_instant_action(self, action_name: Optional[str]) -> bool:
         return self.machine.templates.pc_client and action_name == "close_filter"
 
-    def _card_transition_completed(self, previous_action, current_action) -> bool:
-        """卡片切换只接受卡片观察结果变化，不接受评级/红点抖动。"""
-        previous = getattr(previous_action, "source_observation", "")
-        current = (
-            getattr(current_action, "source_observation", "")
-            if current_action is not None
-            else getattr(self.machine, "_current_card_observation", None)
+    def _after_action_click(self, action: HeroAction) -> None:
+        if (
+            self.machine.templates.pc_client
+            or action.transition_kind != "card_change"
+            or self.machine._last_screen is None
+        ):
+            return
+        observer = CardSwitchMotionObserver(self.machine._last_screen)
+        self._card_switch_motion_confirmed = False
+        for _ in range(36):
+            self.sleep(1 / 12)
+            if observer.update(self.runtime.capture()):
+                self._card_switch_motion_confirmed = True
+                self.runtime.log(
+                    "模式=英雄合成 切换阶段=MOVING->SETTLED 结果=已确认"
+                )
+                return
+        self.runtime.log(
+            "模式=英雄合成 切换阶段=WAITING_DEPARTURE 结果=未确认"
         )
-        return bool(previous and current and previous != current)
+
+    def _card_transition_completed(self, previous_action, current_action) -> bool:
+        completed = self._card_switch_motion_confirmed
+        if completed:
+            self._card_switch_motion_confirmed = False
+        return completed
 
     def _transition_completed(
         self, previous_action, current_action, confirmed_page: str
@@ -1550,12 +1569,7 @@ class HeroSynthRunner(ModeRunnerBase):
 
     def _transition_retry_reason(self, previous_action, current_action) -> str:
         if getattr(previous_action, "transition_kind", "") == "card_change":
-            observation = (
-                getattr(current_action, "source_observation", "")
-                or getattr(self.machine, "_current_card_observation", None)
-                or "未知"
-            )
-            return f"当前卡片观察仍为{observation}，未确认进入新卡片"
+            return "未观察到右侧列表移动并重新稳定"
         return super()._transition_retry_reason(previous_action, current_action)
 
     def _transition_success_detail(self, previous_action, current_action) -> str:
@@ -1566,7 +1580,8 @@ class HeroSynthRunner(ModeRunnerBase):
                 else getattr(self.machine, "_current_card_observation", None)
             )
             return (
-                f"切换成功=卡片观察 {previous_action.source_observation} -> {observation}"
+                f"切换成功=右侧列表移动后重新稳定；卡片观察 "
+                f"{previous_action.source_observation} -> {observation}"
             )
         return super()._transition_success_detail(previous_action, current_action)
 

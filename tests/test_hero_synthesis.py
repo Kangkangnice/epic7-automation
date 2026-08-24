@@ -78,6 +78,15 @@ def sss_only_material_page():
     return screen
 
 
+def shifted_list(screen, pixels):
+    shifted = screen.copy()
+    x, y, w, h = HeroSynthStateMachine._LIST_FP_ZONE
+    shifted[y : y + h, x : x + w] = np.roll(
+        screen[y : y + h, x : x + w], pixels, axis=0
+    )
+    return shifted
+
+
 class CardSwitchMotionObserverTests(unittest.TestCase):
     def test_vertical_list_motion_then_settling_confirms_switch(self):
         base = fixture("list_reddot")
@@ -114,6 +123,55 @@ class CardSwitchMotionObserverTests(unittest.TestCase):
 
         self.assertIs(observer.phase, MotionPhase.WAITING_DEPARTURE)
 
+
+class CardSwitchRunnerTests(unittest.TestCase):
+    def test_identical_final_card_completes_after_motion_sequence(self):
+        base = fixture("list_reddot")
+        frames = iter(
+            [shifted_list(base, -8), shifted_list(base, -16)]
+            + [shifted_list(base, -16)] * 3
+        )
+        runner = HeroSynthRunner(
+            machine(verify_filter=True),
+            Runtime(lambda: next(frames), lambda *_: None),
+            sleep=lambda _: None,
+        )
+        action = HeroAction(
+            "next_card_same",
+            (1800, 591),
+            source_page="英雄列表",
+            target_pages=("英雄列表",),
+            source_observation="same-copy",
+            transition_kind="card_change",
+        )
+        runner.machine._last_screen = base
+
+        runner._after_action_click(action)
+
+        self.assertTrue(runner._card_transition_completed(action, action))
+
+    def test_no_motion_does_not_complete_even_if_static_fingerprint_changes(self):
+        base = fixture("list_reddot")
+        frames = iter([base.copy()] * 36)
+        runner = HeroSynthRunner(
+            machine(verify_filter=True),
+            Runtime(lambda: next(frames), lambda *_: None),
+            sleep=lambda _: None,
+        )
+        previous = HeroAction(
+            "next_card_old",
+            (0, 0),
+            source_observation="old",
+            transition_kind="card_change",
+        )
+        current = HeroAction(
+            "next_card_new", (0, 0), source_observation="new"
+        )
+        runner.machine._last_screen = base
+
+        runner._after_action_click(previous)
+
+        self.assertFalse(runner._card_transition_completed(previous, current))
 
 class FakeClock:
     def __init__(self):
@@ -564,7 +622,7 @@ class HeroListTransitionTests(unittest.TestCase):
         self.assertEqual(m._detail_fingerprint(screen), action.source_observation)
         self.assertEqual("card_change", action.transition_kind)
 
-    def test_same_named_hero_with_new_card_observation_counts_as_switch(self):
+    def test_confirmed_motion_is_consumed_after_switch(self):
         runner = HeroSynthRunner(
             machine(verify_filter=True), Runtime(lambda: None, lambda *_: None)
         )
@@ -576,10 +634,12 @@ class HeroListTransitionTests(unittest.TestCase):
         current = HeroAction(
             "next_card_new",
             (0, 0),
-            source_observation="name=A|selected_row=2",
+            source_observation="name=A|selected_row=1",
         )
+        runner._card_switch_motion_confirmed = True
 
         self.assertTrue(runner._card_transition_completed(previous, current))
+        self.assertFalse(runner._card_transition_completed(previous, current))
 
     def test_same_card_observation_does_not_count_as_switch(self):
         runner = HeroSynthRunner(
@@ -1297,7 +1357,7 @@ class RunnerFlowTests(unittest.TestCase):
             Runtime(lambda: None, lambda *_: None),
             sleep=lambda _: None,
         )
-        self.assertEqual(10, runner._action_retry_seconds("next_card_test"))
+        self.assertEqual(1, runner._action_retry_seconds("next_card_test"))
 
     def test_material_click_retry_window_is_short(self):
         runner = HeroSynthRunner(
@@ -1308,39 +1368,41 @@ class RunnerFlowTests(unittest.TestCase):
         self.assertEqual(5, runner._action_retry_seconds("add_material_0_2"))
 
     def test_multi_card_sequence_completes_one_simulator_cycle(self):
-        sequence = [
-            fixture("list_reddot"),          # 首次进列表 → 打开筛选
-            fixture("filter_open"),          # 三星已选 → 关闭筛选
-            fixture("list_grey_3s"),         # 筛选关闭目标 + SSS 卡 → 跳过
-            fixture("list_no_reddot"),       # 普通卡 → 跳过
-            fixture("list_reddot"),          # 非 SSS 红点卡 → 进入刻印
-            fixture("imprint_up_cards_no_sss"),  # 加材料1
-            imprint_one_remaining_after_add(),    # 已入槽1张，还剩1张Up
-            fixture("imprint_added"),        # 材料就位 → 开始合成
-            fixture("synth_confirm"),        # 确认合成
-            fixture("imprint_result_popup"), # 关闭结果覆盖层
-            fixture("imprint_after_synth"),  # 返回英雄列表
-            fixture("list_end_of_cards"),    # 无更多卡 → 完成一轮
-        ]
+        grey = fixture("list_grey_3s")
+        no_reddot = fixture("list_no_reddot")
         screens = iter(
-            screen
-            for index, screen in enumerate(sequence)
-            for _ in range(4 if index in {2, 7, 11} else 2)
+            [fixture("list_reddot")] * 2
+            + [fixture("filter_open")] * 2
+            + [grey] * 4
+            + [shifted_list(grey, -8), shifted_list(grey, -16)]
+            + [shifted_list(grey, -16)] * 3
+            + [no_reddot] * 2
+            + [shifted_list(no_reddot, -8), shifted_list(no_reddot, -16)]
+            + [shifted_list(no_reddot, -16)] * 3
+            + [fixture("list_reddot")] * 2
+            + [fixture("imprint_up_cards_no_sss")] * 2
+            + [imprint_one_remaining_after_add()] * 2
+            + [fixture("imprint_added")] * 4
+            + [fixture("synth_confirm")] * 2
+            + [fixture("imprint_result_popup")] * 2
+            + [fixture("imprint_after_synth")] * 2
+            + [fixture("list_end_of_cards")] * 4
         )
         clicks: list[tuple[int, int]] = []
         logs: list[str] = []
+        clock = FakeClock()
         runner = HeroSynthRunner(
             HeroSynthStateMachine(build_hero_templates(TEMPLATES)),
             Runtime(
                 lambda: next(screens),
                 clicks.append,
                 emit=logs.append,
+                monotonic=clock,
             ),
-            sleep=lambda _: None,
+            sleep=clock.sleep,
         )
 
         completed = runner.run(max_cycles=1)
-
         names = [
             line.split("动作=")[1].split()[0]
             for line in logs
@@ -1350,7 +1412,7 @@ class RunnerFlowTests(unittest.TestCase):
         self.assertEqual("open_filter", names[0])
         self.assertEqual("close_filter", names[1])
         self.assertTrue(names[2].startswith("next_card_"), names)
-        self.assertTrue(names[3].startswith("next_card_"))
+        self.assertTrue(names[3].startswith("next_card_"), names)
         self.assertEqual(
             [
                 "open_imprint",
