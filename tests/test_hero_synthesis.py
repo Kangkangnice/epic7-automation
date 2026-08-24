@@ -197,7 +197,7 @@ class CardSwitchRunnerTests(unittest.TestCase):
 
         self.assertTrue(runner._card_transition_completed(action, action))
 
-    def test_no_motion_does_not_complete_even_if_static_fingerprint_changes(self):
+    def test_identity_change_completes_when_motion_observation_is_missed(self):
         base = fixture("list_reddot")
         frames = iter([base.copy()] * 36)
         runner = HeroSynthRunner(
@@ -208,17 +208,24 @@ class CardSwitchRunnerTests(unittest.TestCase):
         previous = HeroAction(
             "next_card_old",
             (0, 0),
+            source_page="英雄列表",
+            target_pages=("英雄列表",),
             source_observation="old",
             transition_kind="card_change",
         )
         current = HeroAction(
-            "next_card_new", (0, 0), source_observation="new"
+            "next_card_new",
+            (0, 0),
+            source_page="英雄列表",
+            source_observation="new",
         )
         runner.machine._last_screen = base
 
         runner._after_action_click(previous)
 
-        self.assertFalse(runner._card_transition_completed(previous, current))
+        self.assertTrue(
+            runner._transition_completed(previous, current, "英雄列表")
+        )
 
     def test_unconfirmed_switch_still_observes_current_frame(self):
         base = fixture("list_reddot")
@@ -261,12 +268,16 @@ class CardSwitchRunnerTests(unittest.TestCase):
         old = HeroAction(
             "next_card_old",
             (1800, 591),
+            source_page="英雄列表",
             reason="当前英雄非SSS但刻印按钮无红点，跳过，详情指纹=old",
+            source_observation="hero-a",
         )
         new = HeroAction(
             "next_card_new",
             (1800, 591),
+            source_page="英雄列表",
             reason="当前英雄非SSS但刻印按钮无红点，跳过，详情指纹=new",
+            source_observation="hero-a",
         )
         stable = StableObservation(required=2)
         outcome = (HeroSynthState.HERO_LIST, 0)
@@ -282,6 +293,50 @@ class CardSwitchRunnerTests(unittest.TestCase):
 
         self.assertIs(first, NOT_STABLE)
         self.assertIs(second, new)
+
+    def test_next_card_requires_same_identity_for_two_stable_frames(self):
+        m = machine(verify_filter=True)
+        runner = HeroSynthRunner(
+            m,
+            Runtime(lambda: None, lambda *_: None),
+            sleep=lambda _: None,
+        )
+        hero_a = HeroAction(
+            "next_card_a",
+            (1800, 591),
+            source_page="英雄列表",
+            reason="当前英雄为SSS，跳过，详情指纹=a",
+            source_observation="hero-a",
+        )
+        hero_b = HeroAction(
+            "next_card_b",
+            (1800, 591),
+            source_page="英雄列表",
+            reason="当前英雄为SSS，跳过，详情指纹=b",
+            source_observation="hero-b",
+        )
+        stable = StableObservation(required=2)
+        outcome = (HeroSynthState.HERO_LIST, 0)
+
+        with patch.object(
+            m,
+            "preview",
+            side_effect=((hero_a, outcome), (hero_b, outcome), (hero_b, outcome)),
+        ):
+            with patch.object(m, "next_action", return_value=hero_b):
+                first = runner._stable_next_action(
+                    fixture("list_no_reddot"), stable
+                )
+                second = runner._stable_next_action(
+                    fixture("list_no_reddot"), stable
+                )
+                third = runner._stable_next_action(
+                    fixture("list_no_reddot"), stable
+                )
+
+        self.assertIs(first, NOT_STABLE)
+        self.assertIs(second, NOT_STABLE)
+        self.assertIs(third, hero_b)
 
 
 class HeroSafetyClassificationTests(unittest.TestCase):
