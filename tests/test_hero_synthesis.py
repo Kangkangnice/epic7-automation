@@ -20,6 +20,10 @@ from auto_game_unified.games.epic7.hero_synthesis import (
     build_hero_templates,
     state_label,
 )
+from auto_game_unified.games.epic7.hero_transition import (
+    CardSwitchMotionObserver,
+    MotionPhase,
+)
 from auto_game_unified.games.epic7.modes import MODE_SPECS, get_mode
 from auto_game_unified.games.epic7.navigation import (
     Epic7Navigator,
@@ -72,6 +76,43 @@ def sss_only_material_page():
     x, y, w, h = HeroSynthStateMachine._UP_BADGE_ZONE
     screen[y + 140 : y + 230, x : x + w] = 0
     return screen
+
+
+class CardSwitchMotionObserverTests(unittest.TestCase):
+    def test_vertical_list_motion_then_settling_confirms_switch(self):
+        base = fixture("list_reddot")
+        observer = CardSwitchMotionObserver(base)
+        moving_1 = np.roll(base, -8, axis=0)
+        moving_2 = np.roll(base, -16, axis=0)
+
+        self.assertFalse(observer.update(moving_1))
+        self.assertFalse(observer.update(moving_2))
+        self.assertFalse(observer.update(moving_2.copy()))
+        self.assertFalse(observer.update(moving_2.copy()))
+        self.assertTrue(observer.update(moving_2.copy()))
+        self.assertIs(observer.phase, MotionPhase.SETTLED)
+
+    def test_static_identical_copy_never_confirms_switch(self):
+        base = fixture("list_reddot")
+        observer = CardSwitchMotionObserver(base)
+
+        for _ in range(6):
+            self.assertFalse(observer.update(base.copy()))
+
+        self.assertIs(observer.phase, MotionPhase.WAITING_DEPARTURE)
+
+    def test_central_portrait_animation_is_outside_motion_roi(self):
+        base = fixture("list_reddot")
+        animated = base.copy()
+        animated[250:900, 650:1350] = np.roll(
+            animated[250:900, 650:1350], 20, axis=0
+        )
+        observer = CardSwitchMotionObserver(base)
+
+        for _ in range(6):
+            self.assertFalse(observer.update(animated))
+
+        self.assertIs(observer.phase, MotionPhase.WAITING_DEPARTURE)
 
 
 class FakeClock:
