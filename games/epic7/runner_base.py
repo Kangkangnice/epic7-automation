@@ -77,6 +77,9 @@ class ModeRunnerBase:
     def _apply_recovery_state(self) -> None:
         """恢复导航后设置落点状态（含业务标志重置）。"""
 
+    def _after_action_click(self, action: Any) -> None:
+        """Optional short observation immediately after an action click."""
+
     def _run_committed_battle(self, *, cycle: int) -> None:
         raise NotImplementedError
 
@@ -536,6 +539,7 @@ class ModeRunnerBase:
                         f"模式={self._MODE_LABEL} 决策={decision_hint}"
                     )
                 self.runtime.click(action.point, action.name)
+                self._after_action_click(action)
                 last_transition_action = action if target_pages else None
                 last_action_clicked_at = self.now()
                 state_started = last_action_clicked_at
