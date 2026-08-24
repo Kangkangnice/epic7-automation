@@ -129,9 +129,26 @@ class ModeRunnerBase:
     ) -> str:
         return ""
 
+    @staticmethod
+    def _source_observation_matches(
+        previous_action: Any, current_action: Any
+    ) -> bool:
+        previous = getattr(previous_action, "source_observation", "")
+        if not previous:
+            return True
+        return bool(
+            current_action is not None
+            and getattr(current_action, "source_observation", "") == previous
+        )
+
     def _is_instant_action(self, action_name: Optional[str]) -> bool:
         """返回 True 表示该动作不需要 stable 2 帧确认（一次性副作用，必须立刻发）。"""
         return False
+
+    def _stable_action_signature(self, preview_action: Any, outcome: Any) -> str:
+        if preview_action is not None:
+            return preview_action.name
+        return f"settled:{outcome[0].value}:{outcome[1]}"
 
     def _is_black_screen(self, screen) -> bool:
         """子模式可选择启用独立黑屏保护；默认不改变现有模式行为。"""
@@ -163,11 +180,7 @@ class ModeRunnerBase:
         """两帧稳定确认后返回 next_action；未稳定时返回 NOT_STABLE。"""
         preview_action, outcome = self.machine.preview(screen)
         self.unknown_screen_wake.reset()
-        signature = (
-            preview_action.name
-            if preview_action is not None
-            else f"settled:{outcome[0].value}:{outcome[1]}"
-        )
+        signature = self._stable_action_signature(preview_action, outcome)
         # 一次性副作用动作：直接 click 跳过 stable——这种动作的副作用必须
         # 立即生效（如 close_filter），否则会被动画过渡帧打断。
         if preview_action is not None and self._is_instant_action(preview_action.name):
@@ -410,6 +423,17 @@ class ModeRunnerBase:
                     + (f" {detail}" if detail else "")
                 )
                 last_transition_action = None
+            elif last_transition_action is not None:
+                source_page = getattr(last_transition_action, "source_page", "")
+                action = (
+                    last_transition_action
+                    if source_page
+                    and confirmed_page == source_page
+                    and self._source_observation_matches(
+                        last_transition_action, action
+                    )
+                    else None
+                )
 
             if self._check_cycle_completed(cycles_before, max_cycles):
                 return self.machine.completed_cycles

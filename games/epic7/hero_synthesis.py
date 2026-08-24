@@ -222,6 +222,8 @@ class HeroSynthStateMachine:
     _MATERIAL_SSS_REGION = (1750, 350, 230, 650)
     _CARD_BELOW_ZONE = (1450, 537, 520, 83)
     _DETAIL_CONTENT_ZONE = (150, 350, 550, 300)
+    _HERO_INFO_TAB_ZONE = (0, 150, 127, 105)
+    _EQUIPMENT_TAB_ZONE = (0, 255, 127, 105)
     _IMPRINT_SLOT_ZONES = (
         (600, 605, 370, 110),
         (970, 605, 370, 110),
@@ -249,6 +251,7 @@ class HeroSynthStateMachine:
     _DETAIL_FP_ZONE = (150, 350, 550, 300)
     _SIMULATOR_DETAIL_FP_ZONE = (150, 180, 550, 170)
     _LIST_FP_ZONE = (1450, 200, 532, 780)
+    _HERO_IDENTITY_ZONE = (145, 165, 430, 145)
 
     # 点击点（参考尺寸坐标）
     _FUNNEL_POINT = (1540, 191)
@@ -266,6 +269,7 @@ class HeroSynthStateMachine:
     _REWARD_CLOSE_POINT = (960, 843)
     _IMPRINT_RESULT_CLOSE_POINT = (991, 850)
     _TRANSMIT_ENTRY_POINT = (1735, 1060)
+    _HERO_INFO_TAB_POINT = (65, 200)
     _BACK_OFFSET = (-26, -6)
     _PC_FUNNEL_POINT = (1612, 141)
     _PC_STAR3_POINT = (1148, 613)
@@ -274,10 +278,11 @@ class HeroSynthStateMachine:
     _PC_BACK_OFFSET = (11, -4)
     _CARD_BELOW_BRIGHT_MIN = 2000
     _DETAIL_CONTENT_BRIGHT_MIN = 5000
+    _SELECTED_TAB_BLUE_MIN = 1000
     _REWARD_STRIP_RANGE = (300, 1500)
     _SSS_MATERIAL_MIN = 0.80  # 材料卡保留少量背景，阈值略低于评级模板
     _SSS_MATERIAL_CLEAR_MAX = 0.55
-    _SSS_TEMPLATE_INSET = 2
+    _SSS_TEMPLATE_INSET = 4
     _NON_SSS_BUTTON_SATURATION_MIN = 90.0
     _FILTER_ATTRIBUTE_MIN = 0.82
     _FILTER_ATTRIBUTE_SMALL_MIN = 0.75
@@ -319,6 +324,7 @@ class HeroSynthStateMachine:
         self._confirmed_page: str = ""
         self.transmit_phase = TransmitPhase.NONE
         self.transmit_target_observation: Optional[str] = None
+        self.transmit_continuity_intact = False
         self._active_card_observation: Optional[str] = None
         self._transmit_reward_confirmed = False
         self._imprint_empty_observations = 0
@@ -332,11 +338,14 @@ class HeroSynthStateMachine:
 
     @pending_transmit_target.setter
     def pending_transmit_target(self, value: bool) -> None:
-        if value and self.transmit_phase is TransmitPhase.NONE:
-            self.transmit_phase = TransmitPhase.PENDING
+        if value:
+            if self.transmit_phase is TransmitPhase.NONE:
+                self.transmit_phase = TransmitPhase.PENDING
+            self.transmit_continuity_intact = True
         elif not value:
             self.transmit_phase = TransmitPhase.NONE
             self.transmit_target_observation = None
+            self.transmit_continuity_intact = False
 
     def _confirm_page(self, label: str) -> None:
         if self.templates.pc_client:
@@ -564,11 +573,14 @@ class HeroSynthStateMachine:
     def _sss_material_present(self, screen: np.ndarray) -> bool:
         if self.templates.pc_client or self.templates.sss_material is None:
             return False
-        return self._locate(
+        inset = self._SSS_TEMPLATE_INSET
+        template = self.templates.sss_material[inset:-inset, inset:-inset]
+        return find_template(
             screen,
-            "sss_material",
+            template,
             self._SSS_MATERIAL_MIN,
-            region_override=self._MATERIAL_SSS_REGION,
+            region=self._MATERIAL_SSS_REGION,
+            reference_size=self._REFERENCE_SIZE,
         ) is not None
 
     def _sss_material_warning_close(self, screen: np.ndarray) -> Optional[Match]:
@@ -600,6 +612,28 @@ class HeroSynthStateMachine:
     def _detail_content_present(self, screen: np.ndarray) -> bool:
         gray = self._zone_gray(screen, self._DETAIL_CONTENT_ZONE)
         return int((gray > 45).sum()) > self._DETAIL_CONTENT_BRIGHT_MIN
+
+    def _selected_tab_blue_pixels(
+        self, screen: np.ndarray, zone: tuple[int, int, int, int]
+    ) -> int:
+        hsv = self._zone_hsv(screen, zone)
+        return int((cv2.inRange(hsv, (90, 80, 80), (130, 255, 255)) > 0).sum())
+
+    def _equipment_tab_selected(self, screen: np.ndarray) -> bool:
+        return bool(
+            self._selected_tab_blue_pixels(screen, self._EQUIPMENT_TAB_ZONE)
+            >= self._SELECTED_TAB_BLUE_MIN
+            and self._selected_tab_blue_pixels(screen, self._HERO_INFO_TAB_ZONE)
+            < self._SELECTED_TAB_BLUE_MIN
+        )
+
+    def _hero_info_tab_selected(self, screen: np.ndarray) -> bool:
+        return bool(
+            self._selected_tab_blue_pixels(screen, self._HERO_INFO_TAB_ZONE)
+            >= self._SELECTED_TAB_BLUE_MIN
+            and self._selected_tab_blue_pixels(screen, self._EQUIPMENT_TAB_ZONE)
+            < self._SELECTED_TAB_BLUE_MIN
+        )
 
     def _up_badge_rows(self, screen: np.ndarray) -> list[tuple[int, int]]:
         """返回右侧材料卡左边真实 Up! 标记的纵向范围。
@@ -1012,7 +1046,7 @@ class HeroSynthStateMachine:
             )
 
         if observation is FilterObservation.HERO_LIST_FILTER_CLOSED:
-            self._active_card_observation = self._detail_fingerprint(screen)
+            self._active_card_observation = self._hero_identity_fingerprint(screen)
             if self._filter_close_pending:
                 self._filter_close_pending = False
                 self.filter_verified = True
@@ -1069,6 +1103,18 @@ class HeroSynthStateMachine:
             parts.append((small // 32).astype(np.uint8).tobytes())
         return hashlib.sha1(b"".join(parts)).hexdigest()[:8]
 
+    def _hero_identity_fingerprint(self, screen: np.ndarray) -> str:
+        """用英雄名称等静态白色文字确认返回后仍是同类英雄。"""
+        hsv = self._zone_hsv(screen, self._HERO_IDENTITY_ZONE)
+        white = cv2.inRange(hsv, (0, 0, 150), (179, 70, 255))
+        white = cv2.morphologyEx(
+            white,
+            cv2.MORPH_OPEN,
+            np.ones((2, 2), dtype=np.uint8),
+        )
+        small = cv2.resize(white, (32, 12), interpolation=cv2.INTER_AREA)
+        return hashlib.sha1((small // 64).astype(np.uint8).tobytes()).hexdigest()[:8]
+
     def _advance_or_finish(self, screen: np.ndarray) -> Optional[HeroAction]:
         self._current_card_observation = self._detail_fingerprint(screen)
         if not self._hero_list_ready(screen):
@@ -1103,8 +1149,8 @@ class HeroSynthStateMachine:
         fp = self._current_card_observation
         if fp is None:
             return None
-        # Runner 的翻卡身份只允许由稳定卡片指纹决定；评级/红点是当前
-        # 决策原因，识别抖动不能被当成“已经翻到下一张”。
+        # 动作名保留动态详情指纹用于诊断；重试契约只使用静态英雄身份，
+        # 避免立绘动画变化后在错误英雄上重试旧动作。
         sig = fp
         skip_reason = (
             "当前英雄为SSS，跳过"
@@ -1123,7 +1169,9 @@ class HeroSynthStateMachine:
                 if self.templates.pc_client
                 else f"{skip_reason}，详情指纹={fp}，等待下一英雄或列表末尾"
             ),
-            source_observation="" if self.templates.pc_client else fp,
+            source_observation=(
+                "" if self.templates.pc_client else self._hero_identity_fingerprint(screen)
+            ),
             transition_kind="" if self.templates.pc_client else "card_change",
         )
 
@@ -1165,7 +1213,10 @@ class HeroSynthStateMachine:
             if transmit_ctx or self.state.value.startswith("transmit"):
                 if (
                     not self.templates.pc_client
-                    and self.transmit_phase is not TransmitPhase.SELECTING
+                    and (
+                        self.transmit_phase is not TransmitPhase.SELECTING
+                        or not self.transmit_continuity_intact
+                    )
                 ):
                     return None
                 self._confirm_page("传送确认")
@@ -1240,6 +1291,7 @@ class HeroSynthStateMachine:
                 return None
             self.transmit_phase = TransmitPhase.NONE
             self.transmit_target_observation = None
+            self.transmit_continuity_intact = False
             self._transmit_reward_confirmed = False
             self.state = HeroSynthState.HERO_LIST
 
@@ -1249,6 +1301,7 @@ class HeroSynthStateMachine:
                 self.transmit_phase
                 not in (TransmitPhase.OPENING, TransmitPhase.SELECTING)
                 or self.transmit_target_observation is None
+                or not self.transmit_continuity_intact
             ):
                 return None
             if not self._transmit_page_ready(screen):
@@ -1341,20 +1394,19 @@ class HeroSynthStateMachine:
             ):
                 self.state = HeroSynthState.IMPRINT_ADD
             sss_material_present = self._sss_material_present(screen)
-            up = self._find_up_card(screen)
-            if self._unknown_up_material_present(screen):
-                self._confirm_page("刻印加材料")
-                return None
-            if sss_material_present and up is None:
+            if sss_material_present:
                 self._confirm_page("刻印SSS材料")
             else:
+                up = self._find_up_card(screen)
+                if self._unknown_up_material_present(screen):
+                    self._confirm_page("刻印加材料")
+                    return None
                 self._confirm_page("刻印加材料")
 
         if (
             self.state is HeroSynthState.IMPRINT_ADD
             and complete_imprint_page
             and sss_material_present
-            and up is None
         ):
             self._imprint_empty_observations = 0
             target_observation = (
@@ -1364,6 +1416,7 @@ class HeroSynthStateMachine:
                 raise UnrecognizedScreen("发现 SSS 材料但缺少当前英雄身份")
             self.transmit_phase = TransmitPhase.PENDING
             self.transmit_target_observation = target_observation
+            self.transmit_continuity_intact = True
             back = self._back_action(screen)
             if back is None:
                 raise UnrecognizedScreen("发现 SSS 材料但刻印页面缺少返回箭头")
@@ -1379,7 +1432,6 @@ class HeroSynthStateMachine:
             self.state is HeroSynthState.IMPRINT_ABORTING
             and complete_imprint_page
             and sss_material_present
-            and up is None
         ):
             back = self._back_action(screen)
             if back is None:
@@ -1467,6 +1519,19 @@ class HeroSynthStateMachine:
             handled, filter_action = self._next_simulator_filter_action(screen)
             if handled:
                 return filter_action
+            if self._equipment_tab_selected(screen):
+                if self._locate(screen, "filter_button", 0.80) is None:
+                    return None
+                self._confirm_page("英雄装备页")
+                return HeroAction(
+                    "select_hero_info_tab",
+                    self._scaled_point(screen, self._HERO_INFO_TAB_POINT),
+                    source_page="英雄装备页",
+                    target_pages=("英雄列表",),
+                    reason="左侧装备标签为蓝色选中态，先切回英雄信息页",
+                )
+            if not self._hero_info_tab_selected(screen):
+                return None
 
         filter_level = self._locate(screen, "filter_level_label")
         star3_selected = self._locate(screen, "filter_star3_selected", 0.90)
@@ -1532,7 +1597,10 @@ class HeroSynthStateMachine:
         if self.pending_transmit_target:
             if not self._hero_list_ready(screen):
                 return None
-            card_observation = self._detail_fingerprint(screen)
+            self._confirm_page("英雄列表")
+            if not self.transmit_continuity_intact:
+                return None
+            card_observation = self._hero_identity_fingerprint(screen)
             self._current_card_observation = card_observation
             if self.transmit_phase not in (
                 TransmitPhase.PENDING,
@@ -1540,7 +1608,7 @@ class HeroSynthStateMachine:
             ):
                 return None
             if self.transmit_target_observation is None:
-                self.transmit_target_observation = card_observation
+                return None
             if card_observation != self.transmit_target_observation:
                 return None
             self._active_card_observation = card_observation
@@ -1554,7 +1622,7 @@ class HeroSynthStateMachine:
                 source_observation=card_observation,
             )
         if not self.templates.pc_client and self._hero_list_ready(screen):
-            self._active_card_observation = self._detail_fingerprint(screen)
+            self._active_card_observation = self._hero_identity_fingerprint(screen)
         struct_n = self._locate_button(screen, self._masked_normal, 0.0)
         struct_g = (
             None
@@ -1575,7 +1643,7 @@ class HeroSynthStateMachine:
                         screen, self._point(self._FUNNEL_POINT, self._PC_FUNNEL_POINT)
                     ),
                     source_observation=(
-                        self._detail_fingerprint(screen)
+                        self._hero_identity_fingerprint(screen)
                         if not self.templates.pc_client
                         else ""
                     ),
@@ -1605,7 +1673,7 @@ class HeroSynthStateMachine:
                         else "当前英雄非SSS且刻印按钮红点存在"
                     ),
                     source_observation=(
-                        self._detail_fingerprint(screen)
+                        self._hero_identity_fingerprint(screen)
                         if not self.templates.pc_client
                         else ""
                     ),
@@ -1669,7 +1737,7 @@ class HeroSynthStateMachine:
                 else "当前英雄非SSS且刻印按钮红点存在"
             ),
             source_observation=(
-                self._detail_fingerprint(screen)
+                self._hero_identity_fingerprint(screen)
                 if not self.templates.pc_client
                 else ""
             ),
@@ -1689,6 +1757,7 @@ class HeroSynthStateMachine:
             self._confirmed_page,
             self.transmit_phase,
             self.transmit_target_observation,
+            self.transmit_continuity_intact,
             self._active_card_observation,
             self._transmit_reward_confirmed,
             self._imprint_empty_observations,
@@ -1712,6 +1781,7 @@ class HeroSynthStateMachine:
                 self._confirmed_page,
                 self.transmit_phase,
                 self.transmit_target_observation,
+                self.transmit_continuity_intact,
                 self._active_card_observation,
                 self._transmit_reward_confirmed,
                 self._imprint_empty_observations,
@@ -1801,6 +1871,9 @@ class HeroSynthRunner(ModeRunnerBase):
         self.machine._filter_close_pending = False
         self.machine._confirmed_page = ""
         self._needs_navigation_settle = self.machine.templates.pc_client
+        self._card_switch_motion_confirmed = False
+        if self.machine.pending_transmit_target:
+            self.machine.transmit_continuity_intact = False
 
     def _stable_next_action(self, screen: np.ndarray, stable: Any):
         if self._needs_navigation_settle:
@@ -1815,6 +1888,18 @@ class HeroSynthRunner(ModeRunnerBase):
 
     def _is_instant_action(self, action_name: Optional[str]) -> bool:
         return self.machine.templates.pc_client and action_name == "close_filter"
+
+    def _stable_action_signature(self, preview_action: Any, outcome: Any) -> str:
+        if (
+            not self.machine.templates.pc_client
+            and preview_action is not None
+            and preview_action.name.startswith("next_card_")
+        ):
+            decision = (
+                "sss" if "当前英雄为SSS" in preview_action.reason else "non_sss"
+            )
+            return f"next_card:{decision}"
+        return super()._stable_action_signature(preview_action, outcome)
 
     def _after_action_click(self, action: HeroAction) -> None:
         if (
@@ -1930,6 +2015,8 @@ class HeroSynthRunner(ModeRunnerBase):
         """让日志解释当前动作的决策原因（评级/红点/选星/状态切换）。"""
         if action_name == "close_sss_material_warning":
             return "刻印页出现 SSS 材料风险提示 → 点关闭后重新观察当前页面"
+        if action_name == "select_hero_info_tab":
+            return "当前在装备子页 → 切回英雄信息页后再判断 SSS 与刻印红点"
         if action_name.startswith("open_filter"):
             return "筛选面板未开 → 点漏斗打开"
         if action_name == "select_star3":
