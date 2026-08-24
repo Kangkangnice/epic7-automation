@@ -1839,6 +1839,7 @@ class HeroSynthRunner(ModeRunnerBase):
         )
         self._needs_navigation_settle = machine.templates.pc_client
         self._card_switch_motion_confirmed = False
+        self._card_switch_motion_observer: CardSwitchMotionObserver | None = None
         # 本次安全策略只作用于模拟器；PC 保持既有未知画面唤醒行为。
         if machine.templates.pc_client:
             self._BLACK_SCREEN_TIMEOUT_SECONDS = None
@@ -1873,6 +1874,7 @@ class HeroSynthRunner(ModeRunnerBase):
         self.machine._confirmed_page = ""
         self._needs_navigation_settle = self.machine.templates.pc_client
         self._card_switch_motion_confirmed = False
+        self._card_switch_motion_observer = None
         if self.machine.pending_transmit_target:
             self.machine.transmit_continuity_intact = False
 
@@ -1922,19 +1924,107 @@ class HeroSynthRunner(ModeRunnerBase):
             or self.machine._last_screen is None
         ):
             return
+        self.runtime.log(
+            f"模式=英雄合成 切换开始 旧身份={action.source_observation or '无法读取'} "
+            f"点击={action.point}"
+        )
         observer = CardSwitchMotionObserver(self.machine._last_screen)
+        self._card_switch_motion_observer = observer
         self._card_switch_motion_confirmed = False
         for _ in range(36):
             self.sleep(1 / 12)
             if observer.update(self.runtime.capture()):
                 self._card_switch_motion_confirmed = True
-                self.runtime.log(
-                    "模式=英雄合成 切换阶段=MOVING->SETTLED 结果=已确认"
-                )
-                return
-        self.runtime.log(
-            "模式=英雄合成 切换阶段=WAITING_DEPARTURE 结果=未确认"
+                break
+
+        samples = observer.samples
+        peak_dy = max((abs(sample.dy) for sample in samples), default=0.0)
+        peak_difference = max(
+            (sample.difference for sample in samples), default=0.0
         )
+        final_baseline_difference = (
+            samples[-1].baseline_difference if samples else 0.0
+        )
+        evidence = (
+            "候选（尚未判定业务成功）"
+            if self._card_switch_motion_confirmed
+            else "未确认"
+        )
+        self.runtime.log(
+            f"模式=英雄合成 动态证据={evidence} 阶段={observer.phase.value} "
+            f"帧数={len(samples)} "
+            f"阈值=单帧垂直>={observer.min_vertical_shift:.2f}px/"
+            f"累计垂直>={observer.min_accumulated_shift:.2f}px/"
+            f"帧差>={observer.departure_difference:.2f}/"
+            f"稳定<={observer.settle_difference:.2f}x{observer.required_settle_frames} "
+            f"实际=峰值垂直{peak_dy:.3f}px/"
+            f"累计垂直{observer.accumulated_shift:.3f}px/"
+            f"峰值帧差{peak_difference:.3f}/"
+            f"最终基线差{final_baseline_difference:.3f}"
+        )
+
+        final_observation = (
+            self.machine._hero_identity_fingerprint(observer.last_screen)
+            if observer.last_screen is not None
+            else ""
+        )
+        identity_status = (
+            "无法读取"
+            if not final_observation
+            else (
+                "未变化"
+                if final_observation == action.source_observation
+                else "已变化"
+            )
+        )
+        self.runtime.log(
+            f"模式=英雄合成 切换观察 静态身份={identity_status} "
+            f"旧身份={action.source_observation or '无法读取'} "
+            f"当前身份={final_observation or '无法读取'}"
+        )
+        if (
+            not self._card_switch_motion_confirmed
+            or not final_observation
+            or final_observation == action.source_observation
+        ):
+            self._save_card_switch_evidence(action, observer, identity_status)
+
+    def _save_card_switch_evidence(
+        self,
+        action: HeroAction,
+        observer: CardSwitchMotionObserver,
+        identity_status: str,
+    ) -> None:
+        self.runtime.log(
+            f"模式=英雄合成 切换诊断 静态身份={identity_status} "
+            f"动作={action.name} 证据=逐帧数值与关键截图"
+        )
+        for sample in observer.samples:
+            self.runtime.log(
+                f"模式=英雄合成 切换证据帧={sample.frame} "
+                f"phase={sample.phase_before.value}->{sample.phase_after.value} "
+                f"dx={sample.dx:.3f} dy={sample.dy:.3f} "
+                f"response={sample.response:.4f} "
+                f"frame_diff={sample.difference:.3f} "
+                f"baseline_diff={sample.baseline_difference:.3f} "
+                f"accumulated={sample.accumulated_shift:.3f} "
+                f"settle={sample.settle_frames} "
+                f"vertical={int(sample.vertical)} departed={int(sample.departed)}"
+            )
+        if self.runtime.diagnostic_dir is None:
+            self.runtime.log(
+                "模式=英雄合成 切换诊断 截图=未保存 原因=未配置诊断目录"
+            )
+            return
+        frames = (
+            ("switch_before", observer.first_screen),
+            ("switch_departure", observer.departure_screen),
+            ("switch_peak", observer.peak_screen),
+            ("switch_final", observer.last_screen),
+        )
+        for label, screen in frames:
+            if screen is not None:
+                self.runtime.save_diagnostic(label, screen)
 
     @staticmethod
     def _parse_material_observation(
