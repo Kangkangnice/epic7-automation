@@ -112,6 +112,51 @@ class CardSwitchMotionObserverTests(unittest.TestCase):
 
         self.assertIs(observer.phase, MotionPhase.WAITING_DEPARTURE)
 
+    def test_center_anchored_list_replacement_then_settling_confirms_switch(self):
+        base = fixture("list_reddot")
+        changed = fixture("list_no_reddot")
+        observer = CardSwitchMotionObserver(base)
+
+        self.assertFalse(observer.update(changed))
+        self.assertFalse(observer.update(changed.copy()))
+        self.assertFalse(observer.update(changed.copy()))
+        self.assertTrue(observer.update(changed.copy()))
+        self.assertIs(observer.phase, MotionPhase.SETTLED)
+
+    def test_motion_then_identical_final_frame_confirms_same_copy_switch(self):
+        base = fixture("list_reddot")
+        moving = shifted_list(base, -16)
+        observer = CardSwitchMotionObserver(base)
+
+        self.assertFalse(observer.update(moving))
+        self.assertFalse(observer.update(base.copy()))
+        self.assertFalse(observer.update(base.copy()))
+        self.assertFalse(observer.update(base.copy()))
+        self.assertTrue(observer.update(base.copy()))
+        self.assertIs(observer.phase, MotionPhase.SETTLED)
+
+    def test_content_flash_returning_to_original_does_not_confirm_switch(self):
+        base = fixture("list_reddot")
+        changed = fixture("list_no_reddot")
+        observer = CardSwitchMotionObserver(base)
+
+        self.assertFalse(observer.update(changed))
+        for _ in range(4):
+            self.assertFalse(observer.update(base.copy()))
+
+        self.assertIsNot(observer.phase, MotionPhase.SETTLED)
+
+    def test_two_pixel_jitter_returning_to_original_does_not_confirm_switch(self):
+        base = fixture("list_reddot")
+        jitter = shifted_list(base, -2)
+        observer = CardSwitchMotionObserver(base)
+
+        self.assertFalse(observer.update(jitter))
+        for _ in range(4):
+            self.assertFalse(observer.update(base.copy()))
+
+        self.assertIsNot(observer.phase, MotionPhase.SETTLED)
+
     def test_central_portrait_animation_is_outside_motion_roi(self):
         base = fixture("list_reddot")
         animated = base.copy()
@@ -174,6 +219,69 @@ class CardSwitchRunnerTests(unittest.TestCase):
         runner._after_action_click(previous)
 
         self.assertFalse(runner._card_transition_completed(previous, current))
+
+    def test_unconfirmed_switch_still_observes_current_frame(self):
+        base = fixture("list_reddot")
+        frames = iter([base.copy()] * 36)
+        runner = HeroSynthRunner(
+            machine(verify_filter=True),
+            Runtime(lambda: next(frames), lambda *_: None),
+            sleep=lambda _: None,
+        )
+        original = HeroAction(
+            "next_card_original",
+            (1800, 591),
+            source_page="英雄列表",
+            target_pages=("英雄列表",),
+            source_observation="original",
+            transition_kind="card_change",
+        )
+        runner.machine._last_screen = base
+        runner._after_action_click(original)
+
+        with patch.object(runner.machine, "preview") as preview:
+            preview.return_value = (
+                None,
+                (HeroSynthState.HERO_LIST, 0),
+            )
+            action = runner._stable_next_action(
+                fixture("list_no_reddot"), StableObservation(required=1)
+            )
+
+        self.assertIsNot(action, original)
+        preview.assert_called_once()
+
+    def test_next_card_stability_ignores_idle_fingerprint_jitter(self):
+        m = machine(verify_filter=True)
+        runner = HeroSynthRunner(
+            m,
+            Runtime(lambda: None, lambda *_: None),
+            sleep=lambda _: None,
+        )
+        old = HeroAction(
+            "next_card_old",
+            (1800, 591),
+            reason="当前英雄非SSS但刻印按钮无红点，跳过，详情指纹=old",
+        )
+        new = HeroAction(
+            "next_card_new",
+            (1800, 591),
+            reason="当前英雄非SSS但刻印按钮无红点，跳过，详情指纹=new",
+        )
+        stable = StableObservation(required=2)
+        outcome = (HeroSynthState.HERO_LIST, 0)
+
+        with patch.object(m, "preview", side_effect=((old, outcome), (new, outcome))):
+            with patch.object(m, "next_action", return_value=new):
+                first = runner._stable_next_action(
+                    fixture("list_no_reddot"), stable
+                )
+                second = runner._stable_next_action(
+                    fixture("list_no_reddot"), stable
+                )
+
+        self.assertIs(first, NOT_STABLE)
+        self.assertIs(second, new)
 
 
 class HeroSafetyClassificationTests(unittest.TestCase):
@@ -347,6 +455,7 @@ class TransmitTransactionTests(unittest.TestCase):
         m = machine(verify_filter=True)
         m.transmit_phase = TransmitPhase.OPENING
         m.transmit_target_observation = "card-copy-7"
+        m.transmit_continuity_intact = True
 
         m.next_action(fixture("transmit_select"))
 
@@ -364,6 +473,46 @@ class TransmitTransactionTests(unittest.TestCase):
         self.assertIs(m.transmit_phase, TransmitPhase.CONFIRMING)
         self.assertEqual("card-copy-7", m.transmit_target_observation)
 
+    def test_recovery_breaks_continuity_and_blocks_pending_transmit(self):
+        m = machine(verify_filter=True)
+        m.transmit_phase = TransmitPhase.PENDING
+        m.transmit_target_observation = m._hero_identity_fingerprint(
+            fixture("list_reddot")
+        )
+        m.transmit_continuity_intact = True
+        runner = HeroSynthRunner(m, Runtime(lambda: None, lambda *_: None))
+
+        runner._apply_recovery_state()
+
+        self.assertFalse(m.transmit_continuity_intact)
+        self.assertIsNone(m.next_action(fixture("list_reddot")))
+
+    def test_recovery_blocks_transmit_selection_and_confirmation_side_effects(self):
+        cases = (
+            (TransmitPhase.OPENING, fixture("transmit_select")),
+            (TransmitPhase.SELECTING, fixture("transmit_confirm")),
+            (TransmitPhase.CONFIRMING, fixture("transmit_confirm")),
+        )
+        for phase, screen in cases:
+            with self.subTest(phase=phase):
+                m = machine(verify_filter=True)
+                m.transmit_phase = phase
+                m.transmit_target_observation = "saved-card"
+                m.transmit_continuity_intact = True
+                runner = HeroSynthRunner(
+                    m, Runtime(lambda: None, lambda *_: None)
+                )
+
+                runner._apply_recovery_state()
+
+                self.assertIsNone(m.next_action(screen))
+
+    def test_pending_transmit_without_saved_target_is_fail_closed(self):
+        m = machine(verify_filter=True)
+        m.pending_transmit_target = True
+
+        self.assertIsNone(m.next_action(fixture("list_reddot")))
+
     def test_saved_target_must_still_be_selected_before_opening_transmit(self):
         m = machine(verify_filter=True)
         m.transmit_phase = TransmitPhase.PENDING
@@ -371,6 +520,23 @@ class TransmitTransactionTests(unittest.TestCase):
 
         self.assertIsNone(m.next_action(fixture("list_reddot")))
         self.assertIs(m.transmit_phase, TransmitPhase.PENDING)
+
+    def test_saved_target_identity_ignores_idle_list_animation(self):
+        m = machine(verify_filter=True)
+        original = fixture("list_reddot")
+        animated = original.copy()
+        animated[250:800, 1600:1900] = 255 - animated[250:800, 1600:1900]
+        self.assertNotEqual(
+            m._detail_fingerprint(original),
+            m._detail_fingerprint(animated),
+        )
+        m.transmit_phase = TransmitPhase.PENDING
+        m.transmit_target_observation = m._hero_identity_fingerprint(original)
+        m.transmit_continuity_intact = True
+
+        action = m.next_action(animated)
+
+        self.assertEqual("open_transmit_for_current_card", action.name)
 
     def test_auto_select_label_alone_is_not_complete_transmit_page(self):
         m = machine(verify_filter=True)
@@ -685,6 +851,7 @@ class HeroPageEvidenceTests(unittest.TestCase):
         m.state = HeroSynthState.TRANSMIT_SELECT
         m.transmit_phase = TransmitPhase.OPENING
         m.transmit_target_observation = "saved-card"
+        m.transmit_continuity_intact = True
 
         m.next_action(fixture("transmit_select"))
         self.assertEqual("传送选择", m._confirmed_page)
@@ -901,16 +1068,40 @@ class HeroListTransitionTests(unittest.TestCase):
         self.assertFalse(action.name.startswith("add_material_"))
         self.assertEqual("abort_imprint_to_transmit", action.name)
 
-    def test_normal_material_is_selected_before_sss_material(self):
-        """同屏有普通 Up 材料和 SSS 材料时，只允许点击普通材料。"""
-        m = machine()
-        m.state = HeroSynthState.IMPRINT_ADD
+    def test_any_sss_material_aborts_before_ordinary_material(self):
+        """同屏只要有 SSS，普通副本也不能再合进当前英雄。"""
+        m = machine(verify_filter=True)
+        m.next_action(fixture("list_reddot"))
 
         action = m.next_action(fixture("imprint_up_cards"))
 
-        self.assertTrue(action.name.startswith("add_material_"))
-        self.assertLess(abs(action.point[1] - 550), 15)
-        self.assertEqual("刻印加材料", m._confirmed_page)
+        self.assertEqual("abort_imprint_to_transmit", action.name)
+        self.assertEqual("刻印SSS材料", m._confirmed_page)
+
+    def test_sss_detection_ignores_animated_card_background_border(self):
+        """SSS 文字本身清晰时，卡片立绘变化不能让整页检测失效。"""
+        m = machine(verify_filter=True)
+        m.next_action(fixture("list_reddot"))
+        screen = fixture("imprint_up_cards").copy()
+        match = m._locate(
+            screen,
+            "sss_material",
+            -1.0,
+            region_override=m._MATERIAL_SSS_REGION,
+        )
+        height, width = m.templates.sss_material.shape[:2]
+        left = match.center[0] - width // 2
+        top = match.center[1] - height // 2
+        border = 4
+        screen[top : top + border, left : left + width] = 0
+        screen[top + height - border : top + height, left : left + width] = 0
+        screen[top : top + height, left : left + border] = 0
+        screen[top : top + height, left + width - border : left + width] = 0
+
+        action = m.next_action(screen)
+
+        self.assertEqual("abort_imprint_to_transmit", action.name)
+        self.assertEqual("刻印SSS材料", m._confirmed_page)
 
     def test_complete_imprint_page_matches_sss_material_once(self):
         m = machine(verify_filter=True)
@@ -961,8 +1152,22 @@ class HeroListTransitionTests(unittest.TestCase):
 
         action = settled_next(m, screen)
 
-        self.assertEqual(m._detail_fingerprint(screen), action.source_observation)
+        self.assertEqual(m._hero_identity_fingerprint(screen), action.source_observation)
         self.assertEqual("card_change", action.transition_kind)
+
+    def test_open_imprint_retry_identity_ignores_list_animation(self):
+        original = fixture("list_reddot")
+        animated = original.copy()
+        animated[250:800, 1600:1900] = 255 - animated[250:800, 1600:1900]
+        m = machine(verify_filter=True)
+
+        first = m.next_action(original)
+        second = m.next_action(animated)
+
+        self.assertEqual("open_imprint", first.name)
+        self.assertEqual("open_imprint", second.name)
+        self.assertNotEqual(m._detail_fingerprint(original), m._detail_fingerprint(animated))
+        self.assertEqual(first.source_observation, second.source_observation)
 
     def test_confirmed_motion_is_consumed_after_switch(self):
         runner = HeroSynthRunner(
@@ -1011,6 +1216,42 @@ class HeroListTransitionTests(unittest.TestCase):
 
 
 class FilterDecisionTests(unittest.TestCase):
+    def test_equipment_subtab_switches_to_hero_info_before_filtering(self):
+        screen = fixture("list_unfiltered").copy()
+        info = (0, 150, 127, 105)
+        equip = (0, 255, 127, 105)
+        ix, iy, iw, ih = info
+        ex, ey, ew, eh = equip
+        info_pixels = screen[iy : iy + ih, ix : ix + iw].copy()
+        screen[iy : iy + ih, ix : ix + iw] = screen[
+            ey : ey + eh, ex : ex + ew
+        ]
+        screen[ey : ey + eh, ex : ex + ew] = info_pixels
+        for x, y, w, h in (
+            HeroSynthStateMachine._BUTTON_ZONE,
+            HeroSynthStateMachine._RATING_REGION,
+            HeroSynthStateMachine._REDDOT_ZONE,
+        ):
+            screen[y : y + h, x : x + w] = 0
+
+        action = machine().next_action(screen)
+
+        self.assertEqual("select_hero_info_tab", action.name)
+        self.assertEqual((65, 200), action.point)
+        self.assertEqual("英雄装备页", action.source_page)
+        self.assertEqual(("英雄列表",), action.target_pages)
+
+    def test_unknown_left_tab_selection_blocks_hero_actions(self):
+        m = machine(verify_filter=True)
+        screen = fixture("list_reddot").copy()
+        for x, y, w, h in (
+            m._HERO_INFO_TAB_ZONE,
+            m._EQUIPMENT_TAB_ZONE,
+        ):
+            screen[y : y + h, x : x + w] = 0
+
+        self.assertIsNone(m.next_action(screen))
+
     def test_filter_open_with_star3_selected_closes(self):
         m = machine()
         action = m.next_action(fixture("filter_open"))
@@ -1155,13 +1396,16 @@ class ImprintDecisionTests(unittest.TestCase):
     def test_pending_transmit_opens_transmit_for_current_card(self):
         m = machine(verify_filter=True)
         m.pending_transmit_target = True
+        m.transmit_target_observation = m._hero_identity_fingerprint(
+            fixture("list_reddot")
+        )
         action = m.next_action(fixture("list_reddot"))
         self.assertEqual("open_transmit_for_current_card", action.name)
         self.assertEqual((1735, 1060), action.point)
 
     def test_sss_material_branch_enters_existing_transmit_flow(self):
         m = machine()
-        m._active_card_observation = m._detail_fingerprint(
+        m._active_card_observation = m._hero_identity_fingerprint(
             fixture("list_reddot")
         )
         m.state = HeroSynthState.IMPRINT_ADD
@@ -1379,6 +1623,7 @@ class TransmitDecisionTests(unittest.TestCase):
         m = machine()
         m.transmit_phase = TransmitPhase.OPENING
         m.transmit_target_observation = "saved-card"
+        m.transmit_continuity_intact = True
         with patch.object(m, "_transmit_target_card", return_value=None), patch.object(
             m, "_transmit_green_present", return_value=False
         ):
@@ -1407,6 +1652,7 @@ class TransmitDecisionTests(unittest.TestCase):
         m = machine()
         m.transmit_phase = TransmitPhase.OPENING
         m.transmit_target_observation = "saved-card"
+        m.transmit_continuity_intact = True
         action = m.next_action(screen)
         self.assertEqual("abort_transmit_sss_target", action.name)
         self.assertIs(m.state, HeroSynthState.TRANSMIT_RETURNING)
@@ -1415,6 +1661,7 @@ class TransmitDecisionTests(unittest.TestCase):
         m = machine()
         m.transmit_phase = TransmitPhase.OPENING
         m.transmit_target_observation = "saved-card"
+        m.transmit_continuity_intact = True
         action = m.next_action(fixture("transmit_select"))
         self.assertEqual("start_transmit", action.name)
         self.assertEqual((1203, 1057), action.point)
@@ -1430,6 +1677,7 @@ class TransmitDecisionTests(unittest.TestCase):
         m = machine()
         m.transmit_phase = TransmitPhase.OPENING
         m.transmit_target_observation = "saved-card"
+        m.transmit_continuity_intact = True
         action = m.next_action(fixture("transmit_selected"))
         self.assertEqual("start_transmit", action.name)
         self.assertEqual((1203, 1057), action.point)
@@ -1439,6 +1687,7 @@ class TransmitDecisionTests(unittest.TestCase):
         m.state = HeroSynthState.TRANSMIT_CONFIRM
         m.transmit_phase = TransmitPhase.SELECTING
         m.transmit_target_observation = "saved-card"
+        m.transmit_continuity_intact = True
         action = m.next_action(fixture("transmit_confirm"))
         self.assertEqual("confirm_transmit", action.name)
 
@@ -1710,6 +1959,51 @@ class RunnerFlowTests(unittest.TestCase):
         output = "\n".join(logs)
         self.assertIn("等待=点击后确认转场", output)
         self.assertNotIn("目标页面=?", output)
+
+    def test_open_imprint_contract_blocks_next_card_until_target_page(self):
+        screens = iter(
+            [fixture("list_reddot")] * 2
+            + [fixture("list_no_reddot")] * 6
+        )
+        logs: list[str] = []
+        runner = HeroSynthRunner(
+            machine(verify_filter=True),
+            Runtime(
+                lambda: next(screens),
+                lambda _: None,
+                emit=logs.append,
+            ),
+            sleep=lambda _: None,
+        )
+
+        with self.assertRaises(StopIteration):
+            runner.run(max_cycles=1)
+
+        clicked = [
+            line for line in logs if "执行点击" in line and "动作=" in line
+        ]
+        self.assertTrue(any("动作=open_imprint" in line for line in clicked))
+        self.assertFalse(any("动作=next_card" in line for line in clicked))
+
+    def test_transition_retry_requires_same_source_observation(self):
+        runner = HeroSynthRunner(
+            machine(verify_filter=True),
+            Runtime(lambda: None, lambda *_: None),
+        )
+        previous = HeroAction(
+            "open_imprint",
+            (0, 0),
+            source_page="英雄列表",
+            source_observation="hero-a",
+        )
+        current = HeroAction(
+            "open_imprint",
+            (0, 0),
+            source_page="英雄列表",
+            source_observation="hero-b",
+        )
+
+        self.assertFalse(runner._source_observation_matches(previous, current))
 
     def test_next_card_retry_window_is_short(self):
         runner = HeroSynthRunner(

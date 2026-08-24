@@ -26,6 +26,7 @@ class CardSwitchMotionObserver:
     min_vertical_shift: float = 1.5
     min_phase_response: float = 0.08
     min_accumulated_shift: float = 8.0
+    departure_difference: float = 6.0
     settle_difference: float = 2.5
     required_settle_frames: int = 3
 
@@ -37,6 +38,9 @@ class CardSwitchMotionObserver:
         self.accumulated_shift = 0.0
         self.settle_frames = 0
         self.previous = self._gray(self.first_screen)
+        self.baseline = self.previous.copy()
+        self.observed_vertical_motion = False
+        self.observed_structural_departure = False
 
     def _gray(self, screen: np.ndarray) -> np.ndarray:
         x, y, w, h = self._LIST_ZONE
@@ -64,8 +68,16 @@ class CardSwitchMotionObserver:
             and abs(dy) > abs(dx) * 1.5
         )
 
-        if vertical:
+        departed = vertical or difference >= self.departure_difference
+        if self.phase is MotionPhase.WAITING_DEPARTURE and departed:
             self.phase = MotionPhase.MOVING
+            self.observed_vertical_motion = vertical
+            self.observed_structural_departure = not vertical
+            self.accumulated_shift += abs(dy) if vertical else 0.0
+            self.settle_frames = 0
+        elif vertical:
+            self.phase = MotionPhase.MOVING
+            self.observed_vertical_motion = True
             self.accumulated_shift += abs(dy)
             self.settle_frames = 0
         elif self.phase in (MotionPhase.MOVING, MotionPhase.SETTLING):
@@ -76,8 +88,18 @@ class CardSwitchMotionObserver:
                 else 0
             )
             if (
-                self.accumulated_shift >= self.min_accumulated_shift
-                and self.settle_frames >= self.required_settle_frames
+                self.settle_frames >= self.required_settle_frames
+                and (
+                    (
+                        self.observed_vertical_motion
+                        and self.accumulated_shift >= self.min_accumulated_shift
+                    )
+                    or (
+                        self.observed_structural_departure
+                        and float(cv2.absdiff(self.baseline, current).mean())
+                        >= self.departure_difference
+                    )
+                )
             ):
                 self.phase = MotionPhase.SETTLED
                 self.previous = current
