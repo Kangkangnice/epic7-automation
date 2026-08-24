@@ -664,6 +664,24 @@ class TransmitRewardEvidenceTests(unittest.TestCase):
         self.assertEqual("back_to_list", action.name)
         self.assertNotIn("transmit", action.name)
 
+    def test_returned_hero_list_is_confirmed_without_filter_button_match(self):
+        m = machine(verify_filter=True)
+        m.state = HeroSynthState.TRANSMIT_RETURNING
+        m.transmit_phase = TransmitPhase.RETURNING
+        m._transmit_reward_confirmed = True
+        screen = fixture("list_reddot").copy()
+        x, y, w, h = m._REGIONS["filter_button"]
+        screen[y : y + h, x : x + w] = 0
+
+        self.assertTrue(m._hero_list_ready(screen))
+        self.assertIsNone(m._locate(screen, "filter_button", 0.80))
+
+        m.next_action(screen)
+
+        self.assertIs(m.state, HeroSynthState.HERO_LIST)
+        self.assertIs(m.transmit_phase, TransmitPhase.NONE)
+        self.assertEqual("英雄列表", m._confirmed_page)
+
 
 def test_sss_material_transmit_returns_once_and_continues_cycle():
     sequence = (
