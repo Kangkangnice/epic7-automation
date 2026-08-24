@@ -252,6 +252,46 @@ class HeroSafetyClassificationTests(unittest.TestCase):
         ):
             self.assertIsNone(m.next_action(fixture("transmit_select")))
 
+
+class FrameScopedEvidenceTests(unittest.TestCase):
+    def test_unknown_frame_clears_simulator_confirmed_page(self):
+        m = machine(verify_filter=True)
+        m._confirmed_page = "刻印加材料"
+        unknown = np.full_like(fixture("imprint_added"), 30)
+
+        self.assertIsNone(m.next_action(unknown))
+        self.assertEqual("", m._confirmed_page)
+
+    def test_material_action_requires_slot_or_row_change(self):
+        runner = HeroSynthRunner(
+            machine(),
+            Runtime(lambda: None, lambda *_: None),
+            sleep=lambda _: None,
+        )
+        previous = HeroAction(
+            "add_material_0_2",
+            (0, 0),
+            source_observation="slots=0;rows=450,600",
+            transition_kind="material_change",
+        )
+        unchanged = HeroAction(
+            "add_material_0_2",
+            (0, 0),
+            source_observation="slots=0;rows=450,600",
+        )
+        changed = HeroAction(
+            "add_material_1_1",
+            (0, 0),
+            source_observation="slots=1;rows=600",
+        )
+
+        self.assertFalse(
+            runner._material_transition_completed(previous, unchanged)
+        )
+        self.assertTrue(
+            runner._material_transition_completed(previous, changed)
+        )
+
 class FakeClock:
     def __init__(self):
         self.value = 0.0
@@ -451,7 +491,7 @@ class HeroPageEvidenceTests(unittest.TestCase):
 
         m.next_action(screen)
 
-        self.assertEqual("筛选面板（三星已选中）", m._confirmed_page)
+        self.assertEqual("", m._confirmed_page)
 
     def test_unknown_filter_observation_preserves_non_filter_page_evidence(self):
         partial = fixture("filter_open_star3_unselected").copy()
@@ -625,7 +665,7 @@ class HeroListTransitionTests(unittest.TestCase):
 
         self.assertIsNone(action)
         self.assertIs(m.state, HeroSynthState.HERO_LIST)
-        self.assertEqual("英雄列表", m._confirmed_page)
+        self.assertEqual("", m._confirmed_page)
 
     def test_immediate_sss_imprint_page_is_recognized_before_material_action(self):
         m = machine(verify_filter=True)
