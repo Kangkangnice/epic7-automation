@@ -1289,6 +1289,7 @@ class HeroSynthStateMachine:
                 return None
             if not self._hero_list_ready(screen):
                 return None
+            self._confirm_page("英雄列表")
             self.transmit_phase = TransmitPhase.NONE
             self.transmit_target_observation = None
             self.transmit_continuity_intact = False
