@@ -12,6 +12,7 @@ from auto_game_unified.core.runtime import Runtime
 from auto_game_unified.core.supervisor import StableObservation
 from auto_game_unified.games.epic7.hero_synthesis import (
     FilterObservation,
+    HeroAction,
     HeroSynthRunner,
     HeroSynthState,
     HeroSynthStateMachine,
@@ -500,6 +501,61 @@ class HeroListTransitionTests(unittest.TestCase):
                 self.assertEqual(("英雄列表",), action.target_pages)
                 self.assertIn(fingerprint, action.reason)
                 self.assertIn(skip_reason, action.reason)
+
+    def test_next_card_identity_ignores_rating_jitter(self):
+        m = machine(verify_filter=True)
+        screen = fixture("list_no_reddot")
+
+        with patch.object(m, "_is_max_rating", side_effect=(True, True, False, False)):
+            first = m.next_action(screen)
+            second = m.next_action(screen)
+
+        self.assertEqual(first.name, second.name)
+        self.assertIn("当前英雄为SSS", first.reason)
+        self.assertIn("当前英雄非SSS但刻印按钮无红点", second.reason)
+
+    def test_next_card_contract_carries_card_observation(self):
+        m = machine(verify_filter=True)
+        screen = fixture("list_no_reddot")
+
+        action = settled_next(m, screen)
+
+        self.assertEqual(m._detail_fingerprint(screen), action.source_observation)
+        self.assertEqual("card_change", action.transition_kind)
+
+    def test_same_named_hero_with_new_card_observation_counts_as_switch(self):
+        runner = HeroSynthRunner(
+            machine(verify_filter=True), Runtime(lambda: None, lambda *_: None)
+        )
+        previous = HeroAction(
+            "next_card_old",
+            (0, 0),
+            source_observation="name=A|selected_row=1",
+        )
+        current = HeroAction(
+            "next_card_new",
+            (0, 0),
+            source_observation="name=A|selected_row=2",
+        )
+
+        self.assertTrue(runner._card_transition_completed(previous, current))
+
+    def test_same_card_observation_does_not_count_as_switch(self):
+        runner = HeroSynthRunner(
+            machine(verify_filter=True), Runtime(lambda: None, lambda *_: None)
+        )
+        previous = HeroAction(
+            "next_card_old",
+            (0, 0),
+            source_observation="name=A|selected_row=1",
+        )
+        current = HeroAction(
+            "next_card_old",
+            (0, 0),
+            source_observation="name=A|selected_row=1",
+        )
+
+        self.assertFalse(runner._card_transition_completed(previous, current))
 
     def test_end_of_list_still_requires_two_stable_observations(self):
         m = machine(verify_filter=True)
