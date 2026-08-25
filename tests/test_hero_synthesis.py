@@ -1141,6 +1141,7 @@ class HeroListDecisionTests(unittest.TestCase):
         action = m.next_action(fixture("list_reddot"))
         self.assertEqual("open_filter", action.name)
         self.assertEqual((1540, 191), action.point)
+        self.assertEqual("英雄信息页已确认，打开三星筛选", action.reason)
 
     def test_list_reddot_opens_imprint(self):
         m = machine(verify_filter=True)
@@ -2159,6 +2160,38 @@ class NavigationTests(unittest.TestCase):
 
 
 class RunnerFlowTests(unittest.TestCase):
+    def test_unconfirmed_hero_subpage_logs_tab_evidence_without_flooding(self):
+        screen = fixture("live_equipment_subpage_20260825").copy()
+        m = machine()
+        for x, y, w, h in (m._HERO_INFO_TAB_ZONE, m._EQUIPMENT_TAB_ZONE):
+            screen[y : y + h, x : x + w] = 0
+        clock = FakeClock()
+        logs = []
+        runner = HeroSynthRunner(
+            m,
+            Runtime(
+                lambda: screen,
+                lambda _: None,
+                emit=logs.append,
+                monotonic=clock,
+            ),
+            sleep=clock.sleep,
+        )
+        stable = StableObservation(required=2)
+
+        self.assertIs(runner._stable_next_action(screen, stable), NOT_STABLE)
+        self.assertIsNone(runner._stable_next_action(screen, stable))
+        self.assertIsNone(runner._stable_next_action(screen, stable))
+        clock.sleep(10)
+        self.assertIsNone(runner._stable_next_action(screen, stable))
+
+        evidence = [log for log in logs if "英雄子页等待" in log]
+        self.assertEqual(2, len(evidence))
+        self.assertIn(
+            "当前子页=未确认 英雄信息蓝色像素=0 装备蓝色像素=0",
+            evidence[0],
+        )
+
     def test_imprint_timeout_logs_material_detector_evidence(self):
         logs = []
         m = machine()

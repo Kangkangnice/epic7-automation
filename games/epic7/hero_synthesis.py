@@ -1159,7 +1159,7 @@ class HeroSynthStateMachine:
                         "筛选面板（三星已选中）",
                         "筛选面板（三星未选中）",
                     ),
-                    reason="漏斗与刻印按钮存在，筛选面板锚点均消失",
+                    reason="英雄信息页已确认，打开三星筛选",
                 )
             return False, None
 
@@ -1972,6 +1972,8 @@ class HeroSynthRunner(ModeRunnerBase):
         self._card_switch_motion_confirmed = False
         self._card_switch_motion_observer: CardSwitchMotionObserver | None = None
         self._last_imprint_abort_wait_log_at: float | None = None
+        self._hero_subpage_wait_started_at: float | None = None
+        self._last_hero_subpage_wait_log_at: float | None = None
         # 本次安全策略只作用于模拟器；PC 保持既有未知画面唤醒行为。
         if machine.templates.pc_client:
             self._BLACK_SCREEN_TIMEOUT_SECONDS = None
@@ -2022,6 +2024,15 @@ class HeroSynthRunner(ModeRunnerBase):
             self._needs_navigation_settle = False
             return super()._stable_next_action(self.runtime.capture(), stable)
         result = super()._stable_next_action(screen, stable)
+        if (
+            not self.machine.templates.pc_client
+            and self.machine.state is HeroSynthState.HERO_LIST
+            and result is None
+        ):
+            self._log_hero_subpage_wait(screen)
+        elif result is not NOT_STABLE:
+            self._hero_subpage_wait_started_at = None
+            self._last_hero_subpage_wait_log_at = None
         if self.machine.state is HeroSynthState.IMPRINT_ABORTING and result in (
             NOT_STABLE,
             None,
@@ -2036,6 +2047,33 @@ class HeroSynthRunner(ModeRunnerBase):
         else:
             self._last_imprint_abort_wait_log_at = None
         return result
+
+    def _log_hero_subpage_wait(self, screen: np.ndarray) -> None:
+        now = self.now()
+        if self._hero_subpage_wait_started_at is None:
+            self._hero_subpage_wait_started_at = now
+        if (
+            self._last_hero_subpage_wait_log_at is not None
+            and now - self._last_hero_subpage_wait_log_at < 10
+        ):
+            return
+        information, equipment = hero_tab_blue_pixel_counts(screen)
+        if hero_information_tab_selected(screen):
+            subpage = "英雄信息"
+        elif hero_equipment_tab_selected(screen):
+            subpage = "英雄装备"
+        else:
+            subpage = "未确认"
+        elapsed = now - self._hero_subpage_wait_started_at
+        self.runtime.log(
+            f"模式={self._MODE_LABEL} 英雄子页等待 "
+            f"当前子页={subpage} "
+            f"英雄信息蓝色像素={information} "
+            f"装备蓝色像素={equipment} "
+            f"英雄列表结构={int(self.machine._hero_list_ready(screen))} "
+            f"已等待={elapsed:.0f}秒"
+        )
+        self._last_hero_subpage_wait_log_at = now
 
     def _log_imprint_abort_evidence(
         self, screen: np.ndarray, *, prefix: str
