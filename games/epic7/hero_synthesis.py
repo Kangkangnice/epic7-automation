@@ -1202,7 +1202,7 @@ class HeroSynthStateMachine:
                 "close_imprint_result",
                 self._scaled_point(screen, self._IMPRINT_RESULT_CLOSE_POINT),
                 source_page="合成结果",
-                target_pages=("合成后刻印页",),
+                target_pages=("合成后刻印页", "英雄列表"),
                 reason="结果标题与关闭控件同时存在",
             )
 
