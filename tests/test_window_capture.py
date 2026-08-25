@@ -292,7 +292,7 @@ class WindowViewportTests(unittest.TestCase):
                 with self.assertRaisesRegex(RuntimeError, "渲染区外点击"):
                     game._click_legacy(point)
 
-    def test_render_tap_uses_ld_input(self):
+    def test_render_tap_uses_indexed_adb_input(self):
         game = Epic7Window()
         with (
             patch.object(
@@ -305,7 +305,14 @@ class WindowViewportTests(unittest.TestCase):
             game._send_render_tap((1790, 274))
 
         run.assert_called_once_with(
-            ["D:\\epic7\\ld.exe", "input", "tap", "1790", "274"],
+            [
+                "D:\\epic7\\ldconsole.exe",
+                "adb",
+                "--index",
+                "0",
+                "--command",
+                "shell input tap 1790 274",
+            ],
             check=True,
             capture_output=True,
             timeout=10,

@@ -254,11 +254,12 @@ class Epic7Window:
         self._send_render_tap(render_point)
 
     def _send_render_tap(self, point: tuple[int, int]) -> None:
-        console_path, _, _ = self._instance_channel()
+        console_path, instance_index, _ = self._instance_channel()
         subprocess.run(
             [
-                str(console_path.with_name("ld.exe")),
-                "input", "tap", str(point[0]), str(point[1]),
+                str(console_path),
+                "adb", "--index", instance_index,
+                "--command", f"shell input tap {point[0]} {point[1]}",
             ],
             check=True,
             capture_output=True,
