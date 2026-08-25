@@ -1917,6 +1917,27 @@ class TransmitDecisionTests(unittest.TestCase):
 
 
 class GuardTests(unittest.TestCase):
+    def test_hero_identity_ignores_animation_to_the_right_of_name(self):
+        original = fixture("list_no_reddot")
+        animated = original.copy()
+        animated[165:310, 425:575] = np.roll(
+            animated[165:310, 425:575], 24, axis=0
+        )
+        m = machine(verify_filter=True)
+
+        self.assertEqual(
+            m._hero_identity_fingerprint(original),
+            m._hero_identity_fingerprint(animated),
+        )
+
+    def test_narrow_hero_identity_still_distinguishes_recorded_heroes(self):
+        m = machine(verify_filter=True)
+
+        self.assertNotEqual(
+            m._hero_identity_fingerprint(fixture("list_no_reddot")),
+            m._hero_identity_fingerprint(fixture("list_grey_3s")),
+        )
+
     def test_card_fingerprint_distinguishes_recorded_cards(self):
         m = machine(verify_filter=True)
         first = m._detail_fingerprint(fixture("list_reddot"))
