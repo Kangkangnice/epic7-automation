@@ -2,6 +2,7 @@ import pytest
 import tkinter as tk
 from unittest.mock import patch
 
+from auto_game_unified.desktop import app as app_module
 from auto_game_unified.desktop.app import DesktopApp, DesktopController, fit_window_size
 from auto_game_unified.desktop.preflight import PreflightReport, PreflightStatus
 
@@ -37,6 +38,13 @@ def passed_preflight():
 
 def blocked_preflight():
     return PreflightReport(PreflightStatus.BLOCK, "没有找到雷电窗口")
+
+
+def test_startup_order_mentions_emulator_before_assistant():
+    hint = getattr(app_module, "STARTUP_ORDER_HINT", "")
+
+    assert "先启动雷电模拟器" in hint
+    assert "进入《第七史诗》" in hint
 
 
 def test_controller_requires_successful_preflight_before_start():
