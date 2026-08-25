@@ -21,6 +21,8 @@ from auto_game_unified.games.epic7.story import (
     find_watch_story_button,
 )
 from auto_game_unified.games.epic7.hero_synthesis import (
+    hero_equipment_tab_selected,
+    hero_information_tab_selected,
     imprint_button_saturation,
 )
 from auto_game_unified.games.epic7.unknown_screen import (
@@ -366,12 +368,24 @@ class Epic7Navigator:
             return PageObservation("hero_equipment", hero_equipment.score)
 
         hero_list = self._locate(screen, "imprint_button_normal", 0.78)
-        if hero_list:
+        if hero_list and hero_equipment_tab_selected(screen):
+            return PageObservation("hero_equipment", hero_list.score)
+        if hero_list and hero_information_tab_selected(screen):
             return PageObservation("hero_list", hero_list.score)
         # 选中 3S 满级英雄时刻印按钮置灰（深/浅两种灰），正常模板高分失配；
         # 结构匹配（图标轮廓仍在）+ 饱和度确认置灰状态，同样认定为英雄列表。
         grey_button = self._locate(screen, "imprint_button_normal", 0.50)
-        if grey_button and imprint_button_saturation(screen) < 90:
+        if (
+            grey_button
+            and imprint_button_saturation(screen) < 90
+            and hero_equipment_tab_selected(screen)
+        ):
+            return PageObservation("hero_equipment", grey_button.score)
+        if (
+            grey_button
+            and imprint_button_saturation(screen) < 90
+            and hero_information_tab_selected(screen)
+        ):
             return PageObservation("hero_list", grey_button.score)
 
         story = find_prepare_battle_button(
@@ -656,7 +670,12 @@ class Epic7Navigator:
             )
         else:
             raise ValueError(f"导航不支持的模式：{mode}")
-        self.runtime.log(f"模式={MODE_LABELS.get(mode, mode)} 状态=导航完成")
+        if mode == "hero_synthesis":
+            self.runtime.log(
+                "模式=英雄合成 状态=导航完成 前提=英雄信息页已就绪"
+            )
+        else:
+            self.runtime.log(f"模式={MODE_LABELS.get(mode, mode)} 状态=导航完成")
 
     def _transition(
         self,
@@ -688,6 +707,7 @@ class Epic7Navigator:
             stable = StableObservation(required=2)
             story_recovery = _StoryRecoveryAttempts()
             hero_detail_tab_switched = False
+            hero_container_logged = False
             last_source: Optional[np.ndarray] = None
             for _ in range(self.transition_frames):
                 screen, observation = self._capture()
@@ -718,20 +738,40 @@ class Epic7Navigator:
                 if (
                     is_stable
                     and target == "hero_list"
+                    and observation.name in {"hero_equipment", "hero_list"}
+                    and not hero_container_logged
+                ):
+                    subpage = (
+                        "英雄装备"
+                        if observation.name == "hero_equipment"
+                        else "英雄信息"
+                    )
+                    self.runtime.log(
+                        "模式=导航 页面=英雄列表容器 状态=已进入 "
+                        f"当前子页={subpage}"
+                    )
+                    hero_container_logged = True
+                if (
+                    is_stable
+                    and target == "hero_list"
                     and observation.name == "hero_equipment"
                     and not hero_detail_tab_switched
                 ):
                     self.runtime.log(
-                        "模式=导航 页面=英雄装备子页 动作=切换英雄详情"
+                        "模式=导航 当前子页=英雄装备 动作=切换英雄信息"
                     )
                     self.runtime.click(
-                        self._HERO_DETAIL_TAB_POINT, "切换英雄详情"
+                        self._HERO_DETAIL_TAB_POINT, "切换英雄信息"
                     )
                     hero_detail_tab_switched = True
                     stable.reset()
                     self.sleep(self.poll_seconds)
                     continue
                 if is_stable and observation.name in targets:
+                    if target == "hero_list" and observation.name == "hero_list":
+                        self.runtime.log(
+                            "模式=导航 当前子页=英雄信息 状态=已确认"
+                        )
                     self.runtime.log(
                         f"模式=导航 页面={page_label(observation.name)} "
                         f"置信度={observation.confidence:.3f} 状态=转场确认"
