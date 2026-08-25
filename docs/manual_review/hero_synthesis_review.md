@@ -211,9 +211,7 @@ PC：    _PC_NEXT_CARD_POINT = (1710, 570)
 
 代码位置：`hero_synthesis.py:161-167` 和 `hero_synthesis.py:544-549`。
 
-人工标注图：
-
-![你提供的红框中心换算后的点击点](../../runtime_diagnostics/epic7_hero_synthesis/user_next_card_point_render_1559_539.png)
+人工标注图曾保存到本机运行路径 `runtime_diagnostics/epic7_hero_synthesis/user_next_card_point_render_1559_539.png`。该目录被 Git 忽略，当前仓库不包含这张历史图片。
 
 当前真实测试结果：日志已经确认模拟器实际点击了 `(1559,591)`，但点击后当前英雄仍没有切换。因此“下一张”问题目前不能简单归因于坐标偏移，仍需人工确认截图中的红框是否确实是可切换的列表卡点击区域。
 
