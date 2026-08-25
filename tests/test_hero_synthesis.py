@@ -1427,6 +1427,19 @@ class HeroListTransitionTests(unittest.TestCase):
 
 
 class FilterDecisionTests(unittest.TestCase):
+    def test_live_equipment_subpage_switches_to_hero_information(self):
+        screen = fixture("live_equipment_subpage_20260825")
+        m = machine()
+
+        self.assertTrue(m._equipment_tab_selected(screen))
+        self.assertFalse(m._hero_info_tab_selected(screen))
+
+        action = m.next_action(screen)
+
+        self.assertIsNotNone(action)
+        self.assertEqual("select_hero_info_tab", action.name)
+        self.assertIn("先切回英雄信息页", action.reason)
+
     def test_equipment_subtab_switches_to_hero_info_before_filtering(self):
         screen = fixture("list_unfiltered").copy()
         info = (0, 150, 127, 105)

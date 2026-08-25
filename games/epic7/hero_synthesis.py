@@ -107,6 +107,43 @@ def imprint_button_saturation(screen: np.ndarray) -> float:
     return float(np.median(hsv[:, :, 1][disc]))
 
 
+def hero_tab_blue_pixel_counts(screen: np.ndarray) -> tuple[int, int]:
+    """Return blue-pixel evidence for the information and equipment tabs."""
+
+    def count(zone: tuple[int, int, int, int]) -> int:
+        reference_width, reference_height = HeroSynthStateMachine._REFERENCE_SIZE
+        x, y, width, height = zone
+        scaled = (
+            round(x * screen.shape[1] / reference_width),
+            round(y * screen.shape[0] / reference_height),
+            round(width * screen.shape[1] / reference_width),
+            round(height * screen.shape[0] / reference_height),
+        )
+        sx, sy, sw, sh = scaled
+        crop = screen[sy : sy + sh, sx : sx + sw]
+        if (sw, sh) != (width, height):
+            crop = cv2.resize(crop, (width, height), interpolation=cv2.INTER_AREA)
+        hsv = cv2.cvtColor(crop, cv2.COLOR_RGB2HSV)
+        return int((cv2.inRange(hsv, (90, 80, 80), (130, 255, 255)) > 0).sum())
+
+    return (
+        count(HeroSynthStateMachine._HERO_INFO_TAB_ZONE),
+        count(HeroSynthStateMachine._EQUIPMENT_TAB_ZONE),
+    )
+
+
+def hero_information_tab_selected(screen: np.ndarray) -> bool:
+    information, equipment = hero_tab_blue_pixel_counts(screen)
+    threshold = HeroSynthStateMachine._SELECTED_TAB_BLUE_MIN
+    return information >= threshold and equipment < threshold
+
+
+def hero_equipment_tab_selected(screen: np.ndarray) -> bool:
+    information, equipment = hero_tab_blue_pixel_counts(screen)
+    threshold = HeroSynthStateMachine._SELECTED_TAB_BLUE_MIN
+    return equipment >= threshold and information < threshold
+
+
 @dataclass(frozen=True)
 class HeroTemplates:
     filter_button: np.ndarray
@@ -636,24 +673,18 @@ class HeroSynthStateMachine:
     def _selected_tab_blue_pixels(
         self, screen: np.ndarray, zone: tuple[int, int, int, int]
     ) -> int:
-        hsv = self._zone_hsv(screen, zone)
-        return int((cv2.inRange(hsv, (90, 80, 80), (130, 255, 255)) > 0).sum())
+        information, equipment = hero_tab_blue_pixel_counts(screen)
+        if zone == self._HERO_INFO_TAB_ZONE:
+            return information
+        if zone == self._EQUIPMENT_TAB_ZONE:
+            return equipment
+        raise ValueError(f"不支持的英雄子页标签区域：{zone}")
 
     def _equipment_tab_selected(self, screen: np.ndarray) -> bool:
-        return bool(
-            self._selected_tab_blue_pixels(screen, self._EQUIPMENT_TAB_ZONE)
-            >= self._SELECTED_TAB_BLUE_MIN
-            and self._selected_tab_blue_pixels(screen, self._HERO_INFO_TAB_ZONE)
-            < self._SELECTED_TAB_BLUE_MIN
-        )
+        return hero_equipment_tab_selected(screen)
 
     def _hero_info_tab_selected(self, screen: np.ndarray) -> bool:
-        return bool(
-            self._selected_tab_blue_pixels(screen, self._HERO_INFO_TAB_ZONE)
-            >= self._SELECTED_TAB_BLUE_MIN
-            and self._selected_tab_blue_pixels(screen, self._EQUIPMENT_TAB_ZONE)
-            < self._SELECTED_TAB_BLUE_MIN
-        )
+        return hero_information_tab_selected(screen)
 
     def _up_badge_rows(self, screen: np.ndarray) -> list[tuple[int, int]]:
         """返回右侧材料卡左边真实 Up! 标记的纵向范围。
@@ -1610,7 +1641,10 @@ class HeroSynthStateMachine:
             if handled:
                 return filter_action
             if self._equipment_tab_selected(screen):
-                if self._locate(screen, "filter_button", 0.80) is None:
+                if (
+                    self._locate(screen, "filter_button", 0.80) is None
+                    and not self._hero_list_ready(screen)
+                ):
                     return None
                 self._confirm_page("英雄装备页")
                 return HeroAction(
@@ -1618,7 +1652,7 @@ class HeroSynthStateMachine:
                     self._scaled_point(screen, self._HERO_INFO_TAB_POINT),
                     source_page="英雄装备页",
                     target_pages=("英雄列表",),
-                    reason="左侧装备标签为蓝色选中态，先切回英雄信息页",
+                    reason="英雄装备标签为蓝色选中，先切回英雄信息页再开始筛选",
                 )
             if not self._hero_info_tab_selected(screen):
                 return None
