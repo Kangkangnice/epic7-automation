@@ -729,6 +729,15 @@ class TransmitTransactionTests(unittest.TestCase):
 
         self.assertFalse(m._transmit_page_ready(incomplete))
 
+    def test_transmit_highlight_tolerates_short_gap_from_hero_art(self):
+        m = machine(verify_filter=True)
+        interrupted = fixture("transmit_select").copy()
+        x, y, w, _ = m._TRANSMIT_HIGHLIGHT_ZONE
+        interrupted[y + 295 : y + 300, x : x + w] = 0
+
+        self.assertIsNotNone(m._transmit_target_card(interrupted))
+        self.assertTrue(m._transmit_page_ready(interrupted))
+
     def test_sss_material_without_saved_current_hero_stops(self):
         m = machine()
         m.state = HeroSynthState.IMPRINT_ADD
@@ -2059,6 +2068,46 @@ class NavigationTests(unittest.TestCase):
 
 
 class RunnerFlowTests(unittest.TestCase):
+    def test_transition_timeout_reports_expected_page_and_detector_evidence(self):
+        clock = FakeClock()
+        source = fixture("list_reddot")
+        incomplete_target = fixture("transmit_select").copy()
+        x, y, w, _ = HeroSynthStateMachine._TRANSMIT_HIGHLIGHT_ZONE
+        incomplete_target[y + 285 : y + 310, x : x + w] = 0
+        captures = iter([source, source])
+        logs = []
+        m = machine(verify_filter=True)
+        m.transmit_phase = TransmitPhase.PENDING
+        m.transmit_target_observation = m._hero_identity_fingerprint(source)
+        m.transmit_continuity_intact = True
+        with TemporaryDirectory() as tmp:
+            runtime = Runtime(
+                lambda: next(captures, incomplete_target),
+                lambda _: None,
+                emit=logs.append,
+                diagnostic_dir=Path(tmp),
+                monotonic=clock,
+            )
+            runner = HeroSynthRunner(m, runtime, sleep=clock.sleep)
+            runner._TIMEOUT_SECONDS = {state: 3 for state in HeroSynthState}
+
+            with self.assertRaisesRegex(
+                RuntimeError,
+                r"等待动作\[open_transmit_for_current_card\]目标画面\[传送选择\]超时",
+            ):
+                runner.run(max_cycles=1)
+
+        output = "\n".join(logs)
+        self.assertIn(
+            "转场超时 动作=open_transmit_for_current_card 原页面=英雄列表 "
+            "期望页面=传送选择 当前已确认页面=无",
+            output,
+        )
+        self.assertIn(
+            "传送页证据 自动选择=1.000 高亮卡=未识别 格子=1 绿色按钮=1",
+            output,
+        )
+
     def test_successful_card_transitions_do_not_arm_loop_recovery(self):
         clock = FakeClock()
         recoveries = []
