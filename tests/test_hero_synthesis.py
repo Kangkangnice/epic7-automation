@@ -1661,7 +1661,7 @@ class ImprintDecisionTests(unittest.TestCase):
                 HeroSynthState.IMPRINT_CONFIRM,
                 "close_imprint_result",
                 "合成结果",
-                ("合成后刻印页",),
+                ("合成后刻印页", "英雄列表"),
                 "结果标题与关闭控件同时存在",
             ),
             (
@@ -1741,6 +1741,22 @@ class ImprintDecisionTests(unittest.TestCase):
         self.assertEqual("close_imprint_result", second.name)
         self.assertIs(m.state, HeroSynthState.IMPRINT_REWARD)
         self.assertEqual(0, m._imprint_empty_observations)
+
+    def test_close_result_transition_accepts_direct_hero_list(self):
+        m = machine(verify_filter=True)
+        m.state = HeroSynthState.IMPRINT_CONFIRM
+        previous = m.next_action(fixture("imprint_result_popup"))
+
+        current = m.next_action(fixture("list_no_reddot"))
+
+        runner = HeroSynthRunner(
+            m, Runtime(lambda: None, lambda *_: None), sleep=lambda _: None
+        )
+        self.assertIs(m.state, HeroSynthState.HERO_LIST)
+        self.assertEqual("英雄列表", m._confirmed_page)
+        self.assertTrue(
+            runner._transition_completed(previous, current, "英雄列表")
+        )
 
     def test_imprint_after_synth_backs_to_list(self):
         m = machine()
