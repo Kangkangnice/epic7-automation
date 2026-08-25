@@ -27,6 +27,11 @@ def fodder_fixture(name: str):
     return cv2.cvtColor(cv2.imread(str(path)), cv2.COLOR_BGR2RGB)
 
 
+def hero_fixture(name: str):
+    path = ROOT / "tests" / "fixtures" / "epic7_hero" / f"{name}.png"
+    return cv2.cvtColor(cv2.imread(str(path)), cv2.COLOR_BGR2RGB)
+
+
 class NavigationTests(unittest.TestCase):
     def test_classifies_friendship_points_popup(self):
         navigator = self.navigator([])
@@ -160,6 +165,43 @@ class NavigationTests(unittest.TestCase):
                     cv2.imread(str(hero_fixtures / f"{name}.png")), cv2.COLOR_BGR2RGB
                 )
                 self.assertEqual("hero_list", navigator.observe(screen).name)
+
+    def test_live_equipment_subpage_is_not_ready_hero_information(self):
+        navigator = self.navigator([])
+
+        observation = navigator.observe(
+            hero_fixture("live_equipment_subpage_20260825")
+        )
+
+        self.assertEqual("hero_equipment", observation.name)
+
+    def test_hero_navigation_logs_equipment_recovery_and_information_entry(self):
+        clicks: list[tuple[int, int]] = []
+        logs: list[str] = []
+        equipment = hero_fixture("live_equipment_subpage_20260825")
+        information = hero_fixture("list_unfiltered")
+        navigator = self.navigator(
+            [equipment, equipment, information, information],
+            clicks=clicks,
+            logs=logs,
+        )
+
+        navigator.navigate(
+            "hero_synthesis", lobby_screen=fixture("lobby_animated_updated")
+        )
+
+        self.assertEqual(2, len(clicks))
+        expected = [
+            "模式=导航 页面=英雄列表容器 状态=已进入 当前子页=英雄装备",
+            "模式=导航 当前子页=英雄装备 动作=切换英雄信息",
+            "模式=导航 当前子页=英雄信息 状态=已确认",
+            "模式=英雄合成 状态=导航完成 前提=英雄信息页已就绪",
+        ]
+        positions = [
+            next(index for index, log in enumerate(logs) if text in log)
+            for text in expected
+        ]
+        self.assertEqual(sorted(positions), positions)
 
     def test_classifies_recorded_pages_with_required_anchors(self):
         navigator = self.navigator([])
