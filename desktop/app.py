@@ -28,6 +28,18 @@ REPO_PARENT = ROOT.parent
 TEMPLATE_ROOT = ROOT / "games" / "epic7" / "templates"
 
 
+def fit_window_size(
+    *,
+    requested: tuple[int, int],
+    screen: tuple[int, int],
+) -> tuple[int, int]:
+    max_width = max(800, screen[0] - 80)
+    max_height = max(600, screen[1] - 80)
+    width = min(max(1080, requested[0] + 40), max_width)
+    height = min(max(760, requested[1] + 40), max_height)
+    return width, height
+
+
 class DesktopController:
     def __init__(self, *, worker: WorkerController) -> None:
         self.worker = worker
@@ -107,15 +119,23 @@ class DesktopApp:
         self._checking = False
 
         self.root.title(f"{PRODUCT_NAME} {PRODUCT_VERSION}")
-        self.root.geometry("1080x760")
-        self.root.minsize(900, 660)
         self.root.configure(background=self._BACKGROUND)
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
         self._configure_styles()
         self._build_layout()
         self._refresh_route_details()
         self._refresh_controls()
+        self._fit_initial_window()
         self.root.after(100, self._poll_worker)
+
+    def _fit_initial_window(self) -> None:
+        self.root.update_idletasks()
+        width, height = fit_window_size(
+            requested=(self.root.winfo_reqwidth(), self.root.winfo_reqheight()),
+            screen=(self.root.winfo_screenwidth(), self.root.winfo_screenheight()),
+        )
+        self.root.geometry(f"{width}x{height}")
+        self.root.minsize(width, height)
 
     def _configure_styles(self) -> None:
         style = ttk.Style(self.root)
