@@ -23,7 +23,20 @@ python -m auto_game_unified.main --help
 
 第一次运行或游戏更新后，先执行干跑。只有识别结果与当前页面一致时才进行一轮实跑。
 
-## 2. 六种模式
+## 2. 桌面界面（推荐）
+
+从仓库父目录启动中文桌面界面：
+
+```powershell
+cd D:\AI\codex\auto_game
+python -u -m auto_game_unified.desktop
+```
+
+桌面界面提供：环境检测、六路线选择、运行次数、开始/安全停止、实时日志、打开日志/诊断目录和一键导出诊断 ZIP。英雄合成为正式功能且固定运行一轮；其他五条路线为实验功能，启动前会提醒可能不稳定。
+
+当前是源码桌面 MVP，仍需要先安装 Python 依赖；Windows 安装包和便携版属于下一阶段。GUI 只显示已经验收的雷电模拟器后端，不提供 PC 客户端入口。开始按钮在环境检测通过前保持禁用。
+
+## 3. 六种模式
 
 | 模式参数 | 中文名称 | 作用 | 轮次含义 |
 |---|---|---|---|
@@ -36,7 +49,7 @@ python -m auto_game_unified.main --help
 
 英雄合成启动器固定执行一轮完整扫描；其他模式由用户输入正整数轮次。
 
-## 3. 交互式启动
+## 4. 交互式启动
 
 最简单的方式是运行中文启动器：
 
@@ -53,7 +66,7 @@ python -u -m auto_game_unified.launcher
 
 启动器会以前台实跑方式执行。运行期间不要操作鼠标键盘或覆盖游戏窗口，随时按 `P` 安全停止。
 
-## 4. 干跑诊断
+## 5. 干跑诊断
 
 干跑只截图、识别并输出当前状态的第一步，不执行点击，也不需要 `--live`：
 
@@ -69,7 +82,7 @@ python -u -m auto_game_unified.main --mode hero_synthesis
 
 `--start-state` 只用于离线/干跑诊断，必须是对应模式允许的状态。实跑时传入该参数会被拒绝。
 
-## 5. 模拟器前台实跑
+## 6. 模拟器前台实跑
 
 实跑必须同时提供 `--live`、`--confirm RUN` 和正整数 `--max-cycles`。先从一轮开始：
 
@@ -84,7 +97,7 @@ python -u -m auto_game_unified.main --mode hero_synthesis --window-backend emula
 
 一轮完整通过后，再增加 `--max-cycles`。不要用“连续点击了多次”判断完成轮次；程序只在对应业务闭环证据成立后计数。
 
-## 6. PC 后端（开发中）
+## 7. PC 后端（开发中）
 
 `--window-backend pc` 已提供窗口接入能力，`templates_pc` 也可能包含候选模板或样本，但这两点都不代表路线已经支持 PC。当前六种模式均未完成 PC 固定样本、dry-run、1 轮和 2 轮实机验收。
 
@@ -97,7 +110,7 @@ python -u -m auto_game_unified.main --mode hero_synthesis --window-backend pc
 
 在 [PC 模板迁移清单](PC_TEMPLATE_MIGRATION.md) 对应路线全部通过前，不建议执行 PC `--live`。候选模板不能代替真实 PC 截图证据。
 
-## 7. 运行期间如何判断是否正常
+## 8. 运行期间如何判断是否正常
 
 正常的动作日志应体现以下顺序：
 
@@ -109,7 +122,7 @@ python -u -m auto_game_unified.main --mode hero_synthesis --window-backend pc
 
 如果页面证据不足，正确行为是记录 `UNKNOWN`、保存诊断并安全停止，而不是继续猜测点击。详细判定规范见 [页面转场契约](TRANSITION_CONTRACTS.md)。
 
-## 8. 停止、退出码与通知
+## 9. 停止、退出码与通知
 
 - 按 `P`：用户手动停止，退出码 `130`；
 - `0`：达到目标轮次；
@@ -124,7 +137,7 @@ $env:EPIC7_PUSHPLUS_TOKEN = "你的 Token"
 
 不要把 Token 写入仓库、日志或聊天记录。返回码 `905` 表示 PushPlus 账户未完成实名认证；它不会改变自动化本身的运行结果，需要在 PushPlus 侧完成认证或停用通知。
 
-## 9. 日志与诊断文件
+## 10. 日志与诊断文件
 
 - 文件日志：`runtime_logs/epic7_<mode>.log`；
 - 当前监控帧：`runtime_diagnostics/epic7_<mode>/current.png`；
@@ -133,7 +146,7 @@ $env:EPIC7_PUSHPLUS_TOKEN = "你的 Token"
 
 反馈故障时，请至少保留：完整错误前后日志、最终诊断截图、运行模式、窗口后端、当时肉眼看到的页面和是否发生过真实点击/消耗。
 
-## 10. 常见问题
+## 11. 常见问题
 
 ### 点击切换英雄后没有反应
 
@@ -157,7 +170,7 @@ SSS 表示目标英雄已经达到最高合成等级。正确业务分支是退�
 
 更多故障定位步骤见 [故障排查](TROUBLESHOOTING.md)，后续路线审计项见 [自动化稳健性待办](TODO.md)。
 
-## 11. 安全边界
+## 12. 安全边界
 
 - 所有点击必须由当前截图中的预期页面和元素触发；
 - 关键模板缺失、证据冲突或状态未知时危险动作失败关闭；
