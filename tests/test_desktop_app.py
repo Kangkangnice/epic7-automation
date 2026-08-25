@@ -1,6 +1,7 @@
 import pytest
+import tkinter as tk
 
-from auto_game_unified.desktop.app import DesktopController
+from auto_game_unified.desktop.app import DesktopApp, DesktopController, fit_window_size
 from auto_game_unified.desktop.preflight import PreflightReport, PreflightStatus
 
 
@@ -70,3 +71,35 @@ def test_controller_rejects_non_positive_cycles():
 
     with pytest.raises(ValueError, match="正整数"):
         controller.set_cycles(0)
+
+
+def test_window_size_expands_for_high_dpi_requested_content():
+    assert fit_window_size(
+        requested=(1613, 1208),
+        screen=(3200, 2000),
+    ) == (1653, 1248)
+
+
+def test_window_size_stays_inside_a_small_screen():
+    assert fit_window_size(
+        requested=(1500, 1100),
+        screen=(1366, 768),
+    ) == (1286, 688)
+
+
+def test_desktop_app_initial_window_contains_its_requested_content(tmp_path):
+    root = tk.Tk()
+    root.withdraw()
+    try:
+        DesktopApp(
+            root,
+            controller=DesktopController(worker=FakeWorker()),
+            project_root=tmp_path,
+        )
+        root.update_idletasks()
+        geometry = root.winfo_geometry().split("+")[0]
+        width, height = (int(value) for value in geometry.split("x"))
+        assert width >= root.winfo_reqwidth()
+        assert height >= root.winfo_reqheight()
+    finally:
+        root.destroy()
