@@ -1570,8 +1570,8 @@ class ImprintDecisionTests(unittest.TestCase):
         self.assertIsNotNone(action)
         self.assertTrue(action.name.startswith("add_material"))
 
-    def test_empty_slots_and_zero_cost_never_start_synthesis(self):
-        """即使漏掉 Up!，没有材料入槽、费用仍为 0 时也必须一直等待。"""
+    def test_empty_slots_and_zero_cost_return_to_list_after_confirmation(self):
+        """完整刻印页连续确认无材料时退出，避免永久停留。"""
         m = machine()
         m.state = HeroSynthState.IMPRINT_ADD
         screen = fixture("imprint_up_cards_no_sss").copy()
@@ -1579,9 +1579,16 @@ class ImprintDecisionTests(unittest.TestCase):
         x, y, w, h = m._UP_STRIP_ZONE
         screen[y : y + h, x : x + w] = 0
 
-        for _ in range(3):
-            self.assertIsNone(m.next_action(screen))
-            self.assertIs(m.state, HeroSynthState.IMPRINT_ADD)
+        self.assertIsNone(m.next_action(screen))
+        action = m.next_action(screen)
+
+        self.assertEqual("back_to_list", action.name)
+        self.assertEqual("刻印加材料", action.source_page)
+        self.assertEqual(("英雄列表",), action.target_pages)
+        self.assertEqual(
+            "完整刻印页连续确认无Up材料、槽位为空且费用为0",
+            action.reason,
+        )
 
     def test_sss_material_aborts_imprint_before_clicking_material(self):
         m = machine()
@@ -2068,6 +2075,30 @@ class NavigationTests(unittest.TestCase):
 
 
 class RunnerFlowTests(unittest.TestCase):
+    def test_imprint_timeout_logs_material_detector_evidence(self):
+        logs = []
+        m = machine()
+        m.state = HeroSynthState.IMPRINT_ADD
+        screen = fixture("imprint_up_cards_no_sss").copy()
+        screen[390:990, 1370:1465] = 0
+        x, y, w, h = m._UP_STRIP_ZONE
+        screen[y : y + h, x : x + w] = 0
+        m._last_screen = screen
+        runner = HeroSynthRunner(
+            m,
+            Runtime(lambda: screen, lambda _: None, emit=logs.append),
+            sleep=lambda _: None,
+        )
+
+        runner._log_settled_timeout(HeroSynthState.IMPRINT_ADD, "diagnostic.png")
+
+        self.assertIn(
+            "刻印页超时 诊断=diagnostic.png 完整页面=1 绿色按钮=1 "
+            "槽位结构=1 已填槽位=0 费用非零=0 Up材料=未识别 "
+            "未知材料=0",
+            "\n".join(logs),
+        )
+
     def test_transition_timeout_reports_expected_page_and_detector_evidence(self):
         clock = FakeClock()
         source = fixture("list_reddot")

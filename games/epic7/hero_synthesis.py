@@ -1481,7 +1481,25 @@ class HeroSynthStateMachine:
             if self.state is HeroSynthState.IMPRINT_ADD:
                 # “没看到 Up”只表示识别结果为空，不表示材料已加完。必须看到
                 # 中间槽内已有材料，且费用从 0 变为非 0，才允许进入合成。
-                if filled_slots == 0 or not self._imprint_cost_nonzero(screen):
+                cost_nonzero = self._imprint_cost_nonzero(screen)
+                if filled_slots == 0 and not cost_nonzero:
+                    self._imprint_empty_observations += 1
+                    if (
+                        self._imprint_empty_observations
+                        < self._READINESS_OBSERVATIONS
+                    ):
+                        return None
+                    back = self._back_action(screen)
+                    if back is None:
+                        return None
+                    return self._simulator_transition_action(
+                        "back_to_list",
+                        back.point,
+                        source_page="刻印加材料",
+                        target_pages=("英雄列表",),
+                        reason="完整刻印页连续确认无Up材料、槽位为空且费用为0",
+                    )
+                if filled_slots == 0 or not cost_nonzero:
                     self._imprint_empty_observations = 0
                     return None
                 self._imprint_empty_observations += 1
@@ -1936,13 +1954,27 @@ class HeroSynthRunner(ModeRunnerBase):
         )
 
     def _log_settled_timeout(self, state: HeroSynthState, diagnostic) -> None:
+        screen = self.machine._last_screen
         if (
             state is HeroSynthState.IMPRINT_ABORTING
-            and self.machine._last_screen is not None
+            and screen is not None
         ):
             self._log_imprint_abort_evidence(
-                self.machine._last_screen,
+                screen,
                 prefix=f"中止返回超时 诊断={diagnostic}",
+            )
+        elif state is HeroSynthState.IMPRINT_ADD and screen is not None:
+            green = self.machine._green_button_present(screen)
+            slots = self.machine._imprint_slots_present(screen)
+            up = self.machine._find_up_card(screen)
+            self.runtime.log(
+                f"模式={self._MODE_LABEL} 刻印页超时 诊断={diagnostic} "
+                f"完整页面={int(green and slots)} "
+                f"绿色按钮={int(green)} 槽位结构={int(slots)} "
+                f"已填槽位={self.machine._imprint_filled_slot_count(screen)} "
+                f"费用非零={int(self.machine._imprint_cost_nonzero(screen))} "
+                f"Up材料={up[2] if up is not None else '未识别'} "
+                f"未知材料={int(self.machine._unknown_up_material_present(screen))}"
             )
 
     def _log_transition_timeout(
