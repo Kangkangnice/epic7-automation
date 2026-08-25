@@ -1,0 +1,471 @@
+"""Tkinter desktop interface for running the existing automation safely."""
+
+from __future__ import annotations
+
+import os
+from pathlib import Path
+import threading
+import tkinter as tk
+from tkinter import filedialog, messagebox, scrolledtext, ttk
+
+from auto_game_unified.desktop.catalog import (
+    PRODUCT_NAME,
+    PRODUCT_VERSION,
+    ROUTES,
+    route_by_name,
+)
+from auto_game_unified.desktop.diagnostics import export_diagnostics
+from auto_game_unified.desktop.preflight import PreflightReport, run_preflight
+from auto_game_unified.desktop.worker import (
+    RunRequest,
+    WorkerController,
+    WorkerEvent,
+)
+
+
+ROOT = Path(__file__).resolve().parents[1]
+REPO_PARENT = ROOT.parent
+TEMPLATE_ROOT = ROOT / "games" / "epic7" / "templates"
+
+
+class DesktopController:
+    def __init__(self, *, worker: WorkerController) -> None:
+        self.worker = worker
+        self.selected_mode = "hero_synthesis"
+        self.cycles = 1
+        self.preflight_report: PreflightReport | None = None
+
+    @property
+    def route(self):
+        return route_by_name(self.selected_mode)
+
+    @property
+    def can_start(self) -> bool:
+        return bool(
+            self.preflight_report is not None
+            and self.preflight_report.can_start
+            and not self.worker.running
+        )
+
+    @property
+    def needs_experimental_confirmation(self) -> bool:
+        return self.route.experimental
+
+    def select_route(self, mode: str) -> None:
+        if self.worker.running:
+            raise RuntimeError("运行期间不能切换路线")
+        route = route_by_name(mode)
+        self.selected_mode = route.mode
+        self.cycles = route.default_cycles
+        self.preflight_report = None
+
+    def set_cycles(self, cycles: int) -> None:
+        if not self.route.cycles_editable:
+            self.cycles = self.route.default_cycles
+            return
+        if cycles <= 0:
+            raise ValueError("运行次数必须是正整数")
+        self.cycles = cycles
+
+    def apply_preflight(self, report: PreflightReport) -> None:
+        self.preflight_report = report
+
+    def start(self) -> None:
+        if not self.can_start:
+            raise RuntimeError("请先完成环境检测")
+        cycles = self.route.default_cycles if not self.route.cycles_editable else self.cycles
+        self.worker.start(RunRequest(self.selected_mode, cycles))
+
+    def stop(self) -> None:
+        self.worker.request_stop()
+
+    def drain_events(self) -> list[WorkerEvent]:
+        return self.worker.drain_events()
+
+
+class DesktopApp:
+    _BACKGROUND = "#f4f4f5"
+    _SURFACE = "#ffffff"
+    _TEXT = "#18181b"
+    _TEXT_SECONDARY = "#52525b"
+    _PRIMARY = "#2563eb"
+    _SUCCESS = "#15803d"
+    _WARNING = "#b45309"
+    _ERROR = "#b91c1c"
+
+    def __init__(
+        self,
+        root: tk.Tk,
+        *,
+        controller: DesktopController,
+        project_root: Path = ROOT,
+    ) -> None:
+        self.root = root
+        self.controller = controller
+        self.project_root = project_root
+        self._route_buttons: list[ttk.Radiobutton] = []
+        self._checking = False
+
+        self.root.title(f"{PRODUCT_NAME} {PRODUCT_VERSION}")
+        self.root.geometry("1080x760")
+        self.root.minsize(900, 660)
+        self.root.configure(background=self._BACKGROUND)
+        self.root.protocol("WM_DELETE_WINDOW", self._on_close)
+        self._configure_styles()
+        self._build_layout()
+        self._refresh_route_details()
+        self._refresh_controls()
+        self.root.after(100, self._poll_worker)
+
+    def _configure_styles(self) -> None:
+        style = ttk.Style(self.root)
+        if "vista" in style.theme_names():
+            style.theme_use("vista")
+        style.configure("App.TFrame", background=self._BACKGROUND)
+        style.configure("Card.TFrame", background=self._SURFACE)
+        style.configure(
+            "Title.TLabel",
+            background=self._BACKGROUND,
+            foreground=self._TEXT,
+            font=("Microsoft YaHei UI", 20, "bold"),
+        )
+        style.configure(
+            "Subtitle.TLabel",
+            background=self._BACKGROUND,
+            foreground=self._TEXT_SECONDARY,
+            font=("Microsoft YaHei UI", 10),
+        )
+        style.configure(
+            "Section.TLabel",
+            background=self._SURFACE,
+            foreground=self._TEXT,
+            font=("Microsoft YaHei UI", 11, "bold"),
+        )
+        style.configure(
+            "Body.TLabel",
+            background=self._SURFACE,
+            foreground=self._TEXT_SECONDARY,
+            font=("Microsoft YaHei UI", 10),
+        )
+        style.configure("TButton", padding=(12, 8), font=("Microsoft YaHei UI", 10))
+        style.configure("Accent.TButton", padding=(16, 9), font=("Microsoft YaHei UI", 10, "bold"))
+        style.configure("Route.TRadiobutton", background=self._SURFACE, font=("Microsoft YaHei UI", 10))
+
+    def _build_layout(self) -> None:
+        outer = ttk.Frame(self.root, style="App.TFrame", padding=20)
+        outer.grid(row=0, column=0, sticky="nsew")
+        self.root.rowconfigure(0, weight=1)
+        self.root.columnconfigure(0, weight=1)
+        outer.columnconfigure(0, weight=1)
+        outer.rowconfigure(3, weight=1)
+
+        ttk.Label(outer, text=PRODUCT_NAME, style="Title.TLabel").grid(
+            row=0, column=0, sticky="w"
+        )
+        ttk.Label(
+            outer,
+            text="免费开源 · 非官方 · PVE 视觉自动化工具",
+            style="Subtitle.TLabel",
+        ).grid(row=1, column=0, sticky="w", pady=(2, 16))
+
+        self._build_preflight_panel(outer)
+        content = ttk.Frame(outer, style="App.TFrame")
+        content.grid(row=3, column=0, sticky="nsew", pady=(14, 0))
+        content.columnconfigure(1, weight=1)
+        content.rowconfigure(1, weight=1)
+        self._build_route_panel(content)
+        self._build_action_panel(content)
+        self._build_log_panel(content)
+
+    def _build_preflight_panel(self, parent: ttk.Frame) -> None:
+        panel = ttk.Frame(parent, style="Card.TFrame", padding=14)
+        panel.grid(row=2, column=0, sticky="ew")
+        panel.columnconfigure(0, weight=1)
+        ttk.Label(panel, text="运行环境", style="Section.TLabel").grid(
+            row=0, column=0, sticky="w"
+        )
+        self.environment_var = tk.StringVar(value="尚未检测。请选择路线后检查雷电模拟器。")
+        self.environment_label = tk.Label(
+            panel,
+            textvariable=self.environment_var,
+            background=self._SURFACE,
+            foreground=self._TEXT_SECONDARY,
+            font=("Microsoft YaHei UI", 10),
+            anchor="w",
+        )
+        self.environment_label.grid(row=1, column=0, sticky="ew", pady=(6, 0))
+        self.check_button = ttk.Button(
+            panel, text="检测环境", command=self._check_environment
+        )
+        self.check_button.grid(row=0, column=1, rowspan=2, padx=(16, 0))
+
+    def _build_route_panel(self, parent: ttk.Frame) -> None:
+        panel = ttk.Frame(parent, style="Card.TFrame", padding=14)
+        panel.grid(row=0, column=0, rowspan=2, sticky="nsw", padx=(0, 14))
+        ttk.Label(panel, text="选择功能", style="Section.TLabel").grid(
+            row=0, column=0, sticky="w", pady=(0, 8)
+        )
+        self.route_var = tk.StringVar(value=self.controller.selected_mode)
+        for index, route in enumerate(ROUTES, start=1):
+            marker = "正式" if not route.experimental else "实验"
+            button = ttk.Radiobutton(
+                panel,
+                text=f"{route.label}  [{marker}]",
+                value=route.mode,
+                variable=self.route_var,
+                command=self._on_route_change,
+                style="Route.TRadiobutton",
+            )
+            button.grid(row=index, column=0, sticky="w", pady=5)
+            self._route_buttons.append(button)
+        self.route_description_var = tk.StringVar()
+        ttk.Label(
+            panel,
+            textvariable=self.route_description_var,
+            style="Body.TLabel",
+            wraplength=250,
+        ).grid(row=8, column=0, sticky="w", pady=(14, 0))
+
+    def _build_action_panel(self, parent: ttk.Frame) -> None:
+        panel = ttk.Frame(parent, style="Card.TFrame", padding=14)
+        panel.grid(row=0, column=1, sticky="ew")
+        panel.columnconfigure(4, weight=1)
+        ttk.Label(panel, text="运行控制", style="Section.TLabel").grid(
+            row=0, column=0, columnspan=5, sticky="w", pady=(0, 10)
+        )
+        ttk.Label(panel, text="运行次数", style="Body.TLabel").grid(
+            row=1, column=0, sticky="w"
+        )
+        self.cycles_var = tk.StringVar(value="1")
+        self.cycles_input = ttk.Spinbox(
+            panel,
+            from_=1,
+            to=999,
+            width=7,
+            textvariable=self.cycles_var,
+        )
+        self.cycles_input.grid(row=1, column=1, padx=(8, 14))
+        self.start_button = ttk.Button(
+            panel,
+            text="开始运行",
+            style="Accent.TButton",
+            command=self._start,
+        )
+        self.start_button.grid(row=1, column=2, padx=(0, 8))
+        self.stop_button = ttk.Button(panel, text="安全停止", command=self._stop)
+        self.stop_button.grid(row=1, column=3)
+
+        utility = ttk.Frame(panel, style="Card.TFrame")
+        utility.grid(row=2, column=0, columnspan=5, sticky="w", pady=(12, 0))
+        ttk.Button(utility, text="打开日志", command=self._open_logs).grid(
+            row=0, column=0, padx=(0, 8)
+        )
+        ttk.Button(utility, text="打开诊断", command=self._open_diagnostics).grid(
+            row=0, column=1, padx=(0, 8)
+        )
+        ttk.Button(utility, text="导出诊断包", command=self._export).grid(
+            row=0, column=2
+        )
+
+    def _build_log_panel(self, parent: ttk.Frame) -> None:
+        panel = ttk.Frame(parent, style="Card.TFrame", padding=14)
+        panel.grid(row=1, column=1, sticky="nsew", pady=(14, 0))
+        panel.rowconfigure(1, weight=1)
+        panel.columnconfigure(0, weight=1)
+        ttk.Label(panel, text="实时日志", style="Section.TLabel").grid(
+            row=0, column=0, sticky="w", pady=(0, 8)
+        )
+        self.log_text = scrolledtext.ScrolledText(
+            panel,
+            height=18,
+            wrap=tk.WORD,
+            state=tk.DISABLED,
+            background="#18181b",
+            foreground="#f4f4f5",
+            insertbackground="#f4f4f5",
+            selectbackground=self._PRIMARY,
+            font=("Consolas", 10),
+            relief=tk.FLAT,
+            padx=10,
+            pady=10,
+        )
+        self.log_text.grid(row=1, column=0, sticky="nsew")
+        self._append_log("准备就绪。先选择功能并检测环境。")
+
+    def _on_route_change(self) -> None:
+        try:
+            self.controller.select_route(self.route_var.get())
+        except Exception as error:
+            messagebox.showerror("无法切换功能", str(error), parent=self.root)
+            self.route_var.set(self.controller.selected_mode)
+            return
+        self.cycles_var.set(str(self.controller.cycles))
+        self.environment_var.set("功能已切换，请重新检测环境。")
+        self.environment_label.configure(foreground=self._TEXT_SECONDARY)
+        self._refresh_route_details()
+        self._refresh_controls()
+
+    def _refresh_route_details(self) -> None:
+        route = self.controller.route
+        status_text = "正式功能" if not route.experimental else "实验功能，可能不稳定"
+        self.route_description_var.set(
+            f"{status_text}\n{route.description}"
+        )
+        self.cycles_var.set(str(self.controller.cycles))
+        self.cycles_input.configure(
+            state=tk.NORMAL if route.cycles_editable else tk.DISABLED
+        )
+
+    def _check_environment(self) -> None:
+        if self._checking or self.controller.worker.running:
+            return
+        self._checking = True
+        self.environment_var.set("正在检测雷电模拟器、截图和模板……")
+        self.environment_label.configure(foreground=self._PRIMARY)
+        self._refresh_controls()
+        mode = self.controller.selected_mode
+
+        def check() -> None:
+            report = run_preflight(
+                mode=mode,
+                template_root=TEMPLATE_ROOT,
+            )
+            self.root.after(0, lambda: self._finish_environment_check(mode, report))
+
+        threading.Thread(target=check, name="epic7-preflight", daemon=True).start()
+
+    def _finish_environment_check(
+        self, mode: str, report: PreflightReport
+    ) -> None:
+        self._checking = False
+        if mode != self.controller.selected_mode:
+            self.environment_var.set("功能已切换，请重新检测环境。")
+            self.environment_label.configure(foreground=self._TEXT_SECONDARY)
+            self._refresh_controls()
+            return
+        self.controller.apply_preflight(report)
+        self.environment_var.set(report.message)
+        self.environment_label.configure(
+            foreground=self._SUCCESS if report.can_start else self._ERROR
+        )
+        self._append_log(f"环境检测：{report.message}")
+        self._refresh_controls()
+
+    def _start(self) -> None:
+        try:
+            self.controller.set_cycles(int(self.cycles_var.get()))
+        except (TypeError, ValueError) as error:
+            messagebox.showerror("运行次数无效", str(error), parent=self.root)
+            return
+        if self.controller.needs_experimental_confirmation:
+            confirmed = messagebox.askyesno(
+                "实验功能提醒",
+                f"{self.controller.route.label}仍处于实验阶段，可能不稳定。\n\n是否继续运行？",
+                parent=self.root,
+            )
+            if not confirmed:
+                return
+        try:
+            self.controller.start()
+        except Exception as error:
+            messagebox.showerror("无法开始", str(error), parent=self.root)
+            return
+        self._append_log(
+            f"开始运行：{self.controller.route.label}，次数={self.controller.cycles}"
+        )
+        self._refresh_controls()
+
+    def _stop(self) -> None:
+        self.controller.stop()
+        self._append_log("已请求安全停止，等待当前检查点退出……")
+        self.stop_button.configure(state=tk.DISABLED)
+
+    def _poll_worker(self) -> None:
+        for event in self.controller.drain_events():
+            if event.kind == "log":
+                self._append_log(event.message)
+            else:
+                self._append_log(f"[{event.message}]")
+            if event.kind == "finished":
+                self._refresh_controls()
+        self.root.after(100, self._poll_worker)
+
+    def _refresh_controls(self) -> None:
+        running = self.controller.worker.running
+        route_state = tk.DISABLED if running or self._checking else tk.NORMAL
+        for button in self._route_buttons:
+            button.configure(state=route_state)
+        self.check_button.configure(
+            state=tk.DISABLED if running or self._checking else tk.NORMAL
+        )
+        self.start_button.configure(
+            state=tk.NORMAL if self.controller.can_start else tk.DISABLED
+        )
+        self.stop_button.configure(state=tk.NORMAL if running else tk.DISABLED)
+        if running:
+            self.cycles_input.configure(state=tk.DISABLED)
+        else:
+            self.cycles_input.configure(
+                state=tk.NORMAL if self.controller.route.cycles_editable else tk.DISABLED
+            )
+
+    def _append_log(self, message: str) -> None:
+        self.log_text.configure(state=tk.NORMAL)
+        self.log_text.insert(tk.END, message + "\n")
+        self.log_text.see(tk.END)
+        self.log_text.configure(state=tk.DISABLED)
+
+    def _open_logs(self) -> None:
+        self._open_directory(self.project_root / "runtime_logs")
+
+    def _open_diagnostics(self) -> None:
+        self._open_directory(
+            self.project_root
+            / "runtime_diagnostics"
+            / f"epic7_{self.controller.selected_mode}"
+        )
+
+    def _open_directory(self, path: Path) -> None:
+        path.mkdir(parents=True, exist_ok=True)
+        os.startfile(path)
+
+    def _export(self) -> None:
+        selected = filedialog.askdirectory(
+            title="选择诊断包保存目录",
+            parent=self.root,
+        )
+        if not selected:
+            return
+        try:
+            path = export_diagnostics(
+                self.controller.selected_mode,
+                root=self.project_root,
+                output_dir=Path(selected),
+            )
+        except Exception as error:
+            messagebox.showerror("导出失败", str(error), parent=self.root)
+            return
+        messagebox.showinfo(
+            "导出完成",
+            f"诊断包已保存：\n{path}\n\n其中可能包含游戏画面和玩家昵称，上传前请自行检查。",
+            parent=self.root,
+        )
+
+    def _on_close(self) -> None:
+        if self.controller.worker.running:
+            messagebox.showwarning(
+                "任务仍在运行",
+                "请先点击“安全停止”，等待任务结束后再关闭窗口。",
+                parent=self.root,
+            )
+            return
+        self.root.destroy()
+
+
+def main() -> int:
+    root = tk.Tk()
+    worker = WorkerController(repo_parent=REPO_PARENT)
+    controller = DesktopController(worker=worker)
+    DesktopApp(root, controller=controller)
+    root.mainloop()
+    return 0
