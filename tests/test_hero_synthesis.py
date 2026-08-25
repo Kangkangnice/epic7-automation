@@ -1604,6 +1604,18 @@ class ImprintDecisionTests(unittest.TestCase):
         self.assertEqual("open_transmit_for_current_card", action.name)
         self.assertEqual((1735, 1060), action.point)
 
+    def test_pending_transmit_uses_continuous_return_when_identity_differs(self):
+        m = machine(verify_filter=True)
+        m.pending_transmit_target = True
+        m.transmit_target_observation = "identity-before-imprint"
+
+        action = m.next_action(fixture("list_reddot"))
+
+        self.assertEqual("open_transmit_for_current_card", action.name)
+        self.assertIn("连续返回", action.reason)
+        self.assertIn("保存身份=identity-before-imprint", action.reason)
+        self.assertIn("当前身份=", action.reason)
+
     def test_sss_material_branch_enters_existing_transmit_flow(self):
         m = machine()
         m._active_card_observation = m._hero_identity_fingerprint(
