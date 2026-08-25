@@ -33,19 +33,24 @@ def _probe_templates(mode: str, template_root: Path) -> None:
     spec.build_machine(template_root, spec.default_state)
 
 
-def run_preflight(
-    *,
+def validate_route_templates(
     mode: str,
     template_root: Path,
-    window_factory: Callable[[], Epic7Window] = Epic7Window,
+    *,
     template_probe: Callable[[str, Path], None] = _probe_templates,
+) -> None:
+    template_probe(mode, template_root)
+
+
+def run_preflight(
+    *,
+    window_factory: Callable[[], Epic7Window] = Epic7Window,
     platform_name: str | None = None,
 ) -> PreflightReport:
     if (platform_name or platform.system()) != "Windows":
         return PreflightReport(PreflightStatus.BLOCK, "首版仅支持 64 位 Windows")
 
     try:
-        template_probe(mode, template_root)
         screen = window_factory().capture()
         height, width = screen.shape[:2]
         if (width, height) != (1982, 1132):
@@ -59,6 +64,6 @@ def run_preflight(
 
     return PreflightReport(
         PreflightStatus.PASS,
-        "雷电模拟器、截图和路线模板检查通过",
+        "雷电模拟器和截图检查通过",
         (width, height),
     )

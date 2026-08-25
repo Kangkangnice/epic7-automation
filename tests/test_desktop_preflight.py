@@ -1,5 +1,6 @@
 import numpy as np
 
+from auto_game_unified.desktop import preflight as preflight_module
 from auto_game_unified.desktop.preflight import PreflightStatus, run_preflight
 
 
@@ -10,12 +11,9 @@ class FakeWindow:
         return screen
 
 
-def test_preflight_passes_for_valid_capture_and_templates(tmp_path):
+def test_preflight_passes_for_valid_capture_without_route_templates():
     report = run_preflight(
-        mode="story",
-        template_root=tmp_path,
         window_factory=FakeWindow,
-        template_probe=lambda mode, root: None,
         platform_name="Windows",
     )
 
@@ -24,15 +22,12 @@ def test_preflight_passes_for_valid_capture_and_templates(tmp_path):
     assert report.screen_size == (1982, 1132)
 
 
-def test_preflight_blocks_when_window_capture_fails(tmp_path):
+def test_preflight_blocks_when_window_capture_fails():
     def broken_window():
         raise RuntimeError("应恰好找到一个支持的雷电模拟器窗口，实际找到 0 个")
 
     report = run_preflight(
-        mode="story",
-        template_root=tmp_path,
         window_factory=broken_window,
-        template_probe=lambda mode, root: None,
         platform_name="Windows",
     )
 
@@ -41,16 +36,27 @@ def test_preflight_blocks_when_window_capture_fails(tmp_path):
     assert "雷电" in report.message
 
 
-def test_preflight_blocks_non_windows_without_touching_window(tmp_path):
+def test_preflight_blocks_non_windows_without_touching_window():
     report = run_preflight(
-        mode="story",
-        template_root=tmp_path,
         window_factory=lambda: (_ for _ in ()).throw(
             AssertionError("must not run")
         ),
-        template_probe=lambda mode, root: None,
         platform_name="Linux",
     )
 
     assert report.status is PreflightStatus.BLOCK
     assert "Windows" in report.message
+
+
+def test_route_template_validation_uses_selected_mode(tmp_path):
+    validate = getattr(preflight_module, "validate_route_templates", None)
+    assert callable(validate)
+    calls = []
+
+    validate(
+        "arena",
+        tmp_path,
+        template_probe=lambda mode, root: calls.append((mode, root)),
+    )
+
+    assert calls == [("arena", tmp_path)]

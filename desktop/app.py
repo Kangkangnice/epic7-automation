@@ -7,6 +7,7 @@ from pathlib import Path
 import threading
 import tkinter as tk
 from tkinter import filedialog, messagebox, scrolledtext, ttk
+from typing import Callable
 
 from auto_game_unified.desktop.catalog import (
     PRODUCT_NAME,
@@ -15,7 +16,11 @@ from auto_game_unified.desktop.catalog import (
     route_by_name,
 )
 from auto_game_unified.desktop.diagnostics import export_diagnostics
-from auto_game_unified.desktop.preflight import PreflightReport, run_preflight
+from auto_game_unified.desktop.preflight import (
+    PreflightReport,
+    run_preflight,
+    validate_route_templates,
+)
 from auto_game_unified.desktop.worker import (
     RunRequest,
     WorkerController,
@@ -110,10 +115,17 @@ class DesktopApp:
         *,
         controller: DesktopController,
         project_root: Path = ROOT,
+        preflight_runner: Callable[[], PreflightReport] = run_preflight,
+        route_validator: Callable[[str, Path], None] = validate_route_templates,
+        thread_factory: Callable[..., threading.Thread] = threading.Thread,
     ) -> None:
         self.root = root
         self.controller = controller
         self.project_root = project_root
+        self.template_root = TEMPLATE_ROOT
+        self._preflight_runner = preflight_runner
+        self._route_validator = route_validator
+        self._thread_factory = thread_factory
         self._route_buttons: list[ttk.Radiobutton] = []
         self._checking = False
 
@@ -340,26 +352,18 @@ class DesktopApp:
         self.environment_var.set("正在检测雷电模拟器、截图和模板……")
         self.environment_label.configure(foreground=self._PRIMARY)
         self._refresh_controls()
-        mode = self.controller.selected_mode
-
         def check() -> None:
-            report = run_preflight(
-                mode=mode,
-                template_root=TEMPLATE_ROOT,
-            )
-            self.root.after(0, lambda: self._finish_environment_check(mode, report))
+            report = self._preflight_runner()
+            self.root.after(0, lambda: self._finish_environment_check(report))
 
-        threading.Thread(target=check, name="epic7-preflight", daemon=True).start()
+        self._thread_factory(
+            target=check,
+            name="epic7-preflight",
+            daemon=True,
+        ).start()
 
-    def _finish_environment_check(
-        self, mode: str, report: PreflightReport
-    ) -> None:
+    def _finish_environment_check(self, report: PreflightReport) -> None:
         self._checking = False
-        if mode != self.controller.selected_mode:
-            self.environment_var.set("功能已切换，请重新检测环境。")
-            self.environment_label.configure(foreground=self._TEXT_SECONDARY)
-            self._refresh_controls()
-            return
         self.controller.apply_preflight(report)
         self.environment_var.set(report.message)
         self.environment_label.configure(
@@ -382,10 +386,64 @@ class DesktopApp:
             )
             if not confirmed:
                 return
+        self._checking = True
+        self.environment_var.set("正在复检运行环境……")
+        self.environment_label.configure(foreground=self._PRIMARY)
+        self._refresh_controls()
+        mode = self.controller.selected_mode
+
+        def check() -> None:
+            report = self._preflight_runner()
+            route_error: Exception | None = None
+            if report.can_start:
+                try:
+                    self._route_validator(mode, self.template_root)
+                except Exception as error:
+                    route_error = error
+            self.root.after(
+                0,
+                lambda: self._finish_start_check(mode, report, route_error),
+            )
+
+        self._thread_factory(
+            target=check,
+            name="epic7-start-check",
+            daemon=True,
+        ).start()
+
+    def _finish_start_check(
+        self,
+        mode: str,
+        report: PreflightReport,
+        route_error: Exception | None,
+    ) -> None:
+        self._checking = False
+        self.controller.apply_preflight(report)
+        if not report.can_start:
+            self.environment_var.set(report.message)
+            self.environment_label.configure(foreground=self._ERROR)
+            self._append_log(f"运行前复检失败：{report.message}")
+            self._refresh_controls()
+            return
+        if route_error is not None:
+            message = f"路线资源检查失败：{route_error}"
+            self.environment_var.set(message)
+            self.environment_label.configure(foreground=self._ERROR)
+            self._append_log(message)
+            self._refresh_controls()
+            return
+        if mode != self.controller.selected_mode:
+            self.environment_var.set("功能已变化，本次启动已取消。")
+            self.environment_label.configure(foreground=self._ERROR)
+            self._refresh_controls()
+            return
+        self.environment_var.set(report.message)
+        self.environment_label.configure(foreground=self._SUCCESS)
         try:
             self.controller.start()
         except Exception as error:
             messagebox.showerror("无法开始", str(error), parent=self.root)
+            self._refresh_controls()
             return
         self._append_log(
             f"开始运行：{self.controller.route.label}，次数={self.controller.cycles}"
@@ -416,7 +474,11 @@ class DesktopApp:
             state=tk.DISABLED if running or self._checking else tk.NORMAL
         )
         self.start_button.configure(
-            state=tk.NORMAL if self.controller.can_start else tk.DISABLED
+            state=(
+                tk.NORMAL
+                if self.controller.can_start and not self._checking
+                else tk.DISABLED
+            )
         )
         self.stop_button.configure(state=tk.NORMAL if running else tk.DISABLED)
         if running:
