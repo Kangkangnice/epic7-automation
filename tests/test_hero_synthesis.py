@@ -1571,6 +1571,25 @@ class ImprintDecisionTests(unittest.TestCase):
         self.assertIsNotNone(action)
         self.assertTrue(action.name.startswith("add_material"))
 
+    def test_orange_hero_art_without_material_card_is_not_an_up_material(self):
+        """英雄武器扫过 Up 区时，没有右侧卡片轮廓就不能点击。"""
+        m = machine()
+        m.state = HeroSynthState.IMPRINT_ADD
+        screen = fixture("imprint_added").copy()
+        x, y, w, h = m._MATERIAL_CARD_ZONE
+        screen[y : y + h, x : x + w] = 0
+        badge_source = fixture("imprint_up_cards_no_sss")
+        x, y, w, h = m._UP_BADGE_ZONE
+        screen[y : y + h, x : x + w] = badge_source[y : y + h, x : x + w]
+
+        self.assertTrue(m._up_badge_rows(screen))
+        self.assertIsNone(m._find_visible_material_card(screen))
+        self.assertIsNone(m._find_up_card(screen))
+
+        self.assertIsNone(m.next_action(screen))
+        action = m.next_action(screen)
+        self.assertEqual("start_synthesis", action.name)
+
     def test_initial_ordinary_card_without_up_badge_is_still_added(self):
         """初始空槽时，Up 动画漏识别不能把可用普通材料当成空页。"""
         m = machine()
