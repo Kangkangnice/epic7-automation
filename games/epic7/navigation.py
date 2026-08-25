@@ -21,8 +21,10 @@ from auto_game_unified.games.epic7.story import (
     find_watch_story_button,
 )
 from auto_game_unified.games.epic7.hero_synthesis import (
+    HERO_INFORMATION_TAB_POINT,
     hero_equipment_tab_selected,
     hero_information_tab_selected,
+    hero_tab_blue_pixel_counts,
     imprint_button_saturation,
 )
 from auto_game_unified.games.epic7.unknown_screen import (
@@ -199,7 +201,9 @@ class Epic7Navigator:
     """Return to the lobby, then follow a verified mode-specific route."""
 
     _BACK_RETRY_SECONDS = 15
-    _HERO_DETAIL_TAB_POINT = (65, 150)
+    _HERO_DETAIL_TAB_POINT = HERO_INFORMATION_TAB_POINT
+    _HERO_DETAIL_TAB_MAX_ATTEMPTS = 4
+    _HERO_DETAIL_TAB_RETRY_SECONDS = 2.0
 
     _REGIONS = {
         "lobby_profile": (0, 35, 500, 200),
@@ -706,7 +710,10 @@ class Epic7Navigator:
             self.runtime.click(click_point, action)
             stable = StableObservation(required=2)
             story_recovery = _StoryRecoveryAttempts()
-            hero_detail_tab_switched = False
+            hero_detail_tab_clicks = 0
+            hero_detail_last_click_at: Optional[float] = None
+            hero_detail_wait_logged = False
+            hero_equipment_seen = False
             hero_container_logged = False
             last_source: Optional[np.ndarray] = None
             for _ in range(self.transition_frames):
@@ -755,22 +762,80 @@ class Epic7Navigator:
                     is_stable
                     and target == "hero_list"
                     and observation.name == "hero_equipment"
-                    and not hero_detail_tab_switched
                 ):
+                    information_blue, equipment_blue = hero_tab_blue_pixel_counts(
+                        screen
+                    )
+                    hero_equipment_seen = True
+                    if hero_detail_last_click_at is not None:
+                        remaining = (
+                            self._HERO_DETAIL_TAB_RETRY_SECONDS
+                            - (self.now() - hero_detail_last_click_at)
+                        )
+                        if remaining > 0:
+                            if not hero_detail_wait_logged:
+                                self.runtime.log(
+                                    "模式=导航 当前子页=英雄装备 "
+                                    "等待=点击后确认装备页退出 "
+                                    f"剩余={remaining:.1f}秒 "
+                                    f"信息蓝={information_blue} "
+                                    f"装备蓝={equipment_blue}"
+                                )
+                                hero_detail_wait_logged = True
+                            self.sleep(self.poll_seconds)
+                            continue
+                        self.runtime.log(
+                            "模式=导航 离开标志=未满足 "
+                            "当前子页=英雄装备 "
+                            f"信息蓝={information_blue} "
+                            f"装备蓝={equipment_blue}"
+                        )
+                    if (
+                        hero_detail_tab_clicks
+                        >= self._HERO_DETAIL_TAB_MAX_ATTEMPTS
+                    ):
+                        diagnostic = self._diagnostic(
+                            "hero_information_tab_entry_failed"
+                        )
+                        raise RuntimeError(
+                            "英雄装备页点击4次后仍未离开；"
+                            f"信息蓝={information_blue} "
+                            f"装备蓝={equipment_blue}；"
+                            f"已保存诊断 {diagnostic}"
+                        )
+                    hero_detail_tab_clicks += 1
                     self.runtime.log(
-                        "模式=导航 当前子页=英雄装备 动作=切换英雄信息"
+                        "模式=导航 进入标志=英雄装备已确认 "
+                        f"信息蓝={information_blue} "
+                        f"装备蓝={equipment_blue} "
+                        "动作=切换英雄信息 "
+                        f"尝试={hero_detail_tab_clicks}/"
+                        f"{self._HERO_DETAIL_TAB_MAX_ATTEMPTS}"
                     )
                     self.runtime.click(
                         self._HERO_DETAIL_TAB_POINT, "切换英雄信息"
                     )
-                    hero_detail_tab_switched = True
+                    hero_detail_last_click_at = self.now()
+                    hero_detail_wait_logged = False
                     stable.reset()
                     self.sleep(self.poll_seconds)
                     continue
                 if is_stable and observation.name in targets:
                     if target == "hero_list" and observation.name == "hero_list":
+                        information_blue, equipment_blue = (
+                            hero_tab_blue_pixel_counts(screen)
+                        )
+                        if hero_equipment_seen:
+                            self.runtime.log(
+                                "模式=导航 离开标志=英雄装备已离开 "
+                                f"信息蓝={information_blue} "
+                                f"装备蓝={equipment_blue}"
+                            )
                         self.runtime.log(
-                            "模式=导航 当前子页=英雄信息 状态=已确认"
+                            "模式=导航 进入标志=英雄信息已到达 "
+                            "连续=2 "
+                            f"信息蓝={information_blue} "
+                            f"装备蓝={equipment_blue}"
                         )
                     self.runtime.log(
                         f"模式=导航 页面={page_label(observation.name)} "

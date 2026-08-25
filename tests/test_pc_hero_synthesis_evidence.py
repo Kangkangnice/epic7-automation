@@ -279,7 +279,7 @@ def test_pc_navigation_switches_hero_equipment_subpage_to_hero_list():
 
     navigator.navigate("hero_synthesis", lobby_screen=fixture("29_live_lobby_before_hero_run"))
 
-    assert clicks == [(1490, 1045), (65, 150)]
+    assert clicks == [(1490, 1045), (65, 200)]
 
 
 def test_pc_runner_waits_before_its_first_hero_action():
