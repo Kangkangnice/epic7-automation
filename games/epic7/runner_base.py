@@ -241,7 +241,7 @@ class ModeRunnerBase:
         action_attempts = 0
         black_started: Optional[float] = None
         last_black_log_at: Optional[float] = None
-        # 动作循环检测：连续发出若干同前缀动作但状态未推进则触发回收
+        # 动作循环检测：只统计上一次已确认转场之后发出的动作。
         recent_actions: list[str] = []
 
         while max_cycles is None or self.machine.completed_cycles < max_cycles:
@@ -423,6 +423,7 @@ class ModeRunnerBase:
                     + (f" {detail}" if detail else "")
                 )
                 last_transition_action = None
+                recent_actions.clear()
             elif last_transition_action is not None:
                 source_page = getattr(last_transition_action, "source_page", "")
                 action = (
