@@ -20,7 +20,7 @@ import numpy as np
 from auto_game_unified.core.matcher import Match, find_template, load_template
 from auto_game_unified.core.recovery import RecoveryGate
 from auto_game_unified.core.runtime import Runtime
-from auto_game_unified.games.epic7.runner_base import ModeRunnerBase
+from auto_game_unified.games.epic7.runner_base import NOT_STABLE, ModeRunnerBase
 from auto_game_unified.games.epic7.hero_transition import (
     CardSwitchMotionObserver,
     SafetyClass,
@@ -1813,7 +1813,7 @@ class HeroSynthRunner(ModeRunnerBase):
         HeroSynthState.HERO_LIST: 60,
         HeroSynthState.FILTER: 45,
         HeroSynthState.IMPRINT_ADD: 90,
-        HeroSynthState.IMPRINT_ABORTING: 45,
+        HeroSynthState.IMPRINT_ABORTING: 90,
         HeroSynthState.IMPRINT_CONFIRM: 60,
         HeroSynthState.IMPRINT_REWARD: 45,
         HeroSynthState.TRANSMIT_SELECT: 60,
@@ -1848,6 +1848,7 @@ class HeroSynthRunner(ModeRunnerBase):
         self._needs_navigation_settle = machine.templates.pc_client
         self._card_switch_motion_confirmed = False
         self._card_switch_motion_observer: CardSwitchMotionObserver | None = None
+        self._last_imprint_abort_wait_log_at: float | None = None
         # 本次安全策略只作用于模拟器；PC 保持既有未知画面唤醒行为。
         if machine.templates.pc_client:
             self._BLACK_SCREEN_TIMEOUT_SECONDS = None
@@ -1866,6 +1867,8 @@ class HeroSynthRunner(ModeRunnerBase):
     def _action_retry_seconds(self, action_name: str) -> float:
         if not self.machine.templates.pc_client and action_name in self._FILTER_ACTIONS:
             return 5
+        if action_name == "abort_imprint_to_transmit":
+            return 12
         if action_name.startswith("add_material"):
             return self._MATERIAL_RETRY_SECONDS
         if action_name.startswith("next_card"):
@@ -1895,7 +1898,49 @@ class HeroSynthRunner(ModeRunnerBase):
             self.sleep(self._SETTLE_AFTER_NAVIGATION_SECONDS)
             self._needs_navigation_settle = False
             return super()._stable_next_action(self.runtime.capture(), stable)
-        return super()._stable_next_action(screen, stable)
+        result = super()._stable_next_action(screen, stable)
+        if self.machine.state is HeroSynthState.IMPRINT_ABORTING and result in (
+            NOT_STABLE,
+            None,
+        ):
+            now = self.now()
+            if (
+                self._last_imprint_abort_wait_log_at is None
+                or now - self._last_imprint_abort_wait_log_at >= 10
+            ):
+                self._log_imprint_abort_evidence(screen, prefix="中止返回等待")
+                self._last_imprint_abort_wait_log_at = now
+        else:
+            self._last_imprint_abort_wait_log_at = None
+        return result
+
+    def _log_imprint_abort_evidence(
+        self, screen: np.ndarray, *, prefix: str
+    ) -> None:
+        ready = self.machine._hero_list_ready(screen)
+        identity = (
+            self.machine._hero_identity_fingerprint(screen) if ready else "未读取"
+        )
+        self.runtime.log(
+            f"模式={self._MODE_LABEL} {prefix} "
+            f"英雄列表就绪={int(ready)} "
+            f"英雄信息页={int(self.machine._hero_info_tab_selected(screen))} "
+            f"详情内容={int(self.machine._detail_content_present(screen))} "
+            f"当前身份={identity} "
+            f"保存身份={self.machine.transmit_target_observation or '缺失'} "
+            f"传送阶段={self.machine.transmit_phase.value} "
+            f"连续性={int(self.machine.transmit_continuity_intact)}"
+        )
+
+    def _log_settled_timeout(self, state: HeroSynthState, diagnostic) -> None:
+        if (
+            state is HeroSynthState.IMPRINT_ABORTING
+            and self.machine._last_screen is not None
+        ):
+            self._log_imprint_abort_evidence(
+                self.machine._last_screen,
+                prefix=f"中止返回超时 诊断={diagnostic}",
+            )
 
     def _is_instant_action(self, action_name: Optional[str]) -> bool:
         return self.machine.templates.pc_client and action_name == "close_filter"
