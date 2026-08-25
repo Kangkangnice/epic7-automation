@@ -28,6 +28,9 @@ from auto_game_unified.games.epic7.hero_transition import (
 from auto_game_unified.games.epic7.unknown_screen import UnrecognizedScreen
 
 
+HERO_INFORMATION_TAB_POINT = (65, 200)
+
+
 class HeroSynthState(Enum):
     HERO_LIST = "hero_list"
     FILTER = "filter"
@@ -307,7 +310,7 @@ class HeroSynthStateMachine:
     _REWARD_CLOSE_POINT = (960, 843)
     _IMPRINT_RESULT_CLOSE_POINT = (991, 850)
     _TRANSMIT_ENTRY_POINT = (1735, 1060)
-    _HERO_INFO_TAB_POINT = (65, 200)
+    _HERO_INFO_TAB_POINT = HERO_INFORMATION_TAB_POINT
     _BACK_OFFSET = (-26, -6)
     _PC_FUNNEL_POINT = (1612, 141)
     _PC_STAR3_POINT = (1148, 613)
