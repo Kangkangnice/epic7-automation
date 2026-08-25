@@ -1610,8 +1610,12 @@ class HeroSynthStateMachine:
                 return None
             if self.transmit_target_observation is None:
                 return None
-            if card_observation != self.transmit_target_observation:
-                return None
+            saved_observation = self.transmit_target_observation
+            identity_relation = (
+                "一致"
+                if card_observation == saved_observation
+                else "不同（以未中断的页面返回为准）"
+            )
             self._active_card_observation = card_observation
             self.transmit_phase = TransmitPhase.OPENING
             return self._simulator_transition_action(
@@ -1619,7 +1623,11 @@ class HeroSynthStateMachine:
                 self._scaled_point(screen, self._TRANSMIT_ENTRY_POINT),
                 source_page="英雄列表",
                 target_pages=("传送选择",),
-                reason="已恢复到保存的待传送英雄，打开传送选择页",
+                reason=(
+                    "中止刻印后连续返回英雄列表，当前选中项即待传送副本；"
+                    f"保存身份={saved_observation}，当前身份={card_observation}，"
+                    f"身份关系={identity_relation}"
+                ),
                 source_observation=card_observation,
             )
         if not self.templates.pc_client and self._hero_list_ready(screen):
