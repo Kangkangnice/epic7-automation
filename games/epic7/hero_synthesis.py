@@ -1259,16 +1259,12 @@ class HeroSynthStateMachine:
             )
 
         # 4. 传送/刻印返回动画：只在确认列表已恢复后继续流程。
+        imprint_abort_returned = False
         if self.state is HeroSynthState.IMPRINT_ABORTING:
-            if (
-                self._green_button_present(screen)
-                or self._sss_material_present(screen)
-                or self._find_up_card(screen) is not None
-            ):
-                return None
             if not self._hero_list_ready(screen):
                 return None
             self.state = HeroSynthState.HERO_LIST
+            imprint_abort_returned = True
 
         if (
             self.transmit_phase is TransmitPhase.RETURNING
@@ -1451,6 +1447,7 @@ class HeroSynthStateMachine:
             not self.templates.pc_client
             and green_button_present
             and not complete_imprint_page
+            and not imprint_abort_returned
         ):
             return None
         if green_button_present and (

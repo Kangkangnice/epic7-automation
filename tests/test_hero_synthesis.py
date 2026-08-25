@@ -1616,6 +1616,21 @@ class ImprintDecisionTests(unittest.TestCase):
         self.assertIn("保存身份=identity-before-imprint", action.reason)
         self.assertIn("当前身份=", action.reason)
 
+    def test_abort_return_ignores_green_false_positive_on_ready_hero_list(self):
+        m = machine(verify_filter=True)
+        m.pending_transmit_target = True
+        m.transmit_target_observation = "identity-before-imprint"
+        m.state = HeroSynthState.IMPRINT_ABORTING
+
+        with (
+            patch.object(m, "_green_button_present", return_value=True),
+            patch.object(m, "_imprint_slots_present", return_value=False),
+        ):
+            action = m.next_action(fixture("list_reddot"))
+
+        self.assertEqual("open_transmit_for_current_card", action.name)
+        self.assertEqual("英雄列表", m._confirmed_page)
+
     def test_sss_material_branch_enters_existing_transmit_flow(self):
         m = machine()
         m._active_card_observation = m._hero_identity_fingerprint(
