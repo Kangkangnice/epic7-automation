@@ -40,6 +40,26 @@ def blocked_preflight():
     return PreflightReport(PreflightStatus.BLOCK, "没有找到雷电窗口")
 
 
+@pytest.fixture(scope="module")
+def tk_root():
+    root = tk.Tk()
+    root.withdraw()
+    yield root
+    root.destroy()
+
+
+@pytest.fixture
+def tk_window(tk_root):
+    existing_callbacks = set(tk_root.tk.call("after", "info"))
+    window = tk.Toplevel(tk_root)
+    window.withdraw()
+    yield window
+    callbacks = set(tk_root.tk.call("after", "info")) - existing_callbacks
+    for callback in callbacks:
+        tk_root.tk.call("after", "cancel", callback)
+    window.destroy()
+
+
 def test_startup_order_mentions_emulator_before_assistant():
     hint = getattr(app_module, "STARTUP_ORDER_HINT", "")
 
@@ -108,106 +128,86 @@ def test_window_size_stays_inside_a_small_screen():
     ) == (1286, 688)
 
 
-def test_desktop_app_initial_window_contains_its_requested_content(tmp_path):
-    root = tk.Tk()
-    root.withdraw()
-    try:
-        DesktopApp(
-            root,
-            controller=DesktopController(worker=FakeWorker()),
-            project_root=tmp_path,
-        )
-        root.update_idletasks()
-        geometry = root.winfo_geometry().split("+")[0]
-        width, height = (int(value) for value in geometry.split("x"))
-        assert width >= root.winfo_reqwidth()
-        assert height >= root.winfo_reqheight()
-    finally:
-        root.destroy()
+def test_desktop_app_initial_window_contains_its_requested_content(tmp_path, tk_window):
+    DesktopApp(
+        tk_window,
+        controller=DesktopController(worker=FakeWorker()),
+        project_root=tmp_path,
+    )
+    tk_window.update_idletasks()
+    geometry = tk_window.winfo_geometry().split("+")[0]
+    width, height = (int(value) for value in geometry.split("x"))
+    assert width >= tk_window.winfo_reqwidth()
+    assert height >= tk_window.winfo_reqheight()
 
 
-def test_start_recheck_failure_does_not_start_worker(tmp_path):
-    root = tk.Tk()
-    root.withdraw()
+def test_start_recheck_failure_does_not_start_worker(tmp_path, tk_window):
     worker = FakeWorker()
     controller = DesktopController(worker=worker)
     controller.apply_preflight(passed_preflight())
     validated_routes = []
-    try:
-        app = DesktopApp(
-            root,
-            controller=controller,
-            project_root=tmp_path,
-            preflight_runner=blocked_preflight,
-            route_validator=lambda mode, template_root: validated_routes.append(mode),
-            thread_factory=ImmediateThread,
-        )
+    app = DesktopApp(
+        tk_window,
+        controller=controller,
+        project_root=tmp_path,
+        preflight_runner=blocked_preflight,
+        route_validator=lambda mode, template_root: validated_routes.append(mode),
+        thread_factory=ImmediateThread,
+    )
 
-        app._start()
-        root.update()
+    app._start()
+    tk_window.update()
 
-        assert worker.request is None
-        assert validated_routes == []
-        assert app.environment_var.get() == "没有找到雷电窗口"
-    finally:
-        root.destroy()
+    assert worker.request is None
+    assert validated_routes == []
+    assert app.environment_var.get() == "没有找到雷电窗口"
 
 
-def test_start_rechecks_environment_and_validates_selected_route(tmp_path):
-    root = tk.Tk()
-    root.withdraw()
+def test_start_rechecks_environment_and_validates_selected_route(tmp_path, tk_window):
     worker = FakeWorker()
     controller = DesktopController(worker=worker)
     controller.select_route("arena")
     controller.apply_preflight(passed_preflight())
     calls = []
-    try:
-        app = DesktopApp(
-            root,
-            controller=controller,
-            project_root=tmp_path,
-            preflight_runner=lambda: calls.append("preflight") or passed_preflight(),
-            route_validator=lambda mode, template_root: calls.append(
-                (mode, template_root)
-            ),
-            thread_factory=ImmediateThread,
-        )
+    app = DesktopApp(
+        tk_window,
+        controller=controller,
+        project_root=tmp_path,
+        preflight_runner=lambda: calls.append("preflight") or passed_preflight(),
+        route_validator=lambda mode, template_root: calls.append(
+            (mode, template_root)
+        ),
+        thread_factory=ImmediateThread,
+    )
 
-        with patch(
-            "auto_game_unified.desktop.app.messagebox.askyesno",
-            return_value=True,
-        ):
-            app._start()
-        root.update()
+    with patch(
+        "auto_game_unified.desktop.app.messagebox.askyesno",
+        return_value=True,
+    ):
+        app._start()
+    tk_window.update()
 
-        assert calls == ["preflight", ("arena", app.template_root)]
-        assert worker.request.mode == "arena"
-    finally:
-        root.destroy()
+    assert calls == ["preflight", ("arena", app.template_root)]
+    assert worker.request.mode == "arena"
 
 
-def test_route_template_failure_does_not_start_worker(tmp_path):
-    root = tk.Tk()
-    root.withdraw()
+def test_route_template_failure_does_not_start_worker(tmp_path, tk_window):
     worker = FakeWorker()
     controller = DesktopController(worker=worker)
     controller.apply_preflight(passed_preflight())
-    try:
-        app = DesktopApp(
-            root,
-            controller=controller,
-            project_root=tmp_path,
-            preflight_runner=passed_preflight,
-            route_validator=lambda mode, template_root: (_ for _ in ()).throw(
-                RuntimeError("缺少模板")
-            ),
-            thread_factory=ImmediateThread,
-        )
+    app = DesktopApp(
+        tk_window,
+        controller=controller,
+        project_root=tmp_path,
+        preflight_runner=passed_preflight,
+        route_validator=lambda mode, template_root: (_ for _ in ()).throw(
+            RuntimeError("缺少模板")
+        ),
+        thread_factory=ImmediateThread,
+    )
 
-        app._start()
-        root.update()
+    app._start()
+    tk_window.update()
 
-        assert worker.request is None
-        assert "路线资源检查失败：缺少模板" == app.environment_var.get()
-    finally:
-        root.destroy()
+    assert worker.request is None
+    assert "路线资源检查失败：缺少模板" == app.environment_var.get()
