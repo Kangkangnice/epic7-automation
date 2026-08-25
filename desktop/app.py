@@ -31,6 +31,9 @@ from auto_game_unified.desktop.worker import (
 ROOT = Path(__file__).resolve().parents[1]
 REPO_PARENT = ROOT.parent
 TEMPLATE_ROOT = ROOT / "games" / "epic7" / "templates"
+STARTUP_ORDER_HINT = (
+    "请先启动雷电模拟器并进入《第七史诗》，再启动本助手并检测环境。"
+)
 
 
 def fit_window_size(
@@ -215,7 +218,12 @@ class DesktopApp:
         ttk.Label(panel, text="运行环境", style="Section.TLabel").grid(
             row=0, column=0, sticky="w"
         )
-        self.environment_var = tk.StringVar(value="尚未检测。请选择路线后检查雷电模拟器。")
+        ttk.Label(
+            panel,
+            text=STARTUP_ORDER_HINT,
+            style="Body.TLabel",
+        ).grid(row=1, column=0, sticky="w", pady=(6, 0))
+        self.environment_var = tk.StringVar(value="尚未检测。请点击“检测环境”。")
         self.environment_label = tk.Label(
             panel,
             textvariable=self.environment_var,
@@ -224,11 +232,11 @@ class DesktopApp:
             font=("Microsoft YaHei UI", 10),
             anchor="w",
         )
-        self.environment_label.grid(row=1, column=0, sticky="ew", pady=(6, 0))
+        self.environment_label.grid(row=2, column=0, sticky="ew", pady=(4, 0))
         self.check_button = ttk.Button(
             panel, text="检测环境", command=self._check_environment
         )
-        self.check_button.grid(row=0, column=1, rowspan=2, padx=(16, 0))
+        self.check_button.grid(row=0, column=1, rowspan=3, padx=(16, 0))
 
     def _build_route_panel(self, parent: ttk.Frame) -> None:
         panel = ttk.Frame(parent, style="Card.TFrame", padding=14)
@@ -321,7 +329,7 @@ class DesktopApp:
             pady=10,
         )
         self.log_text.grid(row=1, column=0, sticky="nsew")
-        self._append_log("准备就绪。先选择功能并检测环境。")
+        self._append_log(f"准备就绪。{STARTUP_ORDER_HINT}")
 
     def _on_route_change(self) -> None:
         try:
@@ -349,7 +357,7 @@ class DesktopApp:
         if self._checking or self.controller.worker.running:
             return
         self._checking = True
-        self.environment_var.set("正在检测雷电模拟器、截图和模板……")
+        self.environment_var.set("正在检测雷电模拟器和截图……")
         self.environment_label.configure(foreground=self._PRIMARY)
         self._refresh_controls()
         def check() -> None:
