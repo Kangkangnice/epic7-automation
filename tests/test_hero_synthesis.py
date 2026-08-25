@@ -1995,6 +1995,47 @@ class NavigationTests(unittest.TestCase):
 
 
 class RunnerFlowTests(unittest.TestCase):
+    def test_successful_card_transitions_do_not_arm_loop_recovery(self):
+        clock = FakeClock()
+        recoveries = []
+        logs = []
+        runner = HeroSynthRunner(
+            machine(verify_filter=True),
+            Runtime(
+                lambda: fixture("list_no_reddot"),
+                lambda _: None,
+                emit=logs.append,
+                monotonic=clock,
+            ),
+            sleep=clock.sleep,
+            recovery=lambda: recoveries.append("recovered"),
+        )
+        runner.machine._confirmed_page = "英雄列表"
+        actions = [
+            HeroAction(
+                f"next_card_{index}",
+                (1800, 591),
+                source_page="英雄列表",
+                target_pages=("英雄列表",),
+                source_observation=f"hero-{index}",
+                transition_kind="card_change",
+            )
+            for index in range(16)
+        ]
+        previews = actions + [NOT_STABLE] * 31
+
+        def confirm_motion(_action):
+            runner._card_switch_motion_confirmed = True
+
+        with patch.object(
+            runner, "_stable_next_action", side_effect=previews
+        ), patch.object(runner, "_after_action_click", side_effect=confirm_motion):
+            with self.assertRaises(StopIteration):
+                runner.run(max_cycles=1)
+
+        self.assertEqual([], recoveries)
+        self.assertNotIn("循环检测=", "\n".join(logs))
+
     def test_close_filter_uses_normal_stability_path(self):
         clicks = []
         runner = HeroSynthRunner(
