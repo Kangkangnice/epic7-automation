@@ -2312,6 +2312,41 @@ class RunnerFlowTests(unittest.TestCase):
         )
         self.assertEqual(5, runner._action_retry_seconds("add_material_0_2"))
 
+    def test_abort_imprint_retries_before_its_state_timeout(self):
+        runner = HeroSynthRunner(
+            HeroSynthStateMachine(build_hero_templates(TEMPLATES)),
+            Runtime(lambda: None, lambda *_: None),
+            sleep=lambda _: None,
+        )
+
+        self.assertEqual(
+            12,
+            runner._action_retry_seconds("abort_imprint_to_transmit"),
+        )
+        self.assertEqual(90, runner._timeout_for(HeroSynthState.IMPRINT_ABORTING))
+
+    def test_abort_imprint_evidence_log_explains_current_screen(self):
+        logs = []
+        m = machine(verify_filter=True)
+        m.pending_transmit_target = True
+        m.transmit_target_observation = "saved-card"
+        runner = HeroSynthRunner(
+            m,
+            Runtime(lambda: None, lambda *_: None, emit=logs.append),
+            sleep=lambda _: None,
+        )
+
+        runner._log_imprint_abort_evidence(
+            fixture("list_reddot"), prefix="中止返回等待"
+        )
+
+        output = "\n".join(logs)
+        self.assertIn("英雄列表就绪=1", output)
+        self.assertIn("当前身份=", output)
+        self.assertIn("保存身份=saved-card", output)
+        self.assertIn("传送阶段=pending", output)
+        self.assertIn("连续性=1", output)
+
     def test_multi_card_sequence_completes_one_simulator_cycle(self):
         grey = fixture("list_grey_3s")
         no_reddot = fixture("list_no_reddot")
