@@ -1,6 +1,7 @@
 import unittest
 from unittest.mock import MagicMock, patch
 from pathlib import Path
+import subprocess
 
 import numpy as np
 import pygetwindow
@@ -316,6 +317,74 @@ class WindowViewportTests(unittest.TestCase):
             check=True,
             capture_output=True,
             timeout=10,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+
+    def test_instance_lookup_hides_ldconsole_window(self):
+        game = Epic7Window()
+        window = MagicMock()
+        window._hWnd = 123
+
+        def set_process_id(_handle, process_id):
+            process_id._obj.value = 789
+
+        process = MagicMock()
+        process.exe.return_value = "D:/epic7/dnplayer.exe"
+        completed = MagicMock(stdout="0,name,top,456,unused,789\n")
+        with (
+            patch.object(game, "_window", return_value=window),
+            patch(
+                "auto_game_unified.core.window.ctypes.windll.user32.GetWindowThreadProcessId",
+                side_effect=set_process_id,
+            ),
+            patch("auto_game_unified.core.window.psutil.Process", return_value=process),
+            patch("auto_game_unified.core.window.Path.exists", return_value=True),
+            patch(
+                "auto_game_unified.core.window.subprocess.run",
+                return_value=completed,
+            ) as run,
+        ):
+            result = game._instance_channel()
+
+        assert result == (Path("D:/epic7/ldconsole.exe"), "0", 456)
+        run.assert_called_once_with(
+            ["D:\\epic7\\ldconsole.exe", "list2"],
+            check=True,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=10,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+
+    def test_android_back_hides_ldconsole_window(self):
+        game = Epic7Window()
+        with (
+            patch.object(
+                game,
+                "_instance_channel",
+                return_value=(Path("D:/epic7/ldconsole.exe"), "0", 456),
+            ),
+            patch("auto_game_unified.core.window.subprocess.run") as run,
+        ):
+            game._send_android_back()
+
+        run.assert_called_once_with(
+            [
+                "D:\\epic7\\ldconsole.exe",
+                "action",
+                "--index",
+                "0",
+                "--key",
+                "call.keyboard",
+                "--value",
+                "back",
+            ],
+            check=True,
+            capture_output=True,
+            timeout=10,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
 
     def test_campfire_wake_uses_a_real_desktop_mouse_click(self):

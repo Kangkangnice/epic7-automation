@@ -264,6 +264,7 @@ class Epic7Window:
             check=True,
             capture_output=True,
             timeout=10,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
 
     @staticmethod
@@ -294,6 +295,7 @@ class Epic7Window:
             encoding="utf-8",
             errors="replace",
             timeout=10,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         ).stdout
         for line in listed.splitlines():
             fields = line.split(",")
@@ -320,4 +322,5 @@ class Epic7Window:
             check=True,
             capture_output=True,
             timeout=10,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
