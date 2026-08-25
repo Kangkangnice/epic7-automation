@@ -616,7 +616,7 @@ python -m pytest tests/test_desktop_app.py -q
 python -c "from auto_game_unified.desktop.app import DesktopApp; print('desktop import ok')"
 ```
 
-Expected: tests pass and output contains `desktop import ok`.
+第二条命令的 Workdir 为仓库父目录 `D:\AI\codex\auto_game`。Expected: tests pass and output contains `desktop import ok`.
 
 - [ ] **Step 6: 提交桌面界面**
 
