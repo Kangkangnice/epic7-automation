@@ -707,6 +707,10 @@ class HeroSynthStateMachine:
             top = min(cards, key=lambda blob: blob[1])
             return (self._UP_CARD_X, top[1] + top[3] // 2, str(len(cards)))
 
+        # Up 窄区可能被英雄武器动画扫过。没有右侧橙色材料卡轮廓时，
+        # 橙色行只能算动画噪声，不能生成点击动作。
+        if self._find_visible_material_card(screen) is None:
+            return None
         ordinary_rows = self._ordinary_up_rows(screen)
         if not ordinary_rows:
             return None
