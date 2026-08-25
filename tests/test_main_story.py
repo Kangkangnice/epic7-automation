@@ -1,4 +1,6 @@
 import os
+from pathlib import Path
+import tempfile
 import unittest
 from dataclasses import replace
 from unittest.mock import patch
@@ -130,6 +132,25 @@ class MainStoryTests(unittest.TestCase):
 
         window.wake.assert_called_once_with((1000, 600))
         window.click.assert_called_once_with((1062, 1045))
+
+    def test_parser_accepts_internal_stop_file(self):
+        args = main_module.parse_args(["--stop-file", r"D:\temp\stop.signal"])
+
+        self.assertEqual(r"D:\temp\stop.signal", args.stop_file)
+
+    def test_build_runtime_stops_when_gui_stop_file_exists(self):
+        with tempfile.TemporaryDirectory() as directory:
+            stop_file = Path(directory) / "stop.signal"
+            stop_file.touch()
+            window = unittest.mock.MagicMock()
+            with patch.object(main_module, "Epic7Window", return_value=window):
+                runtime = main_module._build_runtime(
+                    "story", dry_run=False, stop_file=stop_file
+                )
+
+            with self.assertRaises(ManualStop):
+                runtime.capture()
+            window.capture.assert_not_called()
 
     def test_live_run_returns_home_and_navigates_before_runner(self):
         runtime = unittest.mock.MagicMock()
