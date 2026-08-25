@@ -78,7 +78,12 @@ def _notify_live(
         )
 
 
-def _build_runtime(mode: str, dry_run: bool, window_backend: str = "emulator") -> Runtime:
+def _build_runtime(
+    mode: str,
+    dry_run: bool,
+    window_backend: str = "emulator",
+    stop_file: Path | None = None,
+) -> Runtime:
     if window_backend == "pc":
         game_window = Epic7PcWindow()
         game_window.activate()
@@ -86,6 +91,12 @@ def _build_runtime(mode: str, dry_run: bool, window_backend: str = "emulator") -
         game_window = Epic7Window()
         game_window.activate()
     stop_hotkey = None if dry_run else WindowsPStopHotkey()
+
+    def stop_requested() -> bool:
+        return bool(
+            (stop_hotkey is not None and stop_hotkey.pressed())
+            or (stop_file is not None and stop_file.exists())
+        )
 
     return Runtime(
         capture=game_window.capture,
@@ -95,7 +106,7 @@ def _build_runtime(mode: str, dry_run: bool, window_backend: str = "emulator") -
         dry_run=dry_run,
         diagnostic_dir=ROOT / "runtime_diagnostics" / f"epic7_{mode}",
         log_path=ROOT / "runtime_logs" / f"epic7_{mode}.log",
-        stop_requested=None if stop_hotkey is None else stop_hotkey.pressed,
+        stop_requested=None if dry_run else stop_requested,
     )
 
 
@@ -106,8 +117,14 @@ def run_mode(
     max_cycles: int | None,
     start_state: str,
     window_backend: str = "emulator",
+    stop_file: Path | None = None,
 ) -> RunResult:
-    runtime = _build_runtime(spec.name, dry_run, window_backend=window_backend)
+    runtime = _build_runtime(
+        spec.name,
+        dry_run,
+        window_backend=window_backend,
+        stop_file=stop_file,
+    )
     # PC backend uses a PC-native template set (templates_pc/); emulator keeps
     # the original templates/.  Both share the same structure and reference size.
     template_subdir = "templates_pc" if window_backend == "pc" else "templates"
@@ -179,6 +196,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default="emulator",
         help="capture/input backend: emulator (LDPlayer) or pc (Epic Seven PC client)",
     )
+    parser.add_argument("--stop-file", help=argparse.SUPPRESS)
     return parser.parse_args(argv)
 
 
@@ -206,6 +224,7 @@ def main(argv: list[str] | None = None) -> int:
             max_cycles=args.max_cycles,
             start_state=start_state,
             window_backend=args.window_backend,
+            stop_file=Path(args.stop_file) if args.stop_file else None,
         )
     except ManualStop as error:
         print(f"手动停止 模式={args.mode} 原因={error}", flush=True)
