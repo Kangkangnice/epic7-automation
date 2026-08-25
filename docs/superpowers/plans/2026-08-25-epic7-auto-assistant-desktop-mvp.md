@@ -22,7 +22,7 @@
 - Create: `desktop/worker.py` — 子进程启动、日志队列、停止文件和退出结果。
 - Create: `desktop/diagnostics.py` — 当前路线诊断 ZIP 导出和文本脱敏。
 - Create: `desktop/app.py` — Tkinter 界面和定时轮询。
-- Create: `desktop.py` — `python -m auto_game_unified.desktop` 入口。
+- Create: `desktop/__main__.py` — `python -m auto_game_unified.desktop` 入口。
 - Modify: `main.py` — 增加内部 `--stop-file` 参数并与 P 键组合。
 - Modify: `README.md` — 增加源码 GUI 启动方式和路线状态说明。
 - Test: `tests/test_desktop_catalog.py`
@@ -508,7 +508,7 @@ git commit -m "feat(desktop): export local diagnostics"
 
 **Files:**
 - Create: `desktop/app.py`
-- Create: `desktop.py`
+- Create: `desktop/__main__.py`
 - Test: `tests/test_desktop_app.py`
 
 - [ ] **Step 1: 写失败测试，固定 UI 状态规则而不依赖真实窗口**
@@ -592,7 +592,7 @@ Expected: FAIL because `desktop.app` does not exist.
 - 关闭窗口时若 Worker 正在运行，提示先停止，不直接销毁运行进程；
 - 所有 Tk 控件只在主线程操作。
 
-`desktop.py`：
+`desktop/__main__.py`：
 
 ```python
 from auto_game_unified.desktop.app import main
@@ -621,7 +621,7 @@ Expected: tests pass and output contains `desktop import ok`.
 - [ ] **Step 6: 提交桌面界面**
 
 ```powershell
-git add desktop/app.py desktop.py tests/test_desktop_app.py
+git add desktop/app.py desktop/__main__.py tests/test_desktop_app.py
 git commit -m "feat(desktop): add interactive automation UI"
 ```
 
