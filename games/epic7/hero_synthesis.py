@@ -251,7 +251,7 @@ class HeroSynthStateMachine:
     _DETAIL_FP_ZONE = (150, 350, 550, 300)
     _SIMULATOR_DETAIL_FP_ZONE = (150, 180, 550, 170)
     _LIST_FP_ZONE = (1450, 200, 532, 780)
-    _HERO_IDENTITY_ZONE = (145, 165, 430, 145)
+    _HERO_IDENTITY_ZONE = (145, 165, 280, 145)
 
     # 点击点（参考尺寸坐标）
     _FUNNEL_POINT = (1540, 191)
