@@ -907,16 +907,22 @@ class HeroSynthStateMachine:
         hsv = self._zone_hsv(screen, self._TRANSMIT_HIGHLIGHT_ZONE)
         mask = cv2.inRange(hsv, (95, 120, 140), (125, 255, 255))
         rows = mask.sum(axis=1)
-        segs, in_seg = [], False
+        raw_segments, in_seg = [], False
         for i, v in enumerate(rows):
             if v > 60 and not in_seg:
                 start, in_seg = i, True
             elif v <= 60 and in_seg:
-                if 50 <= i - start <= 350:
-                    segs.append((start, i))
+                raw_segments.append((start, i))
                 in_seg = False
-        if in_seg and 50 <= len(rows) - start <= 350:
-            segs.append((start, len(rows)))
+        if in_seg:
+            raw_segments.append((start, len(rows)))
+        segs: list[tuple[int, int]] = []
+        for start, end in raw_segments:
+            if segs and start - segs[-1][1] <= 8:
+                segs[-1] = (segs[-1][0], end)
+            else:
+                segs.append((start, end))
+        segs = [segment for segment in segs if 50 <= segment[1] - segment[0] <= 350]
         if not segs:
             return None
         start, end = max(segs, key=lambda segment: segment[1] - segment[0])
@@ -1938,6 +1944,32 @@ class HeroSynthRunner(ModeRunnerBase):
                 self.machine._last_screen,
                 prefix=f"中止返回超时 诊断={diagnostic}",
             )
+
+    def _log_transition_timeout(
+        self, action: HeroAction, screen: np.ndarray, confirmed_page: str, diagnostic
+    ) -> None:
+        super()._log_transition_timeout(
+            action, screen, confirmed_page, diagnostic
+        )
+        if action.name != "open_transmit_for_current_card":
+            return
+        auto_select = self.machine._locate(screen, "auto_select_label", 0.85)
+        card = self.machine._transmit_target_card(screen)
+        auto_select_evidence = (
+            f"{auto_select.score:.3f}"
+            if auto_select is not None
+            else "未识别"
+        )
+        self.runtime.log(
+            f"模式={self._MODE_LABEL} 传送页证据 "
+            f"自动选择={auto_select_evidence} "
+            f"高亮卡={card[2] if card is not None else '未识别'} "
+            f"格子={int(self.machine._transmit_grid_present(screen))} "
+            f"绿色按钮={int(self.machine._transmit_green_present(screen))} "
+            f"传送阶段={self.machine.transmit_phase.value} "
+            f"保存身份={self.machine.transmit_target_observation or '缺失'} "
+            f"连续性={int(self.machine.transmit_continuity_intact)}"
+        )
 
     def _is_instant_action(self, action_name: Optional[str]) -> bool:
         return self.machine.templates.pc_client and action_name == "close_filter"

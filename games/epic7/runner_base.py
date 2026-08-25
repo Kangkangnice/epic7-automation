@@ -176,6 +176,18 @@ class ModeRunnerBase:
     def _log_settled_timeout(self, state: Any, diagnostic) -> None:
         """结算等待超时抛错前的补充日志（主线有，其余默认无）。"""
 
+    def _log_transition_timeout(
+        self, action: Any, screen: Any, confirmed_page: str, diagnostic: Any
+    ) -> None:
+        """带目标契约的动作超时时，记录实际等待的页面而非内部旧状态。"""
+        targets = "/".join(getattr(action, "target_pages", ())) or "未声明"
+        self.runtime.log(
+            f"模式={self._MODE_LABEL} 转场超时 动作={action.name} "
+            f"原页面={getattr(action, 'source_page', '') or '未声明'} "
+            f"期望页面={targets} 当前已确认页面={confirmed_page or '无'} "
+            f"内部状态={self._state_label(self.machine.state)} 诊断={diagnostic}"
+        )
+
     def _stable_next_action(self, screen, stable: StableObservation):
         """两帧稳定确认后返回 next_action；未稳定时返回 NOT_STABLE。"""
         preview_action, outcome = self.machine.preview(screen)
@@ -603,9 +615,27 @@ class ModeRunnerBase:
                 action is None
                 and self.now() - state_started >= self._timeout_for(self.machine.state)
             ):
-                diagnostic = self.runtime.save_diagnostic(
-                    f"timeout_{self.machine.state.value}", screen
+                timeout_label = (
+                    f"transition_{last_transition_action.name}"
+                    if last_transition_action is not None
+                    else self.machine.state.value
                 )
+                diagnostic = self.runtime.save_diagnostic(
+                    f"timeout_{timeout_label}", screen
+                )
+                if last_transition_action is not None:
+                    targets = "/".join(last_transition_action.target_pages)
+                    self._log_transition_timeout(
+                        last_transition_action,
+                        screen,
+                        confirmed_page,
+                        diagnostic,
+                    )
+                    raise RuntimeError(
+                        f"等待动作[{last_transition_action.name}]"
+                        f"目标画面[{targets}]超时；"
+                        f"已安全停止并保存诊断 {diagnostic}"
+                    )
                 self._log_settled_timeout(self.machine.state, diagnostic)
                 raise RuntimeError(
                     f"等待画面[{self._state_label(self.machine.state)}]超时无进展；"
