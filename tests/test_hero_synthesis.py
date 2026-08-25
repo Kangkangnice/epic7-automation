@@ -1,6 +1,7 @@
 """英雄合成模式：页面判定、动作决策、安全护栏与完整流程测试。"""
 
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
@@ -1570,25 +1571,48 @@ class ImprintDecisionTests(unittest.TestCase):
         self.assertIsNotNone(action)
         self.assertTrue(action.name.startswith("add_material"))
 
-    def test_empty_slots_and_zero_cost_return_to_list_after_confirmation(self):
-        """完整刻印页连续确认无材料时退出，避免永久停留。"""
+    def test_initial_ordinary_card_without_up_badge_is_still_added(self):
+        """初始空槽时，Up 动画漏识别不能把可用普通材料当成空页。"""
         m = machine()
         m.state = HeroSynthState.IMPRINT_ADD
         screen = fixture("imprint_up_cards_no_sss").copy()
-        screen[390:990, 1370:1465] = 0
-        x, y, w, h = m._UP_STRIP_ZONE
+        x, y, w, h = m._UP_BADGE_ZONE
         screen[y : y + h, x : x + w] = 0
 
-        self.assertIsNone(m.next_action(screen))
         action = m.next_action(screen)
 
-        self.assertEqual("back_to_list", action.name)
+        self.assertIsNotNone(action)
+        self.assertTrue(action.name.startswith("add_material_"))
         self.assertEqual("刻印加材料", action.source_page)
-        self.assertEqual(("英雄列表",), action.target_pages)
-        self.assertEqual(
-            "完整刻印页连续确认无Up材料、槽位为空且费用为0",
-            action.reason,
-        )
+        self.assertIn("普通材料卡", action.reason)
+
+    def test_initial_unknown_material_never_clicks_or_returns(self):
+        """有卡但 SSS 评级处在不确定区时只能等待，不能点击或退出。"""
+        m = machine()
+        m.state = HeroSynthState.IMPRINT_ADD
+        screen = fixture("imprint_up_cards_no_sss").copy()
+        x, y, w, h = m._UP_BADGE_ZONE
+        screen[y : y + h, x : x + w] = 0
+
+        with patch.object(
+            m, "_classify_material_page", return_value=SafetyClass.UNKNOWN
+        ):
+            for _ in range(4):
+                self.assertIsNone(m.next_action(screen))
+
+        self.assertIs(m.state, HeroSynthState.IMPRINT_ADD)
+
+    def test_zero_slots_and_zero_cost_without_a_card_never_means_empty_page(self):
+        """空槽和费用 0 不是材料列表为空的证据，连续观察也不得返回。"""
+        m = machine()
+        m.state = HeroSynthState.IMPRINT_ADD
+        screen = fixture("imprint_up_cards_no_sss").copy()
+        screen[390:990, 1370:1982] = 0
+
+        for _ in range(4):
+            self.assertIsNone(m.next_action(screen))
+
+        self.assertIs(m.state, HeroSynthState.IMPRINT_ADD)
 
     def test_sss_material_aborts_imprint_before_clicking_material(self):
         m = machine()
@@ -1596,6 +1620,34 @@ class ImprintDecisionTests(unittest.TestCase):
         m.state = HeroSynthState.IMPRINT_ADD
         action = m.next_action(sss_only_material_page())
         self.assertEqual("abort_imprint_to_transmit", action.name)
+
+    def test_sss_material_still_aborts_when_up_badge_is_not_visible(self):
+        """SSS 检测独立于 Up 标记，不能落入普通卡轮廓兜底。"""
+        m = machine()
+        m._active_card_observation = "test-card"
+        m.state = HeroSynthState.IMPRINT_ADD
+        screen = fixture("imprint_sss_material").copy()
+        x, y, w, h = m._UP_BADGE_ZONE
+        screen[y : y + h, x : x + w] = 0
+
+        action = m.next_action(screen)
+
+        self.assertEqual("abort_imprint_to_transmit", action.name)
+        self.assertFalse(action.name.startswith("add_material_"))
+
+    def test_missing_sss_template_fails_closed_without_clicking_material(self):
+        """失去 SSS 检测能力时必须判未知，不能把低哨兵值当成非 SSS。"""
+        templates = replace(build_hero_templates(TEMPLATES), sss_material=None)
+        m = HeroSynthStateMachine(templates)
+        m._active_card_observation = "test-card"
+        m.state = HeroSynthState.IMPRINT_ADD
+        screen = fixture("imprint_sss_material")
+
+        for _ in range(4):
+            self.assertIsNone(m.next_action(screen))
+
+        self.assertIs(m.state, HeroSynthState.IMPRINT_ADD)
+        self.assertIs(m._classify_material_page(screen), SafetyClass.UNKNOWN)
 
     def test_sss_material_warning_is_closed_before_resuming_imprint(self):
         m = machine()
@@ -2092,12 +2144,16 @@ class RunnerFlowTests(unittest.TestCase):
 
         runner._log_settled_timeout(HeroSynthState.IMPRINT_ADD, "diagnostic.png")
 
+        joined = "\n".join(logs)
         self.assertIn(
             "刻印页超时 诊断=diagnostic.png 完整页面=1 绿色按钮=1 "
-            "槽位结构=1 已填槽位=0 费用非零=0 Up材料=未识别 "
-            "未知材料=0",
-            "\n".join(logs),
+            "槽位结构=1 已填槽位=0 费用非零=0 Up材料=未识别",
+            joined,
         )
+        self.assertIn("材料卡=card", joined)
+        self.assertIn("SSS页评级=non_sss", joined)
+        self.assertIn("SSS最高分=", joined)
+        self.assertIn("未知Up材料=0", joined)
 
     def test_transition_timeout_reports_expected_page_and_detector_evidence(self):
         clock = FakeClock()

@@ -220,6 +220,7 @@ class HeroSynthStateMachine:
     _REDDOT_ZONE = (1030, 942, 32, 35)  # 模拟器按用户标框收紧的刻印按钮红点区
     _PC_REDDOT_ZONE = (1030, 935, 50, 50)  # PC 保留原红点区
     _MATERIAL_SSS_REGION = (1750, 350, 230, 650)
+    _MATERIAL_CARD_ZONE = (1460, 390, 522, 610)
     _CARD_BELOW_ZONE = (1450, 537, 520, 83)
     _DETAIL_CONTENT_ZONE = (150, 350, 550, 300)
     _HERO_INFO_TAB_ZONE = (0, 150, 127, 105)
@@ -570,18 +571,37 @@ class HeroSynthStateMachine:
             return bool(blobs or extra)
         return any(is_centered_dot(blob) for blob in (*blobs, *extra))
 
-    def _sss_material_present(self, screen: np.ndarray) -> bool:
+    def _material_page_sss_score(self, screen: np.ndarray) -> float:
         if self.templates.pc_client or self.templates.sss_material is None:
-            return False
+            return -1.0
         inset = self._SSS_TEMPLATE_INSET
         template = self.templates.sss_material[inset:-inset, inset:-inset]
-        return find_template(
+        match = find_template(
             screen,
             template,
-            self._SSS_MATERIAL_MIN,
+            -1.0,
             region=self._MATERIAL_SSS_REGION,
             reference_size=self._REFERENCE_SIZE,
-        ) is not None
+        )
+        return match.score if match is not None else -1.0
+
+    def _classify_material_page(self, screen: np.ndarray) -> SafetyClass:
+        """先对整列材料做 SSS 安全分类；不确定时禁止点击任何卡。"""
+        if self.templates.pc_client:
+            return SafetyClass.NON_SSS
+        if self.templates.sss_material is None:
+            return SafetyClass.UNKNOWN
+        score = self._material_page_sss_score(screen)
+        if score < 0:
+            return SafetyClass.UNKNOWN
+        if score >= self._SSS_MATERIAL_MIN:
+            return SafetyClass.SSS
+        if score <= self._SSS_MATERIAL_CLEAR_MAX:
+            return SafetyClass.NON_SSS
+        return SafetyClass.UNKNOWN
+
+    def _sss_material_present(self, screen: np.ndarray) -> bool:
+        return self._classify_material_page(screen) is SafetyClass.SSS
 
     def _sss_material_warning_close(self, screen: np.ndarray) -> Optional[Match]:
         """返回 SSS 材料风险提示层的关闭控件，避免点击覆盖层下的按钮。"""
@@ -748,7 +768,13 @@ class HeroSynthStateMachine:
     def _classify_material_row(
         self, screen: np.ndarray, row: tuple[int, int]
     ) -> SafetyClass:
+        if self.templates.pc_client:
+            return SafetyClass.NON_SSS
+        if self.templates.sss_material is None:
+            return SafetyClass.UNKNOWN
         score = self._material_sss_score(screen, row)
+        if score < 0:
+            return SafetyClass.UNKNOWN
         if score >= self._SSS_MATERIAL_MIN:
             return SafetyClass.SSS
         if score <= self._SSS_MATERIAL_CLEAR_MAX:
@@ -760,6 +786,31 @@ class HeroSynthStateMachine:
             self._classify_material_row(screen, row) is SafetyClass.UNKNOWN
             for row in self._up_badge_rows(screen)
         )
+
+    def _find_visible_material_card(
+        self, screen: np.ndarray
+    ) -> Optional[tuple[int, int, str]]:
+        """定位右侧橙色材料卡，供初始空槽时兜底。
+
+        兜底只负责证明“有卡”和给出点击点；能否点击仍由整页 SSS
+        分类决定，且仅在槽位为空、费用为 0 时使用，避免重复点击已选材料。
+        """
+        cards = [
+            blob
+            for blob in self._blobs(
+                screen,
+                self._MATERIAL_CARD_ZONE,
+                (5, 100, 120),
+                (30, 255, 255),
+                min_area=5000,
+                morph=7,
+            )
+            if blob[2] >= 180 and blob[3] >= 70
+        ]
+        if not cards:
+            return None
+        top = min(cards, key=lambda blob: blob[1])
+        return (self._UP_CARD_X, top[1] + min(48, top[3] // 2), "card")
 
     def _green_button_present(self, screen: np.ndarray) -> bool:
         blobs = self._blobs(
@@ -942,7 +993,7 @@ class HeroSynthStateMachine:
     ) -> SafetyClass:
         if self.templates.pc_client:
             return SafetyClass.NON_SSS
-        if card is None:
+        if card is None or self.templates.sss_material is None:
             return SafetyClass.UNKNOWN
         _, y, _ = card
         region = (1500, max(200, y - 70), 480, 140)
@@ -951,6 +1002,8 @@ class HeroSynthStateMachine:
             (y - 25, y + 25),
             region_override=region,
         )
+        if score < 0:
+            return SafetyClass.UNKNOWN
         if score >= self._SSS_MATERIAL_MIN:
             return SafetyClass.SSS
         if score <= self._SSS_MATERIAL_CLEAR_MAX:
@@ -1389,6 +1442,7 @@ class HeroSynthStateMachine:
             self.state = HeroSynthState.HERO_LIST
 
         sss_material_present = False
+        material_page_class = SafetyClass.NON_SSS
         up = None
         if complete_imprint_page:
             if (
@@ -1400,6 +1454,10 @@ class HeroSynthStateMachine:
             if sss_material_present:
                 self._confirm_page("刻印SSS材料")
             else:
+                material_page_class = self._classify_material_page(screen)
+                if material_page_class is SafetyClass.UNKNOWN:
+                    self._confirm_page("刻印加材料")
+                    return None
                 up = self._find_up_card(screen)
                 if self._unknown_up_material_present(screen):
                     self._confirm_page("刻印加材料")
@@ -1483,21 +1541,27 @@ class HeroSynthStateMachine:
                 # 中间槽内已有材料，且费用从 0 变为非 0，才允许进入合成。
                 cost_nonzero = self._imprint_cost_nonzero(screen)
                 if filled_slots == 0 and not cost_nonzero:
-                    self._imprint_empty_observations += 1
+                    self._imprint_empty_observations = 0
+                    visible_card = self._find_visible_material_card(screen)
                     if (
-                        self._imprint_empty_observations
-                        < self._READINESS_OBSERVATIONS
+                        visible_card is None
+                        or material_page_class is not SafetyClass.NON_SSS
                     ):
                         return None
-                    back = self._back_action(screen)
-                    if back is None:
-                        return None
+                    x, y, tag = visible_card
                     return self._simulator_transition_action(
-                        "back_to_list",
-                        back.point,
+                        f"add_material_{filled_slots}_{tag}",
+                        self._scaled_point(screen, (x, y)),
                         source_page="刻印加材料",
-                        target_pages=("英雄列表",),
-                        reason="完整刻印页连续确认无Up材料、槽位为空且费用为0",
+                        target_pages=("刻印加材料", "刻印SSS材料"),
+                        reason=(
+                            "SSS评级已明确排除且检测到普通材料卡，"
+                            "Up标记未识别，使用材料卡轮廓定位"
+                        ),
+                        source_observation=self._material_observation(
+                            filled_slots, []
+                        ),
+                        transition_kind="material_change",
                     )
                 if filled_slots == 0 or not cost_nonzero:
                     self._imprint_empty_observations = 0
@@ -1967,6 +2031,8 @@ class HeroSynthRunner(ModeRunnerBase):
             green = self.machine._green_button_present(screen)
             slots = self.machine._imprint_slots_present(screen)
             up = self.machine._find_up_card(screen)
+            visible_card = self.machine._find_visible_material_card(screen)
+            material_class = self.machine._classify_material_page(screen)
             self.runtime.log(
                 f"模式={self._MODE_LABEL} 刻印页超时 诊断={diagnostic} "
                 f"完整页面={int(green and slots)} "
@@ -1974,7 +2040,10 @@ class HeroSynthRunner(ModeRunnerBase):
                 f"已填槽位={self.machine._imprint_filled_slot_count(screen)} "
                 f"费用非零={int(self.machine._imprint_cost_nonzero(screen))} "
                 f"Up材料={up[2] if up is not None else '未识别'} "
-                f"未知材料={int(self.machine._unknown_up_material_present(screen))}"
+                f"材料卡={visible_card[2] if visible_card is not None else '未识别'} "
+                f"SSS页评级={material_class.value} "
+                f"SSS最高分={self.machine._material_page_sss_score(screen):.3f} "
+                f"未知Up材料={int(self.machine._unknown_up_material_present(screen))}"
             )
 
     def _log_transition_timeout(
