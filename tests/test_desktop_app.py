@@ -56,13 +56,13 @@ def test_experimental_route_requires_confirmation():
     assert controller.needs_experimental_confirmation is True
 
 
-def test_selecting_another_route_invalidates_previous_preflight():
+def test_selecting_another_route_preserves_successful_preflight():
     controller = DesktopController(worker=FakeWorker())
     controller.apply_preflight(passed_preflight())
 
     controller.select_route("arena")
 
-    assert controller.can_start is False
+    assert controller.can_start is True
 
 
 def test_controller_rejects_non_positive_cycles():

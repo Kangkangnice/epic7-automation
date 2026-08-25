@@ -69,7 +69,6 @@ class DesktopController:
         route = route_by_name(mode)
         self.selected_mode = route.mode
         self.cycles = route.default_cycles
-        self.preflight_report = None
 
     def set_cycles(self, cycles: int) -> None:
         if not self.route.cycles_editable:
@@ -320,8 +319,6 @@ class DesktopApp:
             self.route_var.set(self.controller.selected_mode)
             return
         self.cycles_var.set(str(self.controller.cycles))
-        self.environment_var.set("功能已切换，请重新检测环境。")
-        self.environment_label.configure(foreground=self._TEXT_SECONDARY)
         self._refresh_route_details()
         self._refresh_controls()
 
