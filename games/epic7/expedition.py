@@ -347,6 +347,8 @@ class ExpeditionStateMachine:
             BattleControls.TRANSITION: AutoBattleState.UNKNOWN,
         }[controls]
         auto = self._locate(screen, "auto_off")
+        if auto is not None and self.templates.quick_battle is not None:
+            auto_state = AutoBattleState.MANUAL
         battle = self._locate(screen, "battle_anchor")
         result = self._locate(screen, "result_confirm")
         progressing = valid_game_frame(screen) and meaningful_change(

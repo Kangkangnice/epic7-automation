@@ -1,7 +1,10 @@
+from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
 from PIL import Image
+
+from auto_game_unified.core.battle_supervisor import AutoBattleState
 
 from auto_game_unified.games.epic7.arena import (
     ArenaState,
@@ -152,3 +155,36 @@ def test_pc_story_templates_do_not_require_simulator_quick_battle_assets():
     )
 
     assert templates.quick_battle is None
+
+
+def test_simulator_routes_use_auto_off_icon_before_player_skill_turn():
+    screen = fixture(
+        "epic7_arena",
+        "battle_auto_off_enemy_turn_live_20260826",
+    )
+    machines = (
+        ArenaStateMachine(build_templates(TEMPLATES)),
+        StoryStateMachine(build_story_templates(TEMPLATES / "story")),
+        ExpeditionStateMachine(TEMPLATES / "expedition"),
+    )
+
+    for machine in machines:
+        observation = machine.observe_battle(screen, None)
+        assert observation.auto_state is AutoBattleState.MANUAL
+        assert observation.auto_point is not None
+
+
+def test_pc_story_does_not_enable_simulator_auto_off_source_rule():
+    simulator_templates = build_story_templates(TEMPLATES / "story")
+    machine = StoryStateMachine(
+        replace(simulator_templates, quick_battle=None)
+    )
+    observation = machine.observe_battle(
+        fixture(
+            "epic7_arena",
+            "battle_auto_off_enemy_turn_live_20260826",
+        ),
+        None,
+    )
+
+    assert observation.auto_state is AutoBattleState.UNKNOWN

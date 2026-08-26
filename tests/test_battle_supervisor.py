@@ -61,7 +61,6 @@ def make_supervisor(observations, *, changing_frames=True, config_overrides=None
         absolute_seconds=20,
         unrecognized_seconds=3,
         black_seconds=3,
-        auto_confirm_seconds=3,
         heartbeat_seconds=2,
     )
     if config_overrides:
@@ -148,7 +147,6 @@ def test_persisted_manual_auto_state_stops_after_four_clicks():
     supervisor, gate, observe, clicks, logs, diagnostics = make_supervisor(
         [manual] * 40,
         config_overrides={
-            "auto_confirm_seconds": 20,
             "allowed_action_retry_seconds": 1,
             "allowed_action_failure_seconds": 2,
             "no_business_progress_seconds": 30,
@@ -166,7 +164,7 @@ def test_persisted_manual_auto_state_stops_after_four_clicks():
     assert diagnostics == ["auto_not_confirmed"]
 
 
-def test_business_progress_does_not_confirm_unknown_auto_state():
+def test_business_progress_does_not_falsely_confirm_unknown_auto_state():
     unknown = BattleObservation(
         False,
         True,
@@ -175,14 +173,14 @@ def test_business_progress_does_not_confirm_unknown_auto_state():
         AutoBattleState.UNKNOWN,
         business_progress=True,
     )
+    result = replace(unknown, battle_visible=False, result_visible=True)
     supervisor, gate, observe, clicks, logs, diagnostics = make_supervisor(
-        [unknown] * 30
+        [unknown] * 8 + [result, result]
     )
 
-    with pytest.raises(RuntimeError, match="自动战斗开启未能确认"):
-        supervisor.run(observe, cycle=2)
+    assert supervisor.run(observe, cycle=2) is BattleOutcome.RESULT_REACHED
     assert not any("状态=自动战斗已开启" in line for line in logs)
-    assert diagnostics == ["auto_not_confirmed"]
+    assert diagnostics == []
 
 
 def test_mode_whitelist_action_is_clicked_once_until_it_disappears():
@@ -302,6 +300,31 @@ def test_quick_battle_switch_retries_then_confirms_normal_start_action():
     assert diagnostics == []
 
 
+def test_auto_source_disappears_then_enemy_actions_do_not_timeout():
+    manual = BattleObservation(
+        False, True, False, True, AutoBattleState.MANUAL, (1693, 93)
+    )
+    unknown = replace(
+        manual,
+        auto_state=AutoBattleState.UNKNOWN,
+        auto_point=None,
+        business_progress=True,
+    )
+    auto = replace(manual, auto_state=AutoBattleState.AUTO, auto_point=None)
+    result = replace(auto, battle_visible=False, result_visible=True)
+    supervisor, gate, observe, clicks, logs, diagnostics = make_supervisor(
+        [manual, manual] + [unknown] * 6 + [auto, auto, result, result]
+    )
+
+    assert supervisor.run(observe, cycle=2) is BattleOutcome.RESULT_REACHED
+    assert clicks == [((1693, 93), "enable-auto-battle")]
+    assert any(
+        "来源=自动关闭已离开 目标=人物头像待确认" in line
+        for line in logs
+    )
+    assert diagnostics == []
+
+
 def test_two_dynamic_valid_frames_confirm_entry_after_prep_disappears():
     transition = BattleObservation(
         False,
@@ -324,13 +347,13 @@ def test_two_dynamic_valid_frames_confirm_entry_after_prep_disappears():
 def test_unknown_auto_state_never_clicks_and_safely_stops():
     unknown = BattleObservation(False, True, False, True, AutoBattleState.UNKNOWN)
     supervisor, gate, observe, clicks, logs, diagnostics = make_supervisor(
-        [unknown] * 10
+        [unknown] * 30
     )
 
-    with pytest.raises(RuntimeError, match="自动战斗开启未能确认"):
+    with pytest.raises(RuntimeError, match="战斗业务无进展超时"):
         supervisor.run(observe, cycle=5)
     assert clicks == []
-    assert diagnostics == ["auto_not_confirmed"]
+    assert diagnostics == ["battle_no_business_progress"]
     assert gate.locked is False
 
 
@@ -343,7 +366,6 @@ def test_skill_animation_does_not_start_auto_click_confirmation_timeout():
     supervisor, gate, observe, clicks, logs, diagnostics = make_supervisor(
         [transition] * 5 + [auto, auto, result, result],
         config_overrides={
-            "auto_confirm_seconds": 3,
             "unrecognized_seconds": 10,
             "entry_absolute_seconds": 10,
         },
