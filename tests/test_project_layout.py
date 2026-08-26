@@ -33,6 +33,8 @@ class ProjectLayoutTests(unittest.TestCase):
             "no_ticket.png",
             "failed_first_opponent.png",
             "free_refresh_confirm_live_20260814.png",
+            "quick_battle_selected_live_20260826.png",
+            "normal_battle_ready_live_20260826.png",
         }
         fixture_dir = ROOT / "tests" / "fixtures" / "epic7_arena"
         self.assertEqual(expected, {path.name for path in fixture_dir.glob("*.png")})
