@@ -154,6 +154,12 @@ class BattleSupervisor:
                     and not entry_confirmed
                 ):
                     entry_confirmed = True
+                    if last_allowed_action is not None:
+                        self.runtime.log(
+                            f"模式={self.label} 轮次={cycle} "
+                            f"阶段=战前 转场确认 动作={last_allowed_action[0]} "
+                            "目标=战斗"
+                        )
                     self.runtime.log(
                         f"模式={self.label} 轮次={cycle} "
                         "阶段=战斗 状态=已进入"
@@ -201,11 +207,16 @@ class BattleSupervisor:
                     )
                 )
                 allowed_confirmed = allowed_stable.update(allowed_signature)
-                if observation.allowed_action is None:
-                    last_allowed_action = None
-                    allowed_action_clicks = 0
-                    allowed_action_clicked_at = None
-                elif observation.allowed_action != last_allowed_action:
+                if (
+                    observation.allowed_action is not None
+                    and observation.allowed_action != last_allowed_action
+                ):
+                    if last_allowed_action is not None:
+                        self.runtime.log(
+                            f"模式={self.label} 轮次={cycle} "
+                            f"阶段=战前 转场确认 动作={last_allowed_action[0]} "
+                            f"目标动作={observation.allowed_action[0]}"
+                        )
                     last_allowed_action = observation.allowed_action
                     allowed_action_clicks = 0
                     allowed_action_clicked_at = None
@@ -226,9 +237,10 @@ class BattleSupervisor:
                     )
                     if should_click:
                         allowed_action_clicks += 1
+                        phase = "战斗" if entry_confirmed else "战前"
                         self.runtime.log(
                             f"模式={self.label} 轮次={cycle} "
-                            f"阶段=战斗 动作={action_name} "
+                            f"阶段={phase} 动作={action_name} "
                             f"尝试={allowed_action_clicks}/4"
                         )
                         self.runtime.click(action_point, action_name)

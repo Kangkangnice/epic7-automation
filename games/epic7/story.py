@@ -23,6 +23,12 @@ from auto_game_unified.games.epic7.battle_controls import (
     BattleControls,
     observe_battle_controls,
 )
+from auto_game_unified.games.epic7.pre_battle import (
+    PreBattleMode,
+    QuickBattleDetector,
+    load_simulator_quick_battle_detector,
+    observe_pre_battle,
+)
 # 友情点数弹窗识别已迁至全局弹窗守卫（global_popups），此处保留导出以兼容旧引用。
 from auto_game_unified.games.epic7.global_popups import (
     find_friendship_points_popup_close,
@@ -252,6 +258,7 @@ class StoryTemplates:
     stamina_popup: Optional[np.ndarray] = None
     stamina_material: Optional[np.ndarray] = None
     stamina_confirm: Optional[np.ndarray] = None
+    quick_battle: QuickBattleDetector | None = None
 
 
 def build_story_templates(template_dir: Path) -> StoryTemplates:
@@ -278,6 +285,7 @@ def build_story_templates(template_dir: Path) -> StoryTemplates:
         bonus_reward=load_template(str(template_dir / "bonus_reward.png")),
         next_stage=load_template(str(template_dir / "next_stage.png")),
         **asdict(load_stamina_templates(template_dir)),
+        quick_battle=load_simulator_quick_battle_detector(template_dir),
     )
 
 
@@ -394,6 +402,12 @@ class StoryStateMachine:
             if self.templates.stamina_popup is not None
             else None
         )
+        start = self._locate(screen, "start_mission")
+        pre_battle = observe_pre_battle(
+            self.templates.quick_battle,
+            screen,
+            normal_start=start,
+        )
         battle_guide = find_battle_guide_dont_show(
             screen,
             self.templates.battle_guide_title,
@@ -410,12 +424,23 @@ class StoryStateMachine:
                 if match is not None:
                     allowed_action = (action_name, match.center)
                     break
+        if allowed_action is None:
+            if (
+                pre_battle.mode is PreBattleMode.QUICK
+                and pre_battle.switch_point is not None
+            ):
+                allowed_action = (
+                    "switch-to-normal-battle",
+                    pre_battle.switch_point,
+                )
+            elif pre_battle.mode is PreBattleMode.NORMAL and start is not None:
+                allowed_action = ("start_mission", start.center)
         progressing = (
             auto_state is AutoBattleState.AUTO
             and meaningful_change(previous_screen, screen)
         )
         return BattleObservation(
-            pre_battle_visible=self._locate(screen, "start_mission") is not None,
+            pre_battle_visible=pre_battle.mode is not PreBattleMode.UNKNOWN,
             battle_visible=controls is not BattleControls.TRANSITION,
             result_visible=any(
                 self._locate(screen, name) is not None
@@ -481,6 +506,22 @@ class StoryStateMachine:
         stamina_action = self._handle_stamina(screen)
         if stamina_action is not None:
             return stamina_action
+
+        if self.state is StoryState.TEAM:
+            pre_battle = observe_pre_battle(
+                self.templates.quick_battle,
+                screen,
+                normal_start=self._locate(screen, "start_mission"),
+            )
+            if (
+                pre_battle.mode is PreBattleMode.QUICK
+                and pre_battle.switch_point is not None
+            ):
+                self.state = StoryState.WAIT_BATTLE
+                self.auto_enabled = False
+                self.auto_click_attempted = False
+                self.battle_controls = BattleControls.TRANSITION
+                return StoryAction("start_mission", pre_battle.switch_point)
 
         checks = [
             ("reward", StoryState.WAIT_RESULTS),

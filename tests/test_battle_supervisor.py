@@ -264,6 +264,44 @@ def test_persisted_allowed_action_stops_after_four_failed_clicks():
     assert diagnostics == ["allowed_action_skip_confirm_failed"]
 
 
+def test_quick_battle_switch_retries_then_confirms_normal_start_action():
+    quick = BattleObservation(
+        True,
+        False,
+        False,
+        True,
+        AutoBattleState.UNKNOWN,
+        allowed_action=("switch-to-normal-battle", (1435, 1045)),
+    )
+    normal = replace(
+        quick,
+        allowed_action=("battle-start", (1258, 1043)),
+    )
+    auto = BattleObservation(False, True, False, True, AutoBattleState.AUTO)
+    result = replace(auto, battle_visible=False, result_visible=True)
+    supervisor, gate, observe, clicks, logs, diagnostics = make_supervisor(
+        [quick] * 5 + [normal, normal, auto, auto, result, result],
+        config_overrides={"entry_absolute_seconds": 15},
+    )
+
+    assert supervisor.run(observe, cycle=1) is BattleOutcome.RESULT_REACHED
+    assert clicks == [
+        ((1435, 1045), "switch-to-normal-battle"),
+        ((1435, 1045), "switch-to-normal-battle"),
+        ((1258, 1043), "battle-start"),
+    ]
+    assert any(
+        "阶段=战前 动作=switch-to-normal-battle 尝试=2/4" in line
+        for line in logs
+    )
+    assert any(
+        "阶段=战前 转场确认 动作=switch-to-normal-battle "
+        "目标动作=battle-start" in line
+        for line in logs
+    )
+    assert diagnostics == []
+
+
 def test_two_dynamic_valid_frames_confirm_entry_after_prep_disappears():
     transition = BattleObservation(
         False,

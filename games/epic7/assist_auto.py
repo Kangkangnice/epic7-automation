@@ -23,6 +23,12 @@ from auto_game_unified.games.epic7.battle_controls import (
     BattleControls,
     observe_battle_controls,
 )
+from auto_game_unified.games.epic7.pre_battle import (
+    PreBattleMode,
+    QuickBattleDetector,
+    load_simulator_quick_battle_detector,
+    observe_pre_battle,
+)
 from auto_game_unified.games.epic7.stamina import (
     STAMINA_REGIONS,
     load_stamina_templates,
@@ -74,6 +80,7 @@ class AssistAutoTemplates:
     stamina_confirm: np.ndarray
     results_confirm: np.ndarray
     threshold: float = 0.82
+    quick_battle: QuickBattleDetector | None = None
 
 
 def build_assist_auto_templates(template_dir: Path) -> AssistAutoTemplates:
@@ -91,6 +98,7 @@ def build_assist_auto_templates(template_dir: Path) -> AssistAutoTemplates:
         battle_start=load_template(str(fodder / "battle_start.png")),
         **asdict(load_stamina_templates(story)),
         results_confirm=load_template(str(fodder / "results_confirm.png")),
+        quick_battle=load_simulator_quick_battle_detector(template_dir),
     )
 
 
@@ -199,7 +207,20 @@ class AssistAutoStateMachine:
 
         if self.state == AssistAutoState.TEAM:
             battle_start = self._locate(screen, "battle_start")
-            if battle_start is not None:
+            pre_battle = observe_pre_battle(
+                self.templates.quick_battle,
+                screen,
+                normal_start=battle_start,
+            )
+            if (
+                pre_battle.mode is PreBattleMode.QUICK
+                and pre_battle.switch_point is not None
+            ):
+                return AssistAutoAction(
+                    "switch-to-normal-battle",
+                    pre_battle.switch_point,
+                )
+            if pre_battle.mode is PreBattleMode.NORMAL and battle_start is not None:
                 self.state = AssistAutoState.BATTLE
                 return AssistAutoAction("start_battle", battle_start.center)
 
@@ -269,6 +290,11 @@ class AssistAutoRunner(ModeRunnerBase):
 
     def _timeout_for(self, state: AssistAutoState) -> float:
         return self._TIMEOUT_SECONDS.get(state, 60)
+
+    def _action_retry_seconds(self, action_name: str) -> float:
+        if action_name == "switch-to-normal-battle":
+            return 3.0
+        return super()._action_retry_seconds(action_name)
 
     def _apply_recovery_state(self) -> None:
         self.machine.state = AssistAutoState.TEAM

@@ -29,6 +29,12 @@ from auto_game_unified.games.epic7.battle_controls import (
     BattleControls,
     observe_battle_controls,
 )
+from auto_game_unified.games.epic7.pre_battle import (
+    PreBattleMode,
+    QuickBattleDetector,
+    load_simulator_quick_battle_detector,
+    observe_pre_battle,
+)
 from auto_game_unified.games.epic7.unknown_screen import (
     UnrecognizedScreen,
     UnknownScreenWake,
@@ -212,6 +218,7 @@ class ArenaTemplates:
     refresh_free: np.ndarray
     refresh_confirm: np.ndarray
     threshold: float = 0.98
+    quick_battle: QuickBattleDetector | None = None
 
 
 def build_templates(template_dir: Path) -> ArenaTemplates:
@@ -231,6 +238,7 @@ def build_templates(template_dir: Path) -> ArenaTemplates:
         refresh_title=load_template(str(template_dir / "arena_refresh_title.png")),
         refresh_free=load_template(str(template_dir / "arena_refresh_free.png")),
         refresh_confirm=load_template(str(template_dir / "arena_refresh_confirm.png")),
+        quick_battle=load_simulator_quick_battle_detector(template_dir),
     )
 
 
@@ -441,6 +449,11 @@ class ArenaStateMachine:
         previous_screen: np.ndarray | None,
     ) -> BattleObservation:
         start = self._locate(screen, "battle_start")
+        pre_battle = observe_pre_battle(
+            self.templates.quick_battle,
+            screen,
+            normal_start=start,
+        )
         controls = observe_battle_controls(screen)
         auto_state = {
             BattleControls.AUTO_CONTROLS: AutoBattleState.AUTO,
@@ -456,7 +469,7 @@ class ArenaStateMachine:
             and meaningful_change(previous_screen, screen)
         )
         return BattleObservation(
-            pre_battle_visible=start is not None,
+            pre_battle_visible=pre_battle.mode is not PreBattleMode.UNKNOWN,
             battle_visible=controls is not BattleControls.TRANSITION,
             result_visible=result is not None,
             frame_valid=valid_game_frame(screen),
@@ -480,6 +493,14 @@ class ArenaStateMachine:
                 else None
             ),
             business_progress=progressing,
+            allowed_action=(
+                ("switch-to-normal-battle", pre_battle.switch_point)
+                if pre_battle.mode is PreBattleMode.QUICK
+                and pre_battle.switch_point is not None
+                else ("battle-start", start.center)
+                if pre_battle.mode is PreBattleMode.NORMAL and start is not None
+                else None
+            ),
             pre_battle_business_visible=no_ticket is not None,
         )
 
@@ -518,6 +539,19 @@ class ArenaStateMachine:
                 "select-opponent",
                 self._opponent_point(screen, self._selected_opponent),
             )
+
+        if self.state == ArenaState.TEAM:
+            pre_battle = observe_pre_battle(
+                self.templates.quick_battle,
+                screen,
+                normal_start=self._locate(screen, "battle_start"),
+            )
+            if (
+                pre_battle.mode is PreBattleMode.QUICK
+                and pre_battle.switch_point is not None
+            ):
+                self.state = ArenaState.BATTLE
+                return Action("battle-start", pre_battle.switch_point)
 
         template_name = self._STATE_TEMPLATE[self.state]
         match = self._locate(screen, template_name)

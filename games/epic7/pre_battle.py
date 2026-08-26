@@ -35,6 +35,21 @@ def load_quick_battle_templates(template_dir: Path) -> QuickBattleTemplates:
     )
 
 
+def load_simulator_quick_battle_detector(
+    template_dir: Path,
+) -> "QuickBattleDetector | None":
+    template_root = (
+        template_dir.parent
+        if template_dir.name in {"story", "fodder", "expedition", "assist_auto"}
+        else template_dir
+    )
+    if template_root.name != "templates":
+        return None
+    return QuickBattleDetector(
+        load_quick_battle_templates(template_root / "global")
+    )
+
+
 class QuickBattleDetector:
     """Classify a simulator pre-battle page without inspecting animated heroes."""
 
@@ -87,3 +102,19 @@ class QuickBattleDetector:
                 switch_point=switch.center,
             )
         return PreBattleObservation(PreBattleMode.UNKNOWN)
+
+
+def observe_pre_battle(
+    detector: QuickBattleDetector | None,
+    screen: np.ndarray,
+    *,
+    normal_start: Match | None,
+) -> PreBattleObservation:
+    if detector is not None:
+        return detector.observe(screen, normal_start=normal_start)
+    if normal_start is not None:
+        return PreBattleObservation(
+            PreBattleMode.NORMAL,
+            normal_score=normal_start.score,
+        )
+    return PreBattleObservation(PreBattleMode.UNKNOWN)

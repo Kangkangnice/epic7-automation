@@ -29,6 +29,12 @@ from auto_game_unified.games.epic7.battle_controls import (
     BattleControls,
     observe_battle_controls,
 )
+from auto_game_unified.games.epic7.pre_battle import (
+    PreBattleMode,
+    QuickBattleDetector,
+    load_simulator_quick_battle_detector,
+    observe_pre_battle,
+)
 from auto_game_unified.games.epic7.unknown_screen import (
     UnrecognizedScreen,
     UnknownScreenWake,
@@ -105,6 +111,7 @@ class ExpeditionTemplates:
     campfire_idle: np.ndarray
     expedition_list: np.ndarray
     back: np.ndarray
+    quick_battle: QuickBattleDetector | None = None
 
 
 def build_expedition_templates(template_dir: Path) -> ExpeditionTemplates:
@@ -137,6 +144,7 @@ def build_expedition_templates(template_dir: Path) -> ExpeditionTemplates:
         campfire_idle=load("campfire_idle"),
         expedition_list=load("expedition_list"),
         back=load("back"),
+        quick_battle=load_simulator_quick_battle_detector(template_dir),
     )
 
 
@@ -326,6 +334,12 @@ class ExpeditionStateMachine:
         previous_screen: np.ndarray | None,
     ) -> BattleObservation:
         controls = observe_battle_controls(screen)
+        battle_start = self._locate(screen, "battle_start")
+        pre_battle = observe_pre_battle(
+            self.templates.quick_battle,
+            screen,
+            normal_start=battle_start,
+        )
         auto_state = {
             BattleControls.AUTO_CONTROLS: AutoBattleState.AUTO,
             BattleControls.MANUAL_CONTROLS: AutoBattleState.MANUAL,
@@ -339,7 +353,7 @@ class ExpeditionStateMachine:
             screen,
         )
         return BattleObservation(
-            pre_battle_visible=self._locate(screen, "battle_start") is not None,
+            pre_battle_visible=pre_battle.mode is not PreBattleMode.UNKNOWN,
             battle_visible=(
                 battle is not None
                 or controls is not BattleControls.TRANSITION
@@ -353,6 +367,15 @@ class ExpeditionStateMachine:
                 else None
             ),
             business_progress=progressing,
+            allowed_action=(
+                ("switch-to-normal-battle", pre_battle.switch_point)
+                if pre_battle.mode is PreBattleMode.QUICK
+                and pre_battle.switch_point is not None
+                else ("battle-start", battle_start.center)
+                if pre_battle.mode is PreBattleMode.NORMAL
+                and battle_start is not None
+                else None
+            ),
         )
 
     def next_action(self, screen: np.ndarray) -> Optional[ExpeditionAction]:
@@ -399,7 +422,20 @@ class ExpeditionStateMachine:
             return ExpeditionAction("prepare-battle", match.center)
 
         if self.state == ExpeditionState.TEAM:
-            match = self._required(screen, "battle_start")
+            match = self._locate(screen, "battle_start")
+            pre_battle = observe_pre_battle(
+                self.templates.quick_battle,
+                screen,
+                normal_start=match,
+            )
+            if (
+                pre_battle.mode is PreBattleMode.QUICK
+                and pre_battle.switch_point is not None
+            ):
+                self.state = ExpeditionState.BATTLE
+                return ExpeditionAction("battle-start", pre_battle.switch_point)
+            if pre_battle.mode is not PreBattleMode.NORMAL or match is None:
+                raise UnrecognizedScreen("远征队伍页未识别普通或快速战斗入口")
             self.state = ExpeditionState.BATTLE
             return ExpeditionAction("battle-start", match.center)
 
