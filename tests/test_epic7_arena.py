@@ -414,17 +414,33 @@ class Epic7ArenaStateMachineTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "对手详情.*未识别"):
             machine.next_action(load_fixture("list"))
 
-    def test_ticket_purchase_requires_title_offer_and_button(self):
+    def test_ticket_purchase_accepts_selected_friendship_offer(self):
         machine = ArenaStateMachine(build_templates(TEMPLATES), initial_state=ArenaState.BATTLE)
 
-        action = machine.next_action(load_fixture("no_ticket"))
+        action = machine.next_action(load_fixture("friendship_ticket_offer_live_20260826"))
+
+        self.assertEqual("purchase-friendship-ticket", action.name)
+        self.assertIn("友情点100换5旗帜", action.reason)
+
+    def test_ticket_purchase_does_not_depend_on_dynamic_friendship_balance(self):
+        machine = ArenaStateMachine(build_templates(TEMPLATES), initial_state=ArenaState.BATTLE)
+        screen = load_fixture("friendship_ticket_offer_live_20260826").copy()
+        screen[660:715, 620:920] = 0
+
+        action = machine.next_action(screen)
 
         self.assertEqual("purchase-friendship-ticket", action.name)
 
-    def test_ticket_purchase_rejects_a_non_friendship_offer(self):
+    def test_ticket_purchase_rejects_selected_sky_stone_offer(self):
         machine = ArenaStateMachine(build_templates(TEMPLATES), initial_state=ArenaState.BATTLE)
-        screen = load_fixture("no_ticket").copy()
-        screen[500:760, 650:1350] = 0
+
+        with self.assertRaisesRegex(TicketExhausted, "100 friendship points"):
+            machine.next_action(load_fixture("no_ticket"))
+
+    def test_ticket_purchase_rejects_missing_fixed_friendship_offer_evidence(self):
+        machine = ArenaStateMachine(build_templates(TEMPLATES), initial_state=ArenaState.BATTLE)
+        screen = load_fixture("friendship_ticket_offer_live_20260826").copy()
+        screen[508:660, 568:920] = 0
 
         with self.assertRaises(TicketExhausted):
             machine.next_action(screen)

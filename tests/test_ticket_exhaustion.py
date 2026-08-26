@@ -16,7 +16,11 @@ TEMPLATES = ROOT / "games" / "epic7" / "templates"
 
 class TicketExhaustionTests(unittest.TestCase):
     def test_runner_ends_without_purchase_when_it_was_already_used_today(self):
-        screen = np.asarray(Image.open(FIXTURES / "no_ticket.png").convert("RGB"))[:1132, :1982]
+        screen = np.asarray(
+            Image.open(
+                FIXTURES / "friendship_ticket_offer_live_20260826.png"
+            ).convert("RGB")
+        )[:1132, :1982]
         clicks: list[tuple[int, int]] = []
         runtime = Runtime(lambda: screen, clicks.append)
         with TemporaryDirectory() as directory:

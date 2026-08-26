@@ -116,9 +116,14 @@ class ArenaRunnerTests(unittest.TestCase):
             build_templates(TEMPLATES),
             initial_state=ArenaState.BATTLE,
         )
-        action = machine.next_action(fixture("no_ticket"))
+        action = machine.next_action(fixture("friendship_ticket_offer_live_20260826"))
         screens = iter(
-            [fixture("no_ticket"), fixture("no_ticket"), fixture("team"), fixture("team")]
+            [
+                fixture("friendship_ticket_offer_live_20260826"),
+                fixture("friendship_ticket_offer_live_20260826"),
+                fixture("team"),
+                fixture("team"),
+            ]
         )
         clicks: list[tuple[int, int]] = []
         runner = ArenaRunner(
