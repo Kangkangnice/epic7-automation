@@ -23,7 +23,6 @@ from auto_game_unified.core.runtime import Runtime
 from auto_game_unified.core.supervisor import (
     StableObservation,
     meaningful_change,
-    wait_until_target,
 )
 from auto_game_unified.games.epic7.battle_controls import (
     BattleControls,
@@ -201,6 +200,10 @@ class TicketExhausted(RuntimeError):
 class Action:
     name: str
     point: tuple[int, int]
+    source_state: ArenaState | None = None
+    target_states: tuple[ArenaState, ...] = ()
+    reason: str = ""
+    irreversible: bool = False
 
 
 @dataclass(frozen=True)
@@ -323,6 +326,19 @@ class ArenaStateMachine:
         self.completed_cycles = 0
         self.choose_opponent = choose_opponent
         self._selected_opponent: int | None = None
+        self._cycle_pending = initial_state == ArenaState.CONFIRMING
+
+    def commit(self, action: Action, target: ArenaState) -> None:
+        if action.source_state is not self.state:
+            raise RuntimeError("竞技场动作来源状态与当前状态不一致")
+        if target not in action.target_states:
+            raise RuntimeError("竞技场动作目标状态不在合同中")
+        if action.name == "confirm-result":
+            self._cycle_pending = True
+        self.state = target
+        if target is ArenaState.LIST and self._cycle_pending:
+            self.completed_cycles += 1
+            self._cycle_pending = False
 
     def _locate(self, screen: np.ndarray, template_name: str) -> Optional[Match]:
         threshold = self._THRESHOLDS.get(template_name, self.templates.threshold)
@@ -404,7 +420,68 @@ class ArenaStateMachine:
             if list_ready is None:
                 return True
             return challenge.score >= list_ready.score
+        if state == ArenaState.TEAM:
+            normal_start = self._locate(screen, "battle_start")
+            return observe_pre_battle(
+                self.templates.quick_battle,
+                screen,
+                normal_start=normal_start,
+            ).mode is not PreBattleMode.UNKNOWN
         return self._visible(screen, self._STATE_TEMPLATE[state])
+
+    def action_source_visible(self, screen: np.ndarray, action: Action) -> bool:
+        if action.name == "purchase-friendship-ticket":
+            return (
+                self._visible(screen, "no_ticket")
+                and self._visible(screen, "friendship_ticket_offer")
+                and self._visible(screen, "ticket_purchase_button")
+            )
+        if action.name == "refresh-opponents":
+            return self.is_in_state(screen, ArenaState.LIST) and all(
+                value is False for value in self.opponent_availability(screen)
+            )
+        if action.name == "confirm-result":
+            return self._visible(screen, "confirm")
+        if action.name == "confirm-rank":
+            return find_rank_promotion_confirm(
+                screen,
+                self.templates.rank_promotion_arrow,
+                self.templates.rank_confirm,
+            ) is not None
+        if action.source_state is None:
+            return False
+        return self.is_in_state(screen, action.source_state)
+
+    def action_target_state(
+        self,
+        screen: np.ndarray,
+        action: Action,
+    ) -> ArenaState | None:
+        if (
+            action.name == "purchase-friendship-ticket"
+            and self.action_source_visible(screen, action)
+        ):
+            return None
+        if action.name == "confirm-result":
+            if self.is_in_state(screen, ArenaState.LIST):
+                return ArenaState.LIST
+            if find_rank_promotion_confirm(
+                screen,
+                self.templates.rank_promotion_arrow,
+                self.templates.rank_confirm,
+            ) is not None:
+                return ArenaState.CONFIRMING
+            return None
+        if action.name == "confirm-rank":
+            return (
+                ArenaState.LIST
+                if self.is_in_state(screen, ArenaState.LIST)
+                else None
+            )
+        for target in action.target_states:
+            if self.is_in_state(screen, target):
+                return target
+        return None
 
     def _opponent_point(
         self,
@@ -433,15 +510,24 @@ class ArenaStateMachine:
         availability = self.opponent_availability(screen)
         safe = [index for index, value in enumerate(availability) if value is True]
         if safe:
-            self._selected_opponent = self.choose_opponent(safe)
-            self.state = ArenaState.SELECTED
+            if self._selected_opponent not in safe:
+                self._selected_opponent = self.choose_opponent(safe)
             return Action(
                 "select-opponent",
                 self._opponent_point(screen, self._selected_opponent),
+                ArenaState.LIST,
+                (ArenaState.SELECTED,),
+                "安全对手行已确认，等待对手详情页",
             )
         if all(value is False for value in availability):
             self._selected_opponent = None
-            return Action("refresh-opponents", self._refresh_point(screen))
+            return Action(
+                "refresh-opponents",
+                self._refresh_point(screen),
+                ArenaState.LIST,
+                (ArenaState.LIST,),
+                "三名对手均不可挑战，等待刷新后的安全列表",
+            )
         raise RuntimeError("竞技场对手行无法安全分类")
 
     def observe_battle(
@@ -513,33 +599,44 @@ class ArenaStateMachine:
                 raise TicketExhausted(
                     "ticket popup did not match the friendship 30 -> flags 5 offer"
                 )
-            self.state = ArenaState.TEAM
-            return Action("purchase-friendship-ticket", purchase.center)
+            return Action(
+                "purchase-friendship-ticket",
+                purchase.center,
+                ArenaState.BATTLE,
+                (ArenaState.TEAM,),
+                "友情点30换5旗帜方案已完整识别",
+                irreversible=True,
+            )
 
         if self.state == ArenaState.CONFIRMING:
             if self._visible(screen, "list_ready"):
-                self.completed_cycles += 1
+                if self._cycle_pending:
+                    self.completed_cycles += 1
+                    self._cycle_pending = False
                 self.state = ArenaState.LIST
                 return self._list_action(screen)
             if self._visible(screen, "confirm"):
-                return Action("confirm-result", self._locate(screen, "confirm").center)
+                return Action(
+                    "confirm-result",
+                    self._locate(screen, "confirm").center,
+                    ArenaState.CONFIRMING,
+                    (ArenaState.CONFIRMING, ArenaState.LIST),
+                    "结果确认按钮仍在，等待列表或段位弹窗",
+                )
             rank_confirm = find_rank_promotion_confirm(
                 screen,
                 self.templates.rank_promotion_arrow,
                 self.templates.rank_confirm,
             )
             if rank_confirm is not None:
-                return Action("confirm-rank", rank_confirm.center)
+                return Action(
+                    "confirm-rank",
+                    rank_confirm.center,
+                    ArenaState.CONFIRMING,
+                    (ArenaState.LIST,),
+                    "段位提升弹窗证据完整，等待返回列表",
+                )
             raise RuntimeError("结果确认后应回到对手列表")
-
-        if self.state == ArenaState.SELECTED and not self.is_in_state(screen, ArenaState.SELECTED):
-            if self._selected_opponent is None:
-                self.state = ArenaState.LIST
-                return self._list_action(screen)
-            return Action(
-                "select-opponent",
-                self._opponent_point(screen, self._selected_opponent),
-            )
 
         if self.state == ArenaState.TEAM:
             pre_battle = observe_pre_battle(
@@ -551,8 +648,18 @@ class ArenaStateMachine:
                 pre_battle.mode is PreBattleMode.QUICK
                 and pre_battle.switch_point is not None
             ):
-                self.state = ArenaState.BATTLE
-                return Action("battle-start", pre_battle.switch_point)
+                return Action(
+                    "battle-start",
+                    pre_battle.switch_point,
+                    ArenaState.TEAM,
+                    (ArenaState.BATTLE,),
+                    "快速战斗覆盖普通按钮，交由战斗监督切换",
+                )
+
+        if not self.is_in_state(screen, self.state):
+            raise UnrecognizedScreen(
+                f"竞技场画面[{state_label(self.state)}]未识别"
+            )
 
         template_name = self._STATE_TEMPLATE[self.state]
         match = self._locate(screen, template_name)
@@ -565,17 +672,41 @@ class ArenaStateMachine:
             return self._list_action(screen)
 
         name = self._ACTION_NAME[self.state]
-        previous_state = self.state
-        self.state = ArenaState.CONFIRMING if previous_state == ArenaState.RESULT else self._NEXT_STATE[self.state]
-        return Action(name, match.center)
+        target = (
+            ArenaState.CONFIRMING
+            if self.state == ArenaState.RESULT
+            else self._NEXT_STATE[self.state]
+        )
+        target_states = (
+            (ArenaState.CONFIRMING, ArenaState.LIST)
+            if name == "confirm-result"
+            else (target,)
+        )
+        return Action(
+            name,
+            match.center,
+            self.state,
+            target_states,
+            f"来源画面[{state_label(self.state)}]锚点已确认",
+        )
 
     def preview(self, screen: np.ndarray):
-        snapshot = self.state, self.completed_cycles, self._selected_opponent
+        snapshot = (
+            self.state,
+            self.completed_cycles,
+            self._selected_opponent,
+            self._cycle_pending,
+        )
         try:
             action = self.next_action(screen)
             return action, (self.state, self.completed_cycles)
         finally:
-            self.state, self.completed_cycles, self._selected_opponent = snapshot
+            (
+                self.state,
+                self.completed_cycles,
+                self._selected_opponent,
+                self._cycle_pending,
+            ) = snapshot
 
 
 class ArenaRunner:
@@ -706,6 +837,11 @@ class ArenaRunner:
 
             self.unknown_screen_wake.reset()
             if max_cycles is not None and self.machine.completed_cycles >= max_cycles:
+                recovered = False
+                self.runtime.log(
+                    f"模式=竞技场 轮次={self.machine.completed_cycles} "
+                    "业务完成=结算返回对手列表 目标连续=2"
+                )
                 return self.machine.completed_cycles
             if action.name == "purchase-friendship-ticket" and not self._purchase_allowed_today():
                 self.machine.state = ArenaState.BATTLE
@@ -716,13 +852,16 @@ class ArenaRunner:
                 return self.machine.completed_cycles
             self.runtime.log(
                 f"模式=竞技场 轮次={self.machine.completed_cycles + 1}/{max_cycles or '?'} "
-                f"页面={state_label(state_before)} 动作={action.name}"
+                f"页面={state_label(state_before)} 动作候选={action.name} "
+                f"依据={action.reason or '测试动作'}"
             )
-            self.runtime.click(action.point, action.name)
+            cycles_before = self.machine.completed_cycles
             if self.runtime.dry_run:
+                self.runtime.click(action.point, action.name)
                 return self.machine.completed_cycles
 
             if action.name == "battle-start":
+                self.runtime.click(action.point, action.name)
                 self._run_committed_battle(
                     cycle=self.machine.completed_cycles + 1,
                 )
@@ -731,7 +870,8 @@ class ArenaRunner:
                 continue
 
             if action.name == "refresh-opponents":
-                if not self._wait_until_safe_list():
+                self.runtime.click(action.point, action.name)
+                if not self._wait_until_safe_list(action):
                     diagnostic = self.runtime.save_diagnostic(
                         "refresh_opponents_failed",
                     )
@@ -747,26 +887,15 @@ class ArenaRunner:
                 stable.reset()
                 continue
 
-            # Verify the click actually advanced the screen. Without this the machine
-            # blindly advances state on every click; a click that lands during an
-            # animation (e.g. challenge, right after opponent selection) is silently
-            # swallowed and the run later times out at the wrong screen.
-            new_state = self.machine.state
-            if new_state != ArenaState.CONFIRMING and not self._wait_until_in_state(new_state):
-                diagnostic = self.runtime.save_diagnostic(
-                    f"no_transition_{state_before.value}_to_{new_state.value}", screen
-                )
-                self.runtime.log(
-                    f"模式=竞技场 状态=转场失败 "
-                    f"从={state_label(state_before)} 到={state_label(new_state)} "
-                    f"诊断={diagnostic}"
-                )
-                raise RuntimeError(
-                    f"点击 {action.name} 后画面未推进到"
-                    f"[{state_label(new_state)}]；已保存诊断 {diagnostic}"
-                )
+            self._execute_transition(action)
             if action.name == "purchase-friendship-ticket":
                 self._record_purchase_today()
+            if self.machine.completed_cycles > cycles_before:
+                recovered = False
+                self.runtime.log(
+                    f"模式=竞技场 轮次={self.machine.completed_cycles} "
+                    "业务完成=结算返回对手列表 目标连续=2"
+                )
 
             if self.machine.state != state_before:
                 state_started = self.now()
@@ -774,46 +903,150 @@ class ArenaRunner:
 
         return self.machine.completed_cycles
 
-    def _wait_until_in_state(self, state: ArenaState) -> bool:
-        """轮询直到画面进入目标状态；单帧命中即确认，超时返回 False。
+    def _execute_transition(self, action: Action) -> None:
+        """Click and commit only after the declared target is stable for two frames."""
+        if action.source_state is None or not action.target_states:
+            raise RuntimeError(f"竞技场动作[{action.name}]缺少来源/目标合同")
+        attempts = 1
+        self.runtime.click(action.point, action.name)
+        self.sleep(self._SETTLE_SECONDS)
+        started = progressed = self.now()
+        previous: Optional[np.ndarray] = None
+        source_stable = StableObservation(required=2)
+        target_stable = StableObservation(required=2)
+        source_gone_logged = False
+        source_has_gone = False
+        absolute = min(
+            180,
+            max(self._TIMEOUT_SECONDS[target] for target in action.target_states),
+        )
+        no_progress = min(45, absolute)
 
-        以各状态超时表推算绝对/无进展上限：合法的慢转场（加载/动画）
-        仍可被捕获，而无效点击则清晰地失败而非级联进入错误状态。
-        """
-        return wait_until_target(
-            capture=self.runtime.capture,
-            save_frame=self._save_frame,
-            is_target=lambda screen: self.machine.is_in_state(screen, state),
-            absolute_seconds=min(180, self._TIMEOUT_SECONDS[state]),
-            no_progress_seconds=min(45, self._TIMEOUT_SECONDS[state]),
-            poll_seconds=self.poll_seconds,
-            sleep=self.sleep,
-            now=self.now,
-            settle_seconds=self._SETTLE_SECONDS,
+        while self.now() - started < absolute:
+            screen = self.runtime.capture()
+            self._save_frame(screen)
+            target = self.machine.action_target_state(screen, action)
+            target_visible = target is not None
+            source_visible = self.machine.action_source_visible(screen, action)
+
+            target_key = target.value if target is not None else "other"
+            if target_stable.update(target_key) and target is not None:
+                self.machine.commit(action, target)
+                self.runtime.log(
+                    f"模式=竞技场 转场确认 动作={action.name} "
+                    f"从={state_label(action.source_state)} 到={state_label(target)} "
+                    "目标连续=2"
+                )
+                return
+
+            if source_stable.update("source" if source_visible else "other") and source_visible:
+                if not source_has_gone and attempts < 4:
+                    attempts += 1
+                    self.runtime.log(
+                        f"模式=竞技场 转场重试 动作={action.name} "
+                        f"来源={state_label(action.source_state)}仍在 "
+                        f"尝试={attempts}/4 坐标={action.point}"
+                    )
+                    self.runtime.click(action.point, action.name)
+                    source_stable.reset()
+                    self.sleep(self._SETTLE_SECONDS)
+                    continue
+            elif not source_visible:
+                source_has_gone = True
+                if not source_gone_logged:
+                    source_gone_logged = True
+                    targets = "/".join(
+                        state_label(item) for item in action.target_states
+                    )
+                    self.runtime.log(
+                        f"模式=竞技场 等待转场 动作={action.name} "
+                        f"来源={state_label(action.source_state)}已离开 目标={targets}待稳定"
+                    )
+
+            if meaningful_change(previous, screen):
+                progressed = self.now()
+            previous = screen
+            if self.now() - progressed >= no_progress:
+                break
+            self.sleep(self.poll_seconds)
+
+        diagnostic = None
+        if self.runtime.diagnostic_dir is not None:
+            diagnostic = self.runtime.save_diagnostic(
+                f"no_transition_{action.source_state.value}_to_"
+                f"{'_or_'.join(target.value for target in action.target_states)}"
+            )
+        self.runtime.log(
+            f"模式=竞技场 状态=转场失败 动作={action.name} "
+            f"从={state_label(action.source_state)} "
+            f"到={'/'.join(state_label(target) for target in action.target_states)} "
+            f"尝试={attempts}/4 诊断={diagnostic}"
+        )
+        raise RuntimeError(
+            f"点击 {action.name} 后画面未稳定进入"
+            f"[{'/'.join(state_label(target) for target in action.target_states)}]；"
+            f"已保存诊断 {diagnostic}"
         )
 
     def _save_frame(self, screen: np.ndarray) -> None:
         if self.runtime.diagnostic_dir is not None:
             self.runtime.save_current_frame(screen)
 
-    def _wait_until_safe_list(self) -> bool:
+    def _wait_until_safe_list(self, action: Action | None = None) -> bool:
         self.sleep(self._SETTLE_SECONDS)
         started = self.now()
         last_progress = started
         previous: Optional[np.ndarray] = None
         absolute = min(180, self._TIMEOUT_SECONDS[ArenaState.LIST])
         no_progress = min(45, self._TIMEOUT_SECONDS[ArenaState.LIST])
+        safe_list_stable = StableObservation(required=2)
+        failed_list_stable = StableObservation(required=2)
         refresh_confirm_stable = StableObservation(required=2)
         refresh_confirm_clicks = 0
+        refresh_attempts = 1 if action is not None else 0
+        source_has_gone = False
         while self.now() - started < absolute:
             screen = self.runtime.capture()
             if self.runtime.diagnostic_dir is not None:
                 self.runtime.save_current_frame(screen)
-            if (
+            safe_list = (
                 self.machine.is_in_state(screen, ArenaState.LIST)
                 and self.machine.has_safe_opponent(screen)
-            ):
+            )
+            if safe_list_stable.update("safe" if safe_list else "other") and safe_list:
+                if action is not None:
+                    self.machine.commit(action, ArenaState.LIST)
+                self.runtime.log(
+                    "模式=竞技场 转场确认 动作=refresh-opponents "
+                    "目标=含安全对手的列表 目标连续=2"
+                )
                 return True
+
+            failed_source = (
+                action is not None
+                and self.machine.action_source_visible(screen, action)
+            )
+            if not failed_source and action is not None:
+                source_has_gone = True
+            if (
+                action is not None
+                and failed_list_stable.update(
+                    "failed-list" if failed_source else "other"
+                )
+                and failed_source
+                and not source_has_gone
+                and refresh_attempts < 4
+            ):
+                refresh_attempts += 1
+                self.runtime.log(
+                    "模式=竞技场 转场重试 动作=refresh-opponents "
+                    f"来源=失败对手列表仍在 尝试={refresh_attempts}/4 "
+                    f"坐标={action.point}"
+                )
+                self.runtime.click(action.point, action.name)
+                failed_list_stable.reset()
+                self.sleep(self._SETTLE_SECONDS)
+                continue
             refresh_confirm = self.machine.free_refresh_confirm(screen)
             signature = "free-refresh" if refresh_confirm is not None else "other"
             if refresh_confirm_stable.update(signature) and refresh_confirm is not None:

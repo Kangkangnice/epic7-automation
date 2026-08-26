@@ -126,7 +126,11 @@ def test_supervised_route_state_machines_enter_supervision_from_quick_page():
         action = machine.next_action(quick)
         assert action is not None
         assert action.name == action_name
-        assert machine.state is target_state
+        if isinstance(machine, ArenaStateMachine):
+            assert machine.state is ArenaState.TEAM
+            assert action.target_states == (ArenaState.BATTLE,)
+        else:
+            assert machine.state is target_state
 
 
 def test_assist_auto_switches_quick_mode_without_advancing_team_state():
