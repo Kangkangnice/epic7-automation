@@ -2,6 +2,7 @@ from pathlib import Path
 import unittest
 from unittest.mock import MagicMock
 
+import cv2
 import numpy as np
 from PIL import Image
 
@@ -27,6 +28,140 @@ def fixture(name: str) -> np.ndarray:
 
 
 class ArenaRunnerTests(unittest.TestCase):
+    def test_challenge_retries_same_click_when_selected_source_remains(self):
+        machine = ArenaStateMachine(
+            build_templates(TEMPLATES),
+            initial_state=ArenaState.SELECTED,
+        )
+        action = machine.next_action(fixture("selected"))
+        screens = iter(
+            [fixture("selected"), fixture("selected"), fixture("team"), fixture("team")]
+        )
+        clicks: list[tuple[int, int]] = []
+        runner = ArenaRunner(
+            machine,
+            Runtime(lambda: next(screens), clicks.append, emit=lambda line: None),
+            sleep=lambda seconds: None,
+        )
+
+        runner._execute_transition(action)
+
+        self.assertEqual([action.point, action.point], clicks)
+        self.assertEqual(ArenaState.TEAM, machine.state)
+
+    def test_challenge_does_not_reclick_after_selected_source_disappears(self):
+        machine = ArenaStateMachine(
+            build_templates(TEMPLATES),
+            initial_state=ArenaState.SELECTED,
+        )
+        action = machine.next_action(fixture("selected"))
+        loading = np.zeros_like(fixture("selected"))
+        screens = iter([loading, loading, fixture("team"), fixture("team")])
+        clicks: list[tuple[int, int]] = []
+        runner = ArenaRunner(
+            machine,
+            Runtime(lambda: next(screens), clicks.append, emit=lambda line: None),
+            sleep=lambda seconds: None,
+        )
+
+        runner._execute_transition(action)
+
+        self.assertEqual([action.point], clicks)
+        self.assertEqual(ArenaState.TEAM, machine.state)
+
+    def test_challenge_requires_two_consecutive_target_frames_before_commit(self):
+        machine = ArenaStateMachine(
+            build_templates(TEMPLATES),
+            initial_state=ArenaState.SELECTED,
+        )
+        action = machine.next_action(fixture("selected"))
+        loading = np.zeros_like(fixture("selected"))
+        screens = iter(
+            [fixture("team"), loading, fixture("team"), fixture("team")]
+        )
+        runner = ArenaRunner(
+            machine,
+            Runtime(lambda: next(screens), lambda point: None, emit=lambda line: None),
+            sleep=lambda seconds: None,
+        )
+
+        runner._execute_transition(action)
+
+        self.assertEqual(ArenaState.TEAM, machine.state)
+
+    def test_result_confirmation_retries_and_counts_after_stable_list(self):
+        machine = ArenaStateMachine(
+            build_templates(TEMPLATES),
+            initial_state=ArenaState.RESULT,
+        )
+        action = machine.next_action(fixture("result"))
+        screens = iter(
+            [fixture("result"), fixture("result"), fixture("list"), fixture("list")]
+        )
+        clicks: list[tuple[int, int]] = []
+        runner = ArenaRunner(
+            machine,
+            Runtime(lambda: next(screens), clicks.append, emit=lambda line: None),
+            sleep=lambda seconds: None,
+        )
+
+        runner._execute_transition(action)
+
+        self.assertEqual([action.point, action.point], clicks)
+        self.assertEqual(ArenaState.LIST, machine.state)
+        self.assertEqual(1, machine.completed_cycles)
+
+    def test_ticket_purchase_retries_only_while_purchase_popup_remains(self):
+        machine = ArenaStateMachine(
+            build_templates(TEMPLATES),
+            initial_state=ArenaState.BATTLE,
+        )
+        action = machine.next_action(fixture("no_ticket"))
+        screens = iter(
+            [fixture("no_ticket"), fixture("no_ticket"), fixture("team"), fixture("team")]
+        )
+        clicks: list[tuple[int, int]] = []
+        runner = ArenaRunner(
+            machine,
+            Runtime(lambda: next(screens), clicks.append, emit=lambda line: None),
+            sleep=lambda seconds: None,
+        )
+
+        runner._execute_transition(action)
+
+        self.assertEqual([action.point, action.point], clicks)
+        self.assertEqual(ArenaState.TEAM, machine.state)
+
+    def test_refresh_retries_initial_click_and_requires_stable_safe_list(self):
+        machine = ArenaStateMachine(build_templates(TEMPLATES))
+        failed = fixture("failed_first_opponent").copy()
+        first_x, first_y, first_width, first_height = machine._scaled_region(
+            failed,
+            machine._OPPONENT_STATUS_REGIONS[0],
+        )
+        failed_row = failed[
+            first_y : first_y + first_height,
+            first_x : first_x + first_width,
+        ].copy()
+        for region in machine._OPPONENT_STATUS_REGIONS[1:]:
+            x, y, width, height = machine._scaled_region(failed, region)
+            failed[y : y + height, x : x + width] = cv2.resize(
+                failed_row,
+                (width, height),
+            )
+        action = machine.next_action(failed)
+        screens = iter([failed, failed, fixture("list"), fixture("list")])
+        clicks: list[tuple[int, int]] = []
+        runner = ArenaRunner(
+            machine,
+            Runtime(lambda: next(screens), clicks.append, emit=lambda line: None),
+            sleep=lambda seconds: None,
+        )
+        runner.runtime.click(action.point, action.name)
+
+        self.assertTrue(runner._wait_until_safe_list(action))
+        self.assertEqual([action.point, action.point], clicks)
+
     def test_committed_battle_returns_control_to_result_state(self):
         machine = MagicMock()
         machine.state = ArenaState.BATTLE
@@ -71,31 +206,22 @@ class ArenaRunnerTests(unittest.TestCase):
             build_templates(TEMPLATES),
             choose_opponent=lambda safe: safe[0],
         )
-        # Map each state to the fixture that represents its settled screen. The
-        # runner now captures once per decision and again per transition check, so
-        # the capture must reflect the machine's current state rather than a fixed
-        # sequence.
-        screen_for_state = {
-            "list": "list",
-            "selected": "selected",
-            "team": "team",
-            "battle": "battle",
-            "result": "result",
-            "confirming": "list",
-        }
+        visual_state = "list"
         clicks: list[tuple[int, int]] = []
-        auto_clicked = False
 
         def capture():
-            if machine.state == ArenaState.BATTLE and auto_clicked:
-                return fixture("result")
-            return fixture(screen_for_state[machine.state.value])
+            return fixture(visual_state)
 
         def click(point):
-            nonlocal auto_clicked
+            nonlocal visual_state
             clicks.append(point)
-            if point == (1692, 90):
-                auto_clicked = True
+            visual_state = {
+                (750, 406): "selected",
+                (960, 1045): "team",
+                (1257, 1040): "battle",
+                (1692, 90): "result",
+                (1747, 1045): "list",
+            }.get(point, visual_state)
 
         runtime = Runtime(capture, click)
         runner = ArenaRunner(machine, runtime, sleep=lambda _: None)
@@ -127,7 +253,7 @@ class ArenaRunnerTests(unittest.TestCase):
             sleep=lambda seconds: None,
         )
 
-        def refreshed() -> bool:
+        def refreshed(action: Action) -> bool:
             machine.completed_cycles = 1
             return True
 
@@ -137,13 +263,14 @@ class ArenaRunnerTests(unittest.TestCase):
 
         self.assertEqual(1, completed)
         self.assertEqual([(1344, 225)], clicks)
-        runner._wait_until_safe_list.assert_called_once_with()
+        runner._wait_until_safe_list.assert_called_once_with(refresh)
         self.assertEqual(ArenaState.LIST, machine.state)
 
     def test_safe_list_waiter_requires_both_list_and_available_opponent(self):
         machine = MagicMock()
         machine.is_in_state.return_value = True
-        machine.has_safe_opponent.side_effect = [False, True]
+        machine.has_safe_opponent.side_effect = [False, True, True]
+        machine.free_refresh_confirm.return_value = None
         runner = ArenaRunner(
             machine,
             Runtime(
@@ -155,12 +282,12 @@ class ArenaRunnerTests(unittest.TestCase):
         )
 
         self.assertTrue(runner._wait_until_safe_list())
-        self.assertEqual(2, machine.has_safe_opponent.call_count)
+        self.assertEqual(3, machine.has_safe_opponent.call_count)
 
     def test_safe_list_waiter_confirms_free_refresh_then_accepts_new_list(self):
         machine = ArenaStateMachine(build_templates(TEMPLATES))
         confirmation = fixture("free_refresh_confirm_live_20260814")
-        screens = iter([confirmation, confirmation, fixture("list")])
+        screens = iter([confirmation, confirmation, fixture("list"), fixture("list")])
         clicks: list[tuple[int, int]] = []
         runner = ArenaRunner(
             machine,

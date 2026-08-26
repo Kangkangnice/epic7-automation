@@ -131,7 +131,67 @@ class Epic7ArenaStateMachineTests(unittest.TestCase):
         self.assertEqual("select-opponent", action.name)
         self.assertEqual((1, 2), choices[0])
         self.assertEqual(machine._opponent_point(screen, 2), action.point)
+        self.assertEqual(ArenaState.LIST, machine.state)
+        self.assertEqual(ArenaState.LIST, action.source_state)
+        self.assertEqual((ArenaState.SELECTED,), action.target_states)
+
+        machine.commit(action, ArenaState.SELECTED)
+
         self.assertEqual(ArenaState.SELECTED, machine.state)
+
+    def test_challenge_state_is_committed_only_after_target_evidence(self):
+        machine = ArenaStateMachine(
+            build_templates(TEMPLATES),
+            initial_state=ArenaState.SELECTED,
+        )
+
+        action = machine.next_action(load_fixture("selected"))
+
+        self.assertEqual("challenge", action.name)
+        self.assertEqual(ArenaState.SELECTED, machine.state)
+        self.assertEqual(ArenaState.SELECTED, action.source_state)
+        self.assertEqual((ArenaState.TEAM,), action.target_states)
+
+        machine.commit(action, ArenaState.TEAM)
+
+        self.assertEqual(ArenaState.TEAM, machine.state)
+
+    def test_result_and_rank_actions_do_not_advance_without_commit(self):
+        machine = ArenaStateMachine(
+            build_templates(TEMPLATES),
+            initial_state=ArenaState.RESULT,
+        )
+
+        result_action = machine.next_action(load_fixture("result"))
+
+        self.assertEqual(ArenaState.RESULT, machine.state)
+        self.assertEqual(
+            (ArenaState.CONFIRMING, ArenaState.LIST),
+            result_action.target_states,
+        )
+
+        machine.commit(result_action, ArenaState.CONFIRMING)
+        rank_action = machine.next_action(load_fixture("rank_promotion_master"))
+
+        self.assertEqual(ArenaState.CONFIRMING, machine.state)
+        self.assertEqual(ArenaState.CONFIRMING, rank_action.source_state)
+        self.assertEqual((ArenaState.LIST,), rank_action.target_states)
+
+    def test_ticket_purchase_state_is_committed_only_after_team_returns(self):
+        machine = ArenaStateMachine(
+            build_templates(TEMPLATES),
+            initial_state=ArenaState.BATTLE,
+        )
+
+        action = machine.next_action(load_fixture("no_ticket"))
+
+        self.assertEqual(ArenaState.BATTLE, machine.state)
+        self.assertEqual(ArenaState.BATTLE, action.source_state)
+        self.assertEqual((ArenaState.TEAM,), action.target_states)
+
+        machine.commit(action, ArenaState.TEAM)
+
+        self.assertEqual(ArenaState.TEAM, machine.state)
 
     def test_all_failed_opponents_trigger_refresh_without_advancing_state(self):
         machine = ArenaStateMachine(build_templates(TEMPLATES))
@@ -252,15 +312,19 @@ class Epic7ArenaStateMachineTests(unittest.TestCase):
             choose_opponent=lambda safe: safe[0],
         )
 
-        observed = [
-            machine.next_action(load_fixture("list")),
-            machine.next_action(load_fixture("selected")),
-            machine.next_action(load_fixture("team")),
-            machine.next_action(load_fixture("battle")),
-            machine.next_action(load_fixture("result")),
-            machine.next_action(load_fixture("result")),
-            machine.next_action(load_fixture("list")),
-        ]
+        observed = []
+        for fixture_name, target in (
+            ("list", ArenaState.SELECTED),
+            ("selected", ArenaState.TEAM),
+            ("team", ArenaState.BATTLE),
+            ("battle", ArenaState.RESULT),
+            ("result", ArenaState.CONFIRMING),
+            ("result", ArenaState.CONFIRMING),
+        ):
+            action = machine.next_action(load_fixture(fixture_name))
+            observed.append(action)
+            machine.commit(action, target)
+        observed.append(machine.next_action(load_fixture("list")))
 
         self.assertEqual(
             [
@@ -301,14 +365,11 @@ class Epic7ArenaStateMachineTests(unittest.TestCase):
         self.assertEqual("select-opponent", follow_up.name)
         self.assertEqual(1, machine.completed_cycles)
 
-    def test_retries_safe_row_click_when_list_is_still_visible(self):
+    def test_committed_selected_state_rejects_a_regressed_list(self):
         machine = ArenaStateMachine(build_templates(TEMPLATES), initial_state=ArenaState.SELECTED)
 
-        retry = machine.next_action(load_fixture("list"))
-        next_action = machine.next_action(load_fixture("selected"))
-
-        self.assertEqual("select-opponent", retry.name)
-        self.assertEqual("challenge", next_action.name)
+        with self.assertRaisesRegex(RuntimeError, "对手详情.*未识别"):
+            machine.next_action(load_fixture("list"))
 
     def test_ticket_purchase_requires_title_offer_and_button(self):
         machine = ArenaStateMachine(build_templates(TEMPLATES), initial_state=ArenaState.BATTLE)
