@@ -103,6 +103,7 @@ class BattleSupervisor:
         allowed_action_clicked_at = None
         entry_confirmed = False
         auto_confirmed = False
+        business_pending_logged = False
         battle_stable = StableObservation(required=2)
         auto_stable = StableObservation(required=2)
         allowed_stable = StableObservation(required=2)
@@ -131,16 +132,33 @@ class BattleSupervisor:
                     if observation.pre_battle_business_visible
                     else "other"
                 )
-                if (
-                    business_stable.update(business_signature)
-                    and observation.pre_battle_business_visible
-                    and not entry_confirmed
-                ):
+                business_confirmed = business_stable.update(business_signature)
+                business_pending = (
+                    observation.pre_battle_business_visible and not entry_confirmed
+                )
+                if business_confirmed and business_pending:
                     self.runtime.log(
                         f"模式={self.label} 轮次={cycle} "
                         "阶段=战前 状态=交还业务处理"
                     )
                     return BattleOutcome.PRE_BATTLE_BUSINESS
+                if business_pending:
+                    if not business_pending_logged:
+                        self.runtime.log(
+                            f"模式={self.label} 轮次={cycle} 阶段=战前 "
+                            "状态=业务弹窗首帧已识别 动作=冻结背景操作 "
+                            "等待=连续2帧确认"
+                        )
+                        business_pending_logged = True
+                    allowed_stable.reset()
+                    last_allowed_action = None
+                    allowed_action_clicks = 0
+                    allowed_action_clicked_at = None
+                else:
+                    business_pending_logged = False
+                effective_allowed_action = (
+                    None if business_pending else observation.allowed_action
+                )
 
                 entered = observation.battle_visible or (
                     not observation.pre_battle_visible
@@ -200,28 +218,28 @@ class BattleSupervisor:
                 stable_auto = auto_stable.update(observation.auto_state.value)
                 allowed_signature = (
                     "none"
-                    if observation.allowed_action is None
+                    if effective_allowed_action is None
                     else (
-                        f"{observation.allowed_action[0]}:"
-                        f"{observation.allowed_action[1]}"
+                        f"{effective_allowed_action[0]}:"
+                        f"{effective_allowed_action[1]}"
                     )
                 )
                 allowed_confirmed = allowed_stable.update(allowed_signature)
                 if (
-                    observation.allowed_action is not None
-                    and observation.allowed_action != last_allowed_action
+                    effective_allowed_action is not None
+                    and effective_allowed_action != last_allowed_action
                 ):
                     if last_allowed_action is not None:
                         self.runtime.log(
                             f"模式={self.label} 轮次={cycle} "
                             f"阶段=战前 转场确认 动作={last_allowed_action[0]} "
-                            f"目标动作={observation.allowed_action[0]}"
+                            f"目标动作={effective_allowed_action[0]}"
                         )
-                    last_allowed_action = observation.allowed_action
+                    last_allowed_action = effective_allowed_action
                     allowed_action_clicks = 0
                     allowed_action_clicked_at = None
-                if allowed_confirmed and observation.allowed_action is not None:
-                    action_name, action_point = observation.allowed_action
+                if allowed_confirmed and effective_allowed_action is not None:
+                    action_name, action_point = effective_allowed_action
                     since_click = (
                         None
                         if allowed_action_clicked_at is None
