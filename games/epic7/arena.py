@@ -594,7 +594,9 @@ class ArenaStateMachine:
             ),
             business_progress=progressing,
             allowed_action=(
-                ("switch-to-normal-battle", pre_battle.switch_point)
+                None
+                if no_ticket is not None
+                else ("switch-to-normal-battle", pre_battle.switch_point)
                 if pre_battle.mode is PreBattleMode.QUICK
                 and pre_battle.switch_point is not None
                 else ("battle-start", start.center)

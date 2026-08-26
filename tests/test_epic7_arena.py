@@ -429,6 +429,17 @@ class Epic7ArenaStateMachineTests(unittest.TestCase):
         self.assertIn("报价匹配=", action.reason)
         self.assertIn("购买按钮匹配=", action.reason)
 
+    def test_ticket_popup_suppresses_background_battle_start_action(self):
+        machine = ArenaStateMachine(build_templates(TEMPLATES))
+
+        observation = machine.observe_battle(
+            load_fixture("friendship_ticket_offer_live_20260826"),
+            None,
+        )
+
+        self.assertTrue(observation.pre_battle_business_visible)
+        self.assertIsNone(observation.allowed_action)
+
     def test_ticket_purchase_does_not_depend_on_dynamic_friendship_balance(self):
         machine = ArenaStateMachine(build_templates(TEMPLATES), initial_state=ArenaState.BATTLE)
         screen = load_fixture("friendship_ticket_offer_live_20260826").copy()
