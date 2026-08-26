@@ -45,7 +45,6 @@ class BattleConfig:
     absolute_seconds: float = 900
     unrecognized_seconds: float = 45
     black_seconds: float = 45
-    auto_confirm_seconds: float = 15
     allowed_action_retry_seconds: float = 3
     allowed_action_failure_seconds: float = 15
     heartbeat_seconds: float = 30
@@ -94,10 +93,11 @@ class BattleSupervisor:
     def run(self, observe: BattleObserver, *, cycle: int) -> BattleOutcome:
         self.gate.lock(mode=self.config.mode, cycle=cycle)
         started = active_at = business_at = heartbeat = self.now()
-        invalid_since = black_since = auto_wait_since = None
+        invalid_since = black_since = None
         previous = None
         auto_clicks = 0
         auto_clicked_at = None
+        auto_source_gone_logged = False
         last_allowed_action = None
         allowed_action_clicks = 0
         allowed_action_clicked_at = None
@@ -268,7 +268,6 @@ class BattleSupervisor:
                             screen,
                         )
                     auto_confirmed = False
-                    auto_wait_since = None
                     since_auto_click = (
                         None
                         if auto_clicked_at is None
@@ -288,12 +287,13 @@ class BattleSupervisor:
                         self.runtime.log(
                             f"模式={self.label} 轮次={cycle} "
                             f"阶段=战斗 动作=开启自动战斗 "
-                            f"尝试={auto_clicks}/4"
+                            f"尝试={auto_clicks}/4 依据=自动关闭来源连续=2"
                         )
                         self.runtime.click(
                             observation.auto_point, "enable-auto-battle"
                         )
                         auto_clicked_at = current
+                        auto_source_gone_logged = False
                         auto_stable.reset()
                     elif (
                         auto_clicks >= 4
@@ -310,34 +310,26 @@ class BattleSupervisor:
                     stable_auto
                     and observation.auto_state is AutoBattleState.AUTO
                 ):
-                    auto_wait_since = None
                     auto_clicks = 0
                     auto_clicked_at = None
+                    auto_source_gone_logged = False
                     if not auto_confirmed:
                         auto_confirmed = True
                         self.runtime.log(
                             f"模式={self.label} 轮次={cycle} "
                             "阶段=战斗 状态=自动战斗已开启"
                         )
-                elif observation.auto_state is AutoBattleState.MANUAL:
-                    auto_wait_since = None
                 elif (
-                    entry_confirmed
+                    observation.auto_state is AutoBattleState.UNKNOWN
+                    and auto_clicked_at is not None
                     and not auto_confirmed
-                    and auto_wait_since is None
-                    and observation.battle_visible
+                    and not auto_source_gone_logged
                 ):
-                    auto_wait_since = current
-
-                if (
-                    auto_wait_since is not None
-                    and current - auto_wait_since
-                    >= self.config.auto_confirm_seconds
-                ):
-                    self._fail(
-                        "auto_not_confirmed",
-                        "自动战斗开启未能确认",
-                        screen,
+                    auto_source_gone_logged = True
+                    self.runtime.log(
+                        f"模式={self.label} 轮次={cycle} 阶段=战斗 "
+                        "等待确认=自动战斗 来源=自动关闭已离开 "
+                        "目标=人物头像待确认"
                     )
                 if (
                     not entry_confirmed

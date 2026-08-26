@@ -559,6 +559,8 @@ class ArenaStateMachine:
             BattleControls.TRANSITION: AutoBattleState.UNKNOWN,
         }[controls]
         auto_match = self._locate(screen, "auto_off")
+        if auto_match is not None and self.templates.quick_battle is not None:
+            auto_state = AutoBattleState.MANUAL
         result = self._locate(screen, "confirm")
         no_ticket = self._locate(screen, "no_ticket")
         progressing = (

@@ -398,6 +398,8 @@ class StoryStateMachine:
             BattleControls.TRANSITION: AutoBattleState.UNKNOWN,
         }[controls]
         auto_match = self._locate(screen, "auto_off")
+        if auto_match is not None and self.templates.quick_battle is not None:
+            auto_state = AutoBattleState.MANUAL
         stamina_popup = (
             self._locate(screen, "stamina_popup")
             if self.templates.stamina_popup is not None

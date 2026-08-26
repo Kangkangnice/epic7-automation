@@ -6,6 +6,10 @@ import numpy as np
 from PIL import Image
 
 from auto_game_unified.core.battle_supervisor import AutoBattleState
+from auto_game_unified.games.epic7.battle_controls import (
+    BattleControls,
+    observe_battle_controls,
+)
 from auto_game_unified.games.epic7.arena import (
     ArenaState,
     ArenaStateMachine,
@@ -280,6 +284,16 @@ class Epic7ArenaStateMachineTests(unittest.TestCase):
         self.assertIsNone(machine._locate(screen, "auto_off"))
         self.assertEqual(AutoBattleState.MANUAL, observation.auto_state)
         self.assertEqual(machine._AUTO_CLICK_POINT, observation.auto_point)
+
+    def test_enemy_turn_auto_off_icon_is_manual_source_before_skills_are_available(self):
+        machine = ArenaStateMachine(build_templates(TEMPLATES))
+        screen = load_fixture("battle_auto_off_enemy_turn_live_20260826")
+
+        observation = machine.observe_battle(screen, None)
+
+        self.assertEqual(BattleControls.TRANSITION, observe_battle_controls(screen))
+        self.assertEqual(AutoBattleState.MANUAL, observation.auto_state)
+        self.assertEqual((1693, 93), observation.auto_point)
 
     def test_ticket_popup_is_returned_as_pre_battle_business(self):
         machine = ArenaStateMachine(
