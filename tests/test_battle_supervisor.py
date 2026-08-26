@@ -108,6 +108,51 @@ def test_known_pre_battle_business_popup_returns_control_without_clicking():
     assert diagnostics == []
 
 
+def test_pre_battle_business_first_frame_freezes_stable_background_action():
+    normal = BattleObservation(
+        True,
+        False,
+        False,
+        True,
+        AutoBattleState.UNKNOWN,
+        allowed_action=("battle-start", (1258, 1043)),
+    )
+    popup = replace(normal, pre_battle_business_visible=True)
+    supervisor, gate, observe, clicks, logs, diagnostics = make_supervisor(
+        [normal, normal, popup, popup],
+        config_overrides={"allowed_action_retry_seconds": 1},
+    )
+
+    assert supervisor.run(observe, cycle=1) is BattleOutcome.PRE_BATTLE_BUSINESS
+    assert clicks == [((1258, 1043), "battle-start")]
+    assert any(
+        "业务弹窗首帧已识别" in line and "冻结背景操作" in line
+        for line in logs
+    )
+    assert diagnostics == []
+
+
+def test_transient_pre_battle_business_resets_background_action_stability():
+    normal = BattleObservation(
+        True,
+        False,
+        False,
+        True,
+        AutoBattleState.UNKNOWN,
+        allowed_action=("battle-start", (1258, 1043)),
+    )
+    popup = replace(normal, pre_battle_business_visible=True)
+    auto = BattleObservation(False, True, False, True, AutoBattleState.AUTO)
+    result = replace(auto, battle_visible=False, result_visible=True)
+    supervisor, gate, observe, clicks, logs, diagnostics = make_supervisor(
+        [normal, popup, normal, auto, auto, result, result]
+    )
+
+    assert supervisor.run(observe, cycle=1) is BattleOutcome.RESULT_REACHED
+    assert clicks == []
+    assert diagnostics == []
+
+
 def test_manual_auto_state_clicks_once_and_requires_confirmation():
     manual = BattleObservation(
         False, True, False, True, AutoBattleState.MANUAL, (900, 80)
