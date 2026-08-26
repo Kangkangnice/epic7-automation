@@ -25,6 +25,12 @@ from auto_game_unified.games.epic7.battle_controls import (
     BattleControls,
     observe_battle_controls,
 )
+from auto_game_unified.games.epic7.pre_battle import (
+    PreBattleMode,
+    QuickBattleDetector,
+    load_simulator_quick_battle_detector,
+    observe_pre_battle,
+)
 from auto_game_unified.games.epic7.stamina import (
     STAMINA_REGIONS,
     load_stamina_templates,
@@ -77,6 +83,7 @@ class FodderTemplates:
     stamina_material: np.ndarray
     stamina_confirm: np.ndarray
     threshold: float = 0.82
+    quick_battle: QuickBattleDetector | None = None
 
 
 def build_fodder_templates(template_dir: Path) -> FodderTemplates:
@@ -92,6 +99,7 @@ def build_fodder_templates(template_dir: Path) -> FodderTemplates:
         results_confirm=load_template(str(template_dir / "results_confirm.png")),
         replay=load_template(str(template_dir / "replay.png")),
         **asdict(load_stamina_templates(story)),
+        quick_battle=load_simulator_quick_battle_detector(template_dir),
     )
 
 
@@ -189,6 +197,11 @@ class FodderStateMachine:
     ) -> BattleObservation:
         controls = observe_battle_controls(screen)
         battle_start = self._locate(screen, "battle_start")
+        pre_battle = observe_pre_battle(
+            self.templates.quick_battle,
+            screen,
+            normal_start=battle_start,
+        )
         stamina_popup = self._locate(screen, "stamina_popup")
         auto_state = {
             BattleControls.AUTO_CONTROLS: AutoBattleState.AUTO,
@@ -200,7 +213,7 @@ class FodderStateMachine:
             for name in ("clear", "results_confirm", "replay")
         )
         return BattleObservation(
-            pre_battle_visible=battle_start is not None,
+            pre_battle_visible=pre_battle.mode is not PreBattleMode.UNKNOWN,
             battle_visible=controls is not BattleControls.TRANSITION,
             result_visible=result_visible,
             frame_valid=valid_game_frame(screen),
@@ -215,8 +228,12 @@ class FodderStateMachine:
                 and meaningful_change(previous_screen, screen)
             ),
             allowed_action=(
-                ("start_battle", battle_start.center)
-                if battle_start is not None
+                ("switch-to-normal-battle", pre_battle.switch_point)
+                if pre_battle.mode is PreBattleMode.QUICK
+                and pre_battle.switch_point is not None
+                else ("start_battle", battle_start.center)
+                if pre_battle.mode is PreBattleMode.NORMAL
+                and battle_start is not None
                 else None
             ),
             pre_battle_business_visible=stamina_popup is not None,
@@ -257,7 +274,18 @@ class FodderStateMachine:
                 return FodderAction("select_team", select_team.center)
         if self.state in (FodderState.TEAM, FodderState.BATTLE):
             battle_start = self._locate(screen, "battle_start")
-            if battle_start is not None:
+            pre_battle = observe_pre_battle(
+                self.templates.quick_battle,
+                screen,
+                normal_start=battle_start,
+            )
+            if (
+                pre_battle.mode is PreBattleMode.QUICK
+                and pre_battle.switch_point is not None
+            ):
+                self.state = FodderState.BATTLE
+                return FodderAction("start_battle", pre_battle.switch_point)
+            if pre_battle.mode is PreBattleMode.NORMAL and battle_start is not None:
                 self.state = FodderState.BATTLE
                 return FodderAction("start_battle", battle_start.center)
         if self.state is FodderState.BATTLE:
