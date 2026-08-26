@@ -21,6 +21,7 @@ from auto_game_unified.core.runtime import Runtime, StaminaExhausted
 from auto_game_unified.core.supervisor import meaningful_change
 from auto_game_unified.games.epic7.battle_controls import (
     BattleControls,
+    battle_scene_visible,
     observe_battle_controls,
 )
 from auto_game_unified.games.epic7.pre_battle import (
@@ -441,7 +442,7 @@ class StoryStateMachine:
         )
         return BattleObservation(
             pre_battle_visible=pre_battle.mode is not PreBattleMode.UNKNOWN,
-            battle_visible=controls is not BattleControls.TRANSITION,
+            battle_visible=battle_scene_visible(screen),
             result_visible=any(
                 self._locate(screen, name) is not None
                 for name in ("reward", "clear", "results_confirm")

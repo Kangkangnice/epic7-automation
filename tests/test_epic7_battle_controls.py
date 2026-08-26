@@ -8,6 +8,7 @@ from auto_game_unified.games.epic7.battle_controls import (
     BattleControls,
     observe_battle_controls,
 )
+from auto_game_unified.games.epic7 import battle_controls as battle_controls_module
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -19,6 +20,47 @@ def load_fixture(group: str, name: str) -> np.ndarray:
 
 
 class SharedBattleControlsTests(unittest.TestCase):
+    def test_live_arena_skill_animation_keeps_battle_scene_visible(self):
+        screen = load_fixture(
+            "epic7_arena", "battle_skill_animation_live_20260825"
+        )
+
+        self.assertEqual(
+            BattleControls.TRANSITION,
+            observe_battle_controls(screen),
+        )
+        self.assertTrue(battle_controls_module.battle_scene_visible(screen))
+
+    def test_each_mode_stable_battle_has_shared_scene_evidence(self):
+        for group, name in (
+            ("epic7_story", "battle_auto_on_live_20260809"),
+            ("epic7_arena", "battle"),
+            ("epic7_expedition", "battle"),
+            ("epic7_fodder", "battle"),
+        ):
+            with self.subTest(group=group, name=name):
+                self.assertTrue(
+                    battle_controls_module.battle_scene_visible(
+                        load_fixture(group, name)
+                    )
+                )
+
+    def test_pre_battle_and_result_pages_are_not_battle_scenes(self):
+        for group, name in (
+            ("epic7_arena", "normal_battle_ready_live_20260826"),
+            ("epic7_arena", "quick_battle_selected_live_20260826"),
+            ("epic7_arena", "result"),
+            ("epic7_story", "team"),
+            ("epic7_fodder", "team"),
+            ("epic7_expedition", "team"),
+        ):
+            with self.subTest(group=group, name=name):
+                self.assertFalse(
+                    battle_controls_module.battle_scene_visible(
+                        load_fixture(group, name)
+                    )
+                )
+
     def test_blue_red_mixed_auto_controls_remain_auto(self):
         for name in (
             "battle_auto_dead_one_live_20260814",

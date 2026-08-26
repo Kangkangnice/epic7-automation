@@ -27,6 +27,7 @@ from auto_game_unified.core.supervisor import (
 )
 from auto_game_unified.games.epic7.battle_controls import (
     BattleControls,
+    battle_scene_visible,
     observe_battle_controls,
 )
 from auto_game_unified.games.epic7.pre_battle import (
@@ -356,7 +357,7 @@ class ExpeditionStateMachine:
             pre_battle_visible=pre_battle.mode is not PreBattleMode.UNKNOWN,
             battle_visible=(
                 battle is not None
-                or controls is not BattleControls.TRANSITION
+                or battle_scene_visible(screen)
             ),
             result_visible=result is not None,
             frame_valid=valid_game_frame(screen),
