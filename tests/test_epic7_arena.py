@@ -215,6 +215,35 @@ class Epic7ArenaStateMachineTests(unittest.TestCase):
         self.assertEqual("select-opponent", retry.name)
         self.assertEqual(first.point, retry.point)
 
+    def test_challenge_commit_releases_the_row_for_the_next_cycle(self):
+        choices = iter([0, 1])
+        machine = ArenaStateMachine(
+            build_templates(TEMPLATES),
+            choose_opponent=lambda safe: next(choices),
+        )
+        first = machine.next_action(load_fixture("list"))
+        machine.commit(first, ArenaState.SELECTED)
+        challenge = machine.next_action(load_fixture("selected"))
+        machine.commit(challenge, ArenaState.TEAM)
+        machine.state = ArenaState.LIST
+
+        second = machine.next_action(load_fixture("list"))
+
+        self.assertNotEqual(first.point, second.point)
+
+    def test_recovery_to_list_discards_an_unconfirmed_cycle(self):
+        machine = ArenaStateMachine(
+            build_templates(TEMPLATES),
+            initial_state=ArenaState.CONFIRMING,
+        )
+
+        machine.reset_after_recovery()
+        refresh = machine.next_action(make_all_failed_screen(machine))
+        machine.commit(refresh, ArenaState.LIST)
+
+        self.assertEqual(ArenaState.LIST, machine.state)
+        self.assertEqual(0, machine.completed_cycles)
+
     def test_confirmed_result_counts_once_before_refresh_decision(self):
         machine = ArenaStateMachine(
             build_templates(TEMPLATES),

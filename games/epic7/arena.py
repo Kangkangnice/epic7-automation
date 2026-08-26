@@ -336,9 +336,20 @@ class ArenaStateMachine:
         if action.name == "confirm-result":
             self._cycle_pending = True
         self.state = target
-        if target is ArenaState.LIST and self._cycle_pending:
+        if action.name == "challenge" and target is ArenaState.TEAM:
+            self._selected_opponent = None
+        if (
+            target is ArenaState.LIST
+            and self._cycle_pending
+            and action.name in {"confirm-result", "confirm-rank"}
+        ):
             self.completed_cycles += 1
             self._cycle_pending = False
+
+    def reset_after_recovery(self) -> None:
+        self.state = ArenaState.LIST
+        self._selected_opponent = None
+        self._cycle_pending = False
 
     def _locate(self, screen: np.ndarray, template_name: str) -> Optional[Match]:
         threshold = self._THRESHOLDS.get(template_name, self.templates.threshold)
@@ -818,7 +829,7 @@ class ArenaRunner:
                             f"模式=竞技场 页面={state_label(self.machine.state)} 恢复=回大厅重新导航"
                         )
                         self.recovery()
-                        self.machine.state = ArenaState.LIST
+                        self.machine.reset_after_recovery()
                         state_started = self.now()
                         stable.reset()
                         continue
