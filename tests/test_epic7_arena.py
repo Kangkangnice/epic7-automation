@@ -187,7 +187,9 @@ class Epic7ArenaStateMachineTests(unittest.TestCase):
             initial_state=ArenaState.BATTLE,
         )
 
-        action = machine.next_action(load_fixture("no_ticket"))
+        action = machine.next_action(
+            load_fixture("friendship_ticket_offer_live_20260826")
+        )
 
         self.assertEqual(ArenaState.BATTLE, machine.state)
         self.assertEqual(ArenaState.BATTLE, action.source_state)
@@ -420,7 +422,12 @@ class Epic7ArenaStateMachineTests(unittest.TestCase):
         action = machine.next_action(load_fixture("friendship_ticket_offer_live_20260826"))
 
         self.assertEqual("purchase-friendship-ticket", action.name)
-        self.assertIn("友情点100换5旗帜", action.reason)
+        self.assertIn(
+            "资源=友情点 报价=100 获得旗帜=5 选择=左侧已确认",
+            action.reason,
+        )
+        self.assertIn("报价匹配=", action.reason)
+        self.assertIn("购买按钮匹配=", action.reason)
 
     def test_ticket_purchase_does_not_depend_on_dynamic_friendship_balance(self):
         machine = ArenaStateMachine(build_templates(TEMPLATES), initial_state=ArenaState.BATTLE)
