@@ -23,6 +23,7 @@ from auto_game_unified.core.runtime import Runtime, StaminaExhausted
 from auto_game_unified.core.supervisor import meaningful_change
 from auto_game_unified.games.epic7.battle_controls import (
     BattleControls,
+    battle_scene_visible,
     observe_battle_controls,
 )
 from auto_game_unified.games.epic7.pre_battle import (
@@ -214,7 +215,7 @@ class FodderStateMachine:
         )
         return BattleObservation(
             pre_battle_visible=pre_battle.mode is not PreBattleMode.UNKNOWN,
-            battle_visible=controls is not BattleControls.TRANSITION,
+            battle_visible=battle_scene_visible(screen),
             result_visible=result_visible,
             frame_valid=valid_game_frame(screen),
             auto_state=auto_state,

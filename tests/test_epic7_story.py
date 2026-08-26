@@ -403,7 +403,7 @@ class Epic7StoryStateMachineTests(unittest.TestCase):
 
         self.assertEqual(story_module.BattleControls.TRANSITION, controls)
 
-    def test_skill_animation_is_treated_as_a_bounded_transition(self):
+    def test_skill_animation_keeps_battle_present_while_controls_are_unknown(self):
         machine = StoryStateMachine(
             build_story_templates(TEMPLATES), initial_state=StoryState.ACTIVE
         )
@@ -414,7 +414,7 @@ class Epic7StoryStateMachineTests(unittest.TestCase):
 
         self.assertTrue(observation.frame_valid)
         self.assertEqual(AutoBattleState.UNKNOWN, observation.auto_state)
-        self.assertFalse(observation.battle_visible)
+        self.assertTrue(observation.battle_visible)
         self.assertIsNone(observation.auto_point)
 
     def test_auto_off_click_is_not_treated_as_auto_enabled(self):

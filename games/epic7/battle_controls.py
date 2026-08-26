@@ -18,12 +18,15 @@ _MANUAL_CONTROL_CENTERS = (1534, 1683, 1834)
 _PC_MANUAL_CONTROL_CENTERS = (1599, 1737, 1885)
 
 
+def _reference_frame(screen: np.ndarray) -> np.ndarray:
+    if screen.shape[:2] == (_REFERENCE_SIZE[1], _REFERENCE_SIZE[0]):
+        return screen
+    return cv2.resize(screen, _REFERENCE_SIZE, interpolation=cv2.INTER_AREA)
+
+
 def observe_battle_controls(screen: np.ndarray) -> BattleControls:
     """Classify stable lower-right battle controls, ignoring scene artwork."""
-    if screen.shape[:2] != (_REFERENCE_SIZE[1], _REFERENCE_SIZE[0]):
-        frame = cv2.resize(screen, _REFERENCE_SIZE, interpolation=cv2.INTER_AREA)
-    else:
-        frame = screen
+    frame = _reference_frame(screen)
 
     roi_x, roi_y, roi_width, roi_height = _CONTROL_ROI
     roi = frame[roi_y : roi_y + roi_height, roi_x : roi_x + roi_width]
@@ -129,3 +132,30 @@ def observe_battle_controls(screen: np.ndarray) -> BattleControls:
     ):
         return BattleControls.MANUAL_CONTROLS
     return BattleControls.TRANSITION
+
+
+def battle_scene_visible(screen: np.ndarray) -> bool:
+    """Keep battle presence separate from whether skill controls are operable."""
+    frame = _reference_frame(screen)
+    hsv = cv2.cvtColor(frame, cv2.COLOR_RGB2HSV)
+    controls = observe_battle_controls(screen)
+
+    if controls is BattleControls.MANUAL_CONTROLS:
+        return True
+
+    def white_ratio(region: tuple[int, int, int, int]) -> float:
+        x1, y1, x2, y2 = region
+        roi = hsv[y1:y2, x1:x2]
+        white = (roi[:, :, 1] <= 60) & (roi[:, :, 2] >= 160)
+        return float(np.mean(white))
+
+    turn_order = white_ratio((0, 120, 140, 900))
+    if turn_order < 0.12:
+        return False
+    if controls is BattleControls.AUTO_CONTROLS:
+        return True
+
+    # 技能演出会暂时盖住底部技能槽，但右上战斗控制区和左侧行动顺序
+    # 仍保留高亮结构。上限排除纯白加载帧和整块白色非战斗面板。
+    pause_controls = white_ratio((1780, 45, 1920, 165))
+    return 0.08 <= pause_controls <= 0.85 and turn_order >= 0.12
