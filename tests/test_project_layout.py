@@ -33,6 +33,7 @@ class ProjectLayoutTests(unittest.TestCase):
             "rank_confirm.png",
             "rank_promotion_master.png",
             "no_ticket.png",
+            "friendship_ticket_offer_live_20260826.png",
             "failed_first_opponent.png",
             "free_refresh_confirm_live_20260814.png",
             "quick_battle_selected_live_20260826.png",
