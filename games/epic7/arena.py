@@ -283,7 +283,7 @@ class ArenaStateMachine:
         "auto_off": (1550, 0, 300, 220),
         "confirm": (1500, 930, 420, 202),
         "no_ticket": (700, 150, 700, 300),
-        "friendship_ticket_offer": (600, 450, 800, 360),
+        "friendship_ticket_offer": (540, 470, 440, 230),
         "ticket_purchase_button": (900, 760, 500, 260),
     }
 
@@ -610,14 +610,16 @@ class ArenaStateMachine:
             purchase = self._locate(screen, "ticket_purchase_button")
             if offer is None or purchase is None:
                 raise TicketExhausted(
-                    "ticket popup did not match the friendship 30 -> flags 5 offer"
+                    "ticket popup did not match the selected "
+                    "100 friendship points -> 5 flags offer"
                 )
             return Action(
                 "purchase-friendship-ticket",
                 purchase.center,
                 ArenaState.BATTLE,
                 (ArenaState.TEAM,),
-                "友情点30换5旗帜方案已完整识别",
+                "资源=友情点 报价=100 获得旗帜=5 选择=左侧已确认 "
+                f"报价匹配={offer.score:.3f} 购买按钮匹配={purchase.score:.3f}",
                 irreversible=True,
             )
 
