@@ -10,21 +10,11 @@ import numpy as np
 
 from .matcher import Match, find_best_template, load_template
 from auto_game_unified.games.epic7.evidence.common import (
+    AtomObservation,
     EvidenceProfile,
     EvidenceState,
     validate_profile,
 )
-
-
-@dataclass(frozen=True)
-class AtomObservation:
-    key: str
-    template: str
-    region: tuple[int, int, int, int]
-    threshold: float
-    observed: bool
-    score: float | None
-    center: tuple[int, int] | None
 
 
 @dataclass(frozen=True)
@@ -39,7 +29,6 @@ def inspect_profile(
     template_root: Path,
 ) -> ProfileInspection:
     observations: dict[str, AtomObservation] = {}
-    flags: dict[str, bool] = {}
     for key, atom in profile.atoms.items():
         template_path = template_root / atom.template_path
         template = load_template(str(template_path))
@@ -50,17 +39,18 @@ def inspect_profile(
             reference_size=atom.reference_size,
         )
         observed = match is not None and match.score >= atom.threshold
-        flags[key] = observed
         observations[key] = AtomObservation(
             key=key,
             template=str(template_path),
+            config=profile.config_path,
             region=atom.region,
+            reference_size=atom.reference_size,
             threshold=atom.threshold,
             observed=observed,
             score=match.score if match is not None else None,
             center=match.center if match is not None else None,
         )
-    pages = {page.key: page.evaluate(flags) for page in profile.pages}
+    pages = profile.evaluate_pages(observations)
     return ProfileInspection(atoms=observations, pages=pages)
 
 

@@ -50,8 +50,9 @@ from auto_game_unified.games.epic7.evidence.arena import (
     REGIONS as ARENA_REGIONS,
     THRESHOLDS as ARENA_THRESHOLDS,
     build_arena_evidence,
+    classify_arena_selected_scores,
 )
-from auto_game_unified.games.epic7.evidence.common import EvidenceProfile
+from auto_game_unified.games.epic7.evidence.common import EvidenceProfile, EvidenceState
 
 
 _RANK_PROMOTION_REFERENCE_SIZE = ARENA_REFERENCE_SIZE
@@ -428,12 +429,11 @@ class ArenaStateMachine:
         """
         if state == ArenaState.SELECTED:
             challenge = self._locate(screen, "challenge")
-            if challenge is None:
-                return False
             list_ready = self._locate(screen, "list_ready")
-            if list_ready is None:
-                return True
-            return challenge.score >= list_ready.score
+            return classify_arena_selected_scores(
+                challenge.score if challenge is not None else None,
+                list_ready.score if list_ready is not None else None,
+            ) is EvidenceState.SAFE
         if state == ArenaState.TEAM:
             normal_start = self._locate(screen, "battle_start")
             return observe_pre_battle(

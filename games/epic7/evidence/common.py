@@ -3,7 +3,7 @@
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import Mapping
+from typing import Callable, Mapping
 
 
 class EvidenceState(Enum):
@@ -20,6 +20,19 @@ class AtomEvidence:
     threshold: float
     description: str = ""
     reference_size: tuple[int, int] = (1982, 1132)
+
+
+@dataclass(frozen=True)
+class AtomObservation:
+    key: str
+    template: str
+    config: str
+    region: tuple[int, int, int, int]
+    reference_size: tuple[int, int]
+    threshold: float
+    observed: bool
+    score: float | None
+    center: tuple[int, int] | None
 
 
 @dataclass(frozen=True)
@@ -46,6 +59,11 @@ class PageEvidence:
 class EvidenceProfile:
     atoms: Mapping[str, AtomEvidence]
     pages: tuple[PageEvidence, ...] = ()
+    page_evaluator: Callable[
+        [Mapping[str, AtomObservation]], Mapping[str, EvidenceState]
+    ] | None = None
+    config_path: str = ""
+    template_root: Path | None = None
 
     def atom(self, key: str) -> AtomEvidence:
         return self.atoms[key]
@@ -55,6 +73,14 @@ class EvidenceProfile:
             if page.key == key:
                 return page
         raise KeyError(key)
+
+    def evaluate_pages(
+        self, observations: Mapping[str, AtomObservation]
+    ) -> dict[str, EvidenceState]:
+        if self.page_evaluator is not None:
+            return dict(self.page_evaluator(observations))
+        flags = {key: item.observed for key, item in observations.items()}
+        return {page.key: page.evaluate(flags) for page in self.pages}
 
 
 def validate_profile(profile: EvidenceProfile, root: Path) -> list[str]:

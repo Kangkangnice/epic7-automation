@@ -5,6 +5,14 @@ from pathlib import Path
 import numpy as np
 
 from auto_game_unified.core.matcher import Match, find_template, load_template
+from auto_game_unified.games.epic7.evidence.pre_battle import (
+    QUICK_BUTTON_THRESHOLD,
+    QUICK_SWITCH_THRESHOLD,
+    REFERENCE_SIZE,
+    REGION,
+    PreBattleEvidenceState,
+    classify_pre_battle_evidence,
+)
 
 
 class PreBattleMode(Enum):
@@ -53,10 +61,10 @@ def load_simulator_quick_battle_detector(
 class QuickBattleDetector:
     """Classify a simulator pre-battle page without inspecting animated heroes."""
 
-    _REFERENCE_SIZE = (1982, 1132)
-    _REGION = (900, 900, 1050, 232)
-    _BUTTON_THRESHOLD = 0.88
-    _SWITCH_THRESHOLD = 0.90
+    _REFERENCE_SIZE = REFERENCE_SIZE
+    _REGION = REGION
+    _BUTTON_THRESHOLD = QUICK_BUTTON_THRESHOLD
+    _SWITCH_THRESHOLD = QUICK_SWITCH_THRESHOLD
 
     def __init__(self, templates: QuickBattleTemplates) -> None:
         self.templates = templates
@@ -86,15 +94,17 @@ class QuickBattleDetector:
             self.templates.quick_switch,
             self._SWITCH_THRESHOLD,
         )
-        quick_complete = quick is not None and switch is not None
-        quick_partial = quick is not None or switch is not None
-
-        if normal_start is not None and not quick_partial:
+        state = classify_pre_battle_evidence(
+            normal_observed=normal_start is not None,
+            quick_observed=quick is not None,
+            switch_observed=switch is not None,
+        )
+        if state is PreBattleEvidenceState.NORMAL:
             return PreBattleObservation(
                 PreBattleMode.NORMAL,
                 normal_score=normal_start.score,
             )
-        if normal_start is None and quick_complete:
+        if state is PreBattleEvidenceState.QUICK:
             return PreBattleObservation(
                 PreBattleMode.QUICK,
                 quick_score=quick.score,
