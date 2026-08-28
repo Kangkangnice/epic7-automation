@@ -19,12 +19,8 @@ from auto_game_unified.core.battle_supervisor import (
 )
 from auto_game_unified.core.matcher import Match, find_template, load_template
 from auto_game_unified.core.recovery import RecoveryGate
-from auto_game_unified.core.runtime import Runtime
-from auto_game_unified.core.supervisor import (
-    StableObservation,
-    meaningful_change,
-    wait_until_target,
-)
+from auto_game_unified.core.runtime import Runtime, StaminaExhausted
+from auto_game_unified.core.supervisor import StableObservation, meaningful_change
 from auto_game_unified.games.epic7.battle_controls import (
     BattleControls,
     battle_scene_visible,
@@ -40,6 +36,13 @@ from auto_game_unified.games.epic7.unknown_screen import (
     UnrecognizedScreen,
     UnknownScreenWake,
     UnknownWakeResult,
+)
+from auto_game_unified.games.epic7.evidence.common import EvidenceProfile
+from auto_game_unified.games.epic7.evidence.expedition import (
+    REFERENCE_SIZE as EXPEDITION_REFERENCE_SIZE,
+    REGIONS as EXPEDITION_REGIONS,
+    THRESHOLDS as EXPEDITION_THRESHOLDS,
+    build_expedition_evidence,
 )
 
 
@@ -79,7 +82,7 @@ def state_label(state: ExpeditionState) -> str:
     return STATE_LABELS.get(state, state.value)
 
 
-class PostersExhausted(RuntimeError):
+class PostersExhausted(StaminaExhausted):
     """No card-level wanted-poster departure action remains."""
 
 
@@ -87,6 +90,11 @@ class PostersExhausted(RuntimeError):
 class ExpeditionAction:
     name: str
     point: tuple[int, int]
+    source_page: str = ""
+    target_pages: tuple[str, ...] = ()
+    reason: str = ""
+    source_state: ExpeditionState | None = None
+    target_states: tuple[ExpeditionState, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -113,6 +121,7 @@ class ExpeditionTemplates:
     expedition_list: np.ndarray
     back: np.ndarray
     quick_battle: QuickBattleDetector | None = None
+    evidence: EvidenceProfile | None = None
 
 
 def build_expedition_templates(template_dir: Path) -> ExpeditionTemplates:
@@ -146,36 +155,18 @@ def build_expedition_templates(template_dir: Path) -> ExpeditionTemplates:
         expedition_list=load("expedition_list"),
         back=load("back"),
         quick_battle=load_simulator_quick_battle_detector(template_dir),
+        evidence=build_expedition_evidence(template_dir),
     )
 
 
 class ExpeditionStateMachine:
-    _REFERENCE_SIZE = (1982, 1132)
+    _REFERENCE_SIZE = EXPEDITION_REFERENCE_SIZE
     _THRESHOLD = 0.88
-    _REGIONS = {
-        "home": (1350, 850, 632, 282),
-        # Deliberately excludes the bottom-right global "Embark" button.
-        "poster_embark": (250, 280, 1400, 570),
-        "empty_posters": (550, 250, 900, 550),
-        "difficulty_title": (650, 120, 700, 300),
-        "difficulty_3_selected": (900, 580, 450, 300),
-        "difficulty_confirm": (800, 780, 500, 300),
-        "prepare_battle": (1450, 850, 532, 282),
-        "battle_start": (1300, 900, 682, 232),
-        "auto_off": (1550, 0, 300, 200),
-        "battle_anchor": (1400, 0, 582, 320),
-        "result_confirm": (1450, 850, 532, 282),
-        "victory_title": (750, 250, 500, 250),
-        "victory_close": (700, 650, 600, 300),
-        "defeated_confirm": (650, 700, 700, 432),
-        "public_recruit": (800, 900, 500, 232),
-        "public_title": (700, 250, 600, 300),
-        "public_confirm": (650, 650, 700, 482),
-        "public_recruited": (750, 850, 650, 282),
-        "campfire_idle": (650, 80, 700, 420),
-        "expedition_list": (1100, 100, 500, 260),
-        "back": (0, 0, 220, 230),
-    }
+    # 实机画面会动画/色彩漂移：远征“营地待机”锚点在实时帧最低约 0.835
+    # （见 runtime_diagnostics 实机帧 20260826_081022），故对其单独放宽到 0.82；
+    # 其余锚点沿用 0.88（出发按钮在实时帧稳定命中 1.0，无需放宽）。
+    _THRESHOLDS = EXPEDITION_THRESHOLDS
+    _REGIONS = EXPEDITION_REGIONS
 
     def __init__(
         self,
@@ -189,8 +180,17 @@ class ExpeditionStateMachine:
             else templates
         )
         self.state = initial_state
+        if self.templates.evidence is not None:
+            self._REGIONS = {
+                key: atom.region for key, atom in self.templates.evidence.atoms.items()
+            }
+            self._THRESHOLDS = {
+                key: atom.threshold
+                for key, atom in self.templates.evidence.atoms.items()
+            }
         self.completed_cycles = 0
         self.auto_click_attempted = False
+        self._confirmed_page = ""
 
     def _locate(self, screen: np.ndarray, name: str) -> Optional[Match]:
         template = getattr(self.templates, name)
@@ -215,7 +215,7 @@ class ExpeditionStateMachine:
         return find_template(
             screen,
             template,
-            self._THRESHOLD,
+            self._THRESHOLDS.get(name, self._THRESHOLD),
             region=self._REGIONS[name],
             reference_size=self._REFERENCE_SIZE,
         )
@@ -256,12 +256,31 @@ class ExpeditionStateMachine:
             )
         return match
 
+    def _on_posters_list(self, screen: np.ndarray) -> bool:
+        """通缉传单列表已稳定出现。
+
+        实机帧中“出发”按钮会随列表滑入动画延迟出现（runtime_diagnostics
+        20260826_081147 中出发按钮低于阈值、但列表标题+返回键稳定命中 ~0.99），
+        故同时接受“出发按钮已就位”或“列表标题+返回键齐备”两种信号，使列表
+        动画期间也能被识别为通缉传单列表。
+        """
+        if self._locate(screen, "poster_embark") is not None:
+            return True
+        return (
+            self._locate(screen, "expedition_list") is not None
+            and self._locate(screen, "back") is not None
+        )
+
     def _defeated_action(self, screen: np.ndarray) -> Optional[ExpeditionAction]:
         match = self._locate(screen, "defeated_confirm")
         if match is None:
             return None
-        self.state = ExpeditionState.RETURNING
-        return ExpeditionAction("confirm-defeated", match.center)
+        return self._action(
+            "confirm-defeated", match.center,
+            source_page="公开招募结果",
+            target_states=(ExpeditionState.RETURNING,),
+            reason="识别到战败确认，点击返回",
+        )
 
     def is_in_state(self, screen: np.ndarray, state: ExpeditionState) -> bool:
         if state == ExpeditionState.HOME:
@@ -286,7 +305,7 @@ class ExpeditionStateMachine:
             return any(
                 self._locate(screen, name) is not None
                 for name in ("battle_anchor", "result_confirm")
-            )
+            ) or battle_scene_visible(screen)
         if state == ExpeditionState.RESULT:
             return self._locate(screen, "result_confirm") is not None
         if state == ExpeditionState.OUTCOME:
@@ -328,6 +347,67 @@ class ExpeditionStateMachine:
 
     def is_campfire_idle(self, screen: np.ndarray) -> bool:
         return self._locate(screen, "campfire_idle") is not None
+
+    def _confirm_page(self, label: str) -> None:
+        self._confirmed_page = label
+
+    def _action(
+        self,
+        name: str,
+        point: tuple[int, int],
+        *,
+        source_page: str,
+        target_states: tuple[ExpeditionState, ...],
+        reason: str,
+    ) -> ExpeditionAction:
+        return ExpeditionAction(
+            name,
+            point,
+            source_page=source_page,
+            target_pages=tuple(state_label(item) for item in target_states),
+            reason=reason,
+            source_state=self.state,
+            target_states=target_states,
+        )
+
+    def commit(self, action: ExpeditionAction, target: ExpeditionState) -> None:
+        if action.source_state is not self.state:
+            raise RuntimeError("远征动作来源状态与当前状态不一致")
+        if target not in action.target_states:
+            raise RuntimeError("远征动作目标状态不在合同中")
+        self.state = target
+        if action.name == "return-to-expedition-home" and target is ExpeditionState.HOME:
+            self.completed_cycles += 1
+        if target is ExpeditionState.BATTLE:
+            self.auto_click_attempted = False
+
+    def action_source_visible(self, screen: np.ndarray, action: ExpeditionAction) -> bool:
+        if action.name == "wake-campfire-ui":
+            return self.is_campfire_idle(screen)
+        if action.name == "enable-auto-battle":
+            return self._locate(screen, "auto_off") is not None
+        return (
+            action.source_state is not None
+            and self.is_in_state(screen, action.source_state)
+        )
+
+    def action_target_state(
+        self, screen: np.ndarray, action: ExpeditionAction
+    ) -> ExpeditionState | None:
+        if action.name == "wake-campfire-ui":
+            if self.is_campfire_idle(screen):
+                return None
+            if action.source_state is not None and self.is_in_state(screen, action.source_state):
+                return action.source_state
+            return None
+        if action.name == "enable-auto-battle":
+            if self._locate(screen, "auto_off") is None and self._locate(screen, "battle_anchor") is not None:
+                return ExpeditionState.BATTLE
+            return None
+        for target in action.target_states:
+            if self.is_in_state(screen, target):
+                return target
+        return None
 
     def observe_battle(
         self,
@@ -381,6 +461,23 @@ class ExpeditionStateMachine:
             ),
         )
 
+    def _posters_action(self, screen: np.ndarray) -> Optional[ExpeditionAction]:
+        if self._locate(screen, "empty_posters") is not None:
+            raise PostersExhausted("没有可用的通缉传单")
+        match = self._locate(screen, "poster_embark")
+        if match is not None:
+            return self._action(
+                "select-first-poster", match.center,
+                source_page="通缉传单列表",
+                target_states=(ExpeditionState.DIFFICULTY,),
+                reason="识别到首个通缉传单，点击出发",
+            )
+        # 通缉传单列表已稳定出现（列表标题+返回键命中），但“出发”按钮还在滑入
+        # 动画中未就位：不报错，返回 None 让主循环重新轮询，等按钮就位后再点。
+        if self._on_posters_list(screen):
+            return None
+        raise RuntimeError("传单卡片区域内未找到远征队出发按钮")
+
     def next_action(self, screen: np.ndarray) -> Optional[ExpeditionAction]:
         if self.state in {
             ExpeditionState.OUTCOME,
@@ -392,37 +489,62 @@ class ExpeditionStateMachine:
                 return defeated
 
         if self.state == ExpeditionState.HOME:
-            match = self._required(screen, "home")
-            self.state = ExpeditionState.POSTERS
-            return ExpeditionAction("open-my-posters", match.center)
+            match = self._locate(screen, "home")
+            if match is None and self._on_posters_list(screen):
+                # 远征主页未识别，但画面已是通缉传单列表（如上一轮返回落点偏差、
+                # 或转场动画中状态尚未同步到主页）。直接按 POSTERS 处理，避免被
+                # 误判为未知画面而进入唤醒死循环。
+                self.state = ExpeditionState.POSTERS
+                return self._posters_action(screen)
+            if match is None:
+                raise UnrecognizedScreen("远征主页未识别")
+            return self._action(
+                "open-my-posters", match.center,
+                source_page="远征主页",
+                target_states=(ExpeditionState.POSTERS,),
+                reason="识别到远征主页，点击我的通缉传单",
+            )
 
         if self.state == ExpeditionState.POSTERS:
-            if self._locate(screen, "empty_posters") is not None:
-                raise PostersExhausted("没有可用的通缉传单")
-            match = self._locate(screen, "poster_embark")
-            if match is None:
-                raise RuntimeError("传单卡片区域内未找到远征队出发按钮")
-            self.state = ExpeditionState.DIFFICULTY
-            return ExpeditionAction("select-first-poster", match.center)
+            return self._posters_action(screen)
 
         if self.state == ExpeditionState.DIFFICULTY:
             title = self._required(screen, "difficulty_title")
-            self.state = ExpeditionState.DIFFICULTY_CONFIRM
-            return ExpeditionAction(
+            selected = self._locate(screen, "difficulty_3_selected")
+            confirm = self._locate(screen, "difficulty_confirm")
+            if selected is not None and confirm is not None:
+                return self._action(
+                    "confirm-difficulty-3", confirm.center,
+                    source_page="难度三已选中",
+                    target_states=(ExpeditionState.READY,),
+                    reason="难度三与确认按钮已同时识别，跳过重复选择",
+                )
+            return self._action(
                 "select-difficulty-3",
                 (title.center[0] + 155, title.center[1] + 495),
+                source_page="难度选择",
+                target_states=(ExpeditionState.DIFFICULTY_CONFIRM,),
+                reason="识别到难度标题，点击第3难度",
             )
 
         if self.state == ExpeditionState.DIFFICULTY_CONFIRM:
             self._required(screen, "difficulty_3_selected")
             confirm = self._required(screen, "difficulty_confirm")
-            self.state = ExpeditionState.READY
-            return ExpeditionAction("confirm-difficulty-3", confirm.center)
+            return self._action(
+                "confirm-difficulty-3", confirm.center,
+                source_page="难度确认",
+                target_states=(ExpeditionState.READY,),
+                reason="确认第3难度",
+            )
 
         if self.state == ExpeditionState.READY:
             match = self._required(screen, "prepare_battle")
-            self.state = ExpeditionState.TEAM
-            return ExpeditionAction("prepare-battle", match.center)
+            return self._action(
+                "prepare-battle", match.center,
+                source_page="准备战斗",
+                target_states=(ExpeditionState.TEAM,),
+                reason="识别到准备战斗，进入队伍选择",
+            )
 
         if self.state == ExpeditionState.TEAM:
             match = self._locate(screen, "battle_start")
@@ -435,24 +557,41 @@ class ExpeditionStateMachine:
                 pre_battle.mode is PreBattleMode.QUICK
                 and pre_battle.switch_point is not None
             ):
-                self.state = ExpeditionState.BATTLE
-                return ExpeditionAction("battle-start", pre_battle.switch_point)
+                return self._action(
+                    "battle-start", pre_battle.switch_point,
+                    source_page="队伍选择",
+                    target_states=(ExpeditionState.BATTLE,),
+                    reason="快速战斗，点击切换为普通战斗并开始",
+                )
             if pre_battle.mode is not PreBattleMode.NORMAL or match is None:
                 raise UnrecognizedScreen("远征队伍页未识别普通或快速战斗入口")
-            self.state = ExpeditionState.BATTLE
-            return ExpeditionAction("battle-start", match.center)
+            return self._action(
+                "battle-start", match.center,
+                source_page="队伍选择",
+                target_states=(ExpeditionState.BATTLE,),
+                reason="普通战斗，点击开始战斗",
+            )
 
         if self.state in {ExpeditionState.BATTLE, ExpeditionState.RESULT}:
             result = self._locate(screen, "result_confirm")
             if result is not None:
-                self.state = ExpeditionState.OUTCOME
-                return ExpeditionAction("confirm-result", result.center)
+                return self._action(
+                    "confirm-result", result.center,
+                    source_page="战斗结果",
+                    target_states=(ExpeditionState.OUTCOME,),
+                    reason="识别到结算确认，点击领取结果",
+                )
             auto_off = self._locate(screen, "auto_off")
             if auto_off is not None:
                 if self.auto_click_attempted:
                     return None
                 self.auto_click_attempted = True
-                return ExpeditionAction("enable-auto-battle", auto_off.center)
+                return self._action(
+                    "enable-auto-battle", auto_off.center,
+                    source_page="战斗结果",
+                    target_states=(ExpeditionState.BATTLE,),
+                    reason="识别到自动战斗关闭，开启自动战斗",
+                )
             if self.state == ExpeditionState.BATTLE and self._locate(screen, "battle_anchor"):
                 return None
             raise UnrecognizedScreen("远征战斗/结算画面未识别")
@@ -461,54 +600,89 @@ class ExpeditionStateMachine:
             victory_title = self._locate(screen, "victory_title")
             victory_close = self._locate(screen, "victory_close")
             if victory_title is not None and victory_close is not None:
-                self.state = ExpeditionState.RETURNING
-                return ExpeditionAction(
-                    "close-expedition-victory", victory_close.center
+                return self._action(
+                    "close-expedition-victory", victory_close.center,
+                    source_page="公开招募结果",
+                    target_states=(ExpeditionState.RETURNING,),
+                    reason="识别到胜利结算，关闭远征胜利",
                 )
             if self._locate(screen, "campfire_idle") is not None:
-                return ExpeditionAction("wake-campfire-ui", (1000, 600))
+                return self._action(
+                    "wake-campfire-ui", (1000, 600),
+                    source_page="公开招募结果",
+                    target_states=(ExpeditionState.OUTCOME,),
+                    reason="营地UI未推进，尝试唤醒",
+                )
             recruit = self._required(screen, "public_recruit")
-            self.state = ExpeditionState.RECRUIT_CONFIRM
-            return ExpeditionAction("public-recruit", recruit.center)
+            return self._action(
+                "public-recruit", recruit.center,
+                source_page="公开招募结果",
+                target_states=(ExpeditionState.RECRUIT_CONFIRM,),
+                reason="识别到公开招募，点击招募",
+            )
 
         if self.state == ExpeditionState.RECRUIT_CONFIRM:
             self._required(screen, "public_title")
             confirm = self._required(screen, "public_confirm")
-            self.state = ExpeditionState.RECRUIT_RETURN
-            return ExpeditionAction("confirm-public-recruit", confirm.center)
+            return self._action(
+                "confirm-public-recruit", confirm.center,
+                source_page="招募确认",
+                target_states=(ExpeditionState.RECRUIT_RETURN,),
+                reason="确认公开招募",
+            )
 
         if self.state == ExpeditionState.RECRUIT_RETURN:
             if self._locate(screen, "campfire_idle") is not None:
-                return ExpeditionAction("wake-campfire-ui", (1000, 600))
+                return self._action(
+                    "wake-campfire-ui", (1000, 600),
+                    source_page="招募后返回",
+                    target_states=(ExpeditionState.RECRUIT_RETURN,),
+                    reason="营地UI未推进，尝试唤醒",
+                )
             self._required(screen, "public_recruited")
             back = self._required(screen, "back")
-            self.state = ExpeditionState.RETURNING
-            return ExpeditionAction("return-from-expedition", back.center)
+            return self._action(
+                "return-from-expedition", back.center,
+                source_page="招募后返回",
+                target_states=(ExpeditionState.RETURNING,),
+                reason="识别到招募完成，返回远征",
+            )
 
         if self.state == ExpeditionState.RETURNING:
-            if self._locate(screen, "home") is not None:
-                self.completed_cycles += 1
-                self.state = ExpeditionState.HOME
-                return None
             self._required(screen, "expedition_list")
             back = self._required(screen, "back")
-            return ExpeditionAction("return-to-expedition-home", back.center)
+            return self._action(
+                "return-to-expedition-home", back.center,
+                source_page="返回主页",
+                target_states=(ExpeditionState.HOME,),
+                reason="识别到远征列表，返回主页",
+            )
 
         raise RuntimeError(f"远征状态机遇到不支持的状态：{self.state.value}")
 
     def preview(self, screen: np.ndarray):
-        snapshot = self.state, self.completed_cycles, self.auto_click_attempted
+        snapshot = (
+            self.state,
+            self.completed_cycles,
+            self.auto_click_attempted,
+            self._confirmed_page,
+        )
         try:
             action = self.next_action(screen)
             return action, (self.state, self.completed_cycles)
         finally:
-            self.state, self.completed_cycles, self.auto_click_attempted = snapshot
+            (
+                self.state,
+                self.completed_cycles,
+                self.auto_click_attempted,
+                self._confirmed_page,
+            ) = snapshot
 
 
 class ExpeditionRunner:
+    """远征专用事务循环：稳定观察目标页面后才提交状态。"""
+
     _STATE_TIMEOUT_SECONDS = 45
-    _TRANSITION_NO_PROGRESS_SECONDS = 45
-    _TRANSITION_ABSOLUTE_SECONDS = 180
 
     def __init__(
         self,
@@ -529,6 +703,10 @@ class ExpeditionRunner:
         self.now = now or runtime.now
         self.recovery_gate = recovery_gate or RecoveryGate(recovery)
         self.recovery = self.recovery_gate.recover if recovery is not None else None
+        self.unknown_screen_wake = UnknownScreenWake(
+            runtime, recovery_gate=self.recovery_gate
+        )
+        self.resource_exhausted = False
         self.battle_supervisor = battle_supervisor or BattleSupervisor(
             runtime,
             self.recovery_gate,
@@ -540,205 +718,138 @@ class ExpeditionRunner:
             now=self.now,
             sleep=sleep,
         )
-        self.unknown_screen_wake = UnknownScreenWake(
-            runtime,
-            recovery_gate=self.recovery_gate,
-        )
-        self.resource_exhausted = False
 
     def _run_committed_battle(self, *, cycle: int) -> None:
         outcome = self.battle_supervisor.run(
             self.machine.observe_battle,
             cycle=cycle,
         )
+        if outcome is BattleOutcome.PRE_BATTLE_BUSINESS:
+            self.machine.state = ExpeditionState.BATTLE
+            return
         if outcome is not BattleOutcome.RESULT_REACHED:
-            raise RuntimeError(
-                f"远征战斗出现意外结果：{outcome.value}"
-            )
+            raise RuntimeError(f"远征战斗出现意外结果：{outcome.value}")
         self.machine.state = ExpeditionState.RESULT
+
+    def _save_frame(self, screen: np.ndarray) -> None:
+        if self.runtime.diagnostic_dir is not None:
+            self.runtime.save_current_frame(screen)
+
+    def _diagnostic(self, label: str, screen: np.ndarray):
+        if self.runtime.diagnostic_dir is None:
+            return "not-configured"
+        return self.runtime.save_diagnostic(label, screen)
+
+    def _execute_transition(self, action: ExpeditionAction) -> None:
+        if action.source_state is None or not action.target_states:
+            raise RuntimeError(f"远征动作[{action.name}]缺少来源/目标合同")
+        attempts = 1
+        source_stable = StableObservation(required=2)
+        target_stable = StableObservation(required=2)
+        source_left = False
+        started = self.now()
+        self.runtime.log(
+            f"模式=远征 当前页面={action.source_page} 判断依据={action.reason}"
+        )
+        self.runtime.log(
+            f"模式=远征 执行点击 动作={action.name} 尝试={attempts}/4 "
+            f"坐标={action.point} 目标页面={'/'.join(action.target_pages)}"
+        )
+        self.runtime.click(action.point, action.name)
+        while self.now() - started < self._STATE_TIMEOUT_SECONDS:
+            self.sleep(self.poll_seconds)
+            screen = self.runtime.capture()
+            self._save_frame(screen)
+            target = self.machine.action_target_state(screen, action)
+            if target_stable.update(target.value if target is not None else "other") and target is not None:
+                self.machine.commit(action, target)
+                self.runtime.log(
+                    f"模式=远征 转场确认 动作={action.name} "
+                    f"从={action.source_page} 到={state_label(target)} 目标连续=2"
+                )
+                return
+            source_visible = self.machine.action_source_visible(screen, action)
+            if source_stable.update("source" if source_visible else "other") and source_visible:
+                if source_left:
+                    continue
+                if attempts < 4:
+                    attempts += 1
+                    self.runtime.log(
+                        f"模式=远征 转场重试 动作={action.name} 来源={action.source_page}仍在 "
+                        f"尝试={attempts}/4 坐标={action.point}"
+                    )
+                    self.runtime.click(action.point, action.name)
+                    source_stable.reset()
+                    continue
+            elif not source_visible and not source_left:
+                source_left = True
+                self.runtime.log(
+                    f"模式=远征 等待转场 动作={action.name} 来源={action.source_page}已离开 "
+                    f"目标={'/'.join(action.target_pages)}待稳定"
+                )
+        diagnostic = self._diagnostic(f"no_transition_{action.name}", screen)
+        raise RuntimeError(
+            f"动作[{action.name}]未稳定进入[{'/'.join(action.target_pages)}]；"
+            f"已保存诊断 {diagnostic}"
+        )
 
     def run(self, max_cycles: int | None = None) -> int:
         if self.runtime.dry_run:
             screen = self.runtime.capture()
             action = self.machine.next_action(screen)
             if action is not None:
-                self.runtime.log(
-                    f"模式=远征 页面={state_label(self.machine.state)} 动作={action.name} 状态=诊断"
-                )
-                self.runtime.click(action.point, action.name)
+                self.runtime.log(f"模式=远征 动作={action.name} 状态=诊断")
             return self.machine.completed_cycles
-
         stable = StableObservation(required=2)
         state_started = self.now()
         recovered = False
-        failed_action: Optional[str] = None
-        action_attempts = 0
-
         while max_cycles is None or self.machine.completed_cycles < max_cycles:
             screen = self.runtime.capture()
-            if self.runtime.diagnostic_dir is not None:
-                self.runtime.save_current_frame(screen)
+            self._save_frame(screen)
             state_before = self.machine.state
             cycles_before = self.machine.completed_cycles
-
             try:
-                preview_action, outcome = self.machine.preview(screen)
-            except PostersExhausted as error:
+                preview, _ = self.machine.preview(screen)
+                signature = preview.name if preview is not None else f"settled:{state_before.value}"
+                if not stable.update(signature):
+                    self.sleep(self.poll_seconds)
+                    continue
+                action = self.machine.next_action(screen)
+                stable.reset()
+            except StaminaExhausted as error:
                 self.resource_exhausted = True
-                self.runtime.log(
-                    f"模式=远征 停止=通缉传单耗尽 已完成={self.machine.completed_cycles} 详情={error}"
-                )
+                self.runtime.log(f"模式=远征 停止=通缉传单耗尽 详情={error}")
                 return self.machine.completed_cycles
-            except RuntimeError as error:
-                if isinstance(error, UnrecognizedScreen):
-                    wake_result = self.unknown_screen_wake.handle(
-                        screen,
-                        context=f"远征:{state_label(state_before)}",
-                    )
-                    if wake_result in {
-                        UnknownWakeResult.WAITING,
-                        UnknownWakeResult.CLICKED,
-                    }:
-                        if wake_result is UnknownWakeResult.CLICKED:
-                            state_started = self.now()
-                        self.sleep(self.poll_seconds)
-                        continue
+            except UnrecognizedScreen as error:
+                wake = self.unknown_screen_wake.handle(
+                    screen, context=f"远征:{state_label(state_before)}"
+                )
+                if wake in {UnknownWakeResult.WAITING, UnknownWakeResult.CLICKED}:
+                    self.sleep(self.poll_seconds)
+                    continue
                 if self.now() - state_started < self._STATE_TIMEOUT_SECONDS:
                     self.sleep(self.poll_seconds)
                     continue
-                if self._can_recover(state_before) and self.recovery is not None and not recovered:
-                    recovered = True
-                    self.runtime.log(
-                        f"模式=远征 页面={state_label(state_before)} 恢复=回大厅重新导航"
-                    )
-                    self.recovery()
-                    self.machine.state = ExpeditionState.HOME
+                raise RuntimeError(f"远征未知页面：{error}") from error
+            if action is None:
+                if self.machine.state is ExpeditionState.BATTLE:
+                    self._run_committed_battle(cycle=self.machine.completed_cycles + 1)
                     state_started = self.now()
-                    stable.reset()
-                    failed_action = None
-                    action_attempts = 0
                     continue
-                diagnostic = self._diagnostic(f"timeout_{state_before.value}", screen)
-                raise RuntimeError(
-                    f"页面[{state_label(state_before)}]无进展：{error}；已保存诊断 {diagnostic}"
-                ) from error
-
-            self.unknown_screen_wake.reset()
-            signature = (
-                preview_action.name
-                if preview_action is not None
-                else f"settled:{outcome[0].value}:{outcome[1]}"
-            )
-            if not stable.update(signature):
                 self.sleep(self.poll_seconds)
                 continue
-
-            action = self.machine.next_action(screen)
-            stable.reset()
+            self._execute_transition(action)
+            state_started = self.now()
+            if action.name == "battle-start":
+                self._run_committed_battle(cycle=self.machine.completed_cycles + 1)
+                state_started = self.now()
             if self.machine.completed_cycles > cycles_before:
                 recovered = False
-                self.runtime.log(
-                    f"模式=远征 状态=本轮完成 已完成={self.machine.completed_cycles}"
-                )
+                self.runtime.log(f"模式=远征 业务完成 cycles={self.machine.completed_cycles}")
                 if max_cycles is not None and self.machine.completed_cycles >= max_cycles:
                     return self.machine.completed_cycles
-
-            if action is None:
-                if self.machine.state != state_before:
-                    state_started = self.now()
-                self.sleep(self.poll_seconds)
-                continue
-
-            expected_state = self.machine.state
-            if failed_action == action.name:
-                action_attempts += 1
-            else:
-                failed_action = action.name
-                action_attempts = 1
-            self.runtime.log(
-                f"模式=远征 轮次={self.machine.completed_cycles + 1}/{max_cycles or '?'} "
-                f"页面={state_label(state_before)} 动作={action.name} 尝试={action_attempts}/2"
-            )
-            self.runtime.click(action.point, action.name)
-
-            if max_cycles is not None and self.machine.completed_cycles >= max_cycles:
-                return self.machine.completed_cycles
-            if action.name == "battle-start":
-                self._run_committed_battle(
-                    cycle=self.machine.completed_cycles + 1,
-                )
-                state_started = self.now()
-                failed_action = None
-                action_attempts = 0
-                stable.reset()
-                continue
-            if self._wait_until_in_state(expected_state, action.name):
-                failed_action = None
-                action_attempts = 0
-                state_started = self.now()
-                continue
-
-            self.machine.state = state_before
-            if action_attempts < 4:
-                state_started = self.now()
-                continue
-            if self._can_recover(state_before) and self.recovery is not None and not recovered:
+            if self.now() - state_started >= self._STATE_TIMEOUT_SECONDS and self.recovery and not recovered:
                 recovered = True
-                self.runtime.log(
-                    f"模式=远征 动作={action.name} 恢复=四次点击未转场，回大厅重新导航"
-                )
                 self.recovery()
                 self.machine.state = ExpeditionState.HOME
-                state_started = self.now()
-                failed_action = None
-                action_attempts = 0
-                stable.reset()
-                continue
-            diagnostic = self._diagnostic(f"retry_exhausted_{action.name}", screen)
-            raise RuntimeError(
-                f"动作 {action.name} 点击4次后画面未推进；已保存诊断 {diagnostic}"
-            )
-
         return self.machine.completed_cycles
-
-    def _wait_until_in_state(
-        self, state: ExpeditionState, action_name: str | None = None
-    ) -> bool:
-        def is_target(screen: np.ndarray) -> bool:
-            if not self.machine.is_in_state(screen, state):
-                return False
-            if action_name == "wake-campfire-ui":
-                is_campfire_idle = getattr(self.machine, "is_campfire_idle", None)
-                if is_campfire_idle is not None and is_campfire_idle(screen):
-                    return False
-            return True
-
-        return wait_until_target(
-            capture=self.runtime.capture,
-            save_frame=self._save_frame,
-            is_target=is_target,
-            absolute_seconds=self._TRANSITION_ABSOLUTE_SECONDS,
-            no_progress_seconds=self._TRANSITION_NO_PROGRESS_SECONDS,
-            poll_seconds=self.poll_seconds,
-            sleep=self.sleep,
-            now=self.now,
-            two_frame=True,
-        )
-
-    def _save_frame(self, screen: np.ndarray) -> None:
-        if self.runtime.diagnostic_dir is not None:
-            self.runtime.save_current_frame(screen)
-
-    @staticmethod
-    def _can_recover(state: ExpeditionState) -> bool:
-        return state in {
-            ExpeditionState.HOME,
-            ExpeditionState.POSTERS,
-            ExpeditionState.DIFFICULTY,
-            ExpeditionState.READY,
-        }
-
-    def _diagnostic(self, label: str, screen: np.ndarray):
-        if self.runtime.diagnostic_dir is None:
-            return "not-configured"
-        return self.runtime.save_diagnostic(label, screen)
