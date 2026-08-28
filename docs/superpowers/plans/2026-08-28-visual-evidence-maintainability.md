@@ -8,6 +8,8 @@
 
 **Tech Stack:** Python 3.11, OpenCV, NumPy, pytest, 现有 `Runtime`/`find_template`/状态机。
 
+**Execution status:** Tasks 1–6 implemented; offline verification passed. Real-device acceptance remains a user-owned step per project safety rules.
+
 ---
 
 ## 工作区与基线约束
@@ -130,7 +132,7 @@ class PageEvidence:
         return EvidenceState.SAFE
 ```
 
-`validate_profile(profile, root)` must return human-readable errors and never mutate the profile. Reject missing templates, threshold outside `[0, 1]`, non-positive/out-of-bounds regions, duplicate keys and references to unknown atoms.
+`validate_profile(profile, root)` must return human-readable errors and never mutate the profile. Reject missing templates, threshold outside `[0, 1]`, non-positive regions or regions whose starting point is outside the reference frame, duplicate keys and references to unknown atoms. Regions may extend past the bottom or right edge because the existing matcher clips NumPy slices at the live screenshot boundary.
 
 - [ ] **Step 4: Run focused tests and all existing unit tests touching imports**
 

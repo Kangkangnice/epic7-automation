@@ -1,6 +1,6 @@
 # 第七史诗自动助手
 
-这是一个免费开源、基于窗口截图和 OpenCV 模板匹配的《第七史诗》PVE 前台自动化项目。英雄合成为当前正式功能；其余五种模式仍为实验功能，可能不稳定：
+这是一个免费开源、基于窗口截图和 OpenCV 模板匹配的《第七史诗》PVE 前台自动化项目。英雄合成、主线、竞技场和远征为当前正式功能；狗粮和助手自动仍为实验功能，可能不稳定：
 
 - `story`：主线/刷图循环，处理辅助英雄、剧情跳过、多段战斗、好友申请、奖励和结算。
 - `arena`：新手竞技场循环，失败后跳过红色对手并从剩余对手中随机选择；三名对手均失败时执行免费刷新。旗帜不足时只允许左侧已选中的 `100 友情点 → 5 旗帜`，并永久禁止钻石购买路径。
@@ -22,7 +22,7 @@ cd D:\AI\codex\auto_game
 python -u -m auto_game_unified.desktop
 ```
 
-英雄合成在界面中标记为正式功能并固定运行一轮，其他五条路线标记为实验功能并在启动前提醒。桌面 MVP 当前只提供模拟器后端；Windows 安装包和便携版将在后续打包阶段提供。CLI 和中文交互式启动器继续保留给开发调试。
+英雄合成、主线、竞技场与远征在界面中标记为正式功能；英雄合成固定运行一轮。狗粮和助手自动标记为实验功能并在启动前提醒。桌面 MVP 当前只提供模拟器后端；Windows 安装包和便携版将在后续打包阶段提供。CLI 和中文交互式启动器继续保留给开发调试。
 
 ## 文档
 
@@ -35,6 +35,10 @@ python -u -m auto_game_unified.desktop
 - [PC 模板迁移与实证流程](docs/PC_TEMPLATE_MIGRATION.md)
 - [用户操作、AI 只读观测协作流程](docs/HUMAN_AI_WORKFLOW.md)
 - [新增自动化路线](docs/EXTENDING.md)
+- [界面改版维护：竞技场](docs/maintenance/arena.md)
+- [界面改版维护：主线](docs/maintenance/story.md)
+- [界面改版维护：远征](docs/maintenance/expedition.md)
+- [界面改版维护：英雄合成](docs/maintenance/hero_synthesis.md)
 
 ## 环境要求
 
