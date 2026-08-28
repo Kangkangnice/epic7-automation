@@ -55,6 +55,8 @@ _TEMPLATE_NAMES = (
     "back",
 )
 
+_OPTIONAL_TEMPLATES = {"empty_posters", "defeated_confirm"}
+
 
 def build_expedition_evidence(template_dir: Path) -> EvidenceProfile:
     atoms = {
@@ -63,10 +65,10 @@ def build_expedition_evidence(template_dir: Path) -> EvidenceProfile:
             template_path=f"{name}.png",
             region=REGIONS[name],
             threshold=THRESHOLDS.get(name, 0.88),
+            required=name not in _OPTIONAL_TEMPLATES,
             reference_size=REFERENCE_SIZE,
         )
         for name in _TEMPLATE_NAMES
-        if (template_dir / f"{name}.png").is_file()
     }
     auto_off = AtomEvidence(
         key="auto_off",
@@ -99,4 +101,6 @@ def build_expedition_evidence(template_dir: Path) -> EvidenceProfile:
             ),
             PageEvidence("expedition.campfire", required=("campfire_idle",)),
         ),
+        config_path=str(Path(__file__).resolve()),
+        template_root=template_dir,
     )

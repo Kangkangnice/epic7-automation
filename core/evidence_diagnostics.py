@@ -31,6 +31,19 @@ def inspect_profile(
     observations: dict[str, AtomObservation] = {}
     for key, atom in profile.atoms.items():
         template_path = template_root / atom.template_path
+        if not template_path.is_file() and not atom.required:
+            observations[key] = AtomObservation(
+                key=key,
+                template=str(template_path),
+                config=profile.config_path,
+                region=atom.region,
+                reference_size=atom.reference_size,
+                threshold=atom.threshold,
+                observed=False,
+                score=None,
+                center=None,
+            )
+            continue
         template = load_template(str(template_path))
         match: Match | None = find_best_template(
             screen,

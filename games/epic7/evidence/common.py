@@ -19,6 +19,7 @@ class AtomEvidence:
     region: tuple[int, int, int, int]
     threshold: float
     description: str = ""
+    required: bool = True
     reference_size: tuple[int, int] = (1982, 1132)
 
 
@@ -89,7 +90,7 @@ def validate_profile(profile: EvidenceProfile, root: Path) -> list[str]:
 
     for key, atom in profile.atoms.items():
         path = root / atom.template_path
-        if not path.is_file():
+        if atom.required and not path.is_file():
             errors.append(f"{key}: 模板不存在: {path}")
         if not 0.0 <= atom.threshold <= 1.0:
             errors.append(f"{key}: 阈值必须在 0 到 1 之间: {atom.threshold}")

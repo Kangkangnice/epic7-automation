@@ -61,19 +61,29 @@ _REGION_FOR_TEMPLATE = {
     "imprint_grey": "imprint_button",
 }
 
+_OPTIONAL_TEMPLATES = {
+    "filter_attribute_label",
+    "filter_star3_unselected",
+    "sss_material",
+    "sss_material_warning_title",
+    "sss_material_warning_close",
+    "imprint_result_title",
+    "imprint_result_close",
+    "transmit_reward_title",
+    "transmit_reward_close",
+}
+
 
 def build_hero_evidence(template_root: Path) -> EvidenceProfile:
     atoms: dict[str, AtomEvidence] = {}
     for key, relative_path in _TEMPLATE_PATHS.items():
-        path = template_root / relative_path
-        if not path.is_file():
-            continue
         region_key = _REGION_FOR_TEMPLATE.get(key, key)
         atoms[key] = AtomEvidence(
             key=key,
             template_path=relative_path,
             region=REGIONS[region_key],
             threshold=THRESHOLDS.get(key, 0.80),
+            required=key not in _OPTIONAL_TEMPLATES,
             reference_size=REFERENCE_SIZE,
         )
     return EvidenceProfile(
@@ -88,4 +98,6 @@ def build_hero_evidence(template_root: Path) -> EvidenceProfile:
             PageEvidence("hero.synthesis_result", required=("imprint_result_title",)),
             PageEvidence("hero.transmit_result", required=("transmit_reward_title",)),
         ),
+        config_path=str(Path(__file__).resolve()),
+        template_root=template_root,
     )
