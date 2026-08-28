@@ -40,14 +40,26 @@ from auto_game_unified.games.epic7.unknown_screen import (
     UnknownScreenWake,
     UnknownWakeResult,
 )
+from auto_game_unified.games.epic7.evidence.arena import (
+    FREE_REFRESH_CONFIRM_REGION,
+    FREE_REFRESH_OFFER_REGION,
+    FREE_REFRESH_TITLE_REGION,
+    RANK_PROMOTION_ARROW_REGION,
+    RANK_PROMOTION_CONFIRM_REGION,
+    REFERENCE_SIZE as ARENA_REFERENCE_SIZE,
+    REGIONS as ARENA_REGIONS,
+    THRESHOLDS as ARENA_THRESHOLDS,
+    build_arena_evidence,
+)
+from auto_game_unified.games.epic7.evidence.common import EvidenceProfile
 
 
-_RANK_PROMOTION_REFERENCE_SIZE = (1982, 1132)
-_RANK_PROMOTION_ARROW_REGION = (850, 760, 280, 170)
-_RANK_PROMOTION_CONFIRM_REGION = (700, 930, 520, 202)
-_FREE_REFRESH_TITLE_REGION = (700, 300, 550, 160)
-_FREE_REFRESH_OFFER_REGION = (850, 700, 350, 180)
-_FREE_REFRESH_CONFIRM_REGION = (1050, 700, 400, 180)
+_RANK_PROMOTION_REFERENCE_SIZE = ARENA_REFERENCE_SIZE
+_RANK_PROMOTION_ARROW_REGION = RANK_PROMOTION_ARROW_REGION
+_RANK_PROMOTION_CONFIRM_REGION = RANK_PROMOTION_CONFIRM_REGION
+_FREE_REFRESH_TITLE_REGION = FREE_REFRESH_TITLE_REGION
+_FREE_REFRESH_OFFER_REGION = FREE_REFRESH_OFFER_REGION
+_FREE_REFRESH_CONFIRM_REGION = FREE_REFRESH_CONFIRM_REGION
 
 
 def find_rank_promotion_confirm(
@@ -223,6 +235,7 @@ class ArenaTemplates:
     refresh_confirm: np.ndarray
     threshold: float = 0.98
     quick_battle: QuickBattleDetector | None = None
+    evidence: EvidenceProfile | None = None
 
 
 def build_templates(template_dir: Path) -> ArenaTemplates:
@@ -243,6 +256,7 @@ def build_templates(template_dir: Path) -> ArenaTemplates:
         refresh_free=load_template(str(template_dir / "arena_refresh_free.png")),
         refresh_confirm=load_template(str(template_dir / "arena_refresh_confirm.png")),
         quick_battle=load_simulator_quick_battle_detector(template_dir),
+        evidence=build_arena_evidence(template_dir),
     )
 
 
@@ -256,16 +270,7 @@ class ArenaStateMachine:
 
     # Per-template match thresholds. The shared default (templates.threshold) is 0.98;
     # arena UI animates/drifts like story, so the dynamic screens are relaxed here.
-    _THRESHOLDS = {
-        "list_ready": 0.88,
-        "challenge": 0.90,
-        "battle_start": 0.90,
-        "auto_off": 0.85,
-        "confirm": 0.90,
-        "no_ticket": 0.90,
-        "friendship_ticket_offer": 0.92,
-        "ticket_purchase_button": 0.92,
-    }
+    _THRESHOLDS = ARENA_THRESHOLDS
 
     _REFERENCE_SIZE = (1982, 1132)
     _AUTO_CLICK_POINT = (1690, 96)
@@ -276,16 +281,7 @@ class ArenaStateMachine:
     )
     _FAILED_RED_MIN_RATIO = 0.50
     _AVAILABLE_RED_MAX_RATIO = 0.05
-    _REGIONS = {
-        "list_ready": (700, 900, 520, 250),
-        "challenge": (700, 930, 520, 202),
-        "battle_start": (900, 930, 550, 202),
-        "auto_off": (1550, 0, 300, 220),
-        "confirm": (1500, 930, 420, 202),
-        "no_ticket": (700, 150, 700, 300),
-        "friendship_ticket_offer": (540, 470, 440, 230),
-        "ticket_purchase_button": (900, 760, 500, 260),
-    }
+    _REGIONS = ARENA_REGIONS
 
     _OPPONENT_OFFSETS = (
         (-210, -639),
@@ -325,6 +321,13 @@ class ArenaStateMachine:
         self.state = initial_state
         self.completed_cycles = 0
         self.choose_opponent = choose_opponent
+        if templates.evidence is not None:
+            self._REGIONS = {
+                key: atom.region for key, atom in templates.evidence.atoms.items()
+            }
+            self._THRESHOLDS = {
+                key: atom.threshold for key, atom in templates.evidence.atoms.items()
+            }
         self._selected_opponent: int | None = None
         self._cycle_pending = initial_state == ArenaState.CONFIRMING
 
