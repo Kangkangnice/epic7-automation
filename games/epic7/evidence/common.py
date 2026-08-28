@@ -74,9 +74,9 @@ def validate_profile(profile: EvidenceProfile, root: Path) -> list[str]:
         ref_width, ref_height = atom.reference_size
         if x < 0 or y < 0 or width <= 0 or height <= 0:
             errors.append(f"{key}: 搜索区域必须为非负且宽高大于零: {atom.region}")
-        elif x + width > ref_width or y + height > ref_height:
+        elif x >= ref_width or y >= ref_height:
             errors.append(
-                f"{key}: 搜索区域超出基准画面 {atom.reference_size}: {atom.region}"
+                f"{key}: 搜索区域起点超出基准画面 {atom.reference_size}: {atom.region}"
             )
 
     page_keys: set[str] = set()

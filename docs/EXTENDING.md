@@ -2,6 +2,18 @@
 
 本指南面向后续接手的 Agent。新增路线时保持修改范围最小，不重构已通过实机验证的竞技场和主线模块。
 
+## 0. 视觉证据维护入口
+
+每条路线的模板、搜索区域、阈值和页面组合集中在 `games/epic7/evidence/` 下对应文件；业务状态机仍保留在路线模块中。界面改版时先根据诊断中的证据键名修改证据清单，不要先改状态机。
+
+检查当前完整截图（只读，不会修改模板）：
+
+```powershell
+python tools/check_evidence.py --mode arena --screen tests/fixtures/epic7_arena/list.png
+```
+
+证据清单中的搜索区域允许延伸到画面底部或右侧边缘，因为现有 matcher 会裁剪截图；区域起点、宽高和阈值仍会被校验。新增路线应先在 `evidence/<route>.py` 建立原子证据和页面组合，再写业务状态机。
+
 ## 1. 先手动走完整流程
 
 记录每个稳定页面、可选页面、加载边界、停止条件和循环完成标志。保存完整游戏窗口截图，不要只保存按钮裁剪。协作过程遵循 [HUMAN_AI_WORKFLOW.md](HUMAN_AI_WORKFLOW.md)，素材规则遵循 [TEMPLATE_CAPTURE.md](TEMPLATE_CAPTURE.md)。编码前为每个改变页面或业务状态的动作填写 [页面转场契约](TRANSITION_CONTRACTS.md)。
