@@ -132,3 +132,26 @@ def test_check_evidence_rejects_unknown_mode(capsys):
     )
     assert result.returncode == 2
     assert "不支持的模式" in result.stdout
+
+
+def test_check_evidence_prints_maintenance_location_and_region():
+    root = Path(__file__).resolve().parents[1]
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(root / "tools" / "check_evidence.py"),
+            "--mode",
+            "arena",
+            "--screen",
+            str(root / "tests" / "fixtures" / "epic7_arena" / "selected.png"),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0
+    assert "config=" in result.stdout
+    assert "region=" in result.stdout
+    assert "reference_size=" in result.stdout
+    assert "页面 key=arena.selected 状态=SAFE" in result.stdout

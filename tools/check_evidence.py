@@ -59,6 +59,9 @@ def main(argv: list[str] | None = None) -> int:
         print(
             "证据 "
             f"key={observation.key} "
+            f"config={observation.config or '-'} "
+            f"region={observation.region} "
+            f"reference_size={observation.reference_size} "
             f"observed={int(observation.observed)} "
             f"score={observation.score if observation.score is not None else '-'} "
             f"threshold={observation.threshold} "

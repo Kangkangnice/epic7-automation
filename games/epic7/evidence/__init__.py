@@ -2,6 +2,7 @@
 
 from .common import (
     AtomEvidence,
+    AtomObservation,
     EvidenceProfile,
     EvidenceState,
     PageEvidence,
@@ -10,6 +11,7 @@ from .common import (
 
 __all__ = [
     "AtomEvidence",
+    "AtomObservation",
     "EvidenceProfile",
     "EvidenceState",
     "PageEvidence",
