@@ -26,6 +26,12 @@ from auto_game_unified.games.epic7.hero_transition import (
     SafetyClass,
 )
 from auto_game_unified.games.epic7.unknown_screen import UnrecognizedScreen
+from auto_game_unified.games.epic7.evidence.common import EvidenceProfile
+from auto_game_unified.games.epic7.evidence.hero_synthesis import (
+    REFERENCE_SIZE as HERO_REFERENCE_SIZE,
+    REGIONS as HERO_REGIONS,
+    build_hero_evidence,
+)
 
 
 HERO_INFORMATION_TAB_POINT = (65, 200)
@@ -169,6 +175,7 @@ class HeroTemplates:
     threshold: float = 0.80
     pc_client: bool = False
     assume_non_max_rating: bool = False
+    evidence: EvidenceProfile | None = None
 
 
 def build_hero_templates(template_root: Path) -> HeroTemplates:
@@ -228,23 +235,16 @@ def build_hero_templates(template_root: Path) -> HeroTemplates:
         ),
         pc_client=is_pc,
         assume_non_max_rating=is_pc,
+        evidence=build_hero_evidence(template_root),
     )
 
 
 class HeroSynthStateMachine:
     """英雄合成流程的纯视觉决策状态机。"""
 
-    _REFERENCE_SIZE = (1982, 1132)
+    _REFERENCE_SIZE = HERO_REFERENCE_SIZE
 
-    _REGIONS = {
-        "filter_button": (1450, 160, 200, 60),
-        "filter_level_label": (600, 500, 200, 120),
-        "filter_attribute_label": (630, 250, 220, 90),
-        "filter_star3_selected": (1050, 590, 180, 90),
-        "filter_star3_unselected": (1050, 590, 180, 90),
-        "auto_select_label": (780, 990, 260, 100),
-        "story_back": (0, 40, 120, 160),
-    }
+    _REGIONS = HERO_REGIONS
     # 颜色检测区（x, y, w, h）
     _BUTTON_ZONE = (1000, 900, 250, 200)
     _BUTTON_TL = (1028, 925)  # 140x140 按钮模板的标准落位左上角
@@ -340,6 +340,10 @@ class HeroSynthStateMachine:
     ) -> None:
         self.templates = templates
         self.state = initial_state
+        if templates.evidence is not None:
+            self._REGIONS = {
+                key: atom.region for key, atom in templates.evidence.atoms.items()
+            }
         self.completed_cycles = 0
         self.filter_verified = False
         self.prev_card_grey = False
@@ -372,6 +376,7 @@ class HeroSynthStateMachine:
         self._list_end_observations = 0
         self._list_end_fingerprint: Optional[str] = None
         self._current_card_observation: Optional[str] = None
+        self._previous_card_context: Optional[tuple[str, SafetyClass]] = None
 
     @property
     def pending_transmit_target(self) -> bool:
@@ -1212,6 +1217,43 @@ class HeroSynthStateMachine:
         small = cv2.resize(white, (32, 12), interpolation=cv2.INTER_AREA)
         return hashlib.sha1((small // 64).astype(np.uint8).tobytes()).hexdigest()[:8]
 
+    def _adjacent_sss_duplicate_transmit_action(
+        self, screen: np.ndarray
+    ) -> Optional[HeroAction]:
+        """仅把紧邻同名 SSS 本体后的无红点副本送入既有传送流程。"""
+        previous_context = self._previous_card_context
+        current_identity = self._active_card_observation
+        self._previous_card_context = None
+        if (
+            self.templates.pc_client
+            or previous_context is None
+            or previous_context[1] is not SafetyClass.SSS
+            or previous_context[0] != current_identity
+        ):
+            return None
+        self.transmit_phase = TransmitPhase.OPENING
+        self.transmit_target_observation = current_identity
+        self.transmit_continuity_intact = True
+        return self._simulator_transition_action(
+            "open_transmit_for_current_card",
+            self._scaled_point(screen, self._TRANSMIT_ENTRY_POINT),
+            source_page="英雄列表",
+            target_pages=("传送选择",),
+            reason="上一张=SSS，名称指纹同名=是，当前无红点副本；打开传送并复用目标SSS保护",
+            source_observation=current_identity,
+        )
+
+    def arm_adjacent_sss_context(self, action: HeroAction) -> None:
+        """只在翻卡动态证据已确认后，记录刚离开的 SSS 卡。"""
+        if (
+            self.templates.pc_client
+            or action.transition_kind != "card_change"
+            or "当前英雄为SSS" not in action.reason
+            or not action.source_observation
+        ):
+            return
+        self._previous_card_context = (action.source_observation, SafetyClass.SSS)
+
     def _advance_or_finish(self, screen: np.ndarray) -> Optional[HeroAction]:
         self._current_card_observation = self._detail_fingerprint(screen)
         if not self._hero_list_ready(screen):
@@ -1229,6 +1271,7 @@ class HeroSynthStateMachine:
             if self._list_end_observations < self._READINESS_OBSERVATIONS:
                 return None
             self.completed_cycles += 1
+            self._previous_card_context = None
             self._list_end_observations = 0
             self._list_end_fingerprint = None
             self.filter_verified = False  # 新一轮 cycle 重新筛选
@@ -1311,7 +1354,8 @@ class HeroSynthStateMachine:
                 if (
                     not self.templates.pc_client
                     and (
-                        self.transmit_phase is not TransmitPhase.SELECTING
+                        self.transmit_phase
+                        not in (TransmitPhase.SELECTING, TransmitPhase.CONFIRMING)
                         or not self.transmit_continuity_intact
                     )
                 ):
@@ -1404,6 +1448,19 @@ class HeroSynthStateMachine:
             self.state = HeroSynthState.TRANSMIT_SELECT
             self.transmit_phase = TransmitPhase.SELECTING
             card = self._transmit_target_card(screen)
+            if card is not None and (
+                self._transmit_green_present(screen)
+                and self._transmit_grid_filled(screen)
+            ):
+                self.state = HeroSynthState.TRANSMIT_CONFIRM
+                return self._simulator_transition_action(
+                    "start_transmit",
+                    self._scaled_point(screen, self._TRANSMIT_GREEN_POINT),
+                    source_page="传送选择",
+                    target_pages=("传送确认",),
+                    reason="目标已进入传送格且绿色传送按钮存在",
+                    source_observation="grid=1",
+                )
             target_class = self._classify_transmit_target(screen, card)
             if target_class is SafetyClass.SSS:
                 back = self._back_action(screen)
@@ -1420,19 +1477,6 @@ class HeroSynthStateMachine:
                 )
             if target_class is SafetyClass.UNKNOWN:
                 return None
-            if card is not None and (
-                self._transmit_green_present(screen)
-                and self._transmit_grid_filled(screen)
-            ):
-                self.state = HeroSynthState.TRANSMIT_CONFIRM
-                return self._simulator_transition_action(
-                    "start_transmit",
-                    self._scaled_point(screen, self._TRANSMIT_GREEN_POINT),
-                    source_page="传送选择",
-                    target_pages=("传送确认",),
-                    reason="目标已进入传送格且绿色传送按钮存在",
-                    source_observation="grid=1",
-                )
             if card is not None:
                 x, y, tag = card
                 return self._simulator_transition_action(
@@ -1790,6 +1834,7 @@ class HeroSynthStateMachine:
                 return None
             if self._red_dot_present(screen):
                 self.prev_card_grey = False
+                self._previous_card_context = None
                 if self.templates.pc_client:
                     self.state = HeroSynthState.IMPRINT_ADD
                 self._imprint_empty_observations = 0
@@ -1813,6 +1858,9 @@ class HeroSynthStateMachine:
                         else ""
                     ),
                 )
+            transmit = self._adjacent_sss_duplicate_transmit_action(screen)
+            if transmit is not None:
+                return transmit
             self.prev_card_grey = False
             return self._advance_or_finish(screen)
 
@@ -1846,9 +1894,13 @@ class HeroSynthStateMachine:
             self.prev_card_grey = True
             return self._advance_or_finish(screen)
         if not self._red_dot_present(screen):
+            transmit = self._adjacent_sss_duplicate_transmit_action(screen)
+            if transmit is not None:
+                return transmit
             self.prev_card_grey = False
             return self._advance_or_finish(screen)
         self.prev_card_grey = False
+        self._previous_card_context = None
         if self.templates.pc_client:
             self.state = HeroSynthState.IMPRINT_ADD
         self._imprint_empty_observations = 0
@@ -1899,6 +1951,7 @@ class HeroSynthStateMachine:
             self._list_end_observations,
             self._list_end_fingerprint,
             self._current_card_observation,
+            self._previous_card_context,
             self._last_screen,
         )
         try:
@@ -1923,6 +1976,7 @@ class HeroSynthStateMachine:
                 self._list_end_observations,
                 self._list_end_fingerprint,
                 self._current_card_observation,
+                self._previous_card_context,
                 self._last_screen,
             ) = snapshot
 
@@ -1997,6 +2051,8 @@ class HeroSynthRunner(ModeRunnerBase):
             return 5
         if action_name == "abort_imprint_to_transmit":
             return 12
+        if action_name == "confirm_transmit":
+            return 5
         if action_name.startswith("add_material"):
             return self._MATERIAL_RETRY_SECONDS
         if action_name.startswith("next_card"):
@@ -2224,6 +2280,8 @@ class HeroSynthRunner(ModeRunnerBase):
             f"峰值帧差{peak_difference:.3f}/"
             f"最终基线差{final_baseline_difference:.3f}"
         )
+        if self._card_switch_motion_confirmed:
+            self.machine.arm_adjacent_sss_context(action)
 
         final_observation = (
             self.machine._hero_identity_fingerprint(observer.last_screen)
@@ -2349,7 +2407,7 @@ class HeroSynthRunner(ModeRunnerBase):
         ):
             return self._transmit_selection_completed(
                 previous_action, current_action
-            )
+            ) or getattr(current_action, "name", "") == "abort_transmit_sss_target"
         if getattr(previous_action, "transition_kind", "") == "material_change":
             return self._material_transition_completed(
                 previous_action, current_action
