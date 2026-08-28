@@ -2,7 +2,7 @@ import unittest
 
 import numpy as np
 
-from auto_game_unified.core.matcher import find_template
+from auto_game_unified.core.matcher import find_best_template, find_template
 
 
 class TemplateMatchingTests(unittest.TestCase):
@@ -33,6 +33,22 @@ class TemplateMatchingTests(unittest.TestCase):
         )
 
         self.assertIsNone(match)
+
+    def test_best_match_keeps_score_below_business_threshold(self):
+        rng = np.random.default_rng(7)
+        template = rng.integers(0, 256, size=(10, 10, 3), dtype=np.uint8)
+        changed = template.copy()
+        changed[:3, :3] = 0
+        screen = np.zeros((40, 40, 3), dtype=np.uint8)
+        screen[12:22, 14:24] = changed
+
+        best = find_best_template(screen, template, region=(0, 0, 40, 40))
+
+        self.assertIsNotNone(best)
+        self.assertLess(best.score, 0.999)
+        self.assertIsNone(
+            find_template(screen, template, 0.999, region=(0, 0, 40, 40))
+        )
 
 
 if __name__ == "__main__":
