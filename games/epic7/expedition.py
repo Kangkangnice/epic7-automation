@@ -17,6 +17,9 @@ from auto_game_unified.core.battle_supervisor import (
     BattleSupervisor,
     valid_game_frame,
 )
+from auto_game_unified.core.evidence_diagnostics import (
+    save_runtime_evidence_diagnostic,
+)
 from auto_game_unified.core.matcher import Match, find_template, load_template
 from auto_game_unified.core.recovery import RecoveryGate
 from auto_game_unified.core.runtime import Runtime, StaminaExhausted
@@ -735,10 +738,36 @@ class ExpeditionRunner:
         if self.runtime.diagnostic_dir is not None:
             self.runtime.save_current_frame(screen)
 
-    def _diagnostic(self, label: str, screen: np.ndarray):
+    def _diagnostic(
+        self,
+        label: str,
+        screen: np.ndarray,
+        *,
+        action: ExpeditionAction | None = None,
+        attempt: int = 1,
+        conclusion: str = "页面识别失败",
+    ):
         if self.runtime.diagnostic_dir is None:
             return "not-configured"
-        return self.runtime.save_diagnostic(label, screen)
+        diagnostic = self.runtime.save_diagnostic(label, screen)
+        templates = getattr(self.machine, "templates", None)
+        save_runtime_evidence_diagnostic(
+            self.runtime,
+            screen,
+            getattr(templates, "evidence", None),
+            legacy_path=diagnostic,
+            mode="远征",
+            action=action.name if action is not None else "observe",
+            source=(
+                action.source_page
+                if action is not None
+                else state_label(self.machine.state)
+            ),
+            targets=action.target_pages if action is not None else (),
+            attempt=attempt,
+            conclusion=conclusion,
+        )
+        return diagnostic
 
     def _execute_transition(self, action: ExpeditionAction) -> None:
         if action.source_state is None or not action.target_states:
@@ -787,7 +816,13 @@ class ExpeditionRunner:
                     f"模式=远征 等待转场 动作={action.name} 来源={action.source_page}已离开 "
                     f"目标={'/'.join(action.target_pages)}待稳定"
                 )
-        diagnostic = self._diagnostic(f"no_transition_{action.name}", screen)
+        diagnostic = self._diagnostic(
+            f"no_transition_{action.name}",
+            screen,
+            action=action,
+            attempt=attempts,
+            conclusion="来源页面未退出或目标页面未稳定出现",
+        )
         raise RuntimeError(
             f"动作[{action.name}]未稳定进入[{'/'.join(action.target_pages)}]；"
             f"已保存诊断 {diagnostic}"
@@ -830,7 +865,14 @@ class ExpeditionRunner:
                 if self.now() - state_started < self._STATE_TIMEOUT_SECONDS:
                     self.sleep(self.poll_seconds)
                     continue
-                raise RuntimeError(f"远征未知页面：{error}") from error
+                diagnostic = self._diagnostic(
+                    f"timeout_{state_before.value}",
+                    screen,
+                    conclusion=f"未知页面持续超时：{error}",
+                )
+                raise RuntimeError(
+                    f"远征未知页面：{error}；已保存诊断 {diagnostic}"
+                ) from error
             if action is None:
                 if self.machine.state is ExpeditionState.BATTLE:
                     self._run_committed_battle(cycle=self.machine.completed_cycles + 1)

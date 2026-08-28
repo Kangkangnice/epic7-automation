@@ -24,6 +24,9 @@ from auto_game_unified.core.supervisor import (
     StableObservation,
     meaningful_change,
 )
+from auto_game_unified.core.evidence_diagnostics import (
+    save_runtime_evidence_diagnostic,
+)
 from auto_game_unified.games.epic7.battle_controls import (
     BattleControls,
     battle_scene_visible,
@@ -790,6 +793,37 @@ class ArenaRunner:
             raise RuntimeError(f"竞技场战斗出现意外结果：{outcome.value}")
         self.machine.state = ArenaState.RESULT
 
+    def _save_failure_diagnostic(
+        self,
+        legacy_path: Path,
+        screen: np.ndarray,
+        *,
+        action: Action | None,
+        attempt: int,
+        conclusion: str,
+    ):
+        templates = getattr(self.machine, "templates", None)
+        return save_runtime_evidence_diagnostic(
+            self.runtime,
+            screen,
+            getattr(templates, "evidence", None),
+            legacy_path=legacy_path,
+            mode="竞技场",
+            action=action.name if action is not None else "observe",
+            source=(
+                state_label(action.source_state)
+                if action is not None and action.source_state is not None
+                else state_label(self.machine.state)
+            ),
+            targets=(
+                tuple(state_label(state) for state in action.target_states)
+                if action is not None
+                else ()
+            ),
+            attempt=attempt,
+            conclusion=conclusion,
+        )
+
     def run(self, max_cycles: int | None = None) -> int:
         state_started = self.now()
         stable = StableObservation(required=2)
@@ -845,6 +879,13 @@ class ArenaRunner:
                     diagnostic = self.runtime.save_diagnostic(
                         f"timeout_{self.machine.state.value}", screen
                     )
+                    self._save_failure_diagnostic(
+                        diagnostic,
+                        screen,
+                        action=None,
+                        attempt=1,
+                        conclusion=f"页面识别超时：{error}",
+                    )
                     self.runtime.log(
                         f"模式=竞技场 页面={state_label(self.machine.state)} "
                         f"状态=超时无进展 诊断={diagnostic}"
@@ -892,8 +933,17 @@ class ArenaRunner:
             if action.name == "refresh-opponents":
                 self.runtime.click(action.point, action.name)
                 if not self._wait_until_safe_list(action):
+                    failure_screen = self.runtime.capture()
                     diagnostic = self.runtime.save_diagnostic(
                         "refresh_opponents_failed",
+                        failure_screen,
+                    )
+                    self._save_failure_diagnostic(
+                        diagnostic,
+                        failure_screen,
+                        action=action,
+                        attempt=1,
+                        conclusion="刷新后未出现可安全挑战的对手列表",
                     )
                     self.runtime.log(
                         "模式=竞技场 页面=对手列表 动作=刷新对手 "
@@ -994,7 +1044,15 @@ class ArenaRunner:
         if self.runtime.diagnostic_dir is not None:
             diagnostic = self.runtime.save_diagnostic(
                 f"no_transition_{action.source_state.value}_to_"
-                f"{'_or_'.join(target.value for target in action.target_states)}"
+                f"{'_or_'.join(target.value for target in action.target_states)}",
+                screen,
+            )
+            self._save_failure_diagnostic(
+                diagnostic,
+                screen,
+                action=action,
+                attempt=attempts,
+                conclusion="来源页面已离开或点击耗尽，但目标页面未稳定出现",
             )
         self.runtime.log(
             f"模式=竞技场 状态=转场失败 动作={action.name} "

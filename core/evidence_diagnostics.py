@@ -1,6 +1,6 @@
 """Read-only inspection and self-contained diagnostics for visual evidence."""
 
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 import json
 from pathlib import Path
 from typing import Any, Mapping, Sequence
@@ -121,3 +121,70 @@ def write_evidence_diagnostic(
         encoding="utf-8",
     )
     return output
+
+
+def save_runtime_evidence_diagnostic(
+    runtime: Any,
+    screen: np.ndarray,
+    profile: EvidenceProfile | None,
+    *,
+    legacy_path: Path,
+    mode: str,
+    action: str,
+    source: str,
+    targets: Sequence[str],
+    attempt: int,
+    conclusion: str,
+) -> Path | None:
+    """Add a self-contained evidence pack beside an existing diagnostic PNG.
+
+    This is deliberately best-effort: evidence collection must never replace
+    the original route failure with a secondary diagnostics error.
+    """
+    if (
+        getattr(runtime, "diagnostic_dir", None) is None
+        or profile is None
+        or profile.template_root is None
+    ):
+        return None
+    try:
+        diagnostic_root = Path(runtime.diagnostic_dir)
+        if legacy_path.is_absolute():
+            resolved_legacy = legacy_path
+        elif legacy_path.is_file():
+            resolved_legacy = legacy_path.resolve()
+        else:
+            resolved_legacy = diagnostic_root / legacy_path
+        if not resolved_legacy.is_file():
+            return None
+        inspection = inspect_profile(screen, profile, profile.template_root)
+        evidence = {
+            "profile": {
+                "config": profile.config_path,
+                "template_root": str(profile.template_root),
+            },
+            "atoms": {
+                key: asdict(observation)
+                for key, observation in inspection.atoms.items()
+            },
+            "pages": {
+                key: {"state": state.value}
+                for key, state in inspection.pages.items()
+            },
+        }
+        output = write_evidence_diagnostic(
+            resolved_legacy.with_suffix(""),
+            screen,
+            mode=mode,
+            action=action,
+            source=source,
+            targets=targets,
+            attempt=attempt,
+            evidence=evidence,
+            conclusion=conclusion,
+        )
+        runtime.log(f"已保存视觉证据包 {output}")
+        return output
+    except Exception as error:  # diagnostics must not mask the business failure
+        runtime.log(f"视觉证据诊断失败：{error}")
+        return None
