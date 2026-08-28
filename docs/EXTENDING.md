@@ -14,6 +14,10 @@ python tools/check_evidence.py --mode arena --screen tests/fixtures/epic7_arena/
 
 证据清单中的搜索区域允许延伸到画面底部或右侧边缘，因为现有 matcher 会裁剪截图；区域起点、宽高和阈值仍会被校验。新增路线应先在 `evidence/<route>.py` 建立原子证据和页面组合，再写业务状态机。
 
+检查器会输出 `config`、`template`、`region`、`reference_size`、`score`、`threshold`、`observed` 和 `center`。未达到阈值也必须保留数值 `score`，不能只显示“未命中”。当前命令行检查器只注册了竞技场；主线、远征和英雄合成通过正式失败出口生成同样字段的证据包。
+
+实跑失败后，先看原 `*.png` 旁边的同名目录：`screen.png` 是当时完整画面，`evidence.json` 是可复查的量化结论。先按其中的 `config` 和证据键定位维护文件，再决定替换模板、移动 `REGIONS` 或调整 `THRESHOLDS`；不得仅凭一次失败降低阈值。
+
 ## 1. 先手动走完整流程
 
 记录每个稳定页面、可选页面、加载边界、停止条件和循环完成标志。保存完整游戏窗口截图，不要只保存按钮裁剪。协作过程遵循 [HUMAN_AI_WORKFLOW.md](HUMAN_AI_WORKFLOW.md)，素材规则遵循 [TEMPLATE_CAPTURE.md](TEMPLATE_CAPTURE.md)。编码前为每个改变页面或业务状态的动作填写 [页面转场契约](TRANSITION_CONTRACTS.md)。
@@ -117,6 +121,7 @@ tests/test_hunt_runner.py
 - 日志不会在目标证据出现前写“成功”。
 - 每个状态有合理超时。
 - 干跑未知页面立即失败并保存截图。
+- 正式失败出口同时保留 legacy PNG 与同名目录内的 `evidence.json`；诊断失败不能覆盖原业务异常。
 - 模式恢复状态只接受本模式 Enum。
 - README 补充新模式命令和实机验证边界。
 - `docs/TODO.md` 和 PC 迁移矩阵同步更新，不把候选模板写成已支持。

@@ -5,3 +5,5 @@
 模板位于 `games/epic7/templates/story/`。改版时按失败诊断中的证据键名替换模板；位置变化改 `REGIONS`，分数变化改 `THRESHOLDS`，可选页面或冲突证据改 `PageEvidence`。
 
 跳过、体力、快速战斗、结算和下一关的业务顺序仍在 `games/epic7/story.py`，视觉迁移不得改变这些状态转移。
+
+失败时原 `*.png` 旁的同名目录包含 `screen.png` 和 `evidence.json`。按 `config`、证据键、`region`、`score` 与 `threshold` 定位问题；低于阈值仍有数值得分，不要把“未命中”直接解释成模板缺失。当前命令行检查器未注册主线，以该证据包和主线 fixture 回归为准。
