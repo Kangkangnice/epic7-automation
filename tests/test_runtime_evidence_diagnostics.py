@@ -8,6 +8,7 @@ import numpy as np
 from auto_game_unified.core.evidence_diagnostics import (
     save_runtime_evidence_diagnostic,
 )
+from auto_game_unified.core.runtime import Runtime
 from auto_game_unified.games.epic7.arena import ArenaRunner, ArenaState
 from auto_game_unified.games.epic7.evidence.common import (
     AtomEvidence,
@@ -110,6 +111,71 @@ def test_runtime_evidence_diagnostic_resolves_relative_legacy_path_under_runtime
     )
 
     assert output == runtime.diagnostic_dir / "relative" / "evidence.json"
+
+
+def test_runtime_prunes_evidence_directory_with_legacy_png(tmp_path):
+    profile, screen = _profile(tmp_path)
+    diagnostic_dir = tmp_path / "diagnostics"
+    runtime = Runtime(
+        lambda: screen,
+        lambda point: None,
+        diagnostic_dir=diagnostic_dir,
+        diagnostic_limit=2,
+    )
+    saved = []
+    for index in range(3):
+        legacy = runtime.save_diagnostic(f"failure_{index}", screen)
+        output = save_runtime_evidence_diagnostic(
+            runtime,
+            screen,
+            profile,
+            legacy_path=legacy,
+            mode="主线",
+            action="observe",
+            source="story.page",
+            targets=(),
+            attempt=1,
+            conclusion="页面失败",
+        )
+        assert output is not None
+        saved.append((legacy, output.parent))
+
+    assert not saved[0][0].exists()
+    assert not saved[0][1].exists()
+    assert all(path.exists() and directory.exists() for path, directory in saved[1:])
+
+
+def test_runtime_evidence_diagnostic_never_raises_when_failure_log_also_fails(
+    tmp_path,
+):
+    profile, screen = _profile(tmp_path)
+    missing_profile = EvidenceProfile(
+        atoms={
+            "missing": AtomEvidence(
+                "missing", "missing.png", (0, 0, 10, 10), 0.90
+            )
+        },
+        config_path=profile.config_path,
+        template_root=tmp_path,
+    )
+    runtime = FakeRuntime(tmp_path / "diagnostics")
+    legacy = runtime.save_diagnostic("missing_template", screen)
+    runtime.log = lambda message: (_ for _ in ()).throw(RuntimeError("log failed"))
+
+    output = save_runtime_evidence_diagnostic(
+        runtime,
+        screen,
+        missing_profile,
+        legacy_path=legacy,
+        mode="远征",
+        action="observe",
+        source="expedition.page",
+        targets=(),
+        attempt=1,
+        conclusion="页面失败",
+    )
+
+    assert output is None
 
 
 def test_formal_route_failure_entry_points_write_evidence_packs(tmp_path):

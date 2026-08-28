@@ -186,5 +186,8 @@ def save_runtime_evidence_diagnostic(
         runtime.log(f"已保存视觉证据包 {output}")
         return output
     except Exception as error:  # diagnostics must not mask the business failure
-        runtime.log(f"视觉证据诊断失败：{error}")
+        try:
+            runtime.log(f"视觉证据诊断失败：{error}")
+        except Exception:
+            pass
         return None
