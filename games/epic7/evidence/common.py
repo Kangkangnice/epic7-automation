@@ -1,0 +1,91 @@
+"""Small, immutable descriptions for route-specific visual evidence."""
+
+from dataclasses import dataclass
+from enum import Enum
+from pathlib import Path
+from typing import Mapping
+
+
+class EvidenceState(Enum):
+    SAFE = "SAFE"
+    UNSAFE = "UNSAFE"
+    UNKNOWN = "UNKNOWN"
+
+
+@dataclass(frozen=True)
+class AtomEvidence:
+    key: str
+    template_path: str
+    region: tuple[int, int, int, int]
+    threshold: float
+    description: str = ""
+    reference_size: tuple[int, int] = (1982, 1132)
+
+
+@dataclass(frozen=True)
+class PageEvidence:
+    key: str
+    required: tuple[str, ...] = ()
+    any_of: tuple[tuple[str, ...], ...] = ()
+    forbidden: tuple[str, ...] = ()
+
+    def evaluate(self, observations: Mapping[str, bool]) -> EvidenceState:
+        if any(observations.get(key, False) for key in self.forbidden):
+            return EvidenceState.UNSAFE
+        if not all(observations.get(key, False) for key in self.required):
+            return EvidenceState.UNKNOWN
+        if not all(
+            any(observations.get(key, False) for key in group)
+            for group in self.any_of
+        ):
+            return EvidenceState.UNKNOWN
+        return EvidenceState.SAFE
+
+
+@dataclass(frozen=True)
+class EvidenceProfile:
+    atoms: Mapping[str, AtomEvidence]
+    pages: tuple[PageEvidence, ...] = ()
+
+    def atom(self, key: str) -> AtomEvidence:
+        return self.atoms[key]
+
+    def page(self, key: str) -> PageEvidence:
+        for page in self.pages:
+            if page.key == key:
+                return page
+        raise KeyError(key)
+
+
+def validate_profile(profile: EvidenceProfile, root: Path) -> list[str]:
+    errors: list[str] = []
+    atom_keys = set(profile.atoms)
+
+    for key, atom in profile.atoms.items():
+        path = root / atom.template_path
+        if not path.is_file():
+            errors.append(f"{key}: 模板不存在: {path}")
+        if not 0.0 <= atom.threshold <= 1.0:
+            errors.append(f"{key}: 阈值必须在 0 到 1 之间: {atom.threshold}")
+        if len(atom.region) != 4:
+            errors.append(f"{key}: 搜索区域必须包含 x,y,width,height")
+            continue
+        x, y, width, height = atom.region
+        ref_width, ref_height = atom.reference_size
+        if x < 0 or y < 0 or width <= 0 or height <= 0:
+            errors.append(f"{key}: 搜索区域必须为非负且宽高大于零: {atom.region}")
+        elif x + width > ref_width or y + height > ref_height:
+            errors.append(
+                f"{key}: 搜索区域超出基准画面 {atom.reference_size}: {atom.region}"
+            )
+
+    page_keys: set[str] = set()
+    for page in profile.pages:
+        if page.key in page_keys:
+            errors.append(f"页面键重复: {page.key}")
+        page_keys.add(page.key)
+        references = (*page.required, *page.forbidden, *(key for group in page.any_of for key in group))
+        for reference in references:
+            if reference not in atom_keys:
+                errors.append(f"{page.key}: 引用不存在: {reference}")
+    return errors
