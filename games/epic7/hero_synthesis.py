@@ -28,8 +28,10 @@ from auto_game_unified.games.epic7.hero_transition import (
 from auto_game_unified.games.epic7.unknown_screen import UnrecognizedScreen
 from auto_game_unified.games.epic7.evidence.common import EvidenceProfile
 from auto_game_unified.games.epic7.evidence.hero_synthesis import (
+    FILTER_ATTRIBUTE_SMALL_THRESHOLD,
     REFERENCE_SIZE as HERO_REFERENCE_SIZE,
     REGIONS as HERO_REGIONS,
+    THRESHOLDS as HERO_THRESHOLDS,
     build_hero_evidence,
 )
 
@@ -245,6 +247,14 @@ class HeroSynthStateMachine:
     _REFERENCE_SIZE = HERO_REFERENCE_SIZE
 
     _REGIONS = HERO_REGIONS
+    _THRESHOLDS = HERO_THRESHOLDS
+    # 兼容既有测试与诊断脚本；值只引用统一 profile，不再重复定义。
+    _RATING_REGION = HERO_REGIONS["rating_sss"]
+    _RATING_SSS_MIN = HERO_THRESHOLDS["rating_sss"]
+    _MATERIAL_SSS_REGION = HERO_REGIONS["sss_material"]
+    _SSS_MATERIAL_MIN = HERO_THRESHOLDS["sss_material"]
+    _REWARD_TITLE_REGION = HERO_REGIONS["transmit_reward_title"]
+    _REWARD_CLOSE_REGION = HERO_REGIONS["transmit_reward_close"]
     # 颜色检测区（x, y, w, h）
     _BUTTON_ZONE = (1000, 900, 250, 200)
     _BUTTON_TL = (1028, 925)  # 140x140 按钮模板的标准落位左上角
@@ -254,12 +264,8 @@ class HeroSynthStateMachine:
     _BUTTON_CENTER = (1098, 995)
     _BUTTON_DISC_RADIUS = 58
     _BUTTON_STRUCT_MIN = 0.50  # 结构匹配下限：确认按钮存在（不限颜色）
-    # 评级字符 SSS 在左侧详情面板的中部位置（参考坐标）
-    _RATING_REGION = (130, 435, 180, 130)
-    _RATING_SSS_MIN = 0.90  # 紧裁剪 SSS 模板：避免把 SS 误判为 SSS
     _REDDOT_ZONE = (1030, 942, 32, 35)  # 模拟器按用户标框收紧的刻印按钮红点区
     _PC_REDDOT_ZONE = (1030, 935, 50, 50)  # PC 保留原红点区
-    _MATERIAL_SSS_REGION = (1750, 350, 230, 650)
     _MATERIAL_CARD_ZONE = (1460, 390, 522, 610)
     _CARD_BELOW_ZONE = (1450, 537, 520, 83)
     _DETAIL_CONTENT_ZONE = (150, 350, 550, 300)
@@ -281,12 +287,6 @@ class HeroSynthStateMachine:
     _BLUE_BAND_ZONE = (900, 700, 450, 120)
     _GOLD_BAND_ZONE = (650, 700, 330, 120)
     _REWARD_STRIP_ZONE = (880, 825, 160, 35)
-    _REWARD_TITLE_REGION = (760, 220, 460, 170)
-    _REWARD_CLOSE_REGION = (760, 740, 460, 230)
-    _IMPRINT_RESULT_TITLE_REGION = (650, 180, 700, 300)
-    _IMPRINT_RESULT_CLOSE_REGION = (650, 730, 700, 300)
-    _SSS_WARNING_TITLE_REGION = (500, 420, 1000, 250)
-    _SSS_WARNING_CLOSE_REGION = (700, 650, 550, 220)
     _TRANSMIT_STRIP_ZONE = (1400, 200, 250, 800)
     _TRANSMIT_GRID_ZONE = (50, 305, 620, 405)
     _DETAIL_FP_ZONE = (150, 350, 550, 300)
@@ -321,12 +321,10 @@ class HeroSynthStateMachine:
     _DETAIL_CONTENT_BRIGHT_MIN = 5000
     _SELECTED_TAB_BLUE_MIN = 1000
     _REWARD_STRIP_RANGE = (300, 1500)
-    _SSS_MATERIAL_MIN = 0.80  # 材料卡保留少量背景，阈值略低于评级模板
     _SSS_MATERIAL_CLEAR_MAX = 0.55
     _SSS_TEMPLATE_INSET = 4
     _NON_SSS_BUTTON_SATURATION_MIN = 90.0
-    _FILTER_ATTRIBUTE_MIN = 0.82
-    _FILTER_ATTRIBUTE_SMALL_MIN = 0.75
+    _FILTER_ATTRIBUTE_SMALL_MIN = FILTER_ATTRIBUTE_SMALL_THRESHOLD
     _UP_BADGE_MIN_PIXELS = 300
     _FILLED_SLOT_ORANGE_MIN = 5000
     _NONZERO_COST_YELLOW_MIN = 300
@@ -343,6 +341,9 @@ class HeroSynthStateMachine:
         if templates.evidence is not None:
             self._REGIONS = {
                 key: atom.region for key, atom in templates.evidence.atoms.items()
+            }
+            self._THRESHOLDS = {
+                key: atom.threshold for key, atom in templates.evidence.atoms.items()
             }
         self.completed_cycles = 0
         self.filter_verified = False
@@ -470,10 +471,16 @@ class HeroSynthStateMachine:
         return find_template(
             screen,
             getattr(self.templates, name),
-            threshold or self.templates.threshold,
-            region=region_override or self._REGIONS[name],
+            self._threshold(name) if threshold is None else threshold,
+            region=self._region(name) if region_override is None else region_override,
             reference_size=self._REFERENCE_SIZE,
         )
+
+    def _region(self, name: str) -> tuple[int, int, int, int]:
+        return self._REGIONS[name]
+
+    def _threshold(self, name: str) -> float:
+        return self._THRESHOLDS.get(name, self.templates.threshold)
 
     def _scaled_point(
         self, screen: np.ndarray, point: tuple[int, int]
@@ -552,12 +559,7 @@ class HeroSynthStateMachine:
         """
         if self.templates.assume_non_max_rating:
             return False
-        return (
-            self._locate(
-                screen, "rating_sss", self._RATING_SSS_MIN, region_override=self._RATING_REGION
-            )
-            is not None
-        )
+        return self._locate(screen, "rating_sss") is not None
 
     def _is_max_rating_safe(self) -> bool:
         """给 runner 层日志用的安全包装：无画面返回 False。"""
@@ -625,7 +627,7 @@ class HeroSynthStateMachine:
             screen,
             template,
             -1.0,
-            region=self._MATERIAL_SSS_REGION,
+            region=self._region("sss_material"),
             reference_size=self._REFERENCE_SIZE,
         )
         return match.score if match is not None else -1.0
@@ -639,7 +641,7 @@ class HeroSynthStateMachine:
         score = self._material_page_sss_score(screen)
         if score < 0:
             return SafetyClass.UNKNOWN
-        if score >= self._SSS_MATERIAL_MIN:
+        if score >= self._threshold("sss_material"):
             return SafetyClass.SSS
         if score <= self._SSS_MATERIAL_CLEAR_MAX:
             return SafetyClass.NON_SSS
@@ -656,18 +658,8 @@ class HeroSynthStateMachine:
             or self.templates.sss_material_warning_close is None
         ):
             return None
-        title = self._locate(
-            screen,
-            "sss_material_warning_title",
-            0.82,
-            region_override=self._SSS_WARNING_TITLE_REGION,
-        )
-        close = self._locate(
-            screen,
-            "sss_material_warning_close",
-            0.82,
-            region_override=self._SSS_WARNING_CLOSE_REGION,
-        )
+        title = self._locate(screen, "sss_material_warning_title")
+        close = self._locate(screen, "sss_material_warning_close")
         return close if title is not None and close is not None else None
 
     def _card_below_present(self, screen: np.ndarray) -> bool:
@@ -788,11 +780,12 @@ class HeroSynthStateMachine:
         if self.templates.pc_client or self.templates.sss_material is None:
             return -1.0
         start, end = row
+        material_region = self._region("sss_material")
         region = region_override or (
-            self._MATERIAL_SSS_REGION[0],
-            max(self._MATERIAL_SSS_REGION[1], start - 45),
-            self._MATERIAL_SSS_REGION[2],
-            min(self._MATERIAL_SSS_REGION[3], end - start + 90),
+            material_region[0],
+            max(material_region[1], start - 45),
+            material_region[2],
+            min(material_region[3], end - start + 90),
         )
         inset = self._SSS_TEMPLATE_INSET
         # 去掉模板边缘的卡片背景，避免普通传送卡在背景纹理上得到 0.55+。
@@ -818,7 +811,7 @@ class HeroSynthStateMachine:
         score = self._material_sss_score(screen, row)
         if score < 0:
             return SafetyClass.UNKNOWN
-        if score >= self._SSS_MATERIAL_MIN:
+        if score >= self._threshold("sss_material"):
             return SafetyClass.SSS
         if score <= self._SSS_MATERIAL_CLEAR_MAX:
             return SafetyClass.NON_SSS
@@ -942,18 +935,8 @@ class HeroSynthStateMachine:
             or self.templates.transmit_reward_close is None
         ):
             return False
-        title = self._locate(
-            screen,
-            "transmit_reward_title",
-            0.90,
-            region_override=self._REWARD_TITLE_REGION,
-        )
-        close = self._locate(
-            screen,
-            "transmit_reward_close",
-            0.92,
-            region_override=self._REWARD_CLOSE_REGION,
-        )
+        title = self._locate(screen, "transmit_reward_title")
+        close = self._locate(screen, "transmit_reward_close")
         return (
             title is not None
             and close is not None
@@ -966,18 +949,8 @@ class HeroSynthStateMachine:
             or self.templates.imprint_result_close is None
         ):
             return False
-        title = self._locate(
-            screen,
-            "imprint_result_title",
-            0.82,
-            region_override=self._IMPRINT_RESULT_TITLE_REGION,
-        )
-        close = self._locate(
-            screen,
-            "imprint_result_close",
-            0.78,
-            region_override=self._IMPRINT_RESULT_CLOSE_REGION,
-        )
+        title = self._locate(screen, "imprint_result_title")
+        close = self._locate(screen, "imprint_result_close")
         return title is not None and close is not None
 
     def _transmit_grid_filled(self, screen: np.ndarray) -> bool:
@@ -990,7 +963,7 @@ class HeroSynthStateMachine:
 
     def _transmit_page_ready(self, screen: np.ndarray) -> bool:
         return bool(
-            self._locate(screen, "auto_select_label", 0.85)
+            self._locate(screen, "auto_select_label")
             and self._transmit_target_card(screen) is not None
             and self._transmit_grid_present(screen)
             and self._transmit_green_present(screen)
@@ -1047,7 +1020,7 @@ class HeroSynthStateMachine:
         )
         if score < 0:
             return SafetyClass.UNKNOWN
-        if score >= self._SSS_MATERIAL_MIN:
+        if score >= self._threshold("sss_material"):
             return SafetyClass.SSS
         if score <= self._SSS_MATERIAL_CLEAR_MAX:
             return SafetyClass.NON_SSS
@@ -1088,21 +1061,21 @@ class HeroSynthStateMachine:
         attribute_min = (
             self._FILTER_ATTRIBUTE_SMALL_MIN
             if scale <= 0.55
-            else self._FILTER_ATTRIBUTE_MIN
+            else self._threshold("filter_attribute_label")
         )
-        level = self._locate(screen, "filter_level_label", 0.80)
+        level = self._locate(screen, "filter_level_label")
         attribute = self._locate(screen, "filter_attribute_label", attribute_min)
         panel_open = level is not None and attribute is not None
         if panel_open:
-            if self._locate(screen, "filter_star3_selected", 0.90) is not None:
+            if self._locate(screen, "filter_star3_selected") is not None:
                 return FilterObservation.FILTER_OPEN_STAR3_SELECTED
-            if self._locate(screen, "filter_star3_unselected", 0.90) is not None:
+            if self._locate(screen, "filter_star3_unselected") is not None:
                 return FilterObservation.FILTER_OPEN_STAR3_UNSELECTED
             return FilterObservation.UNKNOWN
         if level is not None or attribute is not None:
             return FilterObservation.UNKNOWN
         if (
-            self._locate(screen, "filter_button", 0.80) is not None
+            self._locate(screen, "filter_button") is not None
             and self._hero_list_ready(screen)
         ):
             return FilterObservation.HERO_LIST_FILTER_CLOSED
@@ -1176,7 +1149,7 @@ class HeroSynthStateMachine:
         return False, None
 
     def _back_action(self, screen: np.ndarray) -> Optional[HeroAction]:
-        back = self._locate(screen, "story_back", 0.90)
+        back = self._locate(screen, "story_back")
         if back is None:
             return None
         # match.center 已是屏幕坐标，仅做箭头热区向左偏移
@@ -1349,7 +1322,7 @@ class HeroSynthStateMachine:
         # 3. 确认弹窗（合成/传送共用的蓝色按钮）
         confirm = self._confirm_button(screen)
         if confirm is not None:
-            transmit_ctx = self._locate(screen, "auto_select_label", 0.85) is not None
+            transmit_ctx = self._locate(screen, "auto_select_label") is not None
             if transmit_ctx or self.state.value.startswith("transmit"):
                 if (
                     not self.templates.pc_client
@@ -1412,7 +1385,7 @@ class HeroSynthStateMachine:
             or self.state is HeroSynthState.TRANSMIT_RETURNING
         ):
             self.state = HeroSynthState.TRANSMIT_RETURNING
-            if self._locate(screen, "auto_select_label", 0.85):
+            if self._locate(screen, "auto_select_label"):
                 self._confirm_page("传送选择")
                 back = self._back_action(screen)
                 if back is not None:
@@ -1434,7 +1407,7 @@ class HeroSynthStateMachine:
             self.state = HeroSynthState.HERO_LIST
 
         # 5. 传送选择界面：四个锚点齐全才算真正进入。
-        if self._locate(screen, "auto_select_label", 0.85):
+        if self._locate(screen, "auto_select_label"):
             if not self.templates.pc_client and (
                 self.transmit_phase
                 not in (TransmitPhase.OPENING, TransmitPhase.SELECTING)
@@ -1689,7 +1662,7 @@ class HeroSynthStateMachine:
                 return filter_action
             if self._equipment_tab_selected(screen):
                 if (
-                    self._locate(screen, "filter_button", 0.80) is None
+                    self._locate(screen, "filter_button") is None
                     and not self._hero_list_ready(screen)
                 ):
                     return None
@@ -1705,7 +1678,7 @@ class HeroSynthStateMachine:
                 return None
 
         filter_level = self._locate(screen, "filter_level_label")
-        star3_selected = self._locate(screen, "filter_star3_selected", 0.90)
+        star3_selected = self._locate(screen, "filter_star3_selected")
         if (
             self.templates.pc_client
             and not self._filter_session_done
@@ -2189,7 +2162,7 @@ class HeroSynthRunner(ModeRunnerBase):
         )
         if action.name != "open_transmit_for_current_card":
             return
-        auto_select = self.machine._locate(screen, "auto_select_label", 0.85)
+        auto_select = self.machine._locate(screen, "auto_select_label")
         card = self.machine._transmit_target_card(screen)
         auto_select_evidence = (
             f"{auto_select.score:.3f}"
