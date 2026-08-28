@@ -30,11 +30,24 @@ REGIONS = {
 }
 
 THRESHOLDS = {
+    "filter_button": 0.80,
+    "filter_level_label": 0.80,
     "filter_attribute_label": 0.82,
-    "filter_star3_unselected": 0.80,
+    "filter_star3_selected": 0.90,
+    "filter_star3_unselected": 0.90,
+    "auto_select_label": 0.85,
+    "story_back": 0.90,
     "sss_material": 0.80,
     "rating_sss": 0.90,
+    "sss_material_warning_title": 0.82,
+    "sss_material_warning_close": 0.82,
+    "imprint_result_title": 0.82,
+    "imprint_result_close": 0.78,
+    "transmit_reward_title": 0.90,
+    "transmit_reward_close": 0.92,
 }
+
+FILTER_ATTRIBUTE_SMALL_THRESHOLD = 0.75
 
 _TEMPLATE_PATHS = {
     "filter_button": "hero/filter_button.png",
