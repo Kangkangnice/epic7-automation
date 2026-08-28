@@ -20,3 +20,12 @@ def test_expedition_profile_uses_current_templates_and_special_threshold():
         "difficulty_title",
         "difficulty_confirm",
     )
+
+
+def test_expedition_profile_reports_required_template_missing_from_empty_directory(tmp_path):
+    profile = build_expedition_evidence(tmp_path)
+
+    assert "home" in profile.atoms
+    errors = validate_profile(profile, tmp_path)
+    assert any("home.png" in error and "模板不存在" in error for error in errors)
+    assert not any("empty_posters.png" in error for error in errors)

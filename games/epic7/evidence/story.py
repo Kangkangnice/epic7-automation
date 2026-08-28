@@ -69,6 +69,8 @@ _TEMPLATE_NAMES = (
     "stamina_confirm",
 )
 
+_OPTIONAL_TEMPLATES = {"stamina_popup", "stamina_material", "stamina_confirm"}
+
 
 def build_story_evidence(template_dir: Path) -> EvidenceProfile:
     atoms = {
@@ -77,10 +79,10 @@ def build_story_evidence(template_dir: Path) -> EvidenceProfile:
             template_path=f"{name}.png",
             region=REGIONS[name],
             threshold=THRESHOLDS.get(name, 0.80),
+            required=name not in _OPTIONAL_TEMPLATES,
             reference_size=REFERENCE_SIZE,
         )
         for name in _TEMPLATE_NAMES
-        if (template_dir / f"{name}.png").is_file()
     }
     return EvidenceProfile(
         atoms=atoms,
@@ -98,4 +100,6 @@ def build_story_evidence(template_dir: Path) -> EvidenceProfile:
                 any_of=(("stamina_material", "stamina_confirm"),),
             ),
         ),
+        config_path=str(Path(__file__).resolve()),
+        template_root=template_dir,
     )
