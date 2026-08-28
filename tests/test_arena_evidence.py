@@ -29,3 +29,14 @@ def test_arena_team_page_rejects_ticket_popup_as_unsafe():
         page.evaluate({"battle_start": True, "no_ticket": True})
         is EvidenceState.UNSAFE
     )
+
+
+def test_arena_selected_page_does_not_accept_list_page_as_selected():
+    profile = build_arena_evidence(TEMPLATES)
+    page = profile.page("arena.selected")
+
+    assert page.evaluate({"challenge": True}) is EvidenceState.SAFE
+    assert (
+        page.evaluate({"challenge": True, "list_ready": True})
+        is EvidenceState.UNSAFE
+    )

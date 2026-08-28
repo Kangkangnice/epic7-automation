@@ -75,7 +75,11 @@ def build_arena_evidence(template_dir: Path) -> EvidenceProfile:
         atoms=atoms,
         pages=(
             PageEvidence("arena.list", required=("list_ready",)),
-            PageEvidence("arena.selected", required=("challenge",)),
+            PageEvidence(
+                "arena.selected",
+                required=("challenge",),
+                forbidden=("list_ready",),
+            ),
             PageEvidence(
                 "arena.team",
                 required=("battle_start",),
