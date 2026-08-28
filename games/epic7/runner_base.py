@@ -13,6 +13,9 @@
 from time import sleep as default_sleep
 from typing import Any, Callable, Optional
 
+from auto_game_unified.core.evidence_diagnostics import (
+    save_runtime_evidence_diagnostic,
+)
 from auto_game_unified.core.recovery import RecoveryGate
 from auto_game_unified.core.runtime import Runtime, StaminaExhausted
 from auto_game_unified.core.supervisor import StableObservation
@@ -170,6 +173,33 @@ class ModeRunnerBase:
     def _timeout_error_message(self, error: Exception, diagnostic) -> str:
         return f"页面无进展：{error}；已安全停止并保存诊断 {diagnostic}"
 
+    def _save_failure_diagnostic(
+        self,
+        legacy_path,
+        screen,
+        *,
+        action: Any = None,
+        attempt: int = 1,
+        conclusion: str,
+    ):
+        templates = getattr(self.machine, "templates", None)
+        profile = getattr(templates, "evidence", None)
+        return save_runtime_evidence_diagnostic(
+            self.runtime,
+            screen,
+            profile,
+            legacy_path=legacy_path,
+            mode=self._MODE_LABEL,
+            action=getattr(action, "name", "") or "observe",
+            source=(
+                getattr(action, "source_page", "")
+                or self._state_label(self.machine.state)
+            ),
+            targets=getattr(action, "target_pages", ()),
+            attempt=attempt,
+            conclusion=conclusion,
+        )
+
     def _log_state_timeout(self, state: Any, elapsed: float, diagnostic) -> None:
         """状态超时抛错前的补充日志（主线有，其余默认无）。"""
 
@@ -220,6 +250,11 @@ class ModeRunnerBase:
         except RuntimeError as error:
             diagnostic = self.runtime.save_diagnostic(
                 f"dry_run_{self.machine.state.value}", screen
+            )
+            self._save_failure_diagnostic(
+                diagnostic,
+                screen,
+                conclusion=f"空跑未识别画面：{error}",
             )
             raise RuntimeError(
                 f"空跑未识别画面[{self._state_label(self.machine.state)}]；"
@@ -282,6 +317,11 @@ class ModeRunnerBase:
                 if elapsed >= black_timeout:
                     diagnostic = self.runtime.save_diagnostic(
                         "black_screen_timeout", screen
+                    )
+                    self._save_failure_diagnostic(
+                        diagnostic,
+                        screen,
+                        conclusion="黑屏超过允许时间",
                     )
                     message = (
                         f"黑屏时间过长（{black_timeout:.0f}秒），程序已安全停止；"
@@ -410,6 +450,11 @@ class ModeRunnerBase:
                     diagnostic = self.runtime.save_diagnostic(
                         f"timeout_{self.machine.state.value}", screen
                     )
+                    self._save_failure_diagnostic(
+                        diagnostic,
+                        screen,
+                        conclusion=f"页面识别超时：{error}",
+                    )
                     self._log_state_timeout(self.machine.state, elapsed, diagnostic)
                     raise RuntimeError(
                         self._timeout_error_message(error, diagnostic)
@@ -537,6 +582,13 @@ class ModeRunnerBase:
                     diagnostic = self.runtime.save_diagnostic(
                         f"retry_exhausted_{action.name}", screen
                     )
+                    self._save_failure_diagnostic(
+                        diagnostic,
+                        screen,
+                        action=action,
+                        attempt=action_attempts,
+                        conclusion="来源页面持续存在，点击四次仍未进入目标页面",
+                    )
                     raise RuntimeError(
                         f"动作 {action.name} 点击4次后画面未推进；已保存诊断 {diagnostic}"
                     )
@@ -623,6 +675,17 @@ class ModeRunnerBase:
                 diagnostic = self.runtime.save_diagnostic(
                     f"timeout_{timeout_label}", screen
                 )
+                self._save_failure_diagnostic(
+                    diagnostic,
+                    screen,
+                    action=last_transition_action,
+                    attempt=action_attempts,
+                    conclusion=(
+                        "目标页面未出现"
+                        if last_transition_action is not None
+                        else "当前页面无动作且等待超时"
+                    ),
+                )
                 if last_transition_action is not None:
                     targets = "/".join(last_transition_action.target_pages)
                     self._log_transition_timeout(
@@ -651,6 +714,13 @@ class ModeRunnerBase:
             ):
                 diagnostic = self.runtime.save_diagnostic(
                     f"absolute_{self.machine.state.value}", screen
+                )
+                self._save_failure_diagnostic(
+                    diagnostic,
+                    screen,
+                    action=last_transition_action,
+                    attempt=action_attempts,
+                    conclusion="页面停留超过绝对超时",
                 )
                 raise RuntimeError(
                     f"页面[{self._state_label(self.machine.state)}]绝对超时；"
