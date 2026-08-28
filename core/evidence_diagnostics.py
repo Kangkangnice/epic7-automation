@@ -8,7 +8,7 @@ from typing import Any, Mapping, Sequence
 import cv2
 import numpy as np
 
-from .matcher import Match, find_template, load_template
+from .matcher import Match, find_best_template, load_template
 from auto_game_unified.games.epic7.evidence.common import (
     EvidenceProfile,
     EvidenceState,
@@ -43,20 +43,20 @@ def inspect_profile(
     for key, atom in profile.atoms.items():
         template_path = template_root / atom.template_path
         template = load_template(str(template_path))
-        match: Match | None = find_template(
+        match: Match | None = find_best_template(
             screen,
             template,
-            atom.threshold,
             region=atom.region,
             reference_size=atom.reference_size,
         )
-        flags[key] = match is not None
+        observed = match is not None and match.score >= atom.threshold
+        flags[key] = observed
         observations[key] = AtomObservation(
             key=key,
             template=str(template_path),
             region=atom.region,
             threshold=atom.threshold,
-            observed=match is not None,
+            observed=observed,
             score=match.score if match is not None else None,
             center=match.center if match is not None else None,
         )

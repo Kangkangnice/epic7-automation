@@ -19,14 +19,13 @@ def load_template(path: str) -> np.ndarray:
     return cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
 
 
-def find_template(
+def find_best_template(
     screen: np.ndarray,
     template: np.ndarray,
-    threshold: float,
     region: tuple[int, int, int, int] | None = None,
     reference_size: tuple[int, int] | None = None,
 ) -> Optional[Match]:
-    """Find a template in a local screen and return its local center.
+    """Return the highest-scoring template position without applying a threshold.
 
     ``reference_size`` is the image size used to create the template.  When the
     emulator window is displayed at another uniform scale, both its templates
@@ -60,10 +59,26 @@ def find_template(
 
     result = cv2.matchTemplate(search, template, cv2.TM_CCOEFF_NORMED)
     _, score, _, location = cv2.minMaxLoc(result)
-    if score < threshold:
-        return None
-
     return Match(
         center=(offset_x + location[0] + width // 2, offset_y + location[1] + height // 2),
         score=float(score),
     )
+
+
+def find_template(
+    screen: np.ndarray,
+    template: np.ndarray,
+    threshold: float,
+    region: tuple[int, int, int, int] | None = None,
+    reference_size: tuple[int, int] | None = None,
+) -> Optional[Match]:
+    """Find a template when its highest score reaches ``threshold``."""
+    best = find_best_template(
+        screen,
+        template,
+        region=region,
+        reference_size=reference_size,
+    )
+    if best is None or best.score < threshold:
+        return None
+    return best

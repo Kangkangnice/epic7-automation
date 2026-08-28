@@ -52,6 +52,35 @@ def test_inspect_profile_reports_match_score_and_page_state(tmp_path: Path):
     assert report.pages["sample.page"] is EvidenceState.SAFE
 
 
+def test_inspect_profile_keeps_score_below_threshold(tmp_path: Path):
+    profile = _profile(tmp_path)
+    atom = profile.atom("anchor")
+    profile = EvidenceProfile(
+        atoms={
+            "anchor": AtomEvidence(
+                atom.key,
+                atom.template_path,
+                atom.region,
+                0.9999,
+                reference_size=atom.reference_size,
+            )
+        },
+        pages=profile.pages,
+    )
+    template = np.arange(100, dtype=np.uint8).reshape(10, 10)
+    changed = template.copy()
+    changed[:3, :3] = 0
+    screen = np.zeros((40, 40, 3), dtype=np.uint8)
+    screen[10:20, 10:20] = np.repeat(changed[:, :, None], 3, axis=2)
+
+    report = inspect_profile(screen, profile, tmp_path)
+    observation = report.atoms["anchor"]
+
+    assert observation.observed is False
+    assert observation.score is not None
+    assert observation.score < observation.threshold
+
+
 def test_write_evidence_diagnostic_saves_json_and_crops(tmp_path: Path):
     screen = np.zeros((40, 50, 3), dtype=np.uint8)
     output = write_evidence_diagnostic(
