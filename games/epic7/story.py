@@ -35,20 +35,31 @@ from auto_game_unified.games.epic7.global_popups import (
     find_friendship_points_popup_close,
 )
 from auto_game_unified.games.epic7.stamina import (
-    STAMINA_REGIONS,
     load_stamina_templates,
     next_stamina_decision,
 )
 from auto_game_unified.games.epic7.runner_base import ModeRunnerBase
 from auto_game_unified.games.epic7.unknown_screen import UnrecognizedScreen
+from auto_game_unified.games.epic7.evidence.common import EvidenceProfile
+from auto_game_unified.games.epic7.evidence.story import (
+    BATTLE_GUIDE_DONT_SHOW_REGION,
+    BATTLE_GUIDE_TITLE_REGION,
+    REFERENCE_SIZE as STORY_REFERENCE_SIZE,
+    REGIONS as STORY_REGIONS,
+    THRESHOLDS as STORY_THRESHOLDS,
+    STORY_SKIP_CONFIRM_REGION,
+    STORY_SKIP_REGION,
+    WATCH_STORY_REGION,
+    build_story_evidence,
+)
 
 
-_WATCH_STORY_REFERENCE_SIZE = (1982, 1132)
-_WATCH_STORY_REGION = (1450, 930, 470, 202)
-_STORY_SKIP_REGION = (1700, 0, 240, 200)
-_STORY_SKIP_CONFIRM_REGION = (850, 600, 600, 300)
-_BATTLE_GUIDE_TITLE_REGION = (780, 250, 420, 180)
-_BATTLE_GUIDE_DONT_SHOW_REGION = (1080, 760, 420, 190)
+_WATCH_STORY_REFERENCE_SIZE = STORY_REFERENCE_SIZE
+_WATCH_STORY_REGION = WATCH_STORY_REGION
+_STORY_SKIP_REGION = STORY_SKIP_REGION
+_STORY_SKIP_CONFIRM_REGION = STORY_SKIP_CONFIRM_REGION
+_BATTLE_GUIDE_TITLE_REGION = BATTLE_GUIDE_TITLE_REGION
+_BATTLE_GUIDE_DONT_SHOW_REGION = BATTLE_GUIDE_DONT_SHOW_REGION
 
 
 def find_battle_guide_dont_show(
@@ -234,6 +245,11 @@ def state_label(state: StoryState) -> str:
 class StoryAction:
     name: str
     point: tuple[int, int]
+    source_page: str = ""
+    target_pages: tuple[str, ...] = ()
+    reason: str = ""
+    source_state: StoryState | None = None
+    target_states: tuple[StoryState, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -260,6 +276,7 @@ class StoryTemplates:
     stamina_material: Optional[np.ndarray] = None
     stamina_confirm: Optional[np.ndarray] = None
     quick_battle: QuickBattleDetector | None = None
+    evidence: EvidenceProfile | None = None
 
 
 def build_story_templates(template_dir: Path) -> StoryTemplates:
@@ -287,32 +304,16 @@ def build_story_templates(template_dir: Path) -> StoryTemplates:
         next_stage=load_template(str(template_dir / "next_stage.png")),
         **asdict(load_stamina_templates(template_dir)),
         quick_battle=load_simulator_quick_battle_detector(template_dir),
+        evidence=build_story_evidence(template_dir),
     )
 
 
 class StoryStateMachine:
     """Story workflow in the game window's local coordinate space."""
 
-    _THRESHOLDS = {
-        "skip": 0.75,
-    }
-    _REFERENCE_SIZE = (1982, 1132)
-    _REGIONS = {
-        "watch_story": (1450, 930, 470, 202),
-        "select_team": (1400, 930, 520, 202),
-        "start_mission": (1400, 930, 520, 202),
-        "skip": (1700, 0, 240, 200),
-        "skip_confirm": (850, 600, 600, 300),
-        "auto_off": (1550, 0, 300, 200),
-        "auto_on": (1550, 0, 300, 200),
-        "reward": (700, 400, 650, 400),
-        "clear": (500, 150, 900, 700),
-        "results_confirm": (1500, 930, 420, 202),
-        "complete": (650, 150, 700, 700),
-        "bonus_reward": (350, 150, 1200, 850),
-        "next_stage": (1450, 930, 470, 202),
-        **STAMINA_REGIONS,
-    }
+    _THRESHOLDS = STORY_THRESHOLDS
+    _REFERENCE_SIZE = STORY_REFERENCE_SIZE
+    _REGIONS = STORY_REGIONS
     _BONUS_REWARD_CLOSE_OFFSET = (0, 312)
     _AUTO_CLICK_POINT = (1690, 96)
 
@@ -321,6 +322,13 @@ class StoryStateMachine:
     ) -> None:
         self.templates = templates
         self.state = initial_state
+        if templates.evidence is not None:
+            self._REGIONS = {
+                key: atom.region for key, atom in templates.evidence.atoms.items()
+            }
+            self._THRESHOLDS = {
+                key: atom.threshold for key, atom in templates.evidence.atoms.items()
+            }
         self.auto_enabled = False
         self.auto_click_attempted = False
         self.battle_controls = BattleControls.TRANSITION
@@ -328,6 +336,48 @@ class StoryStateMachine:
         self.stamina_replenished = 0
         self.stamina_replenish_max: int | None = None
         self._stamina_material_clicked = False
+        self._stamina_purchase_pending = False
+        self._confirmed_page = ""
+
+    def _confirm_page(self, page: str) -> None:
+        self._confirmed_page = page
+
+    def _action(
+        self,
+        name: str,
+        point: tuple[int, int],
+        *,
+        source_page: str,
+        target_pages: tuple[str, ...],
+        reason: str,
+        target_states: tuple[StoryState, ...] = (),
+    ) -> StoryAction:
+        self._confirm_page(source_page)
+        return StoryAction(
+            name,
+            point,
+            source_page,
+            target_pages,
+            reason,
+            self.state,
+            target_states,
+        )
+
+    def commit(self, action: StoryAction, target: StoryState) -> None:
+        """Commit a declared target only after the runner has observed it stable."""
+        if action.source_state is not None and action.source_state is not self.state:
+            raise RuntimeError("主线转场来源状态已变化，拒绝提交旧动作")
+        if target not in action.target_states:
+            raise RuntimeError("主线转场目标不在动作契约中")
+        self.state = target
+
+    def action_clicked(self, action: StoryAction) -> None:
+        """Record click-side effects that must not happen during action preview."""
+        if action.name == "stamina_material":
+            self._stamina_material_clicked = True
+        elif action.name == "stamina_confirm":
+            self._stamina_material_clicked = False
+            self._stamina_purchase_pending = True
 
     def _locate(self, screen: np.ndarray, name: str):
         """Match only the expected local UI region; never the desktop."""
@@ -479,6 +529,9 @@ class StoryStateMachine:
             return None
         if self._locate(screen, "stamina_popup") is None:
             self._stamina_material_clicked = False
+            if self._stamina_purchase_pending:
+                self.stamina_replenished += 1
+                self._stamina_purchase_pending = False
             return None
         if (
             self.stamina_replenish_max is not None
@@ -497,13 +550,22 @@ class StoryStateMachine:
             screen, self._locate, material_clicked=self._stamina_material_clicked
         )
         if decision.status == "material":
-            self._stamina_material_clicked = True
-            return StoryAction("stamina_material", decision.point)
+            return self._action(
+                "stamina_material",
+                decision.point,
+                source_page="体力弹窗",
+                target_pages=("体力弹窗（生命之叶已选中）",),
+                reason="体力弹窗与生命之叶选项已识别",
+            )
         if decision.status == "waiting":
             return None
-        self._stamina_material_clicked = False
-        self.stamina_replenished += 1
-        return StoryAction("stamina_confirm", decision.point)
+        return self._action(
+            "stamina_confirm",
+            decision.point,
+            source_page="体力弹窗（生命之叶已选中）",
+            target_pages=("队伍准备", "快速战斗", "战斗中"),
+            reason="生命之叶选中且购买确认按钮已识别",
+        )
 
     def next_action(self, screen: np.ndarray) -> Optional[StoryAction]:
         stamina_action = self._handle_stamina(screen)
@@ -520,78 +582,182 @@ class StoryStateMachine:
                 pre_battle.mode is PreBattleMode.QUICK
                 and pre_battle.switch_point is not None
             ):
-                self.state = StoryState.WAIT_BATTLE
-                self.auto_enabled = False
-                self.auto_click_attempted = False
-                self.battle_controls = BattleControls.TRANSITION
-                return StoryAction("start_mission", pre_battle.switch_point)
+                return self._action(
+                    "switch_to_normal_battle",
+                    pre_battle.switch_point,
+                    source_page="快速战斗",
+                    target_pages=("队伍准备",),
+                    reason="快速战斗按钮与切换按钮同时成立",
+                    target_states=(StoryState.TEAM,),
+                )
 
         checks = [
-            ("reward", StoryState.WAIT_RESULTS),
-            ("clear", StoryState.WAIT_RESULTS),
-            ("results_confirm", StoryState.WAIT_COMPLETE),
-            ("complete", StoryState.WAIT_NEXT_STAGE),
-            ("bonus_reward", StoryState.WAIT_NEXT_STAGE),
-            ("skip_confirm", StoryState.ACTIVE),
-            ("skip", StoryState.WAIT_SKIP_CONFIRM),
-            ("watch_story", StoryState.WAIT_SKIP_CONFIRM),
-            ("select_team", StoryState.TEAM),
-            ("start_mission", StoryState.WAIT_BATTLE),
+            (
+                "reward",
+                "奖励结算",
+                ("通关结算", "结算确认"),
+                StoryState.WAIT_RESULTS,
+                (StoryState.WAIT_RESULTS,),
+                "奖励按钮位于结算页",
+            ),
+            (
+                "clear",
+                "通关结算",
+                ("结算确认", "通关提示"),
+                StoryState.WAIT_RESULTS,
+                (StoryState.WAIT_RESULTS, StoryState.WAIT_COMPLETE),
+                "通关结算主体已识别",
+            ),
+            (
+                "results_confirm",
+                "结算确认",
+                ("通关提示", "额外奖励", "下一关入口"),
+                StoryState.WAIT_RESULTS,
+                (StoryState.WAIT_COMPLETE, StoryState.WAIT_NEXT_STAGE),
+                "结算确认按钮位于底部确认区",
+            ),
+            (
+                "complete",
+                "通关提示",
+                ("额外奖励", "下一关入口", "关卡入口", "剧情关卡入口"),
+                StoryState.WAIT_COMPLETE,
+                (StoryState.WAIT_NEXT_STAGE, StoryState.STAGE),
+                "通关提示主体已识别",
+            ),
+            (
+                "bonus_reward",
+                "额外奖励",
+                ("下一关入口", "关卡入口", "剧情关卡入口"),
+                StoryState.WAIT_NEXT_STAGE,
+                (StoryState.WAIT_NEXT_STAGE, StoryState.STAGE),
+                "额外奖励弹窗已识别",
+            ),
+            (
+                "skip_confirm",
+                "跳过确认",
+                ("剧情播放", "战斗中", "关卡入口", "剧情关卡入口"),
+                StoryState.WAIT_SKIP_CONFIRM,
+                (StoryState.ACTIVE, StoryState.STAGE),
+                "跳过确认按钮已识别",
+            ),
+            (
+                "skip",
+                "剧情播放",
+                ("跳过确认", "战斗中", "关卡入口", "剧情关卡入口"),
+                StoryState.ACTIVE,
+                (StoryState.WAIT_SKIP_CONFIRM, StoryState.ACTIVE, StoryState.STAGE),
+                "剧情右上角跳过按钮已识别",
+            ),
+            (
+                "watch_story",
+                "剧情关卡入口",
+                ("剧情播放", "跳过确认", "关卡入口", "战斗中"),
+                StoryState.STAGE,
+                (StoryState.WAIT_SKIP_CONFIRM, StoryState.ACTIVE, StoryState.STAGE),
+                "关卡入口的观看剧情按钮已识别",
+            ),
+            (
+                "select_team",
+                "助手选择",
+                ("队伍准备", "快速战斗"),
+                StoryState.TEAM,
+                (StoryState.TEAM,),
+                "助手选择页的确认按钮已识别",
+            ),
+            (
+                "start_mission",
+                "队伍准备",
+                ("战斗中", "体力弹窗"),
+                StoryState.TEAM,
+                (StoryState.WAIT_BATTLE,),
+                "普通战斗开始按钮已识别",
+            ),
         ]
-        for name, new_state in checks:
+        for name, source_page, targets, source_state, target_states, reason in checks:
             match = self._locate(screen, name)
             if match is not None:
                 previous_state = self.state
-                self.state = new_state
                 if (
                     name == "watch_story"
                     and previous_state
                     in (StoryState.WAIT_COMPLETE, StoryState.WAIT_NEXT_STAGE)
                 ):
                     self.completed_cycles += 1
-                if name in ("select_team", "start_mission"):
+                self.state = source_state
+                if name in ("select_team", "start_mission", "watch_story"):
                     self.auto_enabled = False
                 if name == "start_mission":
                     self.auto_click_attempted = False
                     self.battle_controls = BattleControls.TRANSITION
-                return StoryAction(name, self._action_point(screen, name, match))
+                return self._action(
+                    name,
+                    self._action_point(screen, name, match),
+                    source_page=source_page,
+                    target_pages=targets,
+                    reason=reason,
+                    target_states=target_states,
+                )
         match = self._locate(screen, "prepare_battle")
         if match is not None:
             if self.state in (StoryState.WAIT_COMPLETE, StoryState.WAIT_NEXT_STAGE):
+                self._confirm_page("关卡入口")
                 self.completed_cycles += 1
-            if self.state == StoryState.WAIT_NEXT_STAGE:
                 self.state = StoryState.STAGE
                 return None
-            self.state = StoryState.TEAM
+            self.state = StoryState.STAGE
             self.auto_enabled = False
             self.auto_click_attempted = False
             self.battle_controls = BattleControls.TRANSITION
-            return StoryAction("prepare_battle", match.center)
-        if self.state in (StoryState.WAIT_BATTLE, StoryState.ACTIVE):
+            return self._action(
+                "prepare_battle",
+                match.center,
+                source_page="关卡入口",
+                target_pages=("助手选择", "队伍准备", "快速战斗"),
+                reason="关卡入口的准备战斗按钮已识别",
+                target_states=(StoryState.TEAM,),
+            )
+        if self.state in (
+            StoryState.WAIT_SKIP_CONFIRM,
+            StoryState.WAIT_BATTLE,
+            StoryState.ACTIVE,
+        ):
             self.battle_controls = self.observe_battle_controls(screen)
             if self.battle_controls == BattleControls.AUTO_CONTROLS:
                 self.state = StoryState.ACTIVE
                 self.auto_enabled = True
+                self._confirm_page("战斗中")
                 return None
             if self.battle_controls == BattleControls.MANUAL_CONTROLS:
                 self.state = StoryState.WAIT_BATTLE
                 self.auto_enabled = False
-                if self.auto_click_attempted:
-                    return None
-                self.auto_click_attempted = True
                 match = self._locate(screen, "auto_off")
                 point = (
                     match.center
                     if match is not None
                     else self._scaled_point(screen, self._AUTO_CLICK_POINT)
                 )
-                return StoryAction("enable_auto", point)
+                return self._action(
+                    "enable_auto",
+                    point,
+                    source_page="战斗中（自动关闭）",
+                    target_pages=("战斗中",),
+                    reason="战斗头像布局与自动关闭图标已识别",
+                    target_states=(StoryState.ACTIVE,),
+                )
         if self.state == StoryState.WAIT_NEXT_STAGE:
             match = self._locate(screen, "bonus_reward")
             if match is not None:
-                return StoryAction("bonus_reward", self._action_point(screen, "bonus_reward", match))
+                return self._action(
+                    "bonus_reward",
+                    self._action_point(screen, "bonus_reward", match),
+                    source_page="额外奖励",
+                    target_pages=("下一关入口", "关卡入口", "剧情关卡入口"),
+                    reason="额外奖励弹窗已识别",
+                    target_states=(StoryState.WAIT_NEXT_STAGE, StoryState.STAGE),
+                )
             match = self._locate(screen, "next_stage")
             if match is not None:
+                self._confirm_page("下一关入口")
                 self.completed_cycles += 1
                 self.state = StoryState.STAGE
                 return None
@@ -602,18 +768,36 @@ class StoryStateMachine:
             # ending on the (possibly stale) complete button.
             match = self._locate(screen, "bonus_reward")
             if match is not None:
-                return StoryAction("bonus_reward", self._action_point(screen, "bonus_reward", match))
+                self.state = StoryState.WAIT_NEXT_STAGE
+                return self._action(
+                    "bonus_reward",
+                    self._action_point(screen, "bonus_reward", match),
+                    source_page="额外奖励",
+                    target_pages=("下一关入口", "关卡入口", "剧情关卡入口"),
+                    reason="通关后的额外奖励弹窗已识别",
+                    target_states=(StoryState.WAIT_NEXT_STAGE, StoryState.STAGE),
+                )
             match = self._locate(screen, "next_stage")
             if match is not None:
+                self._confirm_page("下一关入口")
                 self.completed_cycles += 1
                 self.state = StoryState.STAGE
                 return None
             match = self._locate(screen, "prepare_battle")
             if match is not None:
+                self._confirm_page("关卡入口")
                 self.state = StoryState.TEAM
                 self.auto_enabled = False
-                return StoryAction("prepare_battle", match.center)
+                return self._action(
+                    "prepare_battle",
+                    match.center,
+                    source_page="关卡入口",
+                    target_pages=("助手选择", "队伍准备", "快速战斗"),
+                    reason="通关后已回到下一关入口",
+                    target_states=(StoryState.TEAM,),
+                )
 
+        self._confirmed_page = ""
         raise UnrecognizedScreen(
             f"主线画面[{state_label(self.state)}]未识别"
         )
@@ -629,6 +813,8 @@ class StoryStateMachine:
             self.completed_cycles,
             self.stamina_replenished,
             self._stamina_material_clicked,
+            self._stamina_purchase_pending,
+            self._confirmed_page,
         )
         try:
             action = self.next_action(screen)
@@ -643,6 +829,8 @@ class StoryStateMachine:
                 self.completed_cycles,
                 self.stamina_replenished,
                 self._stamina_material_clicked,
+                self._stamina_purchase_pending,
+                self._confirmed_page,
             ) = snapshot
 
 
@@ -661,6 +849,7 @@ class StoryRunner(ModeRunnerBase):
         StoryState.WAIT_NEXT_STAGE: 45,
     }
     _BATTLE_ENTRY_ACTION = "start_mission"
+    _ALLOW_UNKNOWN_SCREEN_WAKE = False
 
     def __init__(
         self,
@@ -695,6 +884,25 @@ class StoryRunner(ModeRunnerBase):
     def _apply_recovery_state(self) -> None:
         self.machine.state = StoryState.STAGE
         self.machine.auto_enabled = False
+        self.machine._confirmed_page = ""
+
+    def _after_action_click(self, action: StoryAction) -> None:
+        record_click = getattr(self.machine, "action_clicked", None)
+        if record_click is not None:
+            record_click(action)
+
+    def _transition_success_detail(
+        self, previous_action: StoryAction, current_action: StoryAction | None
+    ) -> str:
+        return (
+            f"从={previous_action.source_page} "
+            f"依据={previous_action.reason} 目标连续=2"
+        )
+
+    def _transition_retry_reason(
+        self, previous_action: StoryAction, current_action: StoryAction | None
+    ) -> str:
+        return f"来源页面={previous_action.source_page}仍在，目标未稳定"
 
     def _run_committed_battle(self, *, cycle: int) -> None:
         outcome = self.battle_supervisor.run(
