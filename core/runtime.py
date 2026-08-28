@@ -1,5 +1,6 @@
 from pathlib import Path
 from datetime import datetime
+import shutil
 from time import monotonic as default_monotonic
 from typing import Callable, Protocol
 
@@ -154,6 +155,11 @@ class Runtime:
         )
         for path in paths[: -self.diagnostic_limit]:
             path.unlink()
+            evidence_directory = path.with_suffix("")
+            if evidence_directory.is_symlink():
+                evidence_directory.unlink()
+            elif evidence_directory.is_dir():
+                shutil.rmtree(evidence_directory)
 
     def _rotate_logs(self) -> None:
         if self.log_path is None:
