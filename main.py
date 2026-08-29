@@ -84,9 +84,10 @@ def _build_runtime(
     window_backend: str = "emulator",
     stop_file: Path | None = None,
 ) -> Runtime:
+    calibration = None
     if window_backend == "pc":
         game_window = Epic7PcWindow()
-        game_window.activate()
+        calibration = game_window.ensure_render_size()
     else:
         game_window = Epic7Window()
         game_window.activate()
@@ -98,7 +99,7 @@ def _build_runtime(
             or (stop_file is not None and stop_file.exists())
         )
 
-    return Runtime(
+    runtime = Runtime(
         capture=game_window.capture,
         click=game_window.click,
         wake=game_window.wake,
@@ -108,6 +109,16 @@ def _build_runtime(
         log_path=ROOT / "runtime_logs" / f"epic7_{mode}.log",
         stop_requested=None if dry_run else stop_requested,
     )
+    if calibration is not None:
+        runtime.log(
+            "模式=PC初始化 "
+            f"调整前={calibration.before.width}x{calibration.before.height} "
+            "目标=1920x1080 "
+            f"调整后={calibration.after.width}x{calibration.after.height} "
+            f"是否调整={'是' if calibration.adjusted else '否'} "
+            "识别画布=1982x1132 模板来源=共享模拟器模板"
+        )
+    return runtime
 
 
 def run_mode(
@@ -125,14 +136,7 @@ def run_mode(
         window_backend=window_backend,
         stop_file=stop_file,
     )
-    # PC backend uses a PC-native template set (templates_pc/); emulator keeps
-    # the original templates/.  Both share the same structure and reference size.
-    template_subdir = "templates_pc" if window_backend == "pc" else "templates"
-    template_root = ROOT / "games" / "epic7" / template_subdir
-    if window_backend == "pc" and not template_root.exists():
-        raise RuntimeError(
-            f"PC 模板目录不存在：{template_root}；请先运行 tools/capture_pc_templates.py 采集 PC 模板"
-        )
+    template_root = ROOT / "games" / "epic7" / "templates"
     navigator = None
     if not dry_run:
         runtime.set_capture_guard(
