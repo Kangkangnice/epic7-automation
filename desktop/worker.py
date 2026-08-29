@@ -15,6 +15,7 @@ from typing import Callable
 class RunRequest:
     mode: str
     cycles: int
+    backend: str = "emulator"
 
 
 @dataclass(frozen=True)
@@ -61,7 +62,7 @@ class WorkerController:
             "--mode",
             request.mode,
             "--window-backend",
-            "emulator",
+            request.backend,
             "--max-cycles",
             str(request.cycles),
             "--live",

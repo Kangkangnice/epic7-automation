@@ -32,11 +32,11 @@ class ImmediateThread:
         self.target()
 
 
-def passed_preflight():
+def passed_preflight(window_backend="emulator"):
     return PreflightReport(PreflightStatus.PASS, "通过", (1982, 1132))
 
 
-def blocked_preflight():
+def blocked_preflight(window_backend="emulator"):
     return PreflightReport(PreflightStatus.BLOCK, "没有找到雷电窗口")
 
 
@@ -91,7 +91,7 @@ def test_controller_forces_hero_synthesis_to_one_cycle():
 
 def test_experimental_route_requires_confirmation():
     controller = DesktopController(worker=FakeWorker())
-    controller.select_route("story")
+    controller.select_route("fodder")
     controller.apply_preflight(passed_preflight())
 
     assert controller.needs_experimental_confirmation is True
@@ -104,6 +104,43 @@ def test_selecting_another_route_preserves_successful_preflight():
     controller.select_route("arena")
 
     assert controller.can_start is True
+
+
+def test_switching_backend_invalidates_previous_preflight():
+    controller = DesktopController(worker=FakeWorker())
+    controller.apply_preflight(passed_preflight())
+
+    controller.select_backend("pc")
+
+    assert controller.selected_backend == "pc"
+    assert controller.can_start is False
+
+
+def test_controller_passes_selected_backend_to_worker():
+    worker = FakeWorker()
+    controller = DesktopController(worker=worker)
+    controller.select_backend("pc")
+    controller.apply_preflight(passed_preflight())
+
+    controller.start()
+
+    assert worker.request.backend == "pc"
+
+
+def test_controller_rejects_unknown_backend():
+    controller = DesktopController(worker=FakeWorker())
+
+    with pytest.raises(ValueError):
+        controller.select_backend("console")
+
+
+def test_controller_rejects_backend_switch_while_running():
+    worker = FakeWorker()
+    worker.running = True
+    controller = DesktopController(worker=worker)
+
+    with pytest.raises(RuntimeError):
+        controller.select_backend("pc")
 
 
 def test_controller_rejects_non_positive_cycles():
@@ -173,7 +210,10 @@ def test_start_rechecks_environment_and_validates_selected_route(tmp_path, tk_wi
         tk_window,
         controller=controller,
         project_root=tmp_path,
-        preflight_runner=lambda: calls.append("preflight") or passed_preflight(),
+        preflight_runner=lambda window_backend: calls.append(
+            ("preflight", window_backend)
+        )
+        or passed_preflight(),
         route_validator=lambda mode, template_root: calls.append(
             (mode, template_root)
         ),
@@ -187,7 +227,7 @@ def test_start_rechecks_environment_and_validates_selected_route(tmp_path, tk_wi
         app._start()
     tk_window.update()
 
-    assert calls == ["preflight", ("arena", app.template_root)]
+    assert calls == [("preflight", "emulator"), ("arena", app.template_root)]
     assert worker.request.mode == "arena"
 
 
