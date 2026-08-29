@@ -1,4 +1,6 @@
 import os
+import io
+from contextlib import redirect_stdout
 from pathlib import Path
 import tempfile
 import unittest
@@ -132,6 +134,51 @@ class MainStoryTests(unittest.TestCase):
 
         window.wake.assert_called_once_with((1000, 600))
         window.click.assert_called_once_with((1062, 1045))
+
+    def test_pc_runtime_calibrates_window_and_logs_actual_geometry(self):
+        window = unittest.mock.MagicMock()
+        window.ensure_render_size.return_value = unittest.mock.MagicMock(
+            before=unittest.mock.MagicMock(width=1280, height=720),
+            after=unittest.mock.MagicMock(width=1920, height=1080),
+            adjusted=True,
+        )
+        output = io.StringIO()
+        with (
+            patch.object(main_module, "Epic7PcWindow", return_value=window),
+            redirect_stdout(output),
+        ):
+            runtime = main_module._build_runtime(
+                "story", dry_run=True, window_backend="pc"
+            )
+
+        window.ensure_render_size.assert_called_once_with()
+        self.assertIs(runtime._capture, window.capture)
+        self.assertIn("调整前=1280x720", output.getvalue())
+        self.assertIn("调整后=1920x1080", output.getvalue())
+        self.assertIn("模板来源=共享模拟器模板", output.getvalue())
+
+    def test_pc_run_uses_shared_template_root(self):
+        runtime = unittest.mock.MagicMock()
+        machine = object()
+        build_machine = unittest.mock.MagicMock(return_value=machine)
+        runner_type = unittest.mock.MagicMock()
+        runner_type.return_value.run.return_value = 0
+        spec = replace(
+            get_mode("story"),
+            build_machine=build_machine,
+            runner_type=runner_type,
+        )
+        with patch.object(main_module, "_build_runtime", return_value=runtime):
+            main_module.run_mode(
+                spec=spec,
+                dry_run=True,
+                max_cycles=1,
+                start_state=spec.default_state,
+                window_backend="pc",
+            )
+
+        template_root = build_machine.call_args.args[0]
+        self.assertEqual("templates", template_root.name)
 
     def test_parser_accepts_internal_stop_file(self):
         args = main_module.parse_args(["--stop-file", r"D:\temp\stop.signal"])
