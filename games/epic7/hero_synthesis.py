@@ -367,6 +367,7 @@ class HeroSynthStateMachine:
         self._awaiting_star3_confirmation: bool = False
         # 模拟器筛选关闭请求只表示“正在等待目标页”，不能代表筛选已完成。
         self._filter_close_pending: bool = False
+        self._last_filter_scores: dict[str, float] = {}
         self._confirmed_page: str = ""
         self.transmit_phase = TransmitPhase.NONE
         self.transmit_target_observation: Optional[str] = None
@@ -1054,6 +1055,19 @@ class HeroSynthStateMachine:
         ):
             return FilterObservation.UNKNOWN
 
+        keys = (
+            "filter_level_label",
+            "filter_attribute_label",
+            "filter_star3_selected",
+            "filter_star3_unselected",
+        )
+        self._last_filter_scores = {}
+        for key in keys:
+            match = self._locate(screen, key, 0.0)
+            self._last_filter_scores[key] = (
+                match.score if match is not None else -1.0
+            )
+
         scale = min(
             screen.shape[1] / self._REFERENCE_SIZE[0],
             screen.shape[0] / self._REFERENCE_SIZE[1],
@@ -1063,16 +1077,27 @@ class HeroSynthStateMachine:
             if scale <= 0.55
             else self._threshold("filter_attribute_label")
         )
-        level = self._locate(screen, "filter_level_label")
-        attribute = self._locate(screen, "filter_attribute_label", attribute_min)
-        panel_open = level is not None and attribute is not None
+        level_present = (
+            self._last_filter_scores["filter_level_label"]
+            >= self._threshold("filter_level_label")
+        )
+        attribute_present = (
+            self._last_filter_scores["filter_attribute_label"] >= attribute_min
+        )
+        panel_open = level_present and attribute_present
         if panel_open:
-            if self._locate(screen, "filter_star3_selected") is not None:
+            if (
+                self._last_filter_scores["filter_star3_selected"]
+                >= self._threshold("filter_star3_selected")
+            ):
                 return FilterObservation.FILTER_OPEN_STAR3_SELECTED
-            if self._locate(screen, "filter_star3_unselected") is not None:
+            if (
+                self._last_filter_scores["filter_star3_unselected"]
+                >= self._threshold("filter_star3_unselected")
+            ):
                 return FilterObservation.FILTER_OPEN_STAR3_UNSELECTED
             return FilterObservation.UNKNOWN
-        if level is not None or attribute is not None:
+        if level_present or attribute_present:
             return FilterObservation.UNKNOWN
         if (
             self._locate(screen, "filter_button") is not None
@@ -1080,6 +1105,22 @@ class HeroSynthStateMachine:
         ):
             return FilterObservation.HERO_LIST_FILTER_CLOSED
         return FilterObservation.UNKNOWN
+
+    def _filter_evidence_summary(self) -> str:
+        def item(label: str, key: str) -> str:
+            return (
+                f"{label}={self._last_filter_scores.get(key, -1.0):.3f}/"
+                f"{self._threshold(key):.2f}"
+            )
+
+        return " ".join(
+            (
+                item("级别", "filter_level_label"),
+                item("属性", "filter_attribute_label"),
+                item("三星已选", "filter_star3_selected"),
+                item("三星未选", "filter_star3_unselected"),
+            )
+        )
 
     def _next_simulator_filter_action(
         self, screen: np.ndarray
@@ -1106,7 +1147,10 @@ class HeroSynthStateMachine:
                 self._scaled_point(screen, self._STAR3_POINT),
                 source_page="筛选面板（三星未选中）",
                 target_pages=("筛选面板（三星已选中）",),
-                reason="级别与属性锚点存在，三星深色按钮存在",
+                reason=(
+                    "级别与属性锚点存在，三星深色按钮存在；"
+                    f"{self._filter_evidence_summary()}"
+                ),
             )
 
         if observation is FilterObservation.FILTER_OPEN_STAR3_SELECTED:
@@ -1117,7 +1161,10 @@ class HeroSynthStateMachine:
                 self._scaled_point(screen, self._FUNNEL_POINT),
                 source_page="筛选面板（三星已选中）",
                 target_pages=("英雄列表",),
-                reason="级别与属性锚点存在，三星白底按钮存在",
+                reason=(
+                    "级别与属性锚点存在，三星白底按钮存在；"
+                    f"{self._filter_evidence_summary()}"
+                ),
             )
 
         if observation is FilterObservation.HERO_LIST_FILTER_CLOSED:
@@ -1140,7 +1187,10 @@ class HeroSynthStateMachine:
                         "筛选面板（三星已选中）",
                         "筛选面板（三星未选中）",
                     ),
-                    reason="英雄信息页已确认，打开三星筛选",
+                    reason=(
+                        "英雄信息页已确认，打开三星筛选；"
+                        f"{self._filter_evidence_summary()}"
+                    ),
                 )
             return False, None
 
