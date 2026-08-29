@@ -29,9 +29,9 @@ ROUTES = (
         "三星英雄刻印合成和 SSS 副本处理",
         cycles_editable=False,
     ),
-    RouteInfo("story", "主线", "实验功能", "主线和刷图循环"),
-    RouteInfo("arena", "竞技场", "实验功能", "新手竞技场循环"),
-    RouteInfo("expedition", "远征", "实验功能", "三阶段远征循环"),
+    RouteInfo("story", "主线", "正式功能", "主线和刷图循环"),
+    RouteInfo("arena", "竞技场", "正式功能", "新手竞技场循环"),
+    RouteInfo("expedition", "远征", "正式功能", "三阶段远征循环"),
     RouteInfo("fodder", "狗粮", "实验功能", "特别的时间之书 Episode 3-7"),
     RouteInfo("assist_auto", "助手自动", "实验功能", "接管游戏内置重复战斗"),
 )

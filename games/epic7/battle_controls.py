@@ -149,13 +149,16 @@ def battle_scene_visible(screen: np.ndarray) -> bool:
         white = (roi[:, :, 1] <= 60) & (roi[:, :, 2] >= 160)
         return float(np.mean(white))
 
+    pause_controls = white_ratio((1780, 45, 1920, 165))
+    if controls is BattleControls.AUTO_CONTROLS:
+        # 自动布局偶尔会在暗色技能特效下让左侧行动顺序栏几乎不可见；
+        # 此时以右上战斗控制区作为独立的第二锚点，不能把有效战斗误判为未知。
+        return 0.08 <= pause_controls <= 0.85
+
     turn_order = white_ratio((0, 120, 140, 900))
     if turn_order < 0.12:
         return False
-    if controls is BattleControls.AUTO_CONTROLS:
-        return True
 
     # 技能演出会暂时盖住底部技能槽，但右上战斗控制区和左侧行动顺序
     # 仍保留高亮结构。上限排除纯白加载帧和整块白色非战斗面板。
-    pause_controls = white_ratio((1780, 45, 1920, 165))
     return 0.08 <= pause_controls <= 0.85 and turn_order >= 0.12
