@@ -874,6 +874,14 @@ class FakeClock:
 
 
 class TemplateTests(unittest.TestCase):
+    def test_template_directory_name_does_not_activate_legacy_pc_logic(self):
+        templates = build_hero_templates(
+            ROOT / "games" / "epic7" / "templates_pc"
+        )
+
+        self.assertFalse(templates.pc_client)
+        self.assertFalse(templates.assume_non_max_rating)
+
     def test_all_templates_load(self):
         templates = build_hero_templates(TEMPLATES)
         for name in (

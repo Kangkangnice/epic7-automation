@@ -183,7 +183,6 @@ class HeroTemplates:
 def build_hero_templates(template_root: Path) -> HeroTemplates:
     hero = template_root / "hero"
     navigation = template_root / "navigation"
-    is_pc = template_root.name == "templates_pc"
     result_title = hero / "imprint_result_title.png"
     result_close = hero / "imprint_result_close.png"
     sss_material = hero / "sss_material.png"
@@ -203,40 +202,38 @@ def build_hero_templates(template_root: Path) -> HeroTemplates:
         story_back=load_template(str(navigation / "story_back.png")),
         rating_sss=load_template(str(hero / "rating_sss.png")),
         filter_attribute_label=(
-            load_template(str(filter_attribute))
-            if not is_pc and filter_attribute.exists()
-            else None
+            load_template(str(filter_attribute)) if filter_attribute.exists() else None
         ),
         filter_star3_unselected=(
             load_template(str(filter_star3_unselected))
-            if not is_pc and filter_star3_unselected.exists()
+            if filter_star3_unselected.exists()
             else None
         ),
         sss_material=(load_template(str(sss_material)) if sss_material.exists() else None),
         sss_material_warning_title=(
             load_template(str(sss_material_warning_title))
-            if not is_pc and sss_material_warning_title.exists()
+            if sss_material_warning_title.exists()
             else None
         ),
         sss_material_warning_close=(
             load_template(str(sss_material_warning_close))
-            if not is_pc and sss_material_warning_close.exists()
+            if sss_material_warning_close.exists()
             else None
         ),
         imprint_result_title=(load_template(str(result_title)) if result_title.exists() else None),
         imprint_result_close=(load_template(str(result_close)) if result_close.exists() else None),
         transmit_reward_title=(
             load_template(str(transmit_reward_title))
-            if not is_pc and transmit_reward_title.exists()
+            if transmit_reward_title.exists()
             else None
         ),
         transmit_reward_close=(
             load_template(str(transmit_reward_close))
-            if not is_pc and transmit_reward_close.exists()
+            if transmit_reward_close.exists()
             else None
         ),
-        pc_client=is_pc,
-        assume_non_max_rating=is_pc,
+        pc_client=False,
+        assume_non_max_rating=False,
         evidence=build_hero_evidence(template_root),
     )
 
