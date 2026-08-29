@@ -155,14 +155,6 @@ def test_assist_auto_switches_quick_mode_without_advancing_team_state():
     assert machine.state is AssistAutoState.TEAM
 
 
-def test_pc_story_templates_do_not_require_simulator_quick_battle_assets():
-    templates = build_story_templates(
-        ROOT / "games" / "epic7" / "templates_pc" / "story"
-    )
-
-    assert templates.quick_battle is None
-
-
 def test_simulator_routes_use_auto_off_icon_before_player_skill_turn():
     screen = fixture(
         "epic7_arena",

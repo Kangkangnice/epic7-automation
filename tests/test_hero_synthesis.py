@@ -1,5 +1,6 @@
 """英雄合成模式：页面判定、动作决策、安全护栏与完整流程测试。"""
 
+import inspect
 import unittest
 from dataclasses import replace
 from pathlib import Path
@@ -37,6 +38,7 @@ from auto_game_unified.games.epic7.runner_base import NOT_STABLE
 
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURES = ROOT / "tests" / "fixtures" / "epic7_hero"
+PC_SHARED_FIXTURES = ROOT / "tests" / "fixtures" / "epic7_pc_shared_hero"
 NAV_FIXTURES = ROOT / "tests" / "fixtures" / "epic7_navigation"
 TEMPLATES = ROOT / "games" / "epic7" / "templates"
 
@@ -44,6 +46,12 @@ TEMPLATES = ROOT / "games" / "epic7" / "templates"
 def fixture(name: str):
     return cv2.cvtColor(
         cv2.imread(str(FIXTURES / f"{name}.png")), cv2.COLOR_BGR2RGB
+    )
+
+
+def pc_shared_fixture(name: str):
+    return cv2.cvtColor(
+        cv2.imread(str(PC_SHARED_FIXTURES / f"{name}.png")), cv2.COLOR_BGR2RGB
     )
 
 
@@ -918,6 +926,11 @@ class FakeClock:
 
 
 class TemplateTests(unittest.TestCase):
+    def test_template_builder_has_no_legacy_pc_directory_switch(self):
+        source = inspect.getsource(build_hero_templates)
+
+        self.assertNotIn("templates" + "_pc", source)
+
     def test_all_templates_load(self):
         templates = build_hero_templates(TEMPLATES)
         for name in (
@@ -998,6 +1011,60 @@ class TemplateTests(unittest.TestCase):
 
 
 class FilterObservationTests(unittest.TestCase):
+    def test_only_filter_panel_thresholds_are_relaxed(self):
+        self.assertEqual(
+            0.75, HeroSynthStateMachine._THRESHOLDS["filter_level_label"]
+        )
+        self.assertEqual(
+            0.75, HeroSynthStateMachine._THRESHOLDS["filter_attribute_label"]
+        )
+        self.assertEqual(
+            0.86, HeroSynthStateMachine._THRESHOLDS["filter_star3_unselected"]
+        )
+        self.assertEqual(0.90, HeroSynthStateMachine._THRESHOLDS["rating_sss"])
+        self.assertEqual(0.80, HeroSynthStateMachine._THRESHOLDS["sss_material"])
+        self.assertEqual(
+            0.90, HeroSynthStateMachine._THRESHOLDS["transmit_reward_title"]
+        )
+
+    def test_current_pc_filter_open_is_recognized_as_unselected(self):
+        m = machine()
+        screen = pc_shared_fixture("filter_open_unselected_20260829")
+
+        observation = m._observe_filter(screen)
+        action = m.next_action(screen)
+
+        self.assertIs(
+            FilterObservation.FILTER_OPEN_STAR3_UNSELECTED,
+            observation,
+        )
+        self.assertEqual("select_star3", action.name)
+        self.assertEqual((1110, 636), action.point)
+
+    def test_current_pc_filter_closed_is_not_misread_as_open(self):
+        observation = machine()._observe_filter(
+            pc_shared_fixture("filter_closed_20260829")
+        )
+
+        self.assertNotIn(
+            observation,
+            {
+                FilterObservation.FILTER_OPEN_STAR3_SELECTED,
+                FilterObservation.FILTER_OPEN_STAR3_UNSELECTED,
+            },
+        )
+
+    def test_current_pc_filter_action_reason_contains_scores(self):
+        action = machine().next_action(
+            pc_shared_fixture("filter_open_unselected_20260829")
+        )
+
+        self.assertIn("级别=", action.reason)
+        self.assertIn("属性=", action.reason)
+        self.assertIn("三星未选=", action.reason)
+        self.assertIn("/0.75", action.reason)
+        self.assertIn("/0.86", action.reason)
+
     def test_closed_hero_list_requires_list_anchors_and_no_panel_anchors(self):
         m = machine()
         self.assertIs(
@@ -1192,7 +1259,9 @@ class HeroListDecisionTests(unittest.TestCase):
         action = m.next_action(fixture("list_reddot"))
         self.assertEqual("open_filter", action.name)
         self.assertEqual((1540, 191), action.point)
-        self.assertEqual("英雄信息页已确认，打开三星筛选", action.reason)
+        self.assertTrue(action.reason.startswith("英雄信息页已确认，打开三星筛选；"))
+        self.assertIn("级别=", action.reason)
+        self.assertIn("属性=", action.reason)
 
     def test_list_reddot_opens_imprint(self):
         m = machine(verify_filter=True)

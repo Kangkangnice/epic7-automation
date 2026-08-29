@@ -103,7 +103,7 @@ python -u -m auto_game_unified.main --mode hero_synthesis --window-backend emula
 
 ## 7. PC 后端（开发中）
 
-`--window-backend pc` 已提供窗口接入能力，`templates_pc` 也可能包含候选模板或样本，但这两点都不代表路线已经支持 PC。当前六种模式均未完成 PC 固定样本、dry-run、1 轮和 2 轮实机验收。
+`--window-backend pc` 已提供窗口接入能力，但共享模板能够加载并不代表路线已经支持 PC。当前六种模式均未完成 PC 固定样本、dry-run、1 轮和 2 轮实机验收。
 
 只在采集/验证场景使用 PC 干跑：
 
