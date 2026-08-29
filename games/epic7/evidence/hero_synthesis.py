@@ -31,10 +31,10 @@ REGIONS = {
 
 THRESHOLDS = {
     "filter_button": 0.80,
-    "filter_level_label": 0.80,
-    "filter_attribute_label": 0.82,
+    "filter_level_label": 0.75,
+    "filter_attribute_label": 0.75,
     "filter_star3_selected": 0.90,
-    "filter_star3_unselected": 0.90,
+    "filter_star3_unselected": 0.86,
     "auto_select_label": 0.85,
     "story_back": 0.90,
     "sss_material": 0.80,
