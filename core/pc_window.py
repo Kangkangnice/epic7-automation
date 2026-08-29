@@ -1,15 +1,9 @@
 """Window capture and input for the Epic Seven PC client (GLFW/OpenGL).
 
-The PC client renders at the window size and (unlike the emulator) does not
-expose a channel to fix that size programmatically -- GLFW ignores external
-resize requests.  So instead of forcing a resolution we normalize every frame
-to a fixed reference size on capture, and map click coordinates back to the
-live window.  This mirrors how the emulator backend already feeds a fixed
-reference frame to find_template, so the business layer needs no changes.
-
-Coordinates used by the business layer (click/observe) are always expressed in
-the reference space; this class is responsible for the reference<->window
-round trip.
+The business layer uses the emulator's legacy 1982x1132 coordinate space.  The
+real game content is 1920x1080 at x=0, y=52 inside that canvas; this backend
+preserves those pixels without interpolation and translates clicks back to the
+real client area.
 """
 
 import ctypes
@@ -18,20 +12,14 @@ import os
 from dataclasses import dataclass
 from time import sleep
 
-import cv2
 import numpy as np
 import psutil
 import pyautogui
 
 
-# Share the emulator's reference frame so the existing template assets are
-# reused as-is; the live window may be any size -- capture rescales to this.
+RENDER_SIZE = (1920, 1080)
 REFERENCE_SIZE = (1982, 1132)
-# Reject a live window whose aspect ratio diverges from the reference.  0.05 is
-# realistic: a 16:9 monitor (1.7778) vs the 1982x1132 reference (1.7509) only
-# differs by ~0.027, while larger differences make template and click mapping
-# unsafe.
-_ASPECT_TOLERANCE = 0.05
+LEGACY_TOP = 52
 _PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
 _TOKEN_QUERY = 0x0008
 _TOKEN_ELEVATION = 20
@@ -39,6 +27,8 @@ _MOUSEEVENTF_MOVE = 0x0001
 _MOUSEEVENTF_LEFTDOWN = 0x0002
 _MOUSEEVENTF_LEFTUP = 0x0004
 _MOUSEEVENTF_ABSOLUTE = 0x8000
+_SWP_NOZORDER = 0x0004
+_SWP_NOACTIVATE = 0x0010
 
 
 class _MouseInput(ctypes.Structure):
@@ -96,6 +86,13 @@ class WindowRect:
     height: int
 
 
+@dataclass(frozen=True)
+class WindowCalibration:
+    before: WindowRect
+    after: WindowRect
+    adjusted: bool
+
+
 class Epic7PcWindow:
     """Capture and click the uniquely titled Epic Seven PC client window."""
 
@@ -109,7 +106,7 @@ class Epic7PcWindow:
         reference_size: tuple[int, int] = REFERENCE_SIZE,
     ) -> None:
         self.reference_size = reference_size
-        self._user32 = ctypes.windll.user32
+        self._user32 = ctypes.WinDLL("user32", use_last_error=True)
 
     # ---- window discovery -------------------------------------------------
 
@@ -177,6 +174,17 @@ class Epic7PcWindow:
             client.bottom - client.top,
         )
 
+    def _outer_rect(self, hwnd) -> WindowRect:
+        rect = wintypes.RECT()
+        if not self._user32.GetWindowRect(hwnd, ctypes.byref(rect)):
+            raise RuntimeError("无法读取 Epic Seven PC 窗口外框")
+        return WindowRect(
+            rect.left,
+            rect.top,
+            rect.right - rect.left,
+            rect.bottom - rect.top,
+        )
+
     def activate(self):
         hwnd = self._find_window()
         if self._user32.GetForegroundWindow() == hwnd:
@@ -193,13 +201,10 @@ class Epic7PcWindow:
         rect = self._rect(hwnd)
         if rect.width <= 0 or rect.height <= 0:
             raise RuntimeError(f"PC 游戏窗口客户区无效：{rect.width}x{rect.height}")
-        live_ratio = rect.width / rect.height
-        ref_ratio = self.reference_size[0] / self.reference_size[1]
-        if abs(live_ratio - ref_ratio) > _ASPECT_TOLERANCE:
+        if (rect.width, rect.height) != RENDER_SIZE:
             raise RuntimeError(
-                f"PC 游戏窗口宽高比 {rect.width}x{rect.height} ({live_ratio:.3f}) "
-                f"与模板基准 {self.reference_size[0]}x{self.reference_size[1]} "
-                f"({ref_ratio:.3f}) 不兼容，已拒绝截图或输入"
+                f"PC 游戏窗口客户区尺寸为 {rect.width}x{rect.height}；"
+                f"预期 {RENDER_SIZE[0]}x{RENDER_SIZE[1]}，已拒绝截图或输入"
             )
         return rect
 
@@ -213,7 +218,57 @@ class Epic7PcWindow:
                 "Windows 会拦截键鼠输入。请以相同权限级别重新启动两者。"
             )
 
+    def ensure_render_size(self) -> WindowCalibration:
+        hwnd = self.activate()
+        self._ensure_input_allowed(hwnd)
+        before = self._rect(hwnd)
+        if (before.width, before.height) == RENDER_SIZE:
+            return WindowCalibration(before, before, False)
+
+        outer = self._outer_rect(hwnd)
+        target_outer_width = RENDER_SIZE[0] + outer.width - before.width
+        target_outer_height = RENDER_SIZE[1] + outer.height - before.height
+        if not self._user32.SetWindowPos(
+            hwnd,
+            0,
+            outer.left,
+            outer.top,
+            target_outer_width,
+            target_outer_height,
+            _SWP_NOZORDER | _SWP_NOACTIVATE,
+        ):
+            error = ctypes.get_last_error()
+            raise RuntimeError(
+                f"PC 游戏窗口调整失败：当前={before.width}x{before.height} "
+                f"目标={RENDER_SIZE[0]}x{RENDER_SIZE[1]} Win32错误码={error}"
+            )
+
+        after = before
+        for _ in range(10):
+            sleep(0.1)
+            after = self._rect(hwnd)
+            if (after.width, after.height) == RENDER_SIZE:
+                return WindowCalibration(before, after, True)
+        raise RuntimeError(
+            f"PC 游戏窗口调整未生效：调整前={before.width}x{before.height} "
+            f"目标={RENDER_SIZE[0]}x{RENDER_SIZE[1]} "
+            f"调整后实际仍为 {after.width}x{after.height}"
+        )
+
     # ---- capture / input --------------------------------------------------
+
+    @staticmethod
+    def _legacy_canvas(render: np.ndarray) -> np.ndarray:
+        if render.shape[:2] != (RENDER_SIZE[1], RENDER_SIZE[0]):
+            raise RuntimeError(
+                f"PC 游戏截图尺寸异常：{render.shape[1]}x{render.shape[0]}；"
+                f"预期 {RENDER_SIZE[0]}x{RENDER_SIZE[1]}"
+            )
+        canvas = np.zeros(
+            (REFERENCE_SIZE[1], REFERENCE_SIZE[0], 3), dtype=np.uint8
+        )
+        canvas[LEGACY_TOP:, : RENDER_SIZE[0]] = render
+        return canvas
 
     def capture(self) -> np.ndarray:
         rect = self._validated_rect(self.activate())
@@ -221,24 +276,19 @@ class Epic7PcWindow:
             region=(rect.left, rect.top, rect.width, rect.height)
         )
         frame = np.asarray(image.convert("RGB"))
-        ref_w, ref_h = self.reference_size
-        if (frame.shape[1], frame.shape[0]) != (ref_w, ref_h):
-            frame = cv2.resize(frame, (ref_w, ref_h), interpolation=cv2.INTER_AREA)
-        return frame
+        return self._legacy_canvas(frame)
 
     def click(self, point: tuple[int, int]) -> None:
         hwnd = self.activate()
         self._ensure_input_allowed(hwnd)
         rect = self._validated_rect(hwnd)
-        ref_w, ref_h = self.reference_size
-        scale_x = rect.width / ref_w
-        scale_y = rect.height / ref_h
-        self._send_click(
-            (
-                rect.left + round(point[0] * scale_x),
-                rect.top + round(point[1] * scale_y),
-            )
-        )
+        render_point = point[0], point[1] - LEGACY_TOP
+        if not (
+            0 <= render_point[0] < RENDER_SIZE[0]
+            and 0 <= render_point[1] < RENDER_SIZE[1]
+        ):
+            raise RuntimeError(f"拒绝在 PC 游戏渲染区外点击：{point}")
+        self._send_click((rect.left + render_point[0], rect.top + render_point[1]))
 
     def _send_click(self, point: tuple[int, int]) -> None:
         """用 SendInput 注入 PC 点击，避免 mouse_event 在高 DPI 客户端错位。"""

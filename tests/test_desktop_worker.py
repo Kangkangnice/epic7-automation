@@ -69,6 +69,21 @@ def test_worker_builds_existing_live_cli_and_streams_logs(tmp_path):
     assert events[-1] == WorkerEvent("finished", "运行完成", exit_code=0)
 
 
+def test_worker_forwards_selected_window_backend(tmp_path):
+    calls = []
+    worker = WorkerController(
+        repo_parent=tmp_path,
+        popen=lambda command, **kwargs: calls.append((command, kwargs))
+        or FakeProcess(),
+    )
+
+    worker.start(RunRequest("story", 1, "pc"))
+    worker.join_reader(timeout=1)
+
+    command = calls[0][0]
+    assert command[command.index("--window-backend") + 1] == "pc"
+
+
 def test_worker_stop_creates_signal_file_before_process_exits(tmp_path):
     release = threading.Event()
     worker = WorkerController(

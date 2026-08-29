@@ -3,6 +3,7 @@ from unittest.mock import MagicMock, patch
 
 import numpy as np
 
+from auto_game_unified.core import pc_window
 from auto_game_unified.core.pc_window import Epic7PcWindow, WindowRect
 
 
@@ -20,6 +21,80 @@ class PcWindowSafetyTests(unittest.TestCase):
         ):
             with self.assertRaisesRegex(RuntimeError, "未能置前"):
                 self.game.activate()
+
+    def test_ensure_render_size_skips_resize_when_client_is_already_exact(self):
+        exact = WindowRect(10, 20, 1920, 1080)
+        self.game._user32 = MagicMock()
+        with (
+            patch.object(self.game, "activate", return_value=123),
+            patch.object(self.game, "_ensure_input_allowed"),
+            patch.object(self.game, "_rect", return_value=exact),
+        ):
+            result = self.game.ensure_render_size()
+
+        self.assertEqual(pc_window.WindowCalibration(exact, exact, False), result)
+        self.game._user32.SetWindowPos.assert_not_called()
+
+    def test_ensure_render_size_resizes_outer_window_and_verifies_client(self):
+        before = WindowRect(152, 294, 1280, 720)
+        after = WindowRect(152, 294, 1920, 1080)
+        outer = WindowRect(139, 236, 1306, 791)
+        self.game._user32 = MagicMock()
+        self.game._user32.SetWindowPos.return_value = 1
+        with (
+            patch.object(self.game, "activate", return_value=123),
+            patch.object(self.game, "_ensure_input_allowed"),
+            patch.object(self.game, "_rect", side_effect=[before, after]),
+            patch.object(self.game, "_outer_rect", return_value=outer, create=True),
+            patch("auto_game_unified.core.pc_window.sleep"),
+        ):
+            result = self.game.ensure_render_size()
+
+        self.assertEqual(pc_window.WindowCalibration(before, after, True), result)
+        self.game._user32.SetWindowPos.assert_called_once_with(
+            123, 0, 139, 236, 1946, 1151, 0x0014
+        )
+
+    def test_ensure_render_size_stops_when_resize_does_not_reach_target(self):
+        before = WindowRect(152, 294, 1280, 720)
+        self.game._user32 = MagicMock()
+        self.game._user32.SetWindowPos.return_value = 1
+        with (
+            patch.object(self.game, "activate", return_value=123),
+            patch.object(self.game, "_ensure_input_allowed"),
+            patch.object(self.game, "_rect", side_effect=[before] * 12),
+            patch.object(
+                self.game,
+                "_outer_rect",
+                return_value=WindowRect(139, 236, 1306, 791),
+                create=True,
+            ),
+            patch("auto_game_unified.core.pc_window.sleep"),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "调整后实际仍为 1280x720"):
+                self.game.ensure_render_size()
+
+    def test_ensure_render_size_reports_win32_error_when_resize_is_denied(self):
+        before = WindowRect(152, 294, 1280, 720)
+        self.game._user32 = MagicMock()
+        self.game._user32.SetWindowPos.return_value = 0
+        with (
+            patch.object(self.game, "activate", return_value=123),
+            patch.object(self.game, "_ensure_input_allowed"),
+            patch.object(self.game, "_rect", return_value=before),
+            patch.object(
+                self.game,
+                "_outer_rect",
+                return_value=WindowRect(139, 236, 1306, 791),
+                create=True,
+            ),
+            patch("auto_game_unified.core.pc_window.ctypes.get_last_error", return_value=5),
+        ):
+            with self.assertRaisesRegex(
+                RuntimeError,
+                "当前=1280x720.*目标=1920x1080.*Win32错误码=5",
+            ):
+                self.game.ensure_render_size()
 
     def test_capture_does_not_screenshot_when_foreground_confirmation_fails(self):
         with (
@@ -77,7 +152,28 @@ class PcWindowSafetyTests(unittest.TestCase):
 
         click.assert_not_called()
 
-    def test_click_uses_send_input_at_the_mapped_desktop_point(self):
+    def test_capture_places_1920x1080_pixels_on_legacy_canvas_without_resizing(self):
+        source = np.arange(1080 * 1920 * 3, dtype=np.uint8).reshape(
+            1080, 1920, 3
+        )
+        with (
+            patch.object(self.game, "activate", return_value=123),
+            patch.object(
+                self.game,
+                "_validated_rect",
+                return_value=WindowRect(10, 20, 1920, 1080),
+            ),
+            patch("auto_game_unified.core.pc_window.pyautogui.screenshot") as screenshot,
+        ):
+            screenshot.return_value = _FakeImage(source)
+            canvas = self.game.capture()
+
+        self.assertEqual((1132, 1982, 3), canvas.shape)
+        np.testing.assert_array_equal(source, canvas[52:, :1920])
+        self.assertFalse(canvas[:52].any())
+        self.assertFalse(canvas[:, 1920:].any())
+
+    def test_click_subtracts_legacy_top_padding_before_sending_input(self):
         with (
             patch.object(self.game, "activate", return_value=123),
             patch.object(
@@ -87,13 +183,29 @@ class PcWindowSafetyTests(unittest.TestCase):
             patch.object(
                 self.game,
                 "_validated_rect",
-                return_value=WindowRect(10, 20, 1982, 1132),
+                return_value=WindowRect(10, 20, 1920, 1080),
             ),
             patch.object(self.game, "_send_click", create=True) as click,
         ):
             self.game.click((991, 566))
 
-        click.assert_called_once_with((1001, 586))
+        click.assert_called_once_with((1001, 534))
+
+    def test_click_rejects_a_point_in_the_top_padding(self):
+        with (
+            patch.object(self.game, "activate", return_value=123),
+            patch.object(self.game, "_ensure_input_allowed"),
+            patch.object(
+                self.game,
+                "_validated_rect",
+                return_value=WindowRect(10, 20, 1920, 1080),
+            ),
+            patch.object(self.game, "_send_click", create=True) as click,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "PC 游戏渲染区外"):
+                self.game.click((100, 51))
+
+        click.assert_not_called()
 
     def test_back_does_not_send_escape_when_foreground_confirmation_fails(self):
         with (
@@ -109,7 +221,7 @@ class PcWindowSafetyTests(unittest.TestCase):
 
         press.assert_not_called()
 
-    def test_capture_rejects_an_incompatible_client_aspect_ratio(self):
+    def test_capture_rejects_a_client_that_is_not_exact_render_size(self):
         with (
             patch.object(self.game, "activate"),
             patch.object(
@@ -122,7 +234,7 @@ class PcWindowSafetyTests(unittest.TestCase):
             screenshot.return_value = _FakeImage(
                 np.full((1000, 1000, 3), 127, dtype=np.uint8)
             )
-            with self.assertRaisesRegex(RuntimeError, "宽高比"):
+            with self.assertRaisesRegex(RuntimeError, "客户区尺寸.*1920x1080"):
                 self.game.capture()
 
         screenshot.assert_not_called()
