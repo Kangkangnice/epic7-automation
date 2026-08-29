@@ -22,16 +22,21 @@ def static_game_screen() -> np.ndarray:
 
 
 @pytest.mark.parametrize(
-    ("runner_type", "state", "timeout_name"),
+    ("runner_type", "state", "timeout_name", "expected_clicks"),
     [
-        (StoryRunner, StoryState.STAGE, "_TIMEOUT_SECONDS"),
-        (ArenaRunner, ArenaState.LIST, "_TIMEOUT_SECONDS"),
-        (ExpeditionRunner, ExpeditionState.HOME, "_STATE_TIMEOUT_SECONDS"),
-        (FodderRunner, FodderState.STAGE, "_TIMEOUT_SECONDS"),
+        (StoryRunner, StoryState.STAGE, "_TIMEOUT_SECONDS", []),
+        (ArenaRunner, ArenaState.LIST, "_TIMEOUT_SECONDS", [(991, 566)] * 4),
+        (
+            ExpeditionRunner,
+            ExpeditionState.HOME,
+            "_STATE_TIMEOUT_SECONDS",
+            [(991, 566)] * 4,
+        ),
+        (FodderRunner, FodderState.STAGE, "_TIMEOUT_SECONDS", [(991, 566)] * 4),
     ],
 )
-def test_every_live_runner_wakes_static_unknown_four_times_before_safe_failure(
-    runner_type, state, timeout_name
+def test_live_runner_unknown_screen_policy_matches_route_safety_contract(
+    runner_type, state, timeout_name, expected_clicks
 ):
     screen = static_game_screen()
     clicks: list[tuple[int, int]] = []
@@ -54,4 +59,4 @@ def test_every_live_runner_wakes_static_unknown_four_times_before_safe_failure(
         with pytest.raises(RuntimeError, match="unknown page"):
             runner.run(max_cycles=1)
 
-    assert clicks == [(991, 566), (991, 566), (991, 566), (991, 566)]
+    assert clicks == expected_clicks

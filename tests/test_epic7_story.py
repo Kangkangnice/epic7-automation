@@ -223,6 +223,20 @@ class Epic7StoryStateMachineTests(unittest.TestCase):
 
         self.assertEqual("prepare_battle", action.name)
 
+    def test_prepare_battle_does_not_advance_until_target_is_committed(self):
+        machine = StoryStateMachine(build_story_templates(TEMPLATES))
+
+        action = machine.next_action(load_fixture("stage"))
+
+        self.assertEqual("prepare_battle", action.name)
+        self.assertEqual(StoryState.STAGE, machine.state)
+        self.assertEqual(StoryState.STAGE, action.source_state)
+        self.assertEqual((StoryState.TEAM,), action.target_states)
+
+        machine.commit(action, StoryState.TEAM)
+
+        self.assertEqual(StoryState.TEAM, machine.state)
+
     def test_episode5_stage_recognizes_prepare_battle_without_background(self):
         machine = StoryStateMachine(build_story_templates(TEMPLATES))
 
@@ -275,6 +289,7 @@ class Epic7StoryStateMachineTests(unittest.TestCase):
         popup = load_fixture("stamina_popup_live_20260809")
 
         select_leaf = machine.next_action(popup)
+        machine.action_clicked(select_leaf)
         confirm = machine.next_action(popup)
 
         self.assertEqual("stamina_material", select_leaf.name)
@@ -294,12 +309,24 @@ class Epic7StoryStateMachineTests(unittest.TestCase):
     def test_stamina_purchase_stops_if_the_selected_leaf_offer_is_not_visible(self):
         machine = StoryStateMachine(build_story_templates(TEMPLATES))
         popup = load_fixture("stamina_popup_live_20260809")
-        machine.next_action(popup)
+        machine.action_clicked(machine.next_action(popup))
         without_leaf = popup.copy()
         without_leaf[480:730, 500:960] = 0
 
         with self.assertRaises(RuntimeError):
             machine.next_action(without_leaf)
+
+    def test_stamina_purchase_count_waits_for_popup_to_leave_after_confirm_click(self):
+        machine = StoryStateMachine(build_story_templates(TEMPLATES))
+        popup = load_fixture("stamina_popup_live_20260809")
+
+        machine.action_clicked(machine.next_action(popup))
+        confirm = machine.next_action(popup)
+        machine.action_clicked(confirm)
+
+        self.assertEqual(0, machine.stamina_replenished)
+        machine.next_action(load_fixture("team"))
+        self.assertEqual(1, machine.stamina_replenished)
 
     def test_story_background_variant_still_recognizes_skip(self):
         machine = StoryStateMachine(build_story_templates(TEMPLATES))
@@ -314,7 +341,7 @@ class Epic7StoryStateMachineTests(unittest.TestCase):
         action = machine.next_action(load_fixture("story_watch_ready_live_20260810"))
 
         self.assertEqual("watch_story", action.name)
-        self.assertEqual(StoryState.WAIT_SKIP_CONFIRM, machine.state)
+        self.assertEqual(StoryState.STAGE, machine.state)
 
     def test_episode4_story_next_stage_is_recognized_and_counts_previous_cycle(self):
         machine = StoryStateMachine(
@@ -325,7 +352,7 @@ class Epic7StoryStateMachineTests(unittest.TestCase):
         action = machine.next_action(load_fixture("story_watch_next_ep4"))
 
         self.assertEqual("watch_story", action.name)
-        self.assertEqual(StoryState.WAIT_SKIP_CONFIRM, machine.state)
+        self.assertEqual(StoryState.STAGE, machine.state)
         self.assertEqual(1, machine.completed_cycles)
 
     def test_wait_complete_counts_cycle_when_next_battle_map_is_already_visible(self):
@@ -336,8 +363,8 @@ class Epic7StoryStateMachineTests(unittest.TestCase):
 
         action = machine.next_action(load_fixture("stage_prepare_battle_ep5"))
 
-        self.assertEqual("prepare_battle", action.name)
-        self.assertEqual(StoryState.TEAM, machine.state)
+        self.assertIsNone(action)
+        self.assertEqual(StoryState.STAGE, machine.state)
         self.assertEqual(1, machine.completed_cycles)
 
     def test_wait_complete_counts_cycle_when_next_story_stage_is_already_visible(self):
@@ -349,7 +376,7 @@ class Epic7StoryStateMachineTests(unittest.TestCase):
         action = machine.next_action(load_fixture("story_watch_next_ep4"))
 
         self.assertEqual("watch_story", action.name)
-        self.assertEqual(StoryState.WAIT_SKIP_CONFIRM, machine.state)
+        self.assertEqual(StoryState.STAGE, machine.state)
         self.assertEqual(1, machine.completed_cycles)
 
     def test_episode4_story_stage_does_not_count_when_it_is_the_initial_page(self):
@@ -358,7 +385,7 @@ class Epic7StoryStateMachineTests(unittest.TestCase):
         action = machine.next_action(load_fixture("story_watch_next_ep4"))
 
         self.assertEqual("watch_story", action.name)
-        self.assertEqual(StoryState.WAIT_SKIP_CONFIRM, machine.state)
+        self.assertEqual(StoryState.STAGE, machine.state)
         self.assertEqual(0, machine.completed_cycles)
 
     def test_watch_story_glyph_does_not_match_other_bottom_right_actions(self):
@@ -438,7 +465,7 @@ class Epic7StoryStateMachineTests(unittest.TestCase):
         self.assertEqual(StoryState.ACTIVE, machine.state)
         self.assertTrue(machine.auto_enabled)
 
-    def test_manual_controls_can_request_enable_auto_only_once_per_stage(self):
+    def test_manual_controls_remain_an_enable_auto_candidate_until_confirmed(self):
         machine = StoryStateMachine(
             build_story_templates(TEMPLATES), initial_state=StoryState.WAIT_BATTLE
         )
@@ -448,7 +475,7 @@ class Epic7StoryStateMachineTests(unittest.TestCase):
         second = machine.next_action(manual)
 
         self.assertEqual("enable_auto", first.name)
-        self.assertIsNone(second)
+        self.assertEqual("enable_auto", second.name)
 
     def test_optional_bonus_reward_is_closed_before_next_stage_is_counted(self):
         machine = StoryStateMachine(
@@ -510,6 +537,17 @@ class Epic7StoryStateMachineTests(unittest.TestCase):
         self.assertEqual("skip", skip.name)
         self.assertEqual("skip_confirm", confirm.name)
         self.assertIsNone(resumed_battle)
+
+    def test_skip_confirmation_allows_the_next_story_segment_to_be_skipped(self):
+        machine = StoryStateMachine(
+            build_story_templates(TEMPLATES),
+            initial_state=StoryState.WAIT_SKIP_CONFIRM,
+        )
+
+        action = machine.next_action(load_fixture("skip_confirm"))
+
+        self.assertEqual("skip_confirm", action.name)
+        self.assertIn("剧情播放", action.target_pages)
 
 
 if __name__ == "__main__":

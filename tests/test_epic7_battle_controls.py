@@ -20,6 +20,17 @@ def load_fixture(group: str, name: str) -> np.ndarray:
 
 
 class SharedBattleControlsTests(unittest.TestCase):
+    def test_auto_battle_with_dark_turn_order_keeps_battle_scene_visible(self):
+        """实跑回归：行动顺序栏在暗色特效下不应否定已识别的自动战斗。"""
+        screen = load_fixture("epic7_story", "battle_auto_on_live_20260809").copy()
+        # 2026-08-27 实机诊断中，左侧行动顺序栏只有约 7% 的白色像素，
+        # 但右上战斗控件仍清晰可见。构造同一视觉条件，避免依赖运行时诊断文件。
+        screen[120:900, :140] = 0
+        screen[120:175, :140] = 255
+
+        self.assertEqual(BattleControls.AUTO_CONTROLS, observe_battle_controls(screen))
+        self.assertTrue(battle_controls_module.battle_scene_visible(screen))
+
     def test_live_arena_skill_animation_keeps_battle_scene_visible(self):
         screen = load_fixture(
             "epic7_arena", "battle_skill_animation_live_20260825"

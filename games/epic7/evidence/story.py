@@ -44,6 +44,9 @@ THRESHOLDS = {
     "battle_guide_dont_show": 0.85,
     "auto_off": 0.80,
     "auto_on": 0.80,
+    # PC 客户端的"选择队伍"文字渲染与模拟器不同，实测 0.780；模拟器为 0.936。
+    # 次高候选 next_stage 在该页面上仅 0.604，与 0.75 仍有 0.15 间隔。
+    "select_team": 0.75,
 }
 
 _TEMPLATE_NAMES = (
