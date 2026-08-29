@@ -179,9 +179,7 @@ def build_navigation_templates(template_root: Path) -> NavigationTemplates:
         ),
         expedition_entry=load_template(str(navigation / "expedition_entry.png")),
         expedition_home=load_template(str(navigation / "expedition_home.png")),
-        lobby_story_click_offset=(120, -20)
-        if template_root.name == "templates_pc"
-        else (65, 11),
+        lobby_story_click_offset=(65, 11),
         lobby_side_story=load_template(str(navigation / "lobby_side_story.png")),
         side_story_special_book=load_template(
             str(navigation / "side_story_special_book.png")

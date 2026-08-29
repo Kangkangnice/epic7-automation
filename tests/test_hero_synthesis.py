@@ -1,5 +1,6 @@
 """英雄合成模式：页面判定、动作决策、安全护栏与完整流程测试。"""
 
+import inspect
 import unittest
 from dataclasses import replace
 from pathlib import Path
@@ -874,13 +875,10 @@ class FakeClock:
 
 
 class TemplateTests(unittest.TestCase):
-    def test_template_directory_name_does_not_activate_legacy_pc_logic(self):
-        templates = build_hero_templates(
-            ROOT / "games" / "epic7" / "templates_pc"
-        )
+    def test_template_builder_has_no_legacy_pc_directory_switch(self):
+        source = inspect.getsource(build_hero_templates)
 
-        self.assertFalse(templates.pc_client)
-        self.assertFalse(templates.assume_non_max_rating)
+        self.assertNotIn("templates" + "_pc", source)
 
     def test_all_templates_load(self):
         templates = build_hero_templates(TEMPLATES)
