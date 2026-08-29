@@ -183,7 +183,6 @@ class HeroTemplates:
 def build_hero_templates(template_root: Path) -> HeroTemplates:
     hero = template_root / "hero"
     navigation = template_root / "navigation"
-    is_pc = template_root.name == "templates_pc"
     result_title = hero / "imprint_result_title.png"
     result_close = hero / "imprint_result_close.png"
     sss_material = hero / "sss_material.png"
@@ -203,40 +202,38 @@ def build_hero_templates(template_root: Path) -> HeroTemplates:
         story_back=load_template(str(navigation / "story_back.png")),
         rating_sss=load_template(str(hero / "rating_sss.png")),
         filter_attribute_label=(
-            load_template(str(filter_attribute))
-            if not is_pc and filter_attribute.exists()
-            else None
+            load_template(str(filter_attribute)) if filter_attribute.exists() else None
         ),
         filter_star3_unselected=(
             load_template(str(filter_star3_unselected))
-            if not is_pc and filter_star3_unselected.exists()
+            if filter_star3_unselected.exists()
             else None
         ),
         sss_material=(load_template(str(sss_material)) if sss_material.exists() else None),
         sss_material_warning_title=(
             load_template(str(sss_material_warning_title))
-            if not is_pc and sss_material_warning_title.exists()
+            if sss_material_warning_title.exists()
             else None
         ),
         sss_material_warning_close=(
             load_template(str(sss_material_warning_close))
-            if not is_pc and sss_material_warning_close.exists()
+            if sss_material_warning_close.exists()
             else None
         ),
         imprint_result_title=(load_template(str(result_title)) if result_title.exists() else None),
         imprint_result_close=(load_template(str(result_close)) if result_close.exists() else None),
         transmit_reward_title=(
             load_template(str(transmit_reward_title))
-            if not is_pc and transmit_reward_title.exists()
+            if transmit_reward_title.exists()
             else None
         ),
         transmit_reward_close=(
             load_template(str(transmit_reward_close))
-            if not is_pc and transmit_reward_close.exists()
+            if transmit_reward_close.exists()
             else None
         ),
-        pc_client=is_pc,
-        assume_non_max_rating=is_pc,
+        pc_client=False,
+        assume_non_max_rating=False,
         evidence=build_hero_evidence(template_root),
     )
 
@@ -367,6 +364,7 @@ class HeroSynthStateMachine:
         self._awaiting_star3_confirmation: bool = False
         # 模拟器筛选关闭请求只表示“正在等待目标页”，不能代表筛选已完成。
         self._filter_close_pending: bool = False
+        self._last_filter_scores: dict[str, float] = {}
         self._confirmed_page: str = ""
         self.transmit_phase = TransmitPhase.NONE
         self.transmit_target_observation: Optional[str] = None
@@ -1054,6 +1052,19 @@ class HeroSynthStateMachine:
         ):
             return FilterObservation.UNKNOWN
 
+        keys = (
+            "filter_level_label",
+            "filter_attribute_label",
+            "filter_star3_selected",
+            "filter_star3_unselected",
+        )
+        self._last_filter_scores = {}
+        for key in keys:
+            match = self._locate(screen, key, 0.0)
+            self._last_filter_scores[key] = (
+                match.score if match is not None else -1.0
+            )
+
         scale = min(
             screen.shape[1] / self._REFERENCE_SIZE[0],
             screen.shape[0] / self._REFERENCE_SIZE[1],
@@ -1063,16 +1074,27 @@ class HeroSynthStateMachine:
             if scale <= 0.55
             else self._threshold("filter_attribute_label")
         )
-        level = self._locate(screen, "filter_level_label")
-        attribute = self._locate(screen, "filter_attribute_label", attribute_min)
-        panel_open = level is not None and attribute is not None
+        level_present = (
+            self._last_filter_scores["filter_level_label"]
+            >= self._threshold("filter_level_label")
+        )
+        attribute_present = (
+            self._last_filter_scores["filter_attribute_label"] >= attribute_min
+        )
+        panel_open = level_present and attribute_present
         if panel_open:
-            if self._locate(screen, "filter_star3_selected") is not None:
+            if (
+                self._last_filter_scores["filter_star3_selected"]
+                >= self._threshold("filter_star3_selected")
+            ):
                 return FilterObservation.FILTER_OPEN_STAR3_SELECTED
-            if self._locate(screen, "filter_star3_unselected") is not None:
+            if (
+                self._last_filter_scores["filter_star3_unselected"]
+                >= self._threshold("filter_star3_unselected")
+            ):
                 return FilterObservation.FILTER_OPEN_STAR3_UNSELECTED
             return FilterObservation.UNKNOWN
-        if level is not None or attribute is not None:
+        if level_present or attribute_present:
             return FilterObservation.UNKNOWN
         if (
             self._locate(screen, "filter_button") is not None
@@ -1080,6 +1102,22 @@ class HeroSynthStateMachine:
         ):
             return FilterObservation.HERO_LIST_FILTER_CLOSED
         return FilterObservation.UNKNOWN
+
+    def _filter_evidence_summary(self) -> str:
+        def item(label: str, key: str) -> str:
+            return (
+                f"{label}={self._last_filter_scores.get(key, -1.0):.3f}/"
+                f"{self._threshold(key):.2f}"
+            )
+
+        return " ".join(
+            (
+                item("级别", "filter_level_label"),
+                item("属性", "filter_attribute_label"),
+                item("三星已选", "filter_star3_selected"),
+                item("三星未选", "filter_star3_unselected"),
+            )
+        )
 
     def _next_simulator_filter_action(
         self, screen: np.ndarray
@@ -1106,7 +1144,10 @@ class HeroSynthStateMachine:
                 self._scaled_point(screen, self._STAR3_POINT),
                 source_page="筛选面板（三星未选中）",
                 target_pages=("筛选面板（三星已选中）",),
-                reason="级别与属性锚点存在，三星深色按钮存在",
+                reason=(
+                    "级别与属性锚点存在，三星深色按钮存在；"
+                    f"{self._filter_evidence_summary()}"
+                ),
             )
 
         if observation is FilterObservation.FILTER_OPEN_STAR3_SELECTED:
@@ -1117,7 +1158,10 @@ class HeroSynthStateMachine:
                 self._scaled_point(screen, self._FUNNEL_POINT),
                 source_page="筛选面板（三星已选中）",
                 target_pages=("英雄列表",),
-                reason="级别与属性锚点存在，三星白底按钮存在",
+                reason=(
+                    "级别与属性锚点存在，三星白底按钮存在；"
+                    f"{self._filter_evidence_summary()}"
+                ),
             )
 
         if observation is FilterObservation.HERO_LIST_FILTER_CLOSED:
@@ -1140,7 +1184,10 @@ class HeroSynthStateMachine:
                         "筛选面板（三星已选中）",
                         "筛选面板（三星未选中）",
                     ),
-                    reason="英雄信息页已确认，打开三星筛选",
+                    reason=(
+                        "英雄信息页已确认，打开三星筛选；"
+                        f"{self._filter_evidence_summary()}"
+                    ),
                 )
             return False, None
 

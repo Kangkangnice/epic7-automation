@@ -1,3 +1,4 @@
+import inspect
 from pathlib import Path
 
 import cv2
@@ -42,6 +43,10 @@ def test_real_pc_lobby_is_recognized_with_shared_emulator_templates():
 
     assert observation.name == "lobby"
     assert observation.confidence >= 0.82
+
+
+def test_navigation_builder_has_no_legacy_pc_directory_switch():
+    assert "templates" + "_pc" not in inspect.getsource(build_navigation_templates)
 
 
 def test_real_pc_lobby_shared_anchor_centers_keep_emulator_geometry():
