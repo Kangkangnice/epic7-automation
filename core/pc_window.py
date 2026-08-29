@@ -27,6 +27,8 @@ _MOUSEEVENTF_MOVE = 0x0001
 _MOUSEEVENTF_LEFTDOWN = 0x0002
 _MOUSEEVENTF_LEFTUP = 0x0004
 _MOUSEEVENTF_ABSOLUTE = 0x8000
+_SWP_NOZORDER = 0x0004
+_SWP_NOACTIVATE = 0x0010
 
 
 class _MouseInput(ctypes.Structure):
@@ -84,6 +86,13 @@ class WindowRect:
     height: int
 
 
+@dataclass(frozen=True)
+class WindowCalibration:
+    before: WindowRect
+    after: WindowRect
+    adjusted: bool
+
+
 class Epic7PcWindow:
     """Capture and click the uniquely titled Epic Seven PC client window."""
 
@@ -97,7 +106,7 @@ class Epic7PcWindow:
         reference_size: tuple[int, int] = REFERENCE_SIZE,
     ) -> None:
         self.reference_size = reference_size
-        self._user32 = ctypes.windll.user32
+        self._user32 = ctypes.WinDLL("user32", use_last_error=True)
 
     # ---- window discovery -------------------------------------------------
 
@@ -165,6 +174,17 @@ class Epic7PcWindow:
             client.bottom - client.top,
         )
 
+    def _outer_rect(self, hwnd) -> WindowRect:
+        rect = wintypes.RECT()
+        if not self._user32.GetWindowRect(hwnd, ctypes.byref(rect)):
+            raise RuntimeError("无法读取 Epic Seven PC 窗口外框")
+        return WindowRect(
+            rect.left,
+            rect.top,
+            rect.right - rect.left,
+            rect.bottom - rect.top,
+        )
+
     def activate(self):
         hwnd = self._find_window()
         if self._user32.GetForegroundWindow() == hwnd:
@@ -197,6 +217,43 @@ class Epic7PcWindow:
                 "PC 客户端以管理员权限运行，而当前自动化未提升权限；"
                 "Windows 会拦截键鼠输入。请以相同权限级别重新启动两者。"
             )
+
+    def ensure_render_size(self) -> WindowCalibration:
+        hwnd = self.activate()
+        self._ensure_input_allowed(hwnd)
+        before = self._rect(hwnd)
+        if (before.width, before.height) == RENDER_SIZE:
+            return WindowCalibration(before, before, False)
+
+        outer = self._outer_rect(hwnd)
+        target_outer_width = RENDER_SIZE[0] + outer.width - before.width
+        target_outer_height = RENDER_SIZE[1] + outer.height - before.height
+        if not self._user32.SetWindowPos(
+            hwnd,
+            0,
+            outer.left,
+            outer.top,
+            target_outer_width,
+            target_outer_height,
+            _SWP_NOZORDER | _SWP_NOACTIVATE,
+        ):
+            error = ctypes.get_last_error()
+            raise RuntimeError(
+                f"PC 游戏窗口调整失败：当前={before.width}x{before.height} "
+                f"目标={RENDER_SIZE[0]}x{RENDER_SIZE[1]} Win32错误码={error}"
+            )
+
+        after = before
+        for _ in range(10):
+            sleep(0.1)
+            after = self._rect(hwnd)
+            if (after.width, after.height) == RENDER_SIZE:
+                return WindowCalibration(before, after, True)
+        raise RuntimeError(
+            f"PC 游戏窗口调整未生效：调整前={before.width}x{before.height} "
+            f"目标={RENDER_SIZE[0]}x{RENDER_SIZE[1]} "
+            f"调整后实际仍为 {after.width}x{after.height}"
+        )
 
     # ---- capture / input --------------------------------------------------
 
