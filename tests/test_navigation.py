@@ -32,7 +32,26 @@ def hero_fixture(name: str):
     return cv2.cvtColor(cv2.imread(str(path)), cv2.COLOR_BGR2RGB)
 
 
+def global_fixture(name: str):
+    path = ROOT / "tests" / "fixtures" / "epic7_global" / f"{name}.png"
+    return cv2.cvtColor(cv2.imread(str(path)), cv2.COLOR_BGR2RGB)
+
+
 class NavigationTests(unittest.TestCase):
+    def test_navigator_selects_platform_thresholds_explicitly(self):
+        runtime = Runtime(lambda: fixture("lobby"), lambda _point: None)
+        emulator = Epic7Navigator(build_navigation_templates(TEMPLATES), runtime)
+        pc = Epic7Navigator(
+            build_navigation_templates(TEMPLATES),
+            runtime,
+            backend="pc",
+        )
+
+        self.assertEqual(0.65, emulator._story_thresholds["skip"])
+        self.assertEqual(0.55, pc._story_thresholds["skip"])
+        self.assertEqual(0.88, emulator._arena_thresholds["list_ready"])
+        self.assertEqual(0.75, pc._arena_thresholds["list_ready"])
+
     def test_classifies_friendship_points_popup(self):
         navigator = self.navigator([])
 
@@ -55,6 +74,23 @@ class NavigationTests(unittest.TestCase):
         self.assertEqual(1, len(clicks))
         self.assertTrue(870 <= clicks[0][0] <= 1050)
         self.assertTrue(885 <= clicks[0][1] <= 1010)
+        self.assertEqual([], backs)
+
+    def test_return_home_closes_pc_friendship_points_popup_without_unknown_wake(self):
+        clicks: list[tuple[int, int]] = []
+        backs: list[bool] = []
+        popup = global_fixture("friendship_points_pc_20260830")
+        navigator = self.navigator(
+            [popup, popup, fixture("lobby"), fixture("lobby")],
+            clicks=clicks,
+            backs=backs,
+        )
+
+        navigator.return_home()
+
+        self.assertEqual(1, len(clicks))
+        self.assertTrue(900 <= clicks[0][0] <= 1020)
+        self.assertTrue(900 <= clicks[0][1] <= 1000)
         self.assertEqual([], backs)
 
     def test_story_transition_closes_friendship_points_popup_before_destination(self):

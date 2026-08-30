@@ -10,6 +10,7 @@ class ProjectLayoutTests(unittest.TestCase):
         fixture_dir = ROOT / "tests" / "fixtures" / "epic7_global"
         self.assertEqual(
             {
+                "friendship_points_pc_20260830.png",
                 "intimacy_level_up_live_20260815.png",
                 "network_disconnected.png",
                 "network_reconnect.png",

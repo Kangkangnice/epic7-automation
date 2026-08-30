@@ -29,6 +29,7 @@ from auto_game_unified.games.epic7.unknown_screen import UnrecognizedScreen
 from auto_game_unified.games.epic7.evidence.common import EvidenceProfile
 from auto_game_unified.games.epic7.evidence.hero_synthesis import (
     FILTER_ATTRIBUTE_SMALL_THRESHOLD,
+    PC_FILTER_ATTRIBUTE_SMALL_THRESHOLD,
     REFERENCE_SIZE as HERO_REFERENCE_SIZE,
     REGIONS as HERO_REGIONS,
     THRESHOLDS as HERO_THRESHOLDS,
@@ -180,7 +181,11 @@ class HeroTemplates:
     evidence: EvidenceProfile | None = None
 
 
-def build_hero_templates(template_root: Path) -> HeroTemplates:
+def build_hero_templates(
+    template_root: Path,
+    *,
+    backend: str = "emulator",
+) -> HeroTemplates:
     hero = template_root / "hero"
     navigation = template_root / "navigation"
     result_title = hero / "imprint_result_title.png"
@@ -192,6 +197,7 @@ def build_hero_templates(template_root: Path) -> HeroTemplates:
     filter_star3_unselected = hero / "filter_star3_unselected.png"
     transmit_reward_title = hero / "transmit_reward_title.png"
     transmit_reward_close = hero / "transmit_reward_close.png"
+    evidence = build_hero_evidence(template_root, backend=backend)
     return HeroTemplates(
         filter_button=load_template(str(hero / "filter_button.png")),
         filter_level_label=load_template(str(hero / "filter_level_label.png")),
@@ -234,7 +240,8 @@ def build_hero_templates(template_root: Path) -> HeroTemplates:
         ),
         pc_client=False,
         assume_non_max_rating=False,
-        evidence=build_hero_evidence(template_root),
+        threshold=evidence.atom("filter_button").threshold,
+        evidence=evidence,
     )
 
 
@@ -332,8 +339,11 @@ class HeroSynthStateMachine:
         self,
         templates: HeroTemplates,
         initial_state: HeroSynthState = HeroSynthState.HERO_LIST,
+        *,
+        backend: str = "emulator",
     ) -> None:
         self.templates = templates
+        self.backend = backend
         self.state = initial_state
         if templates.evidence is not None:
             self._REGIONS = {
@@ -345,6 +355,12 @@ class HeroSynthStateMachine:
         self.completed_cycles = 0
         self.filter_verified = False
         self.prev_card_grey = False
+        self._button_struct_min = 0.40 if backend == "pc" else self._BUTTON_STRUCT_MIN
+        self._filter_attribute_small_min = (
+            PC_FILTER_ATTRIBUTE_SMALL_THRESHOLD
+            if backend == "pc"
+            else FILTER_ATTRIBUTE_SMALL_THRESHOLD
+        )
         self._button_tl = self._PC_BUTTON_TL if templates.pc_client else self._BUTTON_TL
         self._dot_mask = self._PC_DOT_MASK if templates.pc_client else self._DOT_MASK
         self._reddot_zone = (
@@ -1038,7 +1054,7 @@ class HeroSynthStateMachine:
             default=None,
         )
         base_ready = bool(
-            best is not None and best.score >= self._BUTTON_STRUCT_MIN
+            best is not None and best.score >= self._button_struct_min
         ) or self._is_max_rating(screen) or self._red_dot_present(screen)
         return base_ready and (
             self.templates.pc_client or self._detail_content_present(screen)
@@ -1070,7 +1086,7 @@ class HeroSynthStateMachine:
             screen.shape[0] / self._REFERENCE_SIZE[1],
         )
         attribute_min = (
-            self._FILTER_ATTRIBUTE_SMALL_MIN
+            self._filter_attribute_small_min
             if scale <= 0.55
             else self._threshold("filter_attribute_label")
         )
@@ -1096,10 +1112,7 @@ class HeroSynthStateMachine:
             return FilterObservation.UNKNOWN
         if level_present or attribute_present:
             return FilterObservation.UNKNOWN
-        if (
-            self._locate(screen, "filter_button") is not None
-            and self._hero_list_ready(screen)
-        ):
+        if self._hero_info_tab_selected(screen) and self._hero_list_ready(screen):
             return FilterObservation.HERO_LIST_FILTER_CLOSED
         return FilterObservation.UNKNOWN
 
@@ -1834,7 +1847,7 @@ class HeroSynthStateMachine:
             key=lambda m: m.score,
             default=None,
         )
-        if best is not None and best.score >= self._BUTTON_STRUCT_MIN:
+        if best is not None and best.score >= self._button_struct_min:
             if not self.filter_verified:
                 return HeroAction(
                     "open_filter",

@@ -21,12 +21,18 @@ from auto_game_unified.games.epic7 import arena as arena_module
 
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURES = ROOT / "tests" / "fixtures" / "epic7_arena"
+PC_FIXTURES = ROOT / "tests" / "fixtures" / "epic7_pc_arena"
 TEMPLATES = ROOT / "games" / "epic7" / "templates"
 GLOBAL_TEMPLATES = TEMPLATES / "global"
 
 
 def load_fixture(name: str) -> np.ndarray:
     image = np.asarray(Image.open(FIXTURES / f"{name}.png").convert("RGB"))
+    return image[:1132, :1982]
+
+
+def load_pc_fixture(name: str) -> np.ndarray:
+    image = np.asarray(Image.open(PC_FIXTURES / f"{name}.png").convert("RGB"))
     return image[:1132, :1982]
 
 
@@ -50,6 +56,29 @@ def make_all_failed_screen(machine: ArenaStateMachine) -> np.ndarray:
 
 
 class Epic7ArenaStateMachineTests(unittest.TestCase):
+    def test_pc_team_page_uses_pc_threshold_without_relaxing_emulator(self):
+        pc_machine = ArenaStateMachine(
+            build_templates(TEMPLATES, backend="pc"),
+            backend="pc",
+        )
+        emulator_machine = ArenaStateMachine(build_templates(TEMPLATES))
+
+        self.assertTrue(
+            pc_machine.is_in_state(load_pc_fixture("team_20260830"), ArenaState.TEAM)
+        )
+        self.assertEqual(0.70, pc_machine._THRESHOLDS["battle_start"])
+        self.assertEqual(
+            0.70,
+            pc_machine.templates.evidence.atom("battle_start").threshold,
+        )
+        self.assertEqual(0.90, emulator_machine._THRESHOLDS["battle_start"])
+
+        pc_machine.state = ArenaState.TEAM
+        action = pc_machine.next_action(load_pc_fixture("team_20260830"))
+        self.assertEqual("battle-start", action.name)
+        self.assertEqual((1258, 1043), action.point)
+        self.assertEqual((ArenaState.BATTLE,), action.target_states)
+
     def test_free_refresh_confirmation_requires_title_free_offer_and_button(self):
         screen = load_fixture("free_refresh_confirm_live_20260814")
         title = screen[335:415, 800:1140].copy()
@@ -159,6 +188,22 @@ class Epic7ArenaStateMachineTests(unittest.TestCase):
         machine.commit(action, ArenaState.TEAM)
 
         self.assertEqual(ArenaState.TEAM, machine.state)
+
+    def test_selected_state_retries_same_opponent_when_list_is_still_visible(self):
+        machine = ArenaStateMachine(
+            build_templates(TEMPLATES),
+            initial_state=ArenaState.SELECTED,
+            choose_opponent=lambda safe: self.fail("不应重新随机选择对手"),
+        )
+        machine._selected_opponent = 1
+        screen = load_fixture("list")
+
+        action = machine.next_action(screen)
+
+        self.assertEqual(ArenaState.LIST, machine.state)
+        self.assertEqual("select-opponent", action.name)
+        self.assertEqual(ArenaState.LIST, action.source_state)
+        self.assertEqual(machine._opponent_point(screen, 1), action.point)
 
     def test_result_and_rank_actions_do_not_advance_without_commit(self):
         machine = ArenaStateMachine(
@@ -410,11 +455,13 @@ class Epic7ArenaStateMachineTests(unittest.TestCase):
         self.assertEqual("select-opponent", follow_up.name)
         self.assertEqual(1, machine.completed_cycles)
 
-    def test_committed_selected_state_rejects_a_regressed_list(self):
+    def test_committed_selected_state_returns_to_list_on_regressed_list(self):
         machine = ArenaStateMachine(build_templates(TEMPLATES), initial_state=ArenaState.SELECTED)
 
-        with self.assertRaisesRegex(RuntimeError, "对手详情.*未识别"):
-            machine.next_action(load_fixture("list"))
+        action = machine.next_action(load_fixture("list"))
+
+        self.assertEqual(ArenaState.LIST, machine.state)
+        self.assertEqual("select-opponent", action.name)
 
     def test_ticket_purchase_accepts_selected_friendship_offer(self):
         machine = ArenaStateMachine(build_templates(TEMPLATES), initial_state=ArenaState.BATTLE)

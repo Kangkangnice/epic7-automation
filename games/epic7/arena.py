@@ -70,6 +70,7 @@ def find_rank_promotion_confirm(
     screen: np.ndarray,
     arrow_template: np.ndarray,
     confirm_template: np.ndarray,
+    threshold: float = 0.90,
 ) -> Optional[Match]:
     """Return Confirm only when the promotion arrow and button are both visible."""
 
@@ -95,7 +96,7 @@ def find_rank_promotion_confirm(
         match = find_template(
             cv2.inRange(search_hsv, lower, upper),
             cv2.inRange(template_hsv, lower, upper),
-            0.90,
+            threshold,
             reference_size=(ref_width, ref_height),
         )
         if match is None:
@@ -124,6 +125,7 @@ def find_free_refresh_confirm(
     title_template: np.ndarray,
     free_template: np.ndarray,
     confirm_template: np.ndarray,
+    threshold: float = 0.90,
 ) -> Optional[Match]:
     """Return Confirm only for the explicit free opponent-refresh offer."""
 
@@ -149,7 +151,7 @@ def find_free_refresh_confirm(
         match = find_template(
             cv2.inRange(search_hsv, lower, upper),
             cv2.inRange(template_hsv, lower, upper),
-            0.90,
+            threshold,
             reference_size=(ref_width, ref_height),
         )
         if match is None:
@@ -242,7 +244,12 @@ class ArenaTemplates:
     evidence: EvidenceProfile | None = None
 
 
-def build_templates(template_dir: Path) -> ArenaTemplates:
+def build_templates(
+    template_dir: Path,
+    *,
+    backend: str = "emulator",
+) -> ArenaTemplates:
+    evidence = build_arena_evidence(template_dir, backend=backend)
     return ArenaTemplates(
         rank_promotion_arrow=load_template(
             str(template_dir / "global" / "arena_rank_promotion_arrow.png")
@@ -260,7 +267,8 @@ def build_templates(template_dir: Path) -> ArenaTemplates:
         refresh_free=load_template(str(template_dir / "arena_refresh_free.png")),
         refresh_confirm=load_template(str(template_dir / "arena_refresh_confirm.png")),
         quick_battle=load_simulator_quick_battle_detector(template_dir),
-        evidence=build_arena_evidence(template_dir),
+        threshold=0.93 if backend == "pc" else 0.98,
+        evidence=evidence,
     )
 
 
@@ -320,8 +328,10 @@ class ArenaStateMachine:
         *,
         initial_state: ArenaState = ArenaState.LIST,
         choose_opponent: Callable[[Sequence[int]], int] = random.choice,
+        backend: str = "emulator",
     ) -> None:
         self.templates = templates
+        self.backend = backend
         self.state = initial_state
         self.completed_cycles = 0
         self.choose_opponent = choose_opponent
@@ -420,6 +430,7 @@ class ArenaStateMachine:
             self.templates.refresh_title,
             self.templates.refresh_free,
             self.templates.refresh_confirm,
+            self._THRESHOLDS["refresh_confirm"],
         )
 
     def is_in_state(self, screen: np.ndarray, state: "ArenaState") -> bool:
@@ -464,6 +475,7 @@ class ArenaStateMachine:
                 screen,
                 self.templates.rank_promotion_arrow,
                 self.templates.rank_confirm,
+                self._THRESHOLDS["rank_promotion_arrow"],
             ) is not None
         if action.source_state is None:
             return False
@@ -486,6 +498,7 @@ class ArenaStateMachine:
                 screen,
                 self.templates.rank_promotion_arrow,
                 self.templates.rank_confirm,
+                self._THRESHOLDS["rank_promotion_arrow"],
             ) is not None:
                 return ArenaState.CONFIRMING
             return None
@@ -565,7 +578,7 @@ class ArenaStateMachine:
             BattleControls.TRANSITION: AutoBattleState.UNKNOWN,
         }[controls]
         auto_match = self._locate(screen, "auto_off")
-        if auto_match is not None and self.templates.quick_battle is not None:
+        if auto_match is not None and self.backend == "emulator":
             auto_state = AutoBattleState.MANUAL
         result = self._locate(screen, "confirm")
         no_ticket = self._locate(screen, "no_ticket")
@@ -650,6 +663,7 @@ class ArenaStateMachine:
                 screen,
                 self.templates.rank_promotion_arrow,
                 self.templates.rank_confirm,
+                self._THRESHOLDS["rank_promotion_arrow"],
             )
             if rank_confirm is not None:
                 return Action(
@@ -678,6 +692,14 @@ class ArenaStateMachine:
                     (ArenaState.BATTLE,),
                     "快速战斗覆盖普通按钮，交由战斗监督切换",
                 )
+
+        if (
+            self.state == ArenaState.SELECTED
+            and not self.is_in_state(screen, ArenaState.SELECTED)
+            and self.is_in_state(screen, ArenaState.LIST)
+        ):
+            self.state = ArenaState.LIST
+            return self._list_action(screen)
 
         if not self.is_in_state(screen, self.state):
             raise UnrecognizedScreen(

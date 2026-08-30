@@ -13,10 +13,24 @@ from auto_game_unified.games.epic7.expedition import (
     PostersExhausted,
     build_expedition_templates,
 )
+from auto_game_unified.games.epic7.evidence.expedition import (
+    build_expedition_evidence,
+)
 
 
 SIZE = (1132, 1982, 3)
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_expedition_pc_profile_keeps_emulator_thresholds_without_evidence_override():
+    template_dir = ROOT / "games" / "epic7" / "templates" / "expedition"
+    emulator = build_expedition_evidence(template_dir)
+    pc = build_expedition_evidence(template_dir, backend="pc")
+
+    assert emulator.atom("campfire_idle").threshold == 0.82
+    assert pc.atom("campfire_idle").threshold == 0.82
+    assert emulator.atom("battle_start").threshold == 0.88
+    assert pc.atom("battle_start").threshold == 0.88
 
 
 def pattern(seed: int) -> np.ndarray:

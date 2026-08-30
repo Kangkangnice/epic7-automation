@@ -45,6 +45,7 @@ _INTIMACY_TITLE_REGION = (800, 220, 700, 180)
 _INTIMACY_DISMISS_REGION = (850, 780, 650, 250)
 _FRIENDSHIP_TITLE_REGION = (600, 150, 800, 180)
 _FRIENDSHIP_CLOSE_REGION = (750, 840, 450, 190)
+_FRIENDSHIP_ANCHOR_THRESHOLD = 0.55
 _FRIEND_REQUEST_TITLE_REGION = (650, 240, 700, 160)
 _FRIEND_REQUEST_CANCEL_REGION = (550, 720, 500, 230)
 
@@ -190,7 +191,7 @@ def find_friendship_points_popup_close(
         match = find_template(
             cv2.inRange(search_hsv, lower, upper),
             cv2.inRange(template_hsv, lower, upper),
-            0.85,
+            _FRIENDSHIP_ANCHOR_THRESHOLD,
             reference_size=(ref_width, ref_height),
         )
         if match is None:

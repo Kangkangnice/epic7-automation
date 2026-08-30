@@ -61,6 +61,21 @@ THRESHOLDS = {
     "quick_battle_switch": QUICK_SWITCH_THRESHOLD,
 }
 
+PC_THRESHOLD_OVERRIDES = {
+    # 两次 PC 实跑队伍页均为 0.711；现有 160 张非目标画面最高为 0.561。
+    "list_ready": 0.75,
+    "challenge": 0.85,
+    "battle_start": 0.70,
+    "auto_off": 0.80,
+    "confirm": 0.85,
+    "no_ticket": 0.85,
+    "friendship_ticket_offer": 0.87,
+    "ticket_purchase_button": 0.87,
+}
+
+DEFAULT_THRESHOLD = 0.90
+PC_DEFAULT_THRESHOLD = 0.85
+
 _TEMPLATE_PATHS = {
     "rank_promotion_arrow": "global/arena_rank_promotion_arrow.png",
     "list_ready": "list_ready.png",
@@ -147,13 +162,28 @@ _PAGES = (
 )
 
 
-def build_arena_evidence(template_dir: Path) -> EvidenceProfile:
+def thresholds_for(backend: str) -> dict[str, float]:
+    thresholds = dict(THRESHOLDS)
+    if backend == "pc":
+        thresholds.update(PC_THRESHOLD_OVERRIDES)
+    return thresholds
+
+
+def build_arena_evidence(
+    template_dir: Path,
+    *,
+    backend: str = "emulator",
+) -> EvidenceProfile:
+    thresholds = thresholds_for(backend)
+    default_threshold = (
+        PC_DEFAULT_THRESHOLD if backend == "pc" else DEFAULT_THRESHOLD
+    )
     atoms = {
         key: AtomEvidence(
             key=key,
             template_path=relative_path,
             region=REGIONS[key],
-            threshold=THRESHOLDS.get(key, 0.90),
+            threshold=thresholds.get(key, default_threshold),
             reference_size=REFERENCE_SIZE,
         )
         for key, relative_path in _TEMPLATE_PATHS.items()

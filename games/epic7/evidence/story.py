@@ -44,10 +44,24 @@ THRESHOLDS = {
     "battle_guide_dont_show": 0.85,
     "auto_off": 0.80,
     "auto_on": 0.80,
-    # PC 客户端的"选择队伍"文字渲染与模拟器不同，实测 0.780；模拟器为 0.936。
-    # 次高候选 next_stage 在该页面上仅 0.604，与 0.75 仍有 0.15 间隔。
     "select_team": 0.75,
 }
+
+PC_THRESHOLD_OVERRIDES = {
+    # PC 客户端的文字渲染与模拟器不同；平台覆盖不得改写模拟器基线。
+    "watch_story": 0.70,
+    "prepare_battle": 0.80,
+    "skip": 0.55,
+    "skip_confirm": 0.70,
+    "battle_guide_title": 0.75,
+    "battle_guide_dont_show": 0.75,
+    "auto_off": 0.70,
+    "auto_on": 0.70,
+    "select_team": 0.65,
+}
+
+DEFAULT_THRESHOLD = 0.80
+PC_DEFAULT_THRESHOLD = 0.70
 
 _TEMPLATE_NAMES = (
     "battle_guide_title",
@@ -75,13 +89,28 @@ _TEMPLATE_NAMES = (
 _OPTIONAL_TEMPLATES = {"stamina_popup", "stamina_material", "stamina_confirm"}
 
 
-def build_story_evidence(template_dir: Path) -> EvidenceProfile:
+def thresholds_for(backend: str) -> dict[str, float]:
+    thresholds = dict(THRESHOLDS)
+    if backend == "pc":
+        thresholds.update(PC_THRESHOLD_OVERRIDES)
+    return thresholds
+
+
+def build_story_evidence(
+    template_dir: Path,
+    *,
+    backend: str = "emulator",
+) -> EvidenceProfile:
+    thresholds = thresholds_for(backend)
+    default_threshold = (
+        PC_DEFAULT_THRESHOLD if backend == "pc" else DEFAULT_THRESHOLD
+    )
     atoms = {
         name: AtomEvidence(
             key=name,
             template_path=f"{name}.png",
             region=REGIONS[name],
-            threshold=THRESHOLDS.get(name, 0.80),
+            threshold=thresholds.get(name, default_threshold),
             required=name not in _OPTIONAL_TEMPLATES,
             reference_size=REFERENCE_SIZE,
         )

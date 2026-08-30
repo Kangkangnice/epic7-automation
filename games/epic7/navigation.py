@@ -11,6 +11,8 @@ from auto_game_unified.core.matcher import Match, find_template, load_template
 from auto_game_unified.core.runtime import Runtime
 from auto_game_unified.core.supervisor import StableObservation
 from auto_game_unified.games.epic7.arena import find_rank_promotion_confirm
+from auto_game_unified.games.epic7.evidence.arena import thresholds_for as arena_thresholds_for
+from auto_game_unified.games.epic7.evidence.story import thresholds_for as story_thresholds_for
 from auto_game_unified.games.epic7.global_popups import (
     find_friendship_points_popup_close,
 )
@@ -244,9 +246,13 @@ class Epic7Navigator:
         sleep: Callable[[float], None] = default_sleep,
         poll_seconds: float = 0.5,
         transition_frames: int = 90,
+        backend: str = "emulator",
     ) -> None:
         self.templates = templates
         self.runtime = runtime
+        self.backend = backend
+        self._story_thresholds = story_thresholds_for(backend)
+        self._arena_thresholds = arena_thresholds_for(backend)
         self.sleep = sleep
         self.now = runtime.now
         self.poll_seconds = poll_seconds
@@ -284,6 +290,7 @@ class Epic7Navigator:
             screen,
             self.templates.arena_rank_promotion_arrow,
             self.templates.arena_rank_confirm,
+            0.85 if self.backend == "pc" else 0.90,
         )
         if rank_confirm is not None:
             return PageObservation("arena_rank_promotion", rank_confirm.score)
@@ -301,11 +308,17 @@ class Epic7Navigator:
             )
 
         story_skip_confirm = find_story_skip_confirm(
-            screen, self.templates.story_skip_confirm
+            screen,
+            self.templates.story_skip_confirm,
+            self._story_thresholds["skip_confirm"],
         )
         if story_skip_confirm is not None:
             return PageObservation("story_skip_confirm", story_skip_confirm.score)
-        story_skip = find_story_skip_button(screen, self.templates.story_skip)
+        story_skip = find_story_skip_button(
+            screen,
+            self.templates.story_skip,
+            self._story_thresholds["skip"],
+        )
         if story_skip is not None:
             return PageObservation("story_playing", story_skip.score)
 
@@ -394,13 +407,22 @@ class Epic7Navigator:
             screen,
             self.templates.story_ready,
             self.templates.story_ready_updated,
+            self._story_thresholds["prepare_battle"],
         )
         if story:
             return PageObservation("story_ready", story.score)
-        story_watch = find_watch_story_button(screen, self.templates.story_watch)
+        story_watch = find_watch_story_button(
+            screen,
+            self.templates.story_watch,
+            self._story_thresholds["watch_story"],
+        )
         if story_watch:
             return PageObservation("story_ready", story_watch.score)
-        arena = self._locate(screen, "arena_ready", 0.88)
+        arena = self._locate(
+            screen,
+            "arena_ready",
+            self._arena_thresholds["list_ready"],
+        )
         if arena:
             return PageObservation("arena_ready", arena.score)
         return PageObservation("unknown", 0.0)
@@ -422,6 +444,7 @@ class Epic7Navigator:
                 screen,
                 self.templates.arena_rank_promotion_arrow,
                 self.templates.arena_rank_confirm,
+                0.85 if self.backend == "pc" else 0.90,
             )
             action = "确认竞技场段位提升"
         else:
@@ -449,10 +472,18 @@ class Epic7Navigator:
         attempts: _StoryRecoveryAttempts,
     ) -> bool:
         if observation.name == "story_playing":
-            match = find_story_skip_button(screen, self.templates.story_skip)
+            match = find_story_skip_button(
+                screen,
+                self.templates.story_skip,
+                self._story_thresholds["skip"],
+            )
             action = "skip-story-during-navigation"
         elif observation.name == "story_skip_confirm":
-            match = find_story_skip_confirm(screen, self.templates.story_skip_confirm)
+            match = find_story_skip_confirm(
+                screen,
+                self.templates.story_skip_confirm,
+                self._story_thresholds["skip_confirm"],
+            )
             action = "confirm-story-skip-during-navigation"
         else:
             attempts.action = None
