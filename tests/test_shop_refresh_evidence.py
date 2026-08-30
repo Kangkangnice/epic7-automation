@@ -83,6 +83,29 @@ def test_unverified_target_popup_does_not_invent_a_visual_price():
     assert result.purchase_price is None
 
 
+def test_current_client_mystic_row_is_actionable():
+    observer = build_shop_refresh_observer(TEMPLATES)
+
+    result = observer.observe(_screen("mystic_row_live_20260831"))
+
+    mystic_rows = [row for row in result.rows if row.kind is ShopItemKind.MYSTIC]
+    assert len(mystic_rows) == 1
+    assert mystic_rows[0].item_score >= 0.90
+    assert mystic_rows[0].buy_point is not None
+
+
+def test_current_client_mystic_popup_proves_price_280000():
+    observer = build_shop_refresh_observer(TEMPLATES)
+
+    result = observer.observe(_screen("mystic_purchase_confirm_live_20260831"))
+
+    assert result.page is ShopPage.PURCHASE_CONFIRM
+    assert result.purchase_kind is ShopItemKind.MYSTIC
+    assert result.purchase_price == 280_000
+    assert result.confirm_point is not None
+    assert result.cancel_point is not None
+
+
 def test_close_target_scores_fail_closed():
     assert classify_item_scores(0.84, 0.82) is ShopItemKind.UNKNOWN
     assert classify_item_scores(0.83, 0.20) is ShopItemKind.COVENANT

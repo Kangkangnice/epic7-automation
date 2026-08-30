@@ -17,9 +17,13 @@ from .common import AtomEvidence, EvidenceProfile, PageEvidence
 REFERENCE_SIZE = (1982, 1132)
 ITEM_THRESHOLD = 0.75
 ITEM_SCORE_MARGIN = 0.05
-# The two target icons and their purchase-price popups still need current-client
-# fixtures.  Keep live spending disabled until both are captured and verified.
-LIVE_TRANSACTIONS_VERIFIED = False
+# Live spending stays disabled until both target types have current-client row
+# and purchase-price fixtures. Mystic is verified; Covenant is still pending.
+MYSTIC_TRANSACTION_VERIFIED = True
+COVENANT_TRANSACTION_VERIFIED = False
+LIVE_TRANSACTIONS_VERIFIED = bool(
+    MYSTIC_TRANSACTION_VERIFIED and COVENANT_TRANSACTION_VERIFIED
+)
 
 
 class ShopItemKind(Enum):
@@ -75,6 +79,7 @@ REGIONS = {
     "refresh_confirm": (900, 650, 550, 260),
     "covenant_candidate": (650, 140, 380, 992),
     "mystic_candidate": (650, 140, 380, 992),
+    "mystic_price_current": (850, 720, 400, 180),
 }
 
 THRESHOLDS = {
@@ -90,6 +95,7 @@ THRESHOLDS = {
     "refresh_confirm": 0.88,
     "covenant_candidate": ITEM_THRESHOLD,
     "mystic_candidate": ITEM_THRESHOLD,
+    "mystic_price_current": 0.92,
 }
 
 
@@ -301,6 +307,7 @@ class ShopRefreshObserver:
             "purchase_title",
             "purchase_cancel",
             "purchase_action",
+            "mystic_price_current",
             "shop_title",
             "refresh_button_3",
             "buy_button",
@@ -325,15 +332,18 @@ class ShopRefreshObserver:
             )
         if seen("purchase_title") and seen("purchase_cancel") and seen("purchase_action"):
             purchase_kind = self._popup_kind(screen)
+            purchase_price = (
+                280_000
+                if purchase_kind is ShopItemKind.MYSTIC
+                and seen("mystic_price_current")
+                else None
+            )
             return ShopObservation(
                 page=ShopPage.PURCHASE_CONFIRM,
                 confirm_point=matches["purchase_action"].center,
                 cancel_point=matches["purchase_cancel"].center,
                 purchase_kind=purchase_kind,
-                # Never turn an expected business price into visual evidence.
-                # Current target-popup fixtures must be captured before this
-                # field can be populated by a real price detector.
-                purchase_price=None,
+                purchase_price=purchase_price,
                 scores=scores,
             )
         if seen("shop_title") and seen("refresh_button_3") and seen("buy_button"):
