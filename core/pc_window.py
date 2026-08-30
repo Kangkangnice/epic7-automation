@@ -11,6 +11,7 @@ import ctypes.wintypes as wintypes
 import os
 from dataclasses import dataclass
 from time import sleep
+from typing import Callable
 
 import numpy as np
 import psutil
@@ -29,6 +30,31 @@ _MOUSEEVENTF_LEFTUP = 0x0004
 _MOUSEEVENTF_ABSOLUTE = 0x8000
 _SWP_NOZORDER = 0x0004
 _SWP_NOACTIVATE = 0x0010
+_SRCCOPY = 0x00CC0020
+_CAPTUREBLT = 0x40000000
+
+
+class _BitmapInfoHeader(ctypes.Structure):
+    _fields_ = [
+        ("size", wintypes.DWORD),
+        ("width", wintypes.LONG),
+        ("height", wintypes.LONG),
+        ("planes", wintypes.WORD),
+        ("bit_count", wintypes.WORD),
+        ("compression", wintypes.DWORD),
+        ("size_image", wintypes.DWORD),
+        ("x_pixels_per_meter", wintypes.LONG),
+        ("y_pixels_per_meter", wintypes.LONG),
+        ("colors_used", wintypes.DWORD),
+        ("colors_important", wintypes.DWORD),
+    ]
+
+
+class _BitmapInfo(ctypes.Structure):
+    _fields_ = [
+        ("header", _BitmapInfoHeader),
+        ("colors", wintypes.DWORD * 1),
+    ]
 
 
 class _MouseInput(ctypes.Structure):
@@ -104,8 +130,10 @@ class Epic7PcWindow:
     def __init__(
         self,
         reference_size: tuple[int, int] = REFERENCE_SIZE,
+        sleep_fn: Callable[[float], None] = sleep,
     ) -> None:
         self.reference_size = reference_size
+        self._sleep = sleep_fn
         self._user32 = ctypes.WinDLL("user32", use_last_error=True)
 
     # ---- window discovery -------------------------------------------------
@@ -271,24 +299,111 @@ class Epic7PcWindow:
         return canvas
 
     def capture(self) -> np.ndarray:
-        rect = self._validated_rect(self.activate())
-        image = pyautogui.screenshot(
-            region=(rect.left, rect.top, rect.width, rect.height)
-        )
-        frame = np.asarray(image.convert("RGB"))
+        hwnd = self._find_window()
+        self._validated_rect(hwnd)
+        frame = self._capture_client_bitblt(hwnd)
+        if frame is None:
+            raise RuntimeError(
+                "PC 后台截图失败；为避免抢占前台已安全停止。"
+                "请保持游戏窗口未最小化后重试"
+            )
         return self._legacy_canvas(frame)
 
+    def _capture_client_bitblt(self, hwnd) -> np.ndarray | None:
+        """Capture the live client surface without bringing the game forward."""
+
+        client = wintypes.RECT()
+        if not self._user32.GetClientRect(hwnd, ctypes.byref(client)):
+            return None
+        width = client.right - client.left
+        height = client.bottom - client.top
+        if (width, height) != RENDER_SIZE:
+            return None
+
+        gdi32 = ctypes.windll.gdi32
+        window_dc = self._user32.GetDC(hwnd)
+        if not window_dc:
+            return None
+        try:
+            memory_dc = gdi32.CreateCompatibleDC(window_dc)
+            if not memory_dc:
+                return None
+            try:
+                bitmap = gdi32.CreateCompatibleBitmap(window_dc, width, height)
+                if not bitmap:
+                    return None
+                try:
+                    previous = gdi32.SelectObject(memory_dc, bitmap)
+                    try:
+                        if not gdi32.BitBlt(
+                            memory_dc,
+                            0,
+                            0,
+                            width,
+                            height,
+                            window_dc,
+                            0,
+                            0,
+                            _SRCCOPY | _CAPTUREBLT,
+                        ):
+                            return None
+                        info = _BitmapInfo()
+                        info.header.size = ctypes.sizeof(_BitmapInfoHeader)
+                        info.header.width = width
+                        info.header.height = -height
+                        info.header.planes = 1
+                        info.header.bit_count = 32
+                        buffer = ctypes.create_string_buffer(width * height * 4)
+                        if not gdi32.GetDIBits(
+                            memory_dc,
+                            bitmap,
+                            0,
+                            height,
+                            buffer,
+                            ctypes.byref(info),
+                            0,
+                        ):
+                            return None
+                    finally:
+                        if previous:
+                            gdi32.SelectObject(memory_dc, previous)
+                finally:
+                    gdi32.DeleteObject(bitmap)
+            finally:
+                gdi32.DeleteDC(memory_dc)
+        finally:
+            self._user32.ReleaseDC(hwnd, window_dc)
+
+        bgra = np.frombuffer(buffer, dtype=np.uint8).reshape(height, width, 4)
+        frame = np.ascontiguousarray(bgra[:, :, :3][:, :, ::-1])
+        if float(frame.std()) < 1.0:
+            return None
+        return frame
+
     def click(self, point: tuple[int, int]) -> None:
+        previous_foreground = self._user32.GetForegroundWindow()
         hwnd = self.activate()
-        self._ensure_input_allowed(hwnd)
-        rect = self._validated_rect(hwnd)
-        render_point = point[0], point[1] - LEGACY_TOP
-        if not (
-            0 <= render_point[0] < RENDER_SIZE[0]
-            and 0 <= render_point[1] < RENDER_SIZE[1]
-        ):
-            raise RuntimeError(f"拒绝在 PC 游戏渲染区外点击：{point}")
-        self._send_click((rect.left + render_point[0], rect.top + render_point[1]))
+        try:
+            self._ensure_input_allowed(hwnd)
+            rect = self._validated_rect(hwnd)
+            render_point = point[0], point[1] - LEGACY_TOP
+            if not (
+                0 <= render_point[0] < RENDER_SIZE[0]
+                and 0 <= render_point[1] < RENDER_SIZE[1]
+            ):
+                raise RuntimeError(f"拒绝在 PC 游戏渲染区外点击：{point}")
+            self._send_click((rect.left + render_point[0], rect.top + render_point[1]))
+        finally:
+            self._restore_foreground(previous_foreground, hwnd)
+
+    def _restore_foreground(self, previous_hwnd, game_hwnd) -> None:
+        if not previous_hwnd or previous_hwnd == game_hwnd:
+            return
+        try:
+            if self._user32.IsWindow(previous_hwnd):
+                self._user32.SetForegroundWindow(previous_hwnd)
+        except Exception:
+            pass
 
     def _send_click(self, point: tuple[int, int]) -> None:
         """用 SendInput 注入 PC 点击，避免 mouse_event 在高 DPI 客户端错位。"""
@@ -305,12 +420,16 @@ class Epic7PcWindow:
         )
         down = _MouseInput(0, 0, 0, _MOUSEEVENTF_LEFTDOWN, 0, 0)
         up = _MouseInput(0, 0, 0, _MOUSEEVENTF_LEFTUP, 0, 0)
-        inputs = (_Input * 3)(
-            _Input(0, _InputUnion(mouse=move)),
-            _Input(0, _InputUnion(mouse=down)),
-            _Input(0, _InputUnion(mouse=up)),
-        )
-        if self._user32.SendInput(3, inputs, ctypes.sizeof(_Input)) != 3:
+        self._send_mouse_input(move)
+        self._send_mouse_input(down)
+        try:
+            self._sleep(0.08)
+        finally:
+            self._send_mouse_input(up)
+
+    def _send_mouse_input(self, mouse: _MouseInput) -> None:
+        inputs = (_Input * 1)(_Input(0, _InputUnion(mouse=mouse)))
+        if self._user32.SendInput(1, inputs, ctypes.sizeof(_Input)) != 1:
             raise ctypes.WinError(ctypes.get_last_error())
 
     def wake(self, point: tuple[int, int]) -> None:
@@ -319,6 +438,10 @@ class Epic7PcWindow:
         self.click(point)
 
     def back(self) -> None:
+        previous_foreground = self._user32.GetForegroundWindow()
         hwnd = self.activate()
-        self._ensure_input_allowed(hwnd)
-        pyautogui.press("esc")
+        try:
+            self._ensure_input_allowed(hwnd)
+            pyautogui.press("esc")
+        finally:
+            self._restore_foreground(previous_foreground, hwnd)
