@@ -34,6 +34,14 @@ TEMPLATE_ROOT = ROOT / "games" / "epic7" / "templates"
 STARTUP_ORDER_HINT = (
     "请先启动雷电模拟器并进入《第七史诗》，再启动本助手并检测环境。"
 )
+STARTUP_HINTS = {
+    "emulator": STARTUP_ORDER_HINT,
+    "pc": "请先启动《第七史诗》PC 客户端，再以管理员身份启动本助手并检测环境。",
+}
+BACKEND_LABELS = {
+    "emulator": "模拟器（雷电）",
+    "pc": "PC 客户端",
+}
 
 
 def fit_window_size(
@@ -52,6 +60,7 @@ class DesktopController:
     def __init__(self, *, worker: WorkerController) -> None:
         self.worker = worker
         self.selected_mode = "hero_synthesis"
+        self.selected_backend = "emulator"
         self.cycles = 1
         self.preflight_report: PreflightReport | None = None
 
@@ -78,6 +87,17 @@ class DesktopController:
         self.selected_mode = route.mode
         self.cycles = route.default_cycles
 
+    def select_backend(self, backend: str) -> None:
+        if self.worker.running:
+            raise RuntimeError("运行期间不能切换窗口后端")
+        if backend not in STARTUP_HINTS:
+            raise ValueError(f"未知窗口后端：{backend}")
+        if backend == self.selected_backend:
+            return
+        self.selected_backend = backend
+        # 检测结果属于上一个后端，切换后必须重新检测。
+        self.preflight_report = None
+
     def set_cycles(self, cycles: int) -> None:
         if not self.route.cycles_editable:
             self.cycles = self.route.default_cycles
@@ -93,7 +113,9 @@ class DesktopController:
         if not self.can_start:
             raise RuntimeError("请先完成环境检测")
         cycles = self.route.default_cycles if not self.route.cycles_editable else self.cycles
-        self.worker.start(RunRequest(self.selected_mode, cycles))
+        self.worker.start(
+            RunRequest(self.selected_mode, cycles, self.selected_backend)
+        )
 
     def stop(self) -> None:
         self.worker.request_stop()
@@ -118,7 +140,7 @@ class DesktopApp:
         *,
         controller: DesktopController,
         project_root: Path = ROOT,
-        preflight_runner: Callable[[], PreflightReport] = run_preflight,
+        preflight_runner: Callable[..., PreflightReport] = run_preflight,
         route_validator: Callable[[str, Path], None] = validate_route_templates,
         thread_factory: Callable[..., threading.Thread] = threading.Thread,
     ) -> None:
@@ -130,6 +152,7 @@ class DesktopApp:
         self._route_validator = route_validator
         self._thread_factory = thread_factory
         self._route_buttons: list[ttk.Radiobutton] = []
+        self._backend_buttons: list[ttk.Radiobutton] = []
         self._checking = False
 
         self.root.title(f"{PRODUCT_NAME} {PRODUCT_VERSION}")
@@ -218,11 +241,27 @@ class DesktopApp:
         ttk.Label(panel, text="运行环境", style="Section.TLabel").grid(
             row=0, column=0, sticky="w"
         )
-        ttk.Label(
+        backend_row = ttk.Frame(panel, style="Card.TFrame")
+        backend_row.grid(row=1, column=0, sticky="w", pady=(6, 0))
+        self.backend_var = tk.StringVar(value=self.controller.selected_backend)
+        for backend, label in BACKEND_LABELS.items():
+            button = ttk.Radiobutton(
+                backend_row,
+                text=label,
+                value=backend,
+                variable=self.backend_var,
+                command=self._on_backend_change,
+                style="Route.TRadiobutton",
+            )
+            button.pack(side=tk.LEFT, padx=(0, 14))
+            self._backend_buttons.append(button)
+        self.startup_hint_label = ttk.Label(
             panel,
-            text=STARTUP_ORDER_HINT,
+            text=STARTUP_HINTS[self.controller.selected_backend],
             style="Body.TLabel",
-        ).grid(row=1, column=0, sticky="w", pady=(6, 0))
+            wraplength=560,
+        )
+        self.startup_hint_label.grid(row=2, column=0, sticky="w", pady=(6, 0))
         self.environment_var = tk.StringVar(value="尚未检测。请点击“检测环境”。")
         self.environment_label = tk.Label(
             panel,
@@ -232,11 +271,11 @@ class DesktopApp:
             font=("Microsoft YaHei UI", 10),
             anchor="w",
         )
-        self.environment_label.grid(row=2, column=0, sticky="ew", pady=(4, 0))
+        self.environment_label.grid(row=3, column=0, sticky="ew", pady=(4, 0))
         self.check_button = ttk.Button(
             panel, text="检测环境", command=self._check_environment
         )
-        self.check_button.grid(row=0, column=1, rowspan=3, padx=(16, 0))
+        self.check_button.grid(row=0, column=1, rowspan=4, padx=(16, 0))
 
     def _build_route_panel(self, parent: ttk.Frame) -> None:
         panel = ttk.Frame(parent, style="Card.TFrame", padding=14)
@@ -329,7 +368,9 @@ class DesktopApp:
             pady=10,
         )
         self.log_text.grid(row=1, column=0, sticky="nsew")
-        self._append_log(f"准备就绪。{STARTUP_ORDER_HINT}")
+        self._append_log(
+            f"准备就绪。{STARTUP_HINTS[self.controller.selected_backend]}"
+        )
 
     def _on_route_change(self) -> None:
         try:
@@ -341,6 +382,28 @@ class DesktopApp:
         self.cycles_var.set(str(self.controller.cycles))
         self._refresh_route_details()
         self._refresh_controls()
+
+    def _on_backend_change(self) -> None:
+        try:
+            self.controller.select_backend(self.backend_var.get())
+        except Exception as error:
+            messagebox.showerror("无法切换窗口后端", str(error), parent=self.root)
+            self.backend_var.set(self.controller.selected_backend)
+            return
+        self.startup_hint_label.configure(
+            text=STARTUP_HINTS[self.controller.selected_backend]
+        )
+        self.environment_var.set("尚未检测。请点击“检测环境”。")
+        self.environment_label.configure(foreground=self._TEXT_SECONDARY)
+        self._append_log(
+            f"窗口后端已切换为{BACKEND_LABELS[self.controller.selected_backend]}，请重新检测环境。"
+        )
+        self._refresh_controls()
+
+    def _checking_message(self) -> str:
+        if self.controller.selected_backend == "pc":
+            return "正在检测 PC 客户端、窗口尺寸和权限……"
+        return "正在检测雷电模拟器和截图……"
 
     def _refresh_route_details(self) -> None:
         route = self.controller.route
@@ -357,11 +420,13 @@ class DesktopApp:
         if self._checking or self.controller.worker.running:
             return
         self._checking = True
-        self.environment_var.set("正在检测雷电模拟器和截图……")
+        self.environment_var.set(self._checking_message())
         self.environment_label.configure(foreground=self._PRIMARY)
         self._refresh_controls()
         def check() -> None:
-            report = self._preflight_runner()
+            report = self._preflight_runner(
+                window_backend=self.controller.selected_backend
+            )
             self.root.after(0, lambda: self._finish_environment_check(report))
 
         self._thread_factory(
@@ -401,7 +466,9 @@ class DesktopApp:
         mode = self.controller.selected_mode
 
         def check() -> None:
-            report = self._preflight_runner()
+            report = self._preflight_runner(
+                window_backend=self.controller.selected_backend
+            )
             route_error: Exception | None = None
             if report.can_start:
                 try:
@@ -476,7 +543,7 @@ class DesktopApp:
     def _refresh_controls(self) -> None:
         running = self.controller.worker.running
         route_state = tk.DISABLED if running or self._checking else tk.NORMAL
-        for button in self._route_buttons:
+        for button in self._route_buttons + self._backend_buttons:
             button.configure(state=route_state)
         self.check_button.configure(
             state=tk.DISABLED if running or self._checking else tk.NORMAL

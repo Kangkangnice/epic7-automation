@@ -326,6 +326,35 @@ class CardSwitchRunnerTests(unittest.TestCase):
 
         self.assertTrue(runner._card_transition_completed(action, action))
 
+    def test_confirmed_sss_card_switch_arms_context_for_the_next_card(self):
+        base = fixture("list_reddot")
+        frames = iter(
+            [shifted_list(base, -8), shifted_list(base, -16)]
+            + [shifted_list(base, -16)] * 3
+        )
+        runner = HeroSynthRunner(
+            machine(verify_filter=True),
+            Runtime(lambda: next(frames), lambda *_: None),
+            sleep=lambda _: None,
+        )
+        action = HeroAction(
+            "next_card_sss",
+            (1800, 591),
+            source_page="英雄列表",
+            target_pages=("英雄列表",),
+            reason="当前英雄为SSS，跳过",
+            source_observation="hero-abc",
+            transition_kind="card_change",
+        )
+        runner.machine._last_screen = base
+
+        runner._after_action_click(action)
+
+        self.assertEqual(
+            ("hero-abc", SafetyClass.SSS),
+            runner.machine._previous_card_context,
+        )
+
     def test_identity_change_completes_when_motion_observation_is_missed(self):
         base = fixture("list_reddot")
         frames = iter([base.copy()] * 36)
@@ -645,6 +674,28 @@ class TransmitTransactionTests(unittest.TestCase):
 
         self.assertIs(m.transmit_phase, TransmitPhase.SELECTING)
         self.assertEqual("card-copy-7", m.transmit_target_observation)
+
+    def test_sss_abort_after_selection_is_a_valid_selection_outcome(self):
+        """选卡后若安全检查要求退出，Runner 必须执行退出而非卡在旧选卡契约。"""
+        runner = HeroSynthRunner(
+            machine(verify_filter=True), Runtime(lambda: None, lambda *_: None)
+        )
+        selected = HeroAction(
+            "select_transmit_card_502",
+            (1720, 502),
+            source_page="传送选择",
+            target_pages=("传送选择",),
+            source_observation="grid=0",
+            transition_kind="transmit_selection",
+        )
+        abort = HeroAction(
+            "abort_transmit_sss_target",
+            (30, 92),
+            source_page="传送选择",
+            target_pages=("英雄列表",),
+        )
+
+        self.assertTrue(runner._transition_completed(selected, abort, "传送选择"))
 
     def test_recovery_does_not_clear_unfinished_transmit_target(self):
         m = machine(verify_filter=True)
@@ -1157,6 +1208,35 @@ class HeroListDecisionTests(unittest.TestCase):
         self.assertTrue(action.name.startswith("next_card"))
         self.assertEqual((1800, 591), action.point)
 
+    def test_adjacent_same_name_sss_then_no_dot_opens_transmit(self):
+        """同名 3S 本体后的无红点副本必须走传送，而非普通跳过。"""
+        m = machine(verify_filter=True)
+        m._previous_card_context = ("hero-abc", SafetyClass.SSS)
+        with (
+            patch.object(m, "_hero_identity_fingerprint", return_value="hero-abc"),
+            patch.object(m, "_classify_current_hero", return_value=SafetyClass.NON_SSS),
+            patch.object(m, "_red_dot_present", return_value=False),
+        ):
+            action = m.next_action(fixture("list_no_reddot"))
+
+        self.assertEqual("open_transmit_for_current_card", action.name)
+        self.assertIs(m.transmit_phase, TransmitPhase.OPENING)
+        self.assertEqual("hero-abc", m.transmit_target_observation)
+
+    def test_adjacent_same_name_transmit_reason_records_business_evidence(self):
+        m = machine(verify_filter=True)
+        m._previous_card_context = ("hero-abc", SafetyClass.SSS)
+        with (
+            patch.object(m, "_hero_identity_fingerprint", return_value="hero-abc"),
+            patch.object(m, "_classify_current_hero", return_value=SafetyClass.NON_SSS),
+            patch.object(m, "_red_dot_present", return_value=False),
+        ):
+            action = m.next_action(fixture("list_no_reddot"))
+
+        self.assertIn("上一张=SSS", action.reason)
+        self.assertIn("同名=是", action.reason)
+        self.assertIn("当前无红点副本", action.reason)
+
     def test_list_no_reddot_with_live_button_score_advances(self):
         """模拟器按钮轻微变体得分 0.537 时仍应按无红点卡跳过。"""
         m = machine(verify_filter=True)
@@ -1170,6 +1250,26 @@ class HeroListDecisionTests(unittest.TestCase):
         action = settled_next(m, fixture("list_grey_3s"))
         self.assertTrue(action.name.startswith("next_card"))
         self.assertTrue(m.prev_card_grey)
+
+    def test_sss_card_does_not_record_context_before_card_switch_is_confirmed(self):
+        m = machine(verify_filter=True)
+        with patch.object(m, "_hero_identity_fingerprint", return_value="hero-abc"):
+            settled_next(m, fixture("list_grey_3s"))
+
+        self.assertIsNone(m._previous_card_context)
+
+    def test_different_name_consumes_sss_context_before_later_cards(self):
+        m = machine(verify_filter=True)
+        m._previous_card_context = ("hero-abc", SafetyClass.SSS)
+        with (
+            patch.object(m, "_hero_identity_fingerprint", return_value="hero-def"),
+            patch.object(m, "_classify_current_hero", return_value=SafetyClass.NON_SSS),
+            patch.object(m, "_red_dot_present", return_value=False),
+        ):
+            action = m.next_action(fixture("list_no_reddot"))
+
+        self.assertTrue(action.name.startswith("next_card"))
+        self.assertIsNone(m._previous_card_context)
 
     def test_list_grey_3s_with_red_dot_advances(self):
         """3S 灰钮带红点（有冗余副本）也必须识别为置灰并跳过。"""
@@ -1987,8 +2087,10 @@ class TransmitDecisionTests(unittest.TestCase):
         self.assertLessEqual(y, 520)
         self.assertNotEqual(393, y)
 
-    def test_transmit_refuses_highlighted_sss_card(self):
+    def test_transmit_refuses_highlighted_sss_card_when_grid_is_empty(self):
         screen = fixture("transmit_select")
+        # 右侧第二格是空槽；用它覆盖第一格，构造“尚未选入材料”的画面。
+        screen[370:490, 110:530] = screen[370:490, 530:950]
         sss = cv2.imread(
             str(TEMPLATES / "hero" / "sss_material.png"), cv2.IMREAD_COLOR
         )
@@ -1998,6 +2100,7 @@ class TransmitDecisionTests(unittest.TestCase):
         m.transmit_phase = TransmitPhase.OPENING
         m.transmit_target_observation = "saved-card"
         m.transmit_continuity_intact = True
+        self.assertFalse(m._transmit_grid_filled(screen))
         action = m.next_action(screen)
         self.assertEqual("abort_transmit_sss_target", action.name)
         self.assertIs(m.state, HeroSynthState.TRANSMIT_RETURNING)
@@ -2010,6 +2113,21 @@ class TransmitDecisionTests(unittest.TestCase):
         action = m.next_action(fixture("transmit_select"))
         self.assertEqual("start_transmit", action.name)
         self.assertEqual((1203, 1057), action.point)
+
+    def test_filled_transmit_grid_ignores_next_highlighted_sss_card(self):
+        """选中目标后高亮跳到下一张 SSS 时，必须继续传送已入格副本。"""
+        m = machine()
+        m.transmit_phase = TransmitPhase.OPENING
+        m.transmit_target_observation = "saved-card"
+        m.transmit_continuity_intact = True
+
+        with patch.object(
+            m, "_classify_transmit_target", return_value=SafetyClass.SSS
+        ):
+            action = m.next_action(fixture("transmit_selected"))
+
+        self.assertEqual("start_transmit", action.name)
+        self.assertEqual("grid=1", action.source_observation)
 
     def test_transmit_strip_locator_finds_card(self):
         m = machine()
@@ -2035,6 +2153,25 @@ class TransmitDecisionTests(unittest.TestCase):
         m.transmit_continuity_intact = True
         action = m.next_action(fixture("transmit_confirm"))
         self.assertEqual("confirm_transmit", action.name)
+
+    def test_visible_transmit_confirm_popup_can_be_clicked_again(self):
+        """首次确认点击未生效时，弹窗仍在就必须允许安全重试。"""
+        m = machine()
+        m.state = HeroSynthState.TRANSMIT_CONFIRM
+        m.transmit_phase = TransmitPhase.CONFIRMING
+        m.transmit_target_observation = "saved-card"
+        m.transmit_continuity_intact = True
+
+        action = m.next_action(fixture("transmit_confirm"))
+
+        self.assertEqual("confirm_transmit", action.name)
+
+    def test_transmit_confirm_retry_interval_is_five_seconds(self):
+        runner = HeroSynthRunner(
+            machine(), Runtime(lambda: None, lambda *_: None)
+        )
+
+        self.assertEqual(5, runner._action_retry_seconds("confirm_transmit"))
 
     def test_reward_popup_closed_in_transmit_context(self):
         m = machine()
