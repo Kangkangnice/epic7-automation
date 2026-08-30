@@ -247,41 +247,46 @@ class Epic7PcWindow:
             )
 
     def ensure_render_size(self) -> WindowCalibration:
-        hwnd = self.activate()
+        hwnd = self._find_window()
         self._ensure_input_allowed(hwnd)
         before = self._rect(hwnd)
         if (before.width, before.height) == RENDER_SIZE:
             return WindowCalibration(before, before, False)
 
-        outer = self._outer_rect(hwnd)
-        target_outer_width = RENDER_SIZE[0] + outer.width - before.width
-        target_outer_height = RENDER_SIZE[1] + outer.height - before.height
-        if not self._user32.SetWindowPos(
-            hwnd,
-            0,
-            outer.left,
-            outer.top,
-            target_outer_width,
-            target_outer_height,
-            _SWP_NOZORDER | _SWP_NOACTIVATE,
-        ):
-            error = ctypes.get_last_error()
-            raise RuntimeError(
-                f"PC 游戏窗口调整失败：当前={before.width}x{before.height} "
-                f"目标={RENDER_SIZE[0]}x{RENDER_SIZE[1]} Win32错误码={error}"
-            )
+        previous_foreground = self._user32.GetForegroundWindow()
+        try:
+            hwnd = self.activate()
+            outer = self._outer_rect(hwnd)
+            target_outer_width = RENDER_SIZE[0] + outer.width - before.width
+            target_outer_height = RENDER_SIZE[1] + outer.height - before.height
+            if not self._user32.SetWindowPos(
+                hwnd,
+                0,
+                outer.left,
+                outer.top,
+                target_outer_width,
+                target_outer_height,
+                _SWP_NOZORDER | _SWP_NOACTIVATE,
+            ):
+                error = ctypes.get_last_error()
+                raise RuntimeError(
+                    f"PC 游戏窗口调整失败：当前={before.width}x{before.height} "
+                    f"目标={RENDER_SIZE[0]}x{RENDER_SIZE[1]} Win32错误码={error}"
+                )
 
-        after = before
-        for _ in range(10):
-            sleep(0.1)
-            after = self._rect(hwnd)
-            if (after.width, after.height) == RENDER_SIZE:
-                return WindowCalibration(before, after, True)
-        raise RuntimeError(
-            f"PC 游戏窗口调整未生效：调整前={before.width}x{before.height} "
-            f"目标={RENDER_SIZE[0]}x{RENDER_SIZE[1]} "
-            f"调整后实际仍为 {after.width}x{after.height}"
-        )
+            after = before
+            for _ in range(10):
+                sleep(0.1)
+                after = self._rect(hwnd)
+                if (after.width, after.height) == RENDER_SIZE:
+                    return WindowCalibration(before, after, True)
+            raise RuntimeError(
+                f"PC 游戏窗口调整未生效：调整前={before.width}x{before.height} "
+                f"目标={RENDER_SIZE[0]}x{RENDER_SIZE[1]} "
+                f"调整后实际仍为 {after.width}x{after.height}"
+            )
+        finally:
+            self._restore_foreground(previous_foreground, hwnd)
 
     # ---- capture / input --------------------------------------------------
 

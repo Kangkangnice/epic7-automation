@@ -22,17 +22,19 @@ class PcWindowSafetyTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "未能置前"):
                 self.game.activate()
 
-    def test_ensure_render_size_skips_resize_when_client_is_already_exact(self):
+    def test_ensure_render_size_skips_activation_when_client_is_already_exact(self):
         exact = WindowRect(10, 20, 1920, 1080)
         self.game._user32 = MagicMock()
         with (
-            patch.object(self.game, "activate", return_value=123),
+            patch.object(self.game, "_find_window", return_value=123),
+            patch.object(self.game, "activate") as activate,
             patch.object(self.game, "_ensure_input_allowed"),
             patch.object(self.game, "_rect", return_value=exact),
         ):
             result = self.game.ensure_render_size()
 
         self.assertEqual(pc_window.WindowCalibration(exact, exact, False), result)
+        activate.assert_not_called()
         self.game._user32.SetWindowPos.assert_not_called()
 
     def test_ensure_render_size_resizes_outer_window_and_verifies_client(self):
@@ -41,8 +43,13 @@ class PcWindowSafetyTests(unittest.TestCase):
         outer = WindowRect(139, 236, 1306, 791)
         self.game._user32 = MagicMock()
         self.game._user32.SetWindowPos.return_value = 1
+        self.game._user32.GetForegroundWindow.return_value = 999
         with (
-            patch.object(self.game, "activate", return_value=123),
+            patch.object(self.game, "_find_window", return_value=123),
+            patch.object(self.game, "activate", return_value=123) as activate,
+            patch.object(
+                self.game, "_restore_foreground", return_value=True
+            ) as restore,
             patch.object(self.game, "_ensure_input_allowed"),
             patch.object(self.game, "_rect", side_effect=[before, after]),
             patch.object(self.game, "_outer_rect", return_value=outer, create=True),
@@ -51,6 +58,8 @@ class PcWindowSafetyTests(unittest.TestCase):
             result = self.game.ensure_render_size()
 
         self.assertEqual(pc_window.WindowCalibration(before, after, True), result)
+        activate.assert_called_once_with()
+        restore.assert_called_once_with(999, 123)
         self.game._user32.SetWindowPos.assert_called_once_with(
             123, 0, 139, 236, 1946, 1151, 0x0014
         )
@@ -59,8 +68,13 @@ class PcWindowSafetyTests(unittest.TestCase):
         before = WindowRect(152, 294, 1280, 720)
         self.game._user32 = MagicMock()
         self.game._user32.SetWindowPos.return_value = 1
+        self.game._user32.GetForegroundWindow.return_value = 999
         with (
-            patch.object(self.game, "activate", return_value=123),
+            patch.object(self.game, "_find_window", return_value=123),
+            patch.object(self.game, "activate", return_value=123) as activate,
+            patch.object(
+                self.game, "_restore_foreground", return_value=True
+            ) as restore,
             patch.object(self.game, "_ensure_input_allowed"),
             patch.object(self.game, "_rect", side_effect=[before] * 12),
             patch.object(
@@ -73,13 +87,20 @@ class PcWindowSafetyTests(unittest.TestCase):
         ):
             with self.assertRaisesRegex(RuntimeError, "调整后实际仍为 1280x720"):
                 self.game.ensure_render_size()
+        activate.assert_called_once_with()
+        restore.assert_called_once_with(999, 123)
 
     def test_ensure_render_size_reports_win32_error_when_resize_is_denied(self):
         before = WindowRect(152, 294, 1280, 720)
         self.game._user32 = MagicMock()
         self.game._user32.SetWindowPos.return_value = 0
+        self.game._user32.GetForegroundWindow.return_value = 999
         with (
-            patch.object(self.game, "activate", return_value=123),
+            patch.object(self.game, "_find_window", return_value=123),
+            patch.object(self.game, "activate", return_value=123) as activate,
+            patch.object(
+                self.game, "_restore_foreground", return_value=True
+            ) as restore,
             patch.object(self.game, "_ensure_input_allowed"),
             patch.object(self.game, "_rect", return_value=before),
             patch.object(
@@ -95,6 +116,8 @@ class PcWindowSafetyTests(unittest.TestCase):
                 "当前=1280x720.*目标=1920x1080.*Win32错误码=5",
             ):
                 self.game.ensure_render_size()
+        activate.assert_called_once_with()
+        restore.assert_called_once_with(999, 123)
 
     def test_click_does_not_send_desktop_input_when_foreground_confirmation_fails(self):
         with (
