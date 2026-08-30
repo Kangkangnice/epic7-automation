@@ -1,0 +1,12 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+runtime_logs/
+runtime_diagnostics/
+.tools/
+.workbuddy/
+.worktrees/
+*.log
+*.bak
+/_analyze_popup.py
+games/epic7/templates_pc/tools/
