@@ -131,10 +131,19 @@ class Epic7PcWindow:
         self,
         reference_size: tuple[int, int] = REFERENCE_SIZE,
         sleep_fn: Callable[[float], None] = sleep,
+        event_sink: Callable[[str], None] | None = None,
     ) -> None:
         self.reference_size = reference_size
         self._sleep = sleep_fn
+        self._event_sink = event_sink
         self._user32 = ctypes.WinDLL("user32", use_last_error=True)
+
+    def set_event_sink(self, sink: Callable[[str], None] | None) -> None:
+        self._event_sink = sink
+
+    def _emit(self, message: str) -> None:
+        if self._event_sink is not None:
+            self._event_sink(message)
 
     # ---- window discovery -------------------------------------------------
 
@@ -387,8 +396,11 @@ class Epic7PcWindow:
 
     def click(self, point: tuple[int, int]) -> None:
         previous_foreground = self._user32.GetForegroundWindow()
-        hwnd = self.activate()
+        hwnd = None
+        succeeded = False
+        restore_label = "无需"
         try:
+            hwnd = self.activate()
             self._ensure_input_allowed(hwnd)
             rect = self._validated_rect(hwnd)
             render_point = point[0], point[1] - LEGACY_TOP
@@ -398,17 +410,37 @@ class Epic7PcWindow:
             ):
                 raise RuntimeError(f"拒绝在 PC 游戏渲染区外点击：{point}")
             self._send_click((rect.left + render_point[0], rect.top + render_point[1]))
+            succeeded = True
         finally:
-            self._restore_foreground(previous_foreground, hwnd)
+            if hwnd is not None and previous_foreground not in (0, hwnd):
+                restore_label = (
+                    "成功"
+                    if self._restore_foreground(previous_foreground, hwnd)
+                    else "失败"
+                )
+            self._emit(
+                f"模式=PC输入 类型=点击 原前台={previous_foreground} "
+                f"游戏窗口={hwnd if hwnd is not None else '未知'} "
+                f"前置={'成功' if hwnd is not None else '失败'} "
+                f"结果={'成功' if succeeded else '失败'} "
+                f"恢复原窗口={restore_label}"
+            )
 
-    def _restore_foreground(self, previous_hwnd, game_hwnd) -> None:
+    def _restore_foreground(self, previous_hwnd, game_hwnd) -> bool:
         if not previous_hwnd or previous_hwnd == game_hwnd:
-            return
+            return True
         try:
-            if self._user32.IsWindow(previous_hwnd):
-                self._user32.SetForegroundWindow(previous_hwnd)
+            if not self._user32.IsWindow(previous_hwnd):
+                return False
+            if not self._user32.SetForegroundWindow(previous_hwnd):
+                return False
+            for _ in range(10):
+                if self._user32.GetForegroundWindow() == previous_hwnd:
+                    return True
+                self._sleep(0.05)
         except Exception:
-            pass
+            return False
+        return False
 
     def _send_click(self, point: tuple[int, int]) -> None:
         """用 SendInput 注入 PC 点击，避免 mouse_event 在高 DPI 客户端错位。"""
@@ -444,9 +476,25 @@ class Epic7PcWindow:
 
     def back(self) -> None:
         previous_foreground = self._user32.GetForegroundWindow()
-        hwnd = self.activate()
+        hwnd = None
+        succeeded = False
+        restore_label = "无需"
         try:
+            hwnd = self.activate()
             self._ensure_input_allowed(hwnd)
             pyautogui.press("esc")
+            succeeded = True
         finally:
-            self._restore_foreground(previous_foreground, hwnd)
+            if hwnd is not None and previous_foreground not in (0, hwnd):
+                restore_label = (
+                    "成功"
+                    if self._restore_foreground(previous_foreground, hwnd)
+                    else "失败"
+                )
+            self._emit(
+                f"模式=PC输入 类型=返回 原前台={previous_foreground} "
+                f"游戏窗口={hwnd if hwnd is not None else '未知'} "
+                f"前置={'成功' if hwnd is not None else '失败'} "
+                f"结果={'成功' if succeeded else '失败'} "
+                f"恢复原窗口={restore_label}"
+            )
