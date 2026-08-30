@@ -152,6 +152,7 @@ class MainStoryTests(unittest.TestCase):
             )
 
         window.ensure_render_size.assert_called_once_with()
+        window.set_event_sink.assert_called_once_with(runtime.log)
         self.assertIs(runtime._capture, window.capture)
         self.assertIn("调整前=1280x720", output.getvalue())
         self.assertIn("调整后=1920x1080", output.getvalue())
@@ -179,6 +180,7 @@ class MainStoryTests(unittest.TestCase):
 
         template_root = build_machine.call_args.args[0]
         self.assertEqual("templates", template_root.name)
+        self.assertEqual("pc", build_machine.call_args.args[2])
 
     def test_parser_accepts_internal_stop_file(self):
         args = main_module.parse_args(["--stop-file", r"D:\temp\stop.signal"])

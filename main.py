@@ -109,6 +109,8 @@ def _build_runtime(
         log_path=ROOT / "runtime_logs" / f"epic7_{mode}.log",
         stop_requested=None if dry_run else stop_requested,
     )
+    if window_backend == "pc":
+        game_window.set_event_sink(runtime.log)
     if calibration is not None:
         runtime.log(
             "模式=PC初始化 "
@@ -154,11 +156,15 @@ def run_mode(
             )
         )
         if spec.needs_navigation:
-            navigator = Epic7Navigator(build_navigation_templates(template_root), runtime)
+            navigator = Epic7Navigator(
+                build_navigation_templates(template_root),
+                runtime,
+                backend=window_backend,
+            )
             lobby_screen = navigator.return_home()
             navigator.navigate(spec.name, lobby_screen=lobby_screen)
     machine: Any = spec.build_machine(
-        template_root, start_state
+        template_root, start_state, window_backend
     )
     runner_options: dict[str, Any] = {}
     if navigator is not None:

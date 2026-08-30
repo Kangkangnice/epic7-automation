@@ -256,6 +256,64 @@ class PcWindowSafetyTests(unittest.TestCase):
 
         self.assertEqual([("click", (1001, 534)), ("restore", 999)], calls)
 
+    def test_click_logs_successful_focus_restore(self):
+        events = []
+        game = Epic7PcWindow(event_sink=events.append)
+        game._user32 = MagicMock()
+        game._user32.GetForegroundWindow.return_value = 999
+        with (
+            patch.object(game, "_find_window", return_value=123),
+            patch.object(game, "activate", return_value=123),
+            patch.object(game, "_ensure_input_allowed"),
+            patch.object(
+                game,
+                "_validated_rect",
+                return_value=WindowRect(10, 20, 1920, 1080),
+            ),
+            patch.object(game, "_send_click"),
+            patch.object(game, "_restore_foreground", return_value=True),
+        ):
+            game.click((991, 566))
+
+        self.assertIn("类型=点击", events[-1])
+        self.assertIn("前置=成功", events[-1])
+        self.assertIn("恢复原窗口=成功", events[-1])
+
+    def test_click_logs_failed_focus_restore(self):
+        events = []
+        game = Epic7PcWindow(event_sink=events.append)
+        game._user32 = MagicMock()
+        game._user32.GetForegroundWindow.return_value = 999
+        with (
+            patch.object(game, "_find_window", return_value=123),
+            patch.object(game, "activate", return_value=123),
+            patch.object(game, "_ensure_input_allowed"),
+            patch.object(
+                game,
+                "_validated_rect",
+                return_value=WindowRect(10, 20, 1920, 1080),
+            ),
+            patch.object(game, "_send_click"),
+            patch.object(game, "_restore_foreground", return_value=False),
+        ):
+            game.click((991, 566))
+
+        self.assertIn("类型=点击", events[-1])
+        self.assertIn("恢复原窗口=失败", events[-1])
+
+    def test_restore_foreground_reports_failure_when_focus_does_not_return(self):
+        delays = []
+        game = Epic7PcWindow(sleep_fn=delays.append)
+        game._user32 = MagicMock()
+        game._user32.IsWindow.return_value = 1
+        game._user32.SetForegroundWindow.return_value = 1
+        game._user32.GetForegroundWindow.return_value = 123
+
+        restored = game._restore_foreground(999, 123)
+
+        self.assertFalse(restored)
+        self.assertEqual([0.05] * 10, delays)
+
     def test_click_keeps_game_foreground_when_it_was_already_foreground(self):
         self.game._user32 = MagicMock()
         self.game._user32.GetForegroundWindow.return_value = 123
@@ -352,6 +410,23 @@ class PcWindowSafetyTests(unittest.TestCase):
             self.game.back()
 
         self.assertEqual([("press", "esc"), ("restore", 999)], calls)
+
+    def test_back_logs_successful_focus_restore(self):
+        events = []
+        game = Epic7PcWindow(event_sink=events.append)
+        game._user32 = MagicMock()
+        game._user32.GetForegroundWindow.return_value = 999
+        with (
+            patch.object(game, "_find_window", return_value=123),
+            patch.object(game, "activate", return_value=123),
+            patch.object(game, "_ensure_input_allowed"),
+            patch.object(game, "_restore_foreground", return_value=True),
+            patch("auto_game_unified.core.pc_window.pyautogui.press"),
+        ):
+            game.back()
+
+        self.assertIn("类型=返回", events[-1])
+        self.assertIn("恢复原窗口=成功", events[-1])
 
     def test_capture_rejects_a_client_that_is_not_exact_render_size(self):
         with (
