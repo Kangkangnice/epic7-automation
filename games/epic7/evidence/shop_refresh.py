@@ -53,6 +53,8 @@ class ShopObservation:
     confirm_point: tuple[int, int] | None = None
     cancel_point: tuple[int, int] | None = None
     purchase_kind: ShopItemKind = ShopItemKind.UNKNOWN
+    purchase_price: int | None = None
+    refresh_price: int | None = None
     list_fingerprint: str = ""
     scores: Mapping[str, float] | None = None
 
@@ -318,11 +320,17 @@ class ShopRefreshObserver:
                 scores=scores,
             )
         if seen("purchase_title") and seen("purchase_cancel") and seen("purchase_action"):
+            purchase_kind = self._popup_kind(screen)
+            purchase_price = {
+                ShopItemKind.COVENANT: 184_000,
+                ShopItemKind.MYSTIC: 280_000,
+            }.get(purchase_kind)
             return ShopObservation(
                 page=ShopPage.PURCHASE_CONFIRM,
                 confirm_point=matches["purchase_action"].center,
                 cancel_point=matches["purchase_cancel"].center,
-                purchase_kind=self._popup_kind(screen),
+                purchase_kind=purchase_kind,
+                purchase_price=purchase_price,
                 scores=scores,
             )
         if seen("shop_title") and seen("refresh_button_3") and seen("buy_button"):
@@ -330,6 +338,7 @@ class ShopRefreshObserver:
                 page=ShopPage.SHOP,
                 rows=self._rows(screen),
                 refresh_point=matches["refresh_button_3"].center,
+                refresh_price=3,
                 list_fingerprint=self._fingerprint(screen),
                 scores=scores,
             )
