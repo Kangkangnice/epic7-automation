@@ -230,6 +230,21 @@ class Epic7Window:
             self.activate()
             self._click_legacy(point)
 
+    def swipe(
+        self,
+        start: tuple[int, int],
+        end: tuple[int, int],
+        duration_ms: int,
+    ) -> None:
+        render_start, render_end = self._swipe_render_points(
+            start, end, duration_ms
+        )
+        try:
+            self._send_render_swipe(render_start, render_end, duration_ms)
+        except (RuntimeError, subprocess.SubprocessError):
+            self.activate()
+            self._send_render_swipe(render_start, render_end, duration_ms)
+
     def wake(self, point: tuple[int, int]) -> None:
         """Wake LDPlayer's campfire idle layer with a real desktop mouse event."""
 
@@ -253,6 +268,24 @@ class Epic7Window:
             raise RuntimeError(f"拒绝在安卓渲染区外点击：{point}")
         self._send_render_tap(render_point)
 
+    def _swipe_render_points(
+        self,
+        start: tuple[int, int],
+        end: tuple[int, int],
+        duration_ms: int,
+    ) -> tuple[tuple[int, int], tuple[int, int]]:
+        render_start = start[0], start[1] - self._LEGACY_TOP
+        render_end = end[0], end[1] - self._LEGACY_TOP
+        for point in (render_start, render_end):
+            if not (
+                0 <= point[0] < self._RENDER_SIZE[0]
+                and 0 <= point[1] < self._RENDER_SIZE[1]
+            ):
+                raise RuntimeError(f"拒绝在安卓渲染区外滑动：{start}->{end}")
+        if duration_ms <= 0:
+            raise ValueError("滑动时长必须大于 0")
+        return render_start, render_end
+
     def _send_render_tap(self, point: tuple[int, int]) -> None:
         console_path, instance_index, _ = self._instance_channel()
         subprocess.run(
@@ -260,6 +293,31 @@ class Epic7Window:
                 str(console_path),
                 "adb", "--index", instance_index,
                 "--command", f"shell input tap {point[0]} {point[1]}",
+            ],
+            check=True,
+            capture_output=True,
+            timeout=10,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+
+    def _send_render_swipe(
+        self,
+        start: tuple[int, int],
+        end: tuple[int, int],
+        duration_ms: int,
+    ) -> None:
+        console_path, instance_index, _ = self._instance_channel()
+        subprocess.run(
+            [
+                str(console_path),
+                "adb",
+                "--index",
+                instance_index,
+                "--command",
+                (
+                    f"shell input swipe {start[0]} {start[1]} "
+                    f"{end[0]} {end[1]} {duration_ms}"
+                ),
             ],
             check=True,
             capture_output=True,

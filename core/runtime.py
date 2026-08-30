@@ -30,6 +30,10 @@ class Runtime:
         capture: Callable[[], np.ndarray],
         click: Callable[[tuple[int, int]], None],
         *,
+        swipe: Callable[
+            [tuple[int, int], tuple[int, int], int], None
+        ]
+        | None = None,
         wake: Callable[[tuple[int, int]], None] | None = None,
         back: Callable[[], None] | None = None,
         dry_run: bool = False,
@@ -44,6 +48,7 @@ class Runtime:
     ) -> None:
         self._capture = capture
         self._click = click
+        self._swipe = swipe
         self._wake = wake
         self._back = back
         self.dry_run = dry_run
@@ -91,6 +96,25 @@ class Runtime:
                 self._wake(point)
             else:
                 self._click(point)
+
+    def swipe(
+        self,
+        start: tuple[int, int],
+        end: tuple[int, int],
+        duration_ms: int,
+        action: str,
+    ) -> None:
+        self._stop_if_requested()
+        prefix = "空跑 " if self.dry_run else ""
+        self.log(
+            f"{prefix}执行滑动 动作={action} 起点={start} 终点={end} "
+            f"时长={duration_ms}ms"
+        )
+        if self.dry_run:
+            return
+        if self._swipe is None:
+            raise RuntimeError("未配置滑动动作")
+        self._swipe(start, end, duration_ms)
 
     def back(self, action: str = "back") -> None:
         self._stop_if_requested()
