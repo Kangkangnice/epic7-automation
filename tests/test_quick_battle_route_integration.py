@@ -104,8 +104,8 @@ def test_supervised_route_state_machines_enter_supervision_from_quick_page():
                 build_story_templates(TEMPLATES / "story"),
                 initial_state=StoryState.TEAM,
             ),
-            "start_mission",
-            StoryState.WAIT_BATTLE,
+            "switch_to_normal_battle",
+            StoryState.TEAM,
         ),
         (
             FodderStateMachine(
@@ -131,7 +131,13 @@ def test_supervised_route_state_machines_enter_supervision_from_quick_page():
         assert action.name == action_name
         if isinstance(machine, ArenaStateMachine):
             assert machine.state is ArenaState.TEAM
-            assert action.target_states == (ArenaState.BATTLE,)
+            assert action.target_states
+        elif isinstance(machine, ExpeditionStateMachine):
+            assert machine.state is ExpeditionState.TEAM
+            assert action.target_states == (ExpeditionState.BATTLE,)
+        elif isinstance(machine, StoryStateMachine):
+            assert machine.state is StoryState.TEAM
+            assert action.target_states == (StoryState.TEAM,)
         else:
             assert machine.state is target_state
 

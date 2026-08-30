@@ -125,7 +125,7 @@ class StoryRunnerTests(unittest.TestCase):
         action = machine.next_action(fixture("stage_battle_ready_updated"))
 
         self.assertEqual("prepare_battle", action.name)
-        self.assertEqual(StoryState.TEAM, machine.state)
+        self.assertEqual(StoryState.STAGE, machine.state)
 
     def test_delayed_stage_transition_does_not_repeat_the_click(self):
         names = (
@@ -286,6 +286,69 @@ class StoryRunnerTests(unittest.TestCase):
 
         self.assertEqual(4, len(clicks))
 
+    def test_source_departure_without_target_never_repeats_old_transition_click(self):
+        screens = iter(
+            [fixture("stage")] * 2
+            + [np.zeros((1132, 1982, 3), dtype=np.uint8)] * 2
+        )
+        clicks: list[tuple[int, int]] = []
+        now = [0.0]
+
+        def wait(_: float) -> None:
+            now[0] += 50.0
+
+        with TemporaryDirectory() as directory:
+            runtime = Runtime(
+                lambda: next(screens),
+                clicks.append,
+                diagnostic_dir=Path(directory),
+                emit=lambda _: None,
+                monotonic=lambda: now[0],
+            )
+            runner = StoryRunner(
+                StoryStateMachine(build_story_templates(TEMPLATES)),
+                runtime,
+                sleep=wait,
+            )
+
+            with self.assertRaisesRegex(RuntimeError, r"页面无进展"):
+                runner.run(max_cycles=1)
+
+        self.assertEqual(1, len(clicks))
+
+    def test_skip_confirmation_can_return_to_story_for_another_skip_transaction(self):
+        screens = iter(
+            [fixture("skip_confirm")] * 2
+            + [fixture("story")] * 2
+            + [np.zeros((1132, 1982, 3), dtype=np.uint8)] * 4
+        )
+        clicks: list[tuple[int, int]] = []
+        now = [0.0]
+
+        def wait(_: float) -> None:
+            now[0] += 50.0
+
+        with TemporaryDirectory() as directory:
+            runner = StoryRunner(
+                StoryStateMachine(
+                    build_story_templates(TEMPLATES),
+                    initial_state=StoryState.WAIT_SKIP_CONFIRM,
+                ),
+                Runtime(
+                    lambda: next(screens),
+                    clicks.append,
+                    diagnostic_dir=Path(directory),
+                    emit=lambda _: None,
+                    monotonic=lambda: now[0],
+                ),
+                sleep=wait,
+            )
+
+            with self.assertRaisesRegex(RuntimeError, r"页面无进展"):
+                runner.run(max_cycles=1)
+
+        self.assertEqual(2, len(clicks))
+
     def test_complete_screen_takes_priority_over_a_false_skip_match(self):
         machine = StoryStateMachine(build_story_templates(TEMPLATES))
 
@@ -298,7 +361,7 @@ class StoryRunnerTests(unittest.TestCase):
             action = machine.next_action(np.zeros((1132, 1982, 3), dtype=np.uint8))
 
         self.assertEqual("complete", action.name)
-        self.assertEqual(StoryState.WAIT_NEXT_STAGE, machine.state)
+        self.assertEqual(StoryState.WAIT_COMPLETE, machine.state)
 
 
 if __name__ == "__main__":

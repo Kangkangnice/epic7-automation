@@ -1,5 +1,6 @@
 import unittest
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from unittest.mock import MagicMock
 
 import cv2
@@ -38,20 +39,29 @@ class ActionMachine:
         self.transition = transition
 
     def preview(self, _screen):
-        if self.state == ExpeditionState.POSTERS and self.transition:
-            return None, (ExpeditionState.HOME, 1)
-        return ExpeditionAction("test-action", (10, 20)), (ExpeditionState.POSTERS, 0)
+        return self.next_action(_screen), (self.state, self.completed_cycles)
 
     def next_action(self, _screen):
-        if self.state == ExpeditionState.POSTERS and self.transition:
-            self.state = ExpeditionState.HOME
-            self.completed_cycles = 1
+        if self.state is ExpeditionState.POSTERS:
             return None
-        self.state = ExpeditionState.POSTERS
-        return ExpeditionAction("test-action", (10, 20))
+        return ExpeditionAction(
+            "test-action", (10, 20), source_state=ExpeditionState.HOME,
+            target_states=(ExpeditionState.POSTERS,), source_page="测试来源",
+            target_pages=("测试目标",),
+        )
 
     def is_in_state(self, _screen, _state):
         return self.transition
+
+    def action_source_visible(self, _screen, _action):
+        return not self.transition
+
+    def action_target_state(self, _screen, action):
+        return ExpeditionState.POSTERS if self.transition else None
+
+    def commit(self, _action, target):
+        self.state = target
+        self.completed_cycles = 1
 
 
 class BattleMachine:
@@ -77,14 +87,26 @@ class BattleStartMachine:
         self.completed_cycles = 0
 
     def preview(self, _screen):
-        return ExpeditionAction("battle-start", (10, 20)), (ExpeditionState.BATTLE, 0)
+        return self.next_action(_screen), (self.state, 0)
 
     def next_action(self, _screen):
-        self.state = ExpeditionState.BATTLE
-        return ExpeditionAction("battle-start", (10, 20))
+        return ExpeditionAction(
+            "battle-start", (10, 20), source_state=ExpeditionState.TEAM,
+            target_states=(ExpeditionState.BATTLE,), source_page="队伍选择",
+            target_pages=("战斗中",),
+        )
 
     def is_in_state(self, _screen, _state):
         return False
+
+    def action_source_visible(self, _screen, _action):
+        return True
+
+    def action_target_state(self, _screen, _action):
+        return None
+
+    def commit(self, _action, target):
+        self.state = target
 
 
 class ExpeditionRunnerTests(unittest.TestCase):
@@ -168,18 +190,19 @@ class ExpeditionRunnerTests(unittest.TestCase):
                 raise ManualStop("wake was incorrectly accepted forever")
             return screen
 
-        runner = ExpeditionRunner(
-            machine,
-            Runtime(capture, clicks.append),
-            sleep=clock.sleep,
-            poll_seconds=20,
-            now=clock.now,
-        )
+        with TemporaryDirectory() as directory:
+            runner = ExpeditionRunner(
+                machine,
+                Runtime(capture, clicks.append, diagnostic_dir=Path(directory)),
+                sleep=clock.sleep,
+                poll_seconds=1,
+                now=clock.now,
+            )
 
-        with self.assertRaisesRegex(RuntimeError, "点击4次后画面未推进"):
-            runner.run(max_cycles=1)
+            with self.assertRaisesRegex(RuntimeError, "未稳定进入"):
+                runner.run(max_cycles=1)
 
-        self.assertEqual(4, len(clicks))
+            self.assertEqual(4, len(clicks))
 
     def test_failed_battle_start_never_returns_to_lobby(self):
         clock = Clock()
@@ -201,7 +224,7 @@ class ExpeditionRunnerTests(unittest.TestCase):
             battle_supervisor=supervisor,
         )
 
-        with self.assertRaisesRegex(RuntimeError, "battle entry was not confirmed"):
+        with self.assertRaisesRegex(RuntimeError, "未稳定进入"):
             runner.run(max_cycles=1)
 
         self.assertEqual([], recoveries)
@@ -210,36 +233,77 @@ class ExpeditionRunnerTests(unittest.TestCase):
         clock = Clock()
         clicks = []
         machine = ActionMachine(transition=False)
-        runner = ExpeditionRunner(
-            machine,
-            Runtime(lambda: np.zeros((60, 100, 3), dtype=np.uint8), clicks.append),
-            sleep=clock.sleep,
-            poll_seconds=20,
-            now=clock.now,
-        )
+        with TemporaryDirectory() as directory:
+            runner = ExpeditionRunner(
+                machine,
+                Runtime(
+                    lambda: np.zeros((60, 100, 3), dtype=np.uint8),
+                    clicks.append,
+                    diagnostic_dir=Path(directory),
+                ),
+                sleep=clock.sleep,
+                poll_seconds=1,
+                now=clock.now,
+            )
 
-        with self.assertRaisesRegex(RuntimeError, "点击4次后画面未推进"):
-            runner.run(max_cycles=1)
+            with self.assertRaisesRegex(RuntimeError, "未稳定进入"):
+                runner.run(max_cycles=1)
 
-        self.assertEqual(4, len(clicks))
+            self.assertEqual(4, len(clicks))
 
     def test_failed_transition_uses_only_one_recovery_for_a_poster(self):
         clock = Clock()
         recoveries = []
         machine = ActionMachine(transition=False)
+        with TemporaryDirectory() as directory:
+            runner = ExpeditionRunner(
+                machine,
+                Runtime(
+                    lambda: np.zeros((60, 100, 3), dtype=np.uint8),
+                    lambda _: None,
+                    diagnostic_dir=Path(directory),
+                ),
+                sleep=clock.sleep,
+                poll_seconds=1,
+                now=clock.now,
+                recovery=lambda: recoveries.append(True),
+            )
+
+            with self.assertRaisesRegex(RuntimeError, "未稳定进入"):
+                runner.run(max_cycles=1)
+
+            self.assertEqual([], recoveries)
+
+    def test_recorded_poster_page_emits_departure_retries_without_unknown_wake(self):
+        clock = Clock()
+        clicks = []
+        screen = cv2.cvtColor(
+            cv2.imread(str(
+                ROOT / "tests" / "fixtures" / "epic7_expedition" / "posters.png"
+            )),
+            cv2.COLOR_BGR2RGB,
+        )
+        machine = ExpeditionStateMachine(
+            build_expedition_templates(
+                ROOT / "games" / "epic7" / "templates" / "expedition"
+            ),
+            initial_state=ExpeditionState.POSTERS,
+        )
         runner = ExpeditionRunner(
             machine,
-            Runtime(lambda: np.zeros((60, 100, 3), dtype=np.uint8), lambda _: None),
+            Runtime(lambda: screen, clicks.append),
             sleep=clock.sleep,
-            poll_seconds=20,
+            poll_seconds=1,
             now=clock.now,
-            recovery=lambda: recoveries.append(True),
         )
+        action = machine.next_action(screen)
 
-        with self.assertRaisesRegex(RuntimeError, "点击4次后画面未推进"):
-            runner.run(max_cycles=1)
+        with self.assertRaisesRegex(RuntimeError, "未稳定进入"):
+            runner._execute_transition(action)
 
-        self.assertEqual([True], recoveries)
+        self.assertEqual("select-first-poster", action.name)
+        self.assertEqual(4, len(clicks))
+        self.assertEqual(ExpeditionState.POSTERS, machine.state)
 
 
 if __name__ == "__main__":

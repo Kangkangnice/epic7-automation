@@ -111,7 +111,7 @@ class ExpeditionStateMachineTests(unittest.TestCase):
         action = machine.next_action(screen_with((TEMPLATES.home, (1600, 980))))
 
         self.assertEqual("open-my-posters", action.name)
-        self.assertEqual(ExpeditionState.POSTERS, machine.state)
+        self.assertEqual(ExpeditionState.HOME, machine.state)
 
     def test_poster_list_selects_first_card_button_top_to_bottom(self):
         machine = self.machine(ExpeditionState.POSTERS)
@@ -138,6 +138,49 @@ class ExpeditionStateMachineTests(unittest.TestCase):
         with self.assertRaises(PostersExhausted):
             machine.next_action(screen_with((TEMPLATES.empty_posters, (850, 480))))
 
+    def test_home_recognizes_posters_list_when_home_button_absent(self):
+        # 实机：状态仍是主页，但画面已是通缉传单列表（返回落点偏差/转场动画），
+        # 主页锚点缺失。修复前会误判为未知画面进入唤醒死循环。
+        machine = self.machine(ExpeditionState.HOME)
+        screen = screen_with(
+            (TEMPLATES.poster_embark, (517, 750)),
+            (TEMPLATES.back, (0, 0)),
+        )
+
+        action = machine.next_action(screen)
+
+        self.assertEqual("select-first-poster", action.name)
+        self.assertEqual(ExpeditionState.POSTERS, machine.state)
+
+    def test_posters_list_during_embark_animation_returns_none(self):
+        # 实机帧 20260826_081147：列表标题+返回键已就位（~0.99），但“出发”
+        # 按钮仍在滑入动画中未命中。修复前会抛 RuntimeError，导致转场失败。
+        machine = self.machine(ExpeditionState.POSTERS)
+        screen = screen_with(
+            (TEMPLATES.expedition_list, (1100, 100)),
+            (TEMPLATES.back, (0, 0)),
+        )
+
+        self.assertIsNone(machine.next_action(screen))
+
+    def test_campfire_idle_relaxed_threshold_matches_real_drift_frame(self):
+        # 实机帧 20260826_081022 中营地待机锚点仅 ~0.835，旧阈值 0.88 漏识。
+        path = (
+            ROOT
+            / "runtime_diagnostics"
+            / "epic7_expedition"
+            / "20260826_081022_069178_unknown_before_wake.png"
+        )
+        if not path.exists():
+            self.skipTest("real drift frame not available")
+        templates = build_expedition_templates(
+            ROOT / "games" / "epic7" / "templates" / "expedition"
+        )
+        machine = ExpeditionStateMachine(templates, initial_state=ExpeditionState.OUTCOME)
+        screen = cv2.cvtColor(cv2.imread(str(path)), cv2.COLOR_BGR2RGB)
+
+        self.assertIsNotNone(machine._locate(screen, "campfire_idle"))
+
     def test_difficulty_is_fixed_to_stage_three_then_confirmed(self):
         machine = self.machine(ExpeditionState.DIFFICULTY)
         screen = screen_with((TEMPLATES.difficulty_title, (800, 210)))
@@ -145,7 +188,8 @@ class ExpeditionStateMachineTests(unittest.TestCase):
         action = machine.next_action(screen)
 
         self.assertEqual("select-difficulty-3", action.name)
-        self.assertEqual(ExpeditionState.DIFFICULTY_CONFIRM, machine.state)
+        self.assertEqual(ExpeditionState.DIFFICULTY, machine.state)
+        machine.commit(action, ExpeditionState.DIFFICULTY_CONFIRM)
 
         confirm = machine.next_action(
             screen_with(
@@ -154,62 +198,65 @@ class ExpeditionStateMachineTests(unittest.TestCase):
             )
         )
         self.assertEqual("confirm-difficulty-3", confirm.name)
-        self.assertEqual(ExpeditionState.READY, machine.state)
+        self.assertEqual(ExpeditionState.DIFFICULTY_CONFIRM, machine.state)
+
+    def test_selected_stage_three_confirms_without_toggling(self):
+        templates = build_expedition_templates(
+            ROOT / "games" / "epic7" / "templates" / "expedition"
+        )
+        machine = ExpeditionStateMachine(
+            templates, initial_state=ExpeditionState.DIFFICULTY
+        )
+
+        action = machine.next_action(recorded_screen("difficulty_3_selected"))
+
+        self.assertEqual("confirm-difficulty-3", action.name)
+        self.assertEqual(ExpeditionState.DIFFICULTY, machine.state)
+
+    def test_departure_action_does_not_advance_before_target_is_confirmed(self):
+        machine = self.machine(ExpeditionState.POSTERS)
+
+        action = machine.next_action(
+            screen_with((TEMPLATES.poster_embark, (517, 750)))
+        )
+
+        self.assertEqual("select-first-poster", action.name)
+        self.assertEqual(ExpeditionState.POSTERS, machine.state)
 
     def test_one_public_recruit_cycle_counts_only_after_return_home(self):
         machine = self.machine(ExpeditionState.READY)
 
-        self.assertEqual(
-            "prepare-battle",
-            machine.next_action(screen_with((TEMPLATES.prepare_battle, (1650, 980)))).name,
-        )
-        self.assertEqual(
-            "battle-start",
-            machine.next_action(screen_with((TEMPLATES.battle_start, (1400, 980)))).name,
-        )
-        self.assertIsNone(
-            machine.next_action(screen_with((TEMPLATES.battle_anchor, (1650, 100))))
-        )
-        self.assertEqual(0, machine.completed_cycles)
-        self.assertEqual(
-            "confirm-result",
-            machine.next_action(screen_with((TEMPLATES.result_confirm, (1700, 980)))).name,
-        )
-        self.assertEqual(
-            "public-recruit",
-            machine.next_action(screen_with((TEMPLATES.public_recruit, (900, 980)))).name,
-        )
-        self.assertEqual(
-            "confirm-public-recruit",
-            machine.next_action(
-                screen_with(
-                    (TEMPLATES.public_title, (850, 350)),
-                    (TEMPLATES.public_confirm, (930, 800)),
-                )
-            ).name,
-        )
-        self.assertEqual(
-            "return-from-expedition",
-            machine.next_action(
-                screen_with(
-                    (TEMPLATES.public_recruited, (950, 1000)),
-                    (TEMPLATES.back, (45, 70)),
-                )
-            ).name,
-        )
-        self.assertEqual(0, machine.completed_cycles)
-        self.assertEqual(
-            "return-to-expedition-home",
-            machine.next_action(
-                screen_with(
-                    (TEMPLATES.expedition_list, (1250, 180)),
-                    (TEMPLATES.back, (45, 70)),
-                )
-            ).name,
-        )
-        self.assertEqual(0, machine.completed_cycles)
+        def act(screen, target):
+            action = machine.next_action(screen)
+            machine.commit(action, target)
+            return action.name
 
-        self.assertIsNone(machine.next_action(screen_with((TEMPLATES.home, (1600, 980)))))
+        self.assertEqual("prepare-battle", act(
+            screen_with((TEMPLATES.prepare_battle, (1650, 980))), ExpeditionState.TEAM
+        ))
+        self.assertEqual("battle-start", act(
+            screen_with((TEMPLATES.battle_start, (1400, 980))), ExpeditionState.BATTLE
+        ))
+        self.assertEqual(0, machine.completed_cycles)
+        self.assertEqual("confirm-result", act(
+            screen_with((TEMPLATES.result_confirm, (1700, 980))), ExpeditionState.OUTCOME
+        ))
+        self.assertEqual("public-recruit", act(
+            screen_with((TEMPLATES.public_recruit, (900, 980))), ExpeditionState.RECRUIT_CONFIRM
+        ))
+        self.assertEqual("confirm-public-recruit", act(screen_with(
+            (TEMPLATES.public_title, (850, 350)),
+            (TEMPLATES.public_confirm, (930, 800)),
+        ), ExpeditionState.RECRUIT_RETURN))
+        self.assertEqual("return-from-expedition", act(screen_with(
+            (TEMPLATES.public_recruited, (950, 1000)),
+            (TEMPLATES.back, (45, 70)),
+        ), ExpeditionState.RETURNING))
+        self.assertEqual(0, machine.completed_cycles)
+        self.assertEqual("return-to-expedition-home", act(screen_with(
+            (TEMPLATES.expedition_list, (1250, 180)),
+            (TEMPLATES.back, (45, 70)),
+        ), ExpeditionState.HOME))
         self.assertEqual(1, machine.completed_cycles)
         self.assertEqual(ExpeditionState.HOME, machine.state)
 
@@ -221,7 +268,7 @@ class ExpeditionStateMachineTests(unittest.TestCase):
         )
 
         self.assertEqual("confirm-defeated", action.name)
-        self.assertEqual(ExpeditionState.RETURNING, machine.state)
+        self.assertEqual(ExpeditionState.OUTCOME, machine.state)
 
     def test_campfire_idle_is_woken_without_advancing_outcome_state(self):
         machine = self.machine(ExpeditionState.OUTCOME)
@@ -261,7 +308,7 @@ class ExpeditionStateMachineTests(unittest.TestCase):
         )
 
         self.assertEqual("confirm-defeated", action.name)
-        self.assertEqual(ExpeditionState.RETURNING, machine.state)
+        self.assertEqual(ExpeditionState.RECRUIT_CONFIRM, machine.state)
 
     def test_preview_does_not_mutate_state_or_count(self):
         machine = self.machine()
@@ -269,7 +316,7 @@ class ExpeditionStateMachineTests(unittest.TestCase):
         action, outcome = machine.preview(screen_with((TEMPLATES.home, (1600, 980))))
 
         self.assertEqual("open-my-posters", action.name)
-        self.assertEqual((ExpeditionState.POSTERS, 0), outcome)
+        self.assertEqual((ExpeditionState.HOME, 0), outcome)
         self.assertEqual(ExpeditionState.HOME, machine.state)
         self.assertEqual(0, machine.completed_cycles)
 
@@ -297,8 +344,8 @@ class ExpeditionStateMachineTests(unittest.TestCase):
         )
         screen = cv2.cvtColor(cv2.imread(str(path)), cv2.COLOR_BGR2RGB)
 
-        self.assertIsNone(machine.next_action(screen))
-        self.assertEqual(1, machine.completed_cycles)
+        self.assertTrue(machine.is_in_state(screen, ExpeditionState.HOME))
+        self.assertEqual(0, machine.completed_cycles)
 
     def test_recorded_current_client_pages_match_their_states(self):
         templates = build_expedition_templates(
@@ -333,7 +380,8 @@ class ExpeditionStateMachineTests(unittest.TestCase):
 
         action = machine.next_action(recorded_screen("campfire_idle"))
 
-        self.assertEqual(ExpeditionAction("wake-campfire-ui", (1000, 600)), action)
+        self.assertEqual("wake-campfire-ui", action.name)
+        self.assertEqual((1000, 600), action.point)
 
     def test_current_highlighted_public_recruit_button_is_recognized(self):
         templates = build_expedition_templates(
@@ -346,7 +394,7 @@ class ExpeditionStateMachineTests(unittest.TestCase):
         action = machine.next_action(recorded_screen("outcome_public_highlighted"))
 
         self.assertEqual("public-recruit", action.name)
-        self.assertEqual(ExpeditionState.RECRUIT_CONFIRM, machine.state)
+        self.assertEqual(ExpeditionState.OUTCOME, machine.state)
 
     def test_manual_expedition_battle_enables_auto_once(self):
         templates = build_expedition_templates(
@@ -391,7 +439,7 @@ class ExpeditionStateMachineTests(unittest.TestCase):
         action = machine.next_action(recorded_screen("victory_popup_live"))
 
         self.assertEqual("close-expedition-victory", action.name)
-        self.assertEqual(ExpeditionState.RETURNING, machine.state)
+        self.assertEqual(ExpeditionState.OUTCOME, machine.state)
 
 
 if __name__ == "__main__":
