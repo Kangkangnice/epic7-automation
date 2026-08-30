@@ -8,7 +8,7 @@ from typing import Callable
 import cv2
 import numpy as np
 
-from auto_game_unified.core.runtime import Runtime
+from auto_game_unified.core.runtime import ManualStop, Runtime
 from auto_game_unified.core.supervisor import StableObservation
 
 from auto_game_unified.games.epic7.evidence.shop_refresh import (
@@ -300,6 +300,8 @@ class ShopRefreshRunner:
         self.open_retry_seconds = open_retry_seconds
         self.now = runtime.now
         self.resource_exhausted = False
+        self._sold_slots: set[tuple[int, ShopPhase, ShopItemKind, int]] = set()
+        self._sold_rows: set[tuple[int, ShopItemKind, str]] = set()
 
     @staticmethod
     def _observation_signature(observation: ShopObservation) -> str:
@@ -326,8 +328,17 @@ class ShopRefreshRunner:
         difference = cv2.absdiff(before, after)
         return float(difference.mean())
 
-    def _failure(self, message: str, screen: np.ndarray | None = None) -> RuntimeError:
+    def _failure(
+        self,
+        message: str,
+        screen: np.ndarray | None = None,
+        *,
+        evidence: dict[str, np.ndarray] | None = None,
+    ) -> RuntimeError:
+        self.machine.stop(message)
         if self.runtime.diagnostic_dir is not None:
+            for label, evidence_screen in (evidence or {}).items():
+                self.runtime.save_diagnostic(label, evidence_screen)
             diagnostic = self.runtime.save_diagnostic(
                 "shop_refresh_unknown", screen
             )
@@ -344,16 +355,21 @@ class ShopRefreshRunner:
         deadline = self.now() + (timeout or self.transaction_timeout)
         stable = StableObservation(required=2)
         last_screen: np.ndarray | None = None
+        last_observation: ShopObservation | None = None
         while self.now() < deadline:
             screen = self.runtime.capture()
             last_screen = screen
             observation = self.observer.observe(screen)
+            last_observation = observation
             signature = self._observation_signature(observation)
             if stable.update(signature) and observation.page is page:
                 return screen, observation
             self.sleep(self.poll_seconds)
+        scores = dict(last_observation.scores or {}) if last_observation else {}
         raise self._failure(
-            f"等待页面[{page.value}]超时",
+            f"等待页面[{page.value}]超时 最终页="
+            f"{last_observation.page.value if last_observation else 'none'} "
+            f"分数={scores}",
             last_screen,
         )
 
@@ -363,10 +379,53 @@ class ShopRefreshRunner:
             return False
         return any(
             row.kind is pending.row.kind
-            and row.row_key == pending.row.row_key
             and row.buy_point is not None
+            and abs(row.item_center[1] - pending.row.item_center[1]) <= 90
             for row in observation.rows
         )
+
+    def _sold_slot_key(
+        self, row: ShopRowObservation
+    ) -> tuple[int, ShopPhase, ShopItemKind, int]:
+        return (
+            self.machine.completed_cycles,
+            self.machine.phase,
+            row.kind,
+            round(row.item_center[1] / 60),
+        )
+
+    def _is_known_sold(self, row: ShopRowObservation) -> bool:
+        row_identity = (
+            self.machine.completed_cycles,
+            row.kind,
+            row.row_key,
+        )
+        return bool(
+            row_identity in self._sold_rows
+            or self._sold_slot_key(row) in self._sold_slots
+        )
+
+    def _remember_sold(
+        self,
+        original: ShopRowObservation,
+        observation: ShopObservation,
+    ) -> None:
+        candidates = [
+            row
+            for row in observation.rows
+            if row.kind is original.kind
+            and row.buy_point is None
+            and abs(row.item_center[1] - original.item_center[1]) <= 90
+        ]
+        for row in (original, *candidates):
+            self._sold_slots.add(self._sold_slot_key(row))
+            self._sold_rows.add(
+                (
+                    self.machine.completed_cycles,
+                    row.kind,
+                    row.row_key,
+                )
+            )
 
     def _open_and_wait(
         self,
@@ -414,6 +473,7 @@ class ShopRefreshRunner:
         self,
         row: ShopRowObservation,
         source: ShopObservation,
+        source_screen: np.ndarray | None = None,
     ) -> None:
         del source
         self.machine.begin_purchase(row)
@@ -435,8 +495,16 @@ class ShopRefreshRunner:
             popup.purchase_kind, popup.purchase_price
         ):
             raise self._failure(
-                "购买弹窗商品或价格与待购买目标不一致",
+                "购买弹窗商品或价格与待购买目标不一致 "
+                f"待购买={row.kind.value} "
+                f"弹窗={popup.purchase_kind.value} "
+                f"价格={popup.purchase_price}",
                 _popup_screen,
+                evidence=(
+                    {"purchase_source": source_screen}
+                    if source_screen is not None
+                    else None
+                ),
             )
         if popup.confirm_point is None:
             raise self._failure("购买弹窗缺少确认按钮", _popup_screen)
@@ -468,6 +536,7 @@ class ShopRefreshRunner:
                     self.machine.complete_purchase(
                         target_row_still_visible=False
                     )
+                    self._remember_sold(row, observation)
                     self.runtime.log(
                         f"模式=刷书签 业务成功=购买 目标={row.kind.value} "
                         f"本轮统计={self.machine.stats.summary()}"
@@ -476,14 +545,22 @@ class ShopRefreshRunner:
             else:
                 stable.reset()
             self.sleep(self.poll_seconds)
-        raise self._failure("购买结果不明确，禁止重复确认", last_screen)
+        purchase_evidence = {"purchase_popup": _popup_screen}
+        if source_screen is not None:
+            purchase_evidence["purchase_source"] = source_screen
+        raise self._failure(
+            "购买结果不明确，禁止重复确认",
+            last_screen,
+            evidence=purchase_evidence,
+        )
 
     def _scroll_to_bottom(
         self,
         source_screen: np.ndarray,
         source: ShopObservation,
     ) -> None:
-        del source
+        peak_screen = source_screen
+        peak_difference = 0.0
         for attempt in range(1, 3):
             self.runtime.log(
                 f"模式=刷书签 动作候选=scroll_bottom 尝试={attempt}/2"
@@ -506,10 +583,19 @@ class ShopRefreshRunner:
                 difference_from_source = self._visual_difference(
                     source_screen, screen
                 )
+                if difference_from_source > peak_difference:
+                    peak_difference = difference_from_source
+                    peak_screen = screen
                 frame_difference = self._visual_difference(previous, screen)
                 if difference_from_source >= 2.0:
                     motion_seen = True
-                if motion_seen and observation.page is ShopPage.SHOP:
+                different_list = bool(
+                    observation.page is ShopPage.SHOP
+                    and observation.list_fingerprint
+                    and observation.list_fingerprint
+                    != source.list_fingerprint
+                )
+                if motion_seen and different_list:
                     stable_count = stable_count + 1 if frame_difference < 1.0 else 0
                     if stable_count >= 1:
                         self.machine.complete_scroll()
@@ -520,11 +606,29 @@ class ShopRefreshRunner:
                         return
                 previous = screen
                 self.sleep(self.poll_seconds)
+            final = self.observer.observe(last_screen)
             if attempt == 1:
-                final = self.observer.observe(last_screen)
-                if final.page is ShopPage.SHOP and not motion_seen:
+                if (
+                    final.page is ShopPage.SHOP
+                    and final.list_fingerprint == source.list_fingerprint
+                ):
                     continue
-            raise self._failure("滚动到底部结果不明确", last_screen)
+            final_fingerprint = (
+                final.list_fingerprint
+                if final.page is ShopPage.SHOP
+                else final.page.value
+            )
+            raise self._failure(
+                "滚动到底部结果不明确 "
+                f"来源指纹={source.list_fingerprint} "
+                f"最终={final_fingerprint} "
+                f"峰值画面差={peak_difference:.3f}",
+                last_screen,
+                evidence={
+                    "scroll_source": source_screen,
+                    "scroll_peak": peak_screen,
+                },
+            )
 
     def _refresh_transaction(
         self,
@@ -560,26 +664,41 @@ class ShopRefreshRunner:
 
         deadline = self.now() + self.transaction_timeout
         motion_seen = False
+        popup_exited = False
+        peak_screen = source_screen
+        peak_difference = 0.0
         stable = StableObservation(required=2)
         last_screen: np.ndarray | None = None
         while self.now() < deadline:
             screen = self.runtime.capture()
             last_screen = screen
             observation = self.observer.observe(screen)
+            if observation.page is ShopPage.REFRESH_CONFIRM:
+                stable.reset()
+                self.sleep(self.poll_seconds)
+                continue
+            popup_exited = True
             if observation.page is ShopPage.SKYSTONE_SHORTAGE:
                 self.resource_exhausted = True
                 self.machine.stop("钻石不足")
                 self.runtime.log("模式=刷书签 停止=钻石不足")
                 return
             difference = self._visual_difference(source_screen, screen)
+            if difference > peak_difference:
+                peak_difference = difference
+                peak_screen = screen
             fingerprint_changed = bool(
                 observation.page is ShopPage.SHOP
                 and observation.list_fingerprint
                 and observation.list_fingerprint != source.list_fingerprint
             )
-            if difference >= 2.0 or fingerprint_changed:
+            if popup_exited and (difference >= 2.0 or fingerprint_changed):
                 motion_seen = True
-            if observation.page is ShopPage.SHOP and motion_seen:
+            if (
+                observation.page is ShopPage.SHOP
+                and motion_seen
+                and fingerprint_changed
+            ):
                 if stable.update(self._observation_signature(observation)):
                     self.machine.complete_refresh()
                     self.runtime.log(
@@ -592,7 +711,31 @@ class ShopRefreshRunner:
             else:
                 stable.reset()
             self.sleep(self.poll_seconds)
-        raise self._failure("刷新结果不明确，禁止重复确认", last_screen)
+        final_observation = (
+            self.observer.observe(last_screen)
+            if last_screen is not None
+            else None
+        )
+        final_fingerprint = (
+            final_observation.list_fingerprint
+            if final_observation is not None
+            and final_observation.page is ShopPage.SHOP
+            else final_observation.page.value
+            if final_observation is not None
+            else "none"
+        )
+        raise self._failure(
+            "刷新结果不明确，禁止重复确认 "
+            f"来源指纹={source.list_fingerprint} "
+            f"最终={final_fingerprint} "
+            f"峰值画面差={peak_difference:.3f}",
+            last_screen,
+            evidence={
+                "refresh_source": source_screen,
+                "refresh_popup": popup_screen,
+                "refresh_peak": peak_screen,
+            },
+        )
 
     def _stable_shop(self) -> tuple[np.ndarray, ShopObservation]:
         return self._wait_stable(ShopPage.SHOP)
@@ -602,16 +745,32 @@ class ShopRefreshRunner:
             raise ValueError("刷书签需要正数付费刷新次数")
         if self.machine.completed_cycles == 0:
             self.machine.stats.target_refreshes = max_cycles
-        if self.runtime.dry_run:
-            screen = self.runtime.capture()
-            observation = self.observer.observe(screen)
-            self.runtime.log(
-                f"模式=刷书签 空跑页面={observation.page.value} "
-                f"目标行数={len(observation.rows)}"
-            )
-            return 0
-
         try:
+            if self.runtime.dry_run:
+                screen = self.runtime.capture()
+                observation = self.observer.observe(screen)
+                self.runtime.log(
+                    f"模式=刷书签 空跑页面={observation.page.value} "
+                    f"目标行数={len(observation.rows)}"
+                )
+                for row in observation.rows:
+                    self.runtime.log(
+                        f"模式=刷书签 空跑商品={row.kind.value} "
+                        f"行={row.row_key} 分数={row.item_score:.3f} "
+                        f"备选={row.alternate_score:.3f} "
+                        f"同行购买按钮={'有' if row.buy_point else '无'}"
+                    )
+                return 0
+            if not getattr(
+                self.observer,
+                "live_transactions_verified",
+                False,
+            ):
+                reason = "目标商品和购买价格尚未通过当前客户端实证"
+                self.machine.stop(reason)
+                raise RuntimeError(
+                    f"{reason}，已禁止实跑消费；请先完成誓约和神秘的当前客户端截图验收"
+                )
             while self.machine.phase not in {
                 ShopPhase.COMPLETE,
                 ShopPhase.STOPPED,
@@ -641,8 +800,29 @@ class ShopRefreshRunner:
                     if row.kind in {ShopItemKind.COVENANT, ShopItemKind.MYSTIC}
                     and row.buy_point is not None
                 ]
+                unavailable_targets = [
+                    row
+                    for row in observation.rows
+                    if row.kind in {
+                        ShopItemKind.COVENANT,
+                        ShopItemKind.MYSTIC,
+                    }
+                    and row.buy_point is None
+                    and not self._is_known_sold(row)
+                ]
+                if unavailable_targets:
+                    row = unavailable_targets[0]
+                    raise self._failure(
+                        f"目标商品缺少同行购买按钮且并非本轮已购槽位 "
+                        f"行={row.row_key} 目标={row.kind.value}",
+                        screen,
+                    )
                 if targets:
-                    self._purchase_transaction(targets[0], observation)
+                    self._purchase_transaction(
+                        targets[0],
+                        observation,
+                        source_screen=screen,
+                    )
                     continue
                 if self.machine.phase is ShopPhase.SCAN_TOP:
                     self.runtime.log("模式=刷书签 批次顶部=扫描完成")
@@ -655,6 +835,20 @@ class ShopRefreshRunner:
                     break
                 self._refresh_transaction(screen, observation)
             return self.machine.completed_cycles
+        except ManualStop:
+            if self.machine.phase not in {
+                ShopPhase.COMPLETE,
+                ShopPhase.STOPPED,
+            }:
+                self.machine.stop("用户手动停止")
+            raise
+        except Exception as error:
+            if self.machine.phase not in {
+                ShopPhase.COMPLETE,
+                ShopPhase.STOPPED,
+            }:
+                self.machine.stop(str(error))
+            raise
         finally:
             self.runtime.log(
                 f"模式=刷书签 本轮汇总 {self.machine.stats.summary()}"

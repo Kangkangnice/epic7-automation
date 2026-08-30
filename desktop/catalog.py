@@ -34,6 +34,12 @@ ROUTES = (
     RouteInfo("expedition", "远征", "正式功能", "三阶段远征循环"),
     RouteInfo("fodder", "狗粮", "实验功能", "特别的时间之书 Episode 3-7"),
     RouteInfo("assist_auto", "助手自动", "实验功能", "接管游戏内置重复战斗"),
+    RouteInfo(
+        "shop_refresh",
+        "刷书签",
+        "实验功能",
+        "输入付费刷新次数；初始页面也检查；当前仅开放空跑采样，待目标和价格实证",
+    ),
 )
 
 

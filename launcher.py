@@ -12,6 +12,7 @@ MENU_OPTIONS = {
     "4": ("狗粮", "fodder"),
     "5": ("辅助自动", "assist_auto"),
     "6": ("英雄合成", "hero_synthesis"),
+    "7": ("刷书签", "shop_refresh"),
 }
 
 MENU_LINES = (
@@ -22,6 +23,7 @@ MENU_LINES = (
     "4. 狗粮（特别的时间之书 3-7）",
     "5. 辅助自动（自动重复战斗）",
     "6. 英雄合成（三星刻印合成，跑完一遍列表自动结束）",
+    "7. 刷书签（实验功能，只支持模拟器）",
 )
 
 # 运行平台选择：模拟器（LDPlayer）与 PC 客户端共用同一套业务代码与模板资产，
@@ -55,7 +57,7 @@ def run_interactive(
         selected = input_fn("请输入功能编号：").strip()
         if selected in MENU_OPTIONS:
             break
-        output("请输入 1 到 6 之间的功能编号。")
+        output("请输入 1 到 7 之间的功能编号。")
 
     label, mode = MENU_OPTIONS[selected]
     if mode == "hero_synthesis":

@@ -37,7 +37,38 @@ def global_fixture(name: str):
     return cv2.cvtColor(cv2.imread(str(path)), cv2.COLOR_BGR2RGB)
 
 
+def shop_fixture(name: str):
+    path = ROOT / "tests" / "fixtures" / "epic7_shop_refresh" / f"{name}.png"
+    return cv2.cvtColor(cv2.imread(str(path)), cv2.COLOR_BGR2RGB)
+
+
 class NavigationTests(unittest.TestCase):
+    def test_classifies_current_secret_shop_page(self):
+        navigator = self.navigator([])
+
+        observation = navigator.observe(shop_fixture("shop_top_live"))
+
+        self.assertEqual("shop_refresh", observation.name)
+
+    def test_shop_navigation_retries_only_until_secret_shop_is_confirmed(self):
+        clicks: list[tuple[int, int]] = []
+        logs: list[str] = []
+        navigator = self.navigator(
+            [shop_fixture("shop_top_live"), shop_fixture("shop_top_live")],
+            clicks=clicks,
+            logs=logs,
+        )
+
+        navigator.navigate(
+            "shop_refresh",
+            lobby_screen=shop_fixture("lobby_shop_entry"),
+        )
+
+        self.assertEqual(1, len(clicks))
+        self.assertTrue(40 <= clicks[0][0] <= 150)
+        self.assertTrue(470 <= clicks[0][1] <= 610)
+        self.assertTrue(any("模式=刷书签 状态=导航完成" in log for log in logs))
+
     def test_navigator_selects_platform_thresholds_explicitly(self):
         runtime = Runtime(lambda: fixture("lobby"), lambda _point: None)
         emulator = Epic7Navigator(build_navigation_templates(TEMPLATES), runtime)

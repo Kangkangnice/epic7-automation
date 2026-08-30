@@ -1,6 +1,6 @@
 # 使用手册
 
-本手册面向日常运行和故障留证。默认支持基线是 Windows 上的雷电模拟器前台窗口；`pc` 后端目前用于采集和开发验证，六条路线都尚未完成 PC 实机验收。
+本手册面向日常运行和故障留证。默认支持基线是 Windows 上的雷电模拟器；`pc` 后端目前用于采集和开发验证，刷书签明确只支持模拟器。
 
 ## 1. 安装与运行前检查
 
@@ -32,13 +32,13 @@ cd D:\AI\codex\auto_game
 python -u -m auto_game_unified.desktop
 ```
 
-桌面界面提供：环境检测、六路线选择、运行次数、开始/安全停止、实时日志、打开日志/诊断目录和一键导出诊断 ZIP。英雄合成、主线、竞技场与远征为正式功能；英雄合成固定运行一轮。狗粮和助手自动为实验功能，启动前会提醒可能不稳定。
+桌面界面提供：环境检测、七路线选择、运行次数、开始/安全停止、实时日志、打开日志/诊断目录和一键导出诊断 ZIP。英雄合成、主线、竞技场与远征为正式功能；英雄合成固定运行一轮。狗粮、助手自动和刷书签为实验功能，启动前会提醒可能不稳定。
 
 进入界面后点击一次“检测环境”。检测通过后切换功能不会要求重复检测；点击“开始运行”时，助手会在后台自动快速复检模拟器和截图，并校验所选路线资源。复检失败时不会启动自动化。
 
 当前是源码桌面 MVP，仍需要先安装 Python 依赖；Windows 安装包和便携版属于下一阶段。GUI 只显示已经验收的雷电模拟器后端，不提供 PC 客户端入口。开始按钮在环境检测通过前保持禁用。
 
-## 3. 六种模式
+## 3. 七种模式
 
 | 模式参数 | 中文名称 | 作用 | 轮次含义 |
 |---|---|---|---|
@@ -48,8 +48,9 @@ python -u -m auto_game_unified.desktop
 | `fodder` | 狗粮 | “特别的时间之书”Episode 3-7 重复刷图 | 结算后稳定看到“重新进行” |
 | `assist_auto` | 助手自动 | 从当前受支持战斗页面接管自动战斗流程 | 由该模式的战斗完成条件确认 |
 | `hero_synthesis` | 英雄合成 | 逐个检查英雄，安全合成或处理已达 SSS 的副本 | 一次完整的英雄处理事务 |
+| `shop_refresh` | 刷书签（实验） | 只购买誓约和神秘，并付费刷新秘密商店 | 已视觉确认完成的付费刷新次数；另检查初始页面 |
 
-英雄合成启动器固定执行一轮完整扫描；其他模式由用户输入正整数轮次。
+英雄合成启动器固定执行一轮完整扫描；其他模式由用户输入正整数轮次。对刷书签输入 `N`，会检查初始页面和 `N` 个刷新后页面，总计 `N + 1` 批。
 
 ## 4. 交互式启动
 
@@ -62,7 +63,7 @@ python -u -m auto_game_unified.launcher
 
 依次选择：
 
-1. 模式（主线、竞技场、远征、狗粮、助手自动或英雄合成）；
+1. 模式（主线、竞技场、远征、狗粮、助手自动、英雄合成或刷书签）；
 2. 窗口后端（模拟器或 PC）；
 3. 运行次数（英雄合成除外，固定为一轮）。
 
@@ -80,6 +81,7 @@ python -u -m auto_game_unified.main --mode expedition
 python -u -m auto_game_unified.main --mode fodder
 python -u -m auto_game_unified.main --mode assist_auto
 python -u -m auto_game_unified.main --mode hero_synthesis
+python -u -m auto_game_unified.main --mode shop_refresh --max-cycles 1
 ```
 
 `--start-state` 只用于离线/干跑诊断，必须是对应模式允许的状态。实跑时传入该参数会被拒绝。
@@ -95,6 +97,7 @@ python -u -m auto_game_unified.main --mode expedition --window-backend emulator 
 python -u -m auto_game_unified.main --mode fodder --window-backend emulator --max-cycles 1 --live --confirm RUN
 python -u -m auto_game_unified.main --mode assist_auto --window-backend emulator --max-cycles 1 --live --confirm RUN
 python -u -m auto_game_unified.main --mode hero_synthesis --window-backend emulator --max-cycles 1 --live --confirm RUN
+python -u -m auto_game_unified.main --mode shop_refresh --window-backend emulator --max-cycles 1 --live --confirm RUN
 ```
 
 一轮完整通过后，再增加 `--max-cycles`。不要用“连续点击了多次”判断完成轮次；程序只在对应业务闭环证据成立后计数。
@@ -103,7 +106,7 @@ python -u -m auto_game_unified.main --mode hero_synthesis --window-backend emula
 
 ## 7. PC 后端（开发中）
 
-`--window-backend pc` 已提供窗口接入能力，但共享模板能够加载并不代表路线已经支持 PC。当前六种模式均未完成 PC 固定样本、dry-run、1 轮和 2 轮实机验收。
+`--window-backend pc` 已提供窗口接入能力，但共享模板能够加载并不代表路线已经支持 PC。刷书签会直接拒绝 PC 后端；其他路线仍需逐项完成 PC 固定样本、dry-run、1 轮和 2 轮实机验收。
 
 只在采集/验证场景使用 PC 干跑：
 
@@ -129,6 +132,10 @@ python -u -m auto_game_unified.main --mode hero_synthesis --window-backend pc
 竞技场无论第一轮就没有旗帜，还是运行中途耗尽，都会在点击“战斗开始”后处理同一个购买弹窗。购买框出现第一帧时程序立即冻结背景“战斗开始”，连续两帧确认后才进入购买判断，不会透过半透明遮罩重复点击旧按钮。
 
 竞技场旗帜不足时，只允许左侧已选中的 `100 友情点 → 5 旗帜`。程序不识别会变化的“持有”余额；右侧 `30 钻石 → 5` 永久禁止。合法弹窗证据不完整时会保存现场并按资源不足停止，不会猜测购买。
+
+刷书签只识别誓约和神秘，友情书签、英雄、装备和其他商品全部忽略。顶部扫描完成后必须看到不同的列表指纹并重新稳定，才扫描底部；刷新确认框离开后还必须看到不同于刷新前的列表指纹，才提交 3 钻石和刷新次数。购买弹窗与原商品类型或视觉价格不一致时不会确认。购买确认和刷新确认均最多点击一次，回执不明确时保存来源、动态峰值和最终现场并停止。本轮日志分别统计初始/付费页面两种书签的购买次数、钻石和金币，不保存历史文件。
+
+当前版本尚缺当前客户端的誓约、神秘真实商品行和两种购买价格截图，因此只开放空跑采样，实跑会在创建窗口和执行导航前明确阻止。完成这些固定样本和回归测试后，才可解除此保护；不能把业务预期价格直接当作视觉识别结果。
 
 进入战斗后不需要等到我方获得行动回合。模拟器版会根据右上角“自动关闭”图标请求开启自动，右下角人物头像稳定出现后才确认成功。敌方连续行动或技能动画导致头像暂时不可见时，日志会记录“来源已离开、人物头像待确认”并继续等待，不会再因 15 秒内看不到我方技能而报错。
 
