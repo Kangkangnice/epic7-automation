@@ -56,7 +56,7 @@ def test_worker_builds_existing_live_cli_and_streams_logs(tmp_path):
     )
 
     worker.start(RunRequest("story", 3))
-    worker.join_reader(timeout=1)
+    worker.join_reader()
 
     command, options = calls[0]
     assert command[1:4] == ["-u", "-m", "auto_game_unified.main"]
@@ -80,7 +80,7 @@ def test_worker_forwards_selected_window_backend(tmp_path):
     )
 
     worker.start(RunRequest("story", 1, "pc"))
-    worker.join_reader(timeout=1)
+    worker.join_reader()
 
     command = calls[0][0]
     assert command[command.index("--window-backend") + 1] == "pc"
@@ -99,7 +99,7 @@ def test_worker_stop_creates_signal_file_before_process_exits(tmp_path):
     assert worker.stop_file is not None
     assert worker.stop_file.exists()
     release.set()
-    worker.join_reader(timeout=1)
+    worker.join_reader()
     assert worker.drain_events()[-1] == WorkerEvent(
         "finished", "用户停止", exit_code=130
     )
@@ -114,7 +114,7 @@ def test_worker_persists_process_exit_evidence(tmp_path):
     )
 
     worker.start(RunRequest("arena", 5, "pc"))
-    worker.join_reader(timeout=1)
+    worker.join_reader()
 
     evidence = log_path.read_text(encoding="utf-8")
     assert "事件=启动 模式=arena 后端=pc PID=2468" in evidence
@@ -139,7 +139,7 @@ def test_worker_reports_and_persists_abnormal_exit_code(tmp_path):
     )
 
     worker.start(RunRequest("arena", 1, "pc"))
-    worker.join_reader(timeout=1)
+    worker.join_reader()
 
     assert worker.drain_events()[-1] == WorkerEvent(
         "finished", "工作进程异常结束（退出码 23）", exit_code=23
@@ -159,3 +159,66 @@ def test_worker_reports_and_persists_abnormal_exit_code(tmp_path):
     assert len(snapshots) == 1
     assert snapshots[0].read_bytes() == b"latest arena frame"
     assert f"现场={snapshots[0]}" in evidence
+
+
+def test_worker_rotates_evidence_log_and_discards_oldest_backup(tmp_path):
+    log_path = tmp_path / "desktop_worker.log"
+    worker = WorkerController(
+        repo_parent=tmp_path,
+        log_path=log_path,
+        max_log_bytes=1,
+        log_backups=2,
+    )
+
+    for message in ("第一条", "第二条", "第三条", "第四条"):
+        worker._write_evidence(message)
+
+    assert "第四条" in log_path.read_text(encoding="utf-8")
+    assert "第三条" in (tmp_path / "desktop_worker.log.1").read_text(
+        encoding="utf-8"
+    )
+    assert "第二条" in (tmp_path / "desktop_worker.log.2").read_text(
+        encoding="utf-8"
+    )
+    assert not (tmp_path / "desktop_worker.log.3").exists()
+    combined = "".join(
+        path.read_text(encoding="utf-8")
+        for path in (
+            log_path,
+            tmp_path / "desktop_worker.log.1",
+            tmp_path / "desktop_worker.log.2",
+        )
+    )
+    assert "第一条" not in combined
+
+
+def test_worker_keeps_only_latest_failure_snapshots(tmp_path):
+    current = (
+        tmp_path
+        / "auto_game_unified"
+        / "runtime_diagnostics"
+        / "epic7_arena"
+        / "current.png"
+    )
+    current.parent.mkdir(parents=True)
+    current.write_bytes(b"latest arena frame")
+    worker = WorkerController(
+        repo_parent=tmp_path,
+        snapshot_limit=2,
+    )
+    worker._request = RunRequest("arena", 1, "pc")
+
+    for exit_code in (21, 22, 23):
+        worker._snapshot_current_frame(exit_code)
+
+    snapshots = sorted(
+        (
+            tmp_path
+            / "auto_game_unified"
+            / "runtime_diagnostics"
+            / "desktop_worker"
+        ).glob("*.png")
+    )
+    assert len(snapshots) == 2
+    assert snapshots[0].name.endswith("_arena_exit_22.png")
+    assert snapshots[1].name.endswith("_arena_exit_23.png")
