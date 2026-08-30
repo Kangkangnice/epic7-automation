@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from auto_game_unified.core.runtime import Runtime
+from auto_game_unified.core.runtime import ManualStop, Runtime
 from auto_game_unified.games.epic7.evidence.shop_refresh import (
     ShopItemKind,
     ShopObservation,
@@ -45,8 +45,14 @@ class _Clock:
 
 
 class _Observer:
-    def __init__(self, observations: dict[int, ShopObservation]) -> None:
+    def __init__(
+        self,
+        observations: dict[int, ShopObservation],
+        *,
+        live_transactions_verified: bool = True,
+    ) -> None:
         self.observations = observations
+        self.live_transactions_verified = live_transactions_verified
 
     def observe(self, screen: np.ndarray) -> ShopObservation:
         return self.observations[int(screen[0, 0, 0])]
@@ -249,9 +255,17 @@ def test_purchase_transaction_confirms_once_and_commits_after_shop_returns():
         purchase_kind=ShopItemKind.COVENANT,
         purchase_price=COVENANT_PRICE,
     )
+    sold_row = ShopRowObservation(
+        kind=ShopItemKind.COVENANT,
+        item_center=(850, 305),
+        buy_point=None,
+        item_score=0.91,
+        alternate_score=0.20,
+        row_key="row-sold",
+    )
     returned = ShopObservation(
         page=ShopPage.SHOP,
-        rows=(),
+        rows=(sold_row,),
         refresh_point=(330, 1045),
         list_fingerprint="sold",
     )
@@ -277,6 +291,7 @@ def test_purchase_transaction_confirms_once_and_commits_after_shop_returns():
     assert actions.count("open_purchase_confirm") == 1
     assert actions.count("confirm_purchase") == 1
     assert runner.machine.stats.initial_covenant == 1
+    assert runner._is_known_sold(sold_row)
 
 
 def test_purchase_result_unknown_never_repeats_irreversible_confirm():
@@ -471,6 +486,53 @@ def test_refresh_without_motion_or_fingerprint_change_stops_without_commit():
     assert machine.stats.completed_refreshes == 0
 
 
+def test_refresh_popup_itself_is_not_counted_as_list_motion():
+    machine = ShopRefreshStateMachine(1)
+    machine.complete_top_scan()
+    machine.complete_scroll()
+    machine.complete_bottom_scan()
+    source = ShopObservation(
+        page=ShopPage.SHOP,
+        refresh_point=(330, 1045),
+        list_fingerprint="same",
+        refresh_price=3,
+    )
+    confirm = ShopObservation(
+        page=ShopPage.REFRESH_CONFIRM,
+        confirm_point=(1120, 742),
+        cancel_point=(800, 742),
+    )
+    unchanged = ShopObservation(
+        page=ShopPage.SHOP,
+        refresh_point=(330, 1045),
+        list_fingerprint="same",
+        refresh_price=3,
+    )
+    clock = _Clock()
+    clicks: list[tuple[tuple[int, int], str]] = []
+    runner = ShopRefreshRunner(
+        machine,
+        _runtime(
+            [_frame(1), _frame(1), _frame(1), _frame(1)]
+            + [_frame(10)] * 20,
+            clock=clock,
+            clicks=clicks,
+            swipes=[],
+            logs=[],
+        ),
+        observer=_Observer({1: confirm, 10: unchanged}),
+        sleep=clock.sleep,
+        poll_seconds=1.0,
+        transaction_timeout=5.0,
+    )
+
+    with pytest.raises(RuntimeError, match="刷新结果不明确"):
+        runner._refresh_transaction(_frame(10), source)
+
+    assert machine.stats.completed_refreshes == 0
+    assert [action for _point, action in clicks].count("confirm_refresh") == 1
+
+
 def test_open_refresh_retries_when_the_shop_source_remains():
     machine = ShopRefreshStateMachine(1)
     machine.complete_top_scan()
@@ -515,3 +577,221 @@ def test_open_refresh_retries_when_the_shop_source_remains():
     actions = [action for _point, action in clicks]
     assert actions.count("open_refresh_confirm") == 2
     assert actions.count("confirm_refresh") == 1
+
+
+def test_runner_scans_initial_and_last_refreshed_batch_end_to_end():
+    machine = ShopRefreshStateMachine(1)
+    clock = _Clock()
+    logs: list[str] = []
+    runner = ShopRefreshRunner(
+        machine,
+        _runtime(
+            [],
+            clock=clock,
+            clicks=[],
+            swipes=[],
+            logs=logs,
+        ),
+        observer=_Observer({}),
+        sleep=clock.sleep,
+    )
+    observations = iter(
+        [
+            (_frame(10), ShopObservation(page=ShopPage.SHOP, list_fingerprint="initial-top")),
+            (
+                _frame(20),
+                ShopObservation(
+                    page=ShopPage.SHOP,
+                    list_fingerprint="initial-bottom",
+                    refresh_point=(330, 1045),
+                    refresh_price=3,
+                ),
+            ),
+            (_frame(30), ShopObservation(page=ShopPage.SHOP, list_fingerprint="paid-top")),
+            (_frame(40), ShopObservation(page=ShopPage.SHOP, list_fingerprint="paid-bottom")),
+        ]
+    )
+    calls = {"stable": 0, "scroll": 0, "refresh": 0}
+
+    def stable_shop():
+        calls["stable"] += 1
+        return next(observations)
+
+    def scroll_to_bottom(_screen, _observation):
+        calls["scroll"] += 1
+        machine.complete_scroll()
+
+    def refresh_transaction(_screen, observation):
+        calls["refresh"] += 1
+        machine.begin_refresh(
+            source_price=observation.refresh_price,
+            source_fingerprint=observation.list_fingerprint,
+        )
+        assert machine.mark_refresh_confirm_clicked()
+        machine.complete_refresh()
+
+    runner._stable_shop = stable_shop
+    runner._scroll_to_bottom = scroll_to_bottom
+    runner._refresh_transaction = refresh_transaction
+
+    assert runner.run(max_cycles=1) == 1
+    assert calls == {"stable": 4, "scroll": 2, "refresh": 1}
+    assert machine.phase is ShopPhase.COMPLETE
+    assert any("本轮汇总" in log for log in logs)
+
+
+def test_runner_stops_when_unbought_target_has_no_same_row_buy_button():
+    machine = ShopRefreshStateMachine(1)
+    clock = _Clock()
+    runner = ShopRefreshRunner(
+        machine,
+        _runtime(
+            [],
+            clock=clock,
+            clicks=[],
+            swipes=[],
+            logs=[],
+        ),
+        observer=_Observer({}),
+        sleep=clock.sleep,
+    )
+    unavailable = ShopRowObservation(
+        kind=ShopItemKind.COVENANT,
+        item_center=(850, 305),
+        buy_point=None,
+        item_score=0.91,
+        alternate_score=0.20,
+        row_key="unavailable",
+    )
+    observation = ShopObservation(
+        page=ShopPage.SHOP,
+        rows=(unavailable,),
+        list_fingerprint="source",
+    )
+    runner._stable_shop = lambda: (_frame(10), observation)
+
+    with pytest.raises(RuntimeError, match="目标商品缺少同行购买按钮"):
+        runner.run(max_cycles=1)
+
+    assert machine.phase is ShopPhase.STOPPED
+    assert "目标商品缺少同行购买按钮" in machine.stats.stop_reason
+
+
+def test_known_sold_row_remains_known_after_scrolling_to_a_new_y_position():
+    machine = ShopRefreshStateMachine(1)
+    clock = _Clock()
+    runner = ShopRefreshRunner(
+        machine,
+        _runtime(
+            [],
+            clock=clock,
+            clicks=[],
+            swipes=[],
+            logs=[],
+        ),
+        observer=_Observer({}),
+        sleep=clock.sleep,
+    )
+    original = ShopRowObservation(
+        kind=ShopItemKind.COVENANT,
+        item_center=(850, 705),
+        buy_point=None,
+        item_score=0.91,
+        alternate_score=0.20,
+        row_key="same-item-content",
+    )
+    runner._remember_sold(original, ShopObservation(page=ShopPage.SHOP, rows=(original,)))
+    machine.complete_top_scan()
+    machine.complete_scroll()
+    moved = ShopRowObservation(
+        kind=ShopItemKind.COVENANT,
+        item_center=(850, 305),
+        buy_point=None,
+        item_score=0.91,
+        alternate_score=0.20,
+        row_key="same-item-content",
+    )
+
+    assert runner._is_known_sold(moved)
+
+
+def test_scroll_does_not_accept_motion_that_returns_to_the_same_top_list():
+    machine = ShopRefreshStateMachine(1)
+    machine.complete_top_scan()
+    top = ShopObservation(page=ShopPage.SHOP, list_fingerprint="top")
+    clock = _Clock()
+    runner = ShopRefreshRunner(
+        machine,
+        _runtime(
+            [_frame(70), _frame(10), _frame(10)] * 8,
+            clock=clock,
+            clicks=[],
+            swipes=[],
+            logs=[],
+        ),
+        observer=_Observer({70: top, 10: top}),
+        sleep=clock.sleep,
+        poll_seconds=1.0,
+        transaction_timeout=5.0,
+    )
+
+    with pytest.raises(RuntimeError, match="滚动到底部结果不明确"):
+        runner._scroll_to_bottom(_frame(10), top)
+
+    assert machine.phase is ShopPhase.STOPPED
+    assert "来源指纹=top" in machine.stats.stop_reason
+
+
+def test_live_run_is_blocked_until_current_target_evidence_is_verified():
+    machine = ShopRefreshStateMachine(1)
+    clock = _Clock()
+    logs: list[str] = []
+    runner = ShopRefreshRunner(
+        machine,
+        _runtime(
+            [],
+            clock=clock,
+            clicks=[],
+            swipes=[],
+            logs=logs,
+        ),
+        observer=_Observer({}, live_transactions_verified=False),
+        sleep=clock.sleep,
+    )
+
+    with pytest.raises(RuntimeError, match="当前客户端实证"):
+        runner.run(max_cycles=1)
+
+    assert machine.phase is ShopPhase.STOPPED
+    assert "当前客户端实证" in machine.stats.stop_reason
+    assert any("停止原因=目标商品和购买价格尚未通过当前客户端实证" in log for log in logs)
+
+
+def test_manual_stop_is_not_summarized_as_normal_completion():
+    machine = ShopRefreshStateMachine(1)
+    clock = _Clock()
+    logs: list[str] = []
+    runner = ShopRefreshRunner(
+        machine,
+        _runtime(
+            [],
+            clock=clock,
+            clicks=[],
+            swipes=[],
+            logs=logs,
+        ),
+        observer=_Observer({}),
+        sleep=clock.sleep,
+    )
+
+    def manual_stop():
+        raise ManualStop("用户按下 P，正在中断自动化")
+
+    runner._stable_shop = manual_stop
+
+    with pytest.raises(ManualStop):
+        runner.run(max_cycles=1)
+
+    assert machine.phase is ShopPhase.STOPPED
+    assert machine.stats.stop_reason == "用户手动停止"
+    assert any("停止原因=用户手动停止" in log for log in logs)

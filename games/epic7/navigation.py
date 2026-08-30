@@ -29,6 +29,13 @@ from auto_game_unified.games.epic7.hero_synthesis import (
     hero_tab_blue_pixel_counts,
     imprint_button_saturation,
 )
+from auto_game_unified.games.epic7.evidence.shop_refresh import (
+    REGIONS as SHOP_REFRESH_REGIONS,
+    ShopPage,
+    ShopRefreshObserver,
+    build_shop_refresh_evidence,
+    build_shop_refresh_observer,
+)
 from auto_game_unified.games.epic7.unknown_screen import (
     UnknownScreenWake,
     UnknownWakeResult,
@@ -62,6 +69,7 @@ PAGE_LABELS = {
     "hero_equipment": "英雄装备子页",
     "story_ready": "主线入口",
     "arena_ready": "竞技场入口",
+    "shop_refresh": "秘密商店",
     "unknown": "未知画面",
 }
 
@@ -73,6 +81,7 @@ MODE_LABELS = {
     "fodder": "狗粮",
     "assist_auto": "辅助自动",
     "hero_synthesis": "英雄合成",
+    "shop_refresh": "刷书签",
 }
 
 
@@ -124,11 +133,15 @@ class NavigationTemplates:
     episode_adventure: np.ndarray
     fodder_stage_title: np.ndarray
     fodder_prepare_battle: np.ndarray
+    lobby_shop_entry: np.ndarray
+    shop_refresh_observer: ShopRefreshObserver
 
 
 def build_navigation_templates(template_root: Path) -> NavigationTemplates:
     navigation = template_root / "navigation"
     global_templates = template_root / "global"
+    shop_evidence = build_shop_refresh_evidence(template_root)
+    shop_entry = shop_evidence.atom("lobby_shop_entry")
     return NavigationTemplates(
         arena_rank_promotion_arrow=load_template(
             str(global_templates / "arena_rank_promotion_arrow.png")
@@ -194,6 +207,10 @@ def build_navigation_templates(template_root: Path) -> NavigationTemplates:
         fodder_prepare_battle=load_template(
             str(template_root / "fodder" / "prepare_battle.png")
         ),
+        lobby_shop_entry=load_template(
+            str(template_root / shop_entry.template_path)
+        ),
+        shop_refresh_observer=build_shop_refresh_observer(template_root),
     )
 
 
@@ -224,6 +241,7 @@ class Epic7Navigator:
         "story_ready": (1450, 930, 470, 202),
         "story_ready_updated": (1450, 930, 470, 202),
         "arena_ready": (700, 900, 520, 232),
+        "lobby_shop_entry": SHOP_REFRESH_REGIONS["lobby_shop_entry"],
         "expedition_battle_title": (0, 35, 350, 180),
         "expedition_season_tab": (250, 140, 500, 200),
         "expedition_season_active": (250, 140, 500, 200),
@@ -321,6 +339,16 @@ class Epic7Navigator:
         )
         if story_skip is not None:
             return PageObservation("story_playing", story_skip.score)
+
+        shop_observation = self.templates.shop_refresh_observer.observe(screen)
+        if shop_observation.page is ShopPage.SHOP:
+            scores = shop_observation.scores or {}
+            confidence = min(
+                scores.get("shop_title", 0.0),
+                scores.get("refresh_button_3", 0.0),
+                scores.get("buy_button", 0.0),
+            )
+            return PageObservation("shop_refresh", confidence)
 
         lobby_story = self._locate(screen, "lobby_story", 0.80)
         lobby_arena = self._locate(screen, "lobby_arena")
@@ -701,12 +729,22 @@ class Epic7Navigator:
                 "lobby", "hero_list", "lobby_hero", "进入英雄列表",
                 source_screen=lobby_screen,
             )
+        elif mode == "shop_refresh":
+            self._transition(
+                "lobby",
+                "shop_refresh",
+                "lobby_shop_entry",
+                "进入秘密商店",
+                source_screen=lobby_screen,
+            )
         else:
             raise ValueError(f"导航不支持的模式：{mode}")
         if mode == "hero_synthesis":
             self.runtime.log(
                 "模式=英雄合成 状态=导航完成 前提=英雄信息页已就绪"
             )
+        elif mode == "shop_refresh":
+            self.runtime.log("模式=刷书签 状态=导航完成 前提=秘密商店顶部已就绪")
         else:
             self.runtime.log(f"模式={MODE_LABELS.get(mode, mode)} 状态=导航完成")
 

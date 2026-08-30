@@ -17,6 +17,9 @@ from .common import AtomEvidence, EvidenceProfile, PageEvidence
 REFERENCE_SIZE = (1982, 1132)
 ITEM_THRESHOLD = 0.75
 ITEM_SCORE_MARGIN = 0.05
+# The two target icons and their purchase-price popups still need current-client
+# fixtures.  Keep live spending disabled until both are captured and verified.
+LIVE_TRANSACTIONS_VERIFIED = False
 
 
 class ShopItemKind(Enum):
@@ -60,6 +63,7 @@ class ShopObservation:
 
 
 REGIONS = {
+    "lobby_shop_entry": (0, 430, 220, 230),
     "shop_title": (0, 52, 500, 130),
     "refresh_button_3": (0, 930, 650, 202),
     "buy_button": (1500, 140, 420, 992),
@@ -74,6 +78,7 @@ REGIONS = {
 }
 
 THRESHOLDS = {
+    "lobby_shop_entry": 0.82,
     "shop_title": 0.88,
     "refresh_button_3": 0.82,
     "buy_button": 0.86,
@@ -151,6 +156,7 @@ class ShopRefreshObserver:
     def __init__(self, profile: EvidenceProfile, template_root: Path) -> None:
         self.profile = profile
         self.template_root = template_root
+        self.live_transactions_verified = LIVE_TRANSACTIONS_VERIFIED
         self.templates = {
             key: load_template(str(template_root / atom.template_path))
             for key, atom in profile.atoms.items()
@@ -254,8 +260,6 @@ class ShopRefreshObserver:
         for center, covenant_score, mystic_score in self._target_peaks(screen):
             kind = classify_item_scores(covenant_score, mystic_score)
             buy_point = self._buy_for_row(screen, center[1])
-            if kind in {ShopItemKind.COVENANT, ShopItemKind.MYSTIC} and buy_point is None:
-                kind = ShopItemKind.UNKNOWN
             rows.append(
                 ShopRowObservation(
                     kind=kind,
@@ -321,16 +325,15 @@ class ShopRefreshObserver:
             )
         if seen("purchase_title") and seen("purchase_cancel") and seen("purchase_action"):
             purchase_kind = self._popup_kind(screen)
-            purchase_price = {
-                ShopItemKind.COVENANT: 184_000,
-                ShopItemKind.MYSTIC: 280_000,
-            }.get(purchase_kind)
             return ShopObservation(
                 page=ShopPage.PURCHASE_CONFIRM,
                 confirm_point=matches["purchase_action"].center,
                 cancel_point=matches["purchase_cancel"].center,
                 purchase_kind=purchase_kind,
-                purchase_price=purchase_price,
+                # Never turn an expected business price into visual evidence.
+                # Current target-popup fixtures must be captured before this
+                # field can be populated by a real price detector.
+                purchase_price=None,
                 scores=scores,
             )
         if seen("shop_title") and seen("refresh_button_3") and seen("buy_button"):

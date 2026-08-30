@@ -11,7 +11,15 @@ TEMPLATES = ROOT / "games" / "epic7" / "templates"
 class Epic7ModeRegistryTests(unittest.TestCase):
     def test_registry_exposes_the_supported_routes(self):
         self.assertEqual(
-            {"arena", "story", "expedition", "fodder", "assist_auto", "hero_synthesis"},
+            {
+                "arena",
+                "story",
+                "expedition",
+                "fodder",
+                "assist_auto",
+                "hero_synthesis",
+                "shop_refresh",
+            },
             set(MODE_SPECS),
         )
         self.assertEqual("list", get_mode("arena").default_state)
@@ -20,6 +28,14 @@ class Epic7ModeRegistryTests(unittest.TestCase):
         self.assertEqual("stage", get_mode("fodder").default_state)
         self.assertEqual("team", get_mode("assist_auto").default_state)
         self.assertEqual("hero_list", get_mode("hero_synthesis").default_state)
+        self.assertEqual("scan_top", get_mode("shop_refresh").default_state)
+
+    def test_shop_refresh_is_simulator_only(self):
+        shop = get_mode("shop_refresh")
+
+        shop.validate_backend("emulator")
+        with self.assertRaisesRegex(ValueError, "仅支持模拟器"):
+            shop.validate_backend("pc")
 
     def test_each_mode_validates_only_its_own_resume_states(self):
         self.assertEqual("active", get_mode("story").resolve_state("active"))

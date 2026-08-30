@@ -10,6 +10,9 @@ from auto_game_unified.core.recovery import RecoveryGate
 from auto_game_unified.core.runtime import ManualStop, Runtime
 from auto_game_unified.core.window import Epic7Window
 from auto_game_unified.core.pc_window import Epic7PcWindow
+from auto_game_unified.games.epic7.evidence.shop_refresh import (
+    LIVE_TRANSACTIONS_VERIFIED,
+)
 from auto_game_unified.games.epic7.modes import MODE_SPECS, ModeSpec, get_mode
 from auto_game_unified.games.epic7.navigation import Epic7Navigator, build_navigation_templates
 from auto_game_unified.games.epic7.global_popups import (
@@ -29,6 +32,7 @@ MODE_LABELS = {
     "fodder": "狗粮",
     "assist_auto": "辅助自动",
     "hero_synthesis": "英雄合成",
+    "shop_refresh": "刷书签",
 }
 
 
@@ -102,6 +106,7 @@ def _build_runtime(
     runtime = Runtime(
         capture=game_window.capture,
         click=game_window.click,
+        swipe=(game_window.swipe if window_backend == "emulator" else None),
         wake=game_window.wake,
         back=game_window.back,
         dry_run=dry_run,
@@ -132,6 +137,16 @@ def run_mode(
     window_backend: str = "emulator",
     stop_file: Path | None = None,
 ) -> RunResult:
+    spec.validate_backend(window_backend)
+    if (
+        spec.name == "shop_refresh"
+        and not dry_run
+        and not LIVE_TRANSACTIONS_VERIFIED
+    ):
+        raise RuntimeError(
+            "刷书签目标商品和购买价格尚未通过当前客户端实证，"
+            "当前只允许空跑采样"
+        )
     runtime = _build_runtime(
         spec.name,
         dry_run,
@@ -222,6 +237,10 @@ def main(argv: list[str] | None = None) -> int:
     if args.live and args.start_state is not None:
         raise SystemExit("--start-state 仅在空跑诊断模式可用")
     spec = get_mode(args.mode)
+    try:
+        spec.validate_backend(args.window_backend)
+    except ValueError as error:
+        raise SystemExit(str(error)) from error
     try:
         start_state = spec.resolve_state(args.start_state)
     except ValueError as error:

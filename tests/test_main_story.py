@@ -135,6 +135,59 @@ class MainStoryTests(unittest.TestCase):
         window.wake.assert_called_once_with((1000, 600))
         window.click.assert_called_once_with((1062, 1045))
 
+    def test_emulator_runtime_routes_swipe_to_the_ldplayer_channel(self):
+        window = unittest.mock.MagicMock()
+        with patch.object(main_module, "Epic7Window", return_value=window):
+            runtime = main_module._build_runtime("shop_refresh", dry_run=False)
+
+        runtime.swipe(
+            (1300, 850),
+            (1300, 220),
+            500,
+            "shop-scroll-bottom",
+        )
+
+        window.swipe.assert_called_once_with((1300, 850), (1300, 220), 500)
+
+    def test_shop_refresh_rejects_pc_before_runtime_is_created(self):
+        with patch.object(main_module, "_build_runtime") as build_runtime:
+            with self.assertRaisesRegex(ValueError, "仅支持模拟器"):
+                main_module.run_mode(
+                    spec=get_mode("shop_refresh"),
+                    dry_run=True,
+                    max_cycles=1,
+                    start_state="scan_top",
+                    window_backend="pc",
+                )
+
+        build_runtime.assert_not_called()
+
+    def test_shop_refresh_live_is_blocked_before_runtime_until_current_evidence_exists(self):
+        with patch.object(main_module, "_build_runtime") as build_runtime:
+            with self.assertRaisesRegex(RuntimeError, "当前客户端实证"):
+                main_module.run_mode(
+                    spec=get_mode("shop_refresh"),
+                    dry_run=False,
+                    max_cycles=1,
+                    start_state="scan_top",
+                    window_backend="emulator",
+                )
+
+        build_runtime.assert_not_called()
+
+    def test_shop_refresh_pc_cli_fails_with_a_clear_message(self):
+        with self.assertRaisesRegex(SystemExit, "刷书签当前仅支持模拟器"):
+            main_module.main(
+                [
+                    "--mode",
+                    "shop_refresh",
+                    "--window-backend",
+                    "pc",
+                    "--max-cycles",
+                    "1",
+                ]
+            )
+
     def test_pc_runtime_calibrates_window_and_logs_actual_geometry(self):
         window = unittest.mock.MagicMock()
         window.ensure_render_size.return_value = unittest.mock.MagicMock(

@@ -37,6 +37,14 @@ from auto_game_unified.games.epic7.hero_synthesis import (
     HeroSynthStateMachine,
     build_hero_templates,
 )
+from auto_game_unified.games.epic7.evidence.shop_refresh import (
+    build_shop_refresh_observer,
+)
+from auto_game_unified.games.epic7.shop_refresh import (
+    ShopPhase,
+    ShopRefreshRunner,
+    ShopRefreshStateMachine,
+)
 
 
 MachineFactory = Callable[[Path, str, str], Any]
@@ -50,6 +58,7 @@ class ModeSpec:
     build_machine: MachineFactory
     runner_type: type
     needs_navigation: bool = True
+    supported_backends: frozenset[str] = frozenset({"emulator", "pc"})
 
     def resolve_state(self, requested: str | None) -> str:
         state = requested or self.default_state
@@ -57,6 +66,13 @@ class ModeSpec:
             choices = ", ".join(sorted(self.states))
             raise ValueError(f"起始状态 {state!r} 不适用于模式 {self.name}；可选：{choices}")
         return state
+
+    def validate_backend(self, backend: str) -> None:
+        if backend in self.supported_backends:
+            return
+        if self.name == "shop_refresh":
+            raise ValueError("刷书签当前仅支持模拟器")
+        raise ValueError(f"模式 {self.name} 不支持后端 {backend}")
 
 
 def _build_arena(
@@ -129,6 +145,21 @@ def _build_hero_synthesis(
     )
 
 
+def _build_shop_refresh(
+    template_root: Path,
+    state: str,
+    backend: str = "emulator",
+) -> ShopRefreshStateMachine:
+    if state != ShopPhase.SCAN_TOP.value:
+        raise ValueError(f"刷书签起始阶段无效：{state}")
+    if backend != "emulator":
+        raise ValueError("刷书签当前仅支持模拟器")
+    return ShopRefreshStateMachine(
+        1,
+        observer=build_shop_refresh_observer(template_root),
+    )
+
+
 MODE_SPECS = {
     "arena": ModeSpec(
         name="arena",
@@ -172,6 +203,14 @@ MODE_SPECS = {
         states=frozenset(state.value for state in HeroSynthState),
         build_machine=_build_hero_synthesis,
         runner_type=HeroSynthRunner,
+    ),
+    "shop_refresh": ModeSpec(
+        name="shop_refresh",
+        default_state=ShopPhase.SCAN_TOP.value,
+        states=frozenset({ShopPhase.SCAN_TOP.value}),
+        build_machine=_build_shop_refresh,
+        runner_type=ShopRefreshRunner,
+        supported_backends=frozenset({"emulator"}),
     ),
 }
 

@@ -68,6 +68,21 @@ def test_other_purchase_popup_is_not_misclassified_as_a_bookmark():
     assert result.purchase_kind is ShopItemKind.OTHER
 
 
+def test_unverified_target_popup_does_not_invent_a_visual_price():
+    screen = _screen("purchase_confirm_other_live").copy()
+    covenant = _template("covenant_candidate")
+    height, width = covenant.shape[:2]
+    x, y = 760, 500
+    screen[y : y + height, x : x + width] = covenant
+    observer = build_shop_refresh_observer(TEMPLATES)
+
+    result = observer.observe(screen)
+
+    assert result.page is ShopPage.PURCHASE_CONFIRM
+    assert result.purchase_kind is ShopItemKind.COVENANT
+    assert result.purchase_price is None
+
+
 def test_close_target_scores_fail_closed():
     assert classify_item_scores(0.84, 0.82) is ShopItemKind.UNKNOWN
     assert classify_item_scores(0.83, 0.20) is ShopItemKind.COVENANT
@@ -96,7 +111,7 @@ def test_candidate_covenant_icon_is_bound_to_the_current_row_buy_button():
     assert abs(covenant_rows[0].buy_point[1] - covenant_rows[0].item_center[1]) <= 90
 
 
-def test_target_without_same_row_buy_button_is_unknown():
+def test_target_without_same_row_buy_button_is_not_actionable():
     screen = _screen("shop_top_live").copy()
     covenant = _template("covenant_candidate")
     height, width = covenant.shape[:2]
@@ -107,4 +122,6 @@ def test_target_without_same_row_buy_button_is_unknown():
 
     result = observer.observe(screen)
 
-    assert all(row.kind is not ShopItemKind.COVENANT for row in result.rows)
+    covenant_rows = [row for row in result.rows if row.kind is ShopItemKind.COVENANT]
+    assert len(covenant_rows) == 1
+    assert covenant_rows[0].buy_point is None
