@@ -1,3 +1,6 @@
+from pathlib import Path
+
+import cv2
 import numpy as np
 import pytest
 
@@ -7,7 +10,19 @@ from auto_game_unified.games.epic7.evidence.shop_refresh import (
     ShopObservation,
     ShopPage,
     ShopRowObservation,
+    build_shop_refresh_observer,
 )
+
+
+ROOT = Path(__file__).resolve().parents[1]
+TEMPLATES = ROOT / "games" / "epic7" / "templates"
+FIXTURES = ROOT / "tests" / "fixtures" / "epic7_shop_refresh"
+
+
+def _fixture(name: str) -> np.ndarray:
+    bgr = cv2.imread(str(FIXTURES / f"{name}.png"), cv2.IMREAD_COLOR)
+    assert bgr is not None
+    return cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
 from auto_game_unified.games.epic7.shop_refresh import (
     COVENANT_PRICE,
     MYSTIC_PRICE,
@@ -291,6 +306,40 @@ def test_purchase_transaction_confirms_once_and_commits_after_shop_returns():
     assert actions.count("open_purchase_confirm") == 1
     assert actions.count("confirm_purchase") == 1
     assert runner.machine.stats.initial_covenant == 1
+    assert runner._is_known_sold(sold_row)
+
+
+def test_current_mystic_purchase_fixtures_complete_one_real_transaction():
+    observer = build_shop_refresh_observer(TEMPLATES)
+    source_screen = _fixture("mystic_row_live_20260831")
+    popup_screen = _fixture("mystic_purchase_confirm_live_20260831")
+    sold_screen = _fixture("mystic_purchased_row_live_20260831")
+    source = observer.observe(source_screen)
+    row = next(row for row in source.rows if row.kind is ShopItemKind.MYSTIC)
+    clock = _Clock()
+    clicks: list[tuple[tuple[int, int], str]] = []
+    runner = ShopRefreshRunner(
+        ShopRefreshStateMachine(1),
+        _runtime(
+            [popup_screen, popup_screen, sold_screen, sold_screen],
+            clock=clock,
+            clicks=clicks,
+            swipes=[],
+            logs=[],
+        ),
+        observer=observer,
+        sleep=clock.sleep,
+        poll_seconds=0.1,
+    )
+
+    runner._purchase_transaction(row, source, source_screen=source_screen)
+
+    actions = [action for _point, action in clicks]
+    assert actions.count("open_purchase_confirm") == 1
+    assert actions.count("confirm_purchase") == 1
+    assert runner.machine.stats.initial_mystic == 1
+    sold = observer.observe(sold_screen)
+    sold_row = next(row for row in sold.rows if row.kind is ShopItemKind.MYSTIC)
     assert runner._is_known_sold(sold_row)
 
 

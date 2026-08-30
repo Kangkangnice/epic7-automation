@@ -106,6 +106,16 @@ def test_current_client_mystic_popup_proves_price_280000():
     assert result.cancel_point is not None
 
 
+def test_current_client_purchased_mystic_row_is_not_actionable():
+    observer = build_shop_refresh_observer(TEMPLATES)
+
+    result = observer.observe(_screen("mystic_purchased_row_live_20260831"))
+
+    mystic_rows = [row for row in result.rows if row.kind is ShopItemKind.MYSTIC]
+    assert len(mystic_rows) == 1
+    assert mystic_rows[0].buy_point is None
+
+
 def test_close_target_scores_fail_closed():
     assert classify_item_scores(0.84, 0.82) is ShopItemKind.UNKNOWN
     assert classify_item_scores(0.83, 0.20) is ShopItemKind.COVENANT

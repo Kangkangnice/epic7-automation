@@ -80,6 +80,7 @@ REGIONS = {
     "covenant_candidate": (650, 140, 380, 992),
     "mystic_candidate": (650, 140, 380, 992),
     "mystic_price_current": (850, 720, 400, 180),
+    "sold_out_0_of_1_current": (1500, 140, 420, 992),
 }
 
 THRESHOLDS = {
@@ -96,6 +97,7 @@ THRESHOLDS = {
     "covenant_candidate": ITEM_THRESHOLD,
     "mystic_candidate": ITEM_THRESHOLD,
     "mystic_price_current": 0.92,
+    "sold_out_0_of_1_current": 0.92,
 }
 
 
@@ -251,6 +253,19 @@ class ShopRefreshObserver:
             atom.region[2],
             190,
         )
+        sold_atom = self.profile.atom("sold_out_0_of_1_current")
+        sold = find_best_template(
+            screen,
+            self.templates["sold_out_0_of_1_current"],
+            region=row_region,
+            reference_size=REFERENCE_SIZE,
+        )
+        if (
+            sold is not None
+            and sold.score >= sold_atom.threshold
+            and same_shop_row(item_y, sold.center[1])
+        ):
+            return None
         match = find_best_template(
             screen,
             self.templates["buy_button"],
