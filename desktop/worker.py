@@ -35,12 +35,18 @@ class WorkerController:
         repo_parent: Path,
         popen: Callable[..., subprocess.Popen[str]] = subprocess.Popen,
         log_path: Path | None = None,
+        max_log_bytes: int = 5 * 1024 * 1024,
+        log_backups: int = 4,
+        snapshot_limit: int = 30,
     ) -> None:
         self.repo_parent = repo_parent
         self._popen = popen
         self.log_path = log_path or (
             repo_parent / "auto_game_unified" / "runtime_logs" / "desktop_worker.log"
         )
+        self.max_log_bytes = max_log_bytes
+        self.log_backups = log_backups
+        self.snapshot_limit = snapshot_limit
         self._process: subprocess.Popen[str] | None = None
         self._reader: threading.Thread | None = None
         self._events: queue.Queue[WorkerEvent] = queue.Queue()
@@ -187,10 +193,28 @@ class WorkerController:
 
     def _write_evidence(self, message: str) -> None:
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        line = f"{timestamp} {message}\n"
         with self._evidence_lock:
             self.log_path.parent.mkdir(parents=True, exist_ok=True)
+            if (
+                self.log_path.exists()
+                and self.log_path.stat().st_size + len(line.encode("utf-8"))
+                > self.max_log_bytes
+            ):
+                self._rotate_evidence_logs()
             with self.log_path.open("a", encoding="utf-8") as file:
-                file.write(f"{timestamp} {message}\n")
+                file.write(line)
+
+    def _rotate_evidence_logs(self) -> None:
+        oldest = Path(f"{self.log_path}.{self.log_backups}")
+        if oldest.exists():
+            oldest.unlink()
+        for index in range(self.log_backups - 1, 0, -1):
+            source = Path(f"{self.log_path}.{index}")
+            if source.exists():
+                source.replace(Path(f"{self.log_path}.{index + 1}"))
+        if self.log_path.exists():
+            self.log_path.replace(Path(f"{self.log_path}.1"))
 
     def _snapshot_current_frame(self, exit_code: int) -> Path | None:
         if exit_code in {0, 2, 130} or self._request is None:
@@ -212,7 +236,18 @@ class WorkerController:
             / f"{timestamp}_{self._request.mode}_exit_{exit_code}.png"
         )
         shutil.copy2(source, destination)
+        self._prune_failure_snapshots(destination_dir)
         return destination
+
+    def _prune_failure_snapshots(self, destination_dir: Path) -> None:
+        if self.snapshot_limit < 1:
+            return
+        snapshots = sorted(
+            destination_dir.glob("*.png"),
+            key=lambda path: (path.stat().st_mtime_ns, path.name),
+        )
+        for path in snapshots[: -self.snapshot_limit]:
+            path.unlink()
 
     def _cleanup_temporary(self) -> None:
         if self._temporary is not None:
