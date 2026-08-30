@@ -320,6 +320,39 @@ class WindowViewportTests(unittest.TestCase):
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
 
+    def test_legacy_swipe_is_converted_and_sent_through_indexed_adb(self):
+        game = Epic7Window()
+        with (
+            patch.object(
+                game,
+                "_instance_channel",
+                return_value=(Path("D:/epic7/ldconsole.exe"), "0", 456),
+            ),
+            patch("auto_game_unified.core.window.subprocess.run") as run,
+        ):
+            game.swipe((1300, 850), (1300, 220), 500)
+
+        run.assert_called_once_with(
+            [
+                "D:\\epic7\\ldconsole.exe",
+                "adb",
+                "--index",
+                "0",
+                "--command",
+                "shell input swipe 1300 798 1300 168 500",
+            ],
+            check=True,
+            capture_output=True,
+            timeout=10,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+
+    def test_legacy_swipe_rejects_chrome_coordinates(self):
+        game = Epic7Window()
+
+        with self.assertRaisesRegex(RuntimeError, "渲染区外滑动"):
+            game.swipe((1300, 20), (1300, 220), 500)
+
     def test_instance_lookup_hides_ldconsole_window(self):
         game = Epic7Window()
         window = MagicMock()

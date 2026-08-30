@@ -8,6 +8,44 @@ from auto_game_unified.core.runtime import ManualStop, Runtime
 
 
 class RuntimeTests(unittest.TestCase):
+    def test_swipe_is_logged_and_sent_once(self):
+        swipes: list[tuple[tuple[int, int], tuple[int, int], int]] = []
+        lines: list[str] = []
+        runtime = Runtime(
+            lambda: np.zeros((10, 10, 3), dtype=np.uint8),
+            lambda _: None,
+            swipe=lambda start, end, duration: swipes.append((start, end, duration)),
+            emit=lines.append,
+        )
+
+        runtime.swipe((1300, 850), (1300, 220), 500, "shop-scroll-bottom")
+
+        self.assertEqual([((1300, 850), (1300, 220), 500)], swipes)
+        self.assertTrue(
+            any(
+                "执行滑动 动作=shop-scroll-bottom" in line
+                and "起点=(1300, 850)" in line
+                and "终点=(1300, 220)" in line
+                for line in lines
+            )
+        )
+
+    def test_dry_run_swipe_logs_without_sending(self):
+        swipes: list[tuple[tuple[int, int], tuple[int, int], int]] = []
+        lines: list[str] = []
+        runtime = Runtime(
+            lambda: np.zeros((10, 10, 3), dtype=np.uint8),
+            lambda _: None,
+            swipe=lambda start, end, duration: swipes.append((start, end, duration)),
+            dry_run=True,
+            emit=lines.append,
+        )
+
+        runtime.swipe((1300, 850), (1300, 220), 500, "shop-scroll-bottom")
+
+        self.assertEqual([], swipes)
+        self.assertTrue(any("空跑 执行滑动" in line for line in lines))
+
     def test_capture_guard_time_is_excluded_from_runtime_clock(self):
         clock = [10.0]
         guarded = np.full((3, 4, 3), 127, dtype=np.uint8)
