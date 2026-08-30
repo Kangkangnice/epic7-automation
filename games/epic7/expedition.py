@@ -127,7 +127,11 @@ class ExpeditionTemplates:
     evidence: EvidenceProfile | None = None
 
 
-def build_expedition_templates(template_dir: Path) -> ExpeditionTemplates:
+def build_expedition_templates(
+    template_dir: Path,
+    *,
+    backend: str = "emulator",
+) -> ExpeditionTemplates:
     def load(name: str) -> np.ndarray:
         return load_template(str(template_dir / f"{name}.png"))
 
@@ -158,7 +162,7 @@ def build_expedition_templates(template_dir: Path) -> ExpeditionTemplates:
         expedition_list=load("expedition_list"),
         back=load("back"),
         quick_battle=load_simulator_quick_battle_detector(template_dir),
-        evidence=build_expedition_evidence(template_dir),
+        evidence=build_expedition_evidence(template_dir, backend=backend),
     )
 
 
@@ -176,9 +180,11 @@ class ExpeditionStateMachine:
         templates: ExpeditionTemplates | Path,
         *,
         initial_state: ExpeditionState = ExpeditionState.HOME,
+        backend: str = "emulator",
     ) -> None:
+        self.backend = backend
         self.templates = (
-            build_expedition_templates(templates)
+            build_expedition_templates(templates, backend=backend)
             if isinstance(templates, Path)
             else templates
         )
@@ -430,7 +436,7 @@ class ExpeditionStateMachine:
             BattleControls.TRANSITION: AutoBattleState.UNKNOWN,
         }[controls]
         auto = self._locate(screen, "auto_off")
-        if auto is not None and self.templates.quick_battle is not None:
+        if auto is not None and self.backend == "emulator":
             auto_state = AutoBattleState.MANUAL
         battle = self._locate(screen, "battle_anchor")
         result = self._locate(screen, "result_confirm")

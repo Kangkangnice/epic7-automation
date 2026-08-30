@@ -54,7 +54,7 @@ Expected: FAIL because no persistent worker lifecycle log exists.
 
 - [ ] **Step 3: Write minimal implementation**
 
-Track the last output line and whether stop was requested. Append one timestamped UTF-8 line at start, stop request, and finish. Keep the existing `WorkerEvent` stream unchanged except that an abnormal finish message includes its numeric exit code.
+Track the last output line, the most recent 50 output lines, and whether stop was requested. Append one timestamped UTF-8 line at start, stop request, and finish. On abnormal exit, persist the recent output and copy the route's `current.png` to a timestamped desktop-worker diagnostic. Keep the existing `WorkerEvent` stream unchanged except that an abnormal finish message includes its numeric exit code.
 
 - [ ] **Step 4: Run tests to verify they pass**
 

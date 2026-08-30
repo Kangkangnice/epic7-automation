@@ -1,4 +1,3 @@
-from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
@@ -173,9 +172,9 @@ def test_simulator_routes_use_auto_off_icon_before_player_skill_turn():
 
 
 def test_pc_story_does_not_enable_simulator_auto_off_source_rule():
-    simulator_templates = build_story_templates(TEMPLATES / "story")
     machine = StoryStateMachine(
-        replace(simulator_templates, quick_battle=None)
+        build_story_templates(TEMPLATES / "story", backend="pc"),
+        backend="pc",
     )
     observation = machine.observe_battle(
         fixture(
@@ -186,3 +185,24 @@ def test_pc_story_does_not_enable_simulator_auto_off_source_rule():
     )
 
     assert observation.auto_state is AutoBattleState.UNKNOWN
+
+
+def test_pc_arena_and_expedition_do_not_enable_simulator_auto_off_source_rule():
+    screen = fixture(
+        "epic7_arena",
+        "battle_auto_off_enemy_turn_live_20260826",
+    )
+    machines = (
+        ArenaStateMachine(
+            build_templates(TEMPLATES, backend="pc"),
+            backend="pc",
+        ),
+        ExpeditionStateMachine(
+            TEMPLATES / "expedition",
+            backend="pc",
+        ),
+    )
+
+    for machine in machines:
+        observation = machine.observe_battle(screen, None)
+        assert observation.auto_state is AutoBattleState.UNKNOWN

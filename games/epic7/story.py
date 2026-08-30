@@ -66,6 +66,7 @@ def find_battle_guide_dont_show(
     screen: np.ndarray,
     title_template: np.ndarray,
     dont_show_template: np.ndarray,
+    threshold: float = 0.85,
 ) -> Optional[Match]:
     """Return Don't Show only when both battle-guide anchors exist."""
     lower = np.array([0, 0, 150])
@@ -88,7 +89,7 @@ def find_battle_guide_dont_show(
         match = find_template(
             cv2.inRange(search_hsv, lower, upper),
             cv2.inRange(template_hsv, lower, upper),
-            0.85,
+            threshold,
             reference_size=(ref_width, ref_height),
         )
         if match is None:
@@ -103,7 +104,9 @@ def find_battle_guide_dont_show(
 
 
 def find_watch_story_button(
-    screen: np.ndarray, template: np.ndarray
+    screen: np.ndarray,
+    template: np.ndarray,
+    threshold: float = 0.72,
 ) -> Optional[Match]:
     """Find the white watch-story glyph without depending on stage artwork."""
     scale_x = screen.shape[1] / _WATCH_STORY_REFERENCE_SIZE[0]
@@ -124,7 +127,7 @@ def find_watch_story_button(
     match = find_template(
         cv2.inRange(search_hsv, lower, upper),
         cv2.inRange(template_hsv, lower, upper),
-        0.72,
+        threshold,
         reference_size=(_WATCH_STORY_REGION[2], _WATCH_STORY_REGION[3]),
     )
     if match is None:
@@ -136,6 +139,7 @@ def find_prepare_battle_button(
     screen: np.ndarray,
     primary_template: np.ndarray,
     updated_template: np.ndarray,
+    threshold: float = 0.90,
 ) -> Optional[Match]:
     """Find the stable white button glyph without depending on stage artwork."""
     scale_x = screen.shape[1] / _WATCH_STORY_REFERENCE_SIZE[0]
@@ -159,7 +163,7 @@ def find_prepare_battle_button(
         match = find_template(
             search_mask,
             cv2.inRange(template_hsv, lower, upper),
-            0.90,
+            threshold,
             reference_size=(_WATCH_STORY_REGION[2], _WATCH_STORY_REGION[3]),
         )
         if match is not None:
@@ -171,7 +175,9 @@ def find_prepare_battle_button(
 
 
 def find_story_skip_button(
-    screen: np.ndarray, template: np.ndarray
+    screen: np.ndarray,
+    template: np.ndarray,
+    threshold: float = 0.65,
 ) -> Optional[Match]:
     """Find the bright skip glyph without depending on story artwork."""
     scale_x = screen.shape[1] / _WATCH_STORY_REFERENCE_SIZE[0]
@@ -192,7 +198,7 @@ def find_story_skip_button(
     match = find_template(
         cv2.inRange(search_hsv, lower, upper),
         cv2.inRange(template_hsv, lower, upper),
-        0.65,
+        threshold,
         reference_size=(ref_width, ref_height),
     )
     if match is None:
@@ -201,13 +207,15 @@ def find_story_skip_button(
 
 
 def find_story_skip_confirm(
-    screen: np.ndarray, template: np.ndarray
+    screen: np.ndarray,
+    template: np.ndarray,
+    threshold: float = 0.80,
 ) -> Optional[Match]:
     """Find the explicit story-skip confirmation button."""
     return find_template(
         screen,
         template,
-        0.80,
+        threshold,
         region=_STORY_SKIP_CONFIRM_REGION,
         reference_size=_WATCH_STORY_REFERENCE_SIZE,
     )
@@ -279,7 +287,12 @@ class StoryTemplates:
     evidence: EvidenceProfile | None = None
 
 
-def build_story_templates(template_dir: Path) -> StoryTemplates:
+def build_story_templates(
+    template_dir: Path,
+    *,
+    backend: str = "emulator",
+) -> StoryTemplates:
+    evidence = build_story_evidence(template_dir, backend=backend)
     return StoryTemplates(
         battle_guide_title=load_template(str(template_dir / "battle_guide_title.png")),
         battle_guide_dont_show=load_template(
@@ -304,7 +317,8 @@ def build_story_templates(template_dir: Path) -> StoryTemplates:
         next_stage=load_template(str(template_dir / "next_stage.png")),
         **asdict(load_stamina_templates(template_dir)),
         quick_battle=load_simulator_quick_battle_detector(template_dir),
-        evidence=build_story_evidence(template_dir),
+        threshold=evidence.atom("start_mission").threshold,
+        evidence=evidence,
     )
 
 
@@ -318,9 +332,14 @@ class StoryStateMachine:
     _AUTO_CLICK_POINT = (1690, 96)
 
     def __init__(
-        self, templates: StoryTemplates, initial_state: StoryState = StoryState.STAGE
+        self,
+        templates: StoryTemplates,
+        initial_state: StoryState = StoryState.STAGE,
+        *,
+        backend: str = "emulator",
     ) -> None:
         self.templates = templates
+        self.backend = backend
         self.state = initial_state
         if templates.evidence is not None:
             self._REGIONS = {
@@ -382,17 +401,30 @@ class StoryStateMachine:
     def _locate(self, screen: np.ndarray, name: str):
         """Match only the expected local UI region; never the desktop."""
         if name == "watch_story":
-            return find_watch_story_button(screen, self.templates.watch_story)
+            return find_watch_story_button(
+                screen,
+                self.templates.watch_story,
+                self._THRESHOLDS["watch_story"],
+            )
         if name == "prepare_battle":
             return find_prepare_battle_button(
                 screen,
                 self.templates.prepare_battle,
                 self.templates.prepare_battle_updated,
+                self._THRESHOLDS["prepare_battle"],
             )
         if name == "skip":
-            return find_story_skip_button(screen, self.templates.skip)
+            return find_story_skip_button(
+                screen,
+                self.templates.skip,
+                self._THRESHOLDS["skip"],
+            )
         if name == "skip_confirm":
-            return find_story_skip_confirm(screen, self.templates.skip_confirm)
+            return find_story_skip_confirm(
+                screen,
+                self.templates.skip_confirm,
+                self._THRESHOLDS["skip_confirm"],
+            )
         if name in ("auto_off", "auto_on"):
             white = (np.array([180, 180, 180]), np.array([255, 255, 255]))
             x, y, width, height = self._scaled_region(screen, name)
@@ -401,7 +433,7 @@ class StoryStateMachine:
             match = find_template(
                 search_mask,
                 template_mask,
-                0.80,
+                self._THRESHOLDS[name],
                 reference_size=(self._REGIONS[name][2], self._REGIONS[name][3]),
             )
             if match is None:
@@ -448,7 +480,7 @@ class StoryStateMachine:
             BattleControls.TRANSITION: AutoBattleState.UNKNOWN,
         }[controls]
         auto_match = self._locate(screen, "auto_off")
-        if auto_match is not None and self.templates.quick_battle is not None:
+        if auto_match is not None and self.backend == "emulator":
             auto_state = AutoBattleState.MANUAL
         stamina_popup = (
             self._locate(screen, "stamina_popup")
@@ -465,6 +497,7 @@ class StoryStateMachine:
             screen,
             self.templates.battle_guide_title,
             self.templates.battle_guide_dont_show,
+            self._THRESHOLDS["battle_guide_title"],
         )
         allowed_action = (
             ("dismiss-battle-guide-warning", battle_guide.center)

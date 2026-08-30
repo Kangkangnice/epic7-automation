@@ -33,9 +33,13 @@ def _screen(name: str):
 
 def test_arena_profile_declares_existing_templates_and_current_thresholds():
     profile = build_arena_evidence(TEMPLATES)
+    pc_profile = build_arena_evidence(TEMPLATES, backend="pc")
 
     assert validate_profile(profile, TEMPLATES) == []
     assert profile.atom("list_ready").threshold == 0.88
+    assert pc_profile.atom("list_ready").threshold == 0.75
+    assert profile.atom("battle_start").threshold == 0.90
+    assert pc_profile.atom("battle_start").threshold == 0.70
     assert profile.atom("battle_start").region == (900, 930, 550, 202)
     assert profile.atom("list_ready").reference_size == REFERENCE_SIZE
 

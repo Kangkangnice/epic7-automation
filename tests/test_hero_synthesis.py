@@ -28,6 +28,7 @@ from auto_game_unified.games.epic7.hero_transition import (
     MotionPhase,
     SafetyClass,
 )
+from auto_game_unified.games.epic7.evidence.hero_synthesis import build_hero_evidence
 from auto_game_unified.games.epic7.modes import MODE_SPECS, get_mode
 from auto_game_unified.games.epic7.navigation import (
     Epic7Navigator,
@@ -57,6 +58,15 @@ def pc_shared_fixture(name: str):
 
 def machine(verify_filter: bool = False) -> HeroSynthStateMachine:
     m = HeroSynthStateMachine(build_hero_templates(TEMPLATES))
+    m.filter_verified = verify_filter
+    return m
+
+
+def pc_machine(verify_filter: bool = False) -> HeroSynthStateMachine:
+    m = HeroSynthStateMachine(
+        build_hero_templates(TEMPLATES, backend="pc"),
+        backend="pc",
+    )
     m.filter_verified = verify_filter
     return m
 
@@ -1011,24 +1021,33 @@ class TemplateTests(unittest.TestCase):
 
 
 class FilterObservationTests(unittest.TestCase):
-    def test_only_filter_panel_thresholds_are_relaxed(self):
+    def test_current_hero_threshold_policy(self):
+        emulator = build_hero_evidence(TEMPLATES)
+        pc = build_hero_evidence(TEMPLATES, backend="pc")
+
         self.assertEqual(
-            0.75, HeroSynthStateMachine._THRESHOLDS["filter_level_label"]
+            0.75, emulator.atom("filter_level_label").threshold
         )
         self.assertEqual(
-            0.75, HeroSynthStateMachine._THRESHOLDS["filter_attribute_label"]
+            0.65, pc.atom("filter_level_label").threshold
         )
         self.assertEqual(
-            0.86, HeroSynthStateMachine._THRESHOLDS["filter_star3_unselected"]
+            0.75, emulator.atom("filter_attribute_label").threshold
         )
-        self.assertEqual(0.90, HeroSynthStateMachine._THRESHOLDS["rating_sss"])
-        self.assertEqual(0.80, HeroSynthStateMachine._THRESHOLDS["sss_material"])
         self.assertEqual(
-            0.90, HeroSynthStateMachine._THRESHOLDS["transmit_reward_title"]
+            0.65, pc.atom("filter_attribute_label").threshold
         )
+        self.assertEqual(0.86, emulator.atom("filter_star3_unselected").threshold)
+        self.assertEqual(0.76, pc.atom("filter_star3_unselected").threshold)
+        self.assertEqual(0.90, emulator.atom("rating_sss").threshold)
+        self.assertEqual(0.90, pc.atom("rating_sss").threshold)
+        self.assertEqual(0.80, emulator.atom("sss_material").threshold)
+        self.assertEqual(0.80, pc.atom("sss_material").threshold)
+        self.assertEqual(0.90, emulator.atom("transmit_reward_title").threshold)
+        self.assertEqual(0.80, pc.atom("transmit_reward_title").threshold)
 
     def test_current_pc_filter_open_is_recognized_as_unselected(self):
-        m = machine()
+        m = pc_machine()
         screen = pc_shared_fixture("filter_open_unselected_20260829")
 
         observation = m._observe_filter(screen)
@@ -1042,7 +1061,7 @@ class FilterObservationTests(unittest.TestCase):
         self.assertEqual((1110, 636), action.point)
 
     def test_current_pc_filter_closed_is_not_misread_as_open(self):
-        observation = machine()._observe_filter(
+        observation = pc_machine()._observe_filter(
             pc_shared_fixture("filter_closed_20260829")
         )
 
@@ -1055,15 +1074,15 @@ class FilterObservationTests(unittest.TestCase):
         )
 
     def test_current_pc_filter_action_reason_contains_scores(self):
-        action = machine().next_action(
+        action = pc_machine().next_action(
             pc_shared_fixture("filter_open_unselected_20260829")
         )
 
         self.assertIn("级别=", action.reason)
         self.assertIn("属性=", action.reason)
         self.assertIn("三星未选=", action.reason)
-        self.assertIn("/0.75", action.reason)
-        self.assertIn("/0.86", action.reason)
+        self.assertIn("/0.65", action.reason)
+        self.assertIn("/0.76", action.reason)
 
     def test_closed_hero_list_requires_list_anchors_and_no_panel_anchors(self):
         m = machine()

@@ -10,9 +10,13 @@ TEMPLATES = ROOT / "games" / "epic7" / "templates" / "story"
 
 def test_story_profile_uses_current_templates_and_regions():
     profile = build_story_evidence(TEMPLATES)
+    pc_profile = build_story_evidence(TEMPLATES, backend="pc")
 
     assert validate_profile(profile, TEMPLATES) == []
     assert profile.atom("skip").threshold == 0.65
+    assert pc_profile.atom("skip").threshold == 0.55
+    assert profile.atom("select_team").threshold == 0.75
+    assert pc_profile.atom("select_team").threshold == 0.65
     assert profile.atom("skip").region == (1700, 0, 240, 200)
     assert profile.page("story.team").required == ("select_team",)
 

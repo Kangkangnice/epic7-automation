@@ -39,7 +39,7 @@ from auto_game_unified.games.epic7.hero_synthesis import (
 )
 
 
-MachineFactory = Callable[[Path, str], Any]
+MachineFactory = Callable[[Path, str, str], Any]
 
 
 @dataclass(frozen=True)
@@ -59,44 +59,73 @@ class ModeSpec:
         return state
 
 
-def _build_arena(template_root: Path, state: str) -> ArenaStateMachine:
+def _build_arena(
+    template_root: Path,
+    state: str,
+    backend: str = "emulator",
+) -> ArenaStateMachine:
     return ArenaStateMachine(
-        build_templates(template_root), initial_state=ArenaState(state)
+        build_templates(template_root, backend=backend),
+        initial_state=ArenaState(state),
+        backend=backend,
     )
 
 
-def _build_story(template_root: Path, state: str) -> StoryStateMachine:
+def _build_story(
+    template_root: Path,
+    state: str,
+    backend: str = "emulator",
+) -> StoryStateMachine:
     return StoryStateMachine(
-        build_story_templates(template_root / "story"),
+        build_story_templates(template_root / "story", backend=backend),
         initial_state=StoryState(state),
+        backend=backend,
     )
 
 
-def _build_expedition(template_root: Path, state: str) -> ExpeditionStateMachine:
+def _build_expedition(
+    template_root: Path,
+    state: str,
+    backend: str = "emulator",
+) -> ExpeditionStateMachine:
     return ExpeditionStateMachine(
         template_root / "expedition",
         initial_state=ExpeditionState(state),
+        backend=backend,
     )
 
 
-def _build_fodder(template_root: Path, state: str) -> FodderStateMachine:
+def _build_fodder(
+    template_root: Path,
+    state: str,
+    backend: str = "emulator",
+) -> FodderStateMachine:
     return FodderStateMachine(
         build_fodder_templates(template_root / "fodder"),
         initial_state=FodderState(state),
     )
 
 
-def _build_assist_auto(template_root: Path, state: str) -> AssistAutoStateMachine:
+def _build_assist_auto(
+    template_root: Path,
+    state: str,
+    backend: str = "emulator",
+) -> AssistAutoStateMachine:
     return AssistAutoStateMachine(
         build_assist_auto_templates(template_root / "assist_auto"),
         initial_state=AssistAutoState(state),
     )
 
 
-def _build_hero_synthesis(template_root: Path, state: str) -> HeroSynthStateMachine:
+def _build_hero_synthesis(
+    template_root: Path,
+    state: str,
+    backend: str = "emulator",
+) -> HeroSynthStateMachine:
     return HeroSynthStateMachine(
-        build_hero_templates(template_root),
+        build_hero_templates(template_root, backend=backend),
         initial_state=HeroSynthState(state),
+        backend=backend,
     )
 
 

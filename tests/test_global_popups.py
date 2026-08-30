@@ -148,6 +148,19 @@ def test_friendship_points_popup_requires_title_and_close_anchor():
     )
 
 
+def test_pc_friendship_points_popup_is_recognized_from_both_anchors():
+    popup = load_screen("friendship_points_pc_20260830.png")
+    templates = load_friendship_points_templates(TEMPLATES)
+
+    match = find_friendship_points_popup_close(
+        popup, templates.title, templates.close
+    )
+
+    assert match is not None
+    assert 900 <= match.center[0] <= 1020
+    assert 900 <= match.center[1] <= 1000
+
+
 def test_friend_request_requires_title_and_cancel_anchor():
     popup = np.asarray(
         Image.open(STORY_FIXTURES / "friend_request.png").convert("RGB")
