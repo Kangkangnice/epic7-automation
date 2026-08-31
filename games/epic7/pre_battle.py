@@ -48,7 +48,7 @@ def load_simulator_quick_battle_detector(
 ) -> "QuickBattleDetector | None":
     template_root = (
         template_dir.parent
-        if template_dir.name in {"story", "fodder", "expedition", "assist_auto"}
+        if template_dir.name in {"story", "fodder", "expedition"}
         else template_dir
     )
     if template_root.name != "templates":
