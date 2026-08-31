@@ -57,7 +57,7 @@ tests/test_hunt_runner.py
 
 ## 2.1 Runner 骨架约定
 
-页面流程为“点按钮 → 转场 → 新页面”的同构模式（主线、狗粮、辅助自动均属此类）必须继承 `runner_base.py` 的 `ModeRunnerBase`，只声明差异：
+页面流程为“点按钮 → 转场 → 新页面”的同构模式（当前包括主线和狗粮）必须继承 `runner_base.py` 的 `ModeRunnerBase`，只声明差异：
 
 - `_MODE_LABEL`：日志用模式名（中文）。
 - `_TIMEOUT_SECONDS`：每个状态的页面超时表。

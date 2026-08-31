@@ -32,7 +32,7 @@ cd D:\AI\codex\auto_game
 python -u -m auto_game_unified.desktop
 ```
 
-桌面界面提供：环境检测、七路线选择、运行次数、开始/安全停止、实时日志、打开日志/诊断目录和一键导出诊断 ZIP。英雄合成、主线、竞技场与远征为正式功能；英雄合成固定运行一轮。狗粮、助手自动和刷书签为实验功能，启动前会提醒可能不稳定。
+桌面界面提供：环境检测、六路线选择、运行次数、开始/安全停止、实时日志、打开日志/诊断目录和一键导出诊断 ZIP。英雄合成、主线、竞技场与远征为正式功能；英雄合成固定运行一轮。狗粮和刷书签为实验功能，启动前会提醒可能不稳定。
 
 进入界面后点击一次“检测环境”。检测通过后切换功能不会要求重复检测；点击“开始运行”时，助手会在后台自动快速复检模拟器和截图，并校验所选路线资源。复检失败时不会启动自动化。
 
@@ -46,7 +46,6 @@ python -u -m auto_game_unified.desktop
 | `arena` | 竞技场 | 选择对手、战斗、失败轮换与免费刷新 | 完成一次挑战并回到对手列表 |
 | `expedition` | 远征 | 进入远征、选择三阶段、战斗和公开招募 | 回到远征主页并看到“我的通缉传单” |
 | `fodder` | 狗粮 | “特别的时间之书”Episode 3-7 重复刷图 | 结算后稳定看到“重新进行” |
-| `assist_auto` | 助手自动 | 从当前受支持战斗页面接管自动战斗流程 | 由该模式的战斗完成条件确认 |
 | `hero_synthesis` | 英雄合成 | 逐个检查英雄，安全合成或处理已达 SSS 的副本 | 一次完整的英雄处理事务 |
 | `shop_refresh` | 刷书签（实验） | 只购买誓约和神秘，并付费刷新秘密商店 | 已视觉确认完成的付费刷新次数；另检查初始页面 |
 
@@ -63,7 +62,7 @@ python -u -m auto_game_unified.launcher
 
 依次选择：
 
-1. 模式（主线、竞技场、远征、狗粮、助手自动、英雄合成或刷书签）；
+1. 模式（主线、竞技场、远征、狗粮、英雄合成或刷书签）；
 2. 窗口后端（模拟器或 PC）；
 3. 运行次数（英雄合成除外，固定为一轮）。
 
@@ -79,7 +78,6 @@ python -u -m auto_game_unified.main --mode story
 python -u -m auto_game_unified.main --mode arena
 python -u -m auto_game_unified.main --mode expedition
 python -u -m auto_game_unified.main --mode fodder
-python -u -m auto_game_unified.main --mode assist_auto
 python -u -m auto_game_unified.main --mode hero_synthesis
 python -u -m auto_game_unified.main --mode shop_refresh --max-cycles 1
 ```
@@ -95,14 +93,13 @@ python -u -m auto_game_unified.main --mode story --window-backend emulator --max
 python -u -m auto_game_unified.main --mode arena --window-backend emulator --max-cycles 1 --live --confirm RUN
 python -u -m auto_game_unified.main --mode expedition --window-backend emulator --max-cycles 1 --live --confirm RUN
 python -u -m auto_game_unified.main --mode fodder --window-backend emulator --max-cycles 1 --live --confirm RUN
-python -u -m auto_game_unified.main --mode assist_auto --window-backend emulator --max-cycles 1 --live --confirm RUN
 python -u -m auto_game_unified.main --mode hero_synthesis --window-backend emulator --max-cycles 1 --live --confirm RUN
 python -u -m auto_game_unified.main --mode shop_refresh --window-backend emulator --max-cycles 1 --live --confirm RUN
 ```
 
 一轮完整通过后，再增加 `--max-cycles`。不要用“连续点击了多次”判断完成轮次；程序只在对应业务闭环证据成立后计数。
 
-模拟器战前页出现系统赠送的“快速战斗”时，不需要手动处理。主线、竞技场、远征、狗粮和助手自动会先确认快速按钮与白底切换键，再切回普通战斗并继续。该处理目前不适用于仍在开发中的 PC 后端。
+模拟器战前页出现系统赠送的“快速战斗”时，不需要手动处理。主线、竞技场、远征和狗粮会先确认快速按钮与白底切换键，再切回普通战斗并继续。该处理目前不适用于仍在开发中的 PC 后端。
 
 ## 7. PC 后端（开发中）
 
