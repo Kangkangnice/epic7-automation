@@ -110,6 +110,16 @@ def test_initial_purchases_do_not_enter_paid_hit_rate():
     assert stats.covenant_gold == COVENANT_PRICE
 
 
+def test_shop_stability_signature_does_not_use_exact_animated_fingerprint():
+    first = ShopObservation(page=ShopPage.SHOP, list_fingerprint="0000000000000000")
+    second = ShopObservation(page=ShopPage.SHOP, list_fingerprint="0000000000000003")
+
+    assert (
+        ShopRefreshRunner._observation_signature(first)
+        == ShopRefreshRunner._observation_signature(second)
+    )
+
+
 def test_paid_covenant_and_mystic_are_counted_separately():
     stats = ShopRunStats(target_refreshes=2)
     stats.commit_refresh()
@@ -796,6 +806,34 @@ def test_known_sold_row_remains_known_after_scrolling_to_a_new_y_position():
     )
 
     assert runner._is_known_sold(moved)
+
+
+def test_explicit_zero_of_one_row_is_known_sold_before_this_run():
+    machine = ShopRefreshStateMachine(1)
+    clock = _Clock()
+    runner = ShopRefreshRunner(
+        machine,
+        _runtime(
+            [],
+            clock=clock,
+            clicks=[],
+            swipes=[],
+            logs=[],
+        ),
+        observer=_Observer({}),
+        sleep=clock.sleep,
+    )
+    sold = ShopRowObservation(
+        kind=ShopItemKind.COVENANT,
+        item_center=(850, 705),
+        buy_point=None,
+        item_score=0.95,
+        alternate_score=0.20,
+        row_key="preexisting-sold",
+        sold_out=True,
+    )
+
+    assert runner._is_known_sold(sold)
 
 
 def test_scroll_does_not_accept_motion_that_returns_to_the_same_top_list():

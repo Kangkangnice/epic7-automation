@@ -69,6 +69,22 @@ class NavigationTests(unittest.TestCase):
         self.assertTrue(470 <= clicks[0][1] <= 610)
         self.assertTrue(any("模式=刷书签 状态=导航完成" in log for log in logs))
 
+    def test_shop_navigation_accepts_animated_lobby_entry_low_score_frame(self):
+        clicks: list[tuple[int, int]] = []
+        navigator = self.navigator(
+            [shop_fixture("shop_top_live"), shop_fixture("shop_top_live")],
+            clicks=clicks,
+        )
+
+        navigator.navigate(
+            "shop_refresh",
+            lobby_screen=shop_fixture("lobby_shop_entry_low_score_20260831"),
+        )
+
+        self.assertEqual(1, len(clicks))
+        self.assertTrue(35 <= clicks[0][0] <= 130)
+        self.assertTrue(485 <= clicks[0][1] <= 555)
+
     def test_navigator_selects_platform_thresholds_explicitly(self):
         runtime = Runtime(lambda: fixture("lobby"), lambda _point: None)
         emulator = Epic7Navigator(build_navigation_templates(TEMPLATES), runtime)

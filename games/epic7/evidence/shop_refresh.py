@@ -17,8 +17,9 @@ from .common import AtomEvidence, EvidenceProfile, PageEvidence
 REFERENCE_SIZE = (1982, 1132)
 ITEM_THRESHOLD = 0.75
 ITEM_SCORE_MARGIN = 0.05
+LIST_FINGERPRINT_CHANGE_BITS = 10
 # Live spending stays disabled until both target types have current-client row
-# and purchase-price fixtures. Mystic is verified; Covenant is still pending.
+# and purchase-price fixtures. Both target transactions are now verified.
 MYSTIC_TRANSACTION_VERIFIED = True
 COVENANT_TRANSACTION_VERIFIED = True
 LIVE_TRANSACTIONS_VERIFIED = bool(
@@ -50,6 +51,7 @@ class ShopRowObservation:
     item_score: float
     alternate_score: float
     row_key: str
+    sold_out: bool = False
 
 
 @dataclass(frozen=True)
@@ -159,6 +161,17 @@ def same_shop_row(item_y: int, buy_y: int, *, max_delta: int = 90) -> bool:
     return abs(item_y - buy_y) <= max_delta
 
 
+def shop_fingerprint_distance(left: str, right: str) -> int:
+    if left == right:
+        return 0
+    try:
+        if len(left) != 16 or len(right) != 16:
+            raise ValueError
+        return (int(left, 16) ^ int(right, 16)).bit_count()
+    except ValueError:
+        return 64
+
+
 class ShopRefreshObserver:
     _ITEM_REGION = (650, 140, 380, 992)
     _LIST_REGION = (650, 140, 1270, 992)
@@ -192,8 +205,11 @@ class ShopRefreshObserver:
         x, y, width, height = ShopRefreshObserver._LIST_REGION
         crop = screen[y : y + height, x : x + width]
         gray = cv2.cvtColor(crop, cv2.COLOR_RGB2GRAY)
-        reduced = cv2.resize(gray, (64, 32), interpolation=cv2.INTER_AREA)
-        return sha1(reduced.tobytes()).hexdigest()[:16]
+        reduced = cv2.resize(gray, (32, 32), interpolation=cv2.INTER_AREA)
+        coefficients = cv2.dct(reduced.astype(np.float32))[:8, :8].flatten()
+        median = float(np.median(coefficients[1:]))
+        bits = (coefficients > median).astype(np.uint8)
+        return np.packbits(bits).tobytes().hex()
 
     @staticmethod
     def _row_key(screen: np.ndarray, center_y: int) -> str:
@@ -255,19 +271,6 @@ class ShopRefreshObserver:
             atom.region[2],
             190,
         )
-        sold_atom = self.profile.atom("sold_out_0_of_1_current")
-        sold = find_best_template(
-            screen,
-            self.templates["sold_out_0_of_1_current"],
-            region=row_region,
-            reference_size=REFERENCE_SIZE,
-        )
-        if (
-            sold is not None
-            and sold.score >= sold_atom.threshold
-            and same_shop_row(item_y, sold.center[1])
-        ):
-            return None
         match = find_best_template(
             screen,
             self.templates["buy_button"],
@@ -278,11 +281,34 @@ class ShopRefreshObserver:
             return None
         return match.center if same_shop_row(item_y, match.center[1]) else None
 
+    def _sold_for_row(self, screen: np.ndarray, item_y: int) -> bool:
+        atom = self.profile.atom("sold_out_0_of_1_current")
+        row_region = (
+            atom.region[0],
+            max(atom.region[1], item_y - 95),
+            atom.region[2],
+            190,
+        )
+        match = find_best_template(
+            screen,
+            self.templates["sold_out_0_of_1_current"],
+            region=row_region,
+            reference_size=REFERENCE_SIZE,
+        )
+        return bool(
+            match is not None
+            and match.score >= atom.threshold
+            and same_shop_row(item_y, match.center[1])
+        )
+
     def _rows(self, screen: np.ndarray) -> tuple[ShopRowObservation, ...]:
         rows: list[ShopRowObservation] = []
         for center, covenant_score, mystic_score in self._target_peaks(screen):
             kind = classify_item_scores(covenant_score, mystic_score)
-            buy_point = self._buy_for_row(screen, center[1])
+            sold_out = self._sold_for_row(screen, center[1])
+            buy_point = (
+                None if sold_out else self._buy_for_row(screen, center[1])
+            )
             rows.append(
                 ShopRowObservation(
                     kind=kind,
@@ -291,6 +317,7 @@ class ShopRefreshObserver:
                     item_score=max(covenant_score, mystic_score),
                     alternate_score=min(covenant_score, mystic_score),
                     row_key=self._row_key(screen, center[1]),
+                    sold_out=sold_out,
                 )
             )
         return tuple(sorted(rows, key=lambda row: row.item_center[1]))

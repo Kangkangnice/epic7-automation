@@ -12,11 +12,13 @@ from auto_game_unified.core.runtime import ManualStop, Runtime
 from auto_game_unified.core.supervisor import StableObservation
 
 from auto_game_unified.games.epic7.evidence.shop_refresh import (
+    LIST_FINGERPRINT_CHANGE_BITS,
     ShopItemKind,
     ShopObservation,
     ShopPage,
     ShopRefreshObserver,
     ShopRowObservation,
+    shop_fingerprint_distance,
 )
 
 
@@ -307,10 +309,11 @@ class ShopRefreshRunner:
     def _observation_signature(observation: ShopObservation) -> str:
         if observation.page is ShopPage.SHOP:
             rows = ",".join(
-                f"{row.kind.value}:{row.row_key}:{bool(row.buy_point)}"
+                f"{row.kind.value}:{round(row.item_center[1] / 20)}:"
+                f"{bool(row.buy_point)}:{row.sold_out}"
                 for row in observation.rows
             )
-            return f"shop:{observation.list_fingerprint}:{rows}"
+            return f"shop:{rows}"
         if observation.page is ShopPage.PURCHASE_CONFIRM:
             return (
                 f"purchase:{observation.purchase_kind.value}:"
@@ -401,7 +404,8 @@ class ShopRefreshRunner:
             row.row_key,
         )
         return bool(
-            row_identity in self._sold_rows
+            row.sold_out
+            or row_identity in self._sold_rows
             or self._sold_slot_key(row) in self._sold_slots
         )
 
@@ -573,8 +577,7 @@ class ShopRefreshRunner:
             )
             deadline = self.now() + self.transaction_timeout
             motion_seen = False
-            stable_count = 0
-            previous = source_screen
+            stable = StableObservation(required=2)
             last_screen = source_screen
             while self.now() < deadline:
                 screen = self.runtime.capture()
@@ -586,31 +589,37 @@ class ShopRefreshRunner:
                 if difference_from_source > peak_difference:
                     peak_difference = difference_from_source
                     peak_screen = screen
-                frame_difference = self._visual_difference(previous, screen)
                 if difference_from_source >= 2.0:
                     motion_seen = True
                 different_list = bool(
                     observation.page is ShopPage.SHOP
                     and observation.list_fingerprint
-                    and observation.list_fingerprint
-                    != source.list_fingerprint
+                    and shop_fingerprint_distance(
+                        observation.list_fingerprint,
+                        source.list_fingerprint,
+                    )
+                    >= LIST_FINGERPRINT_CHANGE_BITS
                 )
                 if motion_seen and different_list:
-                    stable_count = stable_count + 1 if frame_difference < 1.0 else 0
-                    if stable_count >= 1:
+                    if stable.update(self._observation_signature(observation)):
                         self.machine.complete_scroll()
                         self.runtime.log(
                             "模式=刷书签 转场确认 动作=scroll_bottom "
                             f"目标=商店底部 画面差={difference_from_source:.3f}"
                         )
                         return
-                previous = screen
+                else:
+                    stable.reset()
                 self.sleep(self.poll_seconds)
             final = self.observer.observe(last_screen)
             if attempt == 1:
                 if (
                     final.page is ShopPage.SHOP
-                    and final.list_fingerprint == source.list_fingerprint
+                    and shop_fingerprint_distance(
+                        final.list_fingerprint,
+                        source.list_fingerprint,
+                    )
+                    < LIST_FINGERPRINT_CHANGE_BITS
                 ):
                     continue
             final_fingerprint = (
@@ -649,7 +658,11 @@ class ShopRefreshRunner:
             target_page=ShopPage.REFRESH_CONFIRM,
             source_still=lambda observation: bool(
                 observation.page is ShopPage.SHOP
-                and observation.list_fingerprint == source.list_fingerprint
+                and shop_fingerprint_distance(
+                    observation.list_fingerprint,
+                    source.list_fingerprint,
+                )
+                < LIST_FINGERPRINT_CHANGE_BITS
                 and observation.refresh_price == REFRESH_PRICE
             ),
         )
@@ -690,7 +703,11 @@ class ShopRefreshRunner:
             fingerprint_changed = bool(
                 observation.page is ShopPage.SHOP
                 and observation.list_fingerprint
-                and observation.list_fingerprint != source.list_fingerprint
+                and shop_fingerprint_distance(
+                    observation.list_fingerprint,
+                    source.list_fingerprint,
+                )
+                >= LIST_FINGERPRINT_CHANGE_BITS
             )
             if popup_exited and (difference >= 2.0 or fingerprint_changed):
                 motion_seen = True
