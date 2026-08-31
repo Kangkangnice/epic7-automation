@@ -5,6 +5,7 @@ import numpy as np
 
 from auto_game_unified.games.epic7.evidence.common import validate_profile
 from auto_game_unified.games.epic7.evidence.shop_refresh import (
+    LIVE_TRANSACTIONS_VERIFIED,
     ShopItemKind,
     ShopPage,
     build_shop_refresh_evidence,
@@ -114,6 +115,43 @@ def test_current_client_purchased_mystic_row_is_not_actionable():
     mystic_rows = [row for row in result.rows if row.kind is ShopItemKind.MYSTIC]
     assert len(mystic_rows) == 1
     assert mystic_rows[0].buy_point is None
+
+
+def test_current_client_covenant_row_is_actionable():
+    observer = build_shop_refresh_observer(TEMPLATES)
+
+    result = observer.observe(_screen("covenant_row_live_20260831"))
+
+    rows = [row for row in result.rows if row.kind is ShopItemKind.COVENANT]
+    assert len(rows) == 1
+    assert rows[0].item_score >= 0.90
+    assert rows[0].buy_point is not None
+
+
+def test_current_client_covenant_popup_proves_price_184000():
+    observer = build_shop_refresh_observer(TEMPLATES)
+
+    result = observer.observe(_screen("covenant_purchase_confirm_live_20260831"))
+
+    assert result.page is ShopPage.PURCHASE_CONFIRM
+    assert result.purchase_kind is ShopItemKind.COVENANT
+    assert result.purchase_price == 184_000
+    assert result.confirm_point is not None
+    assert result.cancel_point is not None
+
+
+def test_current_client_purchased_covenant_row_is_not_actionable():
+    observer = build_shop_refresh_observer(TEMPLATES)
+
+    result = observer.observe(_screen("covenant_purchased_row_live_20260831"))
+
+    rows = [row for row in result.rows if row.kind is ShopItemKind.COVENANT]
+    assert len(rows) == 1
+    assert rows[0].buy_point is None
+
+
+def test_both_current_client_transactions_are_verified_for_live_runs():
+    assert LIVE_TRANSACTIONS_VERIFIED
 
 
 def test_close_target_scores_fail_closed():
