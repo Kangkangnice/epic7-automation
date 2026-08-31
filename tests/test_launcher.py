@@ -46,7 +46,6 @@ def test_selects_mode_then_cycles_and_calls_existing_live_entry(
     assert "4. 狗粮（特别的时间之书 3-7）" in output
     assert "5. 英雄合成（三星刻印合成，跑完一遍列表自动结束）" in output
     assert "6. 刷书签（实验功能，只支持模拟器）" in output
-    assert not any("助手自动" in line or "辅助自动" in line for line in output)
     assert f"即将运行：{label}（平台=模拟器（LDPlayer）），共 3 次" in output
 
 

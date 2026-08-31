@@ -1,4 +1,4 @@
-"""story/fodder/assist_auto 三条同构线的公共 Runner 骨架。
+"""story/fodder 两条同构线的公共 Runner 骨架。
 
 主循环协议在此统一实现：
 - 空跑短路（单帧诊断）
@@ -640,7 +640,7 @@ class ModeRunnerBase:
                 if len(recent_actions) > 20:
                     recent_actions.pop(0)
 
-                # 入口三：点击后移交战斗监控（主线 start_mission / 辅助自动 start_battle）
+                # 入口三：点击后移交战斗监控（例如主线 start_mission）
                 if self._CLICK_BEFORE_BATTLE and action.name == self._BATTLE_ENTRY_ACTION:
                     self._run_committed_battle(cycle=self.machine.completed_cycles + 1)
                     if self._after_battle(max_cycles):

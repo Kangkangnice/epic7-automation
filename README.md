@@ -1,12 +1,11 @@
 # 第七史诗自动助手
 
-这是一个免费开源、基于窗口截图和 OpenCV 模板匹配的《第七史诗》PVE 自动化项目。英雄合成、主线、竞技场和远征为当前正式功能；狗粮、助手自动和刷书签仍为实验功能，可能不稳定：
+这是一个免费开源、基于窗口截图和 OpenCV 模板匹配的《第七史诗》PVE 自动化项目。英雄合成、主线、竞技场和远征为当前正式功能；狗粮和刷书签仍为实验功能，可能不稳定：
 
 - `story`：主线/刷图循环，处理辅助英雄、剧情跳过、多段战斗、好友申请、奖励和结算。
 - `arena`：新手竞技场循环，失败后跳过红色对手并从剩余对手中随机选择；三名对手均失败时执行免费刷新。旗帜不足时只允许左侧已选中的 `100 友情点 → 5 旗帜`，并永久禁止钻石购买路径。
 - `expedition`：从大厅进入远征队，固定选择三阶段；每张传单只战斗一次，未击退时公开招募。
 - `fodder`（狗粮）：固定进入“特别的时间之书”Episode 3-7，结算后通过“重新进行”循环刷图；体力不足时只使用生命之叶。
-- `assist_auto`（助手自动）：接管游戏内置重复战斗，监控整组自动战斗并安全衔接下一轮。
 - `hero_synthesis`（英雄合成）：逐个检查英雄，优先保护 SSS，安全添加材料或传送已达 SSS 的无用副本。
 - `shop_refresh`（刷书签，实验）：检查初始秘密商店页面，再执行指定次数的付费刷新；只购买誓约书签和神秘书签，只保留本轮统计。目前仅支持雷电模拟器。
 
@@ -23,7 +22,7 @@ cd D:\AI\codex\auto_game
 python -u -m auto_game_unified.desktop
 ```
 
-英雄合成、主线、竞技场与远征在界面中标记为正式功能；英雄合成固定运行一轮。狗粮、助手自动和刷书签标记为实验功能并在启动前提醒。桌面 MVP 当前只提供模拟器后端；Windows 安装包和便携版将在后续打包阶段提供。CLI 和中文交互式启动器继续保留给开发调试。
+英雄合成、主线、竞技场与远征在界面中标记为正式功能；英雄合成固定运行一轮。狗粮和刷书签标记为实验功能并在启动前提醒。桌面 MVP 当前只提供模拟器后端；Windows 安装包和便携版将在后续打包阶段提供。CLI 和中文交互式启动器继续保留给开发调试。
 
 ## 文档
 
@@ -73,13 +72,12 @@ python -u -m auto_game_unified.launcher
 2. 竞技场
 3. 远征
 4. 狗粮（特别的时间之书 3-7）
-5. 助手自动
-6. 英雄合成
-7. 刷书签（实验功能，只支持模拟器）
+5. 英雄合成
+6. 刷书签（实验功能，只支持模拟器）
 
 选择模拟器或 PC 后端，再输入正整数次数，程序会直接实跑；英雄合成固定执行一轮。刷书签的次数表示“付费刷新次数”，初始免费页面也会检查，所以共扫描 `N + 1` 批商品。按 `P` 可以随时停止。刷书签明确拒绝 PC 后端；其余路线的 PC 后端目前仅用于开发和证据采集，详见 [PC 模板迁移与实证流程](docs/PC_TEMPLATE_MIGRATION.md)。
 
-助手自动从当前受支持的战斗页面接管，不走大厅导航。英雄合成通过 CLI 实跑时未填写 `--max-cycles` 也会安全默认为 `1`，仍建议显式写出该参数。
+英雄合成通过 CLI 实跑时未填写 `--max-cycles` 也会安全默认为 `1`，仍建议显式写出该参数。
 
 ## 干跑诊断
 
@@ -91,7 +89,6 @@ python -u -m auto_game_unified.main --mode story
 python -u -m auto_game_unified.main --mode arena
 python -u -m auto_game_unified.main --mode expedition
 python -u -m auto_game_unified.main --mode fodder
-python -u -m auto_game_unified.main --mode assist_auto
 python -u -m auto_game_unified.main --mode hero_synthesis
 python -u -m auto_game_unified.main --mode shop_refresh --max-cycles 1
 ```
@@ -120,7 +117,6 @@ python -u -m auto_game_unified.main --mode story --max-cycles 1 --live --confirm
 python -u -m auto_game_unified.main --mode arena --max-cycles 1 --live --confirm RUN
 python -u -m auto_game_unified.main --mode expedition --max-cycles 1 --live --confirm RUN
 python -u -m auto_game_unified.main --mode fodder --max-cycles 1 --live --confirm RUN
-python -u -m auto_game_unified.main --mode assist_auto --max-cycles 1 --live --confirm RUN
 python -u -m auto_game_unified.main --mode hero_synthesis --max-cycles 1 --live --confirm RUN
 ```
 
@@ -137,9 +133,9 @@ python -u -m auto_game_unified.main --mode fodder --max-cycles 10 --live --confi
 
 实跑会先从已支持页面受控返回大厅，再进入目标路线。状态必须连续两帧稳定后才允许操作；点击后还要重新识别目标页面，不能以“已经点击”代替“转场成功”。
 
-三条路线共用同一套战斗安全边界：
+涉及战斗的路线共用同一套战斗安全边界：
 
-- 模拟器战前页若因系统赠送次数而显示“快速战斗”，助手会先识别快速按钮和白底切换键，再切回普通战斗；主线、竞技场、远征、狗粮和助手自动共用此规则。PC 后端本轮不包含该能力。
+- 模拟器战前页若因系统赠送次数而显示“快速战斗”，助手会先识别快速按钮和白底切换键，再切回普通战斗；主线、竞技场、远征和狗粮共用此规则。PC 后端本轮不包含该能力。
 - 模式自己的“战斗开始”点击一经执行，立即进入已承诺战斗阶段。
 - 稳定识别到结算锚点以前，禁止返回大厅和执行 `Back`，恢复流程也会被统一恢复锁拒绝。
 - 只有右上角“自动关闭”图标或其它明确 `MANUAL` 证据成立时才会点击自动战斗；敌方连续行动期间的 `UNKNOWN` 只等待，不会因短时间看不到我方技能而停止。
@@ -152,7 +148,6 @@ python -u -m auto_game_unified.main --mode fodder --max-cycles 10 --live --confi
 - 竞技场：完成一次挑战并重新回到对手列表；胜利和失败都计一次，刷新对手列表不计数。
 - 远征：重新回到远征主页并看到右下角“我的通缉传单”。传单角标数字可能动态增加，不参与计数。
 - 狗粮：结算确认后稳定看到“重新进行”。达到目标次数时停在该页面，不再开启下一轮。
-- 助手自动：完成游戏内置的一整组重复战斗并重新进入受监控的自动战斗流程。
 - 英雄合成：完成一个英雄的合成或 SSS 副本处理事务；点击、动画和页面进入本身都不计为业务完成。
 - 刷书签：刷新确认框离开、商品列表发生可解释变化并重新稳定后，才增加一次付费刷新；最后一次刷新后的商品仍要扫描完成。购买只在弹窗离开且原槽位不可再次购买后计数。
 

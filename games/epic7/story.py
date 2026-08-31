@@ -555,7 +555,7 @@ class StoryStateMachine:
     def _handle_stamina(self, screen: np.ndarray) -> Optional[StoryAction]:
         """体力不足时用生命之叶补充；达到上限后抛 StaminaExhausted 干净收尾。
 
-        与狗粮/辅助自动共用两段式决策（stamina.py），主线独有：
+        与狗粮共用两段式决策（stamina.py），主线独有：
         补充次数上限、确认按钮未渲染时等待（返回 None）而非报错。
         """
         if self.templates.stamina_popup is None:
