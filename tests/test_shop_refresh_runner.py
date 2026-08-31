@@ -343,6 +343,40 @@ def test_current_mystic_purchase_fixtures_complete_one_real_transaction():
     assert runner._is_known_sold(sold_row)
 
 
+def test_current_covenant_purchase_fixtures_complete_one_real_transaction():
+    observer = build_shop_refresh_observer(TEMPLATES)
+    source_screen = _fixture("covenant_row_live_20260831")
+    popup_screen = _fixture("covenant_purchase_confirm_live_20260831")
+    sold_screen = _fixture("covenant_purchased_row_live_20260831")
+    source = observer.observe(source_screen)
+    row = next(row for row in source.rows if row.kind is ShopItemKind.COVENANT)
+    clock = _Clock()
+    clicks: list[tuple[tuple[int, int], str]] = []
+    runner = ShopRefreshRunner(
+        ShopRefreshStateMachine(1),
+        _runtime(
+            [popup_screen, popup_screen, sold_screen, sold_screen],
+            clock=clock,
+            clicks=clicks,
+            swipes=[],
+            logs=[],
+        ),
+        observer=observer,
+        sleep=clock.sleep,
+        poll_seconds=0.1,
+    )
+
+    runner._purchase_transaction(row, source, source_screen=source_screen)
+
+    actions = [action for _point, action in clicks]
+    assert actions.count("open_purchase_confirm") == 1
+    assert actions.count("confirm_purchase") == 1
+    assert runner.machine.stats.initial_covenant == 1
+    sold = observer.observe(sold_screen)
+    sold_row = next(row for row in sold.rows if row.kind is ShopItemKind.COVENANT)
+    assert runner._is_known_sold(sold_row)
+
+
 def test_purchase_result_unknown_never_repeats_irreversible_confirm():
     row = _row(ShopItemKind.MYSTIC)
     source = ShopObservation(page=ShopPage.SHOP, rows=(row,))

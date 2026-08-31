@@ -163,7 +163,10 @@ class MainStoryTests(unittest.TestCase):
         build_runtime.assert_not_called()
 
     def test_shop_refresh_live_is_blocked_before_runtime_until_current_evidence_exists(self):
-        with patch.object(main_module, "_build_runtime") as build_runtime:
+        with (
+            patch.object(main_module, "LIVE_TRANSACTIONS_VERIFIED", False),
+            patch.object(main_module, "_build_runtime") as build_runtime,
+        ):
             with self.assertRaisesRegex(RuntimeError, "当前客户端实证"):
                 main_module.run_mode(
                     spec=get_mode("shop_refresh"),

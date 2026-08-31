@@ -20,7 +20,7 @@ ITEM_SCORE_MARGIN = 0.05
 # Live spending stays disabled until both target types have current-client row
 # and purchase-price fixtures. Mystic is verified; Covenant is still pending.
 MYSTIC_TRANSACTION_VERIFIED = True
-COVENANT_TRANSACTION_VERIFIED = False
+COVENANT_TRANSACTION_VERIFIED = True
 LIVE_TRANSACTIONS_VERIFIED = bool(
     MYSTIC_TRANSACTION_VERIFIED and COVENANT_TRANSACTION_VERIFIED
 )
@@ -80,6 +80,7 @@ REGIONS = {
     "covenant_candidate": (650, 140, 380, 992),
     "mystic_candidate": (650, 140, 380, 992),
     "mystic_price_current": (850, 720, 400, 180),
+    "covenant_price_current": (850, 720, 400, 180),
     "sold_out_0_of_1_current": (1500, 140, 420, 992),
 }
 
@@ -97,6 +98,7 @@ THRESHOLDS = {
     "covenant_candidate": ITEM_THRESHOLD,
     "mystic_candidate": ITEM_THRESHOLD,
     "mystic_price_current": 0.92,
+    "covenant_price_current": 0.92,
     "sold_out_0_of_1_current": 0.92,
 }
 
@@ -323,6 +325,7 @@ class ShopRefreshObserver:
             "purchase_cancel",
             "purchase_action",
             "mystic_price_current",
+            "covenant_price_current",
             "shop_title",
             "refresh_button_3",
             "buy_button",
@@ -351,6 +354,9 @@ class ShopRefreshObserver:
                 280_000
                 if purchase_kind is ShopItemKind.MYSTIC
                 and seen("mystic_price_current")
+                else 184_000
+                if purchase_kind is ShopItemKind.COVENANT
+                and seen("covenant_price_current")
                 else None
             )
             return ShopObservation(
