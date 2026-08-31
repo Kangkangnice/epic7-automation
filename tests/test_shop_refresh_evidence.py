@@ -12,6 +12,7 @@ from auto_game_unified.games.epic7.evidence.shop_refresh import (
     build_shop_refresh_observer,
     classify_item_scores,
     same_shop_row,
+    shop_fingerprint_distance,
 )
 
 
@@ -48,6 +49,23 @@ def test_current_shop_top_and_bottom_are_safe_shop_pages():
 
     assert observer.observe(_screen("shop_top_live")).page is ShopPage.SHOP
     assert observer.observe(_screen("shop_bottom_live")).page is ShopPage.SHOP
+
+
+def test_shop_fingerprint_ignores_small_animation_but_separates_scroll_position():
+    observer = build_shop_refresh_observer(TEMPLATES)
+    top = _screen("shop_top_live")
+    animated = top.copy()
+    animated[300:330, 1200:1230] = np.clip(
+        animated[300:330, 1200:1230].astype(np.int16) + 12,
+        0,
+        255,
+    ).astype(np.uint8)
+    top_fingerprint = observer.observe(top).list_fingerprint
+    animated_fingerprint = observer.observe(animated).list_fingerprint
+    bottom_fingerprint = observer.observe(_screen("shop_bottom_live")).list_fingerprint
+
+    assert shop_fingerprint_distance(top_fingerprint, animated_fingerprint) < 10
+    assert shop_fingerprint_distance(top_fingerprint, bottom_fingerprint) >= 10
 
 
 def test_refresh_confirmation_requires_current_prompt_and_both_buttons():
@@ -115,6 +133,7 @@ def test_current_client_purchased_mystic_row_is_not_actionable():
     mystic_rows = [row for row in result.rows if row.kind is ShopItemKind.MYSTIC]
     assert len(mystic_rows) == 1
     assert mystic_rows[0].buy_point is None
+    assert mystic_rows[0].sold_out
 
 
 def test_current_client_covenant_row_is_actionable():
@@ -148,6 +167,7 @@ def test_current_client_purchased_covenant_row_is_not_actionable():
     rows = [row for row in result.rows if row.kind is ShopItemKind.COVENANT]
     assert len(rows) == 1
     assert rows[0].buy_point is None
+    assert rows[0].sold_out
 
 
 def test_both_current_client_transactions_are_verified_for_live_runs():
