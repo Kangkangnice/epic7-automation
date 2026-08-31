@@ -10,11 +10,6 @@ from auto_game_unified.games.epic7.arena import (
     ArenaStateMachine,
     build_templates,
 )
-from auto_game_unified.games.epic7.assist_auto import (
-    AssistAutoState,
-    AssistAutoStateMachine,
-    build_assist_auto_templates,
-)
 from auto_game_unified.games.epic7.expedition import (
     ExpeditionState,
     ExpeditionStateMachine,
@@ -139,19 +134,6 @@ def test_supervised_route_state_machines_enter_supervision_from_quick_page():
             assert action.target_states == (StoryState.TEAM,)
         else:
             assert machine.state is target_state
-
-
-def test_assist_auto_switches_quick_mode_without_advancing_team_state():
-    machine = AssistAutoStateMachine(
-        build_assist_auto_templates(TEMPLATES / "assist_auto")
-    )
-
-    action = machine.next_action(
-        fixture("epic7_arena", "quick_battle_selected_live_20260826")
-    )
-
-    assert action.name == "switch-to-normal-battle"
-    assert machine.state is AssistAutoState.TEAM
 
 
 def test_simulator_routes_use_auto_off_icon_before_player_skill_turn():

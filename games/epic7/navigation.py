@@ -79,7 +79,6 @@ MODE_LABELS = {
     "arena": "竞技场",
     "expedition": "远征",
     "fodder": "狗粮",
-    "assist_auto": "辅助自动",
     "hero_synthesis": "英雄合成",
     "shop_refresh": "刷书签",
 }

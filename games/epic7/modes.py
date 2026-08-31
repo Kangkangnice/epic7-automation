@@ -25,12 +25,6 @@ from auto_game_unified.games.epic7.fodder import (
     FodderStateMachine,
     build_fodder_templates,
 )
-from auto_game_unified.games.epic7.assist_auto import (
-    AssistAutoRunner,
-    AssistAutoState,
-    AssistAutoStateMachine,
-    build_assist_auto_templates,
-)
 from auto_game_unified.games.epic7.hero_synthesis import (
     HeroSynthRunner,
     HeroSynthState,
@@ -122,17 +116,6 @@ def _build_fodder(
     )
 
 
-def _build_assist_auto(
-    template_root: Path,
-    state: str,
-    backend: str = "emulator",
-) -> AssistAutoStateMachine:
-    return AssistAutoStateMachine(
-        build_assist_auto_templates(template_root / "assist_auto"),
-        initial_state=AssistAutoState(state),
-    )
-
-
 def _build_hero_synthesis(
     template_root: Path,
     state: str,
@@ -188,14 +171,6 @@ MODE_SPECS = {
         states=frozenset(state.value for state in FodderState),
         build_machine=_build_fodder,
         runner_type=FodderRunner,
-    ),
-    "assist_auto": ModeSpec(
-        name="assist_auto",
-        default_state=AssistAutoState.TEAM.value,
-        states=frozenset(state.value for state in AssistAutoState),
-        build_machine=_build_assist_auto,
-        runner_type=AssistAutoRunner,
-        needs_navigation=False,
     ),
     "hero_synthesis": ModeSpec(
         name="hero_synthesis",

@@ -16,7 +16,6 @@ class Epic7ModeRegistryTests(unittest.TestCase):
                 "story",
                 "expedition",
                 "fodder",
-                "assist_auto",
                 "hero_synthesis",
                 "shop_refresh",
             },
@@ -26,7 +25,6 @@ class Epic7ModeRegistryTests(unittest.TestCase):
         self.assertEqual("stage", get_mode("story").default_state)
         self.assertEqual("home", get_mode("expedition").default_state)
         self.assertEqual("stage", get_mode("fodder").default_state)
-        self.assertEqual("team", get_mode("assist_auto").default_state)
         self.assertEqual("hero_list", get_mode("hero_synthesis").default_state)
         self.assertEqual("scan_top", get_mode("shop_refresh").default_state)
 
