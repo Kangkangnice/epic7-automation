@@ -24,13 +24,16 @@
 fail-closed：认不出改了哪条路线、或该路线一个测试文件都匹配不到，一律退化成全量，
 绝不用「没测到」冒充「没问题」。
 
-环境缺 pytest 时只做编译检查并明确警告（不阻塞提交），退出码仍为 0；
-真正的测试失败才会返回非 0。
+本机会自动找一个真的装了 pytest 的解释器来跑测试（PATH 上的 `python` 可能没有依赖，
+那样钩子会安静退化成只做编译检查 —— 看着跑了其实没验）。可用环境变量
+`AUTO_GAME_PYTHON` 覆盖。确实找不到时只做编译检查并**大声警告**（不阻塞提交），
+退出码仍为 0；真正的测试失败才会返回非 0。
 """
 
 from __future__ import annotations
 
 import argparse
+import os
 import re
 import subprocess
 import sys
@@ -139,14 +142,59 @@ def run(label: str, command: list[str]) -> int:
     return subprocess.run(command, cwd=WORKSPACE, check=False).returncode
 
 
-def run_tests(targets: list[str]) -> int:
+def _has_pytest(executable: list[str]) -> bool:
+    probe = subprocess.run(
+        [*executable, "-c", "import pytest"],
+        cwd=WORKSPACE,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return probe.returncode == 0
+
+
+def find_python_with_pytest() -> list[str] | None:
+    """找一个真的装了 pytest 的解释器。
+
+    本机踩过的坑：PATH 上的 `python` 是托管的 3.13（没装依赖），
+    于是一个「装好了的」pre-commit 钩子会安静地退化成只做编译检查 ——
+    看着跑了，其实没验。所以这里主动去找带 pytest 的那个。
+    """
+    candidates: list[list[str]] = []
+    override = os.environ.get("AUTO_GAME_PYTHON")
+    if override:
+        candidates.append([override])
+    candidates.append([sys.executable])
+    candidates.append(["python"])
+    candidates.append(["py", "-3"])
+    # 常见安装位置兜底（同一台机器上装了多个解释器很常见）
+    if os.name == "nt":
+        candidates.append([r"D:\anaconda\python.exe"])
+        local = os.environ.get("LOCALAPPDATA", "")
+        if local:
+            candidates.append([os.path.join(local, "Programs", "Python", "Python311", "python.exe")])
+    seen: set[str] = set()
+    for candidate in candidates:
+        key = " ".join(candidate)
+        if key in seen:
+            continue
+        seen.add(key)
+        try:
+            if _has_pytest(candidate):
+                return candidate
+        except OSError:
+            continue
+    return None
+
+
+def run_tests(targets: list[str], interpreter: list[str]) -> int:
     """跑 pytest，并按「结果行」而不是单看退出码判定成败。
 
     本机有个已知干扰：pytest 结束时清理临时目录会撞上 safe-delete 守卫，
     以致 `SystemExit: 1` —— 退出码非 0 但测试其实是全绿的。
     钩子里误拦提交比漏测更烦人，所以这里以结果行为准，并把判断依据打印出来。
     """
-    command = [sys.executable, "-m", "pytest", "-q", *targets]
+    command = [*interpreter, "-m", "pytest", "-q", *targets]
     print(f"[check] 测试: {' '.join(command)}", flush=True)
     result = subprocess.run(command, cwd=WORKSPACE, capture_output=True, text=True)
     print(result.stdout, end="")
@@ -286,17 +334,21 @@ def main() -> int:
         print("[check] 没有需要跑的内容")
         return 0
 
-    try:
-        import pytest  # noqa: F401
-    except ImportError:
-        print(f"[check] 当前解释器没有 pytest，跳过测试（依据：{reason}）")
-        print("[check] 提示：用装了依赖的解释器执行，例如 D:\\anaconda\\python.exe")
+    interpreter = find_python_with_pytest()
+    if interpreter is None:
+        print(
+            f"[check] 警告：本机找不到装了 pytest 的解释器，**只做了编译检查、没跑测试**"
+            f"（依据：{reason}）"
+        )
+        print("[check] 跳过测试不等于没问题。可用 AUTO_GAME_PYTHON 指定解释器，")
+        print("[check] 例如：AUTO_GAME_PYTHON=D:\\anaconda\\python.exe python tools/check.py")
         return 0
 
     print(f"[check] 依据：{reason}")
+    print(f"[check] 测试解释器：{' '.join(interpreter)}")
     if targets != all_targets:
         print(f"[check] 选中 {len(targets)} 个测试文件（共 {len(all_tests)} 个）")
-    return run_tests(targets)
+    return run_tests(targets, interpreter)
 
 
 if __name__ == "__main__":
