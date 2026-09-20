@@ -18,6 +18,22 @@ import pyautogui
 import pygetwindow
 
 
+def render_is_usable(rgb: np.ndarray) -> bool:
+    """窗口级截图（PrintWindow）拿到的画面是否可用。
+
+    全黑或纯色的画面说明 PrintWindow 对这个窗口无效，调用方要回退屏幕截图。
+
+    判据用 uint8 上的极差 `max() - min()`，**不要用 `rgb.std()`**：
+    两者对整数像素几乎等价（std < 1 意味着所有取值与均值相差不到 1，
+    也就是极差 <= 1 左右），但 `np.std` 会按 float64 累加，
+    在 1920×1080×3 上每帧多分配约 47.5 MiB ——
+    实跑与测试并发时曾因此报 `_ArrayMemoryError: Unable to allocate 47.5 MiB`。
+    极差判据略严于 std（极差 2 但分布极度偏斜的帧会被判不可用），
+    这时走屏幕截图回退路径，比冒险用一张近乎纯色的帧更安全。
+    """
+    return int(rgb.max()) - int(rgb.min()) > 1
+
+
 class _BITMAPINFOHEADER(ctypes.Structure):
     _fields_ = [
         ("biSize", wintypes.DWORD),
@@ -255,7 +271,7 @@ class Epic7Window:
             user32.ReleaseDC(handle, hwnd_dc)
         render = np.frombuffer(buffer, dtype=np.uint8).reshape(height, width, 4)
         rgb = np.ascontiguousarray(render[:, :, :3][:, :, ::-1])
-        if rgb.std() < 1.0:  # 全黑/纯色画面：PrintWindow 对该窗口无效
+        if not render_is_usable(rgb):
             return None
         return rgb
 
