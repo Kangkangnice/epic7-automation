@@ -105,11 +105,13 @@ class QuickBattleDetector:
                 normal_score=normal_start.score,
             )
         if state is PreBattleEvidenceState.QUICK:
+            # QUICK 现在只由「切换控件」保证（见 classify_pre_battle_evidence），
+            # 按钮模板可能根本没过阈——主线队伍准备页的宽按钮只有 0.7341。
             return PreBattleObservation(
                 PreBattleMode.QUICK,
-                quick_score=quick.score,
-                switch_score=switch.score,
-                switch_point=switch.center,
+                quick_score=quick.score if quick is not None else 0.0,
+                switch_score=switch.score if switch is not None else 0.0,
+                switch_point=switch.center if switch is not None else None,
             )
         return PreBattleObservation(PreBattleMode.UNKNOWN)
 

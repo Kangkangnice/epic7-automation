@@ -3,7 +3,7 @@
 from dataclasses import dataclass
 from enum import Enum
 from time import sleep as default_sleep
-from typing import Callable
+from typing import Callable, NamedTuple, Optional
 
 import cv2
 import numpy as np
@@ -145,6 +145,9 @@ class ShopRefreshStateMachine:
         self.pending_purchase: PendingPurchase | None = None
         self.pending_refresh: PendingRefresh | None = None
         self.observer = observer
+        # 接力记号：探针认出「人已经把游戏停在商店页」时置位。Runner 看到它就先把
+        # 列表拨回顶部再开扫（人停下时列表可能停在半截甚至底部）。
+        self.resumed_at_shop = False
 
     @property
     def completed_cycles(self) -> int:
@@ -270,6 +273,58 @@ class ShopRefreshStateMachine:
     def stop(self, reason: str) -> None:
         self.stats.stop_reason = reason
         self.phase = ShopPhase.STOPPED
+
+    def mark_resumed_at_shop(self) -> None:
+        """记号：本轮是「人已经停在秘密商店页」接上来的。
+
+        这条路线的 phase 是内部阶段、不是页面，所以接力**不拨 phase**（起始恒为
+        SCAN_TOP）；这个记号只让 Runner 多做一次「列表回到顶部」的准备动作。
+        """
+        self.resumed_at_shop = True
+
+
+class ShopResumePoint(NamedTuple):
+    """刷书签开局接力的落点。"""
+
+    page: str                    # 中文页面名，给日志和诊断看
+    state: Optional[str] = None  # 恒为 None：phase 是内部阶段，起始恒为 SCAN_TOP
+    entry: Optional[str] = None  # 恒为 None：秘密商店页就是业务入口，不需要导航
+
+
+def detect_resume_point(
+    machine: ShopRefreshStateMachine,
+    screen: np.ndarray,
+    *,
+    observed_page: Optional[str] = None,
+) -> Optional[ShopResumePoint]:
+    """刷书签开局接力：认出「人已经把游戏停在秘密商店页」就就地接管。
+
+    这条路线的 10 个 phase（SCAN_TOP / WAIT_SCROLL_RESULT / … / STOPPED）**不是
+    10 个页面** —— 整轮都待在同一张秘密商店页上，它们是内部阶段、不是可停靠画面。
+    所以接力的判据只有一个：**这一帧就是秘密商店**。
+
+    判据与导航器的「秘密商店」页面识别**同源**：两边都调 `ShopRefreshObserver`，
+    都要求「商店标题 + 立即更新(3 空窗) + 购买按钮」三个锚点同时过阈，所以不会各认
+    一套、也不会出现「导航说在商店、接力说不在」。
+
+    接力**不拨状态机状态**（返回的 ``state`` 恒为 None）：phase 没法从中间接，
+    起始恒为 SCAN_TOP。命中后由调用方给状态机打 ``mark_resumed_at_shop()`` 记号，
+    Runner 会把列表先拨回顶部 —— 人停下时列表可能停在半截，直接当「顶部批次」扫会
+    因为滚不动而以「滚动到底部结果不明确」整轮失败。
+
+    弹窗（刷新确认 / 购买确认）**故意不接力**：``return_home`` 的那一下 Back 会先把
+    弹窗关掉，下一帧扫到商店页就地接管，没必要为弹窗单独建判据。
+
+    ``observed_page`` 是导航器认出来的页面名；本路线判据自带观察器，用不上它，
+    保留形参只为与其它路线的探针签名保持一致。
+    """
+    del observed_page
+    observer = machine.observer
+    if observer is None:
+        return None
+    if observer.observe(screen).page is not ShopPage.SHOP:
+        return None
+    return ShopResumePoint("秘密商店")
 
 
 class ShopRefreshRunner:
@@ -757,6 +812,48 @@ class ShopRefreshRunner:
     def _stable_shop(self) -> tuple[np.ndarray, ShopObservation]:
         return self._wait_stable(ShopPage.SHOP)
 
+    def _reset_list_to_top_after_resume(self) -> None:
+        """接力专用：先把列表拨回顶部，再按「顶部批次」开始扫描。
+
+        人停在商店页时列表可能停在半截甚至底部。接力如果直接把当前视口当成顶部批次
+        扫，接着的 `_scroll_to_bottom` 会发现列表根本没动，整轮以「滚动到底部结果
+        不明确」失败 —— 所以接力开头补一次回顶滑动。
+
+        这里**不判定滑动是否真的产生位移**：本来就在顶部时它是空操作，动没动都只等
+        「列表静止」这一个条件 —— 要求**连续三帧列表指纹一致**（比主循环的两帧更保守，
+        滑动的惯性尾巴会让指纹短暂停顿）。回顶方向与 `_SCROLL_*` 相反（往下拖＝回到顶部）。
+        """
+        self.runtime.log("模式=刷书签 接力准备=列表回到顶部")
+        self.runtime.swipe(
+            self._SCROLL_END,
+            self._SCROLL_START,
+            self._SCROLL_DURATION_MS,
+            "shop-scroll-top",
+        )
+        deadline = self.now() + self.transaction_timeout
+        previous: str | None = None
+        settled = 0
+        last_screen: np.ndarray | None = None
+        while self.now() < deadline:
+            screen = self.runtime.capture()
+            last_screen = screen
+            observation = self.observer.observe(screen)
+            if observation.page is not ShopPage.SHOP:
+                previous = None
+                settled = 0
+                self.sleep(self.poll_seconds)
+                continue
+            fingerprint = observation.list_fingerprint
+            settled = settled + 1 if fingerprint and fingerprint == previous else 0
+            previous = fingerprint
+            if settled >= 2:
+                self.runtime.log(
+                    "模式=刷书签 接力准备=列表已静止 动作=从顶部批次开始扫描"
+                )
+                return
+            self.sleep(self.poll_seconds)
+        raise self._failure("接力回顶后商店列表未静止", last_screen)
+
     def run(self, max_cycles: int | None = None) -> int:
         if max_cycles is None or max_cycles <= 0:
             raise ValueError("刷书签需要正数付费刷新次数")
@@ -788,6 +885,8 @@ class ShopRefreshRunner:
                 raise RuntimeError(
                     f"{reason}，已禁止实跑消费；请先完成誓约和神秘的当前客户端截图验收"
                 )
+            if self.machine.resumed_at_shop:
+                self._reset_list_to_top_after_resume()
             while self.machine.phase not in {
                 ShopPhase.COMPLETE,
                 ShopPhase.STOPPED,

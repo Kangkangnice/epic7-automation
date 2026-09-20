@@ -1,7 +1,12 @@
 """Read-only capture of the page the user has parked the emulator on.
 
 保存完整 fixture 到 tests/fixtures/<group>/<name>.png，可选连续多帧并报告
-帧间平均差，供 AI 程序化确认页面是否静止（AI 不读图，只看数值）。
+帧间平均差，用于程序化确认页面是否静止。
+
+2026-09-18 更正：本模型**能直接读 PNG**（Read 工具传图即可），早先「AI 不读图」
+的说法过时了。判页面时**图 + 数值都要看**：图给出「这是什么页」的定性结论，
+数值给出排他性与阈值余量。只靠数值容易在「变暗/淡出帧」上误判——
+`TM_CCOEFF_NORMED` 对亮度缩放不变（实测亮度降到 10% 时模板分仍是 0.9989）。
 """
 
 from argparse import ArgumentParser

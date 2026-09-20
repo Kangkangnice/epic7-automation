@@ -5,6 +5,7 @@ import numpy as np
 
 from auto_game_unified.games.epic7.evidence.common import validate_profile
 from auto_game_unified.games.epic7.evidence.shop_refresh import (
+    LIST_FINGERPRINT_CHANGE_BITS,
     LIVE_TRANSACTIONS_VERIFIED,
     ShopItemKind,
     ShopPage,
@@ -64,8 +65,58 @@ def test_shop_fingerprint_ignores_small_animation_but_separates_scroll_position(
     animated_fingerprint = observer.observe(animated).list_fingerprint
     bottom_fingerprint = observer.observe(_screen("shop_bottom_live")).list_fingerprint
 
-    assert shop_fingerprint_distance(top_fingerprint, animated_fingerprint) < 10
-    assert shop_fingerprint_distance(top_fingerprint, bottom_fingerprint) >= 10
+    assert shop_fingerprint_distance(top_fingerprint, animated_fingerprint) < (
+        LIST_FINGERPRINT_CHANGE_BITS
+    )
+    assert shop_fingerprint_distance(top_fingerprint, bottom_fingerprint) >= (
+        LIST_FINGERPRINT_CHANGE_BITS
+    )
+
+
+def test_fingerprint_confirms_real_scroll_bottom_frames():
+    """2026-09-14 三次实跑都栽在滚动到底部：指纹距离 6~8 低于阈值被判「未改变」。"""
+
+    observer = build_shop_refresh_observer(TEMPLATES)
+
+    for suffix in ("a", "b", "c"):
+        top = observer.observe(
+            _screen(f"shop_scroll_top_live_20260914_{suffix}")
+        ).list_fingerprint
+        peak = observer.observe(
+            _screen(f"shop_scroll_peak_live_20260914_{suffix}")
+        ).list_fingerprint
+        bottom = observer.observe(
+            _screen(f"shop_scroll_bottom_live_20260914_{suffix}")
+        ).list_fingerprint
+
+        scrolled = shop_fingerprint_distance(top, bottom)
+        assert scrolled >= LIST_FINGERPRINT_CHANGE_BITS, (
+            f"{suffix}: 顶部→底部距离 {scrolled} 低于阈值 "
+            f"{LIST_FINGERPRINT_CHANGE_BITS}，滚动会被误判为未发生"
+        )
+        settled = shop_fingerprint_distance(peak, bottom)
+        assert settled < LIST_FINGERPRINT_CHANGE_BITS, (
+            f"{suffix}: 同一底部列表的静帧距离 {settled} 达到阈值 "
+            f"{LIST_FINGERPRINT_CHANGE_BITS}，噪声会伪装成列表变化"
+        )
+
+
+def test_fingerprint_keeps_sold_row_in_the_same_batch_as_unchanged():
+    """同批买掉一行不是换批次，不能触发「列表已改变」。"""
+
+    observer = build_shop_refresh_observer(TEMPLATES)
+
+    for kind in ("mystic", "covenant"):
+        before = observer.observe(_screen(f"{kind}_row_live_20260831")).list_fingerprint
+        after = observer.observe(
+            _screen(f"{kind}_purchased_row_live_20260831")
+        ).list_fingerprint
+
+        distance = shop_fingerprint_distance(before, after)
+        assert distance < LIST_FINGERPRINT_CHANGE_BITS, (
+            f"{kind}: 同批内买掉一行距离 {distance} 达到阈值 "
+            f"{LIST_FINGERPRINT_CHANGE_BITS}，会被误判为换了一批商品"
+        )
 
 
 def test_refresh_confirmation_requires_current_prompt_and_both_buttons():

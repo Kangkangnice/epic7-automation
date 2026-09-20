@@ -219,6 +219,7 @@ class FodderStateMachine:
             result_visible=result_visible,
             frame_valid=valid_game_frame(screen),
             auto_state=auto_state,
+            auto_evidence=f"布局={controls.value} 自动关图标=未使用(狗粮路线不看图标)",
             auto_point=(
                 self._scaled_point(screen, self._AUTO_CLICK_POINT)
                 if auto_state is AutoBattleState.MANUAL

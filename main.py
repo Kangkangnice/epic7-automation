@@ -2,7 +2,9 @@ import argparse
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
+
+import numpy as np
 
 from auto_game_unified.core.hotkey import WindowsPStopHotkey
 from auto_game_unified.core.pushplus import send_pushplus
@@ -13,7 +15,13 @@ from auto_game_unified.core.pc_window import Epic7PcWindow
 from auto_game_unified.games.epic7.evidence.shop_refresh import (
     LIVE_TRANSACTIONS_VERIFIED,
 )
-from auto_game_unified.games.epic7.modes import MODE_SPECS, ModeSpec, get_mode
+from auto_game_unified.games.epic7.modes import (
+    MODE_SPECS,
+    ModeSpec,
+    ResumePoint,
+    ResumeProbe,
+    get_mode,
+)
 from auto_game_unified.games.epic7.navigation import Epic7Navigator, build_navigation_templates
 from auto_game_unified.games.epic7.global_popups import (
     Epic7GlobalPopupGuard,
@@ -32,6 +40,7 @@ MODE_LABELS = {
     "fodder": "狗粮",
     "hero_synthesis": "英雄合成",
     "shop_refresh": "刷书签",
+    "survivor": "幸存者",
 }
 
 
@@ -113,8 +122,8 @@ def _build_runtime(
         log_path=ROOT / "runtime_logs" / f"epic7_{mode}.log",
         stop_requested=None if dry_run else stop_requested,
     )
-    if window_backend == "pc":
-        game_window.set_event_sink(runtime.log)
+    # 模拟器窗口也要能往运行日志里说话（例如「最小化已自动还原」）。
+    game_window.set_event_sink(runtime.log)
     if calibration is not None:
         runtime.log(
             "模式=PC初始化 "
@@ -125,6 +134,73 @@ def _build_runtime(
             "识别画布=1982x1132 模板来源=共享模拟器模板"
         )
     return runtime
+
+
+class _ResumeWatch:
+    """「回大厅」途中的接力观察窗。
+
+    每确认一帧稳定画面就被问一次；一旦探针认出本路线的接力点，记下落点并返回 True，
+    让 ``return_home`` 当场停止返回。只认第一次命中，之后一律 True（探针本身要跑模板
+    匹配，不重复烧算力）。
+    """
+
+    def __init__(
+        self,
+        probe: ResumeProbe,
+        machine: Any,
+        navigator: Epic7Navigator,
+    ) -> None:
+        self._probe = probe
+        self._machine = machine
+        self._navigator = navigator
+        self.point: Optional[ResumePoint] = None
+
+    def __call__(self, screen: np.ndarray) -> bool:
+        if self.point is not None:
+            return True
+        found = self._probe(self._machine, screen, self._navigator)
+        if found is None:
+            return False
+        self.point = found
+        return True
+
+
+def _enter_mode(
+    spec: ModeSpec,
+    machine: Any,
+    navigator: Epic7Navigator,
+    runtime: Runtime,
+) -> None:
+    """把游戏送进本路线的起始位置。
+
+    默认行为是「一路返回大厅 → 按路线重新导航进去」。带接力探针的路线改成边走边看：
+    第一帧就落在接力点上就直接从那一步接着跑（停在准备战斗就继续打，不再退回对手列表重选）；
+    落在别的支线页面上就照旧一路返回，而且**每返回一页都再看一眼**，中途扫到接力点就地接管，
+    否则一直返回到大厅再走老流程。
+    """
+    if spec.resume_probe is None:
+        lobby_screen = navigator.return_home()
+        navigator.navigate(spec.name, lobby_screen=lobby_screen)
+        return
+    watch = _ResumeWatch(spec.resume_probe, machine, navigator)
+    resume_screen = navigator.return_home(stop_probe=watch)
+    point = watch.point
+    if point is None:
+        navigator.navigate(spec.name, lobby_screen=resume_screen)
+        return
+    runtime.log(
+        f"模式={spec.name} 开局=接力 页面={point.page} "
+        f"落点状态={point.state or '保持'} "
+        "动作=跳过回大厅与路线导航 状态=从当前这一步接着往下跑"
+    )
+    runtime.save_diagnostic("resume_point", resume_screen)
+    if point.entry is not None:
+        # 接力点还在导航链中间（比如竞技场模式选择页）→ 从这里接着导航进去。
+        navigator.navigate(
+            spec.name,
+            lobby_screen=resume_screen,
+            already_at=point.entry,
+        )
 
 
 def run_mode(
@@ -153,6 +229,10 @@ def run_mode(
         stop_file=stop_file,
     )
     template_root = ROOT / "games" / "epic7" / "templates"
+    # 先把状态机建好：接力探针要用它的锚点去认画面（只认，不点）。
+    machine: Any = spec.build_machine(
+        template_root, start_state, window_backend
+    )
     navigator = None
     if not dry_run:
         runtime.set_capture_guard(
@@ -175,14 +255,12 @@ def run_mode(
                 runtime,
                 backend=window_backend,
             )
-            lobby_screen = navigator.return_home()
-            navigator.navigate(spec.name, lobby_screen=lobby_screen)
-    machine: Any = spec.build_machine(
-        template_root, start_state, window_backend
-    )
+            _enter_mode(spec, machine, navigator, runtime)
     runner_options: dict[str, Any] = {}
     if navigator is not None:
         def recover_to_mode() -> None:
+            # 恢复**不带**接力探针：恢复的语义是「退回本路线的已知起点重开」，
+            # 调用方紧接着就会 reset_after_recovery()，半路接管会跟它打架。
             lobby_screen = navigator.return_home()
             navigator.navigate(spec.name, lobby_screen=lobby_screen)
 

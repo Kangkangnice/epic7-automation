@@ -444,6 +444,89 @@ class WindowViewportTests(unittest.TestCase):
         render_tap.assert_not_called()
 
 
+class MinimizedWindowRestoreTests(unittest.TestCase):
+    """窗口被最小化（含误触）时应当自动还原，而不是立刻报错终止整条路线。"""
+
+    def _minimized_game(self):
+        game = Epic7Window()
+        window = MagicMock()
+        window.title = "雷电模拟器"
+        window.isMinimized = True
+        window._hWnd = 123
+        return game, window
+
+    def test_minimized_window_is_restored_without_stealing_the_foreground(self):
+        game, window = self._minimized_game()
+        messages: list[str] = []
+        game.set_event_sink(messages.append)
+
+        with (
+            patch(
+                "auto_game_unified.core.window.pygetwindow.getAllWindows",
+                return_value=[window],
+            ),
+            patch.object(game, "_window_process_name", return_value="dnplayer.exe"),
+            patch(
+                "auto_game_unified.core.window.ctypes.windll.user32.ShowWindow"
+            ) as show_window,
+            patch(
+                "auto_game_unified.core.window.ctypes.windll.user32.IsIconic",
+                return_value=0,
+            ) as is_iconic,
+            patch("auto_game_unified.core.window.sleep") as wait,
+        ):
+            self.assertIs(window, game._window())
+
+        show_window.assert_called_once_with(123, Epic7Window._SW_SHOWNOACTIVATE)
+        is_iconic.assert_called_once_with(123)
+        wait.assert_called_once_with(Epic7Window._RESTORE_SETTLE_SECONDS)
+        self.assertTrue(any("最小化已自动还原" in message for message in messages))
+
+    def test_minimized_window_escalates_to_a_foreground_restore_when_needed(self):
+        game, window = self._minimized_game()
+
+        with (
+            patch(
+                "auto_game_unified.core.window.pygetwindow.getAllWindows",
+                return_value=[window],
+            ),
+            patch.object(game, "_window_process_name", return_value="dnplayer.exe"),
+            patch(
+                "auto_game_unified.core.window.ctypes.windll.user32.ShowWindow"
+            ) as show_window,
+            patch(
+                "auto_game_unified.core.window.ctypes.windll.user32.IsIconic",
+                side_effect=[1] * 21 + [0],
+            ),
+            patch("auto_game_unified.core.window.sleep"),
+        ):
+            game._window()
+
+        self.assertEqual(
+            [call.args for call in show_window.call_args_list],
+            [(123, Epic7Window._SW_SHOWNOACTIVATE), (123, Epic7Window._SW_RESTORE)],
+        )
+
+    def test_window_that_stays_minimized_still_fails_instead_of_running_blind(self):
+        game, window = self._minimized_game()
+
+        with (
+            patch(
+                "auto_game_unified.core.window.pygetwindow.getAllWindows",
+                return_value=[window],
+            ),
+            patch.object(game, "_window_process_name", return_value="dnplayer.exe"),
+            patch("auto_game_unified.core.window.ctypes.windll.user32.ShowWindow"),
+            patch(
+                "auto_game_unified.core.window.ctypes.windll.user32.IsIconic",
+                return_value=1,
+            ),
+            patch("auto_game_unified.core.window.sleep"),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "自动还原未生效"):
+                game._window()
+
+
 class _FakeImage:
     def __init__(self, array: np.ndarray) -> None:
         self.array = array

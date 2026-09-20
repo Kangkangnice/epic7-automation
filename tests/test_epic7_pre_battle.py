@@ -56,7 +56,13 @@ def test_live_normal_page_uses_route_start_anchor():
     assert observation.switch_point is None
 
 
-def test_quick_source_is_unknown_when_button_anchor_is_removed():
+def test_switch_control_alone_identifies_the_quick_page():
+    """2026-09-18 起判定不再要求按钮锚点单独成立。
+
+    主线队伍准备页的宽「快速战斗」按钮对竞技场版模板只有 0.7341（门槛 0.88），
+    而同一帧右侧切换控件 0.9883。按钮过不了阈也必须能判出快速战斗页——否则主线
+    会照普通页去点开始按钮的位置，连点 4 次无进展后安全停止（2026-09-18 15:34 实跑）。
+    """
     mode, detector_type, load_templates = detector_api()
     detector = detector_type(load_templates(TEMPLATES))
     screen = fixture("quick_battle_selected_live_20260826").copy()
@@ -64,8 +70,33 @@ def test_quick_source_is_unknown_when_button_anchor_is_removed():
 
     observation = detector.observe(screen, normal_start=None)
 
-    assert observation.mode is mode.UNKNOWN
-    assert observation.switch_point is None
+    assert observation.mode is mode.QUICK
+    assert observation.quick_score == 0.0
+    assert observation.switch_point is not None
+    assert 1380 <= observation.switch_point[0] <= 1490
+
+
+def test_story_wide_quick_button_is_identified_by_its_switch_control():
+    """真实现场（PC 主线队伍准备页）：宽按钮 0.7341 < 0.88，切换控件 0.9883。"""
+    mode, detector_type, load_templates = detector_api()
+    detector = detector_type(load_templates(TEMPLATES))
+    path = (
+        ROOT
+        / "tests"
+        / "fixtures"
+        / "epic7_story"
+        / "team_quick_battle_live_20260918.png"
+    )
+    screen = np.asarray(Image.open(path).convert("RGB"))[:1132, :1982]
+
+    observation = detector.observe(screen, normal_start=None)
+
+    assert observation.mode is mode.QUICK
+    assert observation.quick_score < 0.88
+    assert observation.switch_score > 0.95
+    assert observation.switch_point is not None
+    assert 1800 <= observation.switch_point[0] <= 1930
+    assert 995 <= observation.switch_point[1] <= 1100
 
 
 def test_quick_source_is_unknown_when_switch_anchor_is_removed():

@@ -18,6 +18,7 @@ class Epic7ModeRegistryTests(unittest.TestCase):
                 "fodder",
                 "hero_synthesis",
                 "shop_refresh",
+                "survivor",
             },
             set(MODE_SPECS),
         )
@@ -27,6 +28,7 @@ class Epic7ModeRegistryTests(unittest.TestCase):
         self.assertEqual("stage", get_mode("fodder").default_state)
         self.assertEqual("hero_list", get_mode("hero_synthesis").default_state)
         self.assertEqual("scan_top", get_mode("shop_refresh").default_state)
+        self.assertEqual("card", get_mode("survivor").default_state)
 
     def test_shop_refresh_is_simulator_only(self):
         shop = get_mode("shop_refresh")
@@ -34,6 +36,18 @@ class Epic7ModeRegistryTests(unittest.TestCase):
         shop.validate_backend("emulator")
         with self.assertRaisesRegex(ValueError, "仅支持模拟器"):
             shop.validate_backend("pc")
+
+    def test_survivor_starts_inside_the_activity_without_navigation(self):
+        survivor = get_mode("survivor")
+
+        # 起点固定是用户人工停好的「选第一张卡」页，只有这一个合法起始状态。
+        survivor.validate_backend("emulator")
+        self.assertEqual("card", survivor.resolve_state(None))
+        self.assertFalse(survivor.needs_navigation)
+        with self.assertRaisesRegex(ValueError, "不支持后端 pc"):
+            survivor.validate_backend("pc")
+        with self.assertRaisesRegex(ValueError, "不适用于模式 survivor"):
+            survivor.resolve_state("battle")
 
     def test_each_mode_validates_only_its_own_resume_states(self):
         self.assertEqual("active", get_mode("story").resolve_state("active"))

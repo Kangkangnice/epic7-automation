@@ -9,14 +9,24 @@ import numpy as np
 
 from auto_game_unified.core.matcher import Match, find_template, load_template
 from auto_game_unified.core.runtime import Runtime
-from auto_game_unified.core.supervisor import StableObservation
-from auto_game_unified.games.epic7.arena import find_rank_promotion_confirm
+from auto_game_unified.core.supervisor import StableObservation, meaningful_change
+from auto_game_unified.games.epic7.arena import (
+    ARENA_ENTRY_PAGE,
+    find_rank_promotion_confirm,
+)
 from auto_game_unified.games.epic7.evidence.arena import thresholds_for as arena_thresholds_for
 from auto_game_unified.games.epic7.evidence.story import thresholds_for as story_thresholds_for
 from auto_game_unified.games.epic7.global_popups import (
     find_friendship_points_popup_close,
 )
+from auto_game_unified.games.epic7.expedition import (
+    EXPEDITION_BATTLE_MENU_PAGE,
+    EXPEDITION_ENTRY_PAGE,
+    EXPEDITION_RESUME_PAGES,
+    EXPEDITION_SEASON_PAGE,
+)
 from auto_game_unified.games.epic7.story import (
+    STORY_ENTRY_PAGE,
     find_prepare_battle_button,
     find_story_skip_button,
     find_story_skip_confirm,
@@ -60,6 +70,8 @@ PAGE_LABELS = {
     "story_skip_confirm": "跳过剧情确认",
     "story_playing": "剧情播放中",
     "lobby": "大厅",
+    "battle_menu": "战斗菜单",
+    "season_menu": "赛季菜单",
     "expedition_home": "远征主页",
     "arena_mode": "竞技场模式选择",
     "fodder_episode_detail": "支线详情",
@@ -81,6 +93,15 @@ MODE_LABELS = {
     "fodder": "狗粮",
     "hero_synthesis": "英雄合成",
     "shop_refresh": "刷书签",
+}
+
+
+# 「接力」白名单：模式 -> 允许 ``navigate(already_at=...)`` 的导航链页面。
+# 只列模式自己声明过的接力页；传别的一律报错，不做静默降级（失败关闭）。
+_RESUME_ENTRY_PAGES = {
+    "arena": frozenset({ARENA_ENTRY_PAGE}),
+    "story": frozenset({STORY_ENTRY_PAGE}),
+    "expedition": EXPEDITION_RESUME_PAGES,
 }
 
 
@@ -217,6 +238,13 @@ class Epic7Navigator:
     """Return to the lobby, then follow a verified mode-specific route."""
 
     _BACK_RETRY_SECONDS = 15
+    # 「受控返回」没效果时改用的页内返回箭头门槛。
+    # 实测 176 张 1982×1132 夹具（runtime_logs/_probe_back_arrow.py）：
+    # 真有箭头的页面大多 0.99+，深层页面偏低但仍属同源控件
+    # （远征主页 0.8999 / 支线故事 0.8949 / 远征难度选择 0.7760）；
+    # 没有箭头的页面最高只有 0.5278（局内战斗）、大厅 0.41、退出框 0.41。
+    # 取 0.80 落在两者之间：宁可少点一次，也不在没箭头的地方乱点左上角。
+    _IN_PAGE_BACK_THRESHOLD = 0.80
     _HERO_DETAIL_TAB_POINT = HERO_INFORMATION_TAB_POINT
     _HERO_DETAIL_TAB_MAX_ATTEMPTS = 4
     _HERO_DETAIL_TAB_RETRY_SECONDS = 2.0
@@ -244,7 +272,16 @@ class Epic7Navigator:
         "expedition_battle_title": (0, 35, 350, 180),
         "expedition_season_tab": (250, 140, 500, 200),
         "expedition_season_active": (250, 140, 500, 200),
-        "expedition_entry": (850, 240, 500, 260),
+        # 赛季页那排卡片会随赛季换序：上赛季是「战术档案/远征队/考验殿堂」，
+        # 远征队居中；2026-09-17 新赛季多了一张「星座考验」，远征队被挤到最右。
+        # 原先区域 (850,240,500,260) 只罩住中间那张卡，远征队右移后只拿 0.4395
+        # （实机帧 runtime_diagnostics/epic7_expedition/20260917_185800）→ 赛季页整页
+        # 认不出来 → 落到「未知画面唤醒」点屏幕中央，而那正好压在新中间的卡上，
+        # 表现为「点了中间那张卡」。改为覆盖整行卡片，按「远征队」这个名字模板
+        # 命中哪里就点哪里，与卡片在第几号位无关。
+        # 实测三张卡标题对该模板的分数：远征队 0.9541 / 战术档案 0.3476 /
+        # 星座考验 0.3258（上赛季夹具仍为 1.0000），故放宽区域不会误点别的卡。
+        "expedition_entry": (400, 240, 1580, 260),
         "expedition_home": (1400, 880, 582, 252),
         "lobby_side_story": (1700, 380, 215, 120),
         "side_story_special_book": (1520, 900, 385, 110),
@@ -537,11 +574,46 @@ class Epic7Navigator:
         self.runtime.click(match.center, action)
         return True
 
-    def return_home(self) -> np.ndarray:
+    def _back_took_effect(
+        self,
+        before_page: str,
+        before_screen: Optional[np.ndarray],
+        after_page: str,
+        after_screen: np.ndarray,
+    ) -> bool:
+        """验收一次返回：换页了算生效；还是同一页时，画面明显变了也算生效。
+
+        同一页 + 画面没变 = 这一下返回没起作用。带动画的页面画面一直在动，
+        会被判成「生效」，沿用原来的重试逻辑，不会比改动前更差。
+        """
+        if before_page != after_page:
+            return True
+        return meaningful_change(before_screen, after_screen)
+
+    def return_home(
+        self,
+        *,
+        stop_probe: Optional[Callable[[np.ndarray], bool]] = None,
+    ) -> np.ndarray:
+        """受控返回大厅。
+
+        ``stop_probe`` 是「接力」钩子：每确认一帧稳定画面就先问它一次，返回 True 表示
+        当前这帧已经是本路线的接力点，立刻停止返回并把这一帧交还给调用方
+        （不再按 Back、也不走后面的唤醒/剧情恢复）。
+
+        这样「用户停在竞技场某一页」和「用户停在别的支线页面」两种开局用同一条循环：
+        前者第一帧就被拦下从当前这一步接着跑；后者每返回一页都会被重新检查一次，
+        一直返回直到落回大厅、或者中途扫到一个竞技场页面就在这里接管。
+        """
         self.runtime.log("模式=导航 目标=大厅 状态=开始")
         stable = StableObservation(required=2)
         back_count = 0
         last_back_at: Optional[float] = None
+        # 「按一次、验收一次」：记住返回前那一页的画面，等转场窗口结束后回头比一次。
+        # 没有它，返回没生效也只能靠「连按 8 次都回不去」才发现，白白磨两分钟。
+        last_back_page: Optional[str] = None
+        last_back_screen: Optional[np.ndarray] = None
+        used_in_page_back = False
         back_wait_logged = False
         invalid_count = 0
         story_recovery = _StoryRecoveryAttempts()
@@ -565,12 +637,16 @@ class Epic7Navigator:
                 self.unknown_screen_wake.reset()
             if self._dismiss_global_popup(screen, observation):
                 last_back_at = None
+                last_back_page = None
+                last_back_screen = None
                 back_wait_logged = False
                 stable.reset()
                 self.sleep(1.0)
                 continue
             if self._recover_story(screen, observation, story_recovery):
                 last_back_at = None
+                last_back_page = None
+                last_back_screen = None
                 back_wait_logged = False
                 stable.reset()
                 self.sleep(1.0)
@@ -579,6 +655,15 @@ class Epic7Navigator:
                 f"模式=导航 页面={page_label(observation.name)} "
                 f"置信度={observation.confidence:.3f}"
             )
+            # 接力钩子必须排在 unknown 唤醒之前：放在之后的话，一个没被页面识别命中的
+            # 竞技场页面会先被「点屏幕中央唤醒」点一下，接力点当场就被点掉了。
+            # （放在 lobby 判定之前是安全的：大厅上三个接力锚点都不可见，钩子必然返回 False。）
+            if stop_probe is not None and stop_probe(screen):
+                self.runtime.log(
+                    f"模式=导航 页面={page_label(observation.name)} "
+                    "动作=接力点命中 状态=停止返回大厅"
+                )
+                return screen
             if observation.name == "lobby":
                 self.runtime.log("模式=导航 页面=大厅 状态=已确认")
                 return screen
@@ -590,6 +675,8 @@ class Epic7Navigator:
                     raise RuntimeError("退出确认框缺少取消按钮锚点")
                 self.runtime.click(cancel.center, "取消退出游戏")
                 last_back_at = self.now()
+                last_back_page = None
+                last_back_screen = None
                 back_wait_logged = False
                 stable.reset()
                 self.sleep(1.0)
@@ -622,11 +709,61 @@ class Epic7Navigator:
                 raise RuntimeError(
                     f"受控返回8次后仍未回到大厅；已保存诊断 {diagnostic}"
                 )
+            # 验收：上一次返回已经等满转场窗口，画面却还是原来那一页 —— 说明这一下
+            # 返回对这个页面根本不起作用，再按多少次都一样。改成换一条路走，
+            # 而不是把同一个没用的动作重复到 8 次。
+            if last_back_page is not None:
+                if self._back_took_effect(
+                    last_back_page, last_back_screen, observation.name, screen
+                ):
+                    used_in_page_back = False
+                    self.runtime.log(
+                        f"模式=导航 返回验收=生效 "
+                        f"从={page_label(last_back_page)} "
+                        f"到={page_label(observation.name)}"
+                    )
+                else:
+                    self.runtime.log(
+                        f"模式=导航 返回验收=无效 页面={page_label(observation.name)} "
+                        "原因=返回前后画面一致 后续=不再重复受控返回"
+                    )
+                    last_back_page = observation.name
+                    last_back_screen = screen.copy()
+                    arrow = (
+                        None
+                        if used_in_page_back
+                        else self._locate(
+                            screen, "story_back", self._IN_PAGE_BACK_THRESHOLD
+                        )
+                    )
+                    if arrow is not None:
+                        used_in_page_back = True
+                        back_count += 1
+                        self.runtime.log(
+                            f"模式=导航 页面={page_label(observation.name)} "
+                            f"动作=改用页内返回箭头 重试={back_count}/8"
+                        )
+                        self.runtime.click(arrow.center, "click-in-page-back")
+                        self.unknown_screen_wake.reset()
+                        last_back_at = self.now()
+                        back_wait_logged = False
+                        stable.reset()
+                        self.sleep(1.0)
+                        continue
+                    diagnostic = self._diagnostic("back_has_no_effect")
+                    raise RuntimeError(
+                        f"页面[{page_label(observation.name)}]返回无效："
+                        f"受控返回后画面没有变化，也没有可用的页内返回箭头；"
+                        f"已保存诊断 {diagnostic}"
+                    )
             if observation.name == "story_ready":
                 back = self._locate(screen, "story_back", 0.90)
                 if back is None:
                     raise RuntimeError("主线入口页面缺少可见的返回按钮")
                 back_count += 1
+                used_in_page_back = True
+                last_back_page = observation.name
+                last_back_screen = screen.copy()
                 self.runtime.log(
                     f"模式=导航 页面=主线入口 动作=点击游戏内返回 "
                     f"重试={back_count}/8"
@@ -639,6 +776,8 @@ class Epic7Navigator:
                 self.sleep(1.0)
                 continue
             back_count += 1
+            last_back_page = observation.name
+            last_back_screen = screen.copy()
             self.runtime.log(
                 f"模式=导航 页面={page_label(observation.name)} "
                 f"动作=受控返回 重试={back_count}/8"
@@ -654,46 +793,103 @@ class Epic7Navigator:
             f"返回大厅超过120秒观测预算；已保存诊断 {diagnostic}"
         )
 
-    def navigate(self, mode: str, *, lobby_screen: Optional[np.ndarray] = None) -> None:
+    def navigate(
+        self,
+        mode: str,
+        *,
+        lobby_screen: Optional[np.ndarray] = None,
+        already_at: Optional[str] = None,
+    ) -> None:
+        """按路线受控导航。
+
+        ``already_at`` 是「接力」用的入口：表示当前画面**已经**落在导航链的哪个页面上，
+        跳过它之前的所有转场，直接从那一步接着往下走。传了本模式不认识的页面会直接报错，
+        不做静默降级（失败关闭）。
+        """
+        if already_at is not None and already_at not in _RESUME_ENTRY_PAGES.get(
+            mode, frozenset()
+        ):
+            raise ValueError(
+                f"导航不支持从页面[{already_at}]接力进入模式[{mode}]"
+            )
         if mode == "story":
-            self._transition(
-                "lobby", "story_ready", "lobby_story", "进入主线",
-                source_screen=lobby_screen,
-            )
+            if already_at == STORY_ENTRY_PAGE:
+                # 已经站在关卡入口上了：回大厅再进来一趟纯属多余，而且中途一旦
+                # 按到「返回」就会把当前选区丢掉。这里直接当作导航已完成。
+                self.runtime.log(
+                    "模式=导航 开局=接力 页面=主线入口 "
+                    "动作=跳过回大厅与进入主线 状态=已在关卡入口"
+                )
+            else:
+                self._transition(
+                    "lobby", "story_ready", "lobby_story", "进入主线",
+                    source_screen=lobby_screen,
+                )
         elif mode == "arena":
-            arena_mode = self._transition(
-                "lobby", "arena_mode", "lobby_arena", "进入竞技场",
-                source_screen=lobby_screen,
-            )
+            if already_at == ARENA_ENTRY_PAGE:
+                if lobby_screen is None:
+                    raise RuntimeError("接力进入竞技场时缺少当前画面")
+                self.runtime.log(
+                    "模式=竞技场 开局=接力 页面=竞技场模式选择 "
+                    "动作=跳过回大厅与进入竞技场 状态=直接进新手竞技场"
+                )
+                arena_mode = lobby_screen
+            else:
+                arena_mode = self._transition(
+                    "lobby", "arena_mode", "lobby_arena", "进入竞技场",
+                    source_screen=lobby_screen,
+                )
             self._transition(
                 "arena_mode", "arena_ready", "novice_arena", "进入新手竞技场",
                 source_screen=arena_mode,
             )
         elif mode == "expedition":
-            battle_menu = self._transition(
-                "lobby",
-                ("battle_menu", "season_menu"),
-                "lobby_battle",
-                "进入战斗菜单",
-                source_screen=lobby_screen,
-            )
-            if self.observe(battle_menu).name == "season_menu":
-                season_menu = battle_menu
-            else:
-                season_menu = self._transition(
-                    "battle_menu",
-                    "season_menu",
-                    "expedition_season_tab",
-                    "切换到赛季",
-                    source_screen=battle_menu,
+            if already_at == EXPEDITION_ENTRY_PAGE:
+                # 已经站在远征主页上：整条导航链都没有要做的了。
+                self.runtime.log(
+                    "模式=导航 开局=接力 页面=远征主页 "
+                    "动作=跳过回大厅与进入远征队 状态=已在远征主页"
                 )
-            self._transition(
-                "season_menu",
-                "expedition_home",
-                "expedition_entry",
-                "进入远征队",
-                source_screen=season_menu,
-            )
+            else:
+                if already_at in (
+                    EXPEDITION_BATTLE_MENU_PAGE,
+                    EXPEDITION_SEASON_PAGE,
+                ):
+                    # 已经在链条中间：跳过「回大厅 → 进战斗菜单」，从当前这一级往下走。
+                    # 战斗菜单和赛季菜单都靠 observe() 自己认出来（下面那行），所以两者
+                    # 用同一条路径，不用分开写。
+                    if lobby_screen is None:
+                        raise RuntimeError("接力进入远征时缺少当前画面")
+                    self.runtime.log(
+                        f"模式=导航 开局=接力 页面={page_label(already_at)} "
+                        "动作=跳过回大厅与进入战斗菜单 状态=从当前这一级继续"
+                    )
+                    battle_menu = lobby_screen
+                else:
+                    battle_menu = self._transition(
+                        "lobby",
+                        ("battle_menu", "season_menu"),
+                        "lobby_battle",
+                        "进入战斗菜单",
+                        source_screen=lobby_screen,
+                    )
+                if self.observe(battle_menu).name == "season_menu":
+                    season_menu = battle_menu
+                else:
+                    season_menu = self._transition(
+                        "battle_menu",
+                        "season_menu",
+                        "expedition_season_tab",
+                        "切换到赛季",
+                        source_screen=battle_menu,
+                    )
+                self._transition(
+                    "season_menu",
+                    "expedition_home",
+                    "expedition_entry",
+                    "进入远征队",
+                    source_screen=season_menu,
+                )
         elif mode == "fodder":
             side_story = self._transition(
                 "lobby",

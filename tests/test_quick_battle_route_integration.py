@@ -54,6 +54,32 @@ def test_quick_page_is_a_shared_pre_battle_action_for_supervised_routes():
         assert 995 <= y <= 1100
 
 
+def test_story_wide_quick_page_switches_back_to_normal_battle():
+    """主线队伍准备页（PC）的快速战斗版：宽按钮 0.7341 过不了阈，只有右侧切换控件
+    0.9883 能认出来。这条守住「主线遇到它就跟竞技场一样切回普通战斗」——
+    2026-09-18 15:34 实跑就是在这里把开始按钮连点 4 次、无进展后安全停止的。
+    """
+    quick = fixture("epic7_story", "team_quick_battle_live_20260918")
+    machine = StoryStateMachine(
+        build_story_templates(TEMPLATES / "story"), initial_state=StoryState.TEAM
+    )
+
+    observation = machine.observe_battle(quick, None)
+    assert observation.pre_battle_visible is True
+    assert observation.allowed_action is not None
+    assert observation.allowed_action[0] == "switch-to-normal-battle"
+    switch_x, switch_y = observation.allowed_action[1]
+    assert 1800 <= switch_x <= 1930
+    assert 995 <= switch_y <= 1100
+
+    action = machine.next_action(quick)
+    assert action is not None
+    assert action.name == "switch_to_normal_battle"
+    assert action.point == observation.allowed_action[1]
+    assert machine.state is StoryState.TEAM
+    assert action.target_states == (StoryState.TEAM,)
+
+
 def test_normal_pages_keep_each_route_start_action():
     cases = (
         (

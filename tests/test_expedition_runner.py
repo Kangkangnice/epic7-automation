@@ -109,6 +109,43 @@ class BattleStartMachine:
         self.state = target
 
 
+class PrepareBattleDirectMachine:
+    """「准备战斗」点下去**直接**落到战斗页（游戏跳过队伍选择）。
+
+    契约里必须允许「战斗中」，否则状态机转场白等 45 秒后抛错；落到战斗后还必须
+    把这一局交给战斗监督 —— 少了这一步，状态会卡在 BATTLE 没人驱动。
+    """
+
+    def __init__(self):
+        self.state = ExpeditionState.READY
+        self.completed_cycles = 0
+
+    def preview(self, _screen):
+        return self.next_action(_screen), (self.state, self.completed_cycles)
+
+    def next_action(self, _screen):
+        if self.completed_cycles:
+            return None
+        return ExpeditionAction(
+            "prepare-battle", (10, 20), source_state=ExpeditionState.READY,
+            target_states=(ExpeditionState.TEAM, ExpeditionState.BATTLE),
+            source_page="准备战斗", target_pages=("队伍选择", "战斗中"),
+        )
+
+    def is_in_state(self, _screen, _state):
+        return False
+
+    def action_source_visible(self, _screen, _action):
+        return True
+
+    def action_target_state(self, _screen, _action):
+        return ExpeditionState.BATTLE
+
+    def commit(self, _action, target):
+        self.state = target
+        self.completed_cycles = 1
+
+
 class ExpeditionRunnerTests(unittest.TestCase):
     def test_battle_start_delegates_to_supervisor_and_returns_to_result_handling(self):
         machine = MagicMock()
@@ -129,6 +166,41 @@ class ExpeditionRunnerTests(unittest.TestCase):
 
         supervisor.run.assert_called_once_with(machine.observe_battle, cycle=1)
         self.assertEqual(ExpeditionState.RESULT, machine.state)
+
+    def test_prepare_battle_that_lands_on_battle_hands_off_to_supervisor(self):
+        clock = Clock()
+        logs = []
+        machine = PrepareBattleDirectMachine()
+        machine.observe_battle = MagicMock()
+        supervisor = MagicMock()
+        supervisor.run.return_value = BattleOutcome.RESULT_REACHED
+        runner = ExpeditionRunner(
+            machine,
+            Runtime(
+                lambda: np.zeros((120, 200, 3), dtype=np.uint8),
+                lambda _: None,
+                emit=logs.append,
+            ),
+            sleep=clock.sleep,
+            poll_seconds=1,
+            now=clock.now,
+            battle_supervisor=supervisor,
+        )
+
+        completed = runner.run(max_cycles=1)
+
+        self.assertEqual(1, completed)
+        # 轮次号由 fake machine 的 commit 决定，不是这条用例要守的点；关键是**移交了**。
+        supervisor.run.assert_called_once()
+        self.assertEqual(ExpeditionState.RESULT, machine.state)
+        self.assertTrue(
+            any("到=战斗中" in line for line in logs),
+            f"日志里没有「到=战斗中」：{logs}",
+        )
+        self.assertTrue(
+            any("移交战斗监督" in line for line in logs),
+            f"日志里没有「移交战斗监督」：{logs}",
+        )
 
     def test_action_requires_two_equal_observations_before_click(self):
         clock = Clock()

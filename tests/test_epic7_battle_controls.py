@@ -1,6 +1,7 @@
 from pathlib import Path
 import unittest
 
+import cv2
 import numpy as np
 from PIL import Image
 
@@ -82,6 +83,77 @@ class SharedBattleControlsTests(unittest.TestCase):
                     BattleControls.AUTO_CONTROLS,
                     observe_battle_controls(load_fixture("epic7_arena", name)),
                 )
+
+    def test_single_lit_base_still_reads_as_auto_layout(self):
+        """实跑回归：竞技场剩 1 个活人时，阵亡底座变红变黑、往下沉、颜色失效，
+        底座排上只剩 1 格蓝的（活人）—— 此时必须仍判为自动战斗。
+
+        底座颜色语义：**蓝 = 活着，红 = 阵亡**。
+        真实素材 `battle_auto_dead_three_live_20260814` 就是「活 1 亡 3、底座环 4 个」，
+        老逻辑「亮 >= 3 格」之所以还撑得住，只是因为它把 3 个红（阵亡）也算成了亮。
+        这里把那 3 个阵亡底座刷成中性灰（模拟它们暗到认不出来），
+        于是「亮」只剩 1 格 —— 老逻辑在此判 transition，新逻辑靠底座环仍认出战斗。
+        """
+        screen = load_fixture(
+            "epic7_arena", "battle_auto_dead_three_live_20260814"
+        ).copy()
+        # 这帧里下标 0/1/3 是红的（阵亡），下标 2 是蓝的（活人）。
+        # 把 3 个阵亡底座刷成中性灰 = 模拟它们暗到认不出来、颜色证据失效。
+        for index in (0, 1, 3):
+            center_x = battle_controls_module._AUTO_CONTROL_CENTERS[index]
+            screen[1060:1132, center_x - 50 : center_x + 50] = 60
+
+        self.assertEqual(
+            BattleControls.AUTO_CONTROLS,
+            observe_battle_controls(screen),
+        )
+        self.assertTrue(battle_controls_module.battle_scene_visible(screen))
+
+    def test_low_survivor_arena_frame_counts_one_alive_base(self):
+        """钉住底座颜色语义：蓝 = 活着，红 = 阵亡。
+
+        真实竞技场帧 `battle_auto_dead_three_live_20260814` 是「活 1 亡 3」——
+        4 格底座里只有 1 格是蓝的（活人），另外 3 格是红的（阵亡）。
+        这曾经是判不出自动战斗的隐患：只要红色识别不到，「亮」就塌成 1 格。
+        """
+        screen = load_fixture("epic7_arena", "battle_auto_dead_three_live_20260814")
+        frame = battle_controls_module._reference_frame(screen)
+        hsv = cv2.cvtColor(frame, cv2.COLOR_RGB2HSV)
+
+        alive = dead = 0
+        for center_x in battle_controls_module._AUTO_CONTROL_CENTERS:
+            slot = hsv[1060:1132, center_x - 50 : center_x + 50]
+            blue = (
+                (slot[:, :, 0] >= 85)
+                & (slot[:, :, 0] <= 135)
+                & (slot[:, :, 1] >= 100)
+                & (slot[:, :, 2] >= 70)
+            )
+            red = (
+                ((slot[:, :, 0] <= 10) | (slot[:, :, 0] >= 170))
+                & (slot[:, :, 1] >= 100)
+                & (slot[:, :, 2] >= 45)
+            )
+            alive += int(float(np.mean(blue)) >= 0.40)
+            dead += int(float(np.mean(red)) >= 0.25)
+
+        self.assertEqual(1, alive, "这帧应当只有 1 个活人底座（蓝色）")
+        self.assertEqual(3, dead, "这帧应当有 3 个阵亡底座（红色）")
+        self.assertEqual(
+            BattleControls.AUTO_CONTROLS, observe_battle_controls(screen)
+        )
+
+    def test_single_lit_base_needs_the_full_base_row(self):
+        """守住另一头：「有 1 格活人底座」不能变成「有 1 格就无脑算自动」。
+
+        底座排没被确认（对齐圆不足 3 个）时，仍然要求颜色命中 >= 3 格。
+        epic7_fodder/special_book.png 是实测的反例：活 1 且只有 2 个对齐圆，
+        它是支线/活动书页面，不是战斗画面。
+        """
+        self.assertNotEqual(
+            BattleControls.AUTO_CONTROLS,
+            observe_battle_controls(load_fixture("epic7_fodder", "special_book")),
+        )
 
     def test_skill_animation_is_not_inferred_as_auto(self):
         self.assertEqual(
