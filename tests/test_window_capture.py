@@ -2,11 +2,17 @@ import unittest
 from unittest.mock import MagicMock, patch
 from pathlib import Path
 import subprocess
+import tracemalloc
 
 import numpy as np
 import pygetwindow
 
-from auto_game_unified.core.window import Epic7Window, WindowRect, WindowViewport
+from auto_game_unified.core.window import (
+    Epic7Window,
+    WindowRect,
+    WindowViewport,
+    render_is_usable,
+)
 
 
 class WindowViewportTests(unittest.TestCase):
@@ -442,6 +448,51 @@ class WindowViewportTests(unittest.TestCase):
 
         click.assert_called_once_with(1100, 748)
         render_tap.assert_not_called()
+
+
+class RenderIsUsableTests(unittest.TestCase):
+    """判「这一帧是不是纯色」必须走 uint8 极差，不能退化成 np.std。
+
+    背景：np.std 按 float64 累加，1920×1080×3 每帧多分配约 47.5 MiB，
+    与模拟器抢内存时会出现 _ArrayMemoryError。极差法每帧只多分配几十字节。
+    """
+
+    def test_uniform_frame_is_rejected(self):
+        rgb = np.full((1080, 1920, 3), 17, dtype=np.uint8)
+        self.assertFalse(render_is_usable(rgb))
+
+    def test_black_frame_is_rejected(self):
+        rgb = np.zeros((1080, 1920, 3), dtype=np.uint8)
+        self.assertFalse(render_is_usable(rgb))
+
+    def test_one_level_spread_is_still_rejected(self):
+        # max-min == 1 视为纯色：单级量化噪声不足以说明画面画出来了
+        rgb = np.zeros((4, 4, 3), dtype=np.uint8)
+        rgb[0, 0, 0] = 1
+        self.assertFalse(render_is_usable(rgb))
+
+    def test_two_level_spread_is_accepted(self):
+        rgb = np.zeros((4, 4, 3), dtype=np.uint8)
+        rgb[0, 0, 0] = 2
+        self.assertTrue(render_is_usable(rgb))
+
+    def test_normal_picture_is_accepted(self):
+        rgb = np.arange(1080 * 1920 * 3, dtype=np.uint8).reshape(1080, 1920, 3)
+        self.assertTrue(render_is_usable(rgb))
+
+    def test_does_not_allocate_a_float64_copy_of_the_frame(self):
+        """守住内存回归：极差法不该像 np.std 那样按 float64 复制整帧。"""
+        rgb = np.random.default_rng(0).integers(
+            0, 256, size=(1080, 1920, 3), dtype=np.uint8
+        )
+        tracemalloc.start()
+        try:
+            render_is_usable(rgb)
+            _, peak = tracemalloc.get_traced_memory()
+        finally:
+            tracemalloc.stop()
+        # 极差法实测峰值 ~0.01 MiB；np.std 路线是 47.5 MiB，留足余量仍能抓住回归
+        self.assertLess(peak, 8 * 1024 * 1024, f"峰值 {peak / 1024 / 1024:.2f} MiB")
 
 
 class MinimizedWindowRestoreTests(unittest.TestCase):

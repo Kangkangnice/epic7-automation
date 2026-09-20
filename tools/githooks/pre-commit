@@ -1,0 +1,22 @@
+#!/bin/sh
+# 项目提交前门槛：调用 tools/check.py，按本次改动范围决定跑定向测试还是全量。
+#
+# 安装（每个 clone 各执行一次，或由 tools/check.py --install-hook 代劳）：
+#     git config core.hooksPath tools/githooks
+#
+# 跳过检查（确有急事时）：git commit --no-verify
+# 手工先跑一遍：python tools/check.py --vs HEAD
+
+if command -v python >/dev/null 2>&1; then
+    PY=python
+elif command -v py >/dev/null 2>&1; then
+    PY="py -3"
+else
+    echo "[pre-commit] 找不到 python，跳过检查（不影响提交）"
+    exit 0
+fi
+
+# 用装了 pytest/opencv 的解释器；缺依赖时 check.py 会降级为只做编译检查。
+# shellcheck disable=SC2086
+$PY tools/check.py
+exit $?
