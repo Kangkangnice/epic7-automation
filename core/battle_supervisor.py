@@ -32,6 +32,9 @@ class BattleObservation:
     business_progress: bool = False
     allowed_action: tuple[str, tuple[int, int]] | None = None
     pre_battle_business_visible: bool = False
+    # 「这一帧凭什么判定自动/手动」的人话说明（例如「布局=transition 自动关图标=0.9321」）。
+    # 只在真的要拨自动开关时写进日志——排查「自动被反复关掉」时，这一行就是全部线索。
+    auto_evidence: str = ""
 
 
 @dataclass(frozen=True)
@@ -48,6 +51,9 @@ class BattleConfig:
     allowed_action_retry_seconds: float = 3
     allowed_action_failure_seconds: float = 15
     heartbeat_seconds: float = 30
+    # 一场战斗里「自动开关点开之后又被关掉」最多容忍几次。超过就判定是游戏侧行为，
+    # 不再拨开关（继续监督到结算），免得整场都在自动/手动之间来回跳。
+    auto_recovery_limit: int = 3
 
 
 BattleObserver = Callable[[np.ndarray, np.ndarray | None], BattleObservation]
@@ -98,6 +104,9 @@ class BattleSupervisor:
         auto_clicks = 0
         auto_clicked_at = None
         auto_source_gone_logged = False
+        auto_recoveries = 0
+        auto_interference_stopped = False
+        auto_interference_logged = False
         last_allowed_action = None
         allowed_action_clicks = 0
         allowed_action_clicked_at = None
@@ -286,12 +295,22 @@ class BattleSupervisor:
                             screen,
                         )
                     auto_confirmed = False
+                    if auto_interference_stopped and not auto_interference_logged:
+                        # 本场已经反复出现「点开 → 又被关掉」：再拨下去只是来回跳。
+                        # 停手，交给下面的无进展看门狗兜底，日志留一行说明为什么停手。
+                        auto_interference_logged = True
+                        self.runtime.log(
+                            f"模式={self.label} 轮次={cycle} 阶段=战斗 "
+                            f"状态=自动战斗反复被关闭 累计={auto_recoveries}次 "
+                            "判定=游戏侧行为 处理=不再反复拨自动开关，继续监督本场战斗 "
+                            f"证据={observation.auto_evidence or '未标注'}"
+                        )
                     since_auto_click = (
                         None
                         if auto_clicked_at is None
                         else current - auto_clicked_at
                     )
-                    should_click_auto = (
+                    should_click_auto = not auto_interference_stopped and (
                         auto_clicked_at is None
                         or (
                             auto_clicks < 4
@@ -305,7 +324,8 @@ class BattleSupervisor:
                         self.runtime.log(
                             f"模式={self.label} 轮次={cycle} "
                             f"阶段=战斗 动作=开启自动战斗 "
-                            f"尝试={auto_clicks}/4 依据=自动关闭来源连续=2"
+                            f"尝试={auto_clicks}/4 依据=自动关闭来源连续=2 "
+                            f"证据={observation.auto_evidence or '未标注'}"
                         )
                         self.runtime.click(
                             observation.auto_point, "enable-auto-battle"
@@ -328,6 +348,12 @@ class BattleSupervisor:
                     stable_auto
                     and observation.auto_state is AutoBattleState.AUTO
                 ):
+                    if auto_clicked_at is not None:
+                        # 上一次是我们拨开的，现在确认自动已开启 ⇒ 这次「补开」有效。
+                        # 一场战斗里补开太多次，说明自动是被外面反复关掉的，不再插手。
+                        auto_recoveries += 1
+                        if auto_recoveries >= self.config.auto_recovery_limit:
+                            auto_interference_stopped = True
                     auto_clicks = 0
                     auto_clicked_at = None
                     auto_source_gone_logged = False

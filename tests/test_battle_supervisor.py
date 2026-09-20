@@ -209,6 +209,54 @@ def test_persisted_manual_auto_state_stops_after_four_clicks():
     assert diagnostics == ["auto_not_confirmed"]
 
 
+def test_auto_click_log_names_the_evidence_that_triggered_it():
+    """只记「依据=连续2帧」不够用：下次要能一眼看出是布局还是右上角图标说的。"""
+    manual = BattleObservation(
+        False,
+        True,
+        False,
+        True,
+        AutoBattleState.MANUAL,
+        (900, 80),
+        auto_evidence="布局=transition 自动关图标=0.9321 来源=右上角自动关闭图标",
+    )
+    auto = replace(manual, auto_state=AutoBattleState.AUTO, auto_point=None)
+    result = replace(auto, battle_visible=False, result_visible=True)
+    supervisor, gate, observe, clicks, logs, diagnostics = make_supervisor(
+        [manual, manual, auto, auto, result, result]
+    )
+
+    assert supervisor.run(observe, cycle=2) is BattleOutcome.RESULT_REACHED
+    assert any(
+        "动作=开启自动战斗" in line
+        and "证据=布局=transition 自动关图标=0.9321" in line
+        for line in logs
+    )
+
+
+def test_repeated_auto_recovery_stops_interfering_with_the_toggle():
+    """自动被反复关掉时，不能整场都在拨开关——拨够次数就停手并说明原因。
+
+    现象（2026-09-18 实跑）：一场战斗里 9 轮「点开→说已开启→又被关掉」，
+    每轮 2 下点击，因为「已开启」会把计数清零，4 次上限永远触发不了。
+    """
+    manual = BattleObservation(
+        False, True, False, True, AutoBattleState.MANUAL, (900, 80)
+    )
+    auto = replace(manual, auto_state=AutoBattleState.AUTO, auto_point=None)
+    result = replace(auto, battle_visible=False, result_visible=True)
+    supervisor, gate, observe, clicks, logs, diagnostics = make_supervisor(
+        [manual, manual, auto, auto] * 3 + [manual, manual, result, result]
+    )
+
+    assert supervisor.run(observe, cycle=2) is BattleOutcome.RESULT_REACHED
+    assert clicks == [((900, 80), "enable-auto-battle")] * 3
+    assert any(
+        "状态=自动战斗反复被关闭" in line and "累计=3次" in line for line in logs
+    )
+    assert diagnostics == []
+
+
 def test_business_progress_does_not_falsely_confirm_unknown_auto_state():
     unknown = BattleObservation(
         False,

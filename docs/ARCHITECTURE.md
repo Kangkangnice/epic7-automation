@@ -155,7 +155,43 @@ auto_game_unified/
 
 进程不会持久化内部状态。`--start-state` 只用于干跑诊断，`modes.py` 会验证状态属于对应模式。实跑传入该参数会在截图和点击前拒绝。
 
-正常实跑始终通过导航器受控回大厅，再从大厅进入目标模式。尚未明确支持的中途页面不能靠手工状态参数强行实跑。
+正常实跑在开局会先做一次接力探测（见下节「开局接力」）；没命中接力点才通过导航器受控回大厅，再从大厅进入目标模式。尚未明确支持的中途页面不能靠手工状态参数强行实跑。
+
+## 开局接力
+
+`ModeSpec.resume_probe`（可选）给一条路线装上「开局接着往下跑」的能力。目前三条路线接了：`arena`、`story`、`expedition`；
+其余路线 `resume_probe is None`，调用签名与行为完全不变（仍是 `return_home()` + `navigate()`）。
+
+契约：`ResumeProbe = (machine, screen, navigator) -> Optional[ResumePoint]`，其中
+`ResumePoint = (page: str, state: Optional[str], entry: Optional[str])` —— `page` 只给日志和诊断看，
+`state` 非空时由探针自己 `machine.resume_from(...)` 拨状态机，`entry` 非空表示当前画面已经在导航链的某一级上。
+
+`main._enter_mode` 在实跑开局把探针包成 `_ResumeWatch` 传给 `Epic7Navigator.return_home(stop_probe=...)`：
+
+- 钩子排在页面日志之后、`unknown` 唤醒之前。放在唤醒之后的话，一个没被页面识别命中的支线页面会先被「点屏幕中央」点掉。排在 `lobby` 判定之前是安全的（大厅上各接力锚点都不可见）。
+- 钩子只在连续两帧稳定后才被询问，命中就当场 `return`，不再按 `Back`，并把这一帧原样交还调用方。
+- 命中 → 跳过 `navigate()`，并把状态机拨到那一步；未命中 → 原样走 `navigate()`，且返回过程中每一页都会再问一次，中途扫到接力点就地接管。
+- `entry` 非空 → `navigate(..., already_at=entry)`。白名单在 `navigation._RESUME_ENTRY_PAGES`（`arena` = `arena_mode`「竞技场模式选择」/ `story` = `story_ready`「主线入口」/ `expedition` = `battle_menu`·`season_menu`·`expedition_home`）；传本模式不认识的页面直接 `ValueError`，不做静默降级。
+
+**接力点顺序即优先级**，每条路线各有一张自带注释的常量表：
+
+- `arena`：判定顺序 **竞技场模式选择（`observed_page == arena_mode`）→ `SELECTED` → `TEAM` → `LIST` → `RESULT` → `CONFIRMING` → 战斗中（`battle_scene_visible`）**。`SELECTED` 必须排在 `LIST` 前面 —— 选中对手时列表锚点仍然可见，只有 `challenge` 反超 `list_ready` 才能区分出「已选中」。`TEAM` 那一步还会用 `no_ticket` 二次排除买票弹窗压住的假队伍页。
+  后两步（结果页 / 段位弹窗）没有放进 `_ARENA_RESUME_ORDER` 循环，而是走 `arena.result_arena` 与 `arena.rank_promotion` 两个证据页判定：`is_in_state(RESULT)` 用的是运行期的松判据（只要 `confirm` 可见），开局时屏幕上可能是任何路线，不能拿它当接力判据。顺序上追加在后面是安全的 —— 实测这两页上前三页的锚点全部远低于阈值（结果页上 `list_ready` 0.2722 / `challenge` 0.2624；段位弹窗上 0.6425 / 0.6857），不会互相遮蔽；两步之间也互斥（结果页 `confirm`=1.0000 而晋级箭头不可见，段位弹窗上箭头 0.9993 而 `confirm` 只有 0.1484）。
+- `story._STORY_RESUME_ORDER`：先判 `battle_scene_visible()`，再判关卡入口，然后按 `prepare_battle / watch_story / start_mission / select_team / skip_confirm / skip / complete / bonus_reward / results_confirm / clear / reward / next_stage` 逐页判。顺序上有三处硬约束：战斗必须排在所有锚点之前；`prepare_battle`/`watch_story` 必须排在 `next_stage` 之前（同页可见）；`complete` 必须排在 `next_stage` 之前（实测 `complete`=1.0000、`next_stage`=0.9780）。
+- `expedition._EXPEDITION_RESUME_ORDER`：先收战斗菜单/赛季菜单（只有导航器认得出来，靠 `observe().name`），再收局内，然后按 `HOME → RETURNING → POSTERS → DIFFICULTY_CONFIRM → DIFFICULTY → OUTCOME → RECRUIT_CONFIRM → READY → RECRUIT_RETURN → TEAM → RESULT → BATTLE` 逐状态判。`HOME` 必须排在 `RETURNING` 前（后者的第一判据就是主页可见）；`OUTCOME` 必须排在 `READY` 前（否则会丢掉还没领的招募）。
+
+**状态机必须拨准，不能指望第一帧自愈**：主线 `next_action` 里有两支依赖进来时的状态才肯点击（`prepare_battle` 在 `WAIT_COMPLETE`/`WAIT_NEXT_STAGE` 下只记轮次不点；战斗控件分支只在 `WAIT_SKIP_CONFIRM`/`WAIT_BATTLE`/`ACTIVE` 下跑），远征 `next_action` 则是纯状态驱动的，拨错会走到 `_required` 失败或点错按钮。
+`<Route>StateMachine.resume_from()` 与 `reset_after_recovery()` 的区别是保留进度而非重开一轮。
+
+**局内接力**：三条路线都支持，且都不按 `Back`、不重新导航，而是把这一局直接交给战斗监督等结算。
+竞技场和主线各有一个 `_resume_into_committed_battle()`（由 Runner 在 `resumed_from is <BATTLE 态>` 时调用），原因是 `next_action(BATTLE)` 那条路靠 `auto_off` 图标定位，而**自动战斗开着时这个图标根本不可见**，硬走会抛未识别并在超时后触发「回大厅重新导航」—— 等于在已经承诺的战斗里按 `Back`。
+远征复用 `ExpeditionRunner.run()` 既有的「无动作 + 状态是 `BATTLE` → 交战斗监督」分支，无需额外代码。
+
+**竞技场「战斗结果页」的排他判据**：结算页底部那条「战斗结果 / 确认」是竞技场和远征**共用**的通用结算条（实测竞技场 `result.png` 上 `confirm`=1.0000，远征 `result.png` 上也有 0.9448，都过了 0.90 阈值），光靠它分不出这是哪条路线的结算。所以加了两个竞技场专有内容锚点：`result_rating`（「积分」面板标题，**胜负都会出现**，做主判据）与 `result_victory`（「VICTORY」横幅，只有赢才有，做冗余）。它们在 `arena.result_arena` 页里与 `confirm` 组成合取判据，阈值 0.80 —— 依据是全仓库 196 张夹具里除那张结果页外 `result_rating` 最高 0.3460、`result_victory` 最高 0.2724，离 0.80 还有一倍距离。
+两个模板是 `games/epic7/templates/arena_result_rating.png`（73×41 @922,657）与 `arena_result_victory.png`（558×83 @683,378），2026-09-16 从 `tests/fixtures/epic7_arena/result.png` 按证据档案里的矩形实裁。
+
+**不相容的画面不接力**：买票弹窗压住的队伍页（`no_ticket` 显式排除）。局内不在 `detect_resume_state` 里认，改由 `detect_resume_point` 用 `battle_scene_visible` 兜住（4 张局内实时帧只有 1 张能靠 `auto_off` 认出来，按锚点判会误触发「回大厅」）。
+**恢复（recovery）路径刻意不带探针**：恢复的语义是「退回已知起点重开」，紧接着就 `reset_after_recovery()`，半路接管会跟它打架。
 
 ## 模板和回归素材
 

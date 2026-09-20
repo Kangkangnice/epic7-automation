@@ -92,6 +92,22 @@ class Epic7StoryStateMachineTests(unittest.TestCase):
         self.assertEqual(AutoBattleState.AUTO, auto.auto_state)
         self.assertTrue(result.result_visible)
 
+    def test_battle_adapter_reports_which_evidence_decided_auto_state(self):
+        """排查「自动被反复关掉」时，日志里这一行必须说清到底是谁做的决定。"""
+        machine = StoryStateMachine(build_story_templates(TEMPLATES))
+
+        manual = machine.observe_battle(
+            load_fixture("battle_auto_off_live_20260809"), None
+        )
+        auto = machine.observe_battle(
+            load_fixture("battle_auto_on_live_20260809"), None
+        )
+
+        self.assertIn("布局=manual_controls", manual.auto_evidence)
+        self.assertIn("来源=右上角自动关闭图标", manual.auto_evidence)
+        self.assertIn("布局=auto_controls", auto.auto_evidence)
+        self.assertNotIn("来源=", auto.auto_evidence)
+
     def test_battle_adapter_whitelists_post_start_story_actions(self):
         machine = StoryStateMachine(build_story_templates(TEMPLATES))
 
@@ -283,6 +299,44 @@ class Epic7StoryStateMachineTests(unittest.TestCase):
 
         self.assertEqual("select_team", select_team.name)
         self.assertEqual("start_mission", start_mission.name)
+
+    def test_team_page_survives_the_start_button_reskin(self):
+        """2026-09-17 改版：按钮从橙底「进行任务」换成绿底「战斗开始」。
+
+        旧模板在新画面上只有 0.36（门槛 0.80），实跑就卡在队伍准备页 46 秒后
+        被超时恢复拖走。这条守住「换皮后的画面也必须认得出来」。
+        """
+        machine = StoryStateMachine(build_story_templates(TEMPLATES))
+
+        start_mission = machine.next_action(load_fixture("team_live_20260917"))
+
+        self.assertIsNotNone(start_mission)
+        self.assertEqual("start_mission", start_mission.name)
+
+    def test_both_start_button_skins_are_accepted(self):
+        """两版皮肤都要认：加了新模板不能把老画面顶掉。"""
+        machine = StoryStateMachine(build_story_templates(TEMPLATES))
+
+        for name in ("team_live_20260809", "team_live_20260917"):
+            with self.subTest(name=name):
+                action = machine.next_action(load_fixture(name))
+                self.assertIsNotNone(action)
+                self.assertEqual("start_mission", action.name)
+
+    def test_start_button_does_not_match_other_bottom_right_actions(self):
+        templates = build_story_templates(TEMPLATES)
+
+        for name in ("assistant_live_20260809", "stage_variant", "results"):
+            with self.subTest(name=name):
+                match = story_module.find_start_mission_button(
+                    load_fixture(name),
+                    templates.start_mission,
+                    templates.start_mission_updated,
+                    story_module.STORY_THRESHOLDS.get("start_mission", 0.80),
+                    story_module.STORY_REGIONS["start_mission"],
+                    story_module.STORY_REFERENCE_SIZE,
+                )
+                self.assertIsNone(match)
 
     def test_stamina_popup_selects_only_the_leaf_then_confirms_purchase(self):
         machine = StoryStateMachine(build_story_templates(TEMPLATES))
@@ -548,6 +602,31 @@ class Epic7StoryStateMachineTests(unittest.TestCase):
 
         self.assertEqual("skip_confirm", action.name)
         self.assertIn("剧情播放", action.target_pages)
+
+    def test_skip_confirmation_may_end_the_story_on_the_clear_prompt(self):
+        """跳过最后一段剧情后游戏直接给「通关提示」，不再回剧情播放。
+
+        2026-09-18 两次实跑（14:14:07、14:47:46）都卡在这一步：转场契约里没有
+        「通关提示」，于是干等 45 秒后整条路线以退出码 1 收场（证据包
+        complete=0.996 / next_stage=0.954，其余模板全部未命中）。通关提示是正牌
+        前进页，`complete` 动作专门处理它，必须算作 skip_confirm 的合法落点。
+        """
+        machine = StoryStateMachine(
+            build_story_templates(TEMPLATES),
+            initial_state=StoryState.WAIT_SKIP_CONFIRM,
+        )
+
+        action = machine.next_action(load_fixture("skip_confirm"))
+
+        self.assertEqual("skip_confirm", action.name)
+        self.assertIn("通关提示", action.target_pages)
+        self.assertIn(StoryState.WAIT_COMPLETE, action.target_states)
+
+        endpoint = machine.next_action(load_fixture("complete"))
+
+        self.assertEqual("complete", endpoint.name)
+        self.assertEqual("通关提示", machine._confirmed_page)
+        self.assertEqual(StoryState.WAIT_COMPLETE, machine.state)
 
 
 if __name__ == "__main__":

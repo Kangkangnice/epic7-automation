@@ -70,9 +70,18 @@ def screen_with(*items: tuple[np.ndarray, tuple[int, int]]) -> np.ndarray:
     return screen
 
 
-def recorded_screen(name: str) -> np.ndarray:
-    path = ROOT / "tests" / "fixtures" / "epic7_expedition" / f"{name}.png"
+def recorded_screen(name: str, group: str = "epic7_expedition") -> np.ndarray:
+    path = ROOT / "tests" / "fixtures" / group / f"{name}.png"
     return cv2.cvtColor(cv2.imread(str(path)), cv2.COLOR_BGR2RGB)
+
+
+def real_machine(state=ExpeditionState.HOME) -> ExpeditionStateMachine:
+    return ExpeditionStateMachine(
+        build_expedition_templates(
+            ROOT / "games" / "epic7" / "templates" / "expedition"
+        ),
+        initial_state=state,
+    )
 
 
 class ExpeditionStateMachineTests(unittest.TestCase):
@@ -273,6 +282,60 @@ class ExpeditionStateMachineTests(unittest.TestCase):
         ), ExpeditionState.HOME))
         self.assertEqual(1, machine.completed_cycles)
         self.assertEqual(ExpeditionState.HOME, machine.state)
+
+    def test_prepare_battle_may_land_directly_on_the_battle_page(self):
+        """2026-09-18：点完「准备战斗」游戏**可能直接进战斗**（队伍已保存时跳过队伍选择）。
+
+        四张失败收尾帧（09-17 23:39 / 09-18 19:42、20:00、20:16）全是局内，
+        且 `battle_scene_visible=True` 在四帧上都成立 —— 判据认得出战斗页，
+        是转场契约只写了「队伍选择」，于是白等 45 秒后抛错退出（退出码 1）。
+        """
+        machine = real_machine(ExpeditionState.READY)
+        action = machine.next_action(recorded_screen("ready"))
+
+        self.assertEqual("prepare-battle", action.name)
+        self.assertEqual(
+            (ExpeditionState.TEAM, ExpeditionState.BATTLE),
+            action.target_states,
+        )
+
+        # 队伍页仍优先判 TEAM（走原来的流程）
+        self.assertEqual(
+            ExpeditionState.TEAM,
+            machine.action_target_state(recorded_screen("team"), action),
+        )
+        # 战斗页判 BATTLE
+        self.assertEqual(
+            ExpeditionState.BATTLE,
+            machine.action_target_state(recorded_screen("battle"), action),
+        )
+        machine.commit(action, ExpeditionState.BATTLE)
+        self.assertEqual(ExpeditionState.BATTLE, machine.state)
+        self.assertFalse(machine.auto_click_attempted)
+
+    def test_quick_team_page_is_recognized_by_its_switch_control(self):
+        """队伍页的快速战斗变体：`battle_start` 只剩 0.1378，靠切换控件才认得出来。
+
+        全库 197 张夹具里切换控件过阈的只有 2 张（0.9883 / 1.0000），其余最高 0.5577。
+        认不出这一页，`next_action` 里已有的「切回普通战斗」分支就永远走不到。
+        """
+        machine = real_machine(ExpeditionState.TEAM)
+        quick = recorded_screen("team_quick_battle_live_20260918", "epic7_story")
+
+        self.assertIsNone(machine._locate(quick, "battle_start"))
+        self.assertTrue(machine.is_quick_battle_team_page(quick))
+        self.assertTrue(machine.is_in_state(quick, ExpeditionState.TEAM))
+
+        action = machine.next_action(quick)
+        self.assertEqual("battle-start", action.name)
+        self.assertEqual((ExpeditionState.BATTLE,), action.target_states)
+
+        # 反例：远征自己的准备战斗 / 队伍选择两页不得误判成快速页
+        for name in ("ready", "team"):
+            with self.subTest(fixture=name):
+                self.assertFalse(
+                    machine.is_quick_battle_team_page(recorded_screen(name))
+                )
 
     def test_defeated_popup_skips_public_recruitment(self):
         machine = self.machine(ExpeditionState.OUTCOME)

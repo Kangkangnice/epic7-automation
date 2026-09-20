@@ -17,7 +17,16 @@ from .common import AtomEvidence, EvidenceProfile, PageEvidence
 REFERENCE_SIZE = (1982, 1132)
 ITEM_THRESHOLD = 0.75
 ITEM_SCORE_MARGIN = 0.05
-LIST_FINGERPRINT_CHANGE_BITS = 10
+# 列表指纹用 64x64 的 DCT 低 16x16 系数，共 256 位。原先只取 32x32 的低 8x8
+# 系数（64 位），低频分量对「同一面板换了一批商品」几乎不敏感：2026-09-14 三次
+# 实跑顶部→底部只有 6~8 位差异，而 2026-08-31 fixture 同批内买掉一行却有 12~16
+# 位差异，两类样本分布重叠，任何阈值都会同时出现漏判和误判。
+LIST_FINGERPRINT_RESOLUTION = 64
+LIST_FINGERPRINT_BLOCK = 16
+LIST_FINGERPRINT_BITS = LIST_FINGERPRINT_BLOCK * LIST_FINGERPRINT_BLOCK
+# 实测换列表 100~132 位（39%~52%），同列表静帧 8~26 位、同批买掉一行 40~42 位。
+# 取 25% 作为阈值，两侧各留约 1.5 倍余量。
+LIST_FINGERPRINT_CHANGE_BITS = LIST_FINGERPRINT_BITS // 4
 # Live spending stays disabled until both target types have current-client row
 # and purchase-price fixtures. Both target transactions are now verified.
 MYSTIC_TRANSACTION_VERIFIED = True
@@ -165,11 +174,12 @@ def shop_fingerprint_distance(left: str, right: str) -> int:
     if left == right:
         return 0
     try:
-        if len(left) != 16 or len(right) != 16:
+        if not left or len(left) != len(right):
             raise ValueError
         return (int(left, 16) ^ int(right, 16)).bit_count()
     except ValueError:
-        return 64
+        # 无法比较时按「最大差异」处理：不可解释的指纹不得当成「列表没变」。
+        return LIST_FINGERPRINT_BITS
 
 
 class ShopRefreshObserver:
@@ -205,8 +215,14 @@ class ShopRefreshObserver:
         x, y, width, height = ShopRefreshObserver._LIST_REGION
         crop = screen[y : y + height, x : x + width]
         gray = cv2.cvtColor(crop, cv2.COLOR_RGB2GRAY)
-        reduced = cv2.resize(gray, (32, 32), interpolation=cv2.INTER_AREA)
-        coefficients = cv2.dct(reduced.astype(np.float32))[:8, :8].flatten()
+        reduced = cv2.resize(
+            gray,
+            (LIST_FINGERPRINT_RESOLUTION, LIST_FINGERPRINT_RESOLUTION),
+            interpolation=cv2.INTER_AREA,
+        )
+        coefficients = cv2.dct(reduced.astype(np.float32))[
+            :LIST_FINGERPRINT_BLOCK, :LIST_FINGERPRINT_BLOCK
+        ].flatten()
         median = float(np.median(coefficients[1:]))
         bits = (coefficients > median).astype(np.uint8)
         return np.packbits(bits).tobytes().hex()

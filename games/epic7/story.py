@@ -2,7 +2,7 @@ from dataclasses import asdict, dataclass
 from enum import Enum
 from pathlib import Path
 from time import sleep as default_sleep
-from typing import Callable, Optional
+from typing import Callable, NamedTuple, Optional
 
 import cv2
 import numpy as np
@@ -174,6 +174,32 @@ def find_prepare_battle_button(
     return Match((x + best.center[0], y + best.center[1]), best.score)
 
 
+def find_start_mission_button(
+    screen: np.ndarray,
+    primary_template: np.ndarray,
+    updated_template: np.ndarray,
+    threshold: float,
+    region: tuple[int, int, int, int],
+    reference_size: tuple[int, int],
+) -> Optional[Match]:
+    """队伍准备页那颗开始按钮换过皮，两个模板都试，取分高的那个。
+
+    旧皮是橙底「进行任务」（`start_mission.png`），2026-09-17 起是绿底「战斗开始」
+    （`start_mission_updated.png`）——旧模板在新画面上只有 0.36。两个模板**共用
+    start_mission 的阈值**，不许给新模板单独放宽，否则等于偷偷降低判据。
+    """
+    matches = []
+    for template in (primary_template, updated_template):
+        match = find_template(
+            screen, template, threshold, region=region, reference_size=reference_size
+        )
+        if match is not None:
+            matches.append(match)
+    if not matches:
+        return None
+    return max(matches, key=lambda candidate: candidate.score)
+
+
 def find_story_skip_button(
     screen: np.ndarray,
     template: np.ndarray,
@@ -269,6 +295,9 @@ class StoryTemplates:
     prepare_battle_updated: np.ndarray
     select_team: np.ndarray
     start_mission: np.ndarray
+    # 2026-09-17 游戏把这颗按钮换了皮（橙「进行任务」→ 绿「战斗开始」），
+    # 旧模板在新画面上只有 0.36。两个都留着，命中哪个用哪个。
+    start_mission_updated: np.ndarray
     skip: np.ndarray
     skip_confirm: np.ndarray
     auto_off: np.ndarray
@@ -305,6 +334,9 @@ def build_story_templates(
         ),
         select_team=load_template(str(template_dir / "select_team.png")),
         start_mission=load_template(str(template_dir / "start_mission.png")),
+        start_mission_updated=load_template(
+            str(template_dir / "start_mission_updated.png")
+        ),
         skip=load_template(str(template_dir / "skip.png")),
         skip_confirm=load_template(str(template_dir / "skip_confirm.png")),
         auto_off=load_template(str(template_dir / "auto_off.png")),
@@ -356,6 +388,27 @@ class StoryStateMachine:
         self.stamina_replenish_max: int | None = None
         self._stamina_material_clicked = False
         self._stamina_purchase_pending = False
+        self._confirmed_page = ""
+        # 「接力」进来的落点；None = 本轮是正常从关卡入口开始的。Runner 靠它判断
+        # 「局内接力」要不要跳过状态机直接把这一局交给战斗监督。
+        self.resumed_from: Optional[StoryState] = None
+
+    def resume_from(self, state: StoryState) -> None:
+        """拨到用户停下的那一步，原样接管进度继续往下跑。
+
+        与 ``_apply_recovery_state`` 的区别：那个是「退回关卡入口重开一轮」，
+        这个是「保留当前进度」—— 比如停在通关提示就继续收奖励，而不是退回大厅
+        把这一局的结算丢掉。
+
+        战斗相关的标志一并复位：接力进来的这一局不是本进程点开的，
+        ``battle_controls`` 要从 TRANSITION 重新观测，``auto_click_attempted``
+        也不能带着上一局的账本（否则第一次观察就会跳过自动战斗点击）。
+        """
+        self.state = state
+        self.resumed_from = state
+        self.auto_enabled = False
+        self.auto_click_attempted = False
+        self.battle_controls = BattleControls.TRANSITION
         self._confirmed_page = ""
 
     def _confirm_page(self, page: str) -> None:
@@ -412,6 +465,15 @@ class StoryStateMachine:
                 self.templates.prepare_battle,
                 self.templates.prepare_battle_updated,
                 self._THRESHOLDS["prepare_battle"],
+            )
+        if name == "start_mission":
+            return find_start_mission_button(
+                screen,
+                self.templates.start_mission,
+                self.templates.start_mission_updated,
+                self._THRESHOLDS.get(name, self.templates.threshold),
+                self._REGIONS[name],
+                self._REFERENCE_SIZE,
             )
         if name == "skip":
             return find_story_skip_button(
@@ -480,8 +542,11 @@ class StoryStateMachine:
             BattleControls.TRANSITION: AutoBattleState.UNKNOWN,
         }[controls]
         auto_match = self._locate(screen, "auto_off")
+        auto_score = "无" if auto_match is None else f"{auto_match.score:.4f}"
+        auto_evidence = f"布局={controls.value} 自动关图标={auto_score}"
         if auto_match is not None and self.backend == "emulator":
             auto_state = AutoBattleState.MANUAL
+            auto_evidence += " 来源=右上角自动关闭图标"
         stamina_popup = (
             self._locate(screen, "stamina_popup")
             if self.templates.stamina_popup is not None
@@ -544,6 +609,7 @@ class StoryStateMachine:
             business_progress=progressing,
             allowed_action=allowed_action,
             pre_battle_business_visible=stamina_popup is not None,
+            auto_evidence=auto_evidence,
         )
 
     def _action_point(self, screen: np.ndarray, name: str, match: Match) -> tuple[int, int]:
@@ -665,12 +731,17 @@ class StoryStateMachine:
                 (StoryState.WAIT_NEXT_STAGE, StoryState.STAGE),
                 "额外奖励弹窗已识别",
             ),
+            # 2026-09-18 两次实跑（14:14:07、14:47:46）卡在同一处：把最后一段剧情
+            # 跳掉后游戏不回到剧情播放，而是直接给「通关提示」——原来这里没声明它，
+            # 于是转场契约永远不成立、干等 45 秒后整条路线以退出码 1 收场
+            # （证据包 complete=0.996 / next_stage=0.954，其余模板全部未命中）。
+            # 通关提示本来就是正牌前进页（`complete` 动作专门处理它），补进契约。
             (
                 "skip_confirm",
                 "跳过确认",
-                ("剧情播放", "战斗中", "关卡入口", "剧情关卡入口"),
+                ("剧情播放", "战斗中", "关卡入口", "剧情关卡入口", "通关提示"),
                 StoryState.WAIT_SKIP_CONFIRM,
-                (StoryState.ACTIVE, StoryState.STAGE),
+                (StoryState.ACTIVE, StoryState.STAGE, StoryState.WAIT_COMPLETE),
                 "跳过确认按钮已识别",
             ),
             (
@@ -867,6 +938,88 @@ class StoryStateMachine:
             ) = snapshot
 
 
+# 导航页面名「主线入口」（= `navigation.page_label("story_ready")`）。
+# 站在这一页上说明已经在主线里了，只差「准备战斗」一步，不用再回大厅重进。
+STORY_ENTRY_PAGE = "story_ready"
+
+
+class StoryResumePoint(NamedTuple):
+    """主线开局接力的落点。"""
+
+    page: str                       # 中文页面名，给日志和诊断看
+    state: Optional[StoryState]     # 要拨过去的状态机状态；None = 不动状态机
+    entry: Optional[str] = None     # 已经在导航链的这个页面上，从这里接着导航
+
+
+# 「接力」探测顺序 —— **顺序即优先级**，不能改。每项是（锚点名, 落点状态, 中文页面名）。
+#
+# 三条铁律都是夹具实测逼出来的：
+#
+# 1. **局内排第一**（它不走锚点，看 `battle_scene_visible`）：已经在打的那一局必须最先
+#    接手。战斗画面里 `auto_off` 能到 0.9857（`battle_variant`）、结算类锚点也会零星命中，
+#    先认锚点就可能把「已经在打」错认成某个结算页。反过来万一某个结算帧被认成局内也不亏：
+#    战斗监督进循环第一件事就是连续两帧判 `result_visible`，认出来直接以 RESULT_REACHED
+#    收尾，奖励不会丢。
+# 2. **关卡入口（`prepare_battle` / `watch_story`）排在 `next_stage` 前面**：
+#    两者会**同时出现在关卡入口页**上（实测 `next_stage.png` 上 prepare_battle=0.9793、
+#    `stage.png` 上 next_stage=0.9352）。若先判 next_stage，关卡入口会被拨成
+#    「等待下一关」—— 而 `next_action` 在 WAIT_NEXT_STAGE 下碰到 `prepare_battle`
+#    只记轮次、**不点击**（见 next_action 里那段 recovery 分支），结果是原地干等到
+#    45 秒超时再触发回大厅。先判关卡入口就落成 STAGE，正常点准备战斗。
+# 3. **`complete` 排在 `next_stage` 前面**：通关提示页上两者同时可见
+#    （实测 complete=1.0000、next_stage=0.9780），先判 complete 才会拨成 WAIT_COMPLETE。
+#
+# 其余各项在夹具上互斥，相对顺序不影响结果；按「流程先后」排只是方便读。
+_STORY_RESUME_ORDER: tuple[tuple[str, StoryState, str], ...] = (
+    ("prepare_battle", StoryState.STAGE, "关卡入口"),
+    ("watch_story", StoryState.STAGE, "剧情关卡入口"),
+    ("start_mission", StoryState.TEAM, "队伍准备"),
+    ("select_team", StoryState.TEAM, "助手选择"),
+    ("skip_confirm", StoryState.WAIT_SKIP_CONFIRM, "跳过确认"),
+    ("skip", StoryState.ACTIVE, "剧情播放"),
+    ("complete", StoryState.WAIT_COMPLETE, "通关提示"),
+    ("bonus_reward", StoryState.WAIT_NEXT_STAGE, "额外奖励"),
+    ("results_confirm", StoryState.WAIT_RESULTS, "结算确认"),
+    ("clear", StoryState.WAIT_RESULTS, "通关结算"),
+    ("reward", StoryState.WAIT_RESULTS, "奖励结算"),
+    ("next_stage", StoryState.WAIT_NEXT_STAGE, "下一关入口"),
+)
+
+
+def detect_resume_point(
+    machine: "StoryStateMachine",
+    screen: np.ndarray,
+    *,
+    observed_page: Optional[str] = None,
+) -> Optional[StoryResumePoint]:
+    """主线开局接力：认出用户停在主线一环里的哪一页。
+
+    识别不到返回 None，调用方回退到「回大厅 → 从主线入口重新导航」（失败关闭，
+    行为与加这个功能之前一致）。
+
+    ``observed_page`` 传导航器认出来的页面名（``Epic7Navigator.observe().name``）。
+    主线里只有 ``story_ready`` 这一个导航链上的页面需要它，其余页面状态机自己认，
+    所以这个参数可以省略（导航器拿不到观察结果时传 None）。
+
+    **落点状态是必需的，不是顺手记的**：主线 ``next_action`` 虽然能从锚点自己推出
+    页面（``reward``→WAIT_RESULTS 之类），但有两条支路**依赖进来时的状态**才肯点击 ——
+    ``prepare_battle`` 在 WAIT_COMPLETE/WAIT_NEXT_STAGE 下只记轮次不点击，
+    ``observe_battle_controls`` 那一支只在 WAIT_SKIP_CONFIRM/WAIT_BATTLE/ACTIVE 下才跑。
+    所以接力必须先把状态拨对，不能指望第一帧自己纠正。
+    """
+    if battle_scene_visible(screen):
+        return StoryResumePoint("战斗中", StoryState.WAIT_BATTLE)
+    if observed_page is not None and observed_page == STORY_ENTRY_PAGE:
+        # 导航器认出来就直接落 STAGE + 导航接力点，不再重复跑锚点。
+        return StoryResumePoint("关卡入口", StoryState.STAGE, STORY_ENTRY_PAGE)
+    for name, state, label in _STORY_RESUME_ORDER:
+        if machine._locate(screen, name) is None:
+            continue
+        entry = STORY_ENTRY_PAGE if name in ("prepare_battle", "watch_story") else None
+        return StoryResumePoint(label, state, entry)
+    return None
+
+
 class StoryRunner(ModeRunnerBase):
     """主线短轮询、失败即停 Runner（主循环协议见 ModeRunnerBase）。"""
 
@@ -910,6 +1063,36 @@ class StoryRunner(ModeRunnerBase):
             now=self.now,
             sleep=sleep,
         )
+
+    def run(self, max_cycles: int | None = None) -> int:
+        # 接力落在局内：先把这一局监督完再进主循环。空跑不碰战斗监督（干跑只观察）。
+        # 用 getattr 而不是直接取属性：主循环协议里的状态机是鸭子类型
+        # （测试里的 FakeMachine 只实现 preview/next_action），缺这个标记时按「没接力」处理。
+        if (
+            not self.runtime.dry_run
+            and getattr(self.machine, "resumed_from", None) is StoryState.WAIT_BATTLE
+        ):
+            self._resume_into_committed_battle()
+        return super().run(max_cycles=max_cycles)
+
+    def _resume_into_committed_battle(self) -> None:
+        """接力直接落在局内：这一局不是本进程点开的，但已经打起来了。
+
+        不能走 ``next_action`` 那条路：战斗分支只在
+        WAIT_SKIP_CONFIRM/WAIT_BATTLE/ACTIVE 下才跑，而且它靠 ``auto_off`` 图标定位，
+        而**自动战斗开着时这个图标根本不可见**；就算认出来也要等主循环那一套状态超时。
+        更关键的是开局落在局内时**绝不能按 Back 回大厅** —— 那是「已承诺战斗」的禁区，
+        会把这一局白打。所以直接交给战斗监督等结算，跟点完 start_mission 之后一样。
+
+        代价：这个判据分不出「这是哪条路线的战斗」，停在别的路线战斗里启动主线也会
+        先把这一局监督完再回大厅重新导航。这仍比老流程好：老流程在局内会一直卡在
+        「未知画面等待唤醒」直到返回大厅预算耗尽，然后退出码 1。
+        """
+        self.runtime.log(
+            "模式=主线 开局=接力 页面=战斗中 "
+            "动作=交由战斗监督等待结算 状态=不按Back不重新导航"
+        )
+        self._run_committed_battle(cycle=self.machine.completed_cycles + 1)
 
     def _state_label(self, state: StoryState) -> str:
         return state_label(state)

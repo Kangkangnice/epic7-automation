@@ -85,10 +85,23 @@ class Epic7Window:
     _LEGACY_SIZE = (1982, 1132)
     _LEGACY_TOP = 52
     _PW_RENDERFULLCONTENT = 0x00000002  # PrintWindow：含 DirectX 渲染内容
+    _SW_SHOWNOACTIVATE = 4  # 还原但不抢前台：用户可能正在别的窗口里做事
+    _SW_RESTORE = 9  # 还原并置前，仅在不抢前台的还原没生效时用
+    # 还原后等窗口真的退出最小化状态：每次 0.05s，最多约 1s。
+    _RESTORE_WAIT_ATTEMPTS = 20
+    _RESTORE_SETTLE_SECONDS = 0.4  # 还原动画期间画面还没回来，别立刻截图
 
     def __init__(self, title: str = "第七史诗") -> None:
         self.title = title
         self.viewport = WindowViewport(self._rect)
+        self._event_sink: Callable[[str], None] | None = None
+
+    def set_event_sink(self, sink: Callable[[str], None] | None) -> None:
+        self._event_sink = sink
+
+    def _emit(self, message: str) -> None:
+        if self._event_sink is not None:
+            self._event_sink(message)
 
     def _window(self):
         supported_titles = {self.title, self._UPDATED_TITLE}
@@ -102,8 +115,33 @@ class Epic7Window:
             raise RuntimeError(f"应恰好找到一个支持的雷电模拟器窗口，实际找到 {len(windows)} 个")
         window = windows[0]
         if window.isMinimized:
-            raise RuntimeError(f"窗口 {window.title} 处于最小化状态")
+            # 最小化是用户的正常操作（切去看别的、误触最小化按钮），不是故障：
+            # 先把它还原回桌面继续跑，实在还原不了才当作故障抛错。
+            self._restore_window(window)
         return window
+
+    def _restore_window(self, window) -> None:
+        """把最小化的模拟器窗口还原回桌面。
+
+        优先用「不抢前台」的还原，免得用户正在别的窗口里打字时被抢走焦点；
+        只有这种方式没生效时才退化成会置前的还原。
+        """
+        handle = window._hWnd
+        self._emit(f"窗口最小化已自动还原 标题={window.title}")
+        ctypes.windll.user32.ShowWindow(handle, self._SW_SHOWNOACTIVATE)
+        for _ in range(self._RESTORE_WAIT_ATTEMPTS):
+            if not ctypes.windll.user32.IsIconic(handle):
+                sleep(self._RESTORE_SETTLE_SECONDS)
+                return
+            sleep(0.05)
+        # 不抢前台的还原对个别窗口无效，再试一次会置前的还原。
+        ctypes.windll.user32.ShowWindow(handle, self._SW_RESTORE)
+        for _ in range(self._RESTORE_WAIT_ATTEMPTS):
+            if not ctypes.windll.user32.IsIconic(handle):
+                sleep(self._RESTORE_SETTLE_SECONDS)
+                return
+            sleep(0.05)
+        raise RuntimeError(f"窗口 {window.title} 处于最小化状态，且自动还原未生效")
 
     @staticmethod
     def _window_process_name(window) -> str:
@@ -134,7 +172,7 @@ class Epic7Window:
     @staticmethod
     def _best_effort_activate(handle: int) -> None:
         try:
-            ctypes.windll.user32.ShowWindow(handle, 9)  # SW_RESTORE
+            ctypes.windll.user32.ShowWindow(handle, self._SW_RESTORE)
             ctypes.windll.user32.SetForegroundWindow(handle)
         except Exception:
             pass

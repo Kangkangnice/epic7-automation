@@ -4,7 +4,7 @@ from pathlib import Path
 from datetime import date
 import random
 from time import sleep as default_sleep
-from typing import Callable, Optional, Sequence
+from typing import Callable, NamedTuple, Optional, Sequence
 
 import cv2
 import numpy as np
@@ -19,7 +19,7 @@ from auto_game_unified.core.battle_supervisor import (
 )
 from auto_game_unified.core.matcher import Match, find_template, load_template
 from auto_game_unified.core.recovery import RecoveryGate
-from auto_game_unified.core.runtime import Runtime
+from auto_game_unified.core.runtime import ManualStop, Runtime
 from auto_game_unified.core.supervisor import (
     StableObservation,
     meaningful_change,
@@ -239,6 +239,9 @@ class ArenaTemplates:
     refresh_title: np.ndarray
     refresh_free: np.ndarray
     refresh_confirm: np.ndarray
+    # 结果页的**竞技场专有**内容锚点，只给接力探测用（见 evidence/arena.py 里的说明）。
+    result_rating: np.ndarray
+    result_victory: np.ndarray
     threshold: float = 0.98
     quick_battle: QuickBattleDetector | None = None
     evidence: EvidenceProfile | None = None
@@ -266,6 +269,8 @@ def build_templates(
         refresh_title=load_template(str(template_dir / "arena_refresh_title.png")),
         refresh_free=load_template(str(template_dir / "arena_refresh_free.png")),
         refresh_confirm=load_template(str(template_dir / "arena_refresh_confirm.png")),
+        result_rating=load_template(str(template_dir / "arena_result_rating.png")),
+        result_victory=load_template(str(template_dir / "arena_result_victory.png")),
         quick_battle=load_simulator_quick_battle_detector(template_dir),
         threshold=0.93 if backend == "pc" else 0.98,
         evidence=evidence,
@@ -344,6 +349,9 @@ class ArenaStateMachine:
             }
         self._selected_opponent: int | None = None
         self._cycle_pending = initial_state == ArenaState.CONFIRMING
+        # 「接力」进来的落点；None = 本轮是正常从入口开始的。Runner 靠它判断
+        # 「局内接力」要不要跳过状态机直接把这一局交给战斗监督。
+        self.resumed_from: Optional[ArenaState] = None
 
     def commit(self, action: Action, target: ArenaState) -> None:
         if action.source_state is not self.state:
@@ -367,6 +375,27 @@ class ArenaStateMachine:
         self.state = ArenaState.LIST
         self._selected_opponent = None
         self._cycle_pending = False
+
+    def resume_from(self, state: ArenaState) -> None:
+        """拨到用户停下的那一步，原样接管进度继续往下跑。
+
+        与 ``reset_after_recovery`` 的区别：那个是「退回列表重开一轮」，这个是
+        「保留当前进度」—— 比如停在对手详情页就继续点挑战，而不是退回列表重选对手。
+
+        落在 RESULT / CONFIRMING 时的计数口径：这两页都已经在「这一局打完」之后
+        （RESULT 是结算页、还没点确认；CONFIRMING 是确认之后、段位弹窗那一步）。
+        所以 ``_cycle_pending`` 只在 CONFIRMING 置真 —— 用户手动打完并确认过的这一局
+        算作已完成的一轮，回到列表时 +1，跟本进程自己打完一局的口径完全一致；
+        落在 RESULT 时置假，因为这一次的确认还得由本进程去点，那一轮会照常走完再 +1。
+        两种落点都只 +1 一次，不会重复计数（``commit("confirm-result")`` 之后
+        CONFIRMING 分支会立刻把 pending 清掉）。
+
+        ``resumed_from`` 记下落点，Runner 用它区分「接力落在局内」和「正常从入口开始」。
+        """
+        self.state = state
+        self.resumed_from = state
+        self._selected_opponent = None
+        self._cycle_pending = state is ArenaState.CONFIRMING
 
     def _locate(self, screen: np.ndarray, template_name: str) -> Optional[Match]:
         threshold = self._THRESHOLDS.get(template_name, self.templates.threshold)
@@ -578,8 +607,11 @@ class ArenaStateMachine:
             BattleControls.TRANSITION: AutoBattleState.UNKNOWN,
         }[controls]
         auto_match = self._locate(screen, "auto_off")
+        auto_score = "无" if auto_match is None else f"{auto_match.score:.4f}"
+        auto_evidence = f"布局={controls.value} 自动关图标={auto_score}"
         if auto_match is not None and self.backend == "emulator":
             auto_state = AutoBattleState.MANUAL
+            auto_evidence += " 来源=右上角自动关闭图标"
         result = self._locate(screen, "confirm")
         no_ticket = self._locate(screen, "no_ticket")
         progressing = (
@@ -623,6 +655,7 @@ class ArenaStateMachine:
                 else None
             ),
             pre_battle_business_visible=no_ticket is not None,
+            auto_evidence=auto_evidence,
         )
 
     def next_action(self, screen: np.ndarray) -> Action:
@@ -750,8 +783,175 @@ class ArenaStateMachine:
                 self.state,
                 self.completed_cycles,
                 self._selected_opponent,
-                self._cycle_pending,
-            ) = snapshot
+            self._cycle_pending,
+        ) = snapshot
+
+
+# 「接力」探测顺序 —— **顺序即优先级**，不能改。
+# SELECTED 必须排在 LIST 前面：选中对手时 list_ready 仍然可见（实测 selected.png 上
+# list_ready=0.9553 而 challenge=1.0000），只有 challenge 反超才能区分出「已选中」。
+# 若先判 LIST 就会把「已选好对手、停在详情页」误当列表，退回去重点一次对手。
+_ARENA_RESUME_ORDER = (ArenaState.SELECTED, ArenaState.TEAM, ArenaState.LIST)
+
+# 「结果确认中」的判据页：段位提升弹窗（arrow + rank_confirm 双锚点，HSV 过滤）。
+_ARENA_RESULT_CONFIRMING_PAGE = "arena.rank_promotion"
+
+# 「战斗结果」的排他判据页：confirm + 竞技场专有内容锚点。
+_ARENA_RESULT_PAGE = "arena.result_arena"
+
+
+def _rank_promotion_visible(
+    machine: "ArenaStateMachine",
+    screen: np.ndarray,
+) -> bool:
+    """接力专用：段位提升弹窗是否成立（走 HSV 双锚点那条既有判据）。
+
+    两个锚点必须**同时**命中才算，单看任一锚点会被别处的高分骗到
+    （`rank_confirm` 按钮本身在 `selected.png` 上就有 0.7048）。
+    """
+    return (
+        find_rank_promotion_confirm(
+            screen,
+            machine.templates.rank_promotion_arrow,
+            machine.templates.rank_confirm,
+            machine._THRESHOLDS["rank_promotion_arrow"],
+        )
+        is not None
+    )
+
+
+def _resume_evidence_flags(
+    machine: "ArenaStateMachine",
+    screen: np.ndarray,
+) -> dict[str, bool]:
+    """接力专用：把结果页 / 段位弹窗相关锚点的可见性算成布尔 flags。
+
+    段位弹窗那两项用 `find_rank_promotion_confirm` 的整体结论一起置位 ——
+    这条判据带 HSV 颜色过滤，不是两个独立模板命中的简单与。
+    """
+    promotion = _rank_promotion_visible(machine, screen)
+    return {
+        "confirm": machine._locate(screen, "confirm") is not None,
+        "result_rating": machine._locate(screen, "result_rating") is not None,
+        "result_victory": machine._locate(screen, "result_victory") is not None,
+        "rank_promotion_arrow": promotion,
+        "rank_confirm": promotion,
+    }
+
+
+def detect_resume_state(
+    machine: "ArenaStateMachine",
+    screen: np.ndarray,
+) -> Optional[tuple[ArenaState, str]]:
+    """判断启动前用户把游戏停在了竞技场的哪一步，用于「接着往下跑」。
+
+    返回 `(状态, 中文页面名)`；识别不到返回 None，调用方回退到原来的
+    「回大厅 → 按路线导航」（失败关闭，行为与加这个功能之前一致）。
+
+    竞技场一环共六步（列表 → 详情 → 队伍 → 战斗 → 结果 → 确认中），这里认其中五步，
+    顺序即优先级：对手详情 → 队伍选择（准备战斗）→ 对手列表 → 战斗结果 → 结果确认中。
+    剩下的「战斗中」不在这个函数里认，由 `detect_resume_point` 用
+    `battle_scene_visible` 兜住（见下）。
+
+    **故意不认的两种画面**（认错的代价大于收益）：
+    - **局内**：实测 4 张局内实时帧只有 1 张能靠 `auto_off` 认出 battle
+      （技能动画 `battle_skill_animation_live_20260825`、角色阵亡
+      `battle_auto_dead_*_live_20260814`、卡住 `battle_manual_stuck_live_20260814` 三张都认不出）。
+      而认错的代价是在战斗里按 Back 回大厅 —— 正是「已承诺战斗」要禁止的事。
+      局内交给 `detect_resume_point` 用 `battle_scene_visible` 兜住，不走这里。
+    - **买票弹窗压住的队伍页**：`battle_start` 仍然可见（实测 0.9996），会被误判成 team，
+      接力过去就直接点到弹窗上，故用 `no_ticket` 显式排除。
+
+    后两步（结果页 / 段位弹窗）**与前三页锚点互斥**，所以追加在循环后面不会互相遮蔽：
+    实测结果页上 list_ready=0.2722、challenge=0.2624、battle_start=0.2302（阈值 0.88/0.90），
+    段位弹窗上 list_ready=0.6425、challenge=0.6857（同样在阈值下）。
+    这两步之间也互斥：结果页 confirm=1.0000 而晋级箭头完全不可见，
+    段位弹窗上箭头=0.9993 而 confirm=0.1484。顺序按流程先后排（结果页在前）。
+    """
+    for state in _ARENA_RESUME_ORDER:
+        if not machine.is_in_state(screen, state):
+            continue
+        if state is ArenaState.TEAM and machine._visible(screen, "no_ticket"):
+            continue
+        return state, state_label(state)
+
+    profile = machine.templates.evidence
+    flags = _resume_evidence_flags(machine, screen)
+
+    if profile is not None:
+        if (
+            profile.page(_ARENA_RESULT_PAGE).evaluate(flags)
+            is EvidenceState.SAFE
+        ):
+            return ArenaState.RESULT, state_label(ArenaState.RESULT)
+        if (
+            profile.page(_ARENA_RESULT_CONFIRMING_PAGE).evaluate(flags)
+            is EvidenceState.SAFE
+        ):
+            return ArenaState.CONFIRMING, state_label(ArenaState.CONFIRMING)
+        return None
+
+    # 没有证据档案时的兜底（只在手工拼 ArenaTemplates 的测试里出现）：
+    # 判据与上面两个页面保持一致，避免两处语义漂移。
+    if flags["confirm"] and (flags["result_rating"] or flags["result_victory"]):
+        return ArenaState.RESULT, state_label(ArenaState.RESULT)
+    if flags["rank_promotion_arrow"] and flags["rank_confirm"]:
+        return ArenaState.CONFIRMING, state_label(ArenaState.CONFIRMING)
+    return None
+
+
+# 导航页面名「竞技场模式选择」（= `navigation.page_label("arena_mode")`）。
+# 站在这一页上说明已经在竞技场支线里了，只差「进新手竞技场」一步。
+ARENA_ENTRY_PAGE = "arena_mode"
+
+
+class ArenaResumePoint(NamedTuple):
+    """竞技场开局接力的落点。"""
+
+    page: str                       # 中文页面名，给日志和诊断看
+    state: Optional[ArenaState]     # 要拨过去的状态机状态；None = 不动状态机
+    entry: Optional[str] = None     # 已经在导航链的这个页面上，从这里接着导航
+
+
+def detect_resume_point(
+    machine: "ArenaStateMachine",
+    screen: np.ndarray,
+    *,
+    observed_page: Optional[str] = None,
+) -> Optional[ArenaResumePoint]:
+    """竞技场开局接力：认出用户停在竞技场一环里的哪一页。
+
+    ``observed_page`` 传导航器的页面名（``Epic7Navigator.observe().name``）。
+    竞技场状态机只认对战那几步，**模式选择页只有导航器认得出来**，所以要多带一个信息。
+
+    优先级 = 「还没做任何不可逆动作」在前、「已经在打」在后：
+    模式选择 → 对手详情 → 准备战斗 → 对手列表 → 战斗结果 → 结果确认中 → 战斗中。
+
+    **战斗结果 / 结果确认中这两页曾经不可接力，2026-09-16 补齐**：
+
+    - **战斗结果**卡在「没有排他证据」：识别它的 ``confirm`` 锚点是**和远征结果页共用**的
+      （实测远征 ``result.png`` 也拿 0.9448，高过 0.90 阈值）。现在加了两个竞技场专有内容
+      锚点（``result_rating``=「积分」面板标题，胜负都在；``result_victory``=「VICTORY」横幅），
+      在 ``arena.result_arena`` 页里与 ``confirm`` 组成合取判据。
+    - **结果确认中**其实是段位提升弹窗，`find_rank_promotion_confirm` 早就认得出
+      （双锚点实测 0.9993 / 1.0000），此前只是没接进接力链。
+
+    **局内**用 ``battle_scene_visible`` 认（实测 197 张夹具命中 20 张：19 张是真局内，
+    含主线/远征/狗粮；1 张误报 ``epic7_fodder/replay.png`` —— 战后结算页走兜底分支被判成
+    局内。它不影响已接力的四条路线，但做狗粮接力前必须先解决）。注意这个判据分不出
+    「这是哪条路线的战斗」—— 停在别的路线战斗里启动竞技场，也会先把这一局监督完再回大厅
+    重新导航；这比老流程好：老流程在局内会一直卡在「未知画面等待唤醒」直到返回大厅预算
+    耗尽，然后退出码 1。
+    """
+    if observed_page == ARENA_ENTRY_PAGE:
+        return ArenaResumePoint("竞技场模式选择", None, ARENA_ENTRY_PAGE)
+    found = detect_resume_state(machine, screen)
+    if found is not None:
+        state, label = found
+        return ArenaResumePoint(label, state)
+    if battle_scene_visible(screen):
+        return ArenaResumePoint("战斗中", ArenaState.BATTLE)
+    return None
 
 
 class ArenaRunner:
@@ -846,10 +1046,29 @@ class ArenaRunner:
             conclusion=conclusion,
         )
 
+    def _resume_into_committed_battle(self) -> None:
+        """接力直接落在局内：这一局不是本进程点开的，但已经打起来了。
+
+        不能走 ``next_action(BATTLE)`` —— 那条路靠 ``auto_off`` 图标定位，而**自动战斗开着
+        时这个图标根本不可见** → 抛未识别 → 60 秒后触发「回大厅重新导航」，
+        等于在已经承诺的战斗里按 Back。这里直接交给战斗监督等结算：
+        它自己会在明确 ``MANUAL`` 时点自动，并用心跳和多重超时兜底。
+        """
+        self.runtime.log(
+            "模式=竞技场 开局=接力 页面=战斗中 "
+            "动作=交由战斗监督等待结算 说明=本局非本进程开启"
+        )
+        self._run_committed_battle(cycle=self.machine.completed_cycles + 1)
+
     def run(self, max_cycles: int | None = None) -> int:
         state_started = self.now()
         stable = StableObservation(required=2)
         recovered = False
+        if self.machine.resumed_from is ArenaState.BATTLE:
+            # 先把这一局监督完，再把 state_started 拨到「当前」，否则后面判结果页超时
+            # 会拿一个陈旧的起点，一进 RESULT 就直接判超时。
+            self._resume_into_committed_battle()
+            state_started = self.now()
         while max_cycles is None or self.machine.completed_cycles < max_cycles:
             state_before = self.machine.state
             try:
@@ -872,6 +1091,13 @@ class ArenaRunner:
                     f"已完成={self.machine.completed_cycles} 现场={diagnostic}"
                 )
                 return self.machine.completed_cycles
+            except ManualStop:
+                # ⚠️ 必须排在 `except RuntimeError` 前面。`ManualStop` 是 `RuntimeError`
+                # 的子类，掉进下面那条分支会被当成「页面没认出来」：sleep 一轮再
+                # continue，主循环回头 `capture()` 又抛一次 —— 一次停止会变成按轮询
+                # 频率刷屏 + 每秒一张全屏诊断图，直到该状态超时（列表页 40 秒）才做
+                # 恢复，用户看到的就是「按了停止它却一直在存图片」。
+                raise
             except RuntimeError as error:
                 if isinstance(error, UnrecognizedScreen):
                     wake_result = self.unknown_screen_wake.handle(

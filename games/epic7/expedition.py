@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 from time import sleep as default_sleep
-from typing import Callable, Optional
+from typing import Callable, NamedTuple, Optional
 
 import cv2
 import numpy as np
@@ -200,6 +200,23 @@ class ExpeditionStateMachine:
         self.completed_cycles = 0
         self.auto_click_attempted = False
         self._confirmed_page = ""
+        # 「接力」进来的落点；None = 本轮是正常从远征主页开始的。
+        self.resumed_from: Optional[ExpeditionState] = None
+
+    def resume_from(self, state: ExpeditionState) -> None:
+        """拨到用户停下的那一步，原样接管进度继续往下跑。
+
+        远征的 ``next_action`` 是**纯状态驱动**的（按 ``self.state`` 分派，不像主线那样
+        从锚点自己推页面），所以接力必须把状态拨准，否则第一帧就会走到 ``_required``
+        失败或点错按钮。
+
+        ``auto_click_attempted`` 必须复位：接力进来的这一局不是本进程点开的，
+        带着上一局的账本会让「开自动战斗」这一次点击被跳过。
+        """
+        self.state = state
+        self.resumed_from = state
+        self.auto_click_attempted = False
+        self._confirmed_page = ""
 
     def _locate(self, screen: np.ndarray, name: str) -> Optional[Match]:
         template = getattr(self.templates, name)
@@ -309,7 +326,13 @@ class ExpeditionStateMachine:
         if state == ExpeditionState.READY:
             return self._locate(screen, "prepare_battle") is not None
         if state == ExpeditionState.TEAM:
-            return self._locate(screen, "battle_start") is not None
+            if self._locate(screen, "battle_start") is not None:
+                return True
+            # 2026-09-18：队伍页有「快速战斗」变体，普通「战斗开始」会被宽按钮盖掉
+            # （全库夹具上 battle_start 只剩 0.13），只剩右侧切换控件是排他证据
+            # （快速页 0.9883~1.0000，非快速页最高 0.5577）。不认这一页，TEAM 就永远
+            # 进不去，下面已有的「切回普通战斗」分支也就永远走不到 —— 死等到超时。
+            return self.is_quick_battle_team_page(screen)
         if state == ExpeditionState.BATTLE:
             return any(
                 self._locate(screen, name) is not None
@@ -356,6 +379,21 @@ class ExpeditionStateMachine:
 
     def is_campfire_idle(self, screen: np.ndarray) -> bool:
         return self._locate(screen, "campfire_idle") is not None
+
+    def is_quick_battle_team_page(self, screen: np.ndarray) -> bool:
+        """队伍页是否处于「快速战斗」变体。
+
+        只看切换控件：`normal_start=None` 让共享分类器退化成「切换控件单独成立即判
+        QUICK」（见 `evidence/pre_battle.py`），不引入新阈值。探针
+        `runtime_logs/_audit_exp_quick.py` 实测：197 张夹具里只有 2 张过阈
+        （0.9883 / 1.0000），其余最高 0.5577，零误报。
+        """
+        observation = observe_pre_battle(
+            self.templates.quick_battle,
+            screen,
+            normal_start=None,
+        )
+        return observation.mode is PreBattleMode.QUICK
 
     def _confirm_page(self, label: str) -> None:
         self._confirmed_page = label
@@ -436,8 +474,11 @@ class ExpeditionStateMachine:
             BattleControls.TRANSITION: AutoBattleState.UNKNOWN,
         }[controls]
         auto = self._locate(screen, "auto_off")
+        auto_score = "无" if auto is None else f"{auto.score:.4f}"
+        auto_evidence = f"布局={controls.value} 自动关图标={auto_score}"
         if auto is not None and self.backend == "emulator":
             auto_state = AutoBattleState.MANUAL
+            auto_evidence += " 来源=右上角自动关闭图标"
         battle = self._locate(screen, "battle_anchor")
         result = self._locate(screen, "result_confirm")
         progressing = valid_game_frame(screen) and meaningful_change(
@@ -468,6 +509,7 @@ class ExpeditionStateMachine:
                 and battle_start is not None
                 else None
             ),
+            auto_evidence=auto_evidence,
         )
 
     def _posters_action(self, screen: np.ndarray) -> Optional[ExpeditionAction]:
@@ -551,7 +593,11 @@ class ExpeditionStateMachine:
             return self._action(
                 "prepare-battle", match.center,
                 source_page="准备战斗",
-                target_states=(ExpeditionState.TEAM,),
+                # 2026-09-18：这一下点击**可能直接落到战斗页**（队伍已保存时游戏跳过队伍
+                # 选择），实测 19:42/20:00/20:16/09-17 23:39 四次崩溃的收尾帧全是局内，
+                # 而 `battle_scene_visible=True` 在四帧上都成立——判据认得出，是契约漏了
+                # 「战斗中」，于是白等 45 秒队伍页。补进契约即可，不加新锚点、不放宽阈值。
+                target_states=(ExpeditionState.TEAM, ExpeditionState.BATTLE),
                 reason="识别到准备战斗，进入队伍选择",
             )
 
@@ -686,6 +732,101 @@ class ExpeditionStateMachine:
                 self.auto_click_attempted,
                 self._confirmed_page,
             ) = snapshot
+
+
+# 导航链上可以接力的三页（= `navigation.page_label()` 里的名字）。
+# 远征的导航是一条四级链：大厅 → 战斗菜单 → 赛季菜单 → 远征主页。
+# 站在其中任何一级都能接着往下走，所以三页都要开放接力，不能只开放终点。
+EXPEDITION_BATTLE_MENU_PAGE = "battle_menu"
+EXPEDITION_SEASON_PAGE = "season_menu"
+EXPEDITION_ENTRY_PAGE = "expedition_home"
+EXPEDITION_RESUME_PAGES = frozenset(
+    {
+        EXPEDITION_BATTLE_MENU_PAGE,
+        EXPEDITION_SEASON_PAGE,
+        EXPEDITION_ENTRY_PAGE,
+    }
+)
+
+
+class ExpeditionResumePoint(NamedTuple):
+    """远征开局接力的落点。"""
+
+    page: str                            # 中文页面名，给日志和诊断看
+    state: Optional[ExpeditionState]     # 要拨过去的状态机状态；None = 不动状态机
+    entry: Optional[str] = None          # 已经在导航链的这个页面上，从这里接着导航
+
+
+# 「接力」探测顺序 —— **顺序即优先级**，不能改。远征的 `is_in_state` 判据互相包含得
+# 比较厉害（下面每条都有夹具实测撑腰），顺序排错就会拨到错状态：
+#
+# - **HOME 必须排在 RETURNING 前面**：RETURNING 的判据第一项就是「远征主页可见」，
+#   反过来不成立。先判 RETURNING 会把远征主页拨成 RETURNING，而它的动作要求
+#   `expedition_list`，在主页上找不到 → 直接抛错。
+# - **DIFFICULTY_CONFIRM 排在 DIFFICULTY 前面**：`difficulty_3_selected.png` 两个判据
+#   同时成立（标题+第3难度+确认按钮都在），项目里 `test_recorded_current_client_pages_match_their_states`
+#   把它登记为 DIFFICULTY_CONFIRM，这里跟着走。
+# - **OUTCOME 必须排在 READY 前面**：`outcome_public*.png`（公开招募结果）上
+#   `prepare_battle` 竟然也是可见的，所以 READY 判据同样成立。先判 READY 就会去点
+#   「准备战斗」，把**还没领取的公开招募白扔掉**。先判 OUTCOME 才会点公开招募。
+# - **READY 排在 RECRUIT_RETURN 前面**：`ready.png` 与 `recruited.png` 是同一张营火页
+#   （点开图看，两张只差左侧排名面板的内容），锚点集合完全一样
+#   （都是 prepare_battle + public_recruited + back），机器**没法区分**这两页。
+#   跟着竞技场那条「停在准备战斗就直接打、不退回重选」的口径，统一按 READY 落点：
+#   点准备战斗直接进队伍选择开打。认错的代价也只是多打一局，不会丢奖励、不会按错 Back。
+# - 其余各项在夹具上互斥，相对顺序不影响结果。
+_EXPEDITION_RESUME_ORDER: tuple[ExpeditionState, ...] = (
+    ExpeditionState.HOME,
+    ExpeditionState.RETURNING,
+    ExpeditionState.POSTERS,
+    ExpeditionState.DIFFICULTY_CONFIRM,
+    ExpeditionState.DIFFICULTY,
+    ExpeditionState.OUTCOME,
+    ExpeditionState.RECRUIT_CONFIRM,
+    ExpeditionState.READY,
+    ExpeditionState.RECRUIT_RETURN,
+    ExpeditionState.TEAM,
+    ExpeditionState.RESULT,
+    ExpeditionState.BATTLE,
+)
+
+
+def detect_resume_point(
+    machine: "ExpeditionStateMachine",
+    screen: np.ndarray,
+    *,
+    observed_page: Optional[str] = None,
+) -> Optional[ExpeditionResumePoint]:
+    """远征开局接力：认出用户停在远征一环里的哪一页。
+
+    识别不到返回 None，调用方回退到「回大厅 → 从战斗菜单重新导航」（失败关闭，
+    行为与加这个功能之前一致）。
+
+    ``observed_page`` 传导航器认出来的页面名（``Epic7Navigator.observe().name``）。
+    战斗菜单 / 赛季菜单这两页**只有导航器认得出来**（它们不在远征状态机里），
+    所以这个参数对这两页是必需的。
+    """
+    if observed_page in (
+        EXPEDITION_BATTLE_MENU_PAGE,
+        EXPEDITION_SEASON_PAGE,
+    ):
+        return ExpeditionResumePoint(
+            "战斗菜单" if observed_page == EXPEDITION_BATTLE_MENU_PAGE else "赛季菜单",
+            None,
+            observed_page,
+        )
+    if battle_scene_visible(screen):
+        # 已经在打的那一局最先接手。`ExpeditionRunner` 本来就有
+        # 「无动作 + 状态是 BATTLE → 交战斗监督」那一支，所以只要把状态拨对就能接上。
+        return ExpeditionResumePoint("战斗中", ExpeditionState.BATTLE)
+    for state in _EXPEDITION_RESUME_ORDER:
+        if not machine.is_in_state(screen, state):
+            continue
+        entry = (
+            EXPEDITION_ENTRY_PAGE if state is ExpeditionState.HOME else None
+        )
+        return ExpeditionResumePoint(state_label(state), state, entry)
+    return None
 
 
 class ExpeditionRunner:
@@ -888,7 +1029,16 @@ class ExpeditionRunner:
                 continue
             self._execute_transition(action)
             state_started = self.now()
-            if action.name == "battle-start":
+            # 只要转场把状态落到了「战斗中」，就交给战斗监督 —— 不再只认 battle-start：
+            # prepare-battle 也可能**直接**落到战斗页（见 next_action 里的契约注释），
+            # 漏了这一步会让状态卡在 BATTLE 却没人驱动，白等到状态超时再走恢复。
+            if (
+                action.name in {"battle-start", "prepare-battle"}
+                and self.machine.state is ExpeditionState.BATTLE
+            ):
+                self.runtime.log(
+                    f"模式=远征 动作={action.name} 状态=直接进入战斗，移交战斗监督"
+                )
                 self._run_committed_battle(cycle=self.machine.completed_cycles + 1)
                 state_started = self.now()
             if self.machine.completed_cycles > cycles_before:

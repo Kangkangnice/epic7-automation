@@ -76,7 +76,30 @@ def observe_battle_controls(screen: np.ndarray) -> BattleControls:
     )
 
     def has_auto_layout(expected_xs: tuple[int, ...], expected_y: int) -> bool:
-        auto_bases = []
+        """自动布局 = 底座排确实存在 + 至少 1 格底座是**蓝色（有活人）**。
+
+        底座颜色的语义（2026-09-20 用户澄清，别记错）：
+        - **蓝色 = 这个英雄还活着**；
+        - **红色 = 这个英雄已经阵亡**（底座变红变黑往下沉）。
+
+        所以「亮」本身分两层，可靠度完全不同：
+        - 蓝色（活人）才是「这局还在打」的证据；
+        - 红色（阵亡）只说明「这是战斗里的底座排、有伤亡」，不能当活人算。
+
+        而低存活局面的关键在**底座环**：阵亡后底座颜色失效，但底座的位置圈还在，
+        所以「底座排是否存在」必须靠对齐圆判断，不能靠颜色数。
+        2026-09-20 竞技场实测：`battle_auto_dead_three_live` 就是**活 1 亡 3、圆 4**
+        —— 老逻辑「亮 >= 3 格」能撑住，只是因为把 3 个**红（阵亡）也算成了亮**；
+        一旦红底座暗到认不出来（底座沉下去），就塌成「亮 1 格」→ 判不出自动战斗
+        （详见 memory/topics/battle_auto_flip.md）。
+
+        两道门槛取或：
+        - `活 >= 1 且 圆 >= 3`：4 格底座环都在 ⇒ 必然是战斗画面，此时有 1 个活人就成立。
+        - `亮 >= 3 且 圆 >= 2`：保留原判据兜底 —— 红底灵魂技/暗冷却槽上的图标会让霍夫圆
+          漏检（实测 story/battle_auto_skill_cooldown 只剩 2 个圆），那种帧只能靠颜色数，
+          这里红色必须照算（它证明的是「底座排在这」，不是「还有活人」）。
+        """
+        alive_bases, lit_bases = 0, 0
         for center_x in expected_xs:
             slot = hsv[1060:1132, center_x - 50 : center_x + 50]
             blue = (
@@ -90,15 +113,19 @@ def observe_battle_controls(screen: np.ndarray) -> BattleControls:
                 & (slot[:, :, 1] >= 100)
                 & (slot[:, :, 2] >= 45)
             )
-            auto_bases.append(
-                float(np.mean(blue)) >= 0.40 or float(np.mean(red)) >= 0.25
-            )
-        return sum(auto_bases) >= 3 and aligned_count(
-            expected_xs, expected_y, (40, 60), 30
-        ) >= 2
+            blue_hit = float(np.mean(blue)) >= 0.40
+            red_hit = float(np.mean(red)) >= 0.25
+            alive_bases += int(blue_hit)
+            lit_bases += int(blue_hit or red_hit)
+        aligned_rings = aligned_count(expected_xs, expected_y, (40, 60), 30)
+        return (alive_bases >= 1 and aligned_rings >= 3) or (
+            lit_bases >= 3 and aligned_rings >= 2
+        )
 
-    # 底座颜色命中 >=3 槽即已排除手动布局（手动 3 钮最多擦到 2 个槽位）；
-    # 对齐圆放宽到 >=2：红底灵魂技/暗冷却槽上的图标会让霍夫圆漏检。
+    # 「圆 >= 3」本身就是手动布局的排他证据：手动 3 钮在 x 1440~1982 上最多
+    # 只能擦到 2 个自动槽位（1534→1505、1834→1858，另有 2 个按钮落在槽位窗口外），
+    # 所以放宽「亮 >= 1」不会被手动布局误命中；全库 176 张夹具 + 187 张实跑
+    # 诊断图上，「圆 >= 3」只出现在真实战斗画面里。
     if has_auto_layout(_AUTO_CONTROL_CENTERS, 1047) or (
         not pc_skill_animation
         and has_auto_layout(_PC_AUTO_CONTROL_CENTERS, 1021)

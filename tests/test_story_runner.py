@@ -349,6 +349,58 @@ class StoryRunnerTests(unittest.TestCase):
 
         self.assertEqual(2, len(clicks))
 
+    def test_skip_confirmation_that_ends_the_story_lands_on_the_clear_prompt(self):
+        """跳过最后一段剧情后游戏直接给「通关提示」，转场契约必须认它。
+
+        2026-09-18 14:14:07 / 14:47:46 两次实跑就死在这里：skip_confirm 的
+        target_pages 里没有「通关提示」，转场永远不成立 → 干等 45 秒 →
+        「转场超时 动作=skip_confirm … 当前已确认页面=通关提示」→ 退出码 1。
+        这条守住「通关提示也算 skip_confirm 的合法落点」，并且必须接着点
+        complete 往下走，而不是超时。
+        """
+        screens = iter(
+            [fixture("skip_confirm")] * 2
+            + [fixture("complete")] * 2
+            + [np.zeros((1132, 1982, 3), dtype=np.uint8)] * 8
+        )
+        clicks: list[tuple[int, int]] = []
+        logs: list[str] = []
+        now = [0.0]
+
+        def wait(_: float) -> None:
+            now[0] += 50.0
+
+        with TemporaryDirectory() as directory:
+            runner = StoryRunner(
+                StoryStateMachine(
+                    build_story_templates(TEMPLATES),
+                    initial_state=StoryState.WAIT_SKIP_CONFIRM,
+                ),
+                Runtime(
+                    lambda: next(screens),
+                    clicks.append,
+                    diagnostic_dir=Path(directory),
+                    emit=logs.append,
+                    monotonic=lambda: now[0],
+                ),
+                sleep=wait,
+            )
+
+            with self.assertRaisesRegex(RuntimeError, r"无进展"):
+                runner.run(max_cycles=1)
+
+        # 先点跳过确认，再点通关提示——没有被超时打断
+        self.assertEqual(2, len(clicks))
+        self.assertTrue(
+            any(
+                "完成=skip_confirm" in line and "目标页面=通关提示" in line
+                for line in logs
+            ),
+            logs,
+        )
+        self.assertTrue(any("操作=complete" in line for line in logs), logs)
+        self.assertFalse(any("转场超时" in line for line in logs), logs)
+
     def test_complete_screen_takes_priority_over_a_false_skip_match(self):
         machine = StoryStateMachine(build_story_templates(TEMPLATES))
 

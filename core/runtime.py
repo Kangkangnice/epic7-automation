@@ -63,6 +63,10 @@ class Runtime:
         self._monotonic = monotonic
         self._paused_seconds = 0.0
         self._capture_guard: CaptureGuard | None = None
+        # 停止请求可能来自 **边沿**（P 键按一次）也可能是 **电平**（桌面界面的
+        # stop.signal 文件一旦写出就一直在）。日志和诊断图只在第一次报一次，
+        # 否则一次停止会按轮询频率刷屏、每秒写一张 1.4MB 的截图。
+        self._stop_reported = False
 
     def capture(self) -> np.ndarray:
         screen = self.capture_unguarded()
@@ -126,12 +130,20 @@ class Runtime:
             self._back()
 
     def _stop_if_requested(self) -> None:
+        """有停止请求就抛 ``ManualStop``；**报告只做一次**。
+
+        每次调用仍然照抛（停止请求是电平信号时必须一直生效，不能被漏掉一次就
+        永远丢掉），但日志与 ``manual_stop`` 诊断图只在第一次落地 —— 报告重复的
+        代价是刷屏加每秒一张全屏截图，而收益是零。
+        """
         if self._stop_requested is None or not self._stop_requested():
             return
         message = "用户按下 P，正在中断自动化"
-        self.log(message)
-        if self.diagnostic_dir is not None and self._last_screen is not None:
-            self.save_diagnostic("manual_stop", self._last_screen)
+        if not self._stop_reported:
+            self._stop_reported = True
+            self.log(message)
+            if self.diagnostic_dir is not None and self._last_screen is not None:
+                self.save_diagnostic("manual_stop", self._last_screen)
         raise ManualStop(message)
 
     def log(self, message: str) -> None:

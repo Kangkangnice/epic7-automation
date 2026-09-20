@@ -17,7 +17,7 @@ from auto_game_unified.core.evidence_diagnostics import (
     save_runtime_evidence_diagnostic,
 )
 from auto_game_unified.core.recovery import RecoveryGate
-from auto_game_unified.core.runtime import Runtime, StaminaExhausted
+from auto_game_unified.core.runtime import ManualStop, Runtime, StaminaExhausted
 from auto_game_unified.core.supervisor import StableObservation
 from auto_game_unified.games.epic7.unknown_screen import (
     UnrecognizedScreen,
@@ -247,6 +247,10 @@ class ModeRunnerBase:
         screen = self.runtime.capture()
         try:
             action = self.machine.next_action(screen)
+        except ManualStop:
+            # 空跑也必须能被 P 键/界面停止打断，且不能被下面那条「包装成运行失败」
+            # 的分支吞掉（ManualStop 是 RuntimeError 的子类）。
+            raise
         except RuntimeError as error:
             diagnostic = self.runtime.save_diagnostic(
                 f"dry_run_{self.machine.state.value}", screen
@@ -402,6 +406,14 @@ class ModeRunnerBase:
                     f"模式={self._MODE_LABEL} 停止=生命之叶耗尽 详情={error}"
                 )
                 return self.machine.completed_cycles
+            except ManualStop:
+                # ⚠️ 必须排在 `except RuntimeError` 前面。`ManualStop` 是 `RuntimeError`
+                # 的子类，掉进下面那条分支会被当成「页面没认出来」，只 sleep 一轮就
+                # continue —— 主循环回头再 `capture()` 又抛一次，于是按轮询频率刷
+                # 「用户按下 P / 已保存诊断」并每秒写一张全屏截图，一直磨到该状态的
+                # 超时才停（竞技场列表页 40 秒，战斗监督里最长 900 秒）。
+                # 表现就是「用户按了停止，程序却像卡在诊断循环里」。
+                raise
             except RuntimeError as error:
                 if (
                     isinstance(error, UnrecognizedScreen)

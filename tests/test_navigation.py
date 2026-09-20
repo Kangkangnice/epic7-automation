@@ -2,19 +2,33 @@ from pathlib import Path
 import unittest
 
 import cv2
+import numpy as np
 
+from auto_game_unified.core.matcher import find_best_template
 from auto_game_unified.core.runtime import Runtime
 from auto_game_unified.games.epic7 import story as story_module
-from auto_game_unified.games.epic7.navigation import Epic7Navigator, build_navigation_templates
+from auto_game_unified.games.epic7.navigation import (
+    REFERENCE_SIZE,
+    Epic7Navigator,
+    build_navigation_templates,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURES = ROOT / "tests" / "fixtures" / "epic7_navigation"
+ARENA_FIXTURES = ROOT / "tests" / "fixtures" / "epic7_arena"
 TEMPLATES = ROOT / "games" / "epic7" / "templates"
 
 
 def fixture(name: str):
     return cv2.cvtColor(cv2.imread(str(FIXTURES / f"{name}.png")), cv2.COLOR_BGR2RGB)
+
+
+def arena_fixture(name: str):
+    image = cv2.cvtColor(
+        cv2.imread(str(ARENA_FIXTURES / f"{name}.png")), cv2.COLOR_BGR2RGB
+    )
+    return image[:1132, :1982]
 
 
 def story_fixture(name: str):
@@ -222,6 +236,41 @@ class NavigationTests(unittest.TestCase):
         self.assertTrue(930 <= clicks[0][1] <= 1132)
         self.assertEqual([], backs)
 
+    def test_return_home_stops_at_the_resume_point_without_pressing_back(self):
+        """接力钩子命中就当场停住：一张 Back 都不发，把当前这一帧原样交还调用方。"""
+        backs: list[bool] = []
+        screens = [arena_fixture("selected"), arena_fixture("selected")]
+        navigator = self.navigator(screens, backs=backs)
+        probed: list[np.ndarray] = []
+
+        def stop_probe(screen):
+            probed.append(screen)
+            return True
+
+        screen = navigator.return_home(stop_probe=stop_probe)
+
+        self.assertEqual([], backs)
+        # 第一帧不算稳定帧，钩子只在第二帧被问过一次；交还的就是第二帧那个对象本身。
+        self.assertEqual([screens[1]], probed)
+        self.assertIs(screens[1], screen)
+
+    def test_return_home_keeps_returning_while_the_resume_probe_misses(self):
+        """没命中就照旧一路返回；每确认一页都会再问一次，直到回到大厅。"""
+        backs: list[bool] = []
+        navigator = self.navigator(
+            [fixture("arena_mode"), fixture("arena_mode")] + [fixture("lobby")] * 2,
+            backs=backs,
+        )
+        probed: list[np.ndarray] = []
+
+        screen = navigator.return_home(
+            stop_probe=lambda image: bool(probed.append(image)) or False
+        )
+
+        self.assertEqual([True], backs)
+        self.assertEqual(2, len(probed))
+        self.assertTrue(np.array_equal(fixture("lobby"), screen))
+
     def navigator(self, screens, clicks=None, backs=None, logs=None):
         images = iter(screens)
         runtime = Runtime(
@@ -235,6 +284,29 @@ class NavigationTests(unittest.TestCase):
             runtime,
             sleep=lambda _: None,
             transition_frames=12,
+        )
+
+    def clocked_navigator(self, capture, clicks=None, backs=None, logs=None):
+        """返回大厅要「等满 15 秒转场窗口」才判定一次返回结束，验收相关用例
+        必须让时钟真的往前走，否则永远等不到验收那一步。"""
+        clock = [0.0]
+
+        def sleep(seconds: float):
+            clock[0] += seconds
+
+        runtime = Runtime(
+            capture,
+            (clicks if clicks is not None else []).append,
+            back=lambda: (backs if backs is not None else []).append(True),
+            emit=(logs if logs is not None else []).append,
+            monotonic=lambda: clock[0],
+        )
+        return Epic7Navigator(
+            build_navigation_templates(TEMPLATES),
+            runtime,
+            sleep=sleep,
+            poll_seconds=0.5,
+            transition_frames=48,
         )
 
     def test_classifies_hero_list_with_grey_imprint_button(self):
@@ -591,6 +663,72 @@ class NavigationTests(unittest.TestCase):
         self.assertEqual([(57, 97)], clicks)
         self.assertEqual([], backs)
 
+    def test_effective_back_is_verified_and_the_next_page_is_handled(self):
+        """返回真的换页了：验收必须记下「从哪一页到哪一页」，并继续处理新页。"""
+        clicks: list[tuple[int, int]] = []
+        backs: list[bool] = []
+        logs: list[str] = []
+
+        def capture():
+            if len(backs) < 1:
+                return fixture("expedition_battle_menu")
+            if len(backs) < 2:
+                return fixture("arena_mode")
+            return fixture("lobby")
+
+        navigator = self.clocked_navigator(
+            capture, clicks=clicks, backs=backs, logs=logs
+        )
+
+        navigator.return_home()
+
+        self.assertEqual([True, True], backs)
+        self.assertTrue(
+            any(
+                "返回验收=生效" in log and "从=战斗菜单" in log and "到=竞技场模式选择" in log
+                for log in logs
+            )
+        )
+        self.assertFalse(any("返回验收=无效" in log for log in logs))
+
+    def test_ineffective_back_is_not_repeated_and_falls_back_to_the_page_arrow(self):
+        """返回没生效：不再重复按返回，改点页面自己的返回箭头。"""
+        clicks: list[tuple[int, int]] = []
+        backs: list[bool] = []
+        logs: list[str] = []
+        stuck = fixture("expedition_battle_menu")
+        navigator = self.clocked_navigator(
+            lambda: stuck, clicks=clicks, backs=backs, logs=logs
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "返回无效"):
+            navigator.return_home()
+
+        # 受控返回只按了一次，第二次改成点页内箭头，一共两次尝试。
+        self.assertEqual([True], backs)
+        self.assertEqual(1, len(clicks))
+        self.assertTrue(clicks[0][0] <= 120 and clicks[0][1] <= 160)
+        self.assertTrue(any("返回验收=无效" in log for log in logs))
+        self.assertTrue(any("动作=改用页内返回箭头" in log for log in logs))
+
+    def test_ineffective_back_without_a_page_arrow_stops_instead_of_repeating(self):
+        """页面没有可用箭头：直接停下来报错，不把没用的返回按满 8 次。"""
+        clicks: list[tuple[int, int]] = []
+        backs: list[bool] = []
+        logs: list[str] = []
+        # 秘密商店页左上角没有达标的返回箭头（实测 0.7112 < 0.80）。
+        stuck = shop_fixture("shop_top_live")
+        navigator = self.clocked_navigator(
+            lambda: stuck, clicks=clicks, backs=backs, logs=logs
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "返回无效"):
+            navigator.return_home()
+
+        self.assertEqual([True], backs)
+        self.assertEqual([], clicks)
+        self.assertFalse(any("动作=改用页内返回箭头" in log for log in logs))
+
     def test_story_navigation_confirms_destination_before_returning(self):
         clicks: list[tuple[int, int]] = []
         navigator = self.navigator(
@@ -685,6 +823,68 @@ class NavigationTests(unittest.TestCase):
 
         self.assertIsNone(error)
         self.assertEqual([(1827, 531), (1080, 357)], clicks)
+
+    def test_classifies_season_menu_after_the_expedition_card_moved_to_the_right(self):
+        """赛季轮换把「远征队」从中间挤到最右，赛季页仍须被识别。
+
+        实机帧 runtime_diagnostics/epic7_expedition/20260917_185800：新赛季那排卡片
+        是「战术档案/星座考验/远征队」（新增了星座考验），锚点搜索区域原先只罩中间
+        那张卡 → 整页认不出来 → 落到未知画面唤醒点屏幕中央，表现成「点了中间那张卡」。
+        """
+        navigator = self.navigator([])
+
+        observation = navigator.observe(
+            fixture("expedition_season_menu_live_20260917")
+        )
+
+        self.assertEqual("season_menu", observation.name)
+        self.assertGreaterEqual(observation.confidence, 0.82)
+
+    def test_expedition_navigation_follows_the_card_after_season_rotation(self):
+        """点「远征队」跟着名字走：上赛季在中间点 (1080,357)，这赛季在最右点 (1540,357)。"""
+        clicks: list[tuple[int, int]] = []
+        navigator = self.navigator(
+            [
+                fixture("lobby"), fixture("lobby"),
+                fixture("expedition_battle_menu"), fixture("expedition_battle_menu"),
+                fixture("expedition_season_menu_live_20260917"),
+                fixture("expedition_season_menu_live_20260917"),
+                fixture("expedition_home"), fixture("expedition_home"),
+            ],
+            clicks=clicks,
+        )
+
+        navigator.navigate("expedition")
+
+        self.assertEqual([(1827, 531), (465, 220), (1540, 357)], clicks)
+
+    def test_season_menu_entry_anchor_only_matches_the_expedition_card(self):
+        """区域放宽到整行后，匹配不能被旁边两张卡抢走。
+
+        两个区域都是按新赛季实机帧量出来的卡片标题横带（画布 1982×1132）；
+        夹具是冻结的，所以这些边界不会随着以后换赛季而失效。
+        """
+        navigator = self.navigator([])
+        template = navigator.templates.expedition_entry
+        screen = fixture("expedition_season_menu_live_20260917")
+
+        own_card = find_best_template(
+            screen,
+            template,
+            region=(1430, 300, 470, 115),  # 远征队（最右）
+            reference_size=REFERENCE_SIZE,
+        )
+        other_cards = find_best_template(
+            screen,
+            template,
+            region=(450, 300, 960, 115),  # 战术档案 + 星座考验
+            reference_size=REFERENCE_SIZE,
+        )
+
+        self.assertIsNotNone(own_card)
+        self.assertIsNotNone(other_cards)
+        self.assertGreaterEqual(own_card.score, 0.90)
+        self.assertLess(other_cards.score, 0.60)
 
     def test_classifies_recorded_fodder_navigation_pages(self):
         navigator = self.navigator([])

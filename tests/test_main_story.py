@@ -62,8 +62,12 @@ class MainStoryTests(unittest.TestCase):
                     ),
                     patch.object(main_module, "Epic7Navigator") as navigator_type,
                 ):
-                    navigator_type.return_value.return_home.side_effect = lambda: (
-                        events.append("navigation") or object()
+                    # 竞技场会带 stop_probe（接力观察窗）进来，其余路线不带；
+                    # 两条路径都必须发生在弹窗守卫装好之后，所以这里二者都接受。
+                    navigator_type.return_value.return_home.side_effect = (
+                        lambda **_kwargs: (
+                            events.append("navigation") or object()
+                        )
                     )
                     main_module.run_mode(
                         spec=spec,
@@ -271,7 +275,13 @@ class MainStoryTests(unittest.TestCase):
             )
 
         self.assertEqual(1, result.completed_cycles)
-        navigator_type.return_value.return_home.assert_called_once_with()
+        # 主线带接力探针：回大厅时每确认一帧稳定画面就问一次探针，所以必须传 stop_probe。
+        navigator_type.return_value.return_home.assert_called_once()
+        self.assertTrue(
+            callable(
+                navigator_type.return_value.return_home.call_args.kwargs["stop_probe"]
+            )
+        )
         navigator_type.return_value.navigate.assert_called_once_with("story", lobby_screen=lobby)
 
     def test_story_mode_dispatches_to_story_runner(self):
