@@ -56,6 +56,11 @@ def shop_fixture(name: str):
     return cv2.cvtColor(cv2.imread(str(path)), cv2.COLOR_BGR2RGB)
 
 
+def world_boss_fixture(name: str):
+    path = ROOT / "tests" / "fixtures" / "epic7_world_boss" / f"{name}.png"
+    return cv2.cvtColor(cv2.imread(str(path)), cv2.COLOR_BGR2RGB)
+
+
 class NavigationTests(unittest.TestCase):
     def test_classifies_current_secret_shop_page(self):
         navigator = self.navigator([])
@@ -729,6 +734,60 @@ class NavigationTests(unittest.TestCase):
         self.assertEqual([], clicks)
         self.assertFalse(any("动作=改用页内返回箭头" in log for log in logs))
 
+    def test_ineffective_navigation_click_is_retried_after_the_verify_window(self):
+        """点了导航锚点但页面纹丝不动：验收窗口一到就提前重试。
+
+        实机日志 epic7_shop_refresh.log 2026-09-10 里三次点同一个坐标 (82,521)，
+        前两次各白等 92 秒才重试。这条用例盯的就是「第一次没生效到第二次点击之间
+        只隔了验收窗口，而不是整个转场窗口（48 帧 ≈ 24 秒）」。
+        """
+        clicks: list[tuple[int, int]] = []
+        logs: list[str] = []
+        click_times: list[float] = []
+        clock = [0.0]
+
+        def sleep(seconds: float):
+            clock[0] += seconds
+
+        def click(point):
+            clicks.append(point)
+            click_times.append(clock[0])
+
+        lobby = fixture("lobby")
+        arena_mode = fixture("arena_mode")
+        arena_list = fixture("arena_list")
+
+        def capture():
+            if len(clicks) <= 1:
+                return lobby  # 第一次点击之后：页面没动
+            if len(clicks) == 2:
+                return arena_mode  # 第二次点击才真的换了页
+            return arena_list
+
+        runtime = Runtime(
+            capture,
+            click,
+            back=lambda: None,
+            emit=logs.append,
+            monotonic=lambda: clock[0],
+        )
+        navigator = Epic7Navigator(
+            build_navigation_templates(TEMPLATES),
+            runtime,
+            sleep=sleep,
+            poll_seconds=0.5,
+            transition_frames=48,
+        )
+
+        navigator.navigate("arena", lobby_screen=lobby)
+
+        self.assertEqual(3, len(clicks))
+        self.assertTrue(any("点击验收=无效" in log for log in logs))
+        self.assertTrue(any("点击验收=生效" in log for log in logs))
+        gap = click_times[1] - click_times[0]
+        self.assertGreaterEqual(gap, Epic7Navigator._CLICK_VERIFY_SECONDS)
+        self.assertLess(gap, 12.0)
+
     def test_story_navigation_confirms_destination_before_returning(self):
         clicks: list[tuple[int, int]] = []
         navigator = self.navigator(
@@ -951,3 +1010,156 @@ class NavigationTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class WorldBossNavigationTests(unittest.TestCase):
+    """骑士团 → 世界首领战 导航链。
+
+    这两页最容易出的错是「判成大厅」或「判成未知画面」：它们顶部保留了同一根
+    「世界首领战」标题栏，底部又没有大厅那排图标，所以必须靠排他锚点单独认。
+    """
+
+    def navigator(self, screens, clicks=None):
+        images = iter(screens)
+        runtime = Runtime(lambda: next(images), (clicks if clicks is not None else []).append)
+        return Epic7Navigator(
+            build_navigation_templates(TEMPLATES),
+            runtime,
+            sleep=lambda _: None,
+            transition_frames=12,
+        )
+
+    def test_knights_home_and_world_boss_home_are_told_apart(self):
+        navigator = self.navigator([])
+
+        knights = navigator.observe(world_boss_fixture("knights_home"))
+        home = navigator.observe(world_boss_fixture("worldboss_home"))
+        exhausted = navigator.observe(world_boss_fixture("worldboss_home_exhausted"))
+
+        self.assertEqual("knights_home", knights.name)
+        self.assertEqual("worldboss_home", home.name)
+        # 次数打完只是按钮变灰，页面本身还是同一页，导航链要照样能认出来。
+        self.assertEqual("worldboss_home", exhausted.name)
+
+    def test_lobby_with_knights_icon_is_still_the_lobby(self):
+        """底部那枚骑士团盾牌图标是大厅常驻控件，不能拿它判「在骑士团页」。"""
+        navigator = self.navigator([])
+
+        observation = navigator.observe(world_boss_fixture("lobby_with_knights"))
+
+        self.assertEqual("lobby", observation.name)
+
+    def test_world_boss_pages_are_never_confused_with_lobby(self):
+        navigator = self.navigator([])
+
+        for name in ("knights_home", "worldboss_home", "worldboss_home_exhausted"):
+            with self.subTest(fixture=name):
+                self.assertNotEqual("lobby", navigator.observe(world_boss_fixture(name)).name)
+
+    def test_knights_signin_popup_is_reported_instead_of_unknown(self):
+        """每天第一次进骑士团会先弹签到达成度奖励弹窗。
+
+        这个弹窗盖在骑士团主页上，实测把底页的 ``worldboss_entry`` 从 0.9890
+        压到 **0.4477**（低于 0.85 门槛）—— 也就是说**弹窗期间认不出底页**。
+        所以 observe 必须先报出「这是签到弹窗」，交给全局弹窗守卫点掉它；
+        否则就会掉到「未知画面」，被拿去点屏幕中央（可能误点弹窗后面的东西）。
+        """
+        navigator = self.navigator([])
+
+        popup = navigator.observe(world_boss_fixture("knights_signin_popup"))
+
+        self.assertEqual("knights_signin_popup", popup.name)
+        self.assertNotEqual("unknown", popup.name)
+
+    def test_gift_support_popup_is_reported_instead_of_unknown(self):
+        """进骑士团时团员赠送的支援资源到账弹窗（标题「领取支援物品」）。
+
+        与签到弹窗同理：盖在骑士团主页上、压暗底页锚点，弹窗期间认不出底页。
+        observe 必须先报出「这是领取支援弹窗」，交给全局弹窗守卫点掉；
+        否则会掉到「未知画面」→ 连点中央 4 次都唤醒失败（2026-09-22 实跑就是这样卡住的）。
+        """
+        navigator = self.navigator([])
+
+        popup = navigator.observe(world_boss_fixture("gift_support_popup"))
+
+        self.assertEqual("gift_support_popup", popup.name)
+        self.assertNotEqual("unknown", popup.name)
+
+    def test_knights_home_is_recognized_again_once_the_signin_popup_is_closed(self):
+        """弹窗点掉之后必须能正常认出骑士团主页（别把「压暗」当永久状态）。"""
+        navigator = self.navigator([])
+
+        after = navigator.observe(world_boss_fixture("knights_home_after_popup"))
+
+        self.assertEqual("knights_home", after.name)
+
+    def test_navigation_walks_lobby_then_knights_then_world_boss(self):
+        clicks: list[tuple[int, int]] = []
+        navigator = self.navigator(
+            [
+                world_boss_fixture("knights_home"),
+                world_boss_fixture("knights_home"),
+                world_boss_fixture("worldboss_home"),
+                world_boss_fixture("worldboss_home"),
+            ],
+            clicks=clicks,
+        )
+
+        navigator.navigate("world_boss", lobby_screen=world_boss_fixture("lobby_with_knights"))
+
+        self.assertEqual(2, len(clicks))
+        # 骑士团图标命中中心 + 世界首领战图标命中中心（都在画布坐标系里）。
+        self.assertEqual((1215, 1027), clicks[0])
+        self.assertEqual((449, 693), clicks[1])
+
+    def test_resume_from_knights_home_skips_only_the_first_hop(self):
+        clicks: list[tuple[int, int]] = []
+        logs: list[str] = []
+        images = iter(
+            [world_boss_fixture("worldboss_home"), world_boss_fixture("worldboss_home")]
+        )
+        runtime = Runtime(lambda: next(images), clicks.append, emit=logs.append)
+        navigator = Epic7Navigator(
+            build_navigation_templates(TEMPLATES),
+            runtime,
+            sleep=lambda _: None,
+            transition_frames=12,
+        )
+
+        navigator.navigate(
+            "world_boss",
+            already_at="knights_home",
+            lobby_screen=world_boss_fixture("knights_home"),
+        )
+
+        self.assertEqual(1, len(clicks))
+        self.assertEqual((449, 693), clicks[0])
+        self.assertTrue(any("跳过回大厅与进入骑士团" in line for line in logs))
+
+    def test_resume_from_world_boss_home_needs_no_navigation_at_all(self):
+        clicks: list[tuple[int, int]] = []
+        logs: list[str] = []
+        runtime = Runtime(lambda: world_boss_fixture("worldboss_home"), clicks.append, emit=logs.append)
+        navigator = Epic7Navigator(
+            build_navigation_templates(TEMPLATES),
+            runtime,
+            sleep=lambda _: None,
+            transition_frames=12,
+        )
+
+        navigator.navigate("world_boss", already_at="worldboss_home")
+
+        self.assertEqual([], clicks)
+        self.assertTrue(any("已在世界首领战主页" in line for line in logs))
+
+    def test_resume_at_an_unlisted_page_is_rejected(self):
+        navigator = self.navigator([])
+
+        with self.assertRaisesRegex(ValueError, "导航不支持从页面"):
+            navigator.navigate("world_boss", already_at="battle_menu")
+
+    def test_other_routes_cannot_resume_into_world_boss_pages(self):
+        navigator = self.navigator([])
+
+        with self.assertRaisesRegex(ValueError, "导航不支持从页面"):
+            navigator.navigate("story", already_at="worldboss_home")

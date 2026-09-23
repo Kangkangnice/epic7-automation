@@ -9,7 +9,11 @@ import numpy as np
 
 from auto_game_unified.core.matcher import Match, find_template, load_template
 from auto_game_unified.core.runtime import Runtime
-from auto_game_unified.core.supervisor import StableObservation, meaningful_change
+from auto_game_unified.core.supervisor import (
+    StableObservation,
+    left_page,
+    page_or_picture_changed,
+)
 from auto_game_unified.games.epic7.arena import (
     ARENA_ENTRY_PAGE,
     find_rank_promotion_confirm,
@@ -18,6 +22,8 @@ from auto_game_unified.games.epic7.evidence.arena import thresholds_for as arena
 from auto_game_unified.games.epic7.evidence.story import thresholds_for as story_thresholds_for
 from auto_game_unified.games.epic7.global_popups import (
     find_friendship_points_popup_close,
+    find_gift_support_close,
+    find_knights_signin_close,
 )
 from auto_game_unified.games.epic7.expedition import (
     EXPEDITION_BATTLE_MENU_PAGE,
@@ -45,6 +51,10 @@ from auto_game_unified.games.epic7.evidence.shop_refresh import (
     ShopRefreshObserver,
     build_shop_refresh_evidence,
     build_shop_refresh_observer,
+)
+from auto_game_unified.games.epic7.evidence.world_boss import (
+    REGIONS as WORLD_BOSS_REGIONS,
+    build_world_boss_evidence,
 )
 from auto_game_unified.games.epic7.unknown_screen import (
     UnknownScreenWake,
@@ -82,6 +92,10 @@ PAGE_LABELS = {
     "story_ready": "主线入口",
     "arena_ready": "竞技场入口",
     "shop_refresh": "秘密商店",
+    "knights_home": "骑士团主页",
+    "worldboss_home": "世界首领战主页",
+    "knights_signin_popup": "骑士团签到弹窗",
+    "gift_support_popup": "领取支援物品弹窗",
     "unknown": "未知画面",
 }
 
@@ -93,6 +107,7 @@ MODE_LABELS = {
     "fodder": "狗粮",
     "hero_synthesis": "英雄合成",
     "shop_refresh": "刷书签",
+    "world_boss": "世界首领战",
 }
 
 
@@ -102,6 +117,7 @@ _RESUME_ENTRY_PAGES = {
     "arena": frozenset({ARENA_ENTRY_PAGE}),
     "story": frozenset({STORY_ENTRY_PAGE}),
     "expedition": EXPEDITION_RESUME_PAGES,
+    "world_boss": frozenset({"knights_home", "worldboss_home"}),
 }
 
 
@@ -154,6 +170,13 @@ class NavigationTemplates:
     fodder_stage_title: np.ndarray
     fodder_prepare_battle: np.ndarray
     lobby_shop_entry: np.ndarray
+    lobby_knights: np.ndarray
+    worldboss_entry: np.ndarray
+    lobby_worldboss_select_team: np.ndarray
+    knights_signin_title: np.ndarray
+    knights_signin_close: np.ndarray
+    gift_support_title: np.ndarray
+    gift_support_close: np.ndarray
     shop_refresh_observer: ShopRefreshObserver
 
 
@@ -162,6 +185,8 @@ def build_navigation_templates(template_root: Path) -> NavigationTemplates:
     global_templates = template_root / "global"
     shop_evidence = build_shop_refresh_evidence(template_root)
     shop_entry = shop_evidence.atom("lobby_shop_entry")
+    world_boss_evidence = build_world_boss_evidence(template_root / "world_boss")
+    world_boss_select_team = world_boss_evidence.atom("select_team_button")
     return NavigationTemplates(
         arena_rank_promotion_arrow=load_template(
             str(global_templates / "arena_rank_promotion_arrow.png")
@@ -230,6 +255,23 @@ def build_navigation_templates(template_root: Path) -> NavigationTemplates:
         lobby_shop_entry=load_template(
             str(template_root / shop_entry.template_path)
         ),
+        lobby_knights=load_template(str(navigation / "lobby_knights.png")),
+        worldboss_entry=load_template(str(navigation / "worldboss_entry.png")),
+        lobby_worldboss_select_team=load_template(
+            str(template_root / "world_boss" / world_boss_select_team.template_path)
+        ),
+        knights_signin_title=load_template(
+            str(navigation / "knights_signin_title.png")
+        ),
+        knights_signin_close=load_template(
+            str(navigation / "knights_signin_close.png")
+        ),
+        gift_support_title=load_template(
+            str(navigation / "gift_support_title.png")
+        ),
+        gift_support_close=load_template(
+            str(navigation / "gift_support_close.png")
+        ),
         shop_refresh_observer=build_shop_refresh_observer(template_root),
     )
 
@@ -238,6 +280,12 @@ class Epic7Navigator:
     """Return to the lobby, then follow a verified mode-specific route."""
 
     _BACK_RETRY_SECONDS = 15
+    # 「点一次、验收一次」的验收窗口：点完导航锚点后等这么久，如果还停在来源页上，
+    # 就认定这一下点击没有生效，立刻交给外层提前重试，而不是把整个转场窗口
+    # （transition_frames=90，实测约 92 秒）干等完、再点一次**同样的坐标**。
+    # 取值依据：实机成功转场约 4 秒（epic7_shop_refresh.log 2026-09-10
+    # 19:33:37 点击 → 19:33:41 转场确认），取 8 秒留 2 倍余量。
+    _CLICK_VERIFY_SECONDS = 8.0
     # 「受控返回」没效果时改用的页内返回箭头门槛。
     # 实测 176 张 1982×1132 夹具（runtime_logs/_probe_back_arrow.py）：
     # 真有箭头的页面大多 0.99+，深层页面偏低但仍属同源控件
@@ -289,6 +337,17 @@ class Epic7Navigator:
         "episode_adventure": (1595, 945, 338, 187),
         "fodder_stage_title": (850, 760, 225, 90),
         "fodder_prepare_battle": (1365, 990, 385, 120),
+        # 大厅底部「骑士团」盾牌图标。⚠️ 它其实是**大厅常驻控件**：185 张夹具
+        # 里每张大厅页都在同一个位置以 0.86~0.96 命中（压暗到 55% 亮度仍 0.9643，
+        # 见 runtime_logs/_wb_probe_nav.py）。也就是说它只能拿来「定位点击点」，
+        # 不能拿来判「现在是哪一页」—— 判页要看世界首领战图标。
+        "lobby_knights": (1150, 960, 420, 150),
+        # 骑士团主页的「世界首领战」入口图标（骷髅盾牌）。排他性实测：本页 0.9890，
+        # 跨页最高 0.4210（远征海报）。
+        "worldboss_entry": (380, 620, 180, 140),
+        # 世界首领战主页右下角「选择队伍」按钮。⚠️ 这里复用 evidence/world_boss.py
+        # 的锚点图（不是 navigation 目录下的第二份），避免同一个控件维护两份模板。
+        "lobby_worldboss_select_team": WORLD_BOSS_REGIONS["select_team_button"],
     }
     _CLICK_OFFSETS = {"lobby_story": (65, 11)}
 
@@ -340,6 +399,29 @@ class Epic7Navigator:
         if popup_close is not None:
             return PageObservation("friendship_points_popup", popup_close.score)
 
+        # 骑士团签到达成度奖励弹窗（**每天第一次进骑士团**才出现）。
+        # ⚠️ 必须排在 worldboss_entry 判定**之前**：这个弹窗盖在骑士团主页上，
+        # 实测把 ``worldboss_entry`` 从 0.9890 压到 **0.4477**（低于 0.85 门槛），
+        # 所以弹窗开着时底下那一页**认不出来**。必须让 observe 先报出「这是签到弹窗」，
+        # 好让 Epic7GlobalPopupGuard 把它点掉，然后才会露出骑士团主页。
+        signin_close = find_knights_signin_close(
+            screen,
+            self.templates.knights_signin_title,
+            self.templates.knights_signin_close,
+        )
+        if signin_close is not None:
+            return PageObservation("knights_signin_popup", signin_close.score)
+
+        # 「领取支援物品」弹窗（进骑士团时团员赠送的支援资源到账）。
+        # 与签到弹窗同理，盖在骑士团主页上、压暗底页锚点，必须先报出来让守卫点掉。
+        gift_close = find_gift_support_close(
+            screen,
+            self.templates.gift_support_title,
+            self.templates.gift_support_close,
+        )
+        if gift_close is not None:
+            return PageObservation("gift_support_popup", gift_close.score)
+
         rank_confirm = find_rank_promotion_confirm(
             screen,
             self.templates.arena_rank_promotion_arrow,
@@ -385,6 +467,24 @@ class Epic7Navigator:
                 scores.get("buy_button", 0.0),
             )
             return PageObservation("shop_refresh", confidence)
+
+        # ⚠️ 这三条必须排在 lobby 判定**之前**。骑士团主页和世界首领战主页都在顶部
+        # 保留了「世界首领战」标题栏、底部也**没有**大厅那排图标（实测骑士团页
+        # lobby_knights 0.3562 / 首领战页 0.4017，而大厅页恒在 0.86~0.96），
+        # 所以它们本来就过不了大厅的组合判据，会掉到「未知画面」被点屏幕中央。
+        #
+        # 判据只用两个排他锚点（跨页扫描见 runtime_logs/_wb_probe_nav.py）：
+        #   - worldboss_entry（骑士团主页的「世界首领战」骷髅盾牌）：本页 0.9890，
+        #     跨页最高 0.4210；
+        #   - select_team_button（首领战主页右下角「选择队伍」）：本页 1.0000/0.9161，
+        #     跨页最高 0.4192（见 evidence/world_boss.py 的扫描表）。
+        # **两页顶部标题完全相同**（实测都是 1.0000），所以只能靠这两个按钮区分。
+        worldboss_entry = self._locate(screen, "worldboss_entry", 0.85)
+        if worldboss_entry:
+            return PageObservation("knights_home", worldboss_entry.score)
+        select_team = self._locate(screen, "lobby_worldboss_select_team")
+        if select_team:
+            return PageObservation("worldboss_home", select_team.score)
 
         lobby_story = self._locate(screen, "lobby_story", 0.80)
         lobby_arena = self._locate(screen, "lobby_arena")
@@ -574,22 +674,6 @@ class Epic7Navigator:
         self.runtime.click(match.center, action)
         return True
 
-    def _back_took_effect(
-        self,
-        before_page: str,
-        before_screen: Optional[np.ndarray],
-        after_page: str,
-        after_screen: np.ndarray,
-    ) -> bool:
-        """验收一次返回：换页了算生效；还是同一页时，画面明显变了也算生效。
-
-        同一页 + 画面没变 = 这一下返回没起作用。带动画的页面画面一直在动，
-        会被判成「生效」，沿用原来的重试逻辑，不会比改动前更差。
-        """
-        if before_page != after_page:
-            return True
-        return meaningful_change(before_screen, after_screen)
-
     def return_home(
         self,
         *,
@@ -713,7 +797,7 @@ class Epic7Navigator:
             # 返回对这个页面根本不起作用，再按多少次都一样。改成换一条路走，
             # 而不是把同一个没用的动作重复到 8 次。
             if last_back_page is not None:
-                if self._back_took_effect(
+                if page_or_picture_changed(
                     last_back_page, last_back_screen, observation.name, screen
                 ):
                     used_in_page_back = False
@@ -932,6 +1016,38 @@ class Epic7Navigator:
                 "进入秘密商店",
                 source_screen=lobby_screen,
             )
+        elif mode == "world_boss":
+            if already_at == "worldboss_home":
+                # 已经站在世界首领战主页上：整条导航链都没有要做的了。
+                self.runtime.log(
+                    "模式=导航 开局=接力 页面=世界首领战主页 "
+                    "动作=跳过回大厅与进入骑士团 状态=已在世界首领战主页"
+                )
+            else:
+                if already_at == "knights_home":
+                    # 已经在链条中间：跳过「回大厅 → 进骑士团」，从当前这一级往下走。
+                    if lobby_screen is None:
+                        raise RuntimeError("接力进入世界首领战时缺少当前画面")
+                    self.runtime.log(
+                        "模式=导航 开局=接力 页面=骑士团主页 "
+                        "动作=跳过回大厅与进入骑士团 状态=从当前这一级继续"
+                    )
+                    knights_home = lobby_screen
+                else:
+                    knights_home = self._transition(
+                        "lobby",
+                        "knights_home",
+                        "lobby_knights",
+                        "进入骑士团",
+                        source_screen=lobby_screen,
+                    )
+                self._transition(
+                    "knights_home",
+                    "worldboss_home",
+                    "worldboss_entry",
+                    "进入世界首领战",
+                    source_screen=knights_home,
+                )
         else:
             raise ValueError(f"导航不支持的模式：{mode}")
         if mode == "hero_synthesis":
@@ -940,6 +1056,10 @@ class Epic7Navigator:
             )
         elif mode == "shop_refresh":
             self.runtime.log("模式=刷书签 状态=导航完成 前提=秘密商店顶部已就绪")
+        elif mode == "world_boss":
+            self.runtime.log(
+                "模式=世界首领战 状态=导航完成 前提=世界首领战主页已就绪"
+            )
         else:
             self.runtime.log(f"模式={MODE_LABELS.get(mode, mode)} 状态=导航完成")
 
@@ -970,6 +1090,8 @@ class Epic7Navigator:
             offset = self._click_offset(anchor)
             click_point = (match.center[0] + offset[0], match.center[1] + offset[1])
             self.runtime.click(click_point, action)
+            # 「点一次、验收一次」：记住点击时刻，循环里回头比一次页面身份。
+            verify_started = self.now()
             stable = StableObservation(required=2)
             story_recovery = _StoryRecoveryAttempts()
             hero_detail_tab_clicks = 0
@@ -1082,6 +1204,29 @@ class Epic7Navigator:
                     stable.reset()
                     self.sleep(self.poll_seconds)
                     continue
+                # 「点一次、验收一次」：点完等满验收窗口，如果还停在来源页上，
+                # 说明这一下点击压根没生效 —— 立刻结束本轮等待交给外层重试，
+                # 而不是把整个转场窗口（约 92 秒）干等完、再点一次同样的坐标。
+                # 实机日志 epic7_shop_refresh.log 2026-09-10：三次点同一个坐标
+                # (82,521)，前两次各白等 92 秒，第三次 4 秒就进去了。
+                if is_stable and verify_started is not None:
+                    if left_page(source, observation.name):
+                        self.runtime.log(
+                            f"模式=导航 点击验收=生效 "
+                            f"从={page_label(source)} "
+                            f"到={page_label(observation.name)} "
+                            f"耗时={self.now() - verify_started:.1f}秒"
+                        )
+                        verify_started = None
+                    elif self.now() - verify_started >= self._CLICK_VERIFY_SECONDS:
+                        self.runtime.log(
+                            f"模式=导航 点击验收=无效 "
+                            f"页面={page_label(source)} 动作={action} "
+                            f"已等={self._CLICK_VERIFY_SECONDS:.0f}秒 "
+                            f"状态=提前重试 尝试={attempt}/4"
+                        )
+                        last_source = screen
+                        break
                 if is_stable and observation.name in targets:
                     if target == "hero_list" and observation.name == "hero_list":
                         information_blue, equipment_blue = (

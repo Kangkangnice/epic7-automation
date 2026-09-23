@@ -19,6 +19,7 @@ class Epic7ModeRegistryTests(unittest.TestCase):
                 "hero_synthesis",
                 "shop_refresh",
                 "survivor",
+                "world_boss",
             },
             set(MODE_SPECS),
         )
@@ -29,6 +30,7 @@ class Epic7ModeRegistryTests(unittest.TestCase):
         self.assertEqual("hero_list", get_mode("hero_synthesis").default_state)
         self.assertEqual("scan_top", get_mode("shop_refresh").default_state)
         self.assertEqual("card", get_mode("survivor").default_state)
+        self.assertEqual("home", get_mode("world_boss").default_state)
 
     def test_shop_refresh_is_simulator_only(self):
         shop = get_mode("shop_refresh")
@@ -55,6 +57,25 @@ class Epic7ModeRegistryTests(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "不适用于模式 story"):
             get_mode("story").resolve_state("list")
+
+    def test_world_boss_builds_its_own_machine_from_its_own_template_dir(self):
+        world_boss = get_mode("world_boss")
+
+        # 模板子目录是 templates/world_boss；工厂必须把它当根，不能当 templates 根。
+        machine = world_boss.build_machine(TEMPLATES, "home", "emulator")
+
+        self.assertEqual("home", machine.state.value)
+        self.assertEqual(
+            {
+                "world_boss.knights_home",
+                "world_boss.home",
+                "world_boss.team_select",
+                "world_boss.team_config",
+                "world_boss.result",
+                "world_boss.level_reward",
+            },
+            {page.key for page in machine.templates.evidence.pages},
+        )
 
         self.assertEqual("battle", get_mode("expedition").resolve_state("battle"))
         self.assertEqual("replay", get_mode("fodder").resolve_state("replay"))

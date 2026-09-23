@@ -8,7 +8,7 @@ from dataclasses import replace
 from unittest.mock import patch
 
 from auto_game_unified import main as main_module
-from auto_game_unified.core.pushplus import TOKEN_ENV
+from auto_game_unified.core.qqbot import APP_ID_ENV, CLIENT_SECRET_ENV, USER_OPENID_ENV
 from auto_game_unified.core.recovery import RecoveryGate
 from auto_game_unified.core.runtime import ManualStop
 from auto_game_unified.main import RunResult
@@ -17,7 +17,11 @@ from auto_game_unified.games.epic7.modes import get_mode
 
 class MainStoryTests(unittest.TestCase):
     def setUp(self):
-        self.token_patch = patch.dict(os.environ, {TOKEN_ENV: ""}, clear=False)
+        self.token_patch = patch.dict(
+            os.environ,
+            {APP_ID_ENV: "", CLIENT_SECRET_ENV: "", USER_OPENID_ENV: ""},
+            clear=False,
+        )
         self.token_patch.start()
         self.addCleanup(self.token_patch.stop)
 
@@ -33,6 +37,8 @@ class MainStoryTests(unittest.TestCase):
                 intimacy_templates = object()
                 friendship_templates = object()
                 friend_request_templates = object()
+                knights_signin_templates = object()
+                gift_support_templates = object()
                 runtime.set_capture_guard.side_effect = lambda guard: events.append(
                     "guard"
                 )
@@ -60,6 +66,16 @@ class MainStoryTests(unittest.TestCase):
                         "load_friend_request_templates",
                         return_value=friend_request_templates,
                     ),
+                    patch.object(
+                        main_module,
+                        "load_knights_signin_templates",
+                        return_value=knights_signin_templates,
+                    ),
+                    patch.object(
+                        main_module,
+                        "load_gift_support_templates",
+                        return_value=gift_support_templates,
+                    ),
                     patch.object(main_module, "Epic7Navigator") as navigator_type,
                 ):
                     # 竞技场会带 stop_probe（接力观察窗）进来，其余路线不带；
@@ -84,6 +100,8 @@ class MainStoryTests(unittest.TestCase):
                     intimacy_templates=intimacy_templates,
                     friendship_templates=friendship_templates,
                     friend_request_templates=friend_request_templates,
+                    knights_signin_templates=knights_signin_templates,
+                    gift_support_templates=gift_support_templates,
                 )
                 self.assertEqual(["guard", "navigation"], events)
 
@@ -306,6 +324,19 @@ class MainStoryTests(unittest.TestCase):
         self.assertEqual(2, call.kwargs["max_cycles"])
         self.assertEqual("stage", call.kwargs["start_state"])
 
+    def test_world_boss_defaults_to_two_cycles_without_the_flag(self):
+        """世界首领战每天固定 2 次：不给 --max-cycles 也能跑，而不是报错。"""
+        with patch.object(
+            main_module, "run_mode", return_value=RunResult(0)
+        ) as run_world_boss:
+            exit_code = main_module.main(["--mode", "world_boss"])
+
+        call = run_world_boss.call_args
+        self.assertEqual(0, exit_code)
+        self.assertEqual("world_boss", call.kwargs["spec"].name)
+        self.assertTrue(call.kwargs["dry_run"])
+        self.assertEqual(2, call.kwargs["max_cycles"])
+
     def test_expedition_has_no_difficulty_command_line_option(self):
         with self.assertRaises(SystemExit):
             main_module.parse_args(
@@ -373,7 +404,7 @@ class MainStoryTests(unittest.TestCase):
     def test_live_success_sends_one_completion_notification(self):
         with (
             patch.object(main_module, "run_mode", return_value=RunResult(2)),
-            patch.object(main_module, "send_pushplus") as send,
+            patch.object(main_module, "send_qqbot_c2c") as send,
             patch.object(main_module.time, "monotonic", side_effect=[100.0, 165.0]),
         ):
             exit_code = main_module.main(
@@ -393,6 +424,7 @@ class MainStoryTests(unittest.TestCase):
         self.assertIn("主线已完成", title)
         self.assertIn("完成轮数：2/2", content)
         self.assertIn("耗时：65 秒", content)
+        send.assert_called_once_with(title, content)
 
     def test_live_resource_stop_sends_one_resource_notification(self):
         with (
@@ -401,7 +433,7 @@ class MainStoryTests(unittest.TestCase):
                 "run_mode",
                 return_value=RunResult(3, resource_exhausted=True),
             ),
-            patch.object(main_module, "send_pushplus") as send,
+            patch.object(main_module, "send_qqbot_c2c") as send,
         ):
             exit_code = main_module.main(
                 [
@@ -419,13 +451,14 @@ class MainStoryTests(unittest.TestCase):
         title, content = send.call_args.args
         self.assertIn("资源不足", title)
         self.assertIn("完成轮数：3/5", content)
+        send.assert_called_once_with(title, content)
 
     def test_live_runtime_failure_sends_one_failure_notification(self):
         with (
             patch.object(
                 main_module, "run_mode", side_effect=RuntimeError("unknown page")
             ),
-            patch.object(main_module, "send_pushplus") as send,
+            patch.object(main_module, "send_qqbot_c2c") as send,
         ):
             exit_code = main_module.main(
                 [
@@ -444,11 +477,13 @@ class MainStoryTests(unittest.TestCase):
         self.assertIn("竞技场运行失败", title)
         self.assertIn("unknown page", content)
         self.assertIn("runtime_diagnostics", content)
+        # 跑挂了要推到 QQ：这正是「有问题就报错」那条路径。
+        send.assert_called_once_with(title, content)
 
     def test_unexpected_live_exception_notifies_then_preserves_exception(self):
         with (
             patch.object(main_module, "run_mode", side_effect=ValueError("bad state")),
-            patch.object(main_module, "send_pushplus") as send,
+            patch.object(main_module, "send_qqbot_c2c") as send,
             self.assertRaisesRegex(ValueError, "bad state"),
         ):
             main_module.main(
@@ -468,7 +503,7 @@ class MainStoryTests(unittest.TestCase):
     def test_manual_stop_does_not_notify(self):
         with (
             patch.object(main_module, "run_mode", side_effect=ManualStop("P")),
-            patch.object(main_module, "send_pushplus") as send,
+            patch.object(main_module, "send_qqbot_c2c") as send,
         ):
             exit_code = main_module.main(
                 [
@@ -488,7 +523,7 @@ class MainStoryTests(unittest.TestCase):
     def test_dry_run_does_not_notify(self):
         with (
             patch.object(main_module, "run_mode", return_value=RunResult(1)),
-            patch.object(main_module, "send_pushplus") as send,
+            patch.object(main_module, "send_qqbot_c2c") as send,
         ):
             exit_code = main_module.main(
                 ["--mode", "story", "--max-cycles", "1"]
@@ -502,7 +537,7 @@ class MainStoryTests(unittest.TestCase):
             patch.object(main_module, "run_mode", return_value=RunResult(1)),
             patch.object(
                 main_module,
-                "send_pushplus",
+                "send_qqbot_c2c",
                 side_effect=RuntimeError("notify bug"),
             ),
         ):

@@ -13,6 +13,7 @@
 from time import sleep as default_sleep
 from typing import Any, Callable, Optional
 
+from auto_game_unified.core.battle_supervisor import BattleOutcome
 from auto_game_unified.core.evidence_diagnostics import (
     save_runtime_evidence_diagnostic,
 )
@@ -83,15 +84,31 @@ class ModeRunnerBase:
     def _after_action_click(self, action: Any) -> None:
         """Optional short observation immediately after an action click."""
 
-    def _run_committed_battle(self, *, cycle: int) -> None:
+    def _run_committed_battle(self, *, cycle: int) -> Optional[Any]:
+        """移交战斗监督并返回其结果（``BattleOutcome``）。
+
+        主循环需要看结果：``PRE_BATTLE_BUSINESS`` 表示战斗没打起来（战前业务弹窗），
+        要走 ``_on_battle_handoff_failed`` 的有界重试，而不是当作「已进入战斗」。
+        """
         raise NotImplementedError
 
     def _on_battle_entry(self, action: Any, state_before: Any, max_cycles: Optional[int]) -> None:
         """战斗移交前的日志等特判（狗粮的“交由战斗监督”日志）。"""
 
+    def _on_battle_handoff_failed(self, action: Any, screen) -> bool:
+        """点了「战斗开始」但战斗没开起来时的处理；返回 True 表示已优雅收尾。
+
+        默认直接抛错（安全停止）。子模式可以做成**有界重试** —— 打不起来往往是
+        缺资源（体力不足）这类可恢复场景，重试一次比直接失败合理，但绝不能无限重试。
+        """
+        raise RuntimeError(f"动作 {getattr(action, 'name', '')} 未能进入战斗")
+
     def _after_battle(self, max_cycles: Optional[int]) -> bool:
         """战斗监控返回后的特判；返回 True 表示应立即结束 run()。"""
         return False
+
+    def _on_battle_started(self) -> None:
+        """战斗确实开起来了（监督正常返回结算）：子模式可在此重置重试账本。"""
 
     def _on_action_exhausted(self, action: Any, screen) -> bool:
         """动作重试 2 次仍无进展时的特判；返回 True 表示已优雅收尾。"""
@@ -521,14 +538,33 @@ class ModeRunnerBase:
                 stable.reset()
                 continue
 
-            # 入口二：不点击直接移交战斗监督（狗粮 start_battle 由监督代点）
+            # 入口二：**不点击**直接移交战斗监督。
+            #
+            # 只有 ``_CLICK_BEFORE_BATTLE=False`` 的模式走这里：它让战斗监督
+            # 自己去点开战按钮（狗粮 ``start_battle``）。
+            #
+            # ⚠️ 别把「我看到战斗画面了」这种**观察动作**做成移交入口。
+            # 2026-09-22 试过一次，后果是控制权在**战斗已经开打之后**才交给监督，
+            # 而监督要靠「结算页出现」才能正常退出 —— 战斗画面这一帧根本看不到
+            # 结算页，于是只能一路磨到绝对超时。正确做法是「点开战按钮时移交」
+            # （入口三），战斗画面只作为那个动作的**转场验收依据**。
             if (
                 action is not None
                 and not self._CLICK_BEFORE_BATTLE
                 and action.name == self._BATTLE_ENTRY_ACTION
             ):
                 self._on_battle_entry(action, state_before, max_cycles)
-                self._run_committed_battle(cycle=self.machine.completed_cycles + 1)
+                outcome = self._run_committed_battle(
+                    cycle=self.machine.completed_cycles + 1
+                )
+                if outcome is BattleOutcome.PRE_BATTLE_BUSINESS:
+                    # 战斗没开起来：有界重试，绝不无限重交（同入口三）。
+                    if self._on_battle_handoff_failed(action, screen):
+                        return self.machine.completed_cycles
+                else:
+                    self._on_battle_started()
+                    if self._after_battle(max_cycles):
+                        return self.machine.completed_cycles
                 state_started = absolute_started = self.now()
                 last_action_name = None
                 last_action_clicked_at = None
@@ -654,7 +690,24 @@ class ModeRunnerBase:
 
                 # 入口三：点击后移交战斗监控（例如主线 start_mission）
                 if self._CLICK_BEFORE_BATTLE and action.name == self._BATTLE_ENTRY_ACTION:
-                    self._run_committed_battle(cycle=self.machine.completed_cycles + 1)
+                    outcome = self._run_committed_battle(
+                        cycle=self.machine.completed_cycles + 1
+                    )
+                    if outcome is BattleOutcome.PRE_BATTLE_BUSINESS:
+                        # 打不起来（例如体力不足）：**有界重试**，绝不无限重交。
+                        # 子模式返回 True 表示已优雅收尾（自己 try 了恢复 / 记了日志）。
+                        if self._on_battle_handoff_failed(action, screen):
+                            return self.machine.completed_cycles
+                        state_started = self.now()
+                        absolute_started = state_started
+                        last_action_name = None
+                        last_action_clicked_at = None
+                        last_transition_action = None
+                        retry_wait_logged = False
+                        action_attempts = 0
+                        stable.reset()
+                        continue
+                    self._on_battle_started()
                     if self._after_battle(max_cycles):
                         return self.machine.completed_cycles
                     state_started = self.now()
