@@ -11,7 +11,7 @@ auto_game_unified/
 │  ├─ battle_supervisor.py  # 战斗监控：心跳、画面变化进展、结算移交
 │  ├─ recovery.py           # 恢复额度门控（一轮最多恢复一次）
 │  ├─ hotkey.py             # Windows P 键停止
-│  ├─ pushplus.py           # PushPlus 消息推送
+│  ├─ qqbot.py             # 官方 QQ 机器人开放平台 C2C 私聊推送
 │  └─ window.py             # 游戏窗口捕获与局部坐标点击
 ├─ games/epic7/
 │  ├─ navigation.py         # 从支持页面受控返回大厅并进入目标模式

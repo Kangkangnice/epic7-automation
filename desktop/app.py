@@ -302,7 +302,7 @@ class DesktopApp:
             textvariable=self.route_description_var,
             style="Body.TLabel",
             wraplength=250,
-        ).grid(row=8, column=0, sticky="w", pady=(14, 0))
+        ).grid(row=len(ROUTES) + 1, column=0, sticky="w", pady=(14, 0))
 
     def _build_action_panel(self, parent: ttk.Frame) -> None:
         panel = ttk.Frame(parent, style="Card.TFrame", padding=14)

@@ -193,8 +193,31 @@ def run_tests(targets: list[str], interpreter: list[str]) -> int:
     本机有个已知干扰：pytest 结束时清理临时目录会撞上 safe-delete 守卫，
     以致 `SystemExit: 1` —— 退出码非 0 但测试其实是全绿的。
     钩子里误拦提交比漏测更烦人，所以这里以结果行为准，并把判断依据打印出来。
+
+    另外**必须显式指定 `--basetemp`**：不给时 pytest 用自己的默认临时目录，清空动作
+    同样会撞守卫。给一个**仓库内、名字固定、每次都复用**的目录即可 ——
+    pytest 正常退出时会把 basetemp **清空**（实测跑完 0 残留），所以下次进来它本来就是空的，
+    不会触发「清空已有目录」这一步，也就不会在**用例收集阶段**炸掉
+    （2026-09-22 踩过：basetemp 给了相对路径、落到工作区根、攒了几十项，
+    pytest 一清空就触发守卫，表现成 37 个 `ERROR at setup`，看起来像大面积回归）。
+
+    ⚠️ 两个别用的替代方案：
+    - **先删再建**：safe-delete 垫片 fail-closed，`shutil.rmtree` 大量文件会抛 `OSError`，
+      旧目录还在 ⇒ pytest 又去清它 ⇒ 白绕一圈。
+    - **每次生成唯一目录名**（带 pid/时间戳）：会不断堆积垃圾（实测每次全量留 56 个文件）。
     """
-    command = [*interpreter, "-m", "pytest", "-q", *targets]
+    basetemp = PACKAGE_DIR / "runtime_logs" / "_basetemp"
+    basetemp.mkdir(parents=True, exist_ok=True)
+    command = [
+        *interpreter,
+        "-m",
+        "pytest",
+        "-q",
+        "-p",
+        "no:cacheprovider",
+        f"--basetemp={basetemp}",
+        *targets,
+    ]
     print(f"[check] 测试: {' '.join(command)}", flush=True)
     result = subprocess.run(command, cwd=WORKSPACE, capture_output=True, text=True)
     print(result.stdout, end="")

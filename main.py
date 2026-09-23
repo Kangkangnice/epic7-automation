@@ -7,7 +7,7 @@ from typing import Any, Optional
 import numpy as np
 
 from auto_game_unified.core.hotkey import WindowsPStopHotkey
-from auto_game_unified.core.pushplus import send_pushplus
+from auto_game_unified.core.qqbot import send_qqbot_c2c
 from auto_game_unified.core.recovery import RecoveryGate
 from auto_game_unified.core.runtime import ManualStop, Runtime
 from auto_game_unified.core.window import Epic7Window
@@ -27,7 +27,9 @@ from auto_game_unified.games.epic7.global_popups import (
     Epic7GlobalPopupGuard,
     load_friend_request_templates,
     load_friendship_points_templates,
+    load_gift_support_templates,
     load_intimacy_level_up_templates,
+    load_knights_signin_templates,
     load_network_reconnect_templates,
 )
 
@@ -41,6 +43,7 @@ MODE_LABELS = {
     "hero_synthesis": "英雄合成",
     "shop_refresh": "刷书签",
     "survivor": "幸存者",
+    "world_boss": "世界首领战",
 }
 
 
@@ -81,11 +84,14 @@ def _notify_live(
         lines.append(
             f"诊断目录：{ROOT / 'runtime_diagnostics' / f'epic7_{mode}'}"
         )
+    title = titles[status]
+    body = "\n".join(lines)
+    # 单一通道：没配就安静跳过，挂了也不影响退出码。
     try:
-        send_pushplus(titles[status], "\n".join(lines))
+        send_qqbot_c2c(title, body)
     except Exception as notification_error:
         print(
-            f"PushPlus 通知失败：{type(notification_error).__name__}",
+            f"QQ 通知失败：{type(notification_error).__name__}",
             flush=True,
         )
 
@@ -247,6 +253,15 @@ def run_mode(
                 friend_request_templates=load_friend_request_templates(
                     template_root / "story"
                 ),
+                # 骑士团签到弹窗（每天第一次进骑士团出现），模板放在 navigation 下，
+                # 与骑士团/世界首领战那两个导航锚点同目录。
+                knights_signin_templates=load_knights_signin_templates(
+                    template_root / "navigation"
+                ),
+                # 「领取支援物品」弹窗（进骑士团时团员支援到账），同放 navigation 下。
+                gift_support_templates=load_gift_support_templates(
+                    template_root / "navigation"
+                ),
             )
         )
         if spec.needs_navigation:
@@ -307,6 +322,10 @@ def main(argv: list[str] | None = None) -> int:
     if args.mode == "hero_synthesis" and args.max_cycles is None:
         # 英雄合成固定跑一遍列表，无需指定次数
         args.max_cycles = 1
+    if args.mode == "world_boss" and args.max_cycles is None:
+        # 世界首领战每天固定 2 次（主页「剩余/上限」就是 2），无需指定次数。
+        # 与 launcher.py / desktop/catalog.py 三处保持一致（都被测试钉住）。
+        args.max_cycles = 2
     if args.live and args.confirm != "RUN":
         raise SystemExit("实跑模式需要附加参数：--live --confirm RUN")
     if args.live and (args.max_cycles is None or args.max_cycles <= 0):

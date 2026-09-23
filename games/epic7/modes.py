@@ -51,6 +51,11 @@ from auto_game_unified.games.epic7.survivor import (
     SurvivorState,
     SurvivorStateMachine,
 )
+from auto_game_unified.games.epic7.world_boss import (
+    WorldBossRunner,
+    WorldBossState,
+    WorldBossStateMachine,
+)
 
 
 MachineFactory = Callable[[Path, str, str], Any]
@@ -286,6 +291,18 @@ def _build_survivor(
     )
 
 
+def _build_world_boss(
+    template_root: Path,
+    state: str,
+    backend: str = "emulator",
+) -> WorldBossStateMachine:
+    return WorldBossStateMachine(
+        template_root / "world_boss",
+        initial_state=WorldBossState(state),
+        backend=backend,
+    )
+
+
 MODE_SPECS = {
     "arena": ModeSpec(
         name="arena",
@@ -353,6 +370,13 @@ MODE_SPECS = {
         # 也不做回大厅恢复（Back 会退回活动主页那个未知状态）。
         needs_navigation=False,
         supported_backends=frozenset({"emulator"}),
+    ),
+    "world_boss": ModeSpec(
+        name="world_boss",
+        default_state=WorldBossState.HOME.value,
+        states=frozenset(state.value for state in WorldBossState),
+        build_machine=_build_world_boss,
+        runner_type=WorldBossRunner,
     ),
 }
 

@@ -67,6 +67,33 @@ def meaningful_change(before: Optional[np.ndarray], after: np.ndarray) -> bool:
     return float(np.mean(difference)) >= 2.0
 
 
+def left_page(previous_page: str, current_page: str) -> bool:
+    """「点一次、验收一次」的严格判据：只有页面身份变了才算这一下生效。
+
+    ⚠️ **不要用 ``meaningful_change`` 兜底**。实测（``runtime_logs/_probe_click_verify.py``）：
+    同一页面的不同帧平均差 11.10 / 12.95 / 45.03，而真实转场的相邻帧可以低到 **0.00**
+    —— 两个区间完全重叠，画面差区分不了「原地在动」和「换页」。大厅这类自带待机动画
+    的页面上，画面兜底会把每一次点击都判成「生效」，机制等于没加。
+    """
+    return previous_page != current_page
+
+
+def page_or_picture_changed(
+    previous_page: str,
+    previous_screen: Optional[np.ndarray],
+    current_page: str,
+    current_screen: np.ndarray,
+) -> bool:
+    """「按一次、验收一次」的宽松判据：换页，或同页但画面明显变化，都算生效。
+
+    用于 ``return_home`` 的返回验收：那里误判「生效」的代价只是多等一轮，而误判
+    「无效」会把动作换成页内返回箭头（行为更激进），所以宁松勿紧。
+    """
+    if previous_page != current_page:
+        return True
+    return meaningful_change(previous_screen, current_screen)
+
+
 def wait_until_target(
     *,
     capture: Callable[[], np.ndarray],

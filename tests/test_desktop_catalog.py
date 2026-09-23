@@ -11,10 +11,11 @@ def test_catalog_lists_every_route_in_menu_order():
         "fodder",
         "shop_refresh",
         "survivor",
+        "world_boss",
     ]
     assert route_by_name("hero_synthesis").status == "正式功能"
     assert route_by_name("story").status == "正式功能"
-    assert sum(route.experimental for route in ROUTES) == 3
+    assert sum(route.experimental for route in ROUTES) == 4
 
 
 def test_survivor_is_experimental_and_explains_the_manual_entry_page():
@@ -53,3 +54,24 @@ def test_expedition_is_a_formal_feature():
     expedition = route_by_name("expedition")
     assert expedition.status == "正式功能"
     assert not expedition.experimental
+
+
+def test_world_boss_is_experimental_and_explains_the_resource_boundary():
+    world_boss = route_by_name("world_boss")
+
+    assert world_boss.label == "世界首领战"
+    # 一次实机都没跑过，先按实验功能放进助手。
+    assert world_boss.experimental
+    # 「每次 20 体力」和「不会用钻石」是用户定的红线，必须写在界面上让人看得见。
+    assert "20 体力" in world_boss.description
+    assert "树叶" in world_boss.description
+
+
+def test_world_boss_is_fixed_to_two_cycles():
+    """每天就 2 次，用户明确要求「不要让我选择次数」。"""
+    world_boss = route_by_name("world_boss")
+
+    assert world_boss.default_cycles == 2
+    assert world_boss.cycles_editable is False
+    # 用户看得见的说明里要写清「每天 2 次」，否则置灰的输入框会被当成坏了。
+    assert "2 次" in world_boss.description

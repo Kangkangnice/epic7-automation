@@ -124,6 +124,70 @@ class ProjectLayoutTests(unittest.TestCase):
         fixture_dir = ROOT / "tests" / "fixtures" / "epic7_survivor"
         self.assertEqual(expected, {path.name for path in fixture_dir.glob("*.png")})
 
+    def test_epic7_world_boss_fixture_set_exists(self):
+        expected = {
+            # 2026-09-21 用户授权 AI 直接操作模拟器，实机走通一整轮世界首领战，
+            # 逐页采集。顺序即一轮的运行顺序。
+            "lobby_with_knights.png",
+            "knights_home.png",
+            "worldboss_home.png",
+            # 同一主页的两种状态：次数是「剩余/上限」，可打时 1/2、打完 0/2 且
+            # 「选择队伍」变灰（按钮文字区 HSV 亮度 118.8 → 49.8）。两张都要留，
+            # 是判断「还有没有次数」的回归证据。
+            "worldboss_home_exhausted.png",
+            "team_select.png",
+            "team_config.png",
+            # 体力 17 < 20 时弹出的全局体力弹窗，与 story 共用同一套模板
+            # （实测 stamina_popup 0.9999 / material 0.9895 / confirm 1.0000）。
+            "stamina_popup.png",
+            "battle_result.png",
+            "level_reward.png",
+            # 2026-09-22 用户实测发现「每天第一次进骑士团」会先弹签到达成度奖励弹窗。
+            # 两张一组：弹窗帧（盖住骑士团主页）+ 点掉后的骑士团主页。
+            # 关键实测：弹窗把底页的 worldboss_entry 从 0.9890 压到 0.4477，
+            # 所以弹窗期间认不出底页，必须先关掉再识别。
+            "knights_signin_popup.png",
+            "knights_home_after_popup.png",
+            # 2026-09-22 用户实测第二类骑士团弹窗：「进骑士团时团员赠送的支援资源到账」
+            # （标题「领取支援物品」）。同上，盖住骑士团主页、压暗底页锚点。
+            # 实跑时它把导航打成「未知画面」，连点中央 4 次唤醒失败 —— 故纳入全局弹窗守卫。
+            "gift_support_popup.png",
+            # 2026-09-22 首次实跑失败帧：配置队伍页但「自动配置」按钮已转蓝。
+            # 与 team_config.png 构成一组两态证据（橙=未配置 / 蓝=已配置），
+            # 是「配置队伍页要分两阶段走」的回归依据。
+            "team_config_configured.png",
+            # 2026-09-22 「战斗开始」的**出口标志**：战斗画面本身没有稳定标题可裁模板，
+            # 靠 battle_controls.battle_scene_visible（右上控制区 + 左侧行动顺序）
+            # 判。这张图是「战斗画面已出现」的正例，用来守住「看到战斗画面才移交监督」。
+            "battle.png",
+            # 2026-09-22 用户实拍两张真实世界首领战画面（1920×1080 截图按
+            # core/window.py::_legacy_canvas 的 (0,+52) 偏移还原成 1982×1132 画布）。
+            # 上面那张 battle.png 是**另一种战斗布局**，团本战斗画面在旧判据下
+            # battle_scene_visible 恒为 False —— 这两张才是「实跑看到的那一屏」。
+            #   battle_live_skip.png：HUD 正常帧（右上角有「跳过」，识别锚点 + 点击目标）
+            #   battle_skill_anim.png：boss 技能演出帧（UI 整块隐藏，预期认不出来）
+            "battle_live_skip.png",
+            "battle_skill_anim.png",
+        }
+        fixture_dir = ROOT / "tests" / "fixtures" / "epic7_world_boss"
+        self.assertEqual(expected, {path.name for path in fixture_dir.glob("*.png")})
+
+    def test_navigation_templates_for_knights_and_world_boss_exist(self):
+        # 骑士团/世界首领战导航链要用的两个新锚点。都是排他锚点，必须有：
+        # 骑士团主页与首领战主页顶部标题完全相同，只有靠这两个按钮区分得开。
+        navigation = ROOT / "games" / "epic7" / "templates" / "navigation"
+        for name in (
+            "lobby_knights.png",
+            "worldboss_entry.png",
+            # 骑士团签到弹窗的两个锚点（标题 + 点击关闭），双锚点同时命中才算。
+            "knights_signin_title.png",
+            "knights_signin_close.png",
+            # 「领取支援物品」弹窗的两个锚点，同样双锚点同时命中才算。
+            "gift_support_title.png",
+            "gift_support_close.png",
+        ):
+            self.assertTrue((navigation / name).is_file(), name)
+
 
 if __name__ == "__main__":
     unittest.main()
