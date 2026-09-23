@@ -17,6 +17,7 @@ python auto_game_unified\\tools\\make_desktop_shortcut.py            # 建/覆�
 python auto_game_unified\\tools\\make_desktop_shortcut.py --dir D:\\desktop
 python auto_game_unified\\tools\\make_desktop_shortcut.py --name 第七史诗助手
 python auto_game_unified\\tools\\make_desktop_shortcut.py --icon D:\\某程序.exe,0
+python auto_game_unified\\tools\\make_desktop_shortcut.py --no-admin   # 不要提权
 python auto_game_unified\\tools\\make_desktop_shortcut.py --remove   # 只删图标
 ```
 
@@ -25,6 +26,11 @@ python auto_game_unified\\tools\\make_desktop_shortcut.py --remove   # 只删图
 
 **图标**：不指定时会优先用**游戏本体** ``EpicSeven.exe`` 的图标（存在就用，见
 ``GAME_ICON``）；用 Python 自带图标太丑，用户明确反馈过。想换就传 ``--icon 路径[,序号]``。
+
+**管理员**：默认勾上「以管理员身份运行」，因为 PC 客户端和游戏本体都以管理员运行，
+助手不提权就会被 UIPI 拦掉 ``SendInput``（详见项目记忆「PC 客户端」一节）。
+不想要就传 ``--no-admin``。⚠️ 这个开关**不在** ``WScript.Shell`` 的接口里，
+只能建完之后直接改 ``.lnk`` 文件的字节，见 ``set_run_as_admin()``。
 """
 
 from __future__ import annotations
@@ -70,7 +76,34 @@ def pick_icon(requested: str | None) -> str:
     return ""  # 空串 = 用目标程序自带的图标
 
 
-def build(link_path: Path, arguments: str, working_dir: Path, icon: str) -> Path:
+# `.lnk` 里「以管理员身份运行」的开关位置。
+#
+# ⚠️ 它**不在** ``WScript.Shell`` 的接口里，只能落到文件字节上：
+# ``ShellLinkHeader`` 的 ``LinkFlags`` 是偏移 0x14 起的 4 字节，``0x15`` 是它的
+# 第二个字节，掩码 **0x20** 置位 = 需要提权。
+# （2026-09-23 我把掩码写成 0x40，于是把「本来就是管理员」的旧图标误判成「不是」，
+# 还顺手改错了一条本来对的笔记 —— 别再动这个数。）
+ADMIN_FLAG_OFFSET = 0x15
+ADMIN_FLAG_MASK = 0x20
+
+
+def set_run_as_admin(link_path: Path, enabled: bool) -> None:
+    """改写 ``.lnk`` 里「以管理员身份运行」那一位。
+
+    必须在 ``link.save()`` **之后**调用：``save()`` 是 ``WScript.Shell`` 写的，
+    它不认识这一位，先改会被覆盖掉。
+    """
+    data = bytearray(link_path.read_bytes())
+    if enabled:
+        data[ADMIN_FLAG_OFFSET] |= ADMIN_FLAG_MASK
+    else:
+        data[ADMIN_FLAG_OFFSET] &= ~ADMIN_FLAG_MASK
+    link_path.write_bytes(bytes(data))
+
+
+def build(
+    link_path: Path, arguments: str, working_dir: Path, icon: str, admin: bool
+) -> Path:
     """创建（或覆盖）快捷方式，返回 ``.lnk`` 路径。
 
     ``link_path`` 是 ``.lnk`` 文件本身的位置，真正的启动目标写在 ``TargetPath`` 里 ——
@@ -87,6 +120,7 @@ def build(link_path: Path, arguments: str, working_dir: Path, icon: str) -> Path
     link.WindowStyle = 1
     link.IconLocation = icon
     link.save()
+    set_run_as_admin(link_path, admin)
     return link_path
 
 
@@ -98,6 +132,12 @@ def main(argv: list[str] | None = None) -> int:
         "--icon",
         default=None,
         help="图标来源，形如 路径.exe[,序号]；不传则优先用游戏本体图标",
+    )
+    parser.add_argument(
+        "--no-admin",
+        dest="admin",
+        action="store_false",
+        help="不勾「以管理员身份运行」（默认勾上：PC 客户端要求提权）",
     )
     parser.add_argument("--remove", action="store_true", help="只删图标")
     args = parser.parse_args(argv)
@@ -125,12 +165,13 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     icon = pick_icon(args.icon)
-    build(link_path, f'"{LAUNCHER}"', WORKSPACE, icon)
+    build(link_path, f'"{LAUNCHER}"', WORKSPACE, icon, args.admin)
     print(f"已创建 {link_path}")
     print(f"  目标：{pythonw}")
     print(f"  参数：\"{LAUNCHER}\"")
     print(f"  起始位置：{WORKSPACE}")
     print(f"  图标：{icon or '（目标程序自带）'}")
+    print(f"  以管理员身份运行：{'是' if args.admin else '否'}")
     return 0
 
 

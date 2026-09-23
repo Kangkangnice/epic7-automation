@@ -36,13 +36,19 @@ python -u -m auto_game_unified.desktop
 # 命令行方式
 D:\anaconda\pythonw.exe auto_game_unified\desktop\launch_hidden.py
 
-# 在桌面生成「第七史诗助手」图标（双击即用，随时可重建）
-python auto_game_unified\tools\make_desktop_shortcut.py
-python auto_game_unified\tools\make_desktop_shortcut.py --remove   # 不想要了就删掉
+# 重建桌面图标（就是「游戏」文件夹里那个，双击即用，随时可重建）
+python auto_game_unified\tools\make_desktop_shortcut.py --dir "D:\desktop\游戏" --name 第七史诗自动助手
+# 不想要了就删掉（同一串参数再加 --remove）
+python auto_game_unified\tools\make_desktop_shortcut.py --dir "D:\desktop\游戏" --name 第七史诗自动助手 --remove
 ```
 
-图标默认取《第七史诗》游戏本体的图标（找不到才退回目标程序自带的 Python 图标）；
-想换别的用 `--icon 某程序.exe,0`。
+图标默认取《第七史诗》游戏本体的图标（找不到才退回目标程序自带的 Python 图标），想换别的用
+`--icon 某程序.exe,0`。快捷方式默认勾上「以管理员身份运行」（PC 客户端与游戏本体都要管理员，
+否则会被 UIPI 拦掉点击），不想要就加 `--no-admin`。
+
+⚠️ 上面的 `--dir`／`--name` 不是可有可无的装饰：桌面图标**不在**桌面根目录，而在 `游戏\` 子目录里、
+名字是「第七史诗自动助手」。**不加这两个参数会在桌面根目录另建一个名字和位置都不同的重复图标**
+（2026-09-23 就发生过一次，用户看到两个图标来问）。
 
 无窗口启动时看不到任何报错，所以启动信息会写进
 `auto_game_unified/runtime_logs/desktop_launch.log`（启动就失败时会带完整堆栈）。
