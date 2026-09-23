@@ -103,7 +103,11 @@ DIR_NOTES = {
     ".pytest_cache": ("pytest 缓存", "跑测试留下的缓存，可再生。删了下次跑测试会重建。"),
     "_walk": ("空目录", "可直接删。目录名为空，0 个文件。"),
     "docs": ("空目录", "工作区根的 docs/ 是空的；真正的文档目录是 auto_game_unified/docs/。可直接删。"),
-    "runtime_logs": ("临时输出", "只有 1 个 _ls_slot.txt；真正的运行日志目录是 auto_game_unified/runtime_logs/。"),
+    "runtime_logs": (
+        "临时输出",
+        "排查期间写的临时脚本与输出（工作区根不是仓库，不被 git 跟踪）；"
+        "真正的运行日志目录是 auto_game_unified/runtime_logs/。删掉不影响程序。",
+    ),
     "templates_backup_20260829_1854": (
         "模板历史快照",
         "19 个条目 / 114 个文件。与仓库当前模板：相同 92、不一致 16、仓库已删 6。",
@@ -224,8 +228,15 @@ def render() -> str:
         f"{sum(len(buckets.get(k, [])) for k in ('A1','A2','A3','A4','A5','A6'))} | "
         "为定位具体问题临时产出，结论已进正式代码/文档 | 确认后可整批删 |"
     )
+    root_logs_files = 0
+    root_logs_dir = os.path.join(ROOT, "runtime_logs")
+    if os.path.isdir(root_logs_dir):
+        for _dirpath, _dirnames, _filenames in os.walk(root_logs_dir):
+            root_logs_files += len(_filenames)
     add(
-        "| **L0 可删** | 空目录 + 根 `runtime_logs` | 3 | `_walk`、`docs` 是空的；根 `runtime_logs` 只有 1 个临时文本 | 确认后可删 |"
+        "| **L0 可删** | 空目录 + 根 `runtime_logs` | "
+        f"{2 + root_logs_files} | `_walk`、`docs` 是空的；根 `runtime_logs` 里有 "
+        f"{root_logs_files} 个临时文件（含子目录） | 确认后可删 |"
     )
     add(
         "| **L1 需你确认** | `templates_用户修改版_20260829` | 16 | "
