@@ -77,6 +77,11 @@ ROUTE_KEYWORDS = {
     "hero_synthesis": "hero",
     "shop_refresh": "shop_refresh",
     "survivor": "survivor",
+    # ⚠️ 漏登记的后果不是「测试漏跑」——恰恰相反，是**反向**的：`route_of()` 认不出这个
+    # 文件属于哪条路线 → 定向判定退回全量。全量本身安全，所以不会有测试因此变红，
+    # 只有改的人会奇怪「改一行怎么跑了 9 分半」（世界首领战 2026-09-23 实测）。
+    # 护栏：`test_project_layout.py::test_every_route_is_known_to_the_local_check_gate`。
+    "world_boss": "world_boss",
 }
 
 DOC_SUFFIXES = (".md", ".txt", ".json", ".yaml", ".yml")
