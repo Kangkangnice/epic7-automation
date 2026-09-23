@@ -172,6 +172,26 @@ class ProjectLayoutTests(unittest.TestCase):
         fixture_dir = ROOT / "tests" / "fixtures" / "epic7_world_boss"
         self.assertEqual(expected, {path.name for path in fixture_dir.glob("*.png")})
 
+    def test_every_route_is_known_to_the_local_check_gate(self):
+        """每条路线都要在 `tools/check.py` 的路线表里登记。
+
+        漏登记的后果不是「测试漏跑」——恰恰相反，是**反向**的：`route_of()` 认不出
+        这个文件属于哪条路线，定向判定就退回全量。全量本身是安全的，所以不会有任何
+        测试因此变红，只是改的人会奇怪「改一行怎么跑了 9 分半」（世界首领战 2026-09-23
+        实测）。正因为它是「安静地变慢」而不是「响亮地失败」，才只能靠这条护栏盯着。
+        """
+
+        from auto_game_unified.games.epic7.modes import MODE_SPECS
+        from auto_game_unified.tools.check import ROUTE_KEYWORDS
+
+        missing = sorted(set(MODE_SPECS) - set(ROUTE_KEYWORDS))
+        self.assertEqual(
+            [],
+            missing,
+            f"这些路线没在 tools/check.py 的 ROUTE_KEYWORDS 里登记：{missing}"
+            "（漏了不会报错，只会让改这条路线的人白跑全量）",
+        )
+
     def test_navigation_templates_for_knights_and_world_boss_exist(self):
         # 骑士团/世界首领战导航链要用的两个新锚点。都是排他锚点，必须有：
         # 骑士团主页与首领战主页顶部标题完全相同，只有靠这两个按钮区分得开。
