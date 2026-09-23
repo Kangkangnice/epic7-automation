@@ -41,6 +41,9 @@ python auto_game_unified\tools\make_desktop_shortcut.py
 python auto_game_unified\tools\make_desktop_shortcut.py --remove   # 不想要了就删掉
 ```
 
+图标默认取《第七史诗》游戏本体的图标（找不到才退回目标程序自带的 Python 图标）；
+想换别的用 `--icon 某程序.exe,0`。
+
 无窗口启动时看不到任何报错，所以启动信息会写进
 `auto_game_unified/runtime_logs/desktop_launch.log`（启动就失败时会带完整堆栈）。
 上面那条 `python -u -m ...` **仍然保留**——调试时用它，报错能直接看见。
