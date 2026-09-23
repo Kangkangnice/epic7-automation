@@ -24,6 +24,27 @@ cd D:\AI\codex\auto_game
 python -u -m auto_game_unified.desktop
 ```
 
+### 无终端窗口启动（日常用这个）
+
+上面那条命令是用 `python.exe` 跑的，Windows 会给它配一个**控制台黑窗**。那个黑窗纯属多余
+（`desktop/` 包一行都没往里写东西），而且它和助手是**绑定**的：**关掉黑窗，助手会一起被结束**
+——实机反馈就是「一关终端，助手就没了」。
+
+日常使用请走无窗口入口：它用 `pythonw.exe` 启动，**不创建任何窗口**。
+
+```powershell
+# 命令行方式
+D:\anaconda\pythonw.exe auto_game_unified\desktop\launch_hidden.py
+
+# 在桌面生成「第七史诗助手」图标（双击即用，随时可重建）
+python auto_game_unified\tools\make_desktop_shortcut.py
+python auto_game_unified\tools\make_desktop_shortcut.py --remove   # 不想要了就删掉
+```
+
+无窗口启动时看不到任何报错，所以启动信息会写进
+`auto_game_unified/runtime_logs/desktop_launch.log`（启动就失败时会带完整堆栈）。
+上面那条 `python -u -m ...` **仍然保留**——调试时用它，报错能直接看见。
+
 英雄合成、主线、竞技场与远征在界面中标记为正式功能；英雄合成固定运行一轮。狗粮、刷书签和活动标记为实验功能并在启动前提醒。桌面 MVP 当前只提供模拟器后端；Windows 安装包和便携版将在后续打包阶段提供。CLI 和中文交互式启动器继续保留给开发调试。
 
 ## 文档

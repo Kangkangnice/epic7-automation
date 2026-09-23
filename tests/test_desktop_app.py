@@ -1,3 +1,6 @@
+from pathlib import Path
+import sys
+
 import pytest
 import tkinter as tk
 from unittest.mock import patch
@@ -251,3 +254,56 @@ def test_route_template_failure_does_not_start_worker(tmp_path, tk_window):
 
     assert worker.request is None
     assert "路线资源检查失败：缺少模板" == app.environment_var.get()
+
+
+def test_hidden_launcher_sends_both_streams_to_its_log(tmp_path, monkeypatch):
+    """桌面图标走的是无窗口入口，标准流必须**在导入助手之前**落到日志上。
+
+    双击启动时 ``sys.stdout`` 可能是 ``None``，任何一处不小心往里写都会直接抛异常；
+    这个入口的全部价值就是把两个流换成真文件，所以这里钉死「换成了什么」和
+    「返回码原样透传」（吞掉退出码会把启动失败伪装成成功）。
+    """
+    from auto_game_unified.desktop import launch_hidden
+
+    log_path = tmp_path / "nested" / "desktop_launch.log"
+    monkeypatch.setattr(launch_hidden, "LOG_PATH", log_path)
+    # main() 会直接改写 sys.stdout / sys.stderr，交给 monkeypatch 负责还原
+    monkeypatch.setattr(sys, "stdout", sys.stdout)
+    monkeypatch.setattr(sys, "stderr", sys.stderr)
+
+    with patch("auto_game_unified.desktop.app.main", return_value=7) as run:
+        assert launch_hidden.main() == 7
+
+    run.assert_called_once_with()
+    assert sys.stdout is sys.stderr, "两个流应指向同一个日志文件"
+    assert Path(sys.stdout.name) == log_path
+    try:
+        sys.stderr.write("启动检查\n")
+        sys.stderr.flush()
+    finally:
+        sys.stderr.close()
+    assert "启动检查" in log_path.read_text(encoding="utf-8")
+
+
+def test_hidden_launcher_writes_a_startup_failure_into_the_log(tmp_path, monkeypatch):
+    """启动就崩的时候无窗口下没人看得到，必须落进日志并返回非零。
+
+    没有这条，故障表现就是「双击图标没反应」，连查都没法查。
+    """
+    from auto_game_unified.desktop import launch_hidden
+
+    log_path = tmp_path / "desktop_launch.log"
+    monkeypatch.setattr(launch_hidden, "LOG_PATH", log_path)
+    monkeypatch.setattr(sys, "stdout", sys.stdout)
+    monkeypatch.setattr(sys, "stderr", sys.stderr)
+
+    with patch(
+        "auto_game_unified.desktop.app.main",
+        side_effect=RuntimeError("模板目录缺失"),
+    ):
+        assert launch_hidden.main() == 1
+
+    text = log_path.read_text(encoding="utf-8")
+    sys.stderr.close()
+    assert "模板目录缺失" in text
+    assert "Traceback" in text
