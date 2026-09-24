@@ -1,3 +1,4 @@
+import os
 from dataclasses import dataclass
 from typing import Optional
 
@@ -11,12 +12,32 @@ class Match:
     score: float
 
 
+# 模板在进程内不会变，但同一个文件会被反复解码：全量测试里最热的
+# 一张小图被加载上千次，每次都要重新读盘 + BGR->RGB。
+# 用 (mtime_ns, size) 当版本号，文件被替换时会自动重新解码，
+# 不会读到旧内容；模板总量很小（几十张、几 MB），缓存代价可忽略。
+_TEMPLATE_CACHE: dict[str, tuple[tuple[int, int], np.ndarray]] = {}
+
+
 def load_template(path: str) -> np.ndarray:
     """Load an image in RGB, matching PyAutoGUI screenshot arrays."""
+    stamp: Optional[tuple[int, int]]
+    try:
+        info = os.stat(path)
+        stamp = (info.st_mtime_ns, info.st_size)
+    except OSError:
+        stamp = None
+    if stamp is not None:
+        cached = _TEMPLATE_CACHE.get(path)
+        if cached is not None and cached[0] == stamp:
+            return cached[1]
     image = cv2.imread(path, cv2.IMREAD_COLOR)
     if image is None:
         raise FileNotFoundError(path)
-    return cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+    image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+    if stamp is not None:
+        _TEMPLATE_CACHE[path] = (stamp, image)
+    return image
 
 
 def find_best_template(

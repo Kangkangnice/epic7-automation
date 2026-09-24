@@ -326,6 +326,53 @@ class WindowViewportTests(unittest.TestCase):
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
 
+    def test_render_tap_surfaces_a_dead_adb_channel(self):
+        """ldconsole 在设备离线时**退出码仍然是 0**，失败只写在输出里。
+
+        不检查输出的话，一次根本没送达的点击会被当成发送成功：上层只能看到
+        「点击验收无效」，白烧掉重试次数后报一个与真因无关的「导航转场失败」，
+        既不告警也不切通道（2026-09-24 实机就是这么静默失效的）。
+        """
+        for stream, payload in (
+            ("stdout", b"adb.exe: device offline\n"),
+            ("stderr", b"error: device not found\n"),
+        ):
+            with self.subTest(stream=stream):
+                game = Epic7Window()
+                result = subprocess.CompletedProcess(
+                    args=[], returncode=0, stdout=b"", stderr=b""
+                )
+                setattr(result, stream, payload)
+                with (
+                    patch.object(
+                        game,
+                        "_instance_channel",
+                        return_value=(Path("D:/epic7/ldconsole.exe"), "0", 456),
+                    ),
+                    patch(
+                        "auto_game_unified.core.window.subprocess.run",
+                        return_value=result,
+                    ),
+                    self.assertRaisesRegex(RuntimeError, "输入通道不可用"),
+                ):
+                    game._send_render_tap((1790, 274))
+
+    def test_render_tap_accepts_a_healthy_adb_channel(self):
+        """通道正常时输出为空，不能被上面的检查误伤。"""
+        game = Epic7Window()
+        result = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout=b"", stderr=b""
+        )
+        with (
+            patch.object(
+                game,
+                "_instance_channel",
+                return_value=(Path("D:/epic7/ldconsole.exe"), "0", 456),
+            ),
+            patch("auto_game_unified.core.window.subprocess.run", return_value=result),
+        ):
+            game._send_render_tap((1790, 274))
+
     def test_legacy_swipe_is_converted_and_sent_through_indexed_adb(self):
         game = Epic7Window()
         with (
@@ -358,6 +405,36 @@ class WindowViewportTests(unittest.TestCase):
 
         with self.assertRaisesRegex(RuntimeError, "渲染区外滑动"):
             game.swipe((1300, 20), (1300, 220), 500)
+
+    def test_legacy_swipe_surfaces_a_dead_adb_channel(self):
+        """滑动和点击共用同一条 adb 通道，失败可见性必须一致。
+
+        两处是同一份 `subprocess.run(check=True, capture_output=True)` 的复制，
+        只修点击会让「右侧滑动」重复点击踩过的坑。
+        """
+        for stream, payload in (
+            ("stdout", b"adb.exe: device offline\n"),
+            ("stderr", b"error: device not found\n"),
+        ):
+            with self.subTest(stream=stream):
+                game = Epic7Window()
+                result = subprocess.CompletedProcess(
+                    args=[], returncode=0, stdout=b"", stderr=b""
+                )
+                setattr(result, stream, payload)
+                with (
+                    patch.object(
+                        game,
+                        "_instance_channel",
+                        return_value=(Path("D:/epic7/ldconsole.exe"), "0", 456),
+                    ),
+                    patch(
+                        "auto_game_unified.core.window.subprocess.run",
+                        return_value=result,
+                    ),
+                    self.assertRaisesRegex(RuntimeError, "输入通道不可用"),
+                ):
+                    game._send_render_swipe((1300, 798), (1300, 168), 500)
 
     def test_instance_lookup_hides_ldconsole_window(self):
         game = Epic7Window()
@@ -425,6 +502,43 @@ class WindowViewportTests(unittest.TestCase):
             timeout=10,
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
+
+    def test_android_back_surfaces_a_dead_console(self):
+        """返回键走 ldconsole 实例通道（不是 adb），但它出错时**同样返回 0**。
+
+        2026-09-24 实机实测，四条都返回退出码 0：
+          `adb --index 9 ...`                  -> `adb.exe: device 'emulator-5572' not found`
+          `adb --index 0 ...`（设备离线）       -> `adb.exe: device offline`
+          `action --index 9 --key ... --value back` -> `player don't exist!`
+          `action --index 0`（漏参数）          -> 整篇 usage 文本
+        ⇒ 不检查输出的话，`back()` 的 activate-重试分支同样永不触发。
+        好在 navigation 层对返回另有**画面级验收**（`返回验收=无效`、
+        `受控返回8次后仍未回到大厅`），所以它的后果比点击轻；
+        但「出错却报成功」本身仍该修掉 —— 用户的要求是「所有按键都不能坏」。
+        """
+        for payload in (
+            b"player don't exist!",
+            b"adb.exe: device offline\n",
+            b"dnplayer v14.0.22.0\r\nUsage:\r\n\r\nldconsole <command>\r\n",
+        ):
+            with self.subTest(payload=payload):
+                game = Epic7Window()
+                result = subprocess.CompletedProcess(
+                    args=[], returncode=0, stdout=payload, stderr=b""
+                )
+                with (
+                    patch.object(
+                        game,
+                        "_instance_channel",
+                        return_value=(Path("D:/epic7/ldconsole.exe"), "0", 456),
+                    ),
+                    patch(
+                        "auto_game_unified.core.window.subprocess.run",
+                        return_value=result,
+                    ),
+                    self.assertRaisesRegex(RuntimeError, "输入通道不可用"),
+                ):
+                    game._send_android_back()
 
     def test_campfire_wake_uses_a_real_desktop_mouse_click(self):
         game = Epic7Window()

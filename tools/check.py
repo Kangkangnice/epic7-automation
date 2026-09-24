@@ -50,6 +50,10 @@ PACKAGE = PACKAGE_DIR.name
 SHARED_PATHS = {
     "main.py",
     "launcher.py",
+    # ⚠️ conftest 影响的是**整个套件**（它在 collection 阶段就被导入，改错了所有用例一起变），
+    # 但它的路径以 `tests/` 开头，会先被下面的 NO_TEST_PREFIXES 判成「没有测试覆盖」而跳过测试。
+    # 所以必须显式登记在这里，让改了它就退回全量。
+    "tests/conftest.py",
     "games/epic7/runner_base.py",
     "games/epic7/modes.py",
     "games/epic7/navigation.py",
@@ -82,11 +86,19 @@ ROUTE_KEYWORDS = {
     # 只有改的人会奇怪「改一行怎么跑了 9 分半」（世界首领战 2026-09-23 实测）。
     # 护栏：`test_project_layout.py::test_every_route_is_known_to_the_local_check_gate`。
     "world_boss": "world_boss",
+    "knights_donation": "knights_donation",
 }
 
 DOC_SUFFIXES = (".md", ".txt", ".json", ".yaml", ".yml")
 ASSET_PREFIXES = ("tests/fixtures/", "games/epic7/templates/", "docs/manual_review/")
 LAYOUT_TEST = "test_project_layout.py"
+
+# 测试并行度。**默认 1（关）= 单进程**，2026-09-23 定的：
+# 用户的机器只有 15GB 内存，且提交时常常还开着游戏/别的会话；实测多进程在内存吃紧时会退化
+# （4 片耗时之和 382 秒 → 502 秒，可用内存掉到 4GB、开始换页，比单进程还慢），
+# 所以**先不启用**，改为优先优化单进程本身。
+# 想启用就把这里改成 2 或 4：机器空闲时 4 路实测能把全量从 382 秒压到 191 秒。
+PARALLEL_WORKERS = 1
 
 
 def git(*args: str) -> list[str]:
@@ -217,7 +229,12 @@ def _pick_fresh_basetemp() -> Path:
     root = PACKAGE_DIR / "runtime_logs"
     root.mkdir(parents=True, exist_ok=True)
     index = 0
-    while (root / f"_basetemp_{index}").exists():
+    # ⚠️ 并行分片的临时目录名是 `<basetemp>_<片号>`，所以「这个基名能不能用」
+    # 必须连分片目录一起看：只看 `_basetemp_<n>` 的话，第二次跑会挑到同一个基名，
+    # 而分片目录已经存在 ⇒ pytest 又去 rm_rf 它 ⇒ 正好落回上面那条雷。
+    while (root / f"_basetemp_{index}").exists() or any(
+        root.glob(f"_basetemp_{index}_*")
+    ):
         index += 1
     return root / f"_basetemp_{index}"
 
@@ -247,17 +264,10 @@ def _pytest_env() -> dict[str, str]:
     return env
 
 
-def run_tests(targets: list[str], interpreter: list[str]) -> int:
-    """跑 pytest，并按「结果行」而不是单看退出码判定成败。
-
-    本机有个已知干扰：pytest 结束时清理临时目录会撞上 safe-delete 守卫，
-    以致 `SystemExit: 1` —— 退出码非 0 但测试其实是全绿的。
-    钩子里误拦提交比漏测更烦人，所以这里以结果行为准，并把判断依据打印出来。
-
-    `--basetemp` 为什么必须是「新名字」，见 `_pick_fresh_basetemp()` 的说明。
-    """
-    basetemp = _pick_fresh_basetemp()
-    command = [
+def _pytest_command(
+    interpreter: list[str], basetemp: Path, targets: list[str]
+) -> list[str]:
+    return [
         *interpreter,
         "-m",
         "pytest",
@@ -267,23 +277,132 @@ def run_tests(targets: list[str], interpreter: list[str]) -> int:
         f"--basetemp={basetemp}",
         *targets,
     ]
-    print(f"[check] 测试: {' '.join(command)}", flush=True)
+
+
+def _split_evenly(targets: list[str], workers: int) -> list[list[str]]:
+    """把测试文件尽量均匀地分成 ``workers`` 组：大文件优先，分给当前最轻的一组。
+
+    用「文件字节数」当活重的代理 —— 重的测试文件（如 `test_navigation.py`）既长，
+    加载的夹具也多，实测比按字母轮流分片均匀得多。分片不均是要付代价的：
+    总时长由最慢那片决定。
+    """
+    weighted: list[tuple[int, str]] = []
+    for path in targets:
+        try:
+            size = (PACKAGE_DIR / normalise(path)).stat().st_size
+        except OSError:
+            size = 0
+        weighted.append((size, path))
+    weighted.sort(key=lambda item: item[0], reverse=True)
+
+    buckets: list[list[str]] = [[] for _ in range(workers)]
+    loads = [0] * workers
+    for size, path in weighted:
+        lightest = loads.index(min(loads))
+        buckets[lightest].append(path)
+        loads[lightest] += size
+    return [bucket for bucket in buckets if bucket]
+
+
+def _judge(codes: list[int], outputs: list[str]) -> int:
+    """按「结果行」而不是单看退出码判定成败，逐片判定、**任何一片可疑都算失败**。
+
+    已知的干扰与单进程时同一个：pytest 结束时清理临时目录会撞上 safe-delete 守卫，
+    退出码非 0 但测试其实全绿。判据收紧成「这一片必须自己打印过 `N passed`、
+    且没有 failed/error」，所以「某片崩了、一个字都没输出」这种不会冒充通过。
+    """
+    for text in outputs:
+        print(text, end="")
+
+    forgiven = False
+    for code, text in zip(codes, outputs):
+        if code == 0:
+            continue
+        if PASSED_RE.search(text) and not FAILED_RE.search(text):
+            forgiven = True
+            continue
+        return code or 1
+    if forgiven:
+        print(
+            "[check] 有分片退出码非 0，但结果行没有 failed/error —— "
+            "按已知的临时目录清理守卫误报处理，判为通过"
+        )
+    return 0
+
+
+def _run_parallel(
+    targets: list[str],
+    interpreter: list[str],
+    basetemp: Path,
+    env: dict[str, str],
+    workers: int,
+) -> int:
+    """按文件分片、每片一个独立 pytest 进程并行跑。
+
+    ⚠️ **为什么不用 pytest-xdist**（2026-09-23 实测，别再试回去）：
+    `-n 4` 无论配 `--dist load` 还是 `--dist loadfile`，都会出现用例失败
+    （日志里的 `F`）并**卡死**，最后停在
+    `PluggyTeardownRaisedWarning: Hook: pytest_sessionfinish, OSError: cannot send (already closed?)`
+    ——worker 断连，主进程一直等。同一批测试**手工按文件切 4 片却三次全绿**，
+    所以走「自己分片 + 多进程」这条路，顺带也不引入新依赖。
+    """
+    groups = _split_evenly(targets, workers)
+    print(
+        f"[check] 测试：{len(groups)} 路并行（按文件分片，每片一个独立 pytest 进程）",
+        flush=True,
+    )
+    for index, group in enumerate(groups):
+        print(f"[check]   第 {index + 1} 片：{len(group)} 个文件", flush=True)
+
+    # ⚠️ 每片的输出**必须写文件，不能走管道**（2026-09-23 实测）：
+    # 用 `stdout=PIPE` 时子进程会在管道写满后阻塞，而主进程还在等它结束，
+    # 于是整套卡死 —— 症状是「进程都在、CPU 几乎不动」（10 分钟只烧 300 秒 CPU）。
+    # 日志文件放 basetemp 旁边，和 basetemp 一样属于「跑一次留一份」的残留。
+    logs = [Path(f"{basetemp}_{index}.log") for index in range(len(groups))]
+    processes = []
+    for index, group in enumerate(groups):
+        with open(logs[index], "w", encoding="utf-8", errors="replace") as sink:
+            processes.append(
+                subprocess.Popen(
+                    _pytest_command(interpreter, Path(f"{basetemp}_{index}"), group),
+                    cwd=WORKSPACE,
+                    stdout=sink,
+                    stderr=subprocess.STDOUT,
+                    env=env,
+                )
+            )
+
+    codes = [process.wait() for process in processes]
+    outputs = [log.read_text(encoding="utf-8", errors="replace") for log in logs]
+    return _judge(codes, outputs)
+
+
+def run_tests(targets: list[str], interpreter: list[str]) -> int:
+    """跑 pytest，并按「结果行」而不是单看退出码判定成败。
+
+    本机有个已知干扰：pytest 结束时清理临时目录会撞上 safe-delete 守卫，
+    以致 `SystemExit: 1` —— 退出码非 0 但测试其实是全绿的。
+    钩子里误拦提交比漏测更烦人，所以这里以结果行为准，并把判断依据打印出来。
+
+    目标多于一个文件时按文件分片并行（见 `_run_parallel`），单文件或只有一个
+    目标时保持单进程，省掉并行进程的启动开销。
+
+    `--basetemp` 为什么必须是「新名字」，见 `_pick_fresh_basetemp()` 的说明。
+    """
+    basetemp = _pick_fresh_basetemp()
     env = _pytest_env()
     if env.get("CODEBUDDY_SAFE_DELETE_ENABLED") == "0":
         print("[check] 检测到沙箱：已对 pytest 子进程关闭删除拦截（仅限该子进程）", flush=True)
+
+    workers = min(PARALLEL_WORKERS, len(targets))
+    if workers > 1:
+        return _run_parallel(targets, interpreter, basetemp, env, workers)
+
+    command = _pytest_command(interpreter, basetemp, targets)
+    print(f"[check] 测试: {' '.join(command)}", flush=True)
     result = subprocess.run(command, cwd=WORKSPACE, capture_output=True, text=True, env=env)
-    print(result.stdout, end="")
-    if result.stderr.strip():
-        print(result.stderr, end="")
-    if result.returncode == 0:
-        return 0
-    if PASSED_RE.search(result.stdout) and not FAILED_RE.search(result.stdout):
-        print(
-            f"[check] pytest 退出码 {result.returncode}，但结果行没有 failed/error —— "
-            "按已知的临时目录清理守卫误报处理，判为通过"
-        )
-        return 0
-    return result.returncode
+    return _judge([result.returncode], [result.stdout + result.stderr])
+
 
 
 def install_hook() -> int:

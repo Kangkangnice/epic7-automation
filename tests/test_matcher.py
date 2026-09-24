@@ -1,8 +1,11 @@
+import os
+import tempfile
 import unittest
 
+import cv2
 import numpy as np
 
-from auto_game_unified.core.matcher import find_best_template, find_template
+from auto_game_unified.core.matcher import find_best_template, find_template, load_template
 
 
 class TemplateMatchingTests(unittest.TestCase):
@@ -49,6 +52,37 @@ class TemplateMatchingTests(unittest.TestCase):
         self.assertIsNone(
             find_template(screen, template, 0.999, region=(0, 0, 40, 40))
         )
+
+
+class TemplateLoadingTests(unittest.TestCase):
+    """load_template 会缓存解码结果，缓存不能改变「读到的内容」。"""
+
+    def test_matches_a_direct_decode_on_every_call(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = os.path.join(folder, "t.png")
+            cv2.imwrite(path, np.array([[[0, 0, 255], [0, 255, 0]]], dtype=np.uint8))
+
+            for _ in range(3):
+                expected = cv2.cvtColor(
+                    cv2.imread(path, cv2.IMREAD_COLOR), cv2.COLOR_BGR2RGB
+                )
+                np.testing.assert_array_equal(expected, load_template(path))
+
+    def test_reloads_when_the_file_is_replaced(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = os.path.join(folder, "t.png")
+            cv2.imwrite(path, np.full((2, 2, 3), 10, dtype=np.uint8))
+            self.assertEqual((2, 2, 3), load_template(path).shape)
+
+            cv2.imwrite(path, np.full((5, 5, 3), 200, dtype=np.uint8))
+            np.testing.assert_array_equal(
+                np.full((5, 5, 3), 200, dtype=np.uint8), load_template(path)
+            )
+
+    def test_missing_file_still_raises(self):
+        with tempfile.TemporaryDirectory() as folder:
+            with self.assertRaises(FileNotFoundError):
+                load_template(os.path.join(folder, "missing.png"))
 
 
 if __name__ == "__main__":

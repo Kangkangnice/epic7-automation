@@ -60,6 +60,18 @@ ROUTES = (
         default_cycles=2,
         cycles_editable=False,
     ),
+    RouteInfo(
+        "knights_donation",
+        "骑士团捐赠",
+        "实验功能",
+        "骑士团每日捐赠，跑一遍就结束：从大厅自动导航到骑士团，点「骑士团活动」"
+        "（图标没有红点就直接结束）；资源支援页每天请求一次下级精灵之花、"
+        "再依次支援团员；每周任务页领骑士团点数档位与已完成任务",
+        # 这条路线没有「次数」概念：请求支援一天只能发一次、红点领完就没了。
+        # 与 launcher.py / main.py 的兜底保持一致（都被测试钉住）。
+        default_cycles=1,
+        cycles_editable=False,
+    ),
 )
 
 

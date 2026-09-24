@@ -44,6 +44,7 @@ MODE_LABELS = {
     "shop_refresh": "刷书签",
     "survivor": "幸存者",
     "world_boss": "世界首领战",
+    "knights_donation": "骑士团捐赠",
 }
 
 
@@ -326,6 +327,10 @@ def main(argv: list[str] | None = None) -> int:
         # 世界首领战每天固定 2 次（主页「剩余/上限」就是 2），无需指定次数。
         # 与 launcher.py / desktop/catalog.py 三处保持一致（都被测试钉住）。
         args.max_cycles = 2
+    if args.mode == "knights_donation" and args.max_cycles is None:
+        # 骑士团捐赠每天跑一遍就够：请求支援一天只能发一次、红点领完就没了。
+        # 同上，与 launcher.py / desktop/catalog.py 三处保持一致。
+        args.max_cycles = 1
     if args.live and args.confirm != "RUN":
         raise SystemExit("实跑模式需要附加参数：--live --confirm RUN")
     if args.live and (args.max_cycles is None or args.max_cycles <= 0):

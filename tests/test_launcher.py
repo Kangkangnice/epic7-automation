@@ -166,5 +166,36 @@ def test_invalid_values_are_reprompted_in_chinese():
         ]
     ]
     assert output.count("请输入 1 或 2 选择运行平台。") == 1
-    assert output.count("请输入 1 到 7 之间的功能编号。") == 1
+    assert output.count("请输入 1 到 8 之间的功能编号。") == 1
     assert output.count("运行次数必须是正整数。") == 2
+
+
+def test_knights_donation_skips_count_prompt_and_runs_once():
+    """每天跑一遍就够，用户明确要求「不要让我选择次数」——菜单里不给次数提示。"""
+    inputs = iter(["1", "8"])
+    output = []
+    calls = []
+
+    exit_code = launcher.run_interactive(
+        input_fn=lambda prompt: next(inputs),
+        output=output.append,
+        run_main=lambda args: calls.append(args) or 0,
+    )
+
+    assert exit_code == 0
+    assert calls == [
+        [
+            "--mode",
+            "knights_donation",
+            "--window-backend",
+            "emulator",
+            "--max-cycles",
+            "1",
+            "--live",
+            "--confirm",
+            "RUN",
+        ]
+    ]
+    assert "请输入运行次数：" not in output
+    assert "8. 骑士团捐赠（骑士团每日捐赠，请求支援 + 支援团员 + 每周任务，跑一遍结束）" in output
+    assert "即将运行：骑士团捐赠（平台=模拟器（LDPlayer）），共 1 次" in output

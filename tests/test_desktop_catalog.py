@@ -12,10 +12,11 @@ def test_catalog_lists_every_route_in_menu_order():
         "shop_refresh",
         "survivor",
         "world_boss",
+        "knights_donation",
     ]
     assert route_by_name("hero_synthesis").status == "正式功能"
     assert route_by_name("story").status == "正式功能"
-    assert sum(route.experimental for route in ROUTES) == 4
+    assert sum(route.experimental for route in ROUTES) == 5
 
 
 def test_survivor_is_experimental_and_explains_the_manual_entry_page():
@@ -75,3 +76,19 @@ def test_world_boss_is_fixed_to_two_cycles():
     assert world_boss.cycles_editable is False
     # 用户看得见的说明里要写清「每天 2 次」，否则置灰的输入框会被当成坏了。
     assert "2 次" in world_boss.description
+
+
+def test_knights_donation_is_experimental_and_fixed_to_one_pass():
+    """每天跑一遍就够，用户明确要求「不要让我选择次数」。"""
+    donation = route_by_name("knights_donation")
+
+    assert donation.label == "骑士团捐赠"
+    # 一次实机都没跑过，先按实验功能放进助手。
+    assert donation.experimental
+    assert donation.default_cycles == 1
+    assert donation.cycles_editable is False
+    # 界面上要能看见「怎么进来的」和「怎么结束的」，否则用户不知道它会自己收工。
+    assert "骑士团活动" in donation.description
+    assert "没有红点" in donation.description
+    # 一天只能请求一次支援是用户定的红线，必须写在界面上。
+    assert "每天请求一次" in donation.description
