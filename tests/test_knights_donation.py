@@ -557,7 +557,9 @@ class KnightsDonationStateMachineTests(unittest.TestCase):
         """「点过了」不等于「支援成功」：只有看到「获得奖励」才作数。
 
         对照实验（2026-09-24 实跑）：团员要的材料我持有 0 时，确认框里点「支援1个」
-        **毫无变化** —— 行不消失、今日支援上限也不涨。所以判据只能是「有没有弹奖励」。
+        **什么都不发生** —— 行不消失、今日支援上限也不涨。所以判据只能是「有没有弹奖励」。
+        用户当天补充确认：游戏**会**在下方闪一行小字「材料不足」，但一闪就没
+        ⇒ 那行字不做判据（理由见 `games/epic7/knights_donation.py` 的模块 docstring）。
         """
         subject = machine()
         subject.request_done = True
