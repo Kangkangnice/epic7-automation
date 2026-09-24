@@ -4,15 +4,38 @@
 
 ```
 骑士团主页
-  └ 左侧「骑士团活动」图标**有红点** → 点进去          （没红点 ⇒ 整条路线结束，退出码 0）
+  └ 左侧「骑士团活动」图标 → **直接点进去**（有没有红点都进）
 骑士团活动（左栏三个页签：资源支援 / 团员商店 / 每周任务 —— **只做 1 和 3**）
   ├ 资源支援页
   │   ├ 右上「请求支援」→ 弹窗选「下级精灵之花」→ 底部「请求支援」 （**每天只能请求一次**）
-  │   └ 列表里每行右侧的绿色「支援1个」依次点完（点完弹「获得奖励」，关掉再找下一行）
+  │   └ 列表里每行右侧的绿色「支援1个」依次点完：
+  │       ├ 有的行直接弹「获得奖励（30，今日支援上限 x/200）」→ 关掉再找下一行
+  │       └ 有的行**先**弹「支援资源 / 确定要支援以下的资源吗?」确认框 → 点它里面的「支援1个」
   └ 每周任务页
       ├ 骑士团点数进度条上可领的档位（图标左上角带亮点）
       └ 每行右侧的绿色「领取」
 ```
+
+## ⚠️ 「这一行到底支援成功没有」只能靠**有没有弹获得奖励**判断（2026-09-24 实跑发现）
+
+实跑第一次就卡在这里：点列表里的「支援1个」之后不是马上支援，**先弹了一个确认框**
+（我采图那天没遇到，所以第一版不认识它、整条路线中止）。更关键的是第二次实测：
+团员要的材料我**持有 0** 时，确认框里点「支援1个」**毫无变化** —— 行不消失、
+「今日支援上限」也不涨（对照实验：换成持有充足的那一行，点完立刻弹「获得奖励」、
+上限从 30/200 变成 60/200，该行按钮变成灰勾）。
+
+所以判据不能是「点过了就算支援了」，只能是「**有没有看到获得奖励弹窗**」：
+
+- 挑行时记下按钮中心 y 到 ``pending_support_y``；
+- 看到「获得奖励」⇒ 作数，清空待结算；
+- **回到列表页而没看到奖励** ⇒ 这一行吃不下，把它的 y 记进 ``skipped_rows``，
+  下一轮挑**别的**绿按钮；
+- ⚠️ 跳过表的键是**绝对 y**，只在「列表没动过」时有效：支援成功（列表重排）与
+  下滑（整列位移）都会让旧 y 指到别人头上 ⇒ 这两种情况一发生就**清空**跳过表。
+
+没有这一步的话，`find_best_template` 每轮都会挑回同一个按钮，在那行上白转 4 次
+然后整条路线中止 —— 永远轮不到下面那个真的能支援的人。所以挑行用的是
+``find_all_templates``（整列找**所有**绿按钮）而不是只找最高分那个。
 
 ## ⚠️ 两个「不能按固定坐标点」的实测事实
 
@@ -33,7 +56,8 @@
 | ``request-support`` | 资源支援 | ``target_pages`` = 请求支援弹窗 |
 | ``select-flower`` | 请求支援弹窗 | ``in_page_evidence`` = 该格出现金色选中框（``flower_cell_selected`` 命中） |
 | ``confirm-request`` | 请求支援弹窗 | ``target_pages`` = 资源支援 / 获得奖励弹窗 |
-| ``support-one`` | 资源支援 | ``target_pages`` = 获得奖励弹窗 |
+| ``support-one`` | 资源支援 | ``target_pages`` = 支援资源确认框 / 获得奖励弹窗（**两种落点都真实存在**） |
+| ``confirm-support`` | 支援资源确认框 | ``target_pages`` = 获得奖励弹窗（生效）/ 资源支援（**没生效**，由跳过表接手） |
 | ``scroll-support`` | 资源支援 | ``in_page_evidence`` = 列表整体上移（按钮行的 y 变小 / 出现新行） |
 | ``open-weekly-tab`` | 资源支援 | ``target_pages`` = 每周任务 |
 | ``dismiss-reward`` | 获得奖励弹窗 | ``target_pages`` = 资源支援 / 每周任务（取决于从哪来） |
@@ -54,11 +78,16 @@
 
 ## ⚠️ 这一条路线**只有负样本是全的**
 
-正向样本只有：骑士团主页那颗橙红角标（``guild_home_with_dot.png``）与
-每周任务页那颗蓝角标（``weekly_tasks_claimable.png``）。**没跑过「支援到 200 点上限」**
-那一路 —— 用户描述到上限时会浮出一行「已经到了资源上限」的字。本模块**不依赖**
-那行字：上限一旦到达，列表里的绿色按钮会自己变灰（同一玩家一天只能支援一次），
-状态机找不到绿按钮就自然收尾。**换客户端（PC）或换分辨率时，角标判据必须重采正向样本**。
+本路线只用**一处**角标判据：每周任务页那两颗蓝角标（``points_label`` 可领档位 +
+「每周任务」页签，正向样本 ``weekly_tasks_claimable.png``）。
+骑士团主页那颗橙红角标**不参与任何决策** —— 用户 2026-09-24 更正：有没有红点都要进去
+（原先按红点决定进不进，已拿掉）。``guild_home_with_dot.png`` 仍然留着，用途变成
+``activity_entry`` 余量最薄的回归依据（红点盖住图标左上角 ⇒ 0.9259）。
+
+**没跑过「支援到 200 点上限」**那一路 —— 用户描述到上限时会浮出一行「已经到了资源上限」
+的字。本模块**不依赖**那行字：上限一旦到达，列表里的绿色按钮会自己变灰（同一玩家一天
+只能支援一次），状态机找不到绿按钮就自然收尾。
+**换客户端（PC）或换分辨率时，角标判据必须重采正向样本**。
 """
 
 from dataclasses import dataclass
@@ -69,7 +98,12 @@ from typing import Callable, Optional
 
 import numpy as np
 
-from auto_game_unified.core.matcher import Match, find_template, load_template
+from auto_game_unified.core.matcher import (
+    Match,
+    find_all_templates,
+    find_template,
+    load_template,
+)
 from auto_game_unified.core.recovery import RecoveryGate
 from auto_game_unified.core.runtime import Runtime
 from auto_game_unified.games.epic7.evidence.common import EvidenceState
@@ -88,6 +122,7 @@ class KnightsDonationState(Enum):
     ACTIVITY_PANEL = "activity_panel"
     RESOURCE_SUPPORT = "resource_support"
     REQUEST_POPUP = "request_popup"
+    SUPPORT_CONFIRM = "support_confirm"
     REWARD_POPUP = "reward_popup"
     WEEKLY_TASKS = "weekly_tasks"
     FINISHED = "finished"
@@ -99,6 +134,7 @@ STATE_LABELS = {
     KnightsDonationState.ACTIVITY_PANEL: "骑士团活动（页签未识别）",
     KnightsDonationState.RESOURCE_SUPPORT: "骑士团活动·资源支援",
     KnightsDonationState.REQUEST_POPUP: "请求支援弹窗",
+    KnightsDonationState.SUPPORT_CONFIRM: "支援资源确认框",
     KnightsDonationState.REWARD_POPUP: "获得奖励弹窗",
     KnightsDonationState.WEEKLY_TASKS: "骑士团活动·每周任务",
     KnightsDonationState.FINISHED: "本轮已结束",
@@ -108,6 +144,8 @@ STATE_LABELS = {
 _PAGE_STATES = (
     ("knights_donation.reward_popup", KnightsDonationState.REWARD_POPUP),
     ("knights_donation.request_popup", KnightsDonationState.REQUEST_POPUP),
+    # 确认框盖在资源支援列表上 ⇒ 必须排在 resource_support 之前，否则会被当成列表页。
+    ("knights_donation.support_confirm", KnightsDonationState.SUPPORT_CONFIRM),
     ("knights_donation.resource_support", KnightsDonationState.RESOURCE_SUPPORT),
     ("knights_donation.weekly_tasks", KnightsDonationState.WEEKLY_TASKS),
     ("knights_donation.activity_panel", KnightsDonationState.ACTIVITY_PANEL),
@@ -125,6 +163,12 @@ MAX_SUPPORT_SCROLLS = 2
 # 每周任务里「可领档位」的点击点已经由 evidence 模块的实测偏移给出，
 # 这里只放关闭「获得奖励」弹窗时的纵向偏移（弹窗任意位置都能关，取标题下方一点）。
 REWARD_DISMISS_DY = 120
+
+# 支援列表一屏可能有多个「支援1个」：找全部匹配时的非极大值抑制半径。
+# 实测行距约 195、按钮自身 266×70 ⇒ 60 既不会把同一按钮报两次，也不会把相邻行并成一个。
+SUPPORT_PEAK_MIN_GAP = 60
+# 「已经被判定吃不下的行」的纵向匹配容差：新挑到的按钮中心离它这么近就视为同一行。
+SUPPORT_ROW_SKIP_TOLERANCE = 40
 
 
 def state_label(state: KnightsDonationState) -> str:
@@ -162,6 +206,8 @@ class KnightsDonationTemplates:
     flower_cell_selected: np.ndarray
     popup_confirm: np.ndarray
     reward_title: np.ndarray
+    support_confirm_title: np.ndarray
+    support_confirm_button: np.ndarray
     evidence: object = None
 
 
@@ -183,6 +229,8 @@ def build_knights_donation_templates(template_dir: Path) -> KnightsDonationTempl
         flower_cell_selected=load("flower_cell_selected"),
         popup_confirm=load("popup_confirm"),
         reward_title=load("reward_title"),
+        support_confirm_title=load("support_confirm_title"),
+        support_confirm_button=load("support_confirm_button"),
         evidence=build_knights_donation_evidence(template_dir),
     )
 
@@ -218,6 +266,17 @@ class KnightsDonationStateMachine:
         self.request_done = False
         # 支援列表下滑次数账本（每支援成功一次清零）。
         self.support_scrolls = 0
+        # ⚠️ 「已经试过、但确认之后毫无变化」的行（记按钮中心的 y）。
+        # 实测：团员要的材料我持有 0 时，确认框点完行不会消失、点数也不涨 ⇒
+        # 必须记住这一行、下一次挑**别的**绿按钮，否则会一直挑到同一行、
+        # 四次之后整条路线中止，永远轮不到下面那个能支援的人。
+        # ⚠️ **键是绝对 y、只在「列表没动过」时才有效**：支援成功会重排、下滑会
+        # 整体移位 —— 这两种情况一发生，旧的 y 就指到**别人**头上了，必须清空
+        # （见 ``_at_reward_popup`` 与 `_at_resource_support` 的第 3 步）。
+        self.skipped_rows: set[int] = set()
+        # 本轮已经点下去、还在等结果的支援（按钮中心的 y）。它表达的是
+        # 「这一下到底生效没有」的待结算状态，画面里看不出来。
+        self.pending_support_y: Optional[int] = None
         # 收工理由（写进运行日志的「结论=」，认页面时不出来，只在 _finish 里写）。
         self.finish_reason = ""
         self._confirmed_page = ""
@@ -243,9 +302,6 @@ class KnightsDonationStateMachine:
                 "为避免点到不知名的位置，已安全停止"
             )
         return match
-
-    def dot_present(self, screen: np.ndarray, zone: str) -> bool:
-        return find_dot(screen, zone, reference_size=self._REFERENCE_SIZE) is not None
 
     def observe_page(self, screen: np.ndarray) -> Optional[KnightsDonationState]:
         """按 evidence 页面组合认出当前是哪一页；认不出返回 None。
@@ -295,10 +351,10 @@ class KnightsDonationStateMachine:
     # ---- 各页决策 ----
 
     def _at_guild_home(self, screen: np.ndarray):
-        dot = find_dot(screen, "activity", reference_size=self._REFERENCE_SIZE)
-        if dot is None:
-            self._finish("骑士团主页「骑士团活动」图标没有红点，今天没有要做的")
-            return None
+        # ⚠️ **不看红点**（用户 2026-09-24 更正）：有没有红点都进。
+        # 原先这里以「图标有没有红点」决定进不进、没红点就整条路线结束 —— 已拿掉。
+        # 于是「今天其实没事可做」这天也会整条走完：请求支援（若当天还没发）、
+        # 支援列表找不到人、下滑两轮、切到每周任务发现没得领，然后正常收工。
         entry = self._required(screen, "activity_entry")
         return self._action(
             "open-activity",
@@ -310,7 +366,7 @@ class KnightsDonationStateMachine:
                 state_label(KnightsDonationState.WEEKLY_TASKS),
                 state_label(KnightsDonationState.ACTIVITY_PANEL),
             ),
-            reason=f"「骑士团活动」图标有红点（角标中心={dot}，图标中心={entry.center}）",
+            reason=f"骑士团主页「骑士团活动」图标（中心={entry.center}），有没有红点都进去",
         )
 
     def _at_activity_panel(self, screen: np.ndarray):
@@ -323,7 +379,35 @@ class KnightsDonationStateMachine:
             reason="在骑士团活动界面但页签没认出来，先切到「资源支援」",
         )
 
+    def _support_candidates(self, screen: np.ndarray) -> list[Match]:
+        """整列里**所有**绿色「支援1个」按钮，按分数从高到低。
+
+        为什么不能只取最高分那个：一屏可能有多个一模一样的按钮，而业务要逐个点过去。
+        """
+        atom = self.templates.evidence.atom("support_one_button")
+        return find_all_templates(
+            screen,
+            self.templates.support_one_button,
+            atom.threshold,
+            region=atom.region,
+            reference_size=atom.reference_size,
+            min_gap=SUPPORT_PEAK_MIN_GAP,
+        )
+
+    def _is_skipped(self, y: int) -> bool:
+        return any(
+            abs(y - skipped) <= SUPPORT_ROW_SKIP_TOLERANCE for skipped in self.skipped_rows
+        )
+
     def _at_resource_support(self, screen: np.ndarray):
+        # 0) 先结算上一轮：**回到列表页就说明没等到「获得奖励」** ⇒ 那一下没生效，
+        #    把那一行记进跳过表（实测：团员要的材料我持有 0 时，确认框点完毫无变化）。
+        #    代价说明：万一那一下是**点击丢了**（不是吃不下），也会被记进跳过表 ⇒
+        #    这一次运行会漏掉这个团员。宁可漏一个人，也不要在一行上白转 4 次
+        #    让整条路线中止 —— 而误判在一次成功的支援之后就会自动失效（列表重排 ⇒ 清空）。
+        if self.pending_support_y is not None:
+            self.skipped_rows.add(self.pending_support_y)
+            self.pending_support_y = None
         # 1) 每天一次的「请求支援」。同一次运行里只做一次。
         if not self.request_done:
             button = self._locate(screen, "request_support_button")
@@ -335,19 +419,29 @@ class KnightsDonationStateMachine:
                     target_pages=(state_label(KnightsDonationState.REQUEST_POPUP),),
                     reason="资源支援页右上角「请求支援」，每天只能发一次",
                 )
-        # 2) 支援别人。列表会重排，所以每轮都在整列里重新认绿色按钮。
-        support = self._locate(screen, "support_one_button")
-        if support is not None:
+        # 2) 支援别人。列表会重排，所以每轮都在整列里重新认绿色按钮；
+        #    已经判定「吃不下」的行跳过，去点下一个。
+        for candidate in self._support_candidates(screen):
+            if self._is_skipped(candidate.center[1]):
+                continue
+            self.pending_support_y = candidate.center[1]
             return self._action(
                 "support-one",
-                point=support.center,
+                point=candidate.center,
                 source_page=state_label(KnightsDonationState.RESOURCE_SUPPORT),
-                target_pages=(state_label(KnightsDonationState.REWARD_POPUP),),
-                reason=f"列表里有可支援的成员（绿色按钮@{support.center}）",
+                # 两种落点都合法：有的行直接弹「获得奖励」，有的行先弹确认框。
+                target_pages=(
+                    state_label(KnightsDonationState.SUPPORT_CONFIRM),
+                    state_label(KnightsDonationState.REWARD_POPUP),
+                ),
+                reason=f"列表里有可支援的成员（绿色按钮@{candidate.center}）",
             )
-        # 3) 视口内没有 ⇒ 可能一屏放不下，下滑再看（有界）。
+        # 3) 视口内没有可点的 ⇒ 可能一屏放不下，下滑再看（有界）。
         if self.support_scrolls < MAX_SUPPORT_SCROLLS:
             self.support_scrolls += 1
+            # 滑动手势会让整列位移 ⇒ 跳过表里的 y 键失效，必须清空（否则会误跳过
+            # 刚滑上来的那几行）。
+            self.skipped_rows.clear()
             tab = self._required(screen, "tab_resource_support")
             return self._action(
                 "scroll-support",
@@ -367,6 +461,26 @@ class KnightsDonationStateMachine:
             source_page=state_label(KnightsDonationState.RESOURCE_SUPPORT),
             target_pages=(state_label(KnightsDonationState.WEEKLY_TASKS),),
             reason="已经没有可支援的成员了，切到「每周任务」",
+        )
+
+    def _at_support_confirm(self, screen: np.ndarray):
+        """「支援资源 / 确定要支援以下的资源吗?」确认框：点它里面的「支援1个」。
+
+        ⚠️ 这里**不做「按钮是不是灰的」判断**（没有可靠判据）：确认之后到底生效没有，
+        靠**有没有弹「获得奖励」**来结算 —— 没弹就说明这一行吃不下，
+        ``_at_resource_support`` 的第 0 步会把它记进跳过表。
+        所以 ``target_pages`` 两个落点都写上了，它们都真实存在。
+        """
+        button = self._required(screen, "support_confirm_button")
+        return self._action(
+            "confirm-support",
+            point=button.center,
+            source_page=state_label(KnightsDonationState.SUPPORT_CONFIRM),
+            target_pages=(
+                state_label(KnightsDonationState.REWARD_POPUP),
+                state_label(KnightsDonationState.RESOURCE_SUPPORT),
+            ),
+            reason="「支援资源」确认框里的「支援1个」，点完才算真的支援",
         )
 
     def _at_request_popup(self, screen: np.ndarray):
@@ -397,6 +511,12 @@ class KnightsDonationStateMachine:
         title = self._required(screen, "reward_title")
         # 支援链路完成一次 ⇒ 下滑次数账本清零（下一段还能重新往下找）。
         self.support_scrolls = 0
+        # 看到「获得奖励」就说明刚才那一下**真的生效了** ⇒ 待结算的支援作数，
+        # 不要把它记进跳过表（第 0 步只在「回到列表且没弹奖励」时才会记）。
+        self.pending_support_y = None
+        # 支持成功 ⇒ 这个团员在列表里变成灰勾、整列**重排**（实测）⇒ 跳过表里
+        # 那些按 y 记的键全都指到别人头上了，必须清空，否则会误跳过能支援的人。
+        self.skipped_rows.clear()
         return self._action(
             "dismiss-reward",
             point=(title.center[0], title.center[1] + REWARD_DISMISS_DY),
@@ -455,6 +575,7 @@ class KnightsDonationStateMachine:
             KnightsDonationState.ACTIVITY_PANEL: self._at_activity_panel,
             KnightsDonationState.RESOURCE_SUPPORT: self._at_resource_support,
             KnightsDonationState.REQUEST_POPUP: self._at_request_popup,
+            KnightsDonationState.SUPPORT_CONFIRM: self._at_support_confirm,
             KnightsDonationState.REWARD_POPUP: self._at_reward_popup,
             KnightsDonationState.WEEKLY_TASKS: self._at_weekly_tasks,
         }[page]
@@ -473,6 +594,8 @@ class KnightsDonationStateMachine:
             self.support_scrolls,
             self.finish_reason,
             self._confirmed_page,
+            set(self.skipped_rows),
+            self.pending_support_y,
         )
         try:
             action = self.next_action(screen)
@@ -485,6 +608,8 @@ class KnightsDonationStateMachine:
                 self.support_scrolls,
                 self.finish_reason,
                 self._confirmed_page,
+                self.skipped_rows,
+                self.pending_support_y,
             ) = snapshot
 
 
@@ -503,6 +628,7 @@ class KnightsDonationRunner(ModeRunnerBase):
         KnightsDonationState.ACTIVITY_PANEL: 45,
         KnightsDonationState.RESOURCE_SUPPORT: 60,
         KnightsDonationState.REQUEST_POPUP: 45,
+        KnightsDonationState.SUPPORT_CONFIRM: 45,
         KnightsDonationState.REWARD_POPUP: 45,
         KnightsDonationState.WEEKLY_TASKS: 60,
         KnightsDonationState.FINISHED: 45,
@@ -514,7 +640,18 @@ class KnightsDonationRunner(ModeRunnerBase):
     # （点完立刻能看出生效没有），要么是**同页领奖**（点完原地变灰），
     # 用 45 秒纯属白等 —— 这正是 world_boss 记过的「领奖干等 40 多秒」那一类。
     _SHORT_RETRY_ACTIONS = frozenset(
-        {"select-flower", "confirm-request", "support-one", "claim-milestone", "claim-task"}
+        {
+            "select-flower",
+            "confirm-request",
+            "support-one",
+            "confirm-support",
+            "claim-milestone",
+            "claim-task",
+            # 下滑是**同一个动作名连发两次**（账本上限 2 次），第二次点击会走「同名动作
+            # 等待重试窗口」那条路；用默认 45 秒就是白等 45 秒。它没有「点了没生效」
+            # 的补救动作（滑不动也会照账本往下走），所以短窗口没有副作用。
+            "scroll-support",
+        }
     )
     _SHORT_RETRY_SECONDS = 8.0
 
@@ -567,6 +704,10 @@ class KnightsDonationRunner(ModeRunnerBase):
         self.machine.state = KnightsDonationState.GUILD_HOME
         # 恢复导航已经把画面换掉了，旧的「已确认页面」作废（story / world_boss 同样清空）。
         self.machine._confirmed_page = ""
+        # 正在等结果的那次支援作废（点了没点完，画面已经换掉了）。
+        self.machine.pending_support_y = None
+        # ⚠️ 刻意**不重置** skipped_rows：那是「这一行吃不下」的事实，恢复不改变它；
+        # 重置会导致恢复后在同一行上再白转一轮。
         # 「今天这一次请求支援已经发出去了」是**跨帧进度**，恢复后画面里看不出来；
         # 但恢复只发生在页面没进展时，此时请求支援那一支早已走完 —— 保留原值即可。
         # 这里刻意不重置 request_done：重置会导致恢复后重复请求（一天只能一次）。

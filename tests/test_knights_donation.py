@@ -2,15 +2,19 @@
 
 守四件事：
 
-1. **13 个锚点在本路线 9 张夹具上真的分得开** —— 每个锚点显式声明「必须过阈」与
-   「必须不过阈」的夹具集合，两集合并集必须覆盖全部 9 张，不留没表态的格子。
-2. **红点/亮点判据**：三个搜索区各有正负样本；「已领完」那帧原位的字体碎片不得误报。
-3. **状态机每帧重判**：9 张夹具逐帧识别到正确页面；两个弹窗排在它们盖住的页面之前。
-4. **转场契约真的接上了**：11 个动作全都带得出「从哪来 + 到哪去 / 页内证据」，
-   并用**真状态机 + 真 Runner** 喂一整条帧序列跑完一遍，守住「每个环节都长眼睛」。
+1. **15 个锚点在本路线 11 张夹具上真的分得开** —— 每个锚点显式声明「必须过阈」与
+   「必须不过阈」的夹具集合，两集合并集必须覆盖全部 11 张，不留没表态的格子。
+2. **角标（亮点）判据**：两个搜索区各有正负样本；「已领完」那帧原位的字体碎片不得误报。
+   ⚠️ 骑士团主页那颗红点**不参与判据**（有没有红点都要进活动界面，用户 2026-09-24 更正）。
+3. **状态机每帧重判**：11 张夹具逐帧识别到正确页面；三个弹窗/确认框排在它们盖住的页面之前。
+4. **转场契约真的接上了**：12 个动作全都带得出「从哪来 + 到哪去 / 页内证据」，
+   并用**真状态机 + 真 Runner** 喂整条帧序列跑完一遍，守住「每个环节都长眼睛」。
 
+⚠️ 其中两张夹具（``support_confirm`` / ``support_page_two_buttons``）是 **2026-09-24 实跑
+   当天采到的原始帧**：第一版采图没遇到「支援资源」确认框，是实跑才暴露出来的一整页；
+   而「一屏两个绿按钮、上面那个吃了没反应」也是实跑实测。它们不是构造出来的。
 ⚠️ `activity_panel`（团员商店兜底）与「有领取按钮但没有角标」这两条分支**没有专用实拍夹具**
-   —— 实拍的 18 张全屏帧里游戏每次都从「资源支援」页签打开活动界面、也没有出现过
+   —— 实拍的全屏帧里游戏每次都从「资源支援」页签打开活动界面、也没有出现过
    「没有角标但有领取按钮」的画面。这两条用 `frame_without_anchor()` **擦掉某个锚点**
    构造出来，只用来覆盖分支，不当识别准确率的证据。
 """
@@ -40,6 +44,7 @@ from auto_game_unified.games.epic7.evidence.knights_donation import (
 from auto_game_unified.games.epic7.knights_donation import (
     MAX_SUPPORT_SCROLLS,
     REWARD_DISMISS_DY,
+    SUPPORT_ROW_SKIP_TOLERANCE,
     KnightsDonationAction,
     KnightsDonationRunner,
     KnightsDonationState,
@@ -58,10 +63,16 @@ GH_DOT = "guild_home_with_dot"
 GH_BARE = "guild_home_no_dot"
 SUP = "support_page"
 SUP_SCROLLED = "support_page_scrolled"
+# 2026-09-24 实跑采到的原始帧：列表里**同时有两个**绿色「支援1个」按钮
+# （上面那个要的材料我持有 0、点了不生效；下面那个能支援成功）。
+SUP_TWO = "support_page_two_buttons"
 WK_OK = "weekly_tasks_claimable"
 WK_DONE = "weekly_tasks_claimed"
 POP = "request_popup"
 POP_SEL = "request_popup_selected"
+# 2026-09-24 实跑采到的原始帧：点列表「支援1个」之后弹的「支援资源」确认框
+# （第一版采图时没遇到，实跑才发现的一整页）。
+SCONF = "support_confirm"
 REWARD = "reward_popup"
 
 ALL_FIXTURES = (
@@ -69,62 +80,95 @@ ALL_FIXTURES = (
     GH_BARE,
     SUP,
     SUP_SCROLLED,
+    SUP_TWO,
     WK_OK,
     WK_DONE,
     POP,
     POP_SEL,
+    SCONF,
     REWARD,
 )
-ACTIVITY_PAGES = (SUP, SUP_SCROLLED, WK_OK, WK_DONE)
+# 「资源支援」这一页的三种样子（是否带绿按钮、按钮几个、盖没盖弹窗）。
+SUPPORT_PAGES = (SUP, SUP_SCROLLED, SUP_TWO)
+# 骑士团活动界面里的所有子页（含两个页签页）。
+ACTIVITY_PAGES = (SUP, SUP_SCROLLED, SUP_TWO, WK_OK, WK_DONE)
+# 除「资源支援」外都不是这一页的夹具。
+NOT_SUPPORT = (GH_DOT, GH_BARE, WK_OK, WK_DONE, POP, POP_SEL, SCONF, REWARD)
+# 弹窗类的四张（三个弹窗 + 确认框）。
+POPUP_FIXTURES = (POP, POP_SEL, SCONF, REWARD)
 
 # 锚点 -> (必须过阈的夹具, 必须不过阈的夹具)。两个集合的并集必须等于 ALL_FIXTURES。
 EXPECTATIONS: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
     "activity_entry": (
         (GH_DOT, GH_BARE),
-        (SUP, SUP_SCROLLED, WK_OK, WK_DONE, POP, POP_SEL, REWARD),
+        (SUP, SUP_SCROLLED, SUP_TWO, WK_OK, WK_DONE, POP, POP_SEL, SCONF, REWARD),
     ),
     # panel_title 与两张页签**故意不排他**：同一段文字/标题在三个页签页上都在。
-    # panel_title 只当「活动界面里页签没认出来」的兜底锚点，所以它必须命中全部活动页。
-    "panel_title": (ACTIVITY_PAGES, (GH_DOT, GH_BARE, POP, POP_SEL, REWARD)),
-    "tab_resource_support": (ACTIVITY_PAGES, (GH_DOT, GH_BARE, POP, POP_SEL, REWARD)),
-    "tab_weekly_tasks": (ACTIVITY_PAGES, (GH_DOT, GH_BARE, POP, POP_SEL, REWARD)),
+    # panel_title 只当「活动界面里页签没认出来」的兜底锚点，所以它必须命中全部活动页
+    # ——**包括确认框那一帧**（确认框只盖住中间，左上角标题一点没挡）。
+    "panel_title": (
+        ACTIVITY_PAGES + (SCONF,),
+        (GH_DOT, GH_BARE, POP, POP_SEL, REWARD),
+    ),
+    "tab_resource_support": (
+        ACTIVITY_PAGES,
+        (GH_DOT, GH_BARE, POP, POP_SEL, SCONF, REWARD),
+    ),
+    "tab_weekly_tasks": (
+        ACTIVITY_PAGES,
+        (GH_DOT, GH_BARE, POP, POP_SEL, SCONF, REWARD),
+    ),
+    # ⚠️ 实测：确认框**只盖中间**，右上角那个「请求支援」按钮完全没被挡 ⇒
+    # 它在这一帧上仍然 0.9578（过阈）。也就是说这一帧同时满足 resource_support 的
+    # 判据 —— 靠的是 `_PAGE_STATES` 里 support_confirm 排在 resource_support **前面**。
     "request_support_button": (
-        (SUP, SUP_SCROLLED),
+        SUPPORT_PAGES + (SCONF,),
         (GH_DOT, GH_BARE, WK_OK, WK_DONE, POP, POP_SEL, REWARD),
     ),
-    # 下滑后的帧上绿色按钮已经变灰 ⇒ 它属于 must_not（状态机因此才会去下滑）。
+    # 下滑后的帧上绿色按钮已经变灰 ⇒ 它属于 must_not（状态机因此才会去下滑）；
+    # 两按钮那张上必须能认出**至少一个**（多按钮的情形另有用例专门测）。
     "support_one_button": (
-        (SUP,),
-        (GH_DOT, GH_BARE, SUP_SCROLLED, WK_OK, WK_DONE, POP, POP_SEL, REWARD),
+        (SUP, SUP_TWO),
+        (GH_DOT, GH_BARE, SUP_SCROLLED, WK_OK, WK_DONE, POP, POP_SEL, SCONF, REWARD),
     ),
     "points_label": (
         (WK_OK, WK_DONE),
-        (GH_DOT, GH_BARE, SUP, SUP_SCROLLED, POP, POP_SEL, REWARD),
+        (GH_DOT, GH_BARE, SUP, SUP_SCROLLED, SUP_TWO, POP, POP_SEL, SCONF, REWARD),
     ),
     # 已领完那帧没有「领取」按钮 ⇒ must_not。
     "claim_button": (
         (WK_OK,),
-        (GH_DOT, GH_BARE, SUP, SUP_SCROLLED, WK_DONE, POP, POP_SEL, REWARD),
+        (GH_DOT, GH_BARE, SUP, SUP_SCROLLED, SUP_TWO, WK_DONE, POP, POP_SEL, SCONF, REWARD),
     ),
     "popup_title": (
         (POP, POP_SEL),
-        (GH_DOT, GH_BARE, SUP, SUP_SCROLLED, WK_OK, WK_DONE, REWARD),
+        (GH_DOT, GH_BARE, SUP, SUP_SCROLLED, SUP_TWO, WK_OK, WK_DONE, SCONF, REWARD),
     ),
     "flower_cell": (
         (POP,),
-        (GH_DOT, GH_BARE, SUP, SUP_SCROLLED, WK_OK, WK_DONE, POP_SEL, REWARD),
+        (GH_DOT, GH_BARE, SUP, SUP_SCROLLED, SUP_TWO, WK_OK, WK_DONE, POP_SEL, SCONF, REWARD),
     ),
     "flower_cell_selected": (
         (POP_SEL,),
-        (GH_DOT, GH_BARE, SUP, SUP_SCROLLED, WK_OK, WK_DONE, POP, REWARD),
+        (GH_DOT, GH_BARE, SUP, SUP_SCROLLED, SUP_TWO, WK_OK, WK_DONE, POP, SCONF, REWARD),
     ),
     "popup_confirm": (
         (POP, POP_SEL),
-        (GH_DOT, GH_BARE, SUP, SUP_SCROLLED, WK_OK, WK_DONE, REWARD),
+        (GH_DOT, GH_BARE, SUP, SUP_SCROLLED, SUP_TWO, WK_OK, WK_DONE, SCONF, REWARD),
     ),
     "reward_title": (
         (REWARD,),
-        (GH_DOT, GH_BARE, SUP, SUP_SCROLLED, WK_OK, WK_DONE, POP, POP_SEL),
+        (GH_DOT, GH_BARE, SUP, SUP_SCROLLED, SUP_TWO, WK_OK, WK_DONE, POP, POP_SEL, SCONF),
+    ),
+    # 确认框自己的两个锚点：在本路线 11 张里**只**在确认框那一帧过阈
+    # （其余 10 张最高 0.2079 / 0.2127，余量都在 0.58 以上）。
+    "support_confirm_title": (
+        (SCONF,),
+        (GH_DOT, GH_BARE, SUP, SUP_SCROLLED, SUP_TWO, WK_OK, WK_DONE, POP, POP_SEL, REWARD),
+    ),
+    "support_confirm_button": (
+        (SCONF,),
+        (GH_DOT, GH_BARE, SUP, SUP_SCROLLED, SUP_TWO, WK_OK, WK_DONE, POP, POP_SEL, REWARD),
     ),
 }
 
@@ -144,7 +188,7 @@ def screen(name: str) -> np.ndarray:
 def search_zone(anchor: str) -> tuple[int, int, int, int]:
     """按名字取搜索区。
 
-    模板锚点在 ``REGIONS``；红点/亮点的三个搜索区在 ``DOT_ZONES`` 里
+    模板锚点在 ``REGIONS``；角标（亮点）的搜索区在 ``DOT_ZONES`` 里
     （``milestone`` 只存在于后者），两边都要能取到名字。
     """
     if anchor in REGIONS:
@@ -186,6 +230,15 @@ def machine() -> KnightsDonationStateMachine:
     return KnightsDonationStateMachine(build_knights_donation_templates(TEMPLATES))
 
 
+def support_candidates(image: np.ndarray):
+    """整列里**所有**绿色「支援1个」按钮（与状态机同一条通道，不另配一份参数）。
+
+    一屏可能有多个一模一样的按钮（``support_page_two_buttons.png`` 就是实拍的两按钮帧），
+    所以断言不能拿 ``locate()``（只给全局最高分那一个）当全集。
+    """
+    return machine()._support_candidates(image)
+
+
 def inside(point: tuple[int, int], region: tuple[int, int, int, int]) -> bool:
     x, y, width, height = region
     return x <= point[0] <= x + width and y <= point[1] <= y + height
@@ -196,8 +249,8 @@ class KnightsDonationEvidenceTests(unittest.TestCase):
         profile = build_knights_donation_evidence(TEMPLATES)
 
         self.assertEqual([], validate_profile(profile, TEMPLATES))
-        self.assertEqual(13, len(profile.atoms))
-        self.assertEqual(6, len(profile.pages))
+        self.assertEqual(15, len(profile.atoms))
+        self.assertEqual(7, len(profile.pages))
         for atom in profile.atoms.values():
             self.assertEqual(REFERENCE_SIZE, atom.reference_size)
 
@@ -276,7 +329,7 @@ class KnightsDonationEvidenceTests(unittest.TestCase):
     def test_activity_panel_is_the_unknown_tab_fallback(self):
         """团员商店那类「认不出页签」的兜底：标题在、两个页面锚点都不在。
 
-        ⚠️ 这个分支**没有实拍证据** —— 实拍的 18 张全屏帧里游戏每次都从「资源支援」
+        ⚠️ 这个分支**没有实拍证据** —— 实拍的全屏帧里游戏每次都从「资源支援」
         页签打开活动界面。这里守构造：它只依赖 panel_title，且不带 forbidden，
         否则会把正常的两个子页也判成 UNSAFE 而卡住。
         """
@@ -291,20 +344,12 @@ class KnightsDonationEvidenceTests(unittest.TestCase):
 
 
 class KnightsDonationDotTests(unittest.TestCase):
-    """角标（红点/亮点）判据：掩膜 S≥120 & V≥190，只看「高饱和 + 高亮」，不看色相。
+    """角标（亮点）判据：掩膜 S≥120 & V≥190，只看「高饱和 + 高亮」，不看色相。
 
-    骑士团主页那颗是橙红、左栏那颗是蓝 —— 按色相判会漏掉一半。
+    本路线只用骑士团活动界面里的两处蓝角标（每周任务页签 / 骑士团点数可领档位）。
+    判据不看色相是为了将来换界面时不重新标定 —— 主页那颗橙红角标只是「V 为什么卡 190」
+    的由来，**已不参与决策**。
     """
-
-    def test_guild_home_dot_zone_tells_the_two_home_frames_apart(self):
-        with_dot = find_dot(screen(GH_DOT), "activity")
-        without = find_dot(screen(GH_BARE), "activity")
-
-        self.assertIsNotNone(with_dot)
-        self.assertIsNone(without)
-        # 实测角标中心 (54,510)；取点只用来打日志，但偏太多说明判据跑歪了。
-        self.assertAlmostEqual(54, with_dot[0], delta=6)
-        self.assertAlmostEqual(510, with_dot[1], delta=6)
 
     def test_weekly_tab_dot_disappears_after_claiming(self):
         self.assertIsNotNone(find_dot(screen(WK_OK), "weekly_tab"))
@@ -331,8 +376,8 @@ class KnightsDonationDotTests(unittest.TestCase):
         self.assertGreater(point[1], dot[1])
         self.assertEqual((1107, 318), point)
 
-    def test_the_three_dot_zones_do_not_overlap(self):
-        """三个搜索区必须各自独立，否则一个角标会被当两次。"""
+    def test_the_dot_zones_do_not_overlap(self):
+        """两个搜索区必须各自独立，否则一个角标会被当两次。"""
         boxes = []
         for zone in DOT_ZONES.values():
             x, y, width, height = zone
@@ -355,10 +400,12 @@ class KnightsDonationStateMachineTests(unittest.TestCase):
             GH_BARE: KnightsDonationState.GUILD_HOME,
             SUP: KnightsDonationState.RESOURCE_SUPPORT,
             SUP_SCROLLED: KnightsDonationState.RESOURCE_SUPPORT,
+            SUP_TWO: KnightsDonationState.RESOURCE_SUPPORT,
             WK_OK: KnightsDonationState.WEEKLY_TASKS,
             WK_DONE: KnightsDonationState.WEEKLY_TASKS,
             POP: KnightsDonationState.REQUEST_POPUP,
             POP_SEL: KnightsDonationState.REQUEST_POPUP,
+            SCONF: KnightsDonationState.SUPPORT_CONFIRM,
             REWARD: KnightsDonationState.REWARD_POPUP,
         }
         subject = machine()
@@ -367,6 +414,21 @@ class KnightsDonationStateMachineTests(unittest.TestCase):
             with self.subTest(fixture=name):
                 self.assertIs(want, subject.observe_page(screen(name)))
 
+    def test_the_confirm_dialog_wins_over_the_list_page_it_covers(self):
+        """确认框那一帧**同时**满足「资源支援页」的判据（右上角按钮没被挡住）。
+
+        实测：那一帧上 request_support_button 仍然 0.9578（过阈）。所以这一条测的是
+        **判定顺序** —— `_PAGE_STATES` 里 support_confirm 必须排在 resource_support 前面，
+        否则确认框会被读成资源支援页，状态机会对着被盖住的列表点来点去。
+        """
+        frame = screen(SCONF)
+
+        self.assertGreaterEqual(
+            locate(frame, "request_support_button").score,
+            THRESHOLDS["request_support_button"],
+        )
+        self.assertIs(KnightsDonationState.SUPPORT_CONFIRM, machine().observe_page(frame))
+
     def test_the_activity_panel_fallback_is_reachable_when_the_page_anchor_is_gone(self):
         """资源支援页的右上按钮认不出来时，落点必须是 `activity_panel` 而不是「未知画面」。"""
         frame = frame_without_anchor(SUP, "request_support_button")
@@ -374,31 +436,34 @@ class KnightsDonationStateMachineTests(unittest.TestCase):
         self.assertLess(locate(frame, "request_support_button").score, THRESHOLDS["request_support_button"])
         self.assertIs(KnightsDonationState.ACTIVITY_PANEL, machine().observe_page(frame))
 
-    def test_home_without_a_red_dot_finishes_the_whole_route(self):
-        subject = machine()
+    def test_home_opens_the_activity_panel_whether_or_not_there_is_a_red_dot(self):
+        """用户 2026-09-24 更正：**不看红点**，有没有红点都进活动界面。
 
-        self.assertIsNone(subject.next_action(screen(GH_BARE)))
-        self.assertEqual(1, subject.completed_cycles)
-        self.assertIs(KnightsDonationState.FINISHED, subject.state)
-        self.assertIn("没有红点", subject.finish_reason)
+        原先「没红点就整条路线结束」那套判据已拿掉（那会让「主页今天没亮红点」这天
+        直接不进界面，也就顺带跳过「每周任务里可能还有得领」）。这里两帧用同一组断言
+        钉住，免得以后有人把红点判据又加回来。
+        """
+        for name in (GH_DOT, GH_BARE):
+            with self.subTest(fixture=name):
+                subject = machine()
 
-    def test_home_with_a_red_dot_opens_the_activity_panel(self):
-        subject = machine()
+                action = subject.next_action(screen(name))
 
-        action = subject.next_action(screen(GH_DOT))
-
-        self.assertEqual("open-activity", action.name)
-        # 点击点是「骑士团活动」图标的匹配中心，不是红点、也不是猜的坐标。
-        self.assertEqual((79, 539), action.point)
-        # 活动界面上次停在哪一页，这次就还停在哪一页 ⇒ 三个落点都合法。
-        self.assertEqual(
-            {
-                state_label(KnightsDonationState.RESOURCE_SUPPORT),
-                state_label(KnightsDonationState.WEEKLY_TASKS),
-                state_label(KnightsDonationState.ACTIVITY_PANEL),
-            },
-            set(action.target_pages),
-        )
+                self.assertEqual("open-activity", action.name)
+                # 点击点是「骑士团活动」图标的匹配中心，不是红点、也不是猜的坐标。
+                self.assertEqual((79, 539), action.point)
+                # 活动界面上次停在哪一页，这次就还停在哪一页 ⇒ 三个落点都合法。
+                self.assertEqual(
+                    {
+                        state_label(KnightsDonationState.RESOURCE_SUPPORT),
+                        state_label(KnightsDonationState.WEEKLY_TASKS),
+                        state_label(KnightsDonationState.ACTIVITY_PANEL),
+                    },
+                    set(action.target_pages),
+                )
+                # 不许在主页就收工。
+                self.assertEqual(0, subject.completed_cycles)
+                self.assertIsNot(KnightsDonationState.FINISHED, subject.state)
 
     def test_the_panel_fallback_clicks_back_to_the_resource_tab(self):
         action = machine().next_action(frame_without_anchor(SUP, "request_support_button"))
@@ -466,6 +531,119 @@ class KnightsDonationStateMachineTests(unittest.TestCase):
         subject.support_scrolls = MAX_SUPPORT_SCROLLS
 
         self.assertEqual("support-one", subject.next_action(screen(SUP)).name)
+
+    def test_both_green_buttons_in_one_viewport_are_visible_to_the_machine(self):
+        """一屏两个绿按钮时，状态机必须**两个都看得见**（走 ``find_all_templates``）。
+
+        只用 ``find_best_template``（永远只给最高分那一个）就永远只能点到上面那一个 ——
+        而实拍那帧上**上面那个吃不下、下面那个才行**（2026-09-24 实跑实测）。
+        """
+        frame = screen(SUP_TWO)
+        candidates = support_candidates(frame)
+
+        self.assertEqual(2, len(candidates))
+        # 分数降序；两个是**不同的行**，不是同一个按钮被沿边缘报了两次。
+        self.assertGreater(candidates[0].score, candidates[1].score)
+        self.assertGreater(
+            abs(candidates[0].center[1] - candidates[1].center[1]),
+            SUPPORT_ROW_SKIP_TOLERANCE,
+        )
+        # 开局挑分数最高那个（被跳过之后必须能挑到第二个，见下面的跳过用例）。
+        subject = machine()
+        subject.request_done = True
+        self.assertEqual(candidates[0].center, subject.next_action(frame).point)
+
+    def test_the_reward_popup_is_what_makes_a_support_count(self):
+        """「点过了」不等于「支援成功」：只有看到「获得奖励」才作数。
+
+        对照实验（2026-09-24 实跑）：团员要的材料我持有 0 时，确认框里点「支援1个」
+        **毫无变化** —— 行不消失、今日支援上限也不涨。所以判据只能是「有没有弹奖励」。
+        """
+        subject = machine()
+        subject.request_done = True
+        frame = screen(SUP_TWO)
+
+        self.assertEqual(support_candidates(frame)[0].center, subject.next_action(frame).point)
+        # 点列表那颗 ⇒ 先弹确认框；再点确认框那颗 ⇒ 这次游戏直接弹了「获得奖励」。
+        subject.next_action(screen(SCONF))
+        self.assertIs(KnightsDonationState.SUPPORT_CONFIRM, subject.state)
+        subject.next_action(screen(REWARD))
+
+        self.assertIsNone(subject.pending_support_y)
+        self.assertEqual(set(), subject.skipped_rows)
+
+    def test_a_row_that_shows_no_reward_is_skipped_and_the_next_button_is_tried(self):
+        """回到列表却没看到「获得奖励」⇒ 这一行吃不下，下一轮挑**别的**绿按钮。
+
+        没有这一步就会在同一个按钮上白转 4 次、然后整条路线中止（实跑第一次的现场）。
+        """
+        subject = machine()
+        subject.request_done = True
+        frame = screen(SUP_TWO)
+        first, second = support_candidates(frame)
+
+        self.assertEqual(first.center, subject.next_action(frame).point)
+        self.assertEqual(first.center[1], subject.pending_support_y)
+
+        # 又回到列表页（没弹奖励）⇒ 上一行记进跳过表，这一轮点下一个按钮。
+        again = subject.next_action(frame)
+
+        self.assertEqual({first.center[1]}, subject.skipped_rows)
+        self.assertEqual("support-one", again.name)
+        self.assertEqual(second.center, again.point)
+
+    def test_when_every_visible_row_is_unreachable_it_scrolls_instead_of_repeating(self):
+        """两个绿按钮都吃不下 ⇒ 不再重复点，改为下滑（且跳过表必须清空）。
+
+        ⚠️ 清空是必需的：下滑会让整列位移，旧的 y 键就指到别人头上了。
+        """
+        subject = machine()
+        subject.request_done = True
+        frame = screen(SUP_TWO)
+
+        self.assertEqual(2, len(support_candidates(frame)))
+        subject.next_action(frame)  # 点第一行
+        subject.next_action(frame)  # 吃不下 → 跳过第一行、点第二行
+        action = subject.next_action(frame)  # 第二行也吃不下 → 不能重复点，下滑
+
+        self.assertEqual("scroll-support", action.name)
+        self.assertEqual(1, subject.support_scrolls)
+        self.assertEqual(set(), subject.skipped_rows)
+
+    def test_a_successful_support_invalidates_the_skip_ledger(self):
+        """支援成功 ⇒ 该团员在原地变灰勾、整列**重排** ⇒ 按 y 记的跳过表全部失效。
+
+        不失效的话，重排之后旧的 y 会指到**别人**头上，把本来能支援的人误跳过。
+        """
+        subject = machine()
+        subject.request_done = True
+        frame = screen(SUP_TWO)
+
+        subject.next_action(frame)
+        subject.skipped_rows.add(12345)  # 假装前面已经跳过一行
+        subject.next_action(screen(REWARD))
+
+        self.assertEqual(set(), subject.skipped_rows)
+
+    def test_the_support_confirm_dialog_clicks_its_own_button(self):
+        """确认框是**独立的一页**（2026-09-24 实跑才发现），它自己的按钮才是真的「支援1个」。"""
+        action = machine().next_action(screen(SCONF))
+
+        self.assertEqual("confirm-support", action.name)
+        self.assertEqual(
+            locate(screen(SCONF), "support_confirm_button").center, action.point
+        )
+        self.assertEqual(
+            state_label(KnightsDonationState.SUPPORT_CONFIRM), action.source_page
+        )
+        # 两个落点都真实存在：生效 ⇒ 弹奖励；没生效 ⇒ 回列表（由跳过表接手）。
+        self.assertEqual(
+            {
+                state_label(KnightsDonationState.REWARD_POPUP),
+                state_label(KnightsDonationState.RESOURCE_SUPPORT),
+            },
+            set(action.target_pages),
+        )
 
     def test_popup_picks_the_lower_grade_flower_then_confirms(self):
         subject = machine()
@@ -535,7 +713,7 @@ class KnightsDonationStateMachineTests(unittest.TestCase):
         self.assertIn("每周任务", subject.finish_reason)
 
     def test_every_reachable_action_carries_the_transition_contract(self):
-        """11 个动作逐个对账：`source_page` 必须有，出口验收二选一必须有。
+        """12 个动作逐个对账：`source_page` 必须有，出口验收二选一必须有。
 
         同页动作**不许**用 `target_pages=(本页,)` 糊弄 —— 本页永远在集合里 ⇒
         验收永远通过 ⇒ 分不出「点了没生效」和「点了生效了」。
@@ -550,6 +728,7 @@ class KnightsDonationStateMachineTests(unittest.TestCase):
                 "select-flower",
                 "confirm-request",
                 "support-one",
+                "confirm-support",
                 "scroll-support",
                 "open-weekly-tab",
                 "dismiss-reward",
@@ -591,6 +770,13 @@ class KnightsDonationStateMachineTests(unittest.TestCase):
         subject.preview(screen(SUP))
         self.assertEqual(0, subject.support_scrolls)
 
+        # 跳过表与待结算的支援都是「这一帧试算出来的中间态」，同样不能留下痕迹。
+        subject.request_done = True
+        subject.preview(screen(SUP_TWO))
+        subject.preview(screen(SUP_TWO))
+        self.assertIsNone(subject.pending_support_y)
+        self.assertEqual(set(), subject.skipped_rows)
+
     def test_a_missing_anchor_fails_closed_instead_of_guessing_a_point(self):
         """关键锚点拿不到就失败关闭 —— 绝不退化成固定坐标。
 
@@ -612,7 +798,7 @@ class KnightsDonationStateMachineTests(unittest.TestCase):
 
 
 def reachable_actions() -> dict[str, tuple[KnightsDonationAction, KnightsDonationState]]:
-    """把 11 个动作都取到手，连同「取到时画面确认是哪一页」。
+    """把 12 个动作都取到手，连同「取到时画面确认是哪一页」。
 
     有些动作需要先摆好业务进度标志（`request_done` / `support_scrolls`）才走得到；
     两条没有专用夹具的分支用 `frame_without_anchor()` 构造（见模块 docstring）。
@@ -632,6 +818,8 @@ def reachable_actions() -> dict[str, tuple[KnightsDonationAction, KnightsDonatio
     take(SUP, frame_without_anchor(SUP, "request_support_button"))
     take(SUP, screen(SUP))
     take(SUP, screen(SUP), request_done=True)
+    # 两按钮那张：`support-one` 是同一个动作名，这里顺带证明它也能从实拍帧上取到。
+    take(SUP_TWO, screen(SUP_TWO), request_done=True)
     take(SUP_SCROLLED, screen(SUP_SCROLLED), request_done=True)
     take(
         SUP_SCROLLED,
@@ -641,6 +829,7 @@ def reachable_actions() -> dict[str, tuple[KnightsDonationAction, KnightsDonatio
     )
     take(POP, screen(POP))
     take(POP_SEL, screen(POP_SEL))
+    take(SCONF, screen(SCONF))
     take(REWARD, screen(REWARD))
     take(WK_OK, screen(WK_OK))
     take(WK_OK, frame_without_anchor(WK_OK, "milestone"))
@@ -727,13 +916,19 @@ class KnightsDonationRunnerTests(unittest.TestCase):
         守住三件事：① 动作序列就是设计的那一串，没有多余的重复点击；
         ② 每个动作都通过了转场契约（开关打开还没被拦下 = 全部长眼睛）；
         ③ 收工时轮次恰好 +1，走的是正常结束（不是资源耗尽）。
+
+        ⚠️ 首帧刻意用**没有红点**的主页（``GH_BARE``）：用户 2026-09-24 更正后
+        「有没有红点都进」，所以这一帧也必须照样开进去、把整条链路走完。
+        ⚠️ 支援那一段走的是**实跑真实出现过的路径**：点列表 → 弹「支援资源」确认框 →
+        点确认框 → 才弹「获得奖励」（第一版没接确认框这一页，实机直接中止）。
         """
         frames = [
-            screen(GH_DOT),  # 主页有红点 → open-activity
+            screen(GH_BARE),  # 主页**没有**红点 → 依然 open-activity
             screen(SUP),  # 资源支援 → request-support
             screen(POP),  # 弹窗未选 → select-flower
             screen(POP_SEL),  # 选中了 → confirm-request
             screen(SUP),  # 回头支援别人 → support-one
+            screen(SCONF),  # 先弹「支援资源」确认框 → confirm-support
             screen(REWARD),  # 获得奖励 → dismiss-reward
             screen(WK_OK),  # 每周任务有档位 → claim-milestone
             screen(WK_DONE),  # 都没得领了 → 收工
@@ -760,6 +955,7 @@ class KnightsDonationRunnerTests(unittest.TestCase):
                 "select-flower",
                 "confirm-request",
                 "support-one",
+                "confirm-support",
                 "dismiss-reward",
                 "claim-milestone",
             ],
@@ -775,22 +971,6 @@ class KnightsDonationRunnerTests(unittest.TestCase):
         # 转场真的被验收过（不是「点了就算成功」），收工也留了结论。
         self.assertEqual(1, len([line for line in logs if "完成=open-activity" in line]))
         self.assertTrue(any("结论=" in line for line in logs))
-
-    def test_the_route_ends_immediately_when_the_home_icon_has_no_dot(self):
-        clock = _Clock([screen(GH_BARE)], hold={0: 3})
-        runtime = _RecordingRuntime(
-            clock.capture,
-            lambda point: None,
-            emit=lambda _: None,
-            monotonic=lambda: clock.now,
-        )
-        runner = KnightsDonationRunner(machine(), runtime, sleep=clock.sleep)
-
-        completed = runner.run(max_cycles=1)
-
-        self.assertEqual(1, completed)
-        self.assertEqual([], runtime.actions)
-
 
 if __name__ == "__main__":
     unittest.main()
