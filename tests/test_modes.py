@@ -20,6 +20,7 @@ class Epic7ModeRegistryTests(unittest.TestCase):
                 "shop_refresh",
                 "survivor",
                 "world_boss",
+                "knights_donation",
             },
             set(MODE_SPECS),
         )
@@ -31,6 +32,7 @@ class Epic7ModeRegistryTests(unittest.TestCase):
         self.assertEqual("scan_top", get_mode("shop_refresh").default_state)
         self.assertEqual("card", get_mode("survivor").default_state)
         self.assertEqual("home", get_mode("world_boss").default_state)
+        self.assertEqual("guild_home", get_mode("knights_donation").default_state)
 
     def test_shop_refresh_is_simulator_only(self):
         shop = get_mode("shop_refresh")
@@ -79,6 +81,29 @@ class Epic7ModeRegistryTests(unittest.TestCase):
 
         self.assertEqual("battle", get_mode("expedition").resolve_state("battle"))
         self.assertEqual("replay", get_mode("fodder").resolve_state("replay"))
+
+    def test_knights_donation_builds_from_its_own_template_dir_and_hides_the_terminal_state(self):
+        donation = get_mode("knights_donation")
+
+        # 模板子目录是 templates/knights_donation；工厂必须把它当根，不能当 templates 根。
+        machine = donation.build_machine(TEMPLATES, "guild_home", "emulator")
+
+        self.assertEqual("guild_home", machine.state.value)
+        self.assertEqual(
+            {
+                "knights_donation.guild_home",
+                "knights_donation.activity_panel",
+                "knights_donation.resource_support",
+                "knights_donation.weekly_tasks",
+                "knights_donation.request_popup",
+                "knights_donation.reward_popup",
+            },
+            {page.key for page in machine.templates.evidence.pages},
+        )
+        # ``finished`` 是「本轮已收工」的记号，不是一页画面 —— 不许当起始状态。
+        self.assertNotIn("finished", donation.states)
+        with self.assertRaisesRegex(ValueError, "不适用于模式 knights_donation"):
+            donation.resolve_state("finished")
 
     def test_formal_pc_modes_receive_pc_evidence_without_old_hero_coordinates(self):
         story = get_mode("story").build_machine(TEMPLATES, "stage", "pc")

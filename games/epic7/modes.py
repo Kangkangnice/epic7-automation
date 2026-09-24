@@ -51,6 +51,11 @@ from auto_game_unified.games.epic7.survivor import (
     SurvivorState,
     SurvivorStateMachine,
 )
+from auto_game_unified.games.epic7.knights_donation import (
+    KnightsDonationRunner,
+    KnightsDonationState,
+    KnightsDonationStateMachine,
+)
 from auto_game_unified.games.epic7.world_boss import (
     WorldBossRunner,
     WorldBossState,
@@ -303,6 +308,19 @@ def _build_world_boss(
     )
 
 
+def _build_knights_donation(
+    template_root: Path,
+    state: str,
+    backend: str = "emulator",
+) -> KnightsDonationStateMachine:
+    # 模板子目录是 templates/knights_donation；工厂必须把它当根，不能当 templates 根。
+    return KnightsDonationStateMachine(
+        template_root / "knights_donation",
+        initial_state=KnightsDonationState(state),
+        backend=backend,
+    )
+
+
 MODE_SPECS = {
     "arena": ModeSpec(
         name="arena",
@@ -377,6 +395,19 @@ MODE_SPECS = {
         states=frozenset(state.value for state in WorldBossState),
         build_machine=_build_world_boss,
         runner_type=WorldBossRunner,
+    ),
+    "knights_donation": ModeSpec(
+        name="knights_donation",
+        # 路线从骑士团主页开始（导航把画面停在那儿），第一步就是点「骑士团活动」图标。
+        default_state=KnightsDonationState.GUILD_HOME.value,
+        # 终态 ``FINISHED`` 不给当起始状态：它不是一页画面，是「本轮已收工」的记号。
+        states=frozenset(
+            state.value
+            for state in KnightsDonationState
+            if state is not KnightsDonationState.FINISHED
+        ),
+        build_machine=_build_knights_donation,
+        runner_type=KnightsDonationRunner,
     ),
 }
 

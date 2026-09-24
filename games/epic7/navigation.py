@@ -108,6 +108,7 @@ MODE_LABELS = {
     "hero_synthesis": "英雄合成",
     "shop_refresh": "刷书签",
     "world_boss": "世界首领战",
+    "knights_donation": "骑士团捐赠",
 }
 
 
@@ -1048,6 +1049,21 @@ class Epic7Navigator:
                     "进入世界首领战",
                     source_screen=knights_home,
                 )
+        elif mode == "knights_donation":
+            # 骑士团捐赠的导航链只有一级：大厅 → 骑士团主页。
+            # 「点骑士团活动图标」以及后面整条业务链都在 ``knights_donation.py`` 的
+            # 状态机里，导航只负责把画面送到骑士团主页。
+            #
+            # 这里**不提供** ``already_at`` 接力分支：本路线没挂 ``resume_probe``，
+            # 主流程永远带着 ``lobby_screen`` 从大厅下来，没有任何调用方会传
+            # ``already_at``。真要做接力时再连同 ``_RESUME_ENTRY_PAGES`` 一起加。
+            self._transition(
+                "lobby",
+                "knights_home",
+                "lobby_knights",
+                "进入骑士团",
+                source_screen=lobby_screen,
+            )
         else:
             raise ValueError(f"导航不支持的模式：{mode}")
         if mode == "hero_synthesis":
@@ -1059,6 +1075,10 @@ class Epic7Navigator:
         elif mode == "world_boss":
             self.runtime.log(
                 "模式=世界首领战 状态=导航完成 前提=世界首领战主页已就绪"
+            )
+        elif mode == "knights_donation":
+            self.runtime.log(
+                "模式=骑士团捐赠 状态=导航完成 前提=骑士团主页已就绪"
             )
         else:
             self.runtime.log(f"模式={MODE_LABELS.get(mode, mode)} 状态=导航完成")

@@ -13,6 +13,7 @@ MENU_OPTIONS = {
     "5": ("英雄合成", "hero_synthesis"),
     "6": ("刷书签", "shop_refresh"),
     "7": ("世界首领战", "world_boss"),
+    "8": ("骑士团捐赠", "knights_donation"),
 }
 
 MENU_LINES = (
@@ -24,6 +25,7 @@ MENU_LINES = (
     "5. 英雄合成（三星刻印合成，跑完一遍列表自动结束）",
     "6. 刷书签（实验功能，只支持模拟器）",
     "7. 世界首领战（骑士团每日任务，每场 20 体力，不够自动用树叶买）",
+    "8. 骑士团捐赠（骑士团每日捐赠，请求支援 + 支援团员 + 每周任务，跑一遍结束）",
 )
 
 # 运行平台选择：模拟器（LDPlayer）与 PC 客户端共用同一套业务代码与模板资产，
@@ -57,7 +59,7 @@ def run_interactive(
         selected = input_fn("请输入功能编号：").strip()
         if selected in MENU_OPTIONS:
             break
-        output("请输入 1 到 7 之间的功能编号。")
+        output("请输入 1 到 8 之间的功能编号。")
 
     label, mode = MENU_OPTIONS[selected]
     if mode == "hero_synthesis":
@@ -66,6 +68,10 @@ def run_interactive(
         # 每天固定 2 次（游戏主页「剩余/上限」就是 2），不给用户选。
         # 与 desktop/catalog.py 的 default_cycles / main.py 的兜底保持一致。
         cycles = 2
+    elif mode == "knights_donation":
+        # 每天跑一遍就够（请求支援一天只能发一次），不给用户选。
+        # 同上，与 desktop/catalog.py / main.py 三处保持一致。
+        cycles = 1
     else:
         while True:
             raw_cycles = input_fn("请输入运行次数：").strip()

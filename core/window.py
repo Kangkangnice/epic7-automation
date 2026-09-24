@@ -106,6 +106,18 @@ class Epic7Window:
     # 还原后等窗口真的退出最小化状态：每次 0.05s，最多约 1s。
     _RESTORE_WAIT_ATTEMPTS = 20
     _RESTORE_SETTLE_SECONDS = 0.4  # 还原动画期间画面还没回来，别立刻截图
+    # 雷电控制台**所有**出错情况都返回退出码 0，只把错误打印到 stdout。
+    # 2026-09-24 实测四条：`adb --index 9` → `adb.exe: device 'emulator-5572' not found`、
+    # `adb --index 0`（设备离线）→ `adb.exe: device offline`、
+    # `action --index 9` → `player don't exist!`、`action`（漏参数）→ 整篇 usage。
+    # ⇒ `check=True` 对它完全无效，必须显式看输出（详见 `_ensure_input_delivered`）。
+    _INPUT_FAILURE_MARKERS = (
+        b"adb.exe:",  # adb 客户端自己的错误前缀：offline / not found / unauthorized…
+        b"device offline",  # 兜底：万一某版本不带前缀
+        b"player don't exist",  # ldconsole：实例不存在
+        b"error:",
+        b"usage:",  # ldconsole 参数写错时打印整篇帮助，退出码仍是 0
+    )
 
     def __init__(self, title: str = "第七史诗") -> None:
         self.title = title
@@ -340,9 +352,33 @@ class Epic7Window:
             raise ValueError("滑动时长必须大于 0")
         return render_start, render_end
 
+    @classmethod
+    def _ensure_input_delivered(cls, result: subprocess.CompletedProcess) -> None:
+        """把「控制台回了退出码 0、指令其实没送达」转成显式失败。
+
+        2026-09-24 实机：adb 设备处于 offline，`ldconsole adb` 把
+        `adb.exe: device offline` 写进输出，退出码却是 0。于是点击被当成发送成功，
+        上层只看到「点击验收无效」，重试 4 次后报「导航转场失败」—— 表现是
+        「点不动，但程序不报错、不告警、也不切通道」。
+
+        抛出 RuntimeError 后 `click()` 既有的 activate-重试分支才会真正生效；
+        重试仍失败则明确失败，而不是继续假装成功。
+        """
+        output = b"".join(
+            bytes(stream)
+            for stream in (result.stdout, result.stderr)
+            if isinstance(stream, (bytes, bytearray))
+        )
+        lowered = output.lower()
+        if any(marker in lowered for marker in cls._INPUT_FAILURE_MARKERS):
+            raise RuntimeError(
+                "模拟器输入通道不可用，指令未送达："
+                + output.decode("utf-8", "replace").strip()
+            )
+
     def _send_render_tap(self, point: tuple[int, int]) -> None:
         console_path, instance_index, _ = self._instance_channel()
-        subprocess.run(
+        result = subprocess.run(
             [
                 str(console_path),
                 "adb", "--index", instance_index,
@@ -353,6 +389,7 @@ class Epic7Window:
             timeout=10,
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
+        self._ensure_input_delivered(result)
 
     def _send_render_swipe(
         self,
@@ -361,7 +398,7 @@ class Epic7Window:
         duration_ms: int,
     ) -> None:
         console_path, instance_index, _ = self._instance_channel()
-        subprocess.run(
+        result = subprocess.run(
             [
                 str(console_path),
                 "adb",
@@ -378,6 +415,7 @@ class Epic7Window:
             timeout=10,
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
+        self._ensure_input_delivered(result)
 
     @staticmethod
     def _window_rect_from_handle(handle: int) -> WindowRect:
@@ -426,7 +464,7 @@ class Epic7Window:
         """Use LDPlayer's instance channel; keyboard Esc can be stolen by keymaps."""
 
         console_path, instance_index, _ = self._instance_channel()
-        subprocess.run(
+        result = subprocess.run(
             [
                 str(console_path), "action", "--index", instance_index,
                 "--key", "call.keyboard", "--value", "back",
@@ -436,3 +474,4 @@ class Epic7Window:
             timeout=10,
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
+        self._ensure_input_delivered(result)
