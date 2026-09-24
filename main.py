@@ -149,6 +149,11 @@ class _ResumeWatch:
     每确认一帧稳定画面就被问一次；一旦探针认出本路线的接力点，记下落点并返回 True，
     让 ``return_home`` 当场停止返回。只认第一次命中，之后一律 True（探针本身要跑模板
     匹配，不重复烧算力）。
+
+    ``asked`` 记「探针**真的被执行过**多少帧」。``_enter_mode`` 靠它验证接线真的通：
+    探针挂上了、但启动流程忘了把它交给 ``return_home``，静态看一切正常，只有跑一遍
+    才现形。计数写在调用**之前**：探针抛异常时也该算问过（那属于判据的毛病，
+    不是接线的毛病，别把两种故障混成一条报错）。
     """
 
     def __init__(
@@ -161,10 +166,12 @@ class _ResumeWatch:
         self._machine = machine
         self._navigator = navigator
         self.point: Optional[ResumePoint] = None
+        self.asked = 0
 
     def __call__(self, screen: np.ndarray) -> bool:
         if self.point is not None:
             return True
+        self.asked += 1
         found = self._probe(self._machine, screen, self._navigator)
         if found is None:
             return False
@@ -191,6 +198,14 @@ def _enter_mode(
         return
     watch = _ResumeWatch(spec.resume_probe, machine, navigator)
     resume_screen = navigator.return_home(stop_probe=watch)
+    # 接线检查：`return_home` 的两条正常返回路径都在问过探针**之后**，
+    # 所以「返回了却没问过」只可能是接线断了（比如 stop_probe 忘了传）。
+    # 这时候探针等于白写 —— 人停在半路照样退回大厅重走，而日志里一片祥和。
+    if watch.asked == 0:
+        raise RuntimeError(
+            f"路线 {spec.name} 挂了接力探针，但「回大厅」途中一次都没问过它；"
+            "接线断了（见 main._enter_mode）。"
+        )
     point = watch.point
     if point is None:
         navigator.navigate(spec.name, lobby_screen=resume_screen)

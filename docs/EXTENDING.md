@@ -92,19 +92,39 @@ tests/test_hunt_runner.py
     states=frozenset(state.value for state in HuntState),
     build_machine=_build_hunt,
     runner_type=HuntRunner,
+    # 开局接力：认出人停在本路线哪一步就就地接管。没有它就必须进 RESUME_EXEMPT 并写明理由。
+    resume_probe=_probe_hunt_resume,
 ),
 ```
 
 构建器只负责载入模板和把字符串转换为该模式的 Enum。不要在 `main.py` 添加新的条件分支。
+
+⚠️ **「接力」是注册模式的必填项**：新路线要么挂 `resume_probe`，要么进 `RESUME_EXEMPT` 并写明
+「为什么不做」—— **两者都缺的话 `modes.py` 在 import 阶段直接抛错**（`_assert_resume_declared()`），
+启动都到不了。`needs_navigation=False` 的路线自动豁免（起点本来就是人工推进到活动内部再启动）。
+
+⚠️ **「动作靠什么验收」同样是注册模式的必填项**：新的 Runner 要么打开
+`_REQUIRE_TRANSITION_CONTRACT = True`，要么进 `TRANSITION_EXEMPT` 并写明「用自己的什么机制验收」
+—— 两者都缺的话同样在 import 阶段抛错（`_assert_transition_stance_declared()`）。
+两类表态形状相同、理由写法相同，放在 `modes.py` 里相邻的两份名单中。
+⚠️ 注意：**只有继承 `ModeRunnerBase` 的 Runner 才走得到那段校验**，自带独立主循环的路线
+（`class XxxRunner:` 裸定义）必须进豁免名单 —— 给它们打开开关是**摆设**，没人读。
+
+写一条路线的接力要动哪些文件、「什么算可停靠环节」，见
+[TRANSITION_CONTRACTS.md](TRANSITION_CONTRACTS.md)「接力契约」；判据准不准由
+`tests/test_resume_contracts.py` 在门槛里把住 —— 它拿该路线**自己的夹具**跑真的探针，
+「挂上了」不等于「认得出」。覆盖面登记在 [RESUME_COVERAGE.md](RESUME_COVERAGE.md)。
 
 ## 5. 安全验收顺序
 
 1. 运行全量离线测试。
 2. 停在路线入口，运行默认干跑，确认只打印第一步。
 3. `--live --confirm RUN --max-cycles 1` 验证一轮。
-4. 保存遇到的新页面并补回归测试。
-5. 至少实跑两轮，验证循环衔接。
-6. 主动验证资源不足或结束条件。
+4. **停在路线半中间的某一页再启动**，确认就地接管（日志里应出现
+   `模式=导航 动作=接力点命中` 与 `开局=接力`），而不是一路退回大厅重走。
+5. 保存遇到的新页面并补回归测试。
+6. 至少实跑两轮，验证循环衔接。
+7. 主动验证资源不足或结束条件。
 
 实跑期间用后台进程运行，并按 10 至 15 秒查看日志；不要用几十秒的前台固定等待。状态超时时先看诊断截图，不要直接放宽全局阈值。
 
@@ -118,11 +138,23 @@ tests/test_hunt_runner.py
 - 点击坐标不位于头像、购买或其他高风险控件。
 - 动作名称可从日志直接理解。
 - 动作定义包含来源、允许目标和业务成功证据；重试保留原事务目标。
+- **对「动作验收方式」表了态**：新的 Runner 要么打开
+  `_REQUIRE_TRANSITION_CONTRACT = True`，要么进 `TRANSITION_EXEMPT` 写明「用自己的什么机制验收」；
+  `tests/test_transition_contracts.py` 过（含「每条路线都表了态」「开开关的路线必须真的走得到那段校验」）。
+  同页动作填 `in_page_evidence`（换页动作填 `target_pages`，二选一）。
+  ⚠️ **打开之前先跑一遍那个检查函数再决定**：字段名对不上（例如英雄合成用
+  `source_observation`）会让**所有**同页动作一起被拦，靠看代码看不出来 ——
+  现成范本见 `runtime_logs/_probe_world_boss_contract_switch.py`。
 - 日志不会在目标证据出现前写“成功”。
 - 每个状态有合理超时。
 - 干跑未知页面立即失败并保存截图。
 - 正式失败出口同时保留 legacy PNG 与同名目录内的 `evidence.json`；诊断失败不能覆盖原业务异常。
 - 模式恢复状态只接受本模式 Enum。
+- **对「接力」表了态**：有导航的路线要么挂 `resume_probe`，要么进 `RESUME_EXEMPT` 写明理由；
+  `tests/test_resume_contracts.py` 过（含「接线真通」与「拿自己的夹具跑真探针」两条）。
+- **接力的落点判据与运行期同源** —— 复用状态机自己的页面判据，不另定阈值、不加新锚点。
+  哪些画面**不该**接（弹窗通例 / 不可逆动作页 / 终态）见 [TRANSITION_CONTRACTS.md](TRANSITION_CONTRACTS.md)。
+- 接力覆盖面已登记进 [RESUME_COVERAGE.md](RESUME_COVERAGE.md)。
 - README 补充新模式命令和实机验证边界。
 - `docs/TODO.md` 和 PC 迁移矩阵同步更新，不把候选模板写成已支持。
 

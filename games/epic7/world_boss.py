@@ -17,7 +17,9 @@ LEVEL_REWARD    「全部开启」(961,994) → 同一按钮变「确认」(959,
   ↓
 RESULT_CONFIRM  回结算页 →「确认」(1730,1036)
   ↓
-  └→ 回 HOME，次数 -1，循环
+HOME            回主页 → **先看「每周贡献度」宝箱**（发光=可领 ⇒ 点掉）
+                  ├ 还有宝箱可领 ⇒ 先领（领完才算这一轮收尾）
+                  └ 没有 ⇒ 看次数：>0 进下一把；0/2 ⇒ 正常结束（退出码 2）
 ```
 
 ## ⚠️ 每个动作都必须声明出处与去处（2026-09-22 修正）
@@ -32,8 +34,12 @@ RESULT_CONFIRM  回结算页 →「确认」(1730,1036)
 - 所有动作统一经 ``_action()`` 构造，它会 ``_confirm_page(source_page)`` 写 ``_confirmed_page``
   —— 这个字段之前**从未被赋值过**，导致 ``runner_base._transition_completed`` 全程空转。
 - 「点自动配置」这类**不换页**的动作 ``target_pages`` **留空**。⚠️ 别写 ``(本页,)``：
-  本页永远在集合里 ⇒ 验收永远通过 ⇒ 又退化成秒点。不声明就不进转场账本，
-  验收交给**页面内状态证据**（按钮橙→蓝），没变就按重试窗口有界重试。
+  本页永远在集合里 ⇒ 验收永远通过 ⇒ 又退化成秒点。同页动作改填 ``in_page_evidence``
+  （页面内的什么变化能证明它生效了），实际判定仍由「下一帧重判画面」承担。
+- **2026-09-24：``WorldBossRunner`` 打开 ``_REQUIRE_TRANSITION_CONTRACT``**，动作两个判据
+  都空会在**发出去之前**报错。⚠️ 开之前踩过一个坑：``WorldBossAction`` 当时**没有
+  ``in_page_evidence`` 字段**，而校验规则是「``target_pages`` **或** ``in_page_evidence``」
+  ⇒ 规则里的备选项根本不存在，5 个同页动作一开全被拦。教训写在字段的注释里。
 
 ## 页面识别（模板匹配）与点击点（实测固定坐标）分开
 
@@ -93,6 +99,53 @@ RESULT_CONFIRM  回结算页 →「确认」(1730,1036)
 阈值 10% 落在两者之间，离两边都很远。口径仍是「看游戏给的次数」而不是「看进程跑了几轮」，
 且**不硬编码上限 2** —— 本判据只回答「按钮还亮不亮」。
 
+⚠️ 判据有两道、**取或**（见 `select_team_enabled`）：第二道是「绿条亮度 ÷ 整幅画面亮度」，
+用来挡住**页面淡入的暗帧** —— 绝对亮度判据在整屏压暗到 50% 时会自己塌掉，
+而页面识别用的 `TM_CCOEFF_NORMED` 对亮度缩放不敏感，两边一凑会把「还有次数」误判成
+「次数用完」。实测表见 `docs/WORLD_BOSS_DESIGN.md` 第十二节。
+
+## 每周贡献度宝箱（2026-09-23 用户实拍补充）
+
+主页右上角「每周贡献度」进度条上有两档宝箱，按累计贡献解锁：
+
+| 档位 | 位置 | 画布坐标 |
+|---|---|---|
+| 宝箱 #1 | `27,500,000`，进度条**左侧** | 包围盒 (1594,308,126,128)，中心 **(1657,372)** |
+| 宝箱 #2 | `44,000,000`，进度条**右侧** | 尚未采集「可领」样本，**没做**（见下） |
+
+「够量了」的宝箱会**发光**（金色边框 + 亮青白箱体 + 四角星芒），没有的只是普通暗色箱子；
+**领过之后**箱子原地变成**绿色对勾**（2026-09-23 用户补图确认，**不弹任何窗口**）。
+三种状态可以用同一个「可领」模板分开：
+
+| 画面 | 面板内最高分 |
+|---|---|
+| 可领（`worldboss_home_chest_claimable.png`） | **1.0000** |
+| **已领 = 绿勾**（`worldboss_home_chest_claimed.png`） | 0.7085 |
+| 未点亮 1/2（`worldboss_home.png`） | 0.6559 |
+| 未点亮 0/2（`worldboss_home_exhausted.png`） | 0.6559 |
+| **全库 194 张**里其它路线最高 | 0.4878 |
+
+⇒ 阈值 `WEEKLY_CHEST_THRESHOLD = 0.80`：对「已领」下方余量 0.09，对「未点亮」下方余量 0.14。
+⚠️ 「已领」的余量比「未点亮」薄 —— 因为绿勾底下还架着宝箱本体。**改阈值前重跑
+`runtime_logs/_wb_chest_build_assets.py`**（阈值 0.80 下全库只命中「可领」那 1 张）。
+
+⚠️ **不要拿「暖金色」颜色掩膜做这件事**（试过，`runtime_logs/_wb_chest_gold_probe.py`）：
+**没点亮**的宝箱本身也带暖色内容，而且 `team_config` / `lobby_with_knights` 等页面
+同一区域有面积大得多的金色块 ⇒ 颜色判据完全不排他。模板匹配能分开，是因为
+「亮箱体 / 暗箱体」的**明暗结构**差异，不是「有没有金色」。
+
+⚠️ **宝箱 #2（44,000,000）没做**：它的「可领」外观没有样本，阈值定不了
+（项目规矩：没量过不写死数字）。已量到的是它**未到档**时的外观
+（`_wb_chest_after_claim_probe.py`）：对宝箱 #1 的模板得 **0.7833**，
+离阈值只有 0.017 —— 好在匹配中心在 x=1825，**落在搜索区右边界 1785 之外**，
+所以不会误触发。⇒ **搜索区的右边界是承重的**，收紧/放宽前先看这条线。
+补 #2 需要：① 一张 44M 宝箱发光状态的截图 → ② 裁模板 + 单独搜索区 → ③ 重跑全库排他扫描。
+
+✅ **点完宝箱之后是什么画面：已确认** —— 原地变绿勾，**不弹窗、不换页**。
+所以这一步的验收仍然是「**宝箱不再发光**」= 模板不再命中，与「自动配置」按钮橙→蓝同构；
+绿勾那一态本身不会命中（0.7085 < 0.80），因此**不会出现「领完还一直点」**。
+真正收场的地方在下一轮：次数已经是 0/2 ⇒ `HOME` 分支抛 `AttemptsExhausted`（退出码 2）。
+
 ## 体力：零改动复用 ``stamina.py``
 
 行动力不足弹窗的三个模板在本路线实测 0.9999 / 0.9895 / 1.0000，与 story 同一套控件。
@@ -103,7 +156,7 @@ from dataclasses import asdict, dataclass
 from enum import Enum
 from pathlib import Path
 from time import sleep as default_sleep
-from typing import Callable, Optional
+from typing import Callable, NamedTuple, Optional
 
 import cv2
 import numpy as np
@@ -118,7 +171,11 @@ from auto_game_unified.core.battle_supervisor import (
 )
 from auto_game_unified.core.matcher import Match, find_template, load_template
 from auto_game_unified.core.recovery import RecoveryGate
-from auto_game_unified.core.runtime import Runtime, StaminaExhausted
+from auto_game_unified.core.runtime import (
+    ResourceExhausted,
+    Runtime,
+    StaminaExhausted,
+)
 from auto_game_unified.core.supervisor import meaningful_change
 from auto_game_unified.games.epic7.battle_controls import (
     BattleControls,
@@ -130,6 +187,7 @@ from auto_game_unified.games.epic7.evidence.world_boss import (
     REFERENCE_SIZE as WORLD_BOSS_REFERENCE_SIZE,
     build_world_boss_evidence,
 )
+from auto_game_unified.games.epic7.knights_donation import KNIGHTS_GUILD_HOME_PAGE
 from auto_game_unified.games.epic7.runner_base import ModeRunnerBase
 from auto_game_unified.games.epic7.stamina import (
     STAMINA_REGIONS,
@@ -137,6 +195,23 @@ from auto_game_unified.games.epic7.stamina import (
     next_stamina_decision,
 )
 from auto_game_unified.games.epic7.unknown_screen import UnrecognizedScreen
+
+
+class AttemptsExhausted(ResourceExhausted):
+    """今天的挑战次数打完了：主页「选择队伍」已经变灰。
+
+    ⚠️ **这条判据写好了很久、却一直没接上**（2026-09-23 实跑暴露）：
+    ``select_team_enabled`` 只在单元测试和设计文档里出现过，``next_action`` 从来不问它，
+    于是主页在 ``0/2`` 时照样返回 ``open-team-select`` —— 点一颗灰按钮点不动，
+    45 秒转场超时 → 重试 4 次 → 回大厅恢复 → 再点，**看起来就是「一直在点」**。
+    口径从第一天就是「看游戏给的次数、不看进程跑了几轮」（见模块 docstring），
+    这里把它接到实际的决策路径上。
+
+    走 ``ResourceExhausted``（与竞技场「门票耗尽」同一条通道）：还能干、但没本钱了
+    —— 不是故障，但也不能装作跑满了要求的轮数，所以给退出码 2。
+    """
+
+    stop_label = "今日次数已用完"
 
 
 class WorldBossState(Enum):
@@ -181,8 +256,23 @@ CLICK_POINTS = {
 # 2026-09-21 自 worldboss_home.png 的绿色连通块实测：(1550,1066)-(1894,1099)。
 SELECT_TEAM_BAR = (1550, 1066, 344, 33)
 
-# 绿条判据：绿色像素占比低于此值即认为按钮已变灰（= 今天打完了）。
+# 绿条判据（第一道）：绿色像素占比达到此值即认为按钮可点。
 SELECT_TEAM_ENABLED_GREEN_RATIO = 0.10
+
+# 绿条判据（第二道）：绿条区域亮度 ÷ 整幅画面亮度。
+#
+# ⚠️ **为什么第一道不够**（2026-09-23 用 `runtime_logs/_wb_fade_probe.py` 实测钉死）：
+# 第一道是 HSV 的绝对亮度（`V >= 90`），**页面淡入时整幅画面一起压暗，它跟着塌**；
+# 而页面识别用的 `TM_CCOEFF_NORMED` 对亮度缩放**不敏感** —— 于是「淡入暗帧」会同时
+# 满足「认得出是主页」+「绿条判灰」，把**还有次数**误判成「次数用完」⇒ 提前退出。
+# 实测 `worldboss_home.png`（1/2）压到 50% 亮度：绿占比 0.5924 → **0.0102**（低于 0.10），
+# 而这一刻页面**仍被识别成主页**。这比原来的「一直点」更伤，所以必须堵上。
+#
+# 相对亮度对整屏压暗免疫（实测，亮度系数 1.0 → 0.1 全程）：
+# - 1/2 可点：**1.900 ~ 1.952**（几乎不动）
+# - 0/2 真灰：**0.568 ~ 0.615**
+# 两侧差 3 倍，阈值 1.2 取在中间。**改阈值前先重跑那个探针。**
+SELECT_TEAM_BAR_RELATIVE_V = 1.2
 
 # HSV 绿色范围，与 fodder 判「亮色按钮」用的是同一套。
 _GREEN_LOWER = np.array([35, 80, 90])
@@ -203,9 +293,72 @@ def select_team_green_ratio(screen: np.ndarray, *, reference_size=WORLD_BOSS_REF
     return float(mask.mean()) / 255.0
 
 
+def select_team_bar_relative_v(
+    screen: np.ndarray, *, reference_size=WORLD_BOSS_REFERENCE_SIZE
+) -> float:
+    """量「选择队伍」高亮带**相对整幅画面**的亮度比（对整屏压暗免疫）。
+
+    淡入会把高亮带和背景**一起**压暗，比值几乎不变；按钮真变灰则是
+    「背景照旧、高亮带塌掉」，比值掉到 0.6 上下。实测数据见
+    ``SELECT_TEAM_BAR_RELATIVE_V`` 的注释与 ``runtime_logs/_wb_fade_probe.py``。
+    """
+    x, y, width, height = SELECT_TEAM_BAR
+    scale_x = screen.shape[1] / reference_size[0]
+    scale_y = screen.shape[0] / reference_size[1]
+    patch = screen[
+        round(y * scale_y) : round(y * scale_y) + round(height * scale_y),
+        round(x * scale_x) : round(x * scale_x) + round(width * scale_x),
+    ]
+    if patch.size == 0:
+        return 0.0
+    frame_v = float(cv2.cvtColor(screen, cv2.COLOR_RGB2HSV)[:, :, 2].mean())
+    if frame_v <= 0.0:
+        return 0.0
+    band_v = float(cv2.cvtColor(patch, cv2.COLOR_RGB2HSV)[:, :, 2].mean())
+    return band_v / frame_v
+
+
+# 「每周贡献度」宝箱 #1（`27,500,000` 那一档）在画布上的位置与搜索区。
+# 包围盒由用户 1920×1080 实拍截图按 (0,+52) 还原成画布后实测。
+WEEKLY_CHEST_BOX = (1594, 308, 126, 128)
+# 搜索区套住宝箱 #1，且右边界收在 1785 —— **不盖到进度条右侧的宝箱 #2**（x≈1755 起）。
+# 搜索窗口的宽度就是锚点的一部分：放宽会把「是不是宝箱 #1 可领」变成赌注。
+WEEKLY_CHEST_REGION = (1535, 250, 250, 250)
+
+# 可领 / 未点亮的阈值。全库 193 张夹具实测（`runtime_logs/_wb_chest_build_assets.py`）：
+# 可领 1.0000、未点亮的主页两版都是 0.6559、其它路线最高 0.4878。
+# ⇒ 0.80 下方余量 0.14、上方余量 0.31。**改这个数前先重跑那个探针。**
+WEEKLY_CHEST_THRESHOLD = 0.80
+
+
+def find_weekly_chest(
+    screen: np.ndarray,
+    template: np.ndarray,
+    *,
+    region: tuple[int, int, int, int] = WEEKLY_CHEST_REGION,
+    reference_size=WORLD_BOSS_REFERENCE_SIZE,
+) -> Optional[Match]:
+    """在主页「每周贡献度」面板里找**发光（可领）**的宝箱。命中返回 Match。"""
+    return find_template(
+        screen,
+        template,
+        WEEKLY_CHEST_THRESHOLD,
+        region=region,
+        reference_size=reference_size,
+    )
+
+
 def select_team_enabled(screen: np.ndarray) -> bool:
-    """主页「选择队伍」按钮是否还可点（= 今天还有次数）。"""
-    return select_team_green_ratio(screen) >= SELECT_TEAM_ENABLED_GREEN_RATIO
+    """主页「选择队伍」按钮是否还可点（= 今天还有次数）。
+
+    ⚠️ **必须是「或」，不能改成「且」**：两道判据分别对付两种情形 ——
+    ① 绿得明显（含轻微压暗）⇒ 第一道直接放行，省掉整幅 HSV 的开销；
+    ② 不够绿 ⇒ 第二道区分「真变灰」和「只是整屏在淡入变暗」。
+    用「且」的话，淡入暗帧仍然会掉在第一道外面 ⇒ 误判「次数用完」⇒ 提前退出。
+    """
+    if select_team_green_ratio(screen) >= SELECT_TEAM_ENABLED_GREEN_RATIO:
+        return True
+    return select_team_bar_relative_v(screen) >= SELECT_TEAM_BAR_RELATIVE_V
 
 
 # 配置队伍页的「三队槽位区」（基准画布坐标）：1/2/3 队的底座与战斗力数字。
@@ -330,6 +483,18 @@ class WorldBossAction:
     source_page: str = ""
     target_pages: tuple[str, ...] = ()
     reason: str = ""
+    # 不换页动作的出口验收依据（换页动作用 ``target_pages``，两者填一个）。
+    #
+    # ⚠️ 这个字段是 2026-09-24 补的，补之前它**不存在**：本路线的 5 个同页动作
+    # （自动配置 / 领每周宝箱 / 全部开启 / 体力弹窗两步）**事实上**都有验收判据
+    # （下一帧重判画面看槽位填没填、宝箱还亮不亮、弹窗还在不在），但那些判据写在
+    # ``next_action`` 的代码里，**没有以字段形式登记**。于是
+    # ``runner_base._require_transition_contract`` 一开（它的规则是
+    # 「``target_pages`` **或** ``in_page_evidence``」）就全被拦 —— 规则里的备选项
+    # 根本不存在，只填了 ``source_page`` 的动作一个都跑不掉。
+    # 教训：看到「A 或 B」形式的契约校验，先确认 A、B 两个字段**都真实存在**，
+    # 别用「看起来都填了」代替跑一遍。
+    in_page_evidence: str = ""
 
 
 @dataclass(frozen=True)
@@ -343,6 +508,8 @@ class WorldBossTemplates:
     result_title: np.ndarray
     # 战斗画面右上角的「跳过 」（点它衔接到结算页，也是战斗画面的识别锚点）。
     battle_skip: np.ndarray
+    # 主页「每周贡献度」宝箱 #1 的**可领（发光）**外观。未点亮时同位置得分掉到 0.66。
+    weekly_chest: np.ndarray
     stamina_popup: np.ndarray
     stamina_material: np.ndarray
     stamina_confirm: np.ndarray
@@ -369,6 +536,7 @@ def build_world_boss_templates(
         level_reward_title=load("level_reward_title"),
         result_title=load("result_title"),
         battle_skip=load("battle_skip"),
+        weekly_chest=load("weekly_chest_lit"),
         **asdict(load_stamina_templates(template_root / "story")),
         evidence=build_world_boss_evidence(template_dir),
     )
@@ -432,6 +600,24 @@ class WorldBossStateMachine:
         self.auto_click_attempted = False
         self._confirmed_page = ""
         self._stamina_material_clicked = False
+        # 「接力」进来的落点；None = 本轮是正常从主页开始的。Runner 靠它认出
+        # 「这一局不是本进程点开的，但已经打起来了」⇒ 跳过状态机直接交战斗监督。
+        self.resumed_from: Optional[WorldBossState] = None
+
+    def resume_from(self, state: WorldBossState) -> None:
+        """拨到用户停下的那一步，原样接管进度继续往下跑。
+
+        与 ``_apply_recovery_state`` 的区别：那个是「退回主页重开一轮」，这个是
+        「保留当前进度」—— 停在奖励弹窗就接着领，而不是退回大厅把这一局的结算丢掉。
+
+        ⚠️ 本状态机**几乎不需要**拨状态：``next_action`` 每一页都用 ``observe_page``
+        现判并覆盖 ``self.state``（唯一例外是 ``RESULT`` 那一支 —— 它靠
+        ``state is LEVEL_REWARD`` 分岔，接力刻意走「未领奖励」那一支，见
+        ``detect_resume_point``）。这个方法真正的作用是**留下 ``resumed_from`` 记号**。
+        """
+        self.state = state
+        self.resumed_from = state
+        self._confirmed_page = ""
 
     def _confirm_page(self, page: str) -> None:
         """记下「我发出这个动作时确认站在哪一页」。
@@ -449,6 +635,7 @@ class WorldBossStateMachine:
         source_page: str,
         reason: str,
         target_pages: tuple[str, ...] = (),
+        in_page_evidence: str = "",
         point: tuple[int, int] | None = None,
     ) -> WorldBossAction:
         """构造动作并登记出处，确保转场契约有对账依据。
@@ -456,6 +643,10 @@ class WorldBossStateMachine:
         ``target_pages`` 默认空 = 「这个动作不换页」。⚠️ 同页动作**不要**写
         ``target_pages=(本页,)``：那样 ``_transition_completed`` 永远返回 True，
         验收形同虚设，分不出「点了没生效」和「点了生效了」。
+
+        **同页动作必须填 ``in_page_evidence``** —— 填「点完这一页会有什么变化能证明它生效了」。
+        它和 ``target_pages`` 二选一，本路线的 Runner 已打开机器强制
+        （``_REQUIRE_TRANSITION_CONTRACT``），**两个都空会在发动作前报错**。
 
         ``point`` 为 None 时按 ``CLICK_POINTS`` 查表；调用方也可显式传坐标
         （体力弹窗的两个步骤的坐标是运行期算出来的，不在表里）。
@@ -467,6 +658,7 @@ class WorldBossStateMachine:
             source_page=source_page,
             target_pages=target_pages,
             reason=reason,
+            in_page_evidence=in_page_evidence,
         )
 
     def _locate(self, screen: np.ndarray, name: str) -> Optional[Match]:
@@ -515,6 +707,25 @@ class WorldBossStateMachine:
                 return state
         return None
 
+    def at_knights_home(self, screen: np.ndarray) -> bool:
+        """这一帧是不是**骑士团主页**（导航链的中间站，不是本路线的业务页）。
+
+        判据就是 ``evidence/world_boss.py`` 的 ``world_boss.knights_home`` 页面组合
+        （``knights_title``）—— 与导航层认这一页用的是同一条。全库 226 张实测
+        只命中 4 张，全部是骑士团主页本身（本路线 2 张 + 骑士团捐赠 2 张），零误命中。
+
+        它不进 ``observe_page``：那一页没有「世界首领战要做什么」的决策，
+        只有接力用得上（停在这一页就跳过「回大厅 → 进骑士团」那两级）。
+        """
+        profile = getattr(self.templates, "evidence", None)
+        if profile is None:
+            return False
+        flags = {key: self._locate(screen, key) is not None for key in profile.atoms}
+        return (
+            profile.page("world_boss.knights_home").evaluate(flags)
+            is EvidenceState.SAFE
+        )
+
     def _handle_stamina(self, screen: np.ndarray) -> Optional[WorldBossAction]:
         decision = next_stamina_decision(
             screen, self._locate, material_clicked=self._stamina_material_clicked
@@ -524,10 +735,11 @@ class WorldBossStateMachine:
                 self.stamina_replenished += 1
                 self._stamina_material_clicked = False
             return None
-        # 体力弹窗的两个步骤都在弹窗内完成、**不换页**，所以不声明 target_pages：
-        # 同页契约会永远验收通过（见 TEAM_CONFIG 分支的说明），形同虚设。
-        # 验收依据是**弹窗自身的锚点**：弹窗还在 ⇒ next_action 继续返回该动作，
-        # 按 45 秒窗口有界重试；弹窗消失 ⇒ 自然回到原页继续。
+        # 体力弹窗的两个步骤都在弹窗内完成、**不换页**，所以不声明 target_pages
+        # （同页写本页会让验收永远通过，见 TEAM_CONFIG 分支的说明）。
+        # 验收依据写进 ``in_page_evidence``；实际判定仍由「下一帧重判画面」承担：
+        # 弹窗还在 ⇒ next_action 继续返回该动作，按 45 秒窗口有界重试；
+        # 弹窗消失 ⇒ 自然回到原页继续。
         if decision.status == "material":
             self._stamina_material_clicked = True
             return self._action(
@@ -535,6 +747,10 @@ class WorldBossStateMachine:
                 point=decision.point,
                 source_page="行动力不足弹窗",
                 reason="选生命之叶卡片",
+                in_page_evidence=(
+                    "同一弹窗仍在，但阶段由「选材料」前进到「待确认」——"
+                    "下一次 next_action 报出的是 stamina_confirm 而不是它"
+                ),
             )
         if decision.status == "waiting":
             raise StaminaExhausted("生命之叶购买按钮不可用")
@@ -543,6 +759,10 @@ class WorldBossStateMachine:
             point=decision.point,
             source_page="行动力不足弹窗",
             reason="点确认购买生命之叶",
+            in_page_evidence=(
+                "购买完成后弹窗自身的锚点消失（stamina_popup 不再命中），"
+                "画面回到弹窗底下的业务页"
+            ),
         )
 
     def observe_battle(
@@ -556,9 +776,23 @@ class WorldBossStateMachine:
             BattleControls.MANUAL_CONTROLS: AutoBattleState.MANUAL,
             BattleControls.TRANSITION: AutoBattleState.UNKNOWN,
         }[controls]
+        # 「这一局的战斗结束了」有两个地面：结算页，以及盖在它上面的
+        # 「战斗级别奖励」弹窗 —— 两个都算。
+        #
+        # ⚠️ 奖励弹窗**必须**算数（2026-09-23 实跑踩坑）：点完「跳过」游戏会**直接**
+        # 弹出奖励弹窗，弹窗把结算页压暗，于是 ``result_title`` 掉到 0.7103
+        # （够不到 0.80 门槛）、``battle_visible`` 也变 False（跳过按钮已经没了）、
+        # ``allowed_action`` 为 None ⇒ 监督的 ``recognized`` 五条判据**全假**
+        # ⇒ 45 秒后以 ``battle_unrecognized`` 安全停止，而状态机里
+        # ``LEVEL_REWARD → open-all-chests`` 那条分支一直没人来调。
+        #
+        # 原来写的是 ``result_title and level_reward_title is None``。那个排他是
+        # **页面身份**的需求（``evidence/world_boss.py`` 靠 ``forbidden`` 把
+        # world_boss.result 与 world_boss.level_reward 分开），不该被搬到
+        # 「战斗结束没有」这个判据上 —— 这里要的恰恰是「两页都算结束」。
         result_visible = (
             self._locate(screen, "result_title") is not None
-            and self._locate(screen, "level_reward_title") is None
+            or self._locate(screen, "level_reward_title") is not None
         )
         # 右上角「跳过」：既是「我在战斗画面」的锚点，也是把这一局推向结算的动作。
         # 交给监督去点（``allowed_action``），而不是在观察函数里直接点 ——
@@ -596,6 +830,10 @@ class WorldBossStateMachine:
                 "open-all-chests",
                 source_page=state_label(WorldBossState.LEVEL_REWARD),
                 reason="奖励弹窗「全部开启」",
+                in_page_evidence=(
+                    "按钮原地由「全部开启」换成「确认」——两下点击的坐标只差 2px，"
+                    "所以 Runner 给它单独配了 5 秒短重试窗口"
+                ),
             )
 
         if page is WorldBossState.RESULT:
@@ -649,6 +887,9 @@ class WorldBossStateMachine:
                     "auto-configure",
                     source_page=state_label(WorldBossState.TEAM_CONFIG),
                     reason="三队槽位为空=尚未自动配置",
+                    in_page_evidence=(
+                        "三队槽位被填上英雄（team_configured 由不成立变成成立）"
+                    ),
                 )
             return self._action(
                 "battle-start",
@@ -672,6 +913,34 @@ class WorldBossStateMachine:
 
         if page is WorldBossState.HOME:
             self.state = WorldBossState.HOME
+            # ⚠️ **宝箱要排在次数前面**（2026-09-23 用户明确要求：「先领宝箱，再判次数」，
+            # 「领完宝箱之后才是一轮结束」）。用户的实拍截图正是「0/2 + 有宝箱可领」
+            # 这个状态 —— 顺序反了会在次数用完那一刻直接收摊，宝箱就永远领不到。
+            chest = find_weekly_chest(screen, self.templates.weekly_chest)
+            if chest is not None:
+                # 同页动作（点完箱子不发光，页面不变）⇒ ``target_pages`` 留空。
+                # 验收靠**页面内状态证据**：宝箱模板不再命中（同「自动配置」按钮橙→蓝）。
+                # 点它多按一次没副作用，所以重试窗口用短尺子（见 ``_action_retry_seconds``）。
+                return self._action(
+                    "claim-weekly-chest",
+                    source_page=state_label(WorldBossState.HOME),
+                    point=chest.center,
+                    reason=f"每周贡献度宝箱发光（得分 {chest.score:.4f}）= 可领",
+                    in_page_evidence=(
+                        "宝箱不再发光（weekly_chest 模板由命中变成不命中）"
+                    ),
+                )
+            # ⚠️ 先看次数，再决定要不要点「选择队伍」（2026-09-23 实跑暴露的漏判）。
+            # 少了这一步，主页在 0/2 时会一直报 open-team-select：
+            # 灰按钮点不动 ⇒ 45 秒转场超时 ⇒ 重试 4 次 ⇒ 回大厅恢复 ⇒ 再点……
+            # 表现就是「明明没次数了还在一直点」。
+            #
+            # 单帧就敢下结论，是因为 ``select_team_enabled`` 已经对「淡入变暗」免疫
+            # （两道判据取或，见它的 docstring）—— 不必再叠一层「连续两帧」的门。
+            if not select_team_enabled(screen):
+                raise AttemptsExhausted(
+                    "主页「选择队伍」已变灰（今天次数已用完）"
+                )
             return self._action(
                 "open-team-select",
                 source_page=state_label(WorldBossState.HOME),
@@ -710,10 +979,93 @@ class WorldBossStateMachine:
             ) = snapshot
 
 
+WORLD_BOSS_ENTRY_PAGE = "worldboss_home"
+"""世界首领战主页在导航链上的页面名（``navigation._RESUME_ENTRY_PAGES`` 登记的就是它）。"""
+
+
+class WorldBossResumePoint(NamedTuple):
+    """世界首领战开局接力的落点。"""
+
+    page: str                        # 中文页面名，给日志和诊断看
+    state: Optional[WorldBossState]  # 要拨过去的状态机状态；None = 不动状态机
+    entry: Optional[str] = None      # 已经在导航链的这个页面上，从这里接着导航
+
+
+# 可停靠的**业务页** -> 它在导航链上的落点。
+#
+# 顺序无关紧要：``observe_page`` 的页面组合已做过全库排他扫描，一次最多认出一页。
+#
+# 三类**刻意不接**：
+# - ``RESULT_CONFIRM``：它不是一个画面，是 ``next_action`` 由 ``state is LEVEL_REWARD``
+#   转出来的内部记号（不在 ``_PAGE_STATES`` 里）⇒ 探针根本没有判据可用。
+# - 行动力不足弹窗：点「确认购买」要**消耗生命之叶**（不可逆）。而且它盖在底页上，
+#   回大厅的那一下 Back 会先把弹窗关掉，下一帧探针就在底页接管了 —— 效果一样、更安全。
+# - 骑士团主页：**不是**本路线的业务页，是导航链的中间站，单独判（它落 ``entry``）。
+_RESUMABLE_ENTRIES: dict[WorldBossState, Optional[str]] = {
+    WorldBossState.HOME: WORLD_BOSS_ENTRY_PAGE,
+    WorldBossState.TEAM_SELECT: None,
+    WorldBossState.TEAM_CONFIG: None,
+    WorldBossState.RESULT: None,
+    WorldBossState.LEVEL_REWARD: None,
+}
+
+
+def detect_resume_point(
+    machine: WorldBossStateMachine,
+    screen: np.ndarray,
+) -> Optional[WorldBossResumePoint]:
+    """世界首领战开局接力：认出用户停在哪一页，认不出返回 None。
+
+    判据就是 ``machine.observe_page`` —— **与运行期同源**，不另定阈值、不加新锚点，
+    所以不存在「接力认得出、跑起来认不出」的第二种口径。停在大厅 / 别的路线上返回
+    None，调用方照旧走「回大厅 → 按路线导航」（失败关闭，与加这个功能之前一致）。
+
+    **局内排第一**：``observe_page`` 内部先判战斗画面（``battle_scene_visible`` 或
+    右上角「跳过」），所以「已经在打的那一局」不会被某个残留锚点抢走。落点状态是
+    ``BATTLE``，``WorldBossRunner`` 靠 ``resumed_from`` 收到它就跳过状态机、
+    直接把这一局交给战斗监督（不按 Back、不重新导航，奖励不丢）。
+
+    ⚠️ **``RESULT`` 页是有歧义的**：同一个「战斗结果」画面，进来一次与从奖励弹窗回来
+    一次要做的事不同（``next_action`` 靠 ``state is LEVEL_REWARD`` 分岔），而接力只看
+    到一帧、拿不到这个上下文。这里**保守取「奖励还没领」那一支**（拨 ``RESULT``），
+    理由是三条：
+
+    1. 两支点的是**同一个按钮**（``open-level-reward`` 与 ``confirm-result`` 都是
+       (1730,1036)），所以猜错也不会误触别的功能、更不会点到危险按钮；
+    2. 真停在结算页时，最可能的处境就是「刚打完、奖励还没领」；
+    3. 万一猜反（奖励早已领完），游戏会直接回主页 ⇒ 下一帧 ``observe_page`` 认出
+       ``HOME``，状态机自己拨正、继续往下跑。代价只是一次无效点击与一次「转场未完成」，
+       **不丢奖励、不误点**。
+
+    骑士团主页用 ``machine.at_knights_home`` 单独判：它是导航链的中间站，落 ``entry``
+    让导航从那一级接着往下走（``navigation`` 里那条分支本来就写好了，此前没有调用方）。
+    """
+    page = machine.observe_page(screen)
+    if page is WorldBossState.BATTLE:
+        return WorldBossResumePoint("战斗中", WorldBossState.BATTLE)
+    if page in _RESUMABLE_ENTRIES:
+        return WorldBossResumePoint(state_label(page), page, _RESUMABLE_ENTRIES[page])
+    if machine.at_knights_home(screen):
+        return WorldBossResumePoint("骑士团主页", None, KNIGHTS_GUILD_HOME_PAGE)
+    return None
+
+
 class WorldBossRunner(ModeRunnerBase):
     """世界首领战固定循环 Runner（主循环协议见 ModeRunnerBase）。"""
 
     _MODE_LABEL = "世界首领战"
+    # 转场契约机器强制（2026-09-24 打开；本路线是继 knights_donation 之后第二条）。
+    #
+    # 打开之前，这条路线是「动作看起来都带判据、但机器问不出来」的状态：换页动作带
+    # ``target_pages``，同页动作的验收依据写在 ``next_action`` 的代码里、**没登记成字段**，
+    # 于是漏写一个判据不会有任何报错。打开后每个动作在**发出去之前**逐个校验：
+    # 缺 ``source_page``，或 ``target_pages`` 与 ``in_page_evidence`` 两者皆空，直接抛错；
+    # **空跑同样会拦**（校验点在两个战斗入口之前，任何分支发出的动作都跑不掉）。
+    #
+    # ⚠️ 别把这个开关直接抄到别的老路线上：不同路线用的判据载体不一样
+    # （``arena`` 用 ``source_state`` / ``target_states``，一个动作都不带
+    # ``target_pages``），抄过去会每个动作都抛错。详见 docs/TRANSITION_CONTRACTS.md。
+    _REQUIRE_TRANSITION_CONTRACT = True
     _TIMEOUT_SECONDS = {
         WorldBossState.HOME: 45,
         WorldBossState.TEAM_SELECT: 45,
@@ -736,6 +1088,18 @@ class WorldBossRunner(ModeRunnerBase):
     # 同一个配置队伍页上，打不起来的战斗**最多重来这么多次**，超过就安全停止。
     # 2 次足够覆盖真实场景（体力弹窗交还一次后，补叶、再点就能开打）。
     _MAX_BATTLE_ATTEMPTS = 2
+    # 「全部开启」这一步的同名重试窗口（默认 ``_ACTION_RETRY_SECONDS`` 是 45 秒）。
+    #
+    # 奖励弹窗点完「全部开启」后按钮**原地**换成「确认」、页面**不换**（仍是
+    # ``LEVEL_REWARD``），所以 ``next_action`` 会再返回一次同名动作。用默认的 45 秒
+    # 窗口，就等于领奖时白等 45 秒 —— 2026-09-23 用户反馈的「干等 40 多秒」正是这一类。
+    # 两下点击的坐标只差 2px（``open-all-chests`` (961,994) / ``confirm-level-reward``
+    # (959,994)），第二下正好落在「确认」上，所以只要允许它早点再点一次就够了。
+    _OPEN_ALL_CHESTS_RETRY_SECONDS = 5.0
+    # 「每周贡献度宝箱」的同名重试窗口。宝箱是**同页动作**：点完它就不发光了、页面不变，
+    # 所以「还亮着」= 这一下没生效，该早一点再点 —— 用默认 45 秒会把领宝箱拖成两三分钟。
+    # 点一个宝箱多按几次没有副作用（不是购买/确认类按钮），窗口短一点是安全的。
+    _WEEKLY_CHEST_RETRY_SECONDS = 3.0
 
     def __init__(
         self,
@@ -778,11 +1142,54 @@ class WorldBossRunner(ModeRunnerBase):
     def _state_label(self, state: WorldBossState) -> str:
         return state_label(state)
 
+    def _action_retry_seconds(self, action_name: str) -> float:
+        """给「全部开启」单独一把短尺子，别让领奖白等 45 秒。
+
+        理由见 ``_OPEN_ALL_CHESTS_RETRY_SECONDS`` 的注释：这一步的「两下」是
+        「全部开启」→「确认」，同一个页面、同一个坐标附近，默认 45 秒窗口纯属白等。
+        """
+        if action_name == "open-all-chests":
+            return self._OPEN_ALL_CHESTS_RETRY_SECONDS
+        if action_name == "claim-weekly-chest":
+            return self._WEEKLY_CHEST_RETRY_SECONDS
+        return super()._action_retry_seconds(action_name)
+
     def _apply_recovery_state(self) -> None:
         self.machine.state = WorldBossState.HOME
         # 恢复导航已经把画面换掉了，旧的「已确认页面」作废 —— 留着会让主循环
         # 拿过期页面去对账转场契约（story 的 _apply_recovery_state 同样清空）。
         self.machine._confirmed_page = ""
+
+    def run(self, max_cycles: int | None = None) -> int:
+        # 接力落在局内：先把这一局监督完再进主循环。空跑不碰战斗监督（干跑只观察）。
+        # 用 getattr 而不是直接取属性：主循环协议里的状态机是鸭子类型
+        # （测试里的 FakeMachine 只实现 preview/next_action），缺这个标记时按「没接力」处理。
+        if (
+            not self.runtime.dry_run
+            and getattr(self.machine, "resumed_from", None) is WorldBossState.BATTLE
+        ):
+            self._resume_into_committed_battle()
+        return super().run(max_cycles=max_cycles)
+
+    def _resume_into_committed_battle(self) -> None:
+        """接力直接落在局内：这一局不是本进程点开的，但已经打起来了。
+
+        不能走 ``next_action`` 那条路：``BATTLE`` 分支只是「记下页面、返回 None」，
+        那是给「刚点完战斗开始」用的；而开局就停在局内时**绝不能按 Back 回大厅** ——
+        那是「已承诺战斗」的禁区，会把这一局白打。所以直接交给战斗监督等结算，
+        跟点完「战斗开始」之后一样。
+
+        ⚠️ 判据分不出「这是哪条路线的战斗」：``world_boss_battle_visible`` 里的
+        ``battle_scene_visible`` 那一条在竞技场/远征/主线的战斗帧上同样成立
+        （全库 17 张跨路线战斗夹具实测全部返回「战斗中」）。停在别的路线战斗里启动
+        世界首领战，会先把这一局监督完再回大厅重新导航。这仍比老流程好：老流程在局内
+        会一直卡在「未知画面等待唤醒」，直到返回大厅预算耗尽然后退出码 1。
+        """
+        self.runtime.log(
+            "模式=世界首领战 开局=接力 页面=战斗中 "
+            "动作=交由战斗监督等待结算 状态=不按Back不重新导航"
+        )
+        self._run_committed_battle(cycle=self.machine.completed_cycles + 1)
 
     def _run_committed_battle(self, *, cycle: int) -> BattleOutcome:
         """把已确认开打的这一局交给战斗监督，直到结算。

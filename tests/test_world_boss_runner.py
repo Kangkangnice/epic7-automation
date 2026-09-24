@@ -17,19 +17,27 @@ import cv2
 import numpy as np
 
 from auto_game_unified.core.battle_supervisor import BattleOutcome
+from auto_game_unified.core.matcher import find_best_template
 from auto_game_unified.core.runtime import Runtime, StaminaExhausted
 from auto_game_unified.games.epic7.battle_controls import battle_scene_visible
 from auto_game_unified.games.epic7.world_boss import (
     BATTLE_SKIP_REGION,
     BATTLE_SKIP_THRESHOLD,
     CLICK_POINTS,
+    SELECT_TEAM_BAR_RELATIVE_V,
     SELECT_TEAM_ENABLED_GREEN_RATIO,
+    WEEKLY_CHEST_BOX,
+    WEEKLY_CHEST_REGION,
+    WEEKLY_CHEST_THRESHOLD,
+    AttemptsExhausted,
     WorldBossAction,
     WorldBossRunner,
     WorldBossState,
     WorldBossStateMachine,
     find_world_boss_skip,
+    find_weekly_chest,
     team_configured,
+    select_team_bar_relative_v,
     select_team_enabled,
     select_team_green_ratio,
     state_label,
@@ -51,6 +59,11 @@ def fixture(name: str) -> np.ndarray:
 
 def blank() -> np.ndarray:
     return np.zeros((1132, 1982, 3), dtype=np.uint8)
+
+
+def darkened(image: np.ndarray, scale: float) -> np.ndarray:
+    """模拟页面淡入：整幅按比例压暗（真实淡入就是往黑里混合）。"""
+    return np.clip(image.astype(np.float32) * scale, 0, 255).astype(np.uint8)
 
 
 class WorldBossCountTests(unittest.TestCase):
@@ -83,6 +96,220 @@ class WorldBossCountTests(unittest.TestCase):
         self.assertIs(
             WorldBossState.HOME, machine.observe_page(fixture("worldboss_home_exhausted"))
         )
+
+    def test_faded_home_with_attempts_left_is_not_read_as_exhausted(self):
+        """页面淡入变暗时**不许**把「还有次数」读成「次数用完」。
+
+        这是 2026-09-23 接上次数判据时差点埋下的破坏性回归：页面识别用的
+        ``TM_CCOEFF_NORMED`` 对亮度缩放**不敏感**（暗帧照样认得出主页），
+        而绿条的**绝对**亮度判据很敏感 —— 两边一凑，淡入暗帧会同时满足
+        「是主页」+「绿条判灰」⇒ 提前退出，**还有次数却把这一轮收摊了**。
+
+        实测（``runtime_logs/_wb_fade_probe.py``）：``worldboss_home.png``（1/2）
+        压到 50% 亮度时绿占比从 0.5924 掉到 0.0102（低于 0.10 阈值），
+        而页面**仍被识别成主页** —— 所以这里先把旧判据塌掉这件事钉住，
+        再断言新判据（绝对 + 相对取或）不会上当。
+        """
+
+        screen = darkened(fixture("worldboss_home"), 0.5)
+
+        self.assertLess(
+            select_team_green_ratio(screen),
+            SELECT_TEAM_ENABLED_GREEN_RATIO,
+            "这张暗帧上绝对判据确实会塌 —— 这正是不能用它单独做决定的理由",
+        )
+        self.assertGreaterEqual(
+            select_team_bar_relative_v(screen),
+            SELECT_TEAM_BAR_RELATIVE_V,
+            "相对亮度对整屏压暗免疫，不该跟着掉下去",
+        )
+        self.assertTrue(
+            select_team_enabled(screen),
+            "还有次数的主页被压暗一格，仍然必须判成「可点」",
+        )
+
+    def test_faded_exhausted_home_is_still_read_as_exhausted(self):
+        """反向补齐：真变灰的按钮压暗之后**依然是灰的**，别把免疫做成失明。"""
+
+        screen = darkened(fixture("worldboss_home_exhausted"), 0.5)
+
+        self.assertFalse(
+            select_team_enabled(screen),
+            "压暗不能把真变灰洗成可点 —— 那会退回「一直点」",
+        )
+
+    def test_exhausted_home_stops_instead_of_asking_for_the_team_button(self):
+        """次数用完时**不许**再报「点选择队伍」，必须当场以资源退出收场。
+
+        这就是 2026-09-23 实跑反馈的「按钮明明 0/2 了还在一直点」：
+        判据（``select_team_enabled``）早就写好并有单测，但 ``next_action``
+        **从来没调用过它** ⇒ 主页在 0/2 时照样返回 ``open-team-select`` ⇒
+        灰按钮点不动 ⇒ 45 秒转场超时 ⇒ 重试 4 次 ⇒ 回大厅恢复 ⇒ 再点……
+        所以这条用例守的不是判据，而是**判据有没有被接到决策路径上**。
+        """
+
+        machine = WorldBossStateMachine(TEMPLATES)
+
+        with self.assertRaises(AttemptsExhausted):
+            machine.next_action(fixture("worldboss_home_exhausted"))
+
+    def test_faded_home_with_attempts_left_is_still_asked_for_the_team_button(self):
+        """反向守门：淡入暗帧不能触发上面那条停止（否则会白白收摊）。"""
+
+        machine = WorldBossStateMachine(TEMPLATES)
+
+        action = machine.next_action(darkened(fixture("worldboss_home"), 0.5))
+
+        self.assertEqual("open-team-select", action.name)
+
+
+class WorldBossWeeklyChestTests(unittest.TestCase):
+    """主页「每周贡献度」宝箱：发光（可领）/ 未点亮 要分得开，且顺序是「先领宝箱再判次数」。
+
+    2026-09-23 用户实拍补充：右上角进度条上够量的宝箱会**发光**，
+    应该「在开下一把之前先领掉」，且**领完才算一轮结束**。
+    """
+
+    #: 宝箱 #1（27,500,000）实测中心（画布坐标）。
+    CHEST_POINT = (1657, 372)
+
+    def test_claimable_chest_is_found_at_the_measured_centre(self):
+        machine = WorldBossStateMachine(TEMPLATES)
+
+        match = find_weekly_chest(
+            fixture("worldboss_home_chest_claimable"), machine.templates.weekly_chest
+        )
+
+        self.assertIsNotNone(match, "可领的宝箱必须认得出")
+        self.assertGreater(match.score, WEEKLY_CHEST_THRESHOLD)
+        self.assertLessEqual(abs(match.center[0] - self.CHEST_POINT[0]), 3)
+        self.assertLessEqual(abs(match.center[1] - self.CHEST_POINT[1]), 3)
+
+    def test_unlit_chest_is_not_reported_as_claimable(self):
+        """没点亮的宝箱**不是**可领 —— 判错的后果是站在原地反复点一个死箱子。
+
+        两张未点亮主页都要过一遍：`1/2`（还打得动）和 `0/2`（次数用完）。
+        除了「不命中」，还断言**原始得分离阈值有多远** —— 只断言 ``is None``
+        的话，把阈值调成 0.10 也能通过。
+        """
+
+        template = WorldBossStateMachine(TEMPLATES).templates.weekly_chest
+
+        for name in ("worldboss_home", "worldboss_home_exhausted"):
+            with self.subTest(page=name):
+                screen = fixture(name)
+                best = find_best_template(screen, template, region=WEEKLY_CHEST_REGION)
+                self.assertLess(
+                    best.score,
+                    WEEKLY_CHEST_THRESHOLD - 0.10,
+                    f"{name} 的得分离阈值太近（{best.score:.4f}），余量不足",
+                )
+                self.assertIsNone(
+                    find_weekly_chest(screen, template),
+                    f"{name} 的宝箱没点亮，不该判成可领",
+                )
+
+    def test_no_other_world_boss_page_looks_claimable(self):
+        """本路线其它页一张都不许被判成「有宝箱可领」。
+
+        误判的后果不是灾难性的（多点一下箱子），但会让每一轮都白点一次，
+        而且会把「宝箱」这个信号变得不可信。全库 194 张的扫描是探针做的
+        （`runtime_logs/_wb_chest_build_assets.py`：其它路线最高 0.4878），
+        这里守住本路线这 18 张 —— **包含「已领（绿勾）」那一张**。
+        """
+
+        machine = WorldBossStateMachine(TEMPLATES)
+        hits = {
+            path.name
+            for path in sorted(FIXTURES.glob("*.png"))
+            if find_weekly_chest(fixture(path.stem), machine.templates.weekly_chest)
+            is not None
+        }
+
+        self.assertEqual({"worldboss_home_chest_claimable.png"}, hits)
+
+    def test_claimed_chest_is_not_reported_as_claimable(self):
+        """绿勾那一态**不是**可领 —— 判错的后果是「领完还一直点」。
+
+        绿勾底下还架着宝箱本体，所以它比全暗的两版未点亮主页**更像**可领
+        （0.7085 对 0.6559）。余量比那两版薄，所以这条用 0.05 而不是 0.10 的
+        余量；全库证据在 `runtime_logs/_wb_chest_build_assets.py` 的输出里
+        （阈值 0.80 下命中 1 张 = 只有「可领」那张）。
+        """
+
+        template = WorldBossStateMachine(TEMPLATES).templates.weekly_chest
+        screen = fixture("worldboss_home_chest_claimed")
+
+        best = find_best_template(screen, template, region=WEEKLY_CHEST_REGION)
+        self.assertLess(
+            best.score,
+            WEEKLY_CHEST_THRESHOLD - 0.05,
+            f"绿勾那一态的得分离阈值太近（{best.score:.4f}），余量不足",
+        )
+        self.assertIsNone(
+            find_weekly_chest(screen, template),
+            "宝箱已经领过了，不该再判成可领（否则会原地反复点一个领不动的箱子）",
+        )
+
+    def test_home_after_claiming_ends_the_cycle_instead_of_clicking_again(self):
+        """领完宝箱之后的终点：**不再碰宝箱**，直接判次数、干净收场。
+
+        用户要的是「领完宝箱之后才是一轮结束」。这张实拍图上宝箱已是绿勾、
+        次数是 0/2 ⇒ 这条链路的终点就该是 ``AttemptsExhausted``（退出码 2），
+        而不是回头再点一遍绿勾、也不是去点那颗灰掉的「选择队伍」。
+        """
+
+        machine = WorldBossStateMachine(TEMPLATES)
+        screen = fixture("worldboss_home_chest_claimed")
+
+        self.assertIs(WorldBossState.HOME, machine.observe_page(screen))
+        with self.assertRaises(AttemptsExhausted):
+            machine.next_action(screen)
+
+    def test_home_with_a_claimable_chest_claims_before_judging_attempts(self):
+        """⚠️ 这条是**顺序**回归：截图里同时是「0/2」和「宝箱可领」。
+
+        用户明确要求「先领宝箱，再判次数」「领完宝箱之后才是一轮结束」。
+        顺序反了的话，这个状态下会立刻抛 ``AttemptsExhausted`` 收摊走人 ——
+        宝箱永远领不到。所以这里断言的是：**同一个画面，先出领宝箱的动作**。
+        """
+
+        machine = WorldBossStateMachine(TEMPLATES)
+        screen = fixture("worldboss_home_chest_claimable")
+
+        # 前提：这张图确实是主页，而且按钮确实是灰的（顺序才有意义）。
+        self.assertIs(WorldBossState.HOME, machine.observe_page(screen))
+        self.assertFalse(select_team_enabled(screen), "这张截图上次数是 0/2")
+
+        action = machine.next_action(screen)
+
+        self.assertEqual(
+            "claim-weekly-chest",
+            action.name,
+            "有宝箱可领时必须先领宝箱，不能因为次数用完就直接收摊",
+        )
+        self.assertEqual(self.CHEST_POINT, action.point)
+        # 同页动作（点完宝箱不发光、页面不变）⇒ 不声明 target_pages。
+        self.assertEqual((), action.target_pages)
+        self.assertEqual("世界首领战主页", action.source_page)
+
+    def test_home_without_a_chest_still_reports_the_team_button(self):
+        """反向守门：没有宝箱可领时不许冒出「领宝箱」动作（原有行为不回退）。"""
+
+        machine = WorldBossStateMachine(TEMPLATES)
+
+        action = machine.next_action(fixture("worldboss_home"))
+
+        self.assertEqual("open-team-select", action.name)
+
+    def test_chest_box_matches_the_template_size(self):
+        """裁框与模板必须同尺寸 —— 模板换了、框不跟着改，得分会莫名其妙变低。"""
+
+        machine = WorldBossStateMachine(TEMPLATES)
+        template = machine.templates.weekly_chest
+
+        self.assertEqual(WEEKLY_CHEST_BOX[2], template.shape[1])
+        self.assertEqual(WEEKLY_CHEST_BOX[3], template.shape[0])
 
 
 class WorldBossStateMachineTests(unittest.TestCase):
@@ -278,7 +505,15 @@ class WorldBossRunnerTests(unittest.TestCase):
         machine = MagicMock()
         machine.state = WorldBossState.TEAM_CONFIG
         machine.completed_cycles = 0
-        action = WorldBossAction("stamina_confirm", (1, 1))
+        action = WorldBossAction(
+            "stamina_confirm",
+            (1, 1),
+            # ⚠️ 替身动作必须**照着真状态机的形状**造：本路线已打开转场契约机器强制
+            # （``_REQUIRE_TRANSITION_CONTRACT``），只带名称与坐标的空洞动作会在
+            # 发出去之前被拦下。这里补的判据与 ``_handle_stamina`` 里那条一致。
+            source_page="行动力不足弹窗",
+            in_page_evidence="购买完成后弹窗锚点消失、画面回到业务页",
+        )
         machine.preview.return_value = (action, (WorldBossState.TEAM_CONFIG, 0))
         machine.next_action.return_value = action
         clicks = []
@@ -294,6 +529,203 @@ class WorldBossRunnerTests(unittest.TestCase):
         self.assertEqual(0, completed)
         self.assertTrue(runner.resource_exhausted)
         self.assertEqual(4, len(clicks))
+
+    def test_exhausted_home_ends_the_run_without_a_single_click(self):
+        """次数用完 ⇒ 主循环当场正常收场：退出码口径 2、**一次都不点**。
+
+        「一直在点」的可见症状就落在最后一行的断言上：灰按钮连一下都不该点。
+        用真状态机 + 真 Runner 跑，量的正是实跑那条路径。
+        """
+
+        machine = WorldBossStateMachine(TEMPLATES)
+        clicks: list[tuple[int, int]] = []
+        logs: list[str] = []
+        runner = WorldBossRunner(
+            machine,
+            Runtime(
+                lambda: fixture("worldboss_home_exhausted"),
+                clicks.append,
+                emit=logs.append,
+            ),
+            sleep=lambda _: None,
+        )
+
+        completed = runner.run(max_cycles=3)
+
+        self.assertEqual(0, completed)
+        self.assertTrue(
+            runner.resource_exhausted,
+            "次数用完是「没本钱了」的正常结论，不是故障（退出码应为 2）",
+        )
+        self.assertEqual([], clicks, f"灰按钮一下都不该点，实际点击 {clicks}")
+        self.assertTrue(
+            any("停止=今日次数已用完" in line for line in logs),
+            f"日志要能一眼看出缺的是什么，实际 {logs}",
+        )
+
+    def test_claiming_a_chest_that_never_goes_away_stops_after_bounded_tries(self):
+        """宝箱点了不消失 ⇒ 有界收场，**绝不无限点**。
+
+        这是这条路线最容易踩的坑（2026-09-23 刚修完「0/2 还在一直点」）：
+        宝箱是**同页动作**，点完页面不变、判据（模板命中）也就没变，
+        所以一旦「点了没生效」没有上限，就会变成原地循环。
+
+        帧序列一直停在「宝箱可领」的主页上 = 点了但箱子没消失。
+        用真实窗口（`_WEEKLY_CHEST_RETRY_SECONDS = 3.0`）+ `poll_seconds=1.0`：
+        若窗口还是默认的 45 秒，60 秒的假时钟根本走不到 5 次尝试，
+        终局错误会变成状态超时 —— 所以断言那句错误文案，也在顺带守住短窗口。
+        """
+
+        machine = WorldBossStateMachine(TEMPLATES)
+        clicks: list[tuple[int, int]] = []
+        clock = _FakeClock([fixture("worldboss_home_chest_claimable")] * 60)
+        with TemporaryDirectory() as directory:
+            runner = WorldBossRunner(
+                machine,
+                Runtime(
+                    clock.capture,
+                    clicks.append,
+                    emit=lambda _: None,
+                    diagnostic_dir=Path(directory),
+                    monotonic=lambda: clock.now,
+                ),
+                sleep=clock.sleep,
+            )
+
+            with self.assertRaises(RuntimeError) as caught:
+                runner.run(max_cycles=1)
+
+        self.assertIn("点击4次后画面未推进", str(caught.exception))
+        self.assertEqual(
+            [WorldBossWeeklyChestTests.CHEST_POINT] * 4,
+            clicks,
+            f"宝箱最多点 4 次就该收场，实际点击 {clicks}",
+        )
+
+    def test_claiming_the_chest_then_running_out_of_attempts_ends_the_cycle(self):
+        """**整条链路**跑一遍真 Runner：宝箱领掉 ⇒ 判次数 ⇒ 一轮干净结束。
+
+        这是用户 2026-09-23 那条要求的完整形态：「在进行第二把之前要先看有没有
+        宝箱可领」，**领完宝箱才算一轮结束**。帧序列就是真机顺序：
+        先「宝箱发光 + 0/2」，点掉之后换成「绿勾 + 0/2」那一张实拍图。
+
+        ⚠️ 断言里最要紧的是**「只许点宝箱」**：整轮下来一次都不能碰到那颗灰掉的
+        「选择队伍」（那正是用户反馈的「一直在点」）。
+        宝箱本身允许点两下（3 秒短窗口内画面还没换完就再来一下），所以这里卡上界
+        而不是等号 —— 卡等号等于在断言轮询节奏，不是断言行为。
+        """
+
+        machine = WorldBossStateMachine(TEMPLATES)
+        clicks: list[tuple[int, int]] = []
+        logs: list[str] = []
+        clock = _FakeClock(
+            [fixture("worldboss_home_chest_claimable")] * 6
+            + [fixture("worldboss_home_chest_claimed")] * 30
+        )
+        with TemporaryDirectory() as directory:
+            runner = WorldBossRunner(
+                machine,
+                Runtime(
+                    clock.capture,
+                    clicks.append,
+                    emit=logs.append,
+                    diagnostic_dir=Path(directory),
+                    monotonic=lambda: clock.now,
+                ),
+                sleep=clock.sleep,
+            )
+
+            completed = runner.run(max_cycles=3)
+
+        self.assertEqual(0, completed)
+        self.assertTrue(
+            runner.resource_exhausted,
+            "领完宝箱、次数又是 0/2 ⇒ 这是「没本钱了」的正常结论（退出码 2），不是故障",
+        )
+        self.assertTrue(
+            any("停止=今日次数已用完" in line for line in logs),
+            f"日志要能一眼看出缺的是什么，实际 {logs}",
+        )
+        self.assertTrue(clicks, "宝箱该点，一下都没点说明根本没走到领宝箱这一步")
+        self.assertLessEqual(
+            len(clicks), 2, f"宝箱最多点两下（3 秒短窗口），实际 {clicks}"
+        )
+        self.assertEqual(
+            {WorldBossWeeklyChestTests.CHEST_POINT},
+            set(clicks),
+            f"整轮只许点宝箱；点到别处（尤其灰掉的「选择队伍」）就是「一直在点」复发，"
+            f"实际点击 {clicks}",
+        )
+
+    def test_reward_claim_second_click_waits_only_the_short_window(self):
+        """领奖这一步的两下点击之间不能白等 45 秒。
+
+        奖励弹窗点完「全部开启」后按钮**原地**变「确认」、页面**不换**（仍是
+        ``LEVEL_REWARD``），所以状态机会再报一次同名动作 ``open-all-chests``。
+        主循环对同名动作的默认等待是 ``_ACTION_RETRY_SECONDS``（45 秒）——
+        2026-09-23 用户反馈的「干等 40 多秒」就是这一类。
+        两个坐标只差 2px，第二下正好落在「确认」上，所以这里该用短窗口。
+
+        用假时钟量「两次点击之间的间隔」，而不是断言某个常量 ——
+        断言常量只能证明写了个数，证明不了主循环真的按它走。
+        实测 **6.0 秒**（配置的 5 秒 + 主循环「两帧稳定」那道门占去的一帧，轮询 1 秒/帧）；
+        修之前这个值是 **45 秒**。
+        """
+
+        machine = MagicMock()
+        machine.state = WorldBossState.LEVEL_REWARD
+        machine.completed_cycles = 0
+        action = WorldBossAction(
+            "open-all-chests",
+            CLICK_POINTS["open-all-chests"],
+            # 同上的替身契约：本路线开着机器强制，空洞动作发不出去。
+            source_page=state_label(WorldBossState.LEVEL_REWARD),
+            in_page_evidence="按钮原地由「全部开启」换成「确认」",
+        )
+        machine.preview.return_value = (action, (WorldBossState.LEVEL_REWARD, 0))
+        machine.next_action.return_value = action
+
+        clock = _FakeClock([fixture("level_reward")] * 12)
+
+        clicks: list[tuple[tuple[int, int], float]] = []
+
+        class _Enough(Exception):
+            """内部哨兵：两下点击都发生了，停。"""
+
+        def record(point: tuple[int, int]) -> None:
+            clicks.append((point, clock.now))
+            if len(clicks) == 2:
+                raise _Enough
+
+        runner = WorldBossRunner(
+            machine,
+            Runtime(
+                clock.capture,
+                record,
+                emit=lambda _: None,
+                monotonic=lambda: clock.now,
+            ),
+            sleep=clock.sleep,
+        )
+
+        with self.assertRaises(_Enough):
+            runner.run(max_cycles=1)
+
+        self.assertEqual(2, len(clicks))
+        self.assertEqual(CLICK_POINTS["open-all-chests"], clicks[0][0])
+        gap = clicks[1][1] - clicks[0][1]
+        self.assertGreaterEqual(
+            gap,
+            runner._OPEN_ALL_CHESTS_RETRY_SECONDS,
+            "不该比配置的窗口还早 —— 那说明根本没按配置走",
+        )
+        self.assertLessEqual(
+            gap,
+            10.0,
+            f"两次「全部开启」之间等了 {gap} 秒"
+            f"（默认窗口是 {runner._ACTION_RETRY_SECONDS} 秒，"
+            "等于回到用户反馈的「干等 40 多秒」）",
+        )
 
     def test_dry_run_on_home_reports_the_open_team_select_action(self):
         """空跑只拍一帧、只做一次识别，不进入轮询。
@@ -803,6 +1235,96 @@ class WorldBossBattleScreenTests(unittest.TestCase):
         )
         self.assertEqual(WorldBossState.RESULT, machine.state)
 
+    def test_level_reward_popup_counts_as_the_battle_being_over(self):
+        """奖励弹窗出现 = 战斗已经结束，观察结果必须这么报。
+
+        2026-09-23 实跑的第二处断点：点完「跳过」游戏**直接**弹出「战斗级别奖励」
+        弹窗（弹窗把结算页压暗），于是 ``result_title`` 掉到 0.7103、``battle_visible``
+        也 False、``allowed_action`` 为 None ⇒ 监督 ``recognized`` 五条全假 ⇒
+        45 秒后 ``battle_unrecognized`` 安全停止，后面的领奖一步都没走到。
+
+        奖励弹窗必须被算成「战斗结束」，监督才会及时把业务交还给状态机。
+        """
+
+        machine = WorldBossStateMachine(TEMPLATES)
+
+        observation = machine.observe_battle(fixture("level_reward"), None)
+
+        self.assertTrue(
+            observation.result_visible,
+            "奖励弹窗出现即「战斗结束」，否则监督认不出这一屏、只能等到超时",
+        )
+        self.assertFalse(observation.battle_visible)
+
+    def test_result_page_alone_still_counts_as_the_battle_being_over(self):
+        """反向补齐：没有弹窗的纯结算页当然也要算「战斗结束」（原有行为不回退）。"""
+
+        machine = WorldBossStateMachine(TEMPLATES)
+
+        self.assertTrue(
+            machine.observe_battle(fixture("battle_result"), None).result_visible
+        )
+
+    def test_battle_frame_is_not_reported_as_battle_over(self):
+        """正在打的战斗画面**不许**被判成「战斗结束」。
+
+        误判的后果是监督提前交还业务，主循环会在战斗还没结束时就去点结算页上的
+        「确认」—— 等于跳到战斗前面去。
+        """
+
+        machine = WorldBossStateMachine(TEMPLATES)
+
+        observation = machine.observe_battle(fixture("battle_live_skip"), None)
+
+        self.assertTrue(observation.battle_visible)
+        self.assertFalse(observation.result_visible)
+
+    def test_skip_then_level_reward_popup_hands_the_business_back(self):
+        """实跑路径「点跳过 → 直接弹奖励弹窗」必须由监督交还业务，且业务接得上。
+
+        帧序列：战斗②帧（连续 2 帧稳定才允许点跳过）→ 奖励弹窗②帧（连续 2 帧才算
+        到结算）。一次 ``sleep`` = 一帧。
+
+        这是 2026-09-23 实跑的完整回归：那天断在「监督不认这一屏」，
+        奖励领不到、最后以 ``battle_unrecognized`` 报错收场。
+        """
+
+        machine = WorldBossStateMachine(TEMPLATES)
+        machine.state = WorldBossState.BATTLE
+        clock = _FakeClock(
+            [
+                fixture("battle_live_skip"),
+                fixture("battle_live_skip"),
+                fixture("level_reward"),
+                fixture("level_reward"),
+            ]
+        )
+        clicks: list[tuple[int, int]] = []
+        runner = WorldBossRunner(
+            machine,
+            Runtime(
+                clock.capture,
+                clicks.append,
+                emit=lambda _: None,
+                monotonic=lambda: clock.now,
+            ),
+            sleep=clock.sleep,
+        )
+
+        outcome = runner._run_committed_battle(cycle=1)
+
+        self.assertIs(BattleOutcome.RESULT_REACHED, outcome)
+        self.assertEqual(
+            [self.SKIP_POINT], clicks, f"应恰好点一次「跳过」，实际点击 {clicks}"
+        )
+        self.assertEqual(WorldBossState.RESULT, machine.state)
+
+        # 交还之后状态机要能自己接上：认得出奖励弹窗、给得出领奖动作。
+        action = machine.next_action(fixture("level_reward"))
+        self.assertIsNotNone(action)
+        self.assertEqual("open-all-chests", action.name)
+        self.assertEqual(WorldBossState.LEVEL_REWARD, machine.state)
+
     def test_skip_anchor_window_stays_left_of_the_story_skip_button(self):
         """搜索窗口必须把剧情播放页的「跳过」挡在门外。
 
@@ -819,6 +1341,94 @@ class WorldBossBattleScreenTests(unittest.TestCase):
         # 匹配器把模板完整放在窗口内，中心落在 [x+half, x+width-half]。
         self.assertLessEqual(x + half, self.SKIP_POINT[0])
         self.assertLessEqual(self.SKIP_POINT[0], x + width - half)
+
+
+class WorldBossTransitionContractTests(unittest.TestCase):
+    """转场契约：本路线的每个动作在发出去之前都必须「长眼睛」。
+
+    这是继 ``knights_donation`` 之后第二条打开 ``_REQUIRE_TRANSITION_CONTRACT`` 的路线。
+    打开之前它是「动作看起来都带判据、机器却问不出来」的状态：换页动作带 ``target_pages``，
+    5 个同页动作的验收依据写在 ``next_action`` 的代码里、**没登记成字段** ⇒ 漏写不报错。
+
+    ⚠️ **开这个开关不能靠静态印象**（2026-09-24 实测教训）：当时看代码觉得「``source_page``
+    全有、换页动作都带 ``target_pages``」，一度以为打开只是纯加固；真跑一遍才发现
+    ``WorldBossAction`` **连 ``in_page_evidence`` 字段都没有**，而校验规则是
+    「``target_pages`` **或** ``in_page_evidence``」—— 规则里那个备选项根本不存在，
+    5 个同页动作一开全被拦。第一条用例就是把这件事钉住。
+    """
+
+    # 真状态机 + 真夹具能走出来的全部动作（换页 5 + 同页 5）。
+    # 第三列是「喂这一帧之前要先把状态拨到哪」，``None`` = 用默认状态。
+    CASES = (
+        ("worldboss_home", "open-team-select", None),
+        ("worldboss_home_chest_claimable", "claim-weekly-chest", None),
+        ("team_select", "build-team", None),
+        ("team_config", "auto-configure", None),
+        ("team_config_configured", "battle-start", None),
+        ("battle_result", "open-level-reward", None),
+        ("battle_result", "confirm-result", WorldBossState.LEVEL_REWARD),
+        ("level_reward", "open-all-chests", None),
+        ("stamina_popup", "stamina_material", None),
+    )
+
+    @staticmethod
+    def _runner(machine: WorldBossStateMachine | None = None) -> WorldBossRunner:
+        return WorldBossRunner(
+            machine if machine is not None else WorldBossStateMachine(TEMPLATES),
+            Runtime(blank, lambda _: None, emit=lambda _: None),
+            sleep=lambda _: None,
+        )
+
+    def test_the_switch_is_on(self):
+        self.assertIs(True, self._runner()._REQUIRE_TRANSITION_CONTRACT)
+
+    def test_a_blind_action_is_refused(self):
+        """没有判据的动作**在点下去之前**就被拦 —— 空跑同样会拦。"""
+        runner = self._runner()
+
+        with self.assertRaisesRegex(RuntimeError, "缺少转场契约"):
+            runner._require_transition_contract(WorldBossAction("blind", (1, 1)))
+        with self.assertRaisesRegex(RuntimeError, "缺少转场契约"):
+            runner._require_transition_contract(
+                WorldBossAction("no-exit", (1, 1), source_page="某页")
+            )
+
+    def test_every_action_in_the_route_carries_its_own_evidence(self):
+        """真状态机走一遍，10 个动作逐个过契约 —— 少一个判据就红。"""
+        runner = self._runner()
+
+        for name, expected, state in self.CASES:
+            with self.subTest(fixture=name, action=expected):
+                machine = WorldBossStateMachine(TEMPLATES)
+                if state is not None:
+                    machine.state = state
+
+                action = machine.next_action(fixture(name))
+
+                self.assertIsNotNone(action, f"{name} 上认不出页面了")
+                self.assertEqual(expected, action.name)
+                self.assertTrue(
+                    action.target_pages or action.in_page_evidence,
+                    f"{expected} 既没声明 target_pages 也没声明 in_page_evidence",
+                )
+                runner._require_transition_contract(action)
+
+    def test_the_stamina_confirm_step_also_carries_evidence(self):
+        """体力弹窗第二步（点「确认购买」）—— 同页动作，只能靠 ``in_page_evidence``。
+
+        它是唯一没法喂单独一帧就拿到的动作：要先让状态机把「选材料」那步走掉
+        （``_stamina_material_clicked`` 置位后，同一个弹窗报出的就变成确认）。
+        """
+        machine = WorldBossStateMachine(TEMPLATES)
+
+        first = machine.next_action(fixture("stamina_popup"))
+        self.assertEqual("stamina_material", first.name)
+
+        second = machine.next_action(fixture("stamina_popup"))
+        self.assertEqual("stamina_confirm", second.name)
+        self.assertEqual("行动力不足弹窗", second.source_page)
+        self.assertTrue(second.in_page_evidence)
+        self._runner(machine)._require_transition_contract(second)
 
 
 if __name__ == "__main__":

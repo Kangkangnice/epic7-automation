@@ -219,7 +219,7 @@ if select_team:
 
 **开局接力白名单**：`world_boss` → `{knights_home, worldboss_home}`。
 停在首领战主页则整条链都不用走；停在骑士团主页则只跳第一跳。
-业务页（队伍选择/配置/结算）**不开放接力** —— 重来一遍只是多花 20 体力，属安全方向。
+业务页与局内的接力见下面「### 开局接力」一节（2026-09-24 补齐）。
 
 ### 体力（零改动复用）
 
@@ -230,14 +230,38 @@ if select_team:
 ⚠️ **用户明确的资源边界**：只用**生命之叶**买体力（持有 174 片），**绝不用钻石**
 （弹窗右侧的钻石选项 30 钻换 60 体力，**永远不点**）。树叶不够就停。
 
-### 开局接力 ✅ 已实现（导航链一级）
+### 开局接力 ✅ 已实现（导航链两级 + 业务页五页 + 局内）—— 2026-09-24 补齐
 
-`world_boss` 的开局接力白名单是 `{knights_home, worldboss_home}`：
+**导航链两级**：白名单 `{knights_home, worldboss_home}`：
 - 停在**世界首领战主页**（`worldboss_home`）→ 整条导航链都不用走，直接开打；
 - 停在**骑士团主页**（`knights_home`）→ 只跳「大厅 → 骑士团」第一跳。
 
-业务页（队伍选择 / 配置队伍 / 结算 / 奖励弹窗）**不开放接力** —— 门都没进或已经在打，
-重来一遍只是多花 20 体力，属安全方向，不做额外判据。
+**业务页 + 局内**：主页 / 选择辅助队伍 / 配置队伍 / 战斗结算 / 战斗级别奖励 / 战斗中
+全部就地接管，判据直接复用状态机自己的 `observe_page`（**与运行期同源**，不另定阈值、不加新锚点），
+外加 `at_knights_home(screen)` 认导航链中间站。
+
+⚠️ **这里曾经判断「业务页不开放接力」**，理由是「重来一遍只是多花 20 体力，属安全方向」。
+**局内那一页推翻了这个理由**：停在战斗里不接，老流程会按 Back 回大厅 —— 不是多花 20 体力，
+是**把已经开打的那一局白打**。所以现在 `BATTLE` 也接：`WorldBossRunner.run()` 先用
+`resumed_from` 认出「这一局不是本进程点开的」，把交接交给战斗监督（不按 Back、不重新导航），
+跑完再进主循环。业务页既然顺路，就一起接了。
+
+⚠️ **结算页（`RESULT`）有歧义**：同一个画面分两支（点确认弹奖励 / 点确认回主页），
+`next_action` 靠 `state is LEVEL_REWARD` 分岔，而接力只看到一帧、拿不到这个上下文
+⇒ **保守取「奖励还没领」那一支**。敢这么取的硬前提是：两支点的是**同一个按钮**
+（`open-level-reward` = `confirm-result` = (1730,1036)），所以猜错也只多一次无效点击，
+下一帧 `observe_page` 认出主页就自己拨正了。**按钮一旦分开，这条推理就不成立。**
+
+**不接的画面**：`RESULT_CONFIRM`（它不是画面，是 `next_action` 由 `state is LEVEL_REWARD`
+转出来的内部记号，不在 `_PAGE_STATES` 里）、行动力不足弹窗（点确认要**消耗生命之叶**，不可逆；
+而且它是盖在底页上的弹窗，回大厅那一下 Back 会先关掉它、下一帧就在底页接管）、
+骑士团两个弹窗与 `lobby_with_knights`。
+
+全库 226 张负例扫描（`runtime_logs/_audit_world_boss_cross_route.py`，输出 `_out.txt`）：
+本路线 18 张里 **13 张认得出**（另 5 张是技能演出帧 / 各类弹窗 / 大厅）；跨路线命中 19 张
+= **17 张别的路线的战斗帧**（`battle_scene_visible` 本来就认任何一条路线的战斗画面，
+story / expedition 的接力同样如此）+ **2 张别的路线的骑士团主页**（同一张真页面，不是误判）。
+⇒ **零真实误命中**。
 
 ⚠️ 这里有个坑值得记下来：**`lobby_knights` 那个大厅盾牌图标看似能当接力判据，实际不能**。
 它是**大厅常驻控件**，185 张夹具里每张大厅页都在同一位置以 0.86~0.96 命中 ——
@@ -344,6 +368,15 @@ if select_team:
 
 - `WorldBossAction` 补齐 `source_page` / `target_pages` / `reason`，对齐 `StoryAction`；
   所有动作统一经 `_action()` 构造，里面调 `_confirm_page(source_page)`。
+
+  > **2026-09-24 再补**：又加了 `in_page_evidence` 字段，并打开
+  > `WorldBossRunner._REQUIRE_TRANSITION_CONTRACT`（机器强制）。补之前这条路线处在
+  > 「动作看起来都带判据、机器却问不出来」的状态：5 个同页动作的验收依据写在
+  > `next_action` 的代码里、**没登记成字段**，而校验规则是「`target_pages` **或**
+  > `in_page_evidence`」—— 规则里那个备选项根本不存在，所以一开开关这 5 个全被拦。
+  > ⚠️ 这件事**靠静态印象判断不出来**（我当时看「`source_page` 全有、换页动作都带
+  > `target_pages`」就以为打开只是纯加固），是用只读探针跑了一遍真状态机才发现。
+  > 详见 `docs/TRANSITION_CONTRACTS.md`「已按本约定实现的参考路线」。
 - 配置队伍页按 **「三队槽位是否真的配好」**分两阶段，判据用**槽位区画面细节量**
   （拉普拉斯方差 `team_detail`），**不用按钮颜色**：
 
@@ -461,13 +494,15 @@ if select_team:
 | 次数口径的准确含义 | ✅ **已确认**：`剩余/上限`（见第四节） |
 | 骑士团签到弹窗 | ✅ **已实现**（全局弹窗守卫，双锚点判据，见第五节） |
 | 「领取支援物品」弹窗（团员支援到账） | ✅ **已实现**（全局弹窗守卫，双锚点判据，见第五节） |
-| 每周贡献度宝箱（可领状态） | **未采集** —— 本轮打完时右侧出现了两个宝箱（27.5M / 44M 门槛），但未点开 |
+| 每周贡献度宝箱 #1（27,500,000，可领状态） | ✅ **已实现**（2026-09-23 用户实拍可领截图，见第十三节） |
+| 每周贡献度宝箱 #2（44,000,000） | ⚠️ **没做** —— 缺「可领（发光）」状态的样本，阈值定不了。已量到它**未到档**时对 #1 模板得 0.7833（离阈值 0.017，靠搜索区右边界挡着，见第十三节）。代码按「一个宝箱 = 一个（模板 + 搜索区）」摆好了，补样本后即可接上 |
+| 点完宝箱之后是什么页面 | ✅ **已确认**（2026-09-23 用户补第二张图）：**原地变绿色对勾，不弹窗、不换页**。所以验收仍是「宝箱不再发光」= 模板不再命中；绿勾那一态本身只有 0.7085 ⇒ 不会「领完还一直点」。一轮的终点在下一轮判次数：`0/2` ⇒ `AttemptsExhausted`（退出码 2） |
 | 战斗内「跳过」按钮 | ✅ **已实现**（2026-09-22，用户补了两张实机截图，见第十节）—— 右上角 `跳过 ›`，既是「在战斗中」的锚点，也是把这一局推向结算的动作 |
 | 重打第 2 次 | **未采** —— 本轮 `1/2` 起步，一场后变 `0/2`，没有第二场的机会 |
 
 ## 八、已固化的证据
 
-### fixture（`tests/fixtures/epic7_world_boss/`，16 张）
+### fixture（`tests/fixtures/epic7_world_boss/`，18 张）
 
 | 文件 | 内容 |
 |---|---|
@@ -487,14 +522,17 @@ if select_team:
 | `battle.png` | 战斗画面（`battle_scene_visible=True`）—— ⚠️ **不是首领战的战斗布局**：这是 4 格列阵（竞技场/远征）布局，右上只有 `? / A / 聊天 / 暂停` 四个图标、**没有跳过** |
 | **`battle_live_skip.png`** | **首领战真实战斗帧**（团本布局）—— 右上角有 `跳过 ›`。用户实机截图按 `canvas = (render_x, render_y + 52)` 重建成 1982×1132。此帧 `battle_scene_visible=False`，仅靠旧判据认不出（`skip` 命中 0.9086） |
 | **`battle_skill_anim.png`** | **首领战 boss 技能演出帧** —— 整块 UI 被演出盖住，**故意设计为认不出**（`skip` 仅 0.2529）。守「演出期间认不出是预期，不是故障」 |
+| **`worldboss_home_chest_claimable.png`** | 主页**同一画面**，但「每周贡献度」宝箱 #1（27,500,000）**发光 = 可领**。⚠️ 这张图上次数是 **`0/2`**（按钮已灰）—— 所以它同时是「**先领宝箱、再判次数**」这条顺序的回归依据（顺序反了会在次数用完那一刻直接收摊，宝箱永远领不到） |
+| **`worldboss_home_chest_claimed.png`** | 同一天的第二次实拍：**点完宝箱之后**的样子 —— 箱子原地变成**绿色对勾**，不弹窗、不换页，次数仍是 `0/2`。这是「**领完不会重复点**」的回归依据（绿勾那一态对可领模板只有 0.7085 < 阈值 0.80），也是「领完宝箱 ⇒ 判次数 ⇒ 干净收场」这条链路的终点证据 |
 
-### 模板（`games/epic7/templates/world_boss/`，8 张）
+### 模板（`games/epic7/templates/world_boss/`，9 张）
 
 `knights_title.png` / `worldboss_title.png` / `team_select_title.png` /
 `level_reward_title.png` / `result_title.png` /
 **`select_team_button.png`**（37×303，主页右下「选择队伍」，实施阶段补）/
 **`team_config_auto.png`**（110×300，配置页左下「自动配置」，实施阶段补）/
-**`battle_skip.png`**（117×48，战斗画面右上「跳过 ›」，2026-09-22 补）
+**`battle_skip.png`**（117×48，战斗画面右上「跳过 ›」，2026-09-22 补）/
+**`weekly_chest_lit.png`**（126×128，主页「每周贡献度」宝箱 #1 的**可领（发光）**外观，2026-09-23 补）
 
 > 实施阶段才发现：前两个「标题」锚点在本路线内部**常驻**（见第三节 ①），
 > 真正能用的排他锚点是后补的这两个按钮。另外 `select_team_button.png` 还被
@@ -714,7 +752,7 @@ if select_team:
   → 战斗画面（跳过 0.9086 命中 ⇒ BATTLE）
       ├ allowed_action=("skip-battle", (1631,97)) ⇒ 监督点掉
       └ 技能演出帧认不出 ⇒ 不动作，继续轮询（45 秒窗口兜底）
-  → 结算页（result_title 命中 且 level_reward_title 未命中，连续 2 帧稳定）
+  → 结算页**或**「战斗级别奖励」弹窗（两者任一命中，连续 2 帧稳定）
       ⇒ RESULT_REACHED，监督退出
   → 点「确认」→ 战斗级别奖励弹窗 → 领奖励
   → 回主页看次数（0/2 ⇒ 正常结束；红点缺失 ⇒ 直接退出）
@@ -722,3 +760,345 @@ if select_team:
 
 **「打完了没有」永远是靠结算页认出来的**，不靠看战斗动画。
 跳过只是把「等战斗演完」的时间缩短，即使跳过一直不生效，流程也能靠结算页收场。
+
+⚠️ **2026-09-23 补**：点完「跳过」游戏会**直接**弹出奖励弹窗（结算页只是短暂闪现，
+1 秒一帧的轮询可能抓不到），所以「战斗结束」的判据必须是
+**结算页 or 奖励弹窗**，不能只认结算页 —— 详见下一节。
+
+## 十一、「跳过之后认不出奖励弹窗」（2026-09-23 实跑）
+
+### 现象
+
+跳过动画确实生效了，但紧接着 45 秒报 `battle_unrecognized` 安全停止，
+「级别奖励」一步都没走到。
+
+### 时间线（`epic7_world_boss.log` 2026-09-23）
+
+```
+18:24:19  动作=skip-battle 尝试=1/4        ← 监督点掉「跳过」
+18:24:30  （画面变成奖励弹窗，此后不动）  ← 距上次画面变化 36 秒
+18:25:15  状态=安全停止 原因=battle_unrecognized
+```
+
+诊断帧 `20260923_182515_306884_battle_unrecognized.png` = 「战斗级别奖励」弹窗
+（标题 + 8 个宝箱 + 「全部开启」，右侧背景能看到结算页的「战斗结果」「确认」和伤害 7,063,227）。
+
+### 真因：`result_visible` 把奖励弹窗**主动排除了**
+
+`games/epic7/world_boss.py::observe_battle()` 原写法：
+
+```python
+result_visible = (
+    self._locate(screen, "result_title") is not None
+    and self._locate(screen, "level_reward_title") is None   # ← 问题在这
+)
+```
+
+那半截排他是从 `evidence/world_boss.py` 的
+`PageEvidence("world_boss.result", forbidden=("level_reward_title",))` 抄来的。
+**那个 `forbidden` 是「页面身份」需求**（奖励弹窗是压暗的结算页，
+`result_title` 在它上面还有 0.7103 ⇒ 两页不许互相串判）；
+抄到「这一局的战斗结束了没有」这条判据上，就变成把奖励弹窗**排除在「结束」之外**。
+
+于是弹窗帧上监督五条判据全假：
+
+| 判据 | 弹窗帧取值 | 为什么 |
+|---|---|---|
+| `result_visible` | False | `level_reward_title` 命中 ⇒ 被排他掉 |
+| `battle_visible` | False | 跳过按钮已经没了 |
+| `allowed_action` | None | 跳过按钮没了 ⇒ 无可点动作 |
+| `pre_battle_visible` | False | 不是队伍页 |
+| `pre_battle_business_visible` | False | 不是体力弹窗 |
+
+⇒ `recognized` 全假 ⇒ 45 秒看门狗安全停止，而状态机里
+`LEVEL_REWARD → open-all-chests` 那条分支一直没人来调。
+
+### 修法（一行 + 两条回归）
+
+```python
+result_visible = (
+    self._locate(screen, "result_title") is not None
+    or self._locate(screen, "level_reward_title") is not None
+)
+```
+
+**判据命名对照**：判「是不是 A 页」要排他（不是 B 才算 A）；
+判「A 阶段结束了没有」要合并（B 出现恰恰是 A 结束的另一种表现）。
+同一个锚点在两种判据里极性可以相反，抄之前先问「我要回答的是『哪一页』还是『还在不在』」。
+
+### 验证（不是「改完就绿」）
+
+只读探针 `runtime_logs/_wb_predicate_probe.py`（不碰模拟器）把两版判据并排量出来：
+
+| 夹具 | `result_title` | `level_reward_title` | 旧判据 | 新判据 |
+|---|---|---|---|---|
+| `battle_live_skip` | 0.0000 | 0.0000 | False | False |
+| `battle_result` | 1.0000 | 0.0000 | True | True |
+| `level_reward` | 0.0000 | **1.0000** | **False** | **True** |
+
+⇒ 修之前这条判据在 `level_reward` 上确实是红的，且战斗帧不会被误判成「已结束」。
+
+回归用例（`tests/test_world_boss_runner.py::WorldBossBattleScreenTests`，+4）：
+1. `test_level_reward_popup_counts_as_the_battle_being_over` —— 弹窗帧 `result_visible=True`
+2. `test_result_page_alone_still_counts_as_the_battle_being_over` —— 纯结算页不回退
+3. `test_battle_frame_is_not_reported_as_battle_over` —— 战斗帧不许判成结束（防提前交还）
+4. `test_skip_then_level_reward_popup_hands_the_business_back` —— 端到端：真监督 + 假时钟，
+   帧序列「战斗×2 → 弹窗×2」⇒ `RESULT_REACHED` + 恰好点一次跳过 + 状态机接着给出
+   `open-all-chests`（这是实跑里断掉的那一环）
+
+门槛：`check.py --vs HEAD` ⇒ **994 passed / 1 skipped / 272 subtests / 0 failed / 0 error**
+（`world_boss.py` 认不出路线 ⇒ 走了全量）。
+
+### 顺带修掉「领奖白等 45 秒」
+
+`open-all-chests` 点完按钮原地变「确认」，页面**还是** `LEVEL_REWARD`，
+所以 `next_action` 会再返回一次 `open-all-chests` —— 而主循环对同名动作要等
+`_ACTION_RETRY_SECONDS = 45` 秒才允许再点。流程本来能走通（第二下正好落在「确认」上，
+两点只差 2px：(961,994) vs (959,994)），但中间白等 45 秒。
+
+**修法**：`WorldBossRunner` 给这个动作单独一把短尺子。
+
+```python
+_OPEN_ALL_CHESTS_RETRY_SECONDS = 5.0        # 默认 _ACTION_RETRY_SECONDS = 45
+
+def _action_retry_seconds(self, action_name: str) -> float:
+    if action_name == "open-all-chests":
+        return self._OPEN_ALL_CHESTS_RETRY_SECONDS
+    return super()._action_retry_seconds(action_name)
+```
+
+**回归**（`WorldBossRunnerTests::test_reward_claim_second_click_waits_only_the_short_window`）：
+假时钟量「两次点击之间的间隔」—— 实测 **6.0 秒**（配置 5 秒 + 主循环「两帧稳定」
+那道门占去的一帧，轮询 1 秒/帧），修之前是 **45 秒**。
+断言写成「≥ 配置窗口 且 ≤ 10 秒」而不是等值断言：干等 45 秒会被挡住，
+但不会把「多一帧稳定期」这种实现细节焊死。
+
+> 还留着的粗糙处（**没改**）：这一步靠「同一个坐标点两次」推进，不是靠独立判据
+> （`CLICK_POINTS` 里 `confirm-level-reward` 至今没有任何判据引用它）。
+> 要做干净，得先有「确认」按钮那一态的锚点模板 —— 现有诊断帧只有「全部开启」那一态。
+
+---
+
+## 十二、「0/2 了还在一直点」——判据写好了却没接上（2026-09-23 实跑）
+
+### 现象
+
+用户实跑反馈：游戏里次数已经显示 `0/2`、按钮已经变灰，程序**还在点「选择队伍」**，
+打完这一轮也不停。
+
+### 真因：**不是判据不准，是判据从来没被调用过**
+
+第一反应都是「判据在实机上失效了」，所以先跑只读探针量（`runtime_logs/_wb_chest_probe.py`）：
+
+| 画面 | 「选择队伍」底板的绿占比 | 判据结论 |
+|---|---|---|
+| 用户实拍截图（`0/2`） | **0.0000** | 已变灰 ✅ 正确 |
+| `worldboss_home.png`（`1/2`） | 0.5924 | 可点 ✅ 正确 |
+| `worldboss_home_exhausted.png`（`0/2`） | 0.0000 | 已变灰 ✅ 正确 |
+
+判据本身**完全正确**。真正的问题在另一边：一次 grep 就定性了 ——
+`select_team_enabled` 只出现在**单元测试和本文档**里，`next_action` **从来没调用过它**（死代码）。
+
+于是主页在 `0/2` 时照样返回 `open-team-select`：
+**灰按钮点不动 → 45 秒转场超时 → 重试 4 次 → 回大厅恢复 → 再点……**
+用户看到的「一直在点」就是这条环路。
+
+> 通用教训：「判据不准」和「判据没接上」是两类 bug，**先量判据取值、再看它有没有进决策路径**，
+> 比直接改阈值快得多。已写进 `topics/lessons.md`。
+
+### 修法
+
+1. `core/runtime.py`：抽出 `ResourceExhausted(RuntimeError)` 基类（带类属性 `stop_label`），
+   `StaminaExhausted` 改成它的子类 —— 「没本钱了」这条通道从「生命之叶专用」变成通用。
+2. `runner_base`：主循环与空跑的 `except StaminaExhausted` 都改成 `except ResourceExhausted`，
+   日志文案改成 `停止={error.stop_label}`（**不再写死**「生命之叶」）。
+3. `world_boss.py`：新增 `AttemptsExhausted(ResourceExhausted)`（`stop_label = "今日次数已用完"`），
+   `HOME` 分支**先判次数，再决定要不要发「选择队伍」**。
+
+```python
+if page is WorldBossState.HOME:
+    self.state = WorldBossState.HOME
+    if not select_team_enabled(screen):
+        raise AttemptsExhausted("主页「选择队伍」已变灰（今天次数已用完）")
+    return self._action("open-team-select", ...)
+```
+
+走的是项目既有的资源退出通道（**退出码 2**，与竞技场「门票耗尽」同构）：
+还能干、但没本钱了 —— 不是故障，也不能装作跑满了要求的轮数。
+
+### ⚠️ 接上判据时暴露的破坏性风险（**必须一起堵**）
+
+判据原本没生效，所以「它准不准」从没被实跑检验过。接上之后立刻冒出反方向的问题：
+判据是 HSV 的**绝对**亮度（`V >= 90`），而页面识别用的 `TM_CCOEFF_NORMED`
+**对亮度缩放不敏感**。两者一凑，**页面淡入的暗帧**会同时满足「认得出是主页」+「绿条判灰」
+⇒ **还有次数却提前退出**。这比原来的「一直点」更伤，所以必须一起改掉。
+
+只读探针实测（`runtime_logs/_wb_fade_probe.py`，把夹具按比例压暗）：
+
+| 量 | 亮度 1.0 | 0.7 | 0.5 | 0.1 |
+|---|---|---|---|---|
+| `1/2` 绿占比（**绝对**判据） | 0.5924 | 0.2287 | **0.0102** ← 穿过 0.10 阈值 | 0.0000 |
+| `1/2` 绿条亮度 ÷ 整幅亮度（**相对**） | **1.900** | 1.909 | 1.907 | **1.952** |
+| `0/2` 绿条亮度 ÷ 整幅亮度（**相对**） | **0.615** | 0.610 | 0.611 | 0.568 |
+
+**相对量在压暗 10 倍的全过程几乎不动**（1.90~1.95），而「真变灰」只有 0.57~0.62 ——
+两侧差 3 倍，阈值 `SELECT_TEAM_BAR_RELATIVE_V = 1.2` 取在中间，余量很大。
+页面识别在压暗到 50% 时**仍然判成主页**（测量表里那一列），所以「模板匹配能抗、颜色判据不能抗」
+不是理论担忧，是这张表上就有的事。
+
+**落地形状：两道判据取或。**
+
+```python
+def select_team_enabled(screen) -> bool:
+    if select_team_green_ratio(screen) >= SELECT_TEAM_ENABLED_GREEN_RATIO:
+        return True   # 绿得明显（含轻微压暗）⇒ 直接放行，省一次整幅 HSV
+    return select_team_bar_relative_v(screen) >= SELECT_TEAM_BAR_RELATIVE_V
+```
+
+⚠️ **不能改成「且」**：那样淡入暗帧照样掉在第一道外面 ⇒ 误判「次数用完」⇒ 提前退出，白绕一圈。
+
+### 回归（6 条）
+
+| 用例 | 守什么 |
+|---|---|
+| `test_faded_home_with_attempts_left_is_not_read_as_exhausted` | 淡入暗帧上**旧判据确实会塌**（先钉住），新判据不上当 |
+| `test_faded_exhausted_home_is_still_read_as_exhausted` | 反向：压暗不能把**真灰**洗成可点 |
+| `test_exhausted_home_stops_instead_of_asking_for_the_team_button` | `next_action` 必须**抛 `AttemptsExhausted`**（守的是接线） |
+| `test_faded_home_with_attempts_left_is_still_asked_for_the_team_button` | 淡入帧仍要正常报 `open-team-select` |
+| `test_exhausted_home_ends_the_run_without_a_single_click` | 真状态机 + 真 Runner：正常收场、`resource_exhausted=True`、**一次都不点** |
+| 既有 3 条 `WorldBossCountTests` | 判据本身的取值不回退 |
+
+`test_exhausted_home_ends_the_run_without_a_single_click` 的最后一行断言
+（`self.assertEqual([], clicks)`）才是「一直在点」的**可测形式** ——
+前面几条只证明判据对、接线对，这条证明**行为对**。
+
+### 验证
+
+- 定向：`test_world_boss_runner.py` → `41 passed, 27 subtests passed`。
+- 全量门槛（动了 `core/runtime.py` + `runner_base.py` ⇒ 判全量）：
+  `check.py --vs HEAD` → **1001 passed / 1 skipped / 0 error**（9 分 00 秒）。
+
+---
+
+## 十三、「每周贡献度」宝箱先领再开下一把（2026-09-23 用户实拍补充）
+
+### 业务口径（用户 2026-09-23 明确）
+
+> 「在进行第二把之前，要看一下有没有宝箱可以领。相当于就是**领完宝箱之后，才是一轮结束**。」
+
+主页右上角「每周贡献度」进度条上按累计贡献解锁两档宝箱，**每周最多两个**；够量的会**发光**。
+
+| 档位 | 门槛 | 位置 | 状态 |
+|---|---|---|---|
+| #1 | `27,500,000` | 进度条**左侧** | ✅ 已实现 |
+| #2 | `44,000,000` | 进度条**右侧** | ⚠️ 未做（缺「可领」样本；未到档时对 #1 模板得 0.7833，见下） |
+
+### ⚠️ 顺序：**先领宝箱，再判次数**
+
+用户的实拍截图正是「次数 `0/2`（按钮已灰）+ 宝箱 #1 可领」这个状态。
+第十三节这个顺序要是写反了，程序会在「次数用完」那一刻**直接收摊走人**，
+宝箱永远领不到 —— 而这恰恰是用户最关心的那一帧。所以 `HOME` 分支的判断次序是：
+
+```python
+chest = find_weekly_chest(screen, self.templates.weekly_chest)
+if chest is not None:                      # ① 先领宝箱
+    return self._action("claim-weekly-chest", source_page="世界首领战主页",
+                        point=chest.center, reason=f"...得分 {chest.score:.4f}")
+if not select_team_enabled(screen):        # ② 再看次数
+    raise AttemptsExhausted(...)
+return self._action("open-team-select", ...)
+```
+
+宝箱是**同页动作**（点完箱子不发光、页面不变）⇒ `target_pages` 留空，
+验收靠**页面内状态证据**「宝箱模板不再命中」，与「自动配置」按钮橙→蓝同构。
+
+### 判据：模板匹配，**不是**颜色
+
+一开始试的是「暖金色掩膜」（`runtime_logs/_wb_chest_gold_probe.py`），**不可用**：
+
+- **没点亮**的宝箱本身也带暖色内容（箱体内那团橙红光效）；
+- `team_config` / `lobby_with_knights` / `battle` 等页面在**同一区域**有面积大得多的金色块
+  （最大 25019 px）⇒ 完全不排他。
+
+改用模板匹配后，同一个位置、同一个模板：
+
+| 画面 | 面板内最高分 |
+|---|---|
+| 可领（正例） | **1.0000** |
+| **已领 = 绿勾**（`worldboss_home_chest_claimed.png`） | 0.7085 |
+| 未点亮，`1/2`（`worldboss_home.png`） | 0.6559 |
+| 未点亮，`0/2`（`worldboss_home_exhausted.png`） | 0.6559 |
+| **全库 194 张**里其它路线最高（`epic7_pc_story/story_skip.png`） | 0.4878 |
+
+⇒ `WEEKLY_CHEST_THRESHOLD = 0.80`：对「已领」**下方余量 0.09**、对「未点亮」下方余量 0.14。
+⚠️ 「已领」的余量比「未点亮」薄 —— 因为绿勾底下还架着宝箱本体，明暗结构和可领态更近。
+**改阈值前重跑 `runtime_logs/_wb_chest_build_assets.py`**：阈值 0.80 下全库只命中「可领」那 1 张。
+
+能分开的原因不是「有没有金色」，而是「亮箱体 / 暗箱体」的**明暗结构**差异 ——
+这也解释了为什么颜色掩膜不行而模板匹配行。
+
+**搜索窗口就是锚点的一部分**（同第十节「跳过」的教训）：
+`WEEKLY_CHEST_REGION = (1535,250,250,250)` 右边界收在 1785，**故意不盖到进度条右侧的宝箱 #2**。
+
+这条线的承重性现在有实测数字了（`runtime_logs/_wb_chest_after_claim_probe.py`）：
+宝箱 #2 **未到档**时（用户贡献度 37,952,979 < 44,000,000）它的外观对本模板得 **0.7833** ——
+离阈值只差 **0.017**。之所以今天不会误触发，全靠**匹配中心落在 x=1825、在搜索区右边界之外**
+（在区内做模板匹配，中心最多只能到 1722）。
+⇒ **谁要把这个搜索区往右放宽，先看这条**；补宝箱 #2 时必须给它**自己的搜索区**，
+不能靠放宽 #1 的窗口。
+
+### 资产怎么来的
+
+两张样本都来自用户 1920×1080 实拍截图，按
+`core/window.py::_legacy_canvas` 的 `(x, y+52)` 偏移还原成 1982×1132 画布
+（**与 `battle_live_skip.png` / `battle_skill_anim.png` 同一套做法**）：
+
+| 资产 | 来源 |
+|---|---|
+| 模板 `weekly_chest_lit.png` = 画布 `(1594,308,126,128)` | 第一次实拍（宝箱**发光**） |
+| 夹具 `worldboss_home_chest_claimable.png` = 整张画布 | 第一次实拍（发光 + `0/2`） |
+| 夹具 `worldboss_home_chest_claimed.png` = 整张画布 | 第二次实拍（**绿勾** + `0/2`） |
+
+- 生成 + 全库排他扫描：`runtime_logs/_wb_chest_build_assets.py`（可重复跑，已复跑验过
+  前两个资产的哈希不变）
+- 三态对照 + 宝箱 #2 定点测量：`runtime_logs/_wb_chest_after_claim_probe.py`
+
+> ⚠️ **正例得分 1.0000 是循环论证**（模板就是从这张图裁的），**不能当证据**。
+> 真正的证据是**负例方向的余量**（未点亮两个主页 0.6559 / 已领 0.7085）和
+> **全库排他**（其它路线最高 0.4878）。
+> 第一次实跑时留意日志里 `claim-weekly-chest` 那条的得分，那才是真实余量。
+
+### 回归（8 条 `WorldBossWeeklyChestTests` + 2 条 Runner 级）
+
+| 用例 | 守什么 |
+|---|---|
+| `test_claimable_chest_is_found_at_the_measured_centre` | 正例能认出来、中心落在实测点 `(1657,372)` |
+| `test_unlit_chest_is_not_reported_as_claimable` | 未点亮不许判可领，**并断言离阈值 ≥ 0.10 的余量**（只断言 `is None` 的话，阈值调到 0.10 也能过） |
+| `test_claimed_chest_is_not_reported_as_claimable` | **已领（绿勾）不许判可领** —— 判错的后果就是「领完还一直点」。余量只有 0.09，所以这一条卡 0.05 而不是 0.10 |
+| `test_no_other_world_boss_page_looks_claimable` | 本路线 18 张里**只有正例**命中 |
+| `test_home_with_a_claimable_chest_claims_before_judging_attempts` | **顺序**：`0/2` + 有宝箱 ⇒ 必须出 `claim-weekly-chest`，而不是抛 `AttemptsExhausted` |
+| `test_home_without_a_chest_still_reports_the_team_button` | 反向：没宝箱时不许冒出领宝箱动作 |
+| `test_home_after_claiming_ends_the_cycle_instead_of_clicking_again` | **链路终点**：绿勾 + `0/2` ⇒ 直接抛 `AttemptsExhausted`，不回头再点绿勾、也不点灰按钮 |
+| `test_chest_box_matches_the_template_size` | 裁框与模板同尺寸（换模板忘了改框 ⇒ 得分莫名变低） |
+| `WorldBossRunnerTests::test_claiming_a_chest_that_never_goes_away_stops_after_bounded_tries` | 点了不消失 ⇒ **有界**（恰好 4 次点击后收场），不会变成新的「一直点」 |
+| `WorldBossRunnerTests::test_claiming_the_chest_then_running_out_of_attempts_ends_the_cycle` | **整条链路跑真 Runner**：发光 `0/2` → 点掉 → 绿勾 `0/2` ⇒ 退出码口径 2、**整轮只点宝箱**（一次都不能碰灰掉的「选择队伍」） |
+
+后两条 Runner 级用例还有副作用价值：它们用**真实**的
+`_WEEKLY_CHEST_RETRY_SECONDS = 3.0` 与假时钟 —— 窗口若退回默认的 45 秒，
+帧预算内根本走不到第 5 次尝试，终局错误会变成状态超时，断言那句错误文案时就会红。
+所以它们顺带守住了「短窗口」。
+
+### ✅ 点完宝箱之后是什么页面：已确认（2026-09-23 用户补第二张图）
+
+**原地变绿色对勾，不弹窗、不换页。** 因此：
+
+- **成功路径的验收**仍然是「宝箱模板不再命中」——够用，不需要额外的正面模板：
+  绿勾那一态本身只有 0.7085，**认不出来**，所以下一轮必然走到判次数那一步。
+- 为什么**没有**为此新增一个「绿勾」模板做正面确认：那会引入一个**新的失败分支** ——
+  领取动画中间帧若两个模板都不命中，就只能靠「重试还是放行」二选一，
+  而「重试」会在游戏已经领完的情况下白点、「放行」就等于现在的行为
+  （等于白加一层）。按「简单优先」，不为了好看引入这个分支。
+  真要正面确认时，绿勾模板可用性已经量过：自匹配 1.0000、在「发光」图上 0.7081，
+  余量 0.29，**随时可以补**。
+- 「绿勾」这个状态顺便给了人眼一个复核点：日志里 `每周贡献度宝箱发光（得分 …）= 可领`
+  出现过、之后不再出现，就说明领到了。

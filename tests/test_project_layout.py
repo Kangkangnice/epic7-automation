@@ -168,8 +168,51 @@ class ProjectLayoutTests(unittest.TestCase):
             #   battle_skill_anim.png：boss 技能演出帧（UI 整块隐藏，预期认不出来）
             "battle_live_skip.png",
             "battle_skill_anim.png",
+            # 2026-09-23 用户实拍：主页「每周贡献度」宝箱 #1（27,500,000）**可领**那一态。
+            # 同样是 1920×1080 按 (0,+52) 还原成 1982×1132 画布，与上面两张同一套做法。
+            # 关键：这张图上次数是 **0/2**、宝箱还是亮的 —— 所以它同时是
+            # 「先领宝箱、再判次数」这条顺序的回归依据（顺序反了会直接收摊走人）。
+            "worldboss_home_chest_claimable.png",
+            # 同一天的第二次实拍：**点完宝箱之后**的样子 —— 箱子原地变成**绿色对勾**，
+            # 不弹任何窗口。这张是「领完不会重复点」的回归依据：绿勾那一态对可领模板
+            # 只有 0.7085（阈值 0.80），认不出来才会往下走去判次数、干净收场。
+            "worldboss_home_chest_claimed.png",
         }
         fixture_dir = ROOT / "tests" / "fixtures" / "epic7_world_boss"
+        self.assertEqual(expected, {path.name for path in fixture_dir.glob("*.png")})
+
+    def test_epic7_knights_donation_fixture_set_exists(self):
+        expected = {
+            # 2026-09-24 用户授权 AI 直接操作模拟器，实机走查骑士团捐赠全链路，逐页采集。
+            # 主页两张一组：「骑士团活动」图标有红点 / 没红点。⚠️ 红点**不参与决策**
+            # （用户当天更正：有没有红点都要进活动界面），留着是因为有红点那张是
+            # activity_entry 余量最薄的回归依据（0.9259，红点盖住图标左上角）。
+            "guild_home_with_dot.png",
+            "guild_home_no_dot.png",
+            # 资源支援页两张一组：一屏放不下时才需要下滑（列表会重排，不许按固定坐标点）。
+            "support_page.png",
+            "support_page_scrolled.png",
+            # 2026-09-24 实跑当天现采的两张（不是按矩形裁的）：
+            #   support_page_two_buttons.png：**一屏两个绿按钮**，上面那个吃不下、下面那个才行
+            #     ⇒ 「挑行走 find_all_templates」这条设计的回归依据。
+            #   support_confirm.png：点「支援1个」之后**先弹的确认框**（第一版采图没遇到、
+            #     实机撞上后整条路线中止的一页）。
+            "support_page_two_buttons.png",
+            "support_confirm.png",
+            # 「请求支援」弹窗两张一组：未选中 / 已选中「下级精灵之花」。
+            # 这两张互为对方最强的干扰源（实测 0.8279 / 0.7878），是 0.88 / 0.85 两个
+            # 非默认阈值的全部依据，必须成对留着。
+            "request_popup.png",
+            "request_popup_selected.png",
+            # 支援成功后的「获得奖励」弹窗（游戏通用对话框，实机确认点哪里都能关）。
+            "reward_popup.png",
+            # 每周任务页两张一组：有可领档位（角标 + 领取按钮都在）/ 全都领完了。
+            # 已领完那张上「骑士团点数」原位会留下字体/宝箱碎片（面积 43/22/50/20），
+            # 是角标判据「面积下限 60」的回归依据。
+            "weekly_tasks_claimable.png",
+            "weekly_tasks_claimed.png",
+        }
+        fixture_dir = ROOT / "tests" / "fixtures" / "epic7_knights_donation"
         self.assertEqual(expected, {path.name for path in fixture_dir.glob("*.png")})
 
     def test_every_route_is_known_to_the_local_check_gate(self):

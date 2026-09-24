@@ -55,11 +55,13 @@ from auto_game_unified.games.epic7.knights_donation import (
     KnightsDonationRunner,
     KnightsDonationState,
     KnightsDonationStateMachine,
+    detect_resume_point as detect_knights_donation_resume_point,
 )
 from auto_game_unified.games.epic7.world_boss import (
     WorldBossRunner,
     WorldBossState,
     WorldBossStateMachine,
+    detect_resume_point as detect_world_boss_resume_point,
 )
 
 
@@ -280,6 +282,58 @@ def _probe_shop_refresh_resume(
     return ResumePoint(page=found.page, state=found.state, entry=found.entry)
 
 
+def _probe_knights_donation_resume(
+    machine: Any,
+    screen: np.ndarray,
+    navigator: Any,
+) -> Optional[ResumePoint]:
+    """骑士团捐赠接力探针：认出人停在骑士团哪一页就就地接管。
+
+    判据直接用状态机自己的 ``observe_page`` —— 与运行期**同源**，不另定阈值、不加新锚点。
+    停在大厅时认不出（``activity_entry`` 在骑士团主页上，大厅上不成立）⇒ 返回 None，
+    照旧走「回大厅 → 进骑士团」。
+
+    能落脚的只有三页（骑士团主页 / 资源支援 / 每周任务），**三个弹窗与活动界面兜底页
+    刻意不接**，理由写在 ``knights_donation._RESUMABLE_STATES`` 上方。
+    """
+    del navigator
+    found = detect_knights_donation_resume_point(machine, screen)
+    if found is None:
+        return None
+    return ResumePoint(page=found.page, state=found.state, entry=found.entry)
+
+
+def _probe_world_boss_resume(
+    machine: Any,
+    screen: np.ndarray,
+    navigator: Any,
+) -> Optional[ResumePoint]:
+    """世界首领战接力探针：认出人停在世界首领战哪一页就就地接管。
+
+    判据直接用状态机自己的 ``observe_page`` —— 与运行期**同源**，不另定阈值、不加新锚点。
+    停在大厅 / 别的路线上认不出 ⇒ 返回 None，照旧走「回大厅 → 进骑士团 → 世界首领战」。
+
+    能落脚的页面（主页 / 选择辅助队伍 / 配置队伍 / 战斗结算 / 战斗级别奖励 / 战斗中），
+    以及骑士团主页这个**导航链中间站**，都由 ``detect_resume_point`` 定；
+    结算页的歧义与三个不接力的理由写在那边。
+
+    命中后必须把状态拨过去 —— 不是为了让页面判得准（``next_action`` 每页都会现判），
+    而是为了让 ``WorldBossRunner`` 拿到 ``resumed_from``：停在局内时要靠它跳过状态机、
+    直接把这一局交给战斗监督，不能按 Back 回大厅。
+    """
+    del navigator
+    found = detect_world_boss_resume_point(machine, screen)
+    if found is None:
+        return None
+    if found.state is not None:
+        machine.resume_from(found.state)
+    return ResumePoint(
+        page=found.page,
+        state=found.state.value if found.state is not None else None,
+        entry=found.entry,
+    )
+
+
 def _build_survivor(
     template_root: Path,
     state: str,
@@ -319,6 +373,83 @@ def _build_knights_donation(
         initial_state=KnightsDonationState(state),
         backend=backend,
     )
+
+
+# 「接力」豁免名单：**必须写明理由**，才允许一条有导航的路线不挂 ``resume_probe``。
+#
+# 与转场契约的 ``_REQUIRE_TRANSITION_CONTRACT`` 是两件事：那个管「跑起来之后每个动作
+# 有没有出口验收」，这个管「开局时人停在半路能不能接上」。一个是逐动作、一个是
+# 开局一次性，所以卡法不同 —— 见 ``docs/TRANSITION_CONTRACTS.md``「接力契约」。
+#
+# 名单在模块加载时自查（见文件末尾 ``_assert_resume_declared``）：新路线漏了接力，
+# **import 阶段就报错**，不会等到有人停在半路才发现自己白走一趟大厅。
+#
+# ``needs_navigation=False`` 的路线自动豁免，不用进这张表 —— 它的起点本来就是人工把
+# 游戏推进到活动内部再启动，连「回大厅」这条路径都没有，谈不上接力。
+RESUME_EXEMPT = {
+    "fodder": (
+        "锚点其实齐全，但有一个**做接力之前必须先解决**的坑：`fodder/replay.png`"
+        "（「重新进行」那一页）会被 `battle_scene_visible` 误判成局内。照搬别人"
+        "「先判局内」的顺序，停在结算页启动会被当成已承诺战斗去监督，而不是点"
+        "「重新进行」—— 白打一局。先解决它再谈接力。"
+    ),
+    "hero_synthesis": (
+        "缺的不是「顺序跑得动」的锚点，而是**排他**锚点：`auto_select_label` 在"
+        "「传送选择 / 传送确认 / 传送奖励」三页上同时可见（实测都是 1.000）。"
+        "运行期靠状态上下文分得开，**接力只有一帧、没有这个上下文** —— 把它误认成"
+        "「传送选择」会重复点一次不可逆的传送确认。PC 端的英雄列表连锚点都没有。"
+    ),
+}
+
+
+# 「动作验收方式」的豁免名单：**必须写清「用自己的什么机制验收」**，才允许一条路线
+# 不打开基类的转场强制开关（``ModeRunnerBase._REQUIRE_TRANSITION_CONTRACT``）。
+#
+# 与上面的 ``RESUME_EXEMPT`` 是**路线准入的两半**，形状刻意做成一样的（一份表 + 一句理由 +
+# 加载期自查），因为它们回答的是同一类问题：「这条路线有没有对某件事表过态」。
+#   - ``RESUME_EXEMPT`` 管「开局停在半路，做不做接力」；
+#   - ``TRANSITION_EXEMPT`` 管「跑起来之后，动作的出口验收靠什么」。
+#
+# 判定规则见 ``_assert_transition_stance_declared``：**打开开关、或进本名单，二选一**。
+# 漏了在 **import 阶段**就报错，不会等到实跑才发现某个动作点了不回头。
+#
+# ⚠️ 名单里标着「**已知欠债**」的三条是真缺判据，不是「用了别的机制」——
+# 把缺口写在明处，比假装它不存在强。它们各自的补法写在理由里。
+TRANSITION_EXEMPT = {
+    "arena": (
+        "自带独立主循环（`ArenaRunner` 是裸定义、`super()` 0 次），**走不到**基类那段"
+        "校验；它用 `Action.source_state` / `target_states` 对账，"
+        "`_execute_transition` 缺任一**直接 raise** —— 比开关更严。"
+    ),
+    "expedition": (
+        "同上：自带独立主循环，`ExpeditionAction` 用 `source_state` / `target_states`，"
+        "`_execute_transition` 缺任一**直接 raise**。"
+    ),
+    "shop_refresh": (
+        "自带独立主循环，验收靠自己的 `_wait_stable` / `_open_with_retry`："
+        "每次购买或刷新都「点完等到目标页稳定」才放行，不经过基类的转场账本。"
+    ),
+    "survivor": (
+        "自带独立主循环，用 `_observe_stable(page, timeout)` 验收。"
+        "⚠️ **已知欠债**：出口验收确实缺 —— 点完不回头看，没生效只能靠"
+        "`_BATTLE_TIMEOUT_SECONDS=1800` 兜（那是安全网，不是判据）。"
+    ),
+    "fodder": (
+        "⚠️ **已知欠债**：走基类主循环，但 `FodderAction` 只有 `name` / `point` 两个字段，"
+        "**完全没有判据** —— 漏写不会有任何报错。补法见 docs/TRANSITION_CONTRACTS.md。"
+    ),
+    "hero_synthesis": (
+        "⚠️ **已知欠债**：走基类主循环，绝大多数动作有判据，但开关**打不开** —— "
+        "PC 客户端分支有 3 处 `source_page=\"\"`、另有 1 处 `target_pages=()`，"
+        "一开这些动作当场被拦。它的页内证据字段名是 `source_observation`，"
+        "机器认的是 `in_page_evidence`，两者要先对齐。"
+    ),
+    "story": (
+        "走基类主循环、未开开关，但**不需要**：`StoryAction` 全项目只有 1 个构造点"
+        "（在 `_action()` 内），而它的 `source_page` / `target_pages` 是**无默认值的必填参数**"
+        "⇒ 漏填直接 `TypeError`，比开关更硬。开它属于冗余。"
+    ),
+}
 
 
 MODE_SPECS = {
@@ -395,6 +526,10 @@ MODE_SPECS = {
         states=frozenset(state.value for state in WorldBossState),
         build_machine=_build_world_boss,
         runner_type=WorldBossRunner,
+        # 开局不无脑回大厅：主页 / 选择辅助队伍 / 配置队伍 / 战斗结算 / 战斗级别奖励
+        # 就地从那一步接着跑，停在局内则把这一局打完再说。骑士团主页这个导航链
+        # 中间站也接（省掉「回大厅 → 进骑士团」两级）。
+        resume_probe=_probe_world_boss_resume,
     ),
     "knights_donation": ModeSpec(
         name="knights_donation",
@@ -408,9 +543,84 @@ MODE_SPECS = {
         ),
         build_machine=_build_knights_donation,
         runner_type=KnightsDonationRunner,
+        # 开局不无脑回大厅：停在骑士团主页 / 资源支援列表 / 每周任务上就地接管。
+        # 三个弹窗与活动界面兜底页不接（不可逆 / 判据不排他 / 无正例），
+        # 见 knights_donation._RESUMABLE_STATES 上方的理由。
+        resume_probe=_probe_knights_donation_resume,
     ),
 }
 
 
 def get_mode(name: str) -> ModeSpec:
     return MODE_SPECS[name]
+
+
+def _assert_resume_declared() -> None:
+    """加载期自查：每条有导航的路线都必须对「接力」表态。
+
+    两种合法表态，二选一，**不能两边都写、也不能两边都不写**：
+
+    - 挂 ``resume_probe``（能接力）；
+    - 进 ``RESUME_EXEMPT`` 并写明理由（不做接力）。
+
+    只查结构，不跑判据 —— 判据准不准要靠拿真夹具跑一遍（
+    ``tests/test_resume_contracts.py``），代码里看不出来。
+    """
+    for name, spec in MODE_SPECS.items():
+        if not spec.needs_navigation:
+            continue
+        has_probe = spec.resume_probe is not None
+        exempt = name in RESUME_EXEMPT
+        if has_probe and exempt:
+            raise RuntimeError(
+                f"路线 {name} 既挂了接力探针、又躺在 RESUME_EXEMPT 里；"
+                "两边只能写一边（挂了探针就把豁免那条划掉）。"
+            )
+        if not has_probe and not exempt:
+            raise RuntimeError(
+                f"路线 {name} 既没有 resume_probe，也不在 RESUME_EXEMPT 里。"
+                "要么挂接力探针，要么在 RESUME_EXEMPT 里写明为什么不做接力；"
+                "规矩见 docs/TRANSITION_CONTRACTS.md「接力契约」。"
+            )
+
+
+def _assert_transition_stance_declared() -> None:
+    """加载期自查：每条路线都必须对「动作的出口验收」表态。
+
+    两种合法表态，二选一，**不能两边都写、也不能两边都不写**：
+
+    - 打开 ``_REQUIRE_TRANSITION_CONTRACT``（此后每个动作必须带 ``source_page`` +
+      ``target_pages`` / ``in_page_evidence``）；
+    - 进 ``TRANSITION_EXEMPT`` 并写清「用自己的什么机制验收」。
+
+    ⚠️ **只认继承基类的路线**：``arena`` / ``expedition`` / ``shop_refresh`` /
+    ``survivor`` 是自带独立主循环的裸定义，连这个属性都没有 ⇒ 开关对它们无效
+    （属性设了也没人读），所以它们必然落在豁免名单里，理由写「用自己的哪套机制」。
+    别把「它的动作没有 ``target_pages``」直接推成「打开开关会抛错」——
+    还要问一句「它的 runner 走得到那段代码吗」。
+
+    只查结构，不跑判据 —— 判据准不准要靠拿真夹具跑一遍
+    （``tests/test_transition_contracts.py`` 与各路线自己的 ``test_*_runner``）。
+    """
+    for name, spec in MODE_SPECS.items():
+        enforced = (
+            getattr(spec.runner_type, "_REQUIRE_TRANSITION_CONTRACT", False) is True
+        )
+        exempt = name in TRANSITION_EXEMPT
+        if enforced and exempt:
+            raise RuntimeError(
+                f"路线 {name} 既打开了转场强制开关、又躺在 TRANSITION_EXEMPT 里；"
+                "两边只能写一边（打开了就把豁免那条划掉）。"
+            )
+        if not enforced and not exempt:
+            raise RuntimeError(
+                f"路线 {name} 既没有打开 _REQUIRE_TRANSITION_CONTRACT，"
+                "也不在 TRANSITION_EXEMPT 里。要么打开开关（此后每个动作必须带 "
+                "source_page + target_pages / in_page_evidence），要么在 "
+                "TRANSITION_EXEMPT 里写清「用自己的什么机制验收」；"
+                "规矩见 docs/TRANSITION_CONTRACTS.md。"
+            )
+
+
+_assert_resume_declared()
+_assert_transition_stance_declared()

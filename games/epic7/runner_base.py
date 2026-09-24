@@ -18,7 +18,7 @@ from auto_game_unified.core.evidence_diagnostics import (
     save_runtime_evidence_diagnostic,
 )
 from auto_game_unified.core.recovery import RecoveryGate
-from auto_game_unified.core.runtime import ManualStop, Runtime, StaminaExhausted
+from auto_game_unified.core.runtime import ManualStop, ResourceExhausted, Runtime
 from auto_game_unified.core.supervisor import StableObservation
 from auto_game_unified.games.epic7.unknown_screen import (
     UnrecognizedScreen,
@@ -47,6 +47,10 @@ class ModeRunnerBase:
     _BLACK_SCREEN_TIMEOUT_SECONDS: Optional[float] = None
     _BLACK_SCREEN_LOG_INTERVAL_SECONDS = 10.0
     _ALLOW_UNKNOWN_SCREEN_WAKE = True
+    # True=每个动作必须声明「来源 + 去处/页内证据」，缺声明直接拒绝发出。
+    # 默认 False：现有路线行为完全不变。新路线子类打开，见
+    # docs/TRANSITION_CONTRACTS.md「新路线准入（强制）」。
+    _REQUIRE_TRANSITION_CONTRACT = False
 
     def __init__(
         self,
@@ -258,6 +262,28 @@ class ModeRunnerBase:
             return NOT_STABLE
         return self.machine.next_action(screen)
 
+    def _require_transition_contract(self, action: Any) -> None:
+        """新路线准入：``_REQUIRE_TRANSITION_CONTRACT`` 打开时，动作必须带出口验收。
+
+        换页动作声明 ``target_pages``；不换页动作声明 ``in_page_evidence``（页内验收依据）。
+        两者皆空 = 这个动作点完不回头看 = 没长眼睛，直接失败关闭（空跑同样会拦）。
+        """
+        if not self._REQUIRE_TRANSITION_CONTRACT:
+            return
+        source_page = getattr(action, "source_page", "")
+        target_pages = getattr(action, "target_pages", ())
+        in_page_evidence = getattr(action, "in_page_evidence", "")
+        missing = []
+        if not source_page:
+            missing.append("source_page（从哪来）")
+        if not target_pages and not in_page_evidence:
+            missing.append("target_pages（到哪去）或 in_page_evidence（页内验收依据）")
+        if missing:
+            raise RuntimeError(
+                f"动作[{getattr(action, 'name', '')}]缺少转场契约：{'、'.join(missing)}；"
+                "请按 docs/TRANSITION_CONTRACTS.md 的契约模板补齐后再运行"
+            )
+
     # ---- 公共主循环 ----
 
     def _dry_run(self) -> int:
@@ -268,6 +294,15 @@ class ModeRunnerBase:
             # 空跑也必须能被 P 键/界面停止打断，且不能被下面那条「包装成运行失败」
             # 的分支吞掉（ManualStop 是 RuntimeError 的子类）。
             raise
+        except ResourceExhausted as error:
+            # 空跑碰上「没本钱了」也是一个正常结论，别被下面那条包装成
+            # 「空跑未识别画面」—— 空跑本来就是给用户先看一眼用的，
+            # 报「认不出这一页」会把人往错的方向带。
+            self.resource_exhausted = True
+            self.runtime.log(
+                f"模式={self._MODE_LABEL} 空跑 停止={error.stop_label} 详情={error}"
+            )
+            return self.machine.completed_cycles
         except RuntimeError as error:
             diagnostic = self.runtime.save_diagnostic(
                 f"dry_run_{self.machine.state.value}", screen
@@ -417,10 +452,14 @@ class ModeRunnerBase:
                 continue
             try:
                 action = self._stable_next_action(screen, stable)
-            except StaminaExhausted as error:
+            except ResourceExhausted as error:
+                # 「还能干、但没本钱了」：生命之叶 / 通缉传单 / 挑战次数……
+                # 各路线缺的东西不一样，所以「停止=」后面的文案由异常自己带
+                # （``stop_label``），这里不写死 —— 日志要能一眼看出缺的是什么。
                 self.resource_exhausted = True
                 self.runtime.log(
-                    f"模式={self._MODE_LABEL} 停止=生命之叶耗尽 详情={error}"
+                    f"模式={self._MODE_LABEL} 停止={error.stop_label} "
+                    f"已完成={self.machine.completed_cycles} 详情={error}"
                 )
                 return self.machine.completed_cycles
             except ManualStop:
@@ -537,6 +576,11 @@ class ModeRunnerBase:
                 action_attempts = 0
                 stable.reset()
                 continue
+
+            # 新路线准入：开了强制开关的路线，动作必须「长眼睛」才允许发出。
+            # 放在两个战斗入口之前，任何分支发出的动作都会被拦到。
+            if action is not None:
+                self._require_transition_contract(action)
 
             # 入口二：**不点击**直接移交战斗监督。
             #

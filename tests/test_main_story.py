@@ -7,12 +7,37 @@ import unittest
 from dataclasses import replace
 from unittest.mock import patch
 
+import numpy as np
+
 from auto_game_unified import main as main_module
 from auto_game_unified.core.qqbot import APP_ID_ENV, CLIENT_SECRET_ENV, USER_OPENID_ENV
 from auto_game_unified.core.recovery import RecoveryGate
 from auto_game_unified.core.runtime import ManualStop
 from auto_game_unified.main import RunResult
 from auto_game_unified.games.epic7.modes import get_mode
+
+
+def fake_return_home(*, returns=None, on_call=None):
+    """替身 navigator 的 ``return_home``：**必须转发 ``stop_probe``**。
+
+    ``main._enter_mode`` 会核对「接力探针到底被问过没有」——问都没问过就是接线断了，
+    直接抛错（见 ``docs/TRANSITION_CONTRACTS.md``「接力契约」卡点②）。所以一个
+    不转发 ``stop_probe`` 的替身已经不忠实于 ``Epic7Navigator`` 的接口了：
+    它表面上「回大厅成功」，实际上把接力钩子吃掉了。
+
+    转发时给一帧**空白图**：认不出任何页面 ⇒ 探针返回 None ⇒ 走原本的
+    「回大厅 → 按路线导航」流程，这些用例关心的东西全都不受影响。代价约 0.2 秒。
+    """
+
+    def return_home(**kwargs):
+        if on_call is not None:
+            on_call()
+        probe = kwargs.get("stop_probe")
+        if probe is not None:
+            probe(np.zeros((1132, 1982, 3), dtype=np.uint8))
+        return returns
+
+    return return_home
 
 
 class MainStoryTests(unittest.TestCase):
@@ -78,11 +103,12 @@ class MainStoryTests(unittest.TestCase):
                     ),
                     patch.object(main_module, "Epic7Navigator") as navigator_type,
                 ):
-                    # 竞技场会带 stop_probe（接力观察窗）进来，其余路线不带；
+                    # 竞技场/主线/远征会带 stop_probe（接力观察窗）进来，狗粮不带；
                     # 两条路径都必须发生在弹窗守卫装好之后，所以这里二者都接受。
+                    # 带 stop_probe 时替身必须转发它，否则 `_enter_mode` 会判定接线断了。
                     navigator_type.return_value.return_home.side_effect = (
-                        lambda **_kwargs: (
-                            events.append("navigation") or object()
+                        fake_return_home(
+                            on_call=lambda: events.append("navigation")
                         )
                     )
                     main_module.run_mode(
@@ -133,8 +159,9 @@ class MainStoryTests(unittest.TestCase):
 
         with (
             patch.object(main_module, "_build_runtime", return_value=runtime),
-            patch.object(main_module, "Epic7Navigator"),
+            patch.object(main_module, "Epic7Navigator") as navigator_type,
         ):
+            navigator_type.return_value.return_home.side_effect = fake_return_home()
             main_module.run_mode(
                 spec=spec,
                 dry_run=False,
@@ -287,7 +314,9 @@ class MainStoryTests(unittest.TestCase):
             patch.object(main_module, "Epic7Navigator") as navigator_type,
             patch("auto_game_unified.games.epic7.story.StoryRunner.run", return_value=1),
         ):
-            navigator_type.return_value.return_home.return_value = lobby
+            navigator_type.return_value.return_home.side_effect = fake_return_home(
+                returns=lobby
+            )
             result = main_module.run_mode(
                 spec=get_mode("story"), dry_run=False, max_cycles=1, start_state="stage"
             )
