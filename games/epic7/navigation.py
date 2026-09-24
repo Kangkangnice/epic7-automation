@@ -31,6 +31,7 @@ from auto_game_unified.games.epic7.expedition import (
     EXPEDITION_RESUME_PAGES,
     EXPEDITION_SEASON_PAGE,
 )
+from auto_game_unified.games.epic7.knights_donation import KNIGHTS_GUILD_HOME_PAGE
 from auto_game_unified.games.epic7.story import (
     STORY_ENTRY_PAGE,
     find_prepare_battle_button,
@@ -56,6 +57,7 @@ from auto_game_unified.games.epic7.evidence.world_boss import (
     REGIONS as WORLD_BOSS_REGIONS,
     build_world_boss_evidence,
 )
+from auto_game_unified.games.epic7.world_boss import WORLD_BOSS_ENTRY_PAGE
 from auto_game_unified.games.epic7.unknown_screen import (
     UnknownScreenWake,
     UnknownWakeResult,
@@ -118,7 +120,10 @@ _RESUME_ENTRY_PAGES = {
     "arena": frozenset({ARENA_ENTRY_PAGE}),
     "story": frozenset({STORY_ENTRY_PAGE}),
     "expedition": EXPEDITION_RESUME_PAGES,
-    "world_boss": frozenset({"knights_home", "worldboss_home"}),
+    "world_boss": frozenset({KNIGHTS_GUILD_HOME_PAGE, WORLD_BOSS_ENTRY_PAGE}),
+    # 骑士团捐赠的导航链只有一级，所以「在导航链上」的落点只有骑士团主页一个。
+    # 业务链里的页面（资源支援 / 每周任务）探针把 ``entry`` 留空 ⇒ 根本不会走到这里。
+    "knights_donation": frozenset({KNIGHTS_GUILD_HOME_PAGE}),
 }
 
 
@@ -1018,14 +1023,14 @@ class Epic7Navigator:
                 source_screen=lobby_screen,
             )
         elif mode == "world_boss":
-            if already_at == "worldboss_home":
+            if already_at == WORLD_BOSS_ENTRY_PAGE:
                 # 已经站在世界首领战主页上：整条导航链都没有要做的了。
                 self.runtime.log(
                     "模式=导航 开局=接力 页面=世界首领战主页 "
                     "动作=跳过回大厅与进入骑士团 状态=已在世界首领战主页"
                 )
             else:
-                if already_at == "knights_home":
+                if already_at == KNIGHTS_GUILD_HOME_PAGE:
                     # 已经在链条中间：跳过「回大厅 → 进骑士团」，从当前这一级往下走。
                     if lobby_screen is None:
                         raise RuntimeError("接力进入世界首领战时缺少当前画面")
@@ -1053,17 +1058,22 @@ class Epic7Navigator:
             # 骑士团捐赠的导航链只有一级：大厅 → 骑士团主页。
             # 「点骑士团活动图标」以及后面整条业务链都在 ``knights_donation.py`` 的
             # 状态机里，导航只负责把画面送到骑士团主页。
-            #
-            # 这里**不提供** ``already_at`` 接力分支：本路线没挂 ``resume_probe``，
-            # 主流程永远带着 ``lobby_screen`` 从大厅下来，没有任何调用方会传
-            # ``already_at``。真要做接力时再连同 ``_RESUME_ENTRY_PAGES`` 一起加。
-            self._transition(
-                "lobby",
-                "knights_home",
-                "lobby_knights",
-                "进入骑士团",
-                source_screen=lobby_screen,
-            )
+            if already_at == KNIGHTS_GUILD_HOME_PAGE:
+                # 人已经站在骑士团主页上了：回大厅再进来一趟纯属多余。
+                # 业务链里那两页（资源支援 / 每周任务）的 ``entry`` 是 None，
+                # 探针就地接管、不会调到这里。
+                self.runtime.log(
+                    "模式=骑士团捐赠 开局=接力 页面=骑士团主页 "
+                    "动作=跳过回大厅与进入骑士团 状态=已在骑士团主页"
+                )
+            else:
+                self._transition(
+                    "lobby",
+                    "knights_home",
+                    "lobby_knights",
+                    "进入骑士团",
+                    source_screen=lobby_screen,
+                )
         else:
             raise ValueError(f"导航不支持的模式：{mode}")
         if mode == "hero_synthesis":

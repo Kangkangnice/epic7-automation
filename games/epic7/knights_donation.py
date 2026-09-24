@@ -106,7 +106,7 @@ from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 from time import sleep as default_sleep
-from typing import Callable, Optional
+from typing import Callable, NamedTuple, Optional
 
 import numpy as np
 
@@ -162,6 +162,33 @@ _PAGE_STATES = (
     ("knights_donation.weekly_tasks", KnightsDonationState.WEEKLY_TASKS),
     ("knights_donation.activity_panel", KnightsDonationState.ACTIVITY_PANEL),
     ("knights_donation.guild_home", KnightsDonationState.GUILD_HOME),
+)
+
+# 骑士团主页在**导航链**上的页面名（= `Epic7Navigator.observe().name`）。
+# 站在这一页说明已经在骑士团里了，只差「点骑士团活动」一步 —— 从这里接着导航
+# 可以省掉一次「进入骑士团」的点击。
+KNIGHTS_GUILD_HOME_PAGE = "knights_home"
+
+# 开局接力能落脚的页面。
+#
+# ⚠️ 另外四处**刻意不接力**，理由分三种：
+#   1. ``support_confirm``（支援资源确认框）/ ``request_popup``（请求支援）点下去
+#      **不可逆** —— 前者消耗材料、后者花掉当天唯一一次请求额度。接力到那一页
+#      等于**助手替你按下不可逆的确认**。``arena`` 的「买票弹窗压住的队伍页」就是这么
+#      用 ``no_ticket`` 显式排除的（见 docs/RESUME_COVERAGE.md）。
+#   2. ``reward_popup``（获得奖励）虽然可逆，但它的判据 ``reward_title`` **不排他**：
+#      2026-09-24 全库 226 张扫描实测，``epic7_hero/reward_popup.png`` 与
+#      ``epic7_story/bonus_reward.png`` 都能让它命中 ⇒ 接力过去会在**别的路线的弹窗上**
+#      按骑士团弹窗的坐标点一下。要接它得先补排他锚点、重跑扫描。
+#   3. ``activity_panel``（活动界面兜底页）没有**正例**：同一次扫描里自家 11 张夹具
+#      没有一张判成它（因为它们都能被更具体的页认出来）。判据没在真帧上验证过就不接。
+#
+# ⚠️ 而弹窗**本来也不需要接力**：返回大厅那一下 Back 会先关掉它（=取消），下一帧
+# 人就落在底页上，探针在那一刻就地接管 —— 效果一样，还更安全。
+_RESUMABLE_STATES = (
+    KnightsDonationState.GUILD_HOME,
+    KnightsDonationState.RESOURCE_SUPPORT,
+    KnightsDonationState.WEEKLY_TASKS,
 )
 
 # 支援列表「一屏放不下」时的下滑手势（实机验证过会产生位移）。
@@ -758,3 +785,49 @@ class KnightsDonationRunner(ModeRunnerBase):
 
     def _decision_hint(self, action_name: str, state: KnightsDonationState) -> str:
         return ""
+
+
+# ---- 开局接力 ----
+# 契约与三道卡点见 docs/TRANSITION_CONTRACTS.md「接力契约」那一节。
+
+
+class KnightsDonationResumePoint(NamedTuple):
+    """骑士团捐赠开局接力的落点（``modes.ResumePoint`` 的路线本地版）。"""
+
+    page: str                       # 中文页面名，给日志和诊断看
+    state: Optional[str] = None     # 恒为 None：本路线每帧重判页面，不需要拨状态
+    entry: Optional[str] = None     # 非空 = 已经在导航链的某一级上，从这里接着导航
+
+
+def detect_resume_point(
+    machine: "KnightsDonationStateMachine",
+    screen: np.ndarray,
+) -> Optional[KnightsDonationResumePoint]:
+    """骑士团捐赠开局接力：认出人停在哪一页就就地接管。
+
+    **判据与运行期同源** —— 直接调状态机自己的 ``observe_page``，不另定一套阈值、
+    不加新锚点。这条路线的页面识别是**纯锚点**（`evidence` 页面组合，不依赖状态机
+    上下文），所以开局只有一帧也判得出来；这正是它比 `hero_synthesis` 好做的地方
+    （后者要靠 `transmit_phase` 这类上下文分页，而接力只有一帧）。
+
+    **不拨状态**（``state`` 恒为 None，照 `shop_refresh` 的做法）：本状态机**每一帧都从
+    画面重判页面**（见 `KnightsDonationStateMachine` 的类 docstring），拨了下一帧就被覆盖，
+    留着只会制造「日志说拨到了 A、实际画面是 B」的假象。
+
+    落在**骑士团主页**时额外给 ``entry``：那一页在导航链上（大厅 → 骑士团主页），
+    从这里接着导航能省掉一次「进入骑士团」的点击。
+
+    ⚠️ 人停在**大厅**上时返回 None（``activity_entry`` 在骑士团主页上，大厅上不成立）⇒
+    照旧走「回大厅 → 进骑士团」，与接力挂上之前的行为完全一致。
+    """
+    page = machine.observe_page(screen)
+    if page is None:
+        return None
+    if page is KnightsDonationState.GUILD_HOME:
+        return KnightsDonationResumePoint(
+            page=state_label(page),
+            entry=KNIGHTS_GUILD_HOME_PAGE,
+        )
+    if page in _RESUMABLE_STATES:
+        return KnightsDonationResumePoint(page=state_label(page))
+    return None

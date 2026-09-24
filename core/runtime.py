@@ -14,8 +14,24 @@ class CaptureGuard(Protocol):
     ) -> tuple[np.ndarray, bool]: ...
 
 
-class StaminaExhausted(RuntimeError):
+class ResourceExhausted(RuntimeError):
+    """资源/次数不够导致的**正常业务退出**（退出码 2）。
+
+    这条通道的语义是「还能干，但没本钱了」：不是故障、不留失败诊断，
+    但也不能装作跑满了 —— 所以单独给一个退出码，通知里一眼能看出来。
+
+    ``stop_label`` 是写进运行日志``停止=``后面的文案，各路线按自己缺的那样东西命名。
+    **故意不给一个笼统的默认值**：日志的价值就在于能一眼看出到底缺了什么，
+    写「资源耗尽」等于没写。子类只覆盖这一个类属性。
+    """
+
+    stop_label = "资源耗尽"
+
+
+class StaminaExhausted(ResourceExhausted):
     """Raised when stamina refills are used up; the run stops cleanly."""
+
+    stop_label = "生命之叶耗尽"
 
 
 class ManualStop(RuntimeError):
