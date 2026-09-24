@@ -89,6 +89,7 @@ def test_knights_donation_is_experimental_and_fixed_to_one_pass():
     assert donation.cycles_editable is False
     # 界面上要能看见「怎么进来的」和「怎么结束的」，否则用户不知道它会自己收工。
     assert "骑士团活动" in donation.description
-    assert "没有红点" in donation.description
+    # ⚠️ 用户 2026-09-24 更正：有没有红点都要进 ⇒ 界面上不许再写「没红点就结束」。
+    assert "红点" not in donation.description
     # 一天只能请求一次支援是用户定的红线，必须写在界面上。
     assert "每天请求一次" in donation.description

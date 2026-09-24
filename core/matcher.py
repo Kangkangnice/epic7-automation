@@ -103,3 +103,77 @@ def find_template(
     if best is None or best.score < threshold:
         return None
     return best
+
+
+def find_all_templates(
+    screen: np.ndarray,
+    template: np.ndarray,
+    threshold: float,
+    *,
+    region: tuple[int, int, int, int] | None = None,
+    reference_size: tuple[int, int] | None = None,
+    min_gap: int = 40,
+) -> list[Match]:
+    """找出区域内**所有**过阈的匹配，按分数从高到低返回。
+
+    用途是「同一个模板在一屏里出现多次」的场合（例：骑士团捐赠的支援列表 ——
+    每一行右侧都有一个一模一样的绿色「支援1个」按钮，而业务需要**逐个**点过去）。
+    只拿 ``find_best_template`` 的话永远只能看到分数最高的那一个。
+
+    ``min_gap`` 是非极大值抑制半径（基准画布像素）：与已选中的点距离小于它的
+    候选会被丢掉，避免同一个按钮被沿边缘重复报出来。取值应当**小于两个真实
+    实例的间距、大于模板自身尺寸**，否则会把相邻的两个真实实例误当同一个。
+    """
+    if reference_size is not None:
+        scale_x = screen.shape[1] / reference_size[0]
+        scale_y = screen.shape[0] / reference_size[1]
+        if abs(scale_x - scale_y) > 0.02:
+            raise RuntimeError("画面宽高比与模板基准不一致")
+        template = cv2.resize(
+            template,
+            (
+                max(1, round(template.shape[1] * scale_x)),
+                max(1, round(template.shape[0] * scale_y)),
+            ),
+            interpolation=cv2.INTER_AREA if scale_x < 1 else cv2.INTER_CUBIC,
+        )
+        if region is not None:
+            region = (
+                round(region[0] * scale_x),
+                round(region[1] * scale_y),
+                round(region[2] * scale_x),
+                round(region[3] * scale_y),
+            )
+        gap = max(1, round(min_gap * scale_x))
+    else:
+        gap = min_gap
+
+    offset_x = offset_y = 0
+    search = screen
+    if region is not None:
+        offset_x, offset_y, width, height = region
+        search = screen[offset_y : offset_y + height, offset_x : offset_x + width]
+
+    height, width = template.shape[:2]
+    if search.shape[0] < height or search.shape[1] < width:
+        return []
+
+    result = cv2.matchTemplate(search, template, cv2.TM_CCOEFF_NORMED)
+    work = result.copy()
+    found: list[Match] = []
+    while True:
+        _, score, _, location = cv2.minMaxLoc(work)
+        if score < threshold:
+            break
+        column, row = location
+        found.append(
+            Match(
+                center=(offset_x + column + width // 2, offset_y + row + height // 2),
+                score=float(score),
+            )
+        )
+        work[
+            max(0, row - gap) : row + gap,
+            max(0, column - gap) : column + gap,
+        ] = -1.0
+    return found

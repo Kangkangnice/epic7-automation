@@ -96,6 +96,8 @@ class Epic7ModeRegistryTests(unittest.TestCase):
                 "knights_donation.resource_support",
                 "knights_donation.weekly_tasks",
                 "knights_donation.request_popup",
+                # 2026-09-24 实跑新发现的一页（点列表「支援1个」先弹的确认框）。
+                "knights_donation.support_confirm",
                 "knights_donation.reward_popup",
             },
             {page.key for page in machine.templates.evidence.pages},
