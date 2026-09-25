@@ -139,9 +139,10 @@ def test_world_boss_skips_count_prompt_and_runs_twice():
 
 
 def test_invalid_values_are_reprompted_in_chinese():
-    # "7" 在 2026-09-21 之前是非法编号，加了世界首领战之后变成合法了，
-    # 所以这里改用 "9" 来守住「编号超出菜单范围会被重新询问」这条行为。
-    inputs = iter(["x", "1", "9", "2", "0", "abc", "3"])
+    # "7" 在 2026-09-21 之前是非法编号，加了世界首领战之后变成合法了；
+    # 之后菜单又陆续加了新项。这里用一个**大于当前菜单长度**的编号（"11"）
+    # 来守住「编号超出范围会被重新询问」这条行为，不依赖具体加到了第几项。
+    inputs = iter(["x", "1", "11", "2", "0", "abc", "3"])
     output = []
     calls = []
 
@@ -166,7 +167,7 @@ def test_invalid_values_are_reprompted_in_chinese():
         ]
     ]
     assert output.count("请输入 1 或 2 选择运行平台。") == 1
-    assert output.count("请输入 1 到 8 之间的功能编号。") == 1
+    assert output.count("请输入 1 到 10 之间的功能编号。") == 1
     assert output.count("运行次数必须是正整数。") == 2
 
 
@@ -199,3 +200,31 @@ def test_knights_donation_skips_count_prompt_and_runs_once():
     assert "请输入运行次数：" not in output
     assert "8. 骑士团捐赠（骑士团每日捐赠，请求支援 + 支援团员 + 每周任务，跑一遍结束）" in output
     assert "即将运行：骑士团捐赠（平台=模拟器（LDPlayer）），共 1 次" in output
+
+
+def test_daily_tasks_menu_entry_runs_without_asking_cycles():
+    """菜单第 10 项是「每日任务」：走 --daily、不问次数（各条有自己的每日次数）。"""
+    inputs = iter(["1", "10"])
+    output = []
+    calls = []
+
+    exit_code = launcher.run_interactive(
+        input_fn=lambda prompt: next(inputs),
+        output=output.append,
+        run_main=lambda args: calls.append(args) or 0,
+    )
+
+    assert exit_code == 0
+    assert calls == [
+        [
+            "--daily",
+            "--window-backend",
+            "emulator",
+            "--live",
+            "--confirm",
+            "RUN",
+        ]
+    ]
+    assert "请输入运行次数：" not in output
+    assert "10. 每日任务" in "\n".join(output)
+    assert "即将运行：每日任务（平台=模拟器（LDPlayer））" in output

@@ -1,5 +1,7 @@
 import threading
 
+import pytest
+
 from auto_game_unified.desktop.worker import (
     RunRequest,
     WorkerController,
@@ -190,6 +192,52 @@ def test_worker_rotates_evidence_log_and_discards_oldest_backup(tmp_path):
         )
     )
     assert "第一条" not in combined
+
+
+def test_worker_builds_daily_command_without_max_cycles(tmp_path):
+    """每日任务走 ``--daily``，次数由各条路线自己的默认值定 ⇒ 不传 ``--max-cycles``。"""
+    calls = []
+    worker = WorkerController(
+        repo_parent=tmp_path,
+        popen=lambda command, **kwargs: calls.append((command, kwargs))
+        or FakeProcess(),
+    )
+
+    worker.start(
+        RunRequest("arena", 1, daily_tasks=("world_boss", "knights_donation"))
+    )
+    worker.join_reader()
+
+    command = calls[0][0]
+    assert "--daily" in command
+    assert command[command.index("--daily-tasks") + 1] == "world_boss,knights_donation"
+    assert "--mode" not in command
+    assert "--max-cycles" not in command
+    assert command[command.index("--window-backend") + 1] == "emulator"
+    assert "--live" in command
+    assert command[command.index("--confirm") + 1] == "RUN"
+
+
+def test_worker_rejects_daily_without_any_task(tmp_path):
+    worker = WorkerController(repo_parent=tmp_path)
+
+    with pytest.raises(ValueError, match="至少"):
+        worker.start(RunRequest("arena", 1, daily_tasks=()))
+
+
+def test_worker_evidence_labels_daily_runs(tmp_path):
+    log_path = tmp_path / "desktop_worker.log"
+    worker = WorkerController(
+        repo_parent=tmp_path,
+        popen=lambda *args, **kwargs: FakeProcess(pid=777),
+        log_path=log_path,
+    )
+
+    worker.start(RunRequest("arena", 1, daily_tasks=("arena", "world_boss"), backend="pc"))
+    worker.join_reader()
+
+    evidence = log_path.read_text(encoding="utf-8")
+    assert "事件=启动 模式=每日任务(arena,world_boss) 后端=pc PID=777" in evidence
 
 
 def test_worker_keeps_only_latest_failure_snapshots(tmp_path):

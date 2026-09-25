@@ -10,9 +10,12 @@ from tkinter import filedialog, messagebox, scrolledtext, ttk
 from typing import Callable
 
 from auto_game_unified.desktop.catalog import (
+    DAILY_DESCRIPTION,
+    DAILY_LABEL,
     PRODUCT_NAME,
     PRODUCT_VERSION,
     ROUTES,
+    daily_items,
     route_by_name,
 )
 from auto_game_unified.desktop.diagnostics import export_diagnostics
@@ -63,10 +66,42 @@ class DesktopController:
         self.selected_backend = "emulator"
         self.cycles = 1
         self.preflight_report: PreflightReport | None = None
+        # 「每日任务」勾选：默认全勾（按 DAILY_TASKS 的次序）。它是**独立于**
+        # selected_mode 的一套状态 —— 单路线单选与每日任务多选互不干扰。
+        self.daily_selection: list[str] = [mode for mode, _ in daily_items()]
 
     @property
     def route(self):
         return route_by_name(self.selected_mode)
+
+    @property
+    def daily_ready(self) -> bool:
+        """每日任务能不能开跑：至少勾了一项，且没有任务在跑。"""
+        return bool(self.daily_selection) and not self.worker.running
+
+    def toggle_daily_item(self, mode: str, checked: bool) -> None:
+        if self.worker.running:
+            raise RuntimeError("运行期间不能修改每日任务")
+        if mode not in {m for m, _ in daily_items()}:
+            raise ValueError(f"每日任务里没有这条路线：{mode}")
+        if checked and mode not in self.daily_selection:
+            self.daily_selection.append(mode)
+        elif not checked and mode in self.daily_selection:
+            self.daily_selection.remove(mode)
+
+    def start_daily(self) -> None:
+        if not self.can_start:
+            raise RuntimeError("请先完成环境检测")
+        if not self.daily_selection:
+            raise RuntimeError("每日任务至少要勾选一项")
+        self.worker.start(
+            RunRequest(
+                self.selected_mode,
+                self.cycles,
+                self.selected_backend,
+                daily_tasks=tuple(self.daily_selection),
+            )
+        )
 
     @property
     def can_start(self) -> bool:
@@ -153,6 +188,7 @@ class DesktopApp:
         self._thread_factory = thread_factory
         self._route_buttons: list[ttk.Radiobutton] = []
         self._backend_buttons: list[ttk.Radiobutton] = []
+        self._daily_buttons: list[ttk.Checkbutton] = []
         self._checking = False
 
         self.root.title(f"{PRODUCT_NAME} {PRODUCT_VERSION}")
@@ -231,6 +267,7 @@ class DesktopApp:
         content.columnconfigure(1, weight=1)
         content.rowconfigure(1, weight=1)
         self._build_route_panel(content)
+        self._build_daily_panel(content)
         self._build_action_panel(content)
         self._build_log_panel(content)
 
@@ -279,7 +316,7 @@ class DesktopApp:
 
     def _build_route_panel(self, parent: ttk.Frame) -> None:
         panel = ttk.Frame(parent, style="Card.TFrame", padding=14)
-        panel.grid(row=0, column=0, rowspan=2, sticky="nsw", padx=(0, 14))
+        panel.grid(row=0, column=0, sticky="new", padx=(0, 14))
         ttk.Label(panel, text="选择功能", style="Section.TLabel").grid(
             row=0, column=0, sticky="w", pady=(0, 8)
         )
@@ -303,6 +340,46 @@ class DesktopApp:
             style="Body.TLabel",
             wraplength=250,
         ).grid(row=len(ROUTES) + 1, column=0, sticky="w", pady=(14, 0))
+
+    def _build_daily_panel(self, parent: ttk.Frame) -> None:
+        """「每日任务」区块：多选 + 独立启动按钮。
+
+        ⚠️ 与上面的单路线单选面板**是两套独立的东西**：上面选「跑哪一条」，
+        这里选「日常串哪几条」。所以它有自己的启动按钮，不复用「开始运行」，
+        免得两种模式互相干扰（各自的勾选/次数语义完全不同）。
+        """
+        panel = ttk.Frame(parent, style="Card.TFrame", padding=14)
+        panel.grid(row=1, column=0, sticky="new", padx=(0, 14), pady=(14, 0))
+        ttk.Label(panel, text=DAILY_LABEL, style="Section.TLabel").grid(
+            row=0, column=0, sticky="w"
+        )
+        self.daily_vars: dict[str, tk.BooleanVar] = {}
+        row_index = 1
+        for mode, label in daily_items():
+            var = tk.BooleanVar(value=mode in self.controller.daily_selection)
+            self.daily_vars[mode] = var
+            checkbox = ttk.Checkbutton(
+                panel,
+                text=label,
+                variable=var,
+                command=lambda m=mode: self._on_daily_toggle(m),
+            )
+            checkbox.grid(row=row_index, column=0, sticky="w", pady=3)
+            self._daily_buttons.append(checkbox)
+            row_index += 1
+        ttk.Label(
+            panel,
+            text=DAILY_DESCRIPTION,
+            style="Body.TLabel",
+            wraplength=250,
+        ).grid(row=row_index, column=0, sticky="w", pady=(10, 0))
+        self.daily_button = ttk.Button(
+            panel,
+            text="开始每日任务",
+            style="Accent.TButton",
+            command=self._start_daily,
+        )
+        self.daily_button.grid(row=row_index + 1, column=0, sticky="w", pady=(10, 0))
 
     def _build_action_panel(self, parent: ttk.Frame) -> None:
         panel = ttk.Frame(parent, style="Card.TFrame", padding=14)
@@ -381,6 +458,81 @@ class DesktopApp:
             return
         self.cycles_var.set(str(self.controller.cycles))
         self._refresh_route_details()
+        self._refresh_controls()
+
+    def _on_daily_toggle(self, mode: str) -> None:
+        var = self.daily_vars[mode]
+        try:
+            self.controller.toggle_daily_item(mode, var.get())
+        except Exception as error:
+            messagebox.showerror("无法修改每日任务", str(error), parent=self.root)
+            var.set(mode in self.controller.daily_selection)
+            return
+        self._refresh_controls()
+
+    def _start_daily(self) -> None:
+        """启动每日任务：与单路线共用同一套「先复检环境」的前置流程。"""
+        if not self.controller.daily_selection:
+            messagebox.showwarning(
+                "每日任务", "至少要勾选一项再开始。", parent=self.root
+            )
+            return
+        # 每日任务里含实验功能路线（世界首领战/骑士团捐赠都是），照单路线那样提醒一次。
+        confirmed = messagebox.askyesno(
+            "实验功能提醒",
+            "每日任务里有仍处于实验阶段的路线，可能不稳定。\n\n是否继续运行？",
+            parent=self.root,
+        )
+        if not confirmed:
+            return
+        self._checking = True
+        self.environment_var.set("正在复检运行环境……")
+        self.environment_label.configure(foreground=self._PRIMARY)
+        self._refresh_controls()
+        selection = tuple(self.controller.daily_selection)
+
+        def check() -> None:
+            report = self._preflight_runner(
+                window_backend=self.controller.selected_backend
+            )
+            self.root.after(
+                0,
+                lambda: self._finish_daily_start_check(selection, report),
+            )
+
+        self._thread_factory(
+            target=check,
+            name="epic7-daily-start-check",
+            daemon=True,
+        ).start()
+
+    def _finish_daily_start_check(
+        self,
+        selection: tuple[str, ...],
+        report: PreflightReport,
+    ) -> None:
+        self._checking = False
+        self.controller.apply_preflight(report)
+        if not report.can_start:
+            self.environment_var.set(report.message)
+            self.environment_label.configure(foreground=self._ERROR)
+            self._append_log(f"运行前复检失败：{report.message}")
+            self._refresh_controls()
+            return
+        if tuple(self.controller.daily_selection) != selection:
+            self.environment_var.set("每日任务勾选已变化，本次启动已取消。")
+            self.environment_label.configure(foreground=self._ERROR)
+            self._refresh_controls()
+            return
+        self.environment_var.set(report.message)
+        self.environment_label.configure(foreground=self._SUCCESS)
+        try:
+            self.controller.start_daily()
+        except Exception as error:
+            messagebox.showerror("无法开始", str(error), parent=self.root)
+            self._refresh_controls()
+            return
+        self._append_log(f"开始每日任务：共 {len(selection)} 项")
         self._refresh_controls()
 
     def _on_backend_change(self) -> None:
@@ -543,7 +695,7 @@ class DesktopApp:
     def _refresh_controls(self) -> None:
         running = self.controller.worker.running
         route_state = tk.DISABLED if running or self._checking else tk.NORMAL
-        for button in self._route_buttons + self._backend_buttons:
+        for button in self._route_buttons + self._backend_buttons + self._daily_buttons:
             button.configure(state=route_state)
         self.check_button.configure(
             state=tk.DISABLED if running or self._checking else tk.NORMAL
@@ -552,6 +704,16 @@ class DesktopApp:
             state=(
                 tk.NORMAL
                 if self.controller.can_start and not self._checking
+                else tk.DISABLED
+            )
+        )
+        # 每日任务按钮：要勾了至少一项、且完成过环境检测、且当前没在跑。
+        self.daily_button.configure(
+            state=(
+                tk.NORMAL
+                if self.controller.daily_ready
+                and self.controller.can_start
+                and not self._checking
                 else tk.DISABLED
             )
         )

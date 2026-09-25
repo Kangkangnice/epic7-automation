@@ -307,3 +307,179 @@ def test_hidden_launcher_writes_a_startup_failure_into_the_log(tmp_path, monkeyp
     sys.stderr.close()
     assert "模板目录缺失" in text
     assert "Traceback" in text
+
+
+# --------------------------------------------------------------------------
+# 「每日任务」界面区块
+# --------------------------------------------------------------------------
+
+
+def test_controller_defaults_to_all_daily_tasks_ticked():
+    controller = DesktopController(worker=FakeWorker())
+
+    from auto_game_unified.games.epic7.daily_tasks import DAILY_TASKS
+
+    assert controller.daily_selection == [task.mode for task in DAILY_TASKS]
+    assert controller.daily_ready is True
+
+
+def test_controller_daily_ready_needs_at_least_one_tick():
+    controller = DesktopController(worker=FakeWorker())
+
+    for mode in list(controller.daily_selection):
+        controller.toggle_daily_item(mode, False)
+
+    assert controller.daily_selection == []
+    assert controller.daily_ready is False
+
+
+def test_controller_rejects_unknown_daily_mode():
+    controller = DesktopController(worker=FakeWorker())
+
+    with pytest.raises(ValueError):
+        controller.toggle_daily_item("nope", True)
+
+
+def test_controller_starts_daily_worker_with_the_selection():
+    worker = FakeWorker()
+    controller = DesktopController(worker=worker)
+    controller.apply_preflight(passed_preflight())
+    controller.toggle_daily_item("arena", False)
+
+    controller.start_daily()
+
+    assert worker.request.is_daily is True
+    assert worker.request.daily_tasks == ("world_boss", "knights_donation")
+
+
+def test_controller_refuses_daily_start_with_empty_selection():
+    worker = FakeWorker()
+    controller = DesktopController(worker=worker)
+    controller.apply_preflight(passed_preflight())
+    for mode in list(controller.daily_selection):
+        controller.toggle_daily_item(mode, False)
+
+    with pytest.raises(RuntimeError, match="至少"):
+        controller.start_daily()
+
+
+def test_daily_panel_renders_a_checkbox_per_task(tmp_path, tk_window):
+    from auto_game_unified.games.epic7.daily_tasks import DAILY_TASKS
+
+    controller = DesktopController(worker=FakeWorker())
+    app = DesktopApp(tk_window, controller=controller, project_root=tmp_path)
+    tk_window.update_idletasks()
+
+    assert list(app.daily_vars) == [task.mode for task in DAILY_TASKS]
+    assert len(app._daily_buttons) == len(DAILY_TASKS)
+    assert all(var.get() for var in app.daily_vars.values())
+
+
+def test_unchecking_a_daily_task_updates_the_controller(tmp_path, tk_window):
+    controller = DesktopController(worker=FakeWorker())
+    app = DesktopApp(tk_window, controller=controller, project_root=tmp_path)
+    tk_window.update_idletasks()
+
+    app.daily_vars["arena"].set(False)
+    app._on_daily_toggle("arena")
+
+    assert controller.daily_selection == ["world_boss", "knights_donation"]
+    assert app.daily_vars["arena"].get() is False
+
+
+def test_daily_start_runs_preflight_then_starts_worker(tmp_path, tk_window):
+    worker = FakeWorker()
+    controller = DesktopController(worker=worker)
+    calls = []
+    app = DesktopApp(
+        tk_window,
+        controller=controller,
+        project_root=tmp_path,
+        preflight_runner=lambda window_backend: calls.append(window_backend)
+        or passed_preflight(),
+        thread_factory=ImmediateThread,
+    )
+
+    with patch(
+        "auto_game_unified.desktop.app.messagebox.askyesno",
+        return_value=True,
+    ):
+        app._start_daily()
+    tk_window.update()
+
+    assert calls == ["emulator"]
+    assert worker.request is not None
+    assert worker.request.daily_tasks == ("world_boss", "knights_donation", "arena")
+
+
+def test_daily_start_aborts_when_preflight_blocks(tmp_path, tk_window):
+    worker = FakeWorker()
+    controller = DesktopController(worker=worker)
+    app = DesktopApp(
+        tk_window,
+        controller=controller,
+        project_root=tmp_path,
+        preflight_runner=blocked_preflight,
+        thread_factory=ImmediateThread,
+    )
+
+    with patch(
+        "auto_game_unified.desktop.app.messagebox.askyesno",
+        return_value=True,
+    ):
+        app._start_daily()
+    tk_window.update()
+
+    assert worker.request is None
+    assert app.environment_var.get() == "没有找到雷电窗口"
+
+
+def test_daily_start_cancelled_when_selection_changes_mid_check(tmp_path, tk_window):
+    """复检期间用户改了勾选 ⇒ 取消启动（免得跑的不是他看到的那套）。"""
+    worker = FakeWorker()
+    controller = DesktopController(worker=worker)
+    controller.apply_preflight(passed_preflight())
+
+    def preflight_and_flip(window_backend):
+        # 复检跑在后台线程里；用户此时又动了勾选。
+        controller.toggle_daily_item("arena", False)
+        return passed_preflight()
+
+    app = DesktopApp(
+        tk_window,
+        controller=controller,
+        project_root=tmp_path,
+        preflight_runner=preflight_and_flip,
+        thread_factory=ImmediateThread,
+    )
+
+    with patch(
+        "auto_game_unified.desktop.app.messagebox.askyesno",
+        return_value=True,
+    ):
+        app._start_daily()
+    tk_window.update()
+
+    assert worker.request is None
+    assert "已变化" in app.environment_var.get()
+
+
+def test_declining_experimental_warning_does_not_start_daily(tmp_path, tk_window):
+    worker = FakeWorker()
+    controller = DesktopController(worker=worker)
+    app = DesktopApp(
+        tk_window,
+        controller=controller,
+        project_root=tmp_path,
+        preflight_runner=passed_preflight,
+        thread_factory=ImmediateThread,
+    )
+
+    with patch(
+        "auto_game_unified.desktop.app.messagebox.askyesno",
+        return_value=False,
+    ):
+        app._start_daily()
+    tk_window.update()
+
+    assert worker.request is None

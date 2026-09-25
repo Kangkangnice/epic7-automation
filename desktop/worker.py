@@ -19,6 +19,14 @@ class RunRequest:
     mode: str
     cycles: int
     backend: str = "emulator"
+    # 「每日任务」：``None`` = 普通单路线运行；元组 = 走 ``--daily`` 编排
+    # （元素是要跑的路线名，此时 ``mode``/``cycles`` 不参与 —— 各条路线有自己的
+    # 每日次数）。空元组是非法的（界面拦住「至少勾一项」），由 ``start`` 复查。
+    daily_tasks: tuple[str, ...] | None = None
+
+    @property
+    def is_daily(self) -> bool:
+        return self.daily_tasks is not None
 
 
 @dataclass(frozen=True)
@@ -65,7 +73,10 @@ class WorkerController:
     def start(self, request: RunRequest) -> None:
         if self.running:
             raise RuntimeError("已有自动化任务正在运行")
-        if request.cycles <= 0:
+        if request.is_daily:
+            if not request.daily_tasks:
+                raise ValueError("每日任务至少要勾选一项")
+        elif request.cycles <= 0:
             raise ValueError("运行次数必须是正整数")
 
         self._temporary = tempfile.TemporaryDirectory(
@@ -76,23 +87,45 @@ class WorkerController:
         self._recent_output.clear()
         self._stop_requested = False
         self._request = request
-        command = [
-            sys.executable,
-            "-u",
-            "-m",
-            "auto_game_unified.main",
-            "--mode",
-            request.mode,
-            "--window-backend",
-            request.backend,
-            "--max-cycles",
-            str(request.cycles),
-            "--live",
-            "--confirm",
-            "RUN",
-            "--stop-file",
-            str(self.stop_file),
-        ]
+        if request.is_daily:
+            # 每日任务：次数由各条路线自己的每日默认值决定（games/epic7/daily_tasks），
+            # 界面上不传 --max-cycles；勾选哪几条用 --daily-tasks 传进去。
+            # ``Joinable``：daily_tasks 是已校验的模式名，不会有逗号。
+            daily_arg = ",".join(request.daily_tasks or ())
+            command = [
+                sys.executable,
+                "-u",
+                "-m",
+                "auto_game_unified.main",
+                "--daily",
+                "--daily-tasks",
+                daily_arg,
+                "--window-backend",
+                request.backend,
+                "--live",
+                "--confirm",
+                "RUN",
+                "--stop-file",
+                str(self.stop_file),
+            ]
+        else:
+            command = [
+                sys.executable,
+                "-u",
+                "-m",
+                "auto_game_unified.main",
+                "--mode",
+                request.mode,
+                "--window-backend",
+                request.backend,
+                "--max-cycles",
+                str(request.cycles),
+                "--live",
+                "--confirm",
+                "RUN",
+                "--stop-file",
+                str(self.stop_file),
+            ]
         environment = os.environ.copy()
         environment["PYTHONIOENCODING"] = "utf-8"
         try:
@@ -112,8 +145,13 @@ class WorkerController:
             self._cleanup_temporary()
             raise
 
+        started_label = (
+            "每日任务(" + ",".join(request.daily_tasks or ()) + ")"
+            if request.is_daily
+            else request.mode
+        )
         self._write_evidence(
-            f"事件=启动 模式={request.mode} 后端={request.backend} "
+            f"事件=启动 模式={started_label} 后端={request.backend} "
             f"PID={getattr(self._process, 'pid', '-')}"
         )
         self._events.put(WorkerEvent("started", "自动化已启动"))
