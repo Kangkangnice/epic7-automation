@@ -51,6 +51,16 @@ class ModeRunnerBase:
     # 默认 False：现有路线行为完全不变。新路线子类打开，见
     # docs/TRANSITION_CONTRACTS.md「新路线准入（强制）」。
     _REQUIRE_TRANSITION_CONTRACT = False
+    # 「收尾回首页」钩子：由 main.run_mode 在 runner.run() 正常返回后注入。
+    #
+    # ⚠️ 为什么走注入而不是让 Runner 自己 import 导航器：Runner 只认识状态机与
+    # Runtime，导航器由 main 装配（`Epic7Navigator` 不在 runner 的依赖里）。
+    # 而且干跑根本没有导航器 —— 注入让它天然为 None，省掉一堆 dry_run 特判。
+    #
+    # 契约：**绝不抛异常**。收尾回首页失败不该改变退出码（任务本身已经成功了），
+    # 失败时实现方自己记日志、返回失败原因字符串；成功返回 None。
+    # 这条契约由 main.run_mode 装配的那份实现守住，见 main._finish_at_home。
+    _finish_home: Optional[Callable[[], Optional[str]]] = None
 
     def __init__(
         self,
@@ -126,6 +136,30 @@ class ModeRunnerBase:
             if max_cycles is not None and self.machine.completed_cycles >= max_cycles:
                 return True
         return False
+
+    def _close_out(self) -> None:
+        """收尾回首页。
+
+        ⚠️ **只挂在「正常跑完」这一条路上** —— 下面 ``run()`` 里四处 return 前面
+        统一调用它。三类出口**刻意不接**：
+
+        - **``ManualStop``（退出码 130）**：用户喊停，这时候再动游戏是添乱。
+        - **异常退出（退出码 1）**：跑到一半挂了，硬按 Back 可能把已承诺的战斗
+          弄丢（尤其 world_boss 停在局内时）。安全 > 整齐。
+        - **``ResourceExhausted``（退出码 2）**：这是「还能干、但没本钱了」的
+          **正常业务退出**，所以**接**（停在购买弹窗/次数用完页上都该回家）。
+
+        ⚠️ 收尾失败**绝不改退出码**：任务本身已经成功了，不能因为「没走回家」
+        就报失败。失败由 ``_finish_home`` 实现方记日志并返回原因，这里只记账。
+        """
+        if self._finish_home is None:
+            return
+        failure = self._finish_home()
+        if failure is not None:
+            self.runtime.log(
+                f"模式={self._MODE_LABEL} 收尾=回首页失败 "
+                f"原因={failure} 处理=已忽略（不影响本次运行结论）"
+            )
 
     def _decision_hint(self, action_name: str, state: Any) -> str:
         """子模式可在覆写里给当前动作附加决策原因摘要。"""
@@ -461,6 +495,7 @@ class ModeRunnerBase:
                     f"模式={self._MODE_LABEL} 停止={error.stop_label} "
                     f"已完成={self.machine.completed_cycles} 详情={error}"
                 )
+                self._close_out()
                 return self.machine.completed_cycles
             except ManualStop:
                 # ⚠️ 必须排在 `except RuntimeError` 前面。`ManualStop` 是 `RuntimeError`
@@ -562,6 +597,7 @@ class ModeRunnerBase:
                 )
 
             if self._check_cycle_completed(cycles_before, max_cycles):
+                self._close_out()
                 return self.machine.completed_cycles
             state_started = self.now() if self.machine.completed_cycles > cycles_before else state_started
 
@@ -604,10 +640,12 @@ class ModeRunnerBase:
                 if outcome is BattleOutcome.PRE_BATTLE_BUSINESS:
                     # 战斗没开起来：有界重试，绝不无限重交（同入口三）。
                     if self._on_battle_handoff_failed(action, screen):
+                        self._close_out()
                         return self.machine.completed_cycles
                 else:
                     self._on_battle_started()
                     if self._after_battle(max_cycles):
+                        self._close_out()
                         return self.machine.completed_cycles
                 state_started = absolute_started = self.now()
                 last_action_name = None
@@ -652,6 +690,7 @@ class ModeRunnerBase:
 
                 if action_attempts > 4:
                     if self._on_action_exhausted(action, screen):
+                        self._close_out()
                         return self.machine.completed_cycles
                     if self.recovery is not None and not self._recovered:
                         self._recovered = True
@@ -741,6 +780,7 @@ class ModeRunnerBase:
                         # 打不起来（例如体力不足）：**有界重试**，绝不无限重交。
                         # 子模式返回 True 表示已优雅收尾（自己 try 了恢复 / 记了日志）。
                         if self._on_battle_handoff_failed(action, screen):
+                            self._close_out()
                             return self.machine.completed_cycles
                         state_started = self.now()
                         absolute_started = state_started
@@ -753,6 +793,7 @@ class ModeRunnerBase:
                         continue
                     self._on_battle_started()
                     if self._after_battle(max_cycles):
+                        self._close_out()
                         return self.machine.completed_cycles
                     state_started = self.now()
                     absolute_started = state_started
@@ -837,4 +878,6 @@ class ModeRunnerBase:
                 )
             self.sleep(self.poll_seconds)
 
+        # while 条件自然结束（跑满 max_cycles）—— 同属「正常跑完」，照收尾。
+        self._close_out()
         return self.machine.completed_cycles
