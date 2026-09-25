@@ -15,6 +15,7 @@ from auto_game_unified.core.pc_window import Epic7PcWindow
 from auto_game_unified.games.epic7.evidence.shop_refresh import (
     LIVE_TRANSACTIONS_VERIFIED,
 )
+from auto_game_unified.games.epic7.finish_home import _assert_finish_home_declared
 from auto_game_unified.games.epic7.modes import (
     MODE_SPECS,
     ModeSpec,
@@ -247,9 +248,16 @@ def _install_finish_home(
     资源耗尽都算正常结论），不能因为「没走回家」就让整次运行报失败 —— 用户看到的
     会是「运行失败」，而实际上该干的活都干完了。
 
-    ⚠️ 干跑 / 不需要导航的路线（``survivor``）传进来的 ``navigator`` 是 ``None``，
-    这里直接不装 —— 少了钩子，Runner 那边就是「零行为」，不需要各处加 dry_run 特判。
+    ⚠️ **还没接「收尾回首页」的路线**（``games/epic7/finish_home.FINISH_HOME_EXEMPT``）：
+    目前只有 ``survivor`` 一条，理由与取舍见那张表。**其余 9 条全部已接**（2026-09-25 完成）。
+
+    ⚠️ 干跑 / 不需要导航的路线传进来的 ``navigator`` 是 ``None``，这里直接不装 ——
+    少了钩子，Runner 那边就是「零行为」，不需要各处加 dry_run 特判。
     """
+    # 「每条路线都得对收尾表态」的自查在这里触发（import 阶段就报错，不会拖到串任务时）。
+    # 放在本函数里是为了让它跟着「收尾回首页」这一整套规矩走，且不必动 modes.py。
+    _assert_finish_home_declared()
+
     if navigator is None:
         return
 
@@ -266,8 +274,9 @@ def _install_finish_home(
         runtime.log(f"模式={mode} 收尾=已回到首页 状态=可以衔接下一个任务")
         return None
 
-    # 基类路线读类属性 `_finish_home`，竞技场读实例属性 `finish_home`（它是裸定义）。
-    # 两个都设：设错的那个不会有人读，比按 runner_type 分支判断更抗改。
+    # ⚠️ **必须是实例级 hasattr，不能查类**：`finish_home` 是在 ``__init__`` 里赋值的
+    # 实例属性，`hasattr(ArenaRunner, "finish_home")` 恒为 False（类上看不到）。
+    # `_finish_home` 是基类类属性，两种路线都能设（不读它的路线设了等于没设）。
     runner._finish_home = finish_at_home
     if hasattr(runner, "finish_home"):
         runner.finish_home = finish_at_home
