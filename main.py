@@ -231,6 +231,48 @@ def _enter_mode(
         )
 
 
+def _install_finish_home(
+    runner: Any,
+    navigator: Optional[Epic7Navigator],
+    runtime: Runtime,
+    *,
+    mode: str,
+) -> None:
+    """给路线装上「收尾回首页」钩子。
+
+    契约（由 Runner 侧声明，见 ``ModeRunnerBase._close_out``）：**绝不抛异常**，
+    失败返回原因字符串、成功返回 ``None``；调用方把它写进日志但**不改退出码**。
+
+    为什么不能直接让 ``return_home()`` 抛到外面：任务本身已经成功了（跑满轮次 /
+    资源耗尽都算正常结论），不能因为「没走回家」就让整次运行报失败 —— 用户看到的
+    会是「运行失败」，而实际上该干的活都干完了。
+
+    ⚠️ 干跑 / 不需要导航的路线（``survivor``）传进来的 ``navigator`` 是 ``None``，
+    这里直接不装 —— 少了钩子，Runner 那边就是「零行为」，不需要各处加 dry_run 特判。
+    """
+    if navigator is None:
+        return
+
+    def finish_at_home() -> Optional[str]:
+        try:
+            navigator.return_home()
+        except ManualStop:
+            # 用户在收尾阶段按了 P：这不是「回不了家」，是「别动了」。
+            # 照实记一笔就收手，既不重试也不改结论。
+            runtime.log(f"模式={mode} 收尾=回首页被手动停止 处理=放弃收尾")
+            return "用户手动停止"
+        except Exception as error:  # noqa: BLE001 —— 契约要求绝不外抛
+            return f"{type(error).__name__}: {error}"
+        runtime.log(f"模式={mode} 收尾=已回到首页 状态=可以衔接下一个任务")
+        return None
+
+    # 基类路线读类属性 `_finish_home`，竞技场读实例属性 `finish_home`（它是裸定义）。
+    # 两个都设：设错的那个不会有人读，比按 runner_type 分支判断更抗改。
+    runner._finish_home = finish_at_home
+    if hasattr(runner, "finish_home"):
+        runner.finish_home = finish_at_home
+
+
 def run_mode(
     *,
     spec: ModeSpec,
@@ -316,6 +358,7 @@ def run_mode(
         # 每局结算画面留一张盘，给「胜负判得对不对」留可回看的证据（见 ArenaRunner）。
         runner_options["outcome_frame_dir"] = ROOT / "docs" / "manual_review" / "arena"
     runner = spec.runner_type(machine, runtime, **runner_options)
+    _install_finish_home(runner, navigator, runtime, mode=spec.name)
     completed = runner.run(max_cycles=max_cycles)
     # 战绩文案只有竞技场会给；别的路线拿不到这个方法，就留 None（通知里不显示）。
     summary = getattr(runner, "outcome_summary", None)

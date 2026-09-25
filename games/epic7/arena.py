@@ -1068,6 +1068,31 @@ class ArenaRunner:
         # 本进程的战绩：胜 / 负 / 认不出。「认不出」单列，不并入负（见 ArenaOutcome）。
         self.outcome_tally = {outcome: 0 for outcome in ArenaOutcome}
         self.resource_exhausted = False
+        # 「收尾回首页」钩子：由 main.run_mode 在 runner.run() 正常返回后注入。
+        # ⚠️ 竞技场**自带独立主循环**（裸定义、`super()` 0 次），走不到基类
+        # `ModeRunnerBase._close_out`，所以这里必须自己声明、自己调用。
+        # 契约同基类：**绝不抛异常**，失败返回原因字符串（退出码不变）。
+        self.finish_home: Callable[[], Optional[str]] | None = None
+
+    def _close_out(self) -> None:
+        """收尾回首页（竞技场自己的那一份，语义同 ``ModeRunnerBase._close_out``）。
+
+        ⚠️ 两类退出**刻意不接**：``ManualStop``（用户喊停）与异常（跑到一半挂了，
+        硬按 Back 有丢局风险）—— 两者都在 ``run()`` 里直接 raise，走不到这里。
+
+        ⚠️ **接力开局照样收尾**：人停在半路被接力接管、补完这一局之后，本进程的
+        任务已经做完了，按用户 2026-09-25 的诉求就该回首页（后面要串下一个任务）。
+        「接力只补一局、不擅自回家」听起来更保守，但那样接力启动会留下**唯一一个
+        做完不回首页**的口子，串任务时正好卡在那儿。
+        """
+        if self.finish_home is None:
+            return
+        failure = self.finish_home()
+        if failure is not None:
+            self.runtime.log(
+                f"模式=竞技场 收尾=回首页失败 原因={failure} "
+                "处理=已忽略（不影响本次运行结论）"
+            )
 
     def _run_committed_battle(self, *, cycle: int) -> None:
         outcome = self.battle_supervisor.run(
@@ -1231,6 +1256,7 @@ class ArenaRunner:
                     f"模式=竞技场 停止=旗帜资源不可安全购买 详情={error} "
                     f"已完成={self.machine.completed_cycles} 现场={diagnostic}"
                 )
+                self._close_out()
                 return self.machine.completed_cycles
             except ManualStop:
                 # ⚠️ 必须排在 `except RuntimeError` 前面。`ManualStop` 是 `RuntimeError`
@@ -1292,6 +1318,7 @@ class ArenaRunner:
                     f"模式=竞技场 轮次={self.machine.completed_cycles} "
                     "业务完成=结算返回对手列表 目标连续=2"
                 )
+                self._close_out()
                 return self.machine.completed_cycles
             if action.name == "purchase-friendship-ticket" and not self._purchase_allowed_today():
                 self.machine.state = ArenaState.BATTLE
@@ -1299,6 +1326,7 @@ class ArenaRunner:
                 self.runtime.log(
                     f"模式=竞技场 停止=今日友情点旗帜已购买 已完成={self.machine.completed_cycles}"
                 )
+                self._close_out()
                 return self.machine.completed_cycles
             self.runtime.log(
                 f"模式=竞技场 轮次={self.machine.completed_cycles + 1}/{max_cycles or '?'} "
@@ -1360,6 +1388,7 @@ class ArenaRunner:
                 state_started = self.now()
             self.sleep(self.poll_seconds)
 
+        self._close_out()
         return self.machine.completed_cycles
 
     def _execute_transition(self, action: Action) -> None:
