@@ -1,0 +1,478 @@
+"""「每日任务」编排层的测试。
+
+这里守的是「编排」而不是「路线」：路线本身各有自己的测试，本模块只负责
+**按次序调它们、失败跳过、段间回大厅、最后汇总**。
+
+⚠️ 与路线测试同一条教训（2026-09-25 两次事故都发生在状态机与主循环**之间**）：
+判据再好，没接进循环就等于没写。所以这里的重点用例全部走 ``run_daily_tasks``
+这个真入口，而不是单独测小函数。
+"""
+
+from __future__ import annotations
+
+import pytest
+
+from auto_game_unified.core.runtime import ManualStop
+from auto_game_unified.games.epic7 import daily_tasks
+from auto_game_unified.games.epic7.daily_tasks import (
+    DAILY_BY_MODE,
+    DAILY_TASKS,
+    DailyOutcome,
+    DailyReport,
+    cycles_for,
+    ensure_at_lobby,
+    normalize_selection,
+    run_daily_tasks,
+)
+
+
+# --------------------------------------------------------------------------
+# 清单本身
+# --------------------------------------------------------------------------
+
+
+def test_daily_list_keeps_the_agreed_order():
+    """次序是用户拍板的（世界首领战 → 骑士团捐赠 → 竞技场），别被 sorted 覆盖。"""
+    assert [task.mode for task in DAILY_TASKS] == [
+        "world_boss",
+        "knights_donation",
+        "arena",
+    ]
+    assert [task.label for task in DAILY_TASKS] == ["世界首领战", "骑士团捐赠", "竞技场"]
+
+
+def test_every_daily_mode_exists_in_mode_specs():
+    """清单里的模式名必须是**真路线**，否则跑起来才发现是接线错误。
+
+    这条同时也是「每日任务不是新路线」的护栏：它只引用已有路线。
+    """
+    from auto_game_unified.games.epic7.modes import MODE_SPECS
+
+    missing = sorted(set(DAILY_BY_MODE) - set(MODE_SPECS))
+    assert missing == [], f"每日任务引用了不存在的路线：{missing}"
+
+
+def test_daily_cycles_are_positive_and_match_known_daily_limits():
+    assert all(task.cycles > 0 for task in DAILY_TASKS)
+    # 世界首领战每天固定 2 次；骑士团捐赠请求支援一天一次。
+    assert cycles_for("world_boss") == 2
+    assert cycles_for("knights_donation") == 1
+
+
+# --------------------------------------------------------------------------
+# 勾选规整
+# --------------------------------------------------------------------------
+
+
+def test_no_selection_means_run_everything():
+    assert normalize_selection(None) == ("world_boss", "knights_donation", "arena")
+
+
+def test_shuffled_selection_is_reordered_to_the_list_order():
+    assert normalize_selection(["arena", "world_boss"]) == ("world_boss", "arena")
+    assert normalize_selection(["arena", "knights_donation", "world_boss"]) == (
+        "world_boss",
+        "knights_donation",
+        "arena",
+    )
+
+
+def test_single_selection_is_kept():
+    assert normalize_selection(["knights_donation"]) == ("knights_donation",)
+
+
+def test_empty_selection_is_rejected():
+    with pytest.raises(ValueError, match="至少"):
+        normalize_selection([])
+
+
+def test_unknown_selection_fails_closed():
+    with pytest.raises(ValueError, match="nope"):
+        normalize_selection(["arena", "nope"])
+
+
+# --------------------------------------------------------------------------
+# 汇总
+# --------------------------------------------------------------------------
+
+
+def test_summary_line_reports_each_task_and_abort_reason():
+    report = DailyReport(
+        outcomes=[
+            DailyOutcome("world_boss", "世界首领战", "completed"),
+            DailyOutcome("knights_donation", "骑士团捐赠", "failed"),
+            DailyOutcome("arena", "竞技场", "skipped"),
+        ],
+        aborted_reason="竞技场 之前无法回到首页（RuntimeError: boom）",
+    )
+
+    line = report.summary_line()
+
+    assert "世界首领战 ✓" in line
+    assert "骑士团捐赠 ✗" in line
+    assert "竞技场 —" in line
+    assert "已中止" in line
+
+
+def test_resource_exhausted_counts_as_ok():
+    report = DailyReport(
+        outcomes=[DailyOutcome("arena", "竞技场", "resource", "轮次=1")]
+    )
+
+    assert report.any_failed is False
+    assert "✓" in report.summary_line()
+
+
+# --------------------------------------------------------------------------
+# 执行器：真入口
+# --------------------------------------------------------------------------
+
+
+class FakeRuntime:
+    def __init__(self) -> None:
+        self.lines: list[str] = []
+        self.captures = 0
+
+    def capture(self):
+        self.captures += 1
+        return object()
+
+    def log(self, message: str) -> None:
+        self.lines.append(message)
+
+    def log_line(self, message: str) -> None:  # 兼容别的调用习惯
+        self.lines.append(message)
+
+
+class FakeObservation:
+    def __init__(self, name: str) -> None:
+        self.name = name
+
+
+class FakeNavigator:
+    def __init__(self, *, lobby: bool = True, return_home_error: Exception | None = None):
+        self._lobby = lobby
+        self._error = return_home_error
+        self.return_calls = 0
+
+    def observe(self, _screen):
+        return FakeObservation("lobby" if self._lobby else "battle")
+
+    def return_home(self):
+        self.return_calls += 1
+        if self._error is not None:
+            raise self._error
+        self._lobby = True
+
+
+class FakeResult:
+    def __init__(self, *, resource_exhausted: bool = False, completed: int = 1):
+        self.resource_exhausted = resource_exhausted
+        self.completed_cycles = completed
+
+
+def test_runs_each_selected_mode_once_in_order():
+    calls = []
+
+    def run_mode(**kwargs):
+        calls.append(kwargs["spec"].name)
+        return FakeResult()
+
+    report = run_daily_tasks(
+        selected=None,
+        dry_run=True,
+        run_mode=run_mode,
+    )
+
+    assert calls == ["world_boss", "knights_donation", "arena"]
+    assert [o.status for o in report.outcomes] == ["completed"] * 3
+    assert report.any_failed is False
+    assert report.aborted_reason is None
+
+
+def test_subset_only_runs_ticked_modes():
+    calls = []
+
+    def run_mode(**kwargs):
+        calls.append(kwargs["spec"].name)
+        return FakeResult()
+
+    report = run_daily_tasks(
+        selected=["arena", "knights_donation"],
+        dry_run=True,
+        run_mode=run_mode,
+    )
+
+    assert calls == ["knights_donation", "arena"]
+    assert [o.label for o in report.outcomes] == ["骑士团捐赠", "竞技场"]
+
+
+def test_cycles_are_passed_from_the_daily_list():
+    seen = []
+
+    def run_mode(**kwargs):
+        seen.append((kwargs["spec"].name, kwargs["max_cycles"]))
+        return FakeResult()
+
+    run_daily_tasks(selected=None, dry_run=True, run_mode=run_mode)
+
+    assert seen == [("world_boss", 2), ("knights_donation", 1), ("arena", 1)]
+
+
+def test_a_failing_task_is_skipped_and_the_rest_still_run():
+    """失败策略：跳过继续，最后汇总 —— 一条挂了不能带崩整轮。"""
+    calls = []
+
+    def run_mode(**kwargs):
+        mode = kwargs["spec"].name
+        calls.append(mode)
+        if mode == "knights_donation":
+            raise RuntimeError("模板缺失")
+        return FakeResult()
+
+    report = run_daily_tasks(selected=None, dry_run=True, run_mode=run_mode)
+
+    assert calls == ["world_boss", "knights_donation", "arena"]
+    assert [o.status for o in report.outcomes] == ["completed", "failed", "completed"]
+    assert report.any_failed is True
+    assert "模板缺失" in report.outcomes[1].detail
+
+
+def test_resource_exhaustion_is_recorded_but_not_a_failure():
+    def run_mode(**kwargs):
+        if kwargs["spec"].name == "world_boss":
+            return FakeResult(resource_exhausted=True)
+        return FakeResult()
+
+    report = run_daily_tasks(selected=None, dry_run=True, run_mode=run_mode)
+
+    assert report.outcomes[0].status == "resource"
+    assert report.any_failed is False
+
+
+def test_manual_stop_ends_the_round_and_keeps_earlier_results():
+    calls = []
+
+    def run_mode(**kwargs):
+        mode = kwargs["spec"].name
+        calls.append(mode)
+        if mode == "knights_donation":
+            raise ManualStop("用户按了 P")
+        return FakeResult()
+
+    report = run_daily_tasks(selected=None, dry_run=True, run_mode=run_mode)
+
+    # 第三条没跑（用户要求停），前两条的结论保留。
+    assert calls == ["world_boss", "knights_donation"]
+    assert report.stopped_by_user is True
+    assert report.outcomes[0].status == "completed"
+    assert report.outcomes[1].status == "skipped"
+
+
+# --------------------------------------------------------------------------
+# 段间「确保在首页」
+# --------------------------------------------------------------------------
+
+
+def test_dry_run_never_builds_a_probe():
+    """干跑不碰游戏，也就不该去连窗口 —— 建 probe 会让干跑假报「回不了家」。"""
+    built = []
+
+    def build_probe():
+        built.append(True)
+        return FakeRuntime(), FakeNavigator()
+
+    def run_mode(**kwargs):
+        return FakeResult()
+
+    run_daily_tasks(
+        selected=None,
+        dry_run=True,
+        run_mode=run_mode,
+        build_probe=build_probe,
+    )
+
+    assert built == []
+
+
+def test_live_run_checks_lobby_between_tasks_and_skips_when_already_there():
+    """段间已在首页 ⇒ 不用 return_home（省一趟，且零点击）。"""
+    runtime = FakeRuntime()
+    navigator = FakeNavigator(lobby=True)
+    order = []
+
+    def run_mode(**kwargs):
+        order.append(("run", kwargs["spec"].name))
+        # 每跑完一条就「离开大厅」，逼下一条做检查
+        navigator._lobby = False
+        return FakeResult()
+
+    def build_probe():
+        order.append(("probe",))
+        return runtime, navigator
+
+    report = run_daily_tasks(
+        selected=["world_boss", "knights_donation"],
+        dry_run=False,
+        run_mode=run_mode,
+        build_probe=build_probe,
+    )
+
+    # probe 只建一次（复用），且第一条之前**不**检查。
+    assert [item[0] for item in order].count("probe") == 1
+    assert order[0] == ("run", "world_boss")
+    assert navigator.return_calls == 1  # 只在第二条之前拉了一次
+    assert [o.status for o in report.outcomes] == ["completed", "completed"]
+
+
+def test_live_run_aborts_the_rest_when_it_cannot_get_back_home():
+    """回不了首页 ⇒ 放弃剩余任务并写清原因，而不是让下一条去撞同一堵墙。"""
+    runtime = FakeRuntime()
+    navigator = FakeNavigator(
+        lobby=False, return_home_error=RuntimeError("点了 8 次返回还在战斗页")
+    )
+    calls = []
+
+    def run_mode(**kwargs):
+        calls.append(kwargs["spec"].name)
+        return FakeResult()
+
+    report = run_daily_tasks(
+        selected=None,
+        dry_run=False,
+        run_mode=run_mode,
+        build_probe=lambda: (runtime, navigator),
+    )
+
+    assert calls == ["world_boss"]  # 第二条起全部放弃
+    assert report.aborted_reason is not None
+    assert "骑士团捐赠" in report.aborted_reason
+    assert report.outcomes[-1].status == "skipped"
+    assert report.any_failed is True
+
+
+def test_ensure_at_lobby_never_raises():
+    """契约：绝不外抛 —— 失败用返回值表达（与路线收尾的约定一致）。"""
+
+    class ExplodingRuntime(FakeRuntime):
+        def capture(self):
+            raise OSError("窗口没了")
+
+    reason = ensure_at_lobby(
+        navigator=FakeNavigator(),
+        runtime=ExplodingRuntime(),
+        mode_label="竞技场",
+    )
+
+    assert reason is not None
+    assert "OSError" in reason
+
+
+def test_ensure_at_lobby_skips_return_home_when_already_in_lobby():
+    navigator = FakeNavigator(lobby=True)
+
+    assert ensure_at_lobby(
+        navigator=navigator, runtime=FakeRuntime(), mode_label="竞技场"
+    ) is None
+    assert navigator.return_calls == 0
+
+
+def test_ensure_at_lobby_logs_which_branch_it_took():
+    runtime = FakeRuntime()
+    ensure_at_lobby(
+        navigator=FakeNavigator(lobby=True), runtime=runtime, mode_label="竞技场"
+    )
+
+    assert any("已在首页" in line for line in runtime.lines)
+
+
+# --------------------------------------------------------------------------
+# 与真 main.run_mode 的接线
+# --------------------------------------------------------------------------
+
+
+def test_main_daily_selection_parser_defaults_to_all():
+    from auto_game_unified.main import _parse_daily_selection
+
+    assert _parse_daily_selection("") == [task.mode for task in DAILY_TASKS]
+    assert _parse_daily_selection("  ") == [task.mode for task in DAILY_TASKS]
+    assert _parse_daily_selection("arena, knights_donation") == [
+        "arena",
+        "knights_donation",
+    ]
+
+
+def test_main_run_daily_wires_the_real_run_mode(monkeypatch):
+    """``_run_daily`` 必须把**真的** ``run_mode`` 传下去。
+
+    这是「判据没接上」的典型位置：逻辑都对，但接了别的函数就白写了。
+    """
+    from auto_game_unified.main import _run_daily, parse_args
+
+    captured = {}
+
+    def fake_run_daily_tasks(**kwargs):
+        captured.update(kwargs)
+        return DailyReport()
+
+    monkeypatch.setattr("auto_game_unified.main.run_daily_tasks", fake_run_daily_tasks)
+    monkeypatch.setattr("auto_game_unified.main._notify_daily", lambda **kwargs: None)
+
+    exit_code = _run_daily(
+        parse_args(["--daily", "--daily-tasks", "arena", "--live", "--confirm", "RUN"])
+    )
+
+    from auto_game_unified.main import run_mode as real_run_mode
+
+    assert captured["run_mode"] is real_run_mode
+    assert captured["dry_run"] is False
+    assert captured["selected"] == ["arena"]
+    assert exit_code == 0
+
+
+def test_run_daily_exit_codes(monkeypatch):
+    from auto_game_unified import main as main_module
+
+    monkeypatch.setattr(main_module, "_notify_daily", lambda **kwargs: None)
+
+    cases = [
+        (DailyReport(), 0),
+        (
+            DailyReport(
+                outcomes=[DailyOutcome("arena", "竞技场", "failed", "boom")],
+            ),
+            1,
+        ),
+        (
+            DailyReport(
+                outcomes=[DailyOutcome("arena", "竞技场", "skipped", "用户手动停止")],
+                stopped_by_user=True,
+            ),
+            130,
+        ),
+        (
+            DailyReport(
+                outcomes=[DailyOutcome("arena", "竞技场", "skipped", "回不去")],
+                aborted_reason="骑士团捐赠 之前无法回到首页（boom）",
+            ),
+            1,
+        ),
+    ]
+    for report, expected in cases:
+        monkeypatch.setattr(
+            main_module, "run_daily_tasks", lambda report=report, **kwargs: report
+        )
+        code = main_module._run_daily(
+            main_module.parse_args(["--daily", "--live", "--confirm", "RUN"])
+        )
+        assert code == expected, report.summary_line()
+
+
+def test_daily_requires_live_confirmation(monkeypatch):
+    """实跑必须显式 --confirm RUN，与单路线同一道闸。"""
+    from auto_game_unified import main as main_module
+
+    monkeypatch.setattr(main_module, "_run_daily", lambda args: 0)
+
+    with pytest.raises(SystemExit):
+        main_module.main(["--daily", "--live"])

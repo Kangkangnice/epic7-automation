@@ -15,6 +15,11 @@ from auto_game_unified.core.pc_window import Epic7PcWindow
 from auto_game_unified.games.epic7.evidence.shop_refresh import (
     LIVE_TRANSACTIONS_VERIFIED,
 )
+from auto_game_unified.games.epic7.daily_tasks import (
+    DAILY_TASKS,
+    DailyReport,
+    run_daily_tasks,
+)
 from auto_game_unified.games.epic7.finish_home import _assert_finish_home_declared
 from auto_game_unified.games.epic7.modes import (
     MODE_SPECS,
@@ -382,6 +387,19 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Unified game automation")
     parser.add_argument("--game", choices=["epic7"], default="epic7")
     parser.add_argument("--mode", choices=sorted(MODE_SPECS), default="arena")
+    parser.add_argument(
+        "--daily",
+        action="store_true",
+        help="跑「每日任务」：把几条路线按固定次序串起来一次跑完（与 --mode 互斥）",
+    )
+    parser.add_argument(
+        "--daily-tasks",
+        default="",
+        help=(
+            "每日任务要跑哪些路线（逗号分隔）；留空=全部。"
+            f"可选：{','.join(task.mode for task in DAILY_TASKS)}"
+        ),
+    )
     parser.add_argument("--live", action="store_true", help="allow mouse clicks")
     parser.add_argument("--confirm", default="", help="must be RUN when --live is used")
     parser.add_argument("--max-cycles", type=int, help="stop after this many completed cycles")
@@ -396,8 +414,105 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+def _parse_daily_selection(raw: str) -> list[str]:
+    """把 ``--daily-tasks`` 的逗号分隔串解析成模式名列表；留空 = 全部。
+
+    只做切分与去空白，**不在这里校验名字**（那是 ``normalize_selection`` 的事，
+    它会把未知名字报成一句人话）。
+    """
+    if not raw.strip():
+        return [task.mode for task in DAILY_TASKS]
+    return [piece.strip() for piece in raw.split(",") if piece.strip()]
+
+
+def _build_daily_probe(
+    *,
+    window_backend: str,
+    stop_file: Path | None,
+) -> tuple[Runtime, Epic7Navigator]:
+    """建「段间检查」用的 ``(runtime, navigator)``。
+
+    段间检查只做两件事：截一帧看是不是大厅、不在就 ``return_home()``。所以这里
+    只需要一个能截图/点返回的 runtime 加一个能认页面的 navigator，不必带状态机。
+    诊断/日志单独归到 ``epic7_daily_probe`` 名下，不跟任何一条路线的日志混。
+    """
+    runtime = _build_runtime(
+        "daily_probe",
+        dry_run=False,
+        window_backend=window_backend,
+        stop_file=stop_file,
+    )
+    template_root = ROOT / "games" / "epic7" / "templates"
+    navigator = Epic7Navigator(
+        build_navigation_templates(template_root),
+        runtime,
+        backend=window_backend,
+    )
+    return runtime, navigator
+
+
+def _notify_daily(
+    *,
+    live: bool,
+    report: DailyReport,
+    elapsed_seconds: int,
+) -> None:
+    """每日任务整轮的通知（与单路线分开，标题/内容都是汇总口径）。"""
+    if not live:
+        return
+    if report.stopped_by_user:
+        title = "第七史诗：每日任务已手动停止"
+    elif report.aborted_reason:
+        title = "第七史诗：每日任务中途中止"
+    elif report.any_failed:
+        title = "第七史诗：每日任务完成（有失败）"
+    else:
+        title = "第七史诗：每日任务已完成"
+    lines = [f"耗时：{elapsed_seconds} 秒"]
+    for outcome in report.outcomes:
+        mark = "✓" if outcome.ok else "✗"
+        detail = f"（{outcome.detail}）" if outcome.detail else ""
+        lines.append(f"{outcome.label} {mark}{detail}")
+    if report.aborted_reason:
+        lines.append(f"中止原因：{report.aborted_reason}")
+    try:
+        send_qqbot_c2c(title, "\n".join(lines))
+    except Exception as notification_error:  # noqa: BLE001 —— 通知挂了不改结论
+        print(f"QQ 通知失败：{type(notification_error).__name__}", flush=True)
+
+
+def _run_daily(args: argparse.Namespace) -> int:
+    """跑「每日任务」编排。退出码沿用单路线那套：0 全成 / 1 有失败 / 130 手动停。"""
+    started_at = time.monotonic()
+    report = run_daily_tasks(
+        selected=_parse_daily_selection(args.daily_tasks),
+        dry_run=not args.live,
+        window_backend=args.window_backend,
+        stop_file=Path(args.stop_file) if args.stop_file else None,
+        run_mode=run_mode,
+        build_probe=lambda: _build_daily_probe(
+            window_backend=args.window_backend,
+            stop_file=Path(args.stop_file) if args.stop_file else None,
+        ),
+    )
+    elapsed = _elapsed_seconds(started_at)
+    _notify_daily(live=args.live, report=report, elapsed_seconds=elapsed)
+    print(f"每日任务汇总：{report.summary_line()}", flush=True)
+    if report.stopped_by_user:
+        return 130
+    if report.aborted_reason or report.any_failed:
+        return 1
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
+    if args.daily:
+        # `--mode` 此时无意义（它有默认值 "arena"，无法可靠区分「用户显式传了」），
+        # 所以不报错、直接忽略 —— 界面与命令行都不会同时传这两个。
+        if args.live and args.confirm != "RUN":
+            raise SystemExit("实跑模式需要附加参数：--live --confirm RUN")
+        return _run_daily(args)
     if args.mode == "hero_synthesis" and args.max_cycles is None:
         # 英雄合成固定跑一遍列表，无需指定次数
         args.max_cycles = 1

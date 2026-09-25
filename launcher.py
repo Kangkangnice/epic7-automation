@@ -5,6 +5,10 @@ from collections.abc import Callable
 from auto_game_unified import main as main_module
 
 
+# 「每日任务」在菜单里的标识。它没有对应的 MODE_SPECS 条目，所以用一个
+# 不可能跟模式名撞车的值；`run_interactive` 见到它就切到 --daily 分支。
+DAILY_MENU_ID = "__daily__"
+
 MENU_OPTIONS = {
     "1": ("主线", "story"),
     "2": ("竞技场", "arena"),
@@ -14,6 +18,8 @@ MENU_OPTIONS = {
     "6": ("刷书签", "shop_refresh"),
     "7": ("世界首领战", "world_boss"),
     "8": ("骑士团捐赠", "knights_donation"),
+    # 每日任务不是单条路线，是一个编排入口（见 games/epic7/daily_tasks.py）。
+    "10": ("每日任务", DAILY_MENU_ID),
 }
 
 MENU_LINES = (
@@ -26,6 +32,7 @@ MENU_LINES = (
     "6. 刷书签（实验功能，只支持模拟器）",
     "7. 世界首领战（骑士团每日任务，每场 20 体力，不够自动用树叶买）",
     "8. 骑士团捐赠（骑士团每日捐赠，请求支援 + 支援团员 + 每周任务，跑一遍结束）",
+    "10. 每日任务（世界首领战 → 骑士团捐赠 → 竞技场，依次跑完；每步自动回首页）",
 )
 
 # 运行平台选择：模拟器（LDPlayer）与 PC 客户端共用同一套业务代码与模板资产，
@@ -59,9 +66,26 @@ def run_interactive(
         selected = input_fn("请输入功能编号：").strip()
         if selected in MENU_OPTIONS:
             break
-        output("请输入 1 到 8 之间的功能编号。")
+        output("请输入 1 到 10 之间的功能编号。")
 
     label, mode = MENU_OPTIONS[selected]
+    if mode == DAILY_MENU_ID:
+        # 每日任务是一个编排入口：次数由各条路线自己的每日默认值决定（见
+        # games/epic7/daily_tasks.py），菜单上不问用户；勾选在桌面助手里做，
+        # 命令行这里一律按「全跑」。
+        output(f"即将运行：{label}（平台={BACKEND_OPTIONS[backend_choice][0]}）")
+        output("按 P 可随时停止。")
+        entry = run_main or main_module.main
+        return entry(
+            [
+                "--daily",
+                "--window-backend",
+                window_backend,
+                "--live",
+                "--confirm",
+                "RUN",
+            ]
+        )
     if mode == "hero_synthesis":
         cycles = 1
     elif mode == "world_boss":

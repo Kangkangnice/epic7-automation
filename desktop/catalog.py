@@ -80,3 +80,27 @@ def route_by_name(mode: str) -> RouteInfo:
         return next(route for route in ROUTES if route.mode == mode)
     except StopIteration as error:
         raise ValueError(f"未知路线：{mode}") from error
+
+
+# ── 「每日任务」：多选，不是单路线 ──────────────────────────────────────────
+# 刻意**不放进 ROUTES**：ROUTES 是「选一条路线」的单选面板数据源（形状是
+# 「一条路线 = 一个状态机 + 一个 Runner」），而每日任务是**编排**（把几条串起来）。
+# 塞进去会让 ROUTES 的语义变浑、连测试钉住的顺序也失去意义。所以单独一组。
+DAILY_GROUP_ID = "__daily__"
+DAILY_LABEL = "每日任务"
+DAILY_DESCRIPTION = (
+    "把下面勾选的日常任务按固定次序一次跑完（世界首领战 → 骑士团捐赠 → 竞技场）；"
+    "每做完一条都会自己回到首页再接下一条；某一条失败会跳过它继续跑，"
+    "最后给你一份「哪条成功、哪条失败」的汇总"
+)
+
+
+def daily_items() -> tuple[tuple[str, str], ...]:
+    """每日任务的勾选项 ``(mode, label)``，次序与执行次序一致。
+
+    直接从 ``games/epic7/daily_tasks.DAILY_TASKS`` 派生 —— 只有一处定义，
+    界面不会跟执行器各说各话。
+    """
+    from auto_game_unified.games.epic7.daily_tasks import DAILY_TASKS
+
+    return tuple((task.mode, task.label) for task in DAILY_TASKS)
