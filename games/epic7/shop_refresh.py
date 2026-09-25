@@ -359,6 +359,11 @@ class ShopRefreshRunner:
         self.resource_exhausted = False
         self._sold_slots: set[tuple[int, ShopPhase, ShopItemKind, int]] = set()
         self._sold_rows: set[tuple[int, ShopItemKind, str]] = set()
+        # 「收尾回首页」钩子：由 main.run_mode 在 runner.run() 正常返回后注入。
+        # ⚠️ 本路线**自带独立主循环**（裸定义、`super()` 0 次），走不到基类
+        # `ModeRunnerBase._close_out`，所以这里必须自己声明、自己调用。
+        # 契约同基类：**绝不抛异常**，失败返回原因字符串（退出码不变）。
+        self.finish_home: Callable[[], Optional[str]] | None = None
 
     @staticmethod
     def _observation_signature(observation: ShopObservation) -> str:
@@ -854,6 +859,29 @@ class ShopRefreshRunner:
             self.sleep(self.poll_seconds)
         raise self._failure("接力回顶后商店列表未静止", last_screen)
 
+    def _close_out(self) -> None:
+        """收尾回首页（刷书签自己的那一份，语义同 ``ModeRunnerBase._close_out``）。
+
+        ⚠️ 这里是 ``run()`` 里**唯一的正常退出口**，它同时覆盖两种结局：
+        ``COMPLETE``（刷满轮次，正常完成）与 ``STOPPED``（金币/钻石不足等资源类
+        主动收工）。两者都该回家。
+
+        ⚠️ 走不到这里的三类：``ManualStop``（用户喊停）、``_failure()`` 抛出的异常、
+        以及实跑未验收那条 ``RuntimeError`` —— 它们都在 ``run()`` 的 ``except``
+        分支里直接 ``raise``。
+
+        ⚠️ **干跑也不接**：干跑在 ``try`` 里第 877 行就 ``return 0`` 了，
+        根本到不了这里（那是「只观察一帧」的诊断路径，不该动游戏）。
+        """
+        if self.finish_home is None:
+            return
+        failure = self.finish_home()
+        if failure is not None:
+            self.runtime.log(
+                f"模式=刷书签 收尾=回首页失败 原因={failure} "
+                "处理=已忽略（不影响本次运行结论）"
+            )
+
     def run(self, max_cycles: int | None = None) -> int:
         if max_cycles is None or max_cycles <= 0:
             raise ValueError("刷书签需要正数付费刷新次数")
@@ -950,6 +978,7 @@ class ShopRefreshRunner:
                 if self.machine.phase is ShopPhase.COMPLETE:
                     break
                 self._refresh_transaction(screen, observation)
+            self._close_out()
             return self.machine.completed_cycles
         except ManualStop:
             if self.machine.phase not in {

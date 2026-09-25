@@ -857,6 +857,11 @@ class ExpeditionRunner:
             runtime, recovery_gate=self.recovery_gate
         )
         self.resource_exhausted = False
+        # 「收尾回首页」钩子：由 main.run_mode 在 runner.run() 正常返回后注入。
+        # ⚠️ 本路线**自带独立主循环**（裸定义、`super()` 0 次），走不到基类
+        # `ModeRunnerBase._close_out`，所以这里必须自己声明、自己调用。
+        # 契约同基类：**绝不抛异常**，失败返回原因字符串（退出码不变）。
+        self.finish_home: Callable[[], Optional[str]] | None = None
         self.battle_supervisor = battle_supervisor or BattleSupervisor(
             runtime,
             self.recovery_gate,
@@ -1001,6 +1006,7 @@ class ExpeditionRunner:
             except StaminaExhausted as error:
                 self.resource_exhausted = True
                 self.runtime.log(f"模式=远征 停止=通缉传单耗尽 详情={error}")
+                self._close_out()
                 return self.machine.completed_cycles
             except UnrecognizedScreen as error:
                 wake = self.unknown_screen_wake.handle(
@@ -1045,9 +1051,29 @@ class ExpeditionRunner:
                 recovered = False
                 self.runtime.log(f"模式=远征 业务完成 cycles={self.machine.completed_cycles}")
                 if max_cycles is not None and self.machine.completed_cycles >= max_cycles:
+                    self._close_out()
                     return self.machine.completed_cycles
             if self.now() - state_started >= self._STATE_TIMEOUT_SECONDS and self.recovery and not recovered:
                 recovered = True
                 self.recovery()
                 self.machine.state = ExpeditionState.HOME
+        self._close_out()
         return self.machine.completed_cycles
+
+    def _close_out(self) -> None:
+        """收尾回首页（远征自己的那一份，语义同 ``ModeRunnerBase._close_out``）。
+
+        ⚠️ 两类退出**刻意不接**：``ManualStop``（用户喊停）与异常（跑到一半挂了，
+        硬按 Back 有丢局风险）—— 两者都在 ``run()`` 里直接 raise，走不到这里。
+
+        ⚠️ **干跑也不接**：``run()`` 的 dry_run 短路在**调用本方法之前**就 return 了
+        （那是「只观察一帧」的诊断路径，不点任何东西，也就不该动游戏）。
+        """
+        if self.finish_home is None:
+            return
+        failure = self.finish_home()
+        if failure is not None:
+            self.runtime.log(
+                f"模式=远征 收尾=回首页失败 原因={failure} "
+                "处理=已忽略（不影响本次运行结论）"
+            )
