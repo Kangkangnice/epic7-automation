@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from datetime import date
+from datetime import date, datetime
 import random
 from time import sleep as default_sleep
 from typing import Callable, NamedTuple, Optional, Sequence
@@ -210,6 +210,41 @@ def state_label(state: ArenaState) -> str:
     return STATE_LABELS.get(state, state.value)
 
 
+class ArenaOutcome(Enum):
+    """一局竞技场的结算结果。
+
+    两个判据现在**都有实测正例**（2026-09-25 起）：
+
+    - ``WIN`` ← ``result_victory``（屏幕上的「VICTORY」大字）：真机赢局帧 0.8761~0.8816，
+      全库 227 张夹具里除结果页外最高 0.2724。
+    - ``LOSE`` ← ``result_defeat``（屏幕上的「DEFEAT」大字）：真机输局帧 0.9871~1.0000，
+      **赢局帧只有 0.1090~0.1129**，全库夹具里最高 0.3828。
+
+    ⚠️ 在这之前 ``LOSE`` 是**推理判据**（「积分面板在、VICTORY 不在」），而那份推理的
+    兜底锚点 ``result_rating`` 在真机上只有 0.38 ⇒ 实际效果是**输局全被判成 ``UNKNOWN``**
+    （2026-09-25 实跑 5 局：3 胜 2 输，报出来是「胜 3（未知 2）」，那两张输局帧现在
+    就是新锚点的素材来源）。
+
+    认不出（两个横幅都没有、画面还不是结算页）仍然单列 ``UNKNOWN``，**绝不并入「负」**：
+    宁可显示「未知 1」，也不能报一个没把握的比分。
+    """
+
+    WIN = "win"
+    LOSE = "lose"
+    UNKNOWN = "unknown"
+
+
+OUTCOME_LABELS = {
+    ArenaOutcome.WIN: "胜",
+    ArenaOutcome.LOSE: "负",
+    ArenaOutcome.UNKNOWN: "未知",
+}
+
+# 结算画面只留最近这么多张。落盘目录是**仓库内**的 ``docs/manual_review/arena/``
+# （会被 git 跟踪），一张全屏 PNG 1~3 MB，无限攒会把仓库撑大；留 10 张足够回看最近一轮。
+OUTCOME_FRAME_KEEP = 10
+
+
 class TicketExhausted(RuntimeError):
     """The game presented its ticket-purchase popup instead of entering battle."""
 
@@ -239,9 +274,10 @@ class ArenaTemplates:
     refresh_title: np.ndarray
     refresh_free: np.ndarray
     refresh_confirm: np.ndarray
-    # 结果页的**竞技场专有**内容锚点，只给接力探测用（见 evidence/arena.py 里的说明）。
+    # 结果页的**竞技场专有**内容锚点（见 evidence/arena.py 里的说明）。
     result_rating: np.ndarray
     result_victory: np.ndarray
+    result_defeat: np.ndarray
     threshold: float = 0.98
     quick_battle: QuickBattleDetector | None = None
     evidence: EvidenceProfile | None = None
@@ -271,6 +307,7 @@ def build_templates(
         refresh_confirm=load_template(str(template_dir / "arena_refresh_confirm.png")),
         result_rating=load_template(str(template_dir / "arena_result_rating.png")),
         result_victory=load_template(str(template_dir / "arena_result_victory.png")),
+        result_defeat=load_template(str(template_dir / "arena_result_defeat.png")),
         quick_battle=load_simulator_quick_battle_detector(template_dir),
         threshold=0.93 if backend == "pc" else 0.98,
         evidence=evidence,
@@ -409,6 +446,26 @@ class ArenaStateMachine:
 
     def _visible(self, screen: np.ndarray, template_name: str) -> bool:
         return self._locate(screen, template_name) is not None
+
+    def observe_outcome(self, screen: np.ndarray) -> ArenaOutcome:
+        """读出这一局是赢、输，还是认不出。
+
+        判据**与接力同源**（同一对结果页模板、同一组阈值，见 ``detect_resume_state``），
+        不另定一套口径 —— 否则就会长出「接力认得出、跑起来认不出」的第二种说法。
+
+        顺序不能颠倒：先看 ``result_victory``（只有赢才有），再看 ``result_defeat``
+        （只有输才有）。``result_rating`` 留在最后兜底 —— 它只在旧基准夹具上有效、
+        真机上只有 0.38（见 ``evidence/arena.py``），留着是为了「横幅还在淡入」的那几帧
+        还有个依据，不是主判据。三个都不在，说明画面还不是结算页（多半停在结算动画里），
+        返回 ``UNKNOWN`` 而不是硬算成输。
+        """
+        if self._visible(screen, "result_victory"):
+            return ArenaOutcome.WIN
+        if self._visible(screen, "result_defeat"):
+            return ArenaOutcome.LOSE
+        if self._visible(screen, "result_rating"):
+            return ArenaOutcome.LOSE
+        return ArenaOutcome.UNKNOWN
 
     @classmethod
     def _scaled_region(
@@ -834,6 +891,7 @@ def _resume_evidence_flags(
         "confirm": machine._locate(screen, "confirm") is not None,
         "result_rating": machine._locate(screen, "result_rating") is not None,
         "result_victory": machine._locate(screen, "result_victory") is not None,
+        "result_defeat": machine._locate(screen, "result_defeat") is not None,
         "rank_promotion_arrow": promotion,
         "rank_confirm": promotion,
     }
@@ -893,7 +951,9 @@ def detect_resume_state(
 
     # 没有证据档案时的兜底（只在手工拼 ArenaTemplates 的测试里出现）：
     # 判据与上面两个页面保持一致，避免两处语义漂移。
-    if flags["confirm"] and (flags["result_rating"] or flags["result_victory"]):
+    if flags["confirm"] and (
+        flags["result_rating"] or flags["result_victory"] or flags["result_defeat"]
+    ):
         return ArenaState.RESULT, state_label(ArenaState.RESULT)
     if flags["rank_promotion_arrow"] and flags["rank_confirm"]:
         return ArenaState.CONFIRMING, state_label(ArenaState.CONFIRMING)
@@ -981,6 +1041,7 @@ class ArenaRunner:
         recovery_gate: RecoveryGate | None = None,
         battle_supervisor: BattleSupervisor | None = None,
         purchase_stamp_path: Path | None = None,
+        outcome_frame_dir: Path | None = None,
     ) -> None:
         self.machine = machine
         self.runtime = runtime
@@ -1001,6 +1062,11 @@ class ArenaRunner:
             recovery_gate=self.recovery_gate,
         )
         self.purchase_stamp_path = purchase_stamp_path
+        # 每局结算画面的落盘目录（实跑由 main.py 注入 docs/manual_review/arena/）。
+        # **默认 None = 不落盘**：测试里绝不能顺手往仓库里写图。
+        self.outcome_frame_dir = outcome_frame_dir
+        # 本进程的战绩：胜 / 负 / 认不出。「认不出」单列，不并入负（见 ArenaOutcome）。
+        self.outcome_tally = {outcome: 0 for outcome in ArenaOutcome}
         self.resource_exhausted = False
 
     def _run_committed_battle(self, *, cycle: int) -> None:
@@ -1014,6 +1080,81 @@ class ArenaRunner:
         if outcome is not BattleOutcome.RESULT_REACHED:
             raise RuntimeError(f"竞技场战斗出现意外结果：{outcome.value}")
         self.machine.state = ArenaState.RESULT
+        self._record_outcome(cycle=cycle)
+
+    def _record_outcome(self, *, cycle: int) -> None:
+        """结算页刚确认，就地记下这一局的胜负。
+
+        **每局恰好走一次**：调用点只有 ``_run_committed_battle``（每局战斗打一次），
+        不像 ``next_action`` 那样每帧都会被问、也不会被 ``preview`` 的空跑回滚。
+
+        判定复用 ``machine.observe_outcome``（与接力同源）。认不出照样入账，进 ``未知``
+        那一格，绝不硬塞给「负」—— 战绩要能反映「我不知道」，而不是给个好看的数字。
+        """
+        screen = self.runtime.capture()
+        result = self.machine.observe_outcome(screen)
+        self.outcome_tally[result] += 1
+        frame = self._save_outcome_frame(screen, result, cycle=cycle)
+        self.runtime.log(
+            f"模式=竞技场 轮次={cycle} 战绩={OUTCOME_LABELS[result]} "
+            f"结算图={frame if frame is not None else '未落盘'}"
+        )
+
+    def _save_outcome_frame(
+        self,
+        screen: np.ndarray,
+        result: ArenaOutcome,
+        *,
+        cycle: int,
+    ) -> Path | None:
+        """把这一局的结算画面留一张盘，作为「胜负判得对不对」的第一手证据。
+
+        「胜」的判据已经实测过，但「负」这一侧至今**没有真帧**（全库唯一那张结算图
+        是赢的）—— 这张图就是补给它的素材：打完回看一眼就知道判得对不对。
+
+        ⚠️ 文件名**保持 ASCII**（``win`` / ``lose`` / ``unknown``）：``cv2.imwrite`` /
+        ``imread`` 走不了中文路径，写「胜/负」会变成一张读不回来的图。
+        """
+        if self.outcome_frame_dir is None:
+            return None
+        self.outcome_frame_dir.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        path = self.outcome_frame_dir / f"{stamp}_{result.value}_r{cycle}.png"
+        image = cv2.cvtColor(screen, cv2.COLOR_RGB2BGR)
+        if not cv2.imwrite(str(path), image):
+            raise RuntimeError(f"结算画面保存失败：{path}")
+        self._prune_outcome_frames()
+        return path
+
+    def _prune_outcome_frames(self) -> None:
+        """只留最近 ``OUTCOME_FRAME_KEEP`` 张结算图，多出来的从**最旧**开始删。
+
+        ⚠️ 排序靠**文件名**，不靠文件时间：命名以 ``%Y%m%d_%H%M%S`` 开头 ⇒ 字典序就是
+        时间序，而 mtime 会被复制/同步改掉、名字不会。改文件名格式时这里要一起看。
+
+        删不掉（用户在看图、文件被占用）就跳过：**留一张旧图不值得中断跑图**，
+        下一次结算再收。
+        """
+        if self.outcome_frame_dir is None:
+            return
+        frames = sorted(self.outcome_frame_dir.glob("*.png"), key=lambda path: path.name)
+        for stale in frames[: -OUTCOME_FRAME_KEEP]:
+            try:
+                stale.unlink()
+            except OSError:
+                continue
+
+    def outcome_summary(self) -> str:
+        """给通知与控制台用的一行战绩：``胜 2 / 负 1``（认不出时补 ``（未知 1）``）。"""
+        parts = [
+            f"{OUTCOME_LABELS[outcome]} {self.outcome_tally[outcome]}"
+            for outcome in (ArenaOutcome.WIN, ArenaOutcome.LOSE)
+        ]
+        unknown = self.outcome_tally[ArenaOutcome.UNKNOWN]
+        text = " / ".join(parts)
+        if unknown:
+            text += f"（未知 {unknown}）"
+        return text
 
     def _save_failure_diagnostic(
         self,

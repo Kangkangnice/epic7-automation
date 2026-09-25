@@ -31,6 +31,9 @@ class ProjectLayoutTests(unittest.TestCase):
             "battle_skill_animation_live_20260825.png",
             "battle_auto_off_enemy_turn_live_20260826.png",
             "result.png",
+            # 2026-09-25 真机输局帧（实跑时被判成「未知」的那两张之一）。它是
+            # `arena_result_defeat.png` 锚点的唯一正例 —— 「负」这一侧以前全库没有真帧。
+            "result_defeat_live_20260925.png",
             "rank_confirm.png",
             "rank_promotion_master.png",
             "no_ticket.png",
@@ -174,9 +177,14 @@ class ProjectLayoutTests(unittest.TestCase):
             # 「先领宝箱、再判次数」这条顺序的回归依据（顺序反了会直接收摊走人）。
             "worldboss_home_chest_claimable.png",
             # 同一天的第二次实拍：**点完宝箱之后**的样子 —— 箱子原地变成**绿色对勾**，
-            # 不弹任何窗口。这张是「领完不会重复点」的回归依据：绿勾那一态对可领模板
-            # 只有 0.7085（阈值 0.80），认不出来才会往下走去判次数、干净收场。
+            # 不弹任何窗口。这张是「领完不会重复点」的回归依据（绿勾那一态对可领模板
+            # 只有 0.7085，认不出来才会往下走去判次数、干净收场）。
             "worldboss_home_chest_claimed.png",
+            # 2026-09-25 第三次实跑：**同一个绿勾态、换一张截图**，对可领模板却得 **0.8069**
+            # —— 越过了当时 0.80 的阈值，于是程序把已领的箱子当成可领，点 4 次不生效 →
+            # 回大厅重来 → 再点 4 次，把路线拖死；而当时局内 0/2 本该直接收场。
+            # ⇒ 这是「模板得分单独守不住」的现场复现件，也是亮度比那道判据的回归依据。
+            "worldboss_home_chest_claimed_dark.png",
         }
         fixture_dir = ROOT / "tests" / "fixtures" / "epic7_world_boss"
         self.assertEqual(expected, {path.name for path in fixture_dir.glob("*.png")})
@@ -199,6 +207,12 @@ class ProjectLayoutTests(unittest.TestCase):
             #     实机撞上后整条路线中止的一页）。
             "support_page_two_buttons.png",
             "support_confirm.png",
+            # 2026-09-25 实跑当天现采（**原始诊断帧**，不是按矩形裁的）：
+            #   support_page_short_material.png：一屏两个绿按钮，**上面那行材料不足**
+            #     （持有 1、这一格要 2）。当时程序把它当成「没点到」连点 4 次、
+            #     整条路线提前收工 ⇒ 「材料不足就跳过」这条判据的回归依据。
+            #     它同时是两个数字字模唯一的实拍样本来源（需求 2 与需求 4）。
+            "support_page_short_material.png",
             # 「请求支援」弹窗两张一组：未选中 / 已选中「下级精灵之花」。
             # 这两张互为对方最强的干扰源（实测 0.8279 / 0.7878），是 0.88 / 0.85 两个
             # 非默认阈值的全部依据，必须成对留着。

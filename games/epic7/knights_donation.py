@@ -16,7 +16,29 @@
       └ 每行右侧的绿色「领取」
 ```
 
-## ⚠️ 「这一行到底支援成功没有」只能靠**有没有弹获得奖励**判断（2026-09-24 实跑发现）
+## 「这一格能不能支援」有两道判据：**先看数字，再看结果**
+
+### 一、点之前（前置判据，2026-09-25 补）：读「持有 vs 需求」
+
+材料不够的那一格，绿色按钮**不会变灰**，点下去什么都不发生。2026-09-25 实跑因此出了事故：
+
+- 程序点完「没看到任何变化」⇒ 当成「没点到」⇒ 对**同一格**连点 4 次（每次隔 8 秒）；
+- 第 4 次后它判定「这个按钮坏了」，`停止=动作[support-one]连续 4 次未生效`，
+  **整条路线提前收工**（后面的每周任务领奖也没做）。
+
+而同一帧里其实还有另一个能支援的绿按钮 —— 只是轮不到它。
+
+路线里本来就有「吃不下就换下一格」的跳过表，但它**从来没生效过**：主循环的转场重试
+（``runner_base.py`` 第 539~562 行）会把状态机刚挑好的那一行**顶替回旧坐标**再点一次
+（`_source_observation_matches` 对没有该字段的动作恒真）。所以正确的做法是
+**点之前就知道**：读每行的「持有：N」与按钮上的「支援 M 个」，``N < M`` 就跳过这一格、
+连点都不点。判据本体、字模来源与覆盖范围见 ``knights_support_digits.py``。
+
+⚠️ **认不出就退回去点**：只要有一边读不出（数字不在字模里、区域没框到），
+``RowNumbers.verdict`` 就返回 ``None``，这里**照旧去点** —— 也就是回到下面那道兜底判据。
+读不出只会「帮不上忙」，不会比现在更坏。
+
+### 二、点之后（兜底判据）：有没有弹「获得奖励」
 
 实跑第一次就卡在这里：点列表里的「支援1个」之后不是马上支援，**先弹了一个确认框**
 （我采图那天没遇到，所以第一版不认识它、整条路线中止）。更关键的是第二次实测：
@@ -24,7 +46,7 @@
 「今日支援上限」也不涨（对照实验：换成持有充足的那一行，点完立刻弹「获得奖励」、
 上限从 30/200 变成 60/200，该行按钮变成灰勾）。
 
-### ⚠️ 游戏**会**提示「材料不足」，但那行小字一闪就没 ⇒ 不做成判据（用户 2026-09-24 确认）
+#### ⚠️ 游戏**会**提示「材料不足」，但那行小字仍然不做判据（2026-09-24 确认）
 
 用户原话：材料为零时点完「**下面会有个小字说材料不足，但很快，然后就没了**」，
 而奖励确实没有任何变化。也就是说游戏确实给了提示，但它是个**一闪而过的浮字**：
@@ -33,10 +55,10 @@
 - 更致命的是「没看到」和「没出现」在画面上**分不开** —— 拿它当判据会把「漏检」读成
   「支援成功了」，正是要避免的那类错误。
 
-所以判据仍然只用**下游那个确定事件**（有没有弹「获得奖励」），
-「材料不足」这行字**只当背景知识**记在这里，别拿它做判据。
+⇒ 那行小字**只当背景知识**。前置判据用的是**静态**的「持有 / 需求」数字
+（它一直在画面上、不会一闪而过）—— 两者能分开，正是 2026-09-25 敢拿数字做判据的原因。
 
-于是判据是「**有没有看到获得奖励弹窗**」：
+兜底判据是「**有没有看到获得奖励弹窗**」：
 
 - 挑行时记下按钮中心 y 到 ``pending_support_y``；
 - 看到「获得奖励」⇒ 作数，清空待结算；
@@ -45,9 +67,26 @@
 - ⚠️ 跳过表的键是**绝对 y**，只在「列表没动过」时有效：支援成功（列表重排）与
   下滑（整列位移）都会让旧 y 指到别人头上 ⇒ 这两种情况一发生就**清空**跳过表。
 
-没有这一步的话，`find_best_template` 每轮都会挑回同一个按钮，在那行上白转 4 次
-然后整条路线中止 —— 永远轮不到下面那个真的能支援的人。所以挑行用的是
-``find_all_templates``（整列找**所有**绿按钮）而不是只找最高分那个。
+跳过表是**两条来路共用**的：① 前置判据说「材料不足」（这一格没点），
+② 点过但没等到「获得奖励」。没有它对①，`find_best_template` 每轮都会挑回同一个按钮；
+对②，则会在那行上白转 4 次然后整条路线中止 —— 永远轮不到下面那个真的能支援的人。
+所以挑行用的是 ``find_all_templates``（整列找**所有**绿按钮）而不是只找最高分那个。
+
+## 「请求支援」今天已经用过 ⇒ 按钮变灰，别点（2026-09-25 用户实跑撞上）
+
+额度用完时按钮**变灰**，但形状没变 ⇒ ``TM_CCOEFF_NORMED`` 照样命中（灰帧 **0.9846**，
+与能点帧 1.0000 只差 0.015）⇒ 照点就白等 ``REQUEST_POPUP`` 的 42 秒转场超时 ×4，
+``停止=动作[request-support]连续 4 次未生效``，整条路线提前收工。
+
+**变灰只体现在亮度上**，所以判据是 ``request_button_relative_v``
+（按钮区域 V 的 99.9 分位 ÷ **整幅画面** V 的均值）：能点 ≈**2.32**、已灰 ≈**1.20**。
+用**相对**亮度而不是绝对阈值，是因为绝对亮度会被页面淡入骗 —— 见
+``REQUEST_BUTTON_ALIVE_RATIO`` 的注释（world_boss 2026-09-23 的教训）。
+
+⚠️ 跳过请求**不影响支援别人**：列表里的绿按钮跟这个额度无关，当天第二次运行照样有人
+可以支援（用户那次现场就是这样：Alefa / Cattails 两行还是绿的）。
+⚠️ 量不出来（区域裁不出 / 整幅全黑）一律**当作还亮着**照旧点 —— 宁可退回今天的行为，
+也不要因为量不到就白丢当天唯一一次请求。
 
 ## ⚠️ 两个「不能按固定坐标点」的实测事实
 
@@ -124,6 +163,11 @@ from auto_game_unified.games.epic7.evidence.knights_donation import (
     build_knights_donation_evidence,
     find_dot,
     milestone_claim_point,
+)
+from auto_game_unified.games.epic7.knights_support_digits import (
+    RowNumbers,
+    load_digit_glyphs,
+    read_row_numbers,
 )
 from auto_game_unified.games.epic7.runner_base import ModeRunnerBase
 from auto_game_unified.games.epic7.unknown_screen import UnrecognizedScreen
@@ -209,6 +253,59 @@ SUPPORT_PEAK_MIN_GAP = 60
 # 「已经被判定吃不下的行」的纵向匹配容差：新挑到的按钮中心离它这么近就视为同一行。
 SUPPORT_ROW_SKIP_TOLERANCE = 40
 
+# ---- 「请求支援」今天已经用过 ⇒ 按钮变灰（2026-09-25 用户实跑撞上）----
+#
+# 事故：当天第二次运行时「请求支援」已经用掉了、按钮**变灰**，但——
+# ⚠️ **模板分认不出来**：``TM_CCOEFF_NORMED`` 对亮度缩放不敏感，而变灰只是文字亮度变了、
+# 字形一模一样 ⇒ 灰帧上模板仍得 **0.9846**（能点帧 1.0000，只差 0.015）。
+# 于是程序照点，页面当然不变 ⇒ 每次白等 ``REQUEST_POPUP`` 的 42 秒转场超时 × 4 次
+# ⇒ ``停止=动作[request-support]连续 4 次未生效``，整条路线提前收工。
+#
+# 所以判据只能看**亮度**；而**绝对亮度会被页面淡入骗**（world_boss 2026-09-23 已踩过：
+# 绝对阈值 ``V>=90`` 在整屏压暗到 50% 时自己塌掉，把「还有次数」误判成「次数用完」）
+# ⇒ 这里用**相对亮度**：按钮区域 V 的 99.9 分位 ÷ **整幅画面** V 的均值。
+#
+# 实测（``runtime_logs/_probe_request_fade.py``，9 张真帧；并把同一帧乘亮度系数
+# 1.0/0.8/0.6/0.5/0.4/0.3 模拟淡入，全程几乎不动）：
+# - **能点**（5 张，褐底与深蓝底两种外观）：**2.321 ~ 2.347**
+# - **已灰**（4 张，含用户当天实跑帧）：**1.195 ~ 1.215**
+# 两侧差 1.9 倍 ⇒ 阈值 1.70，两边各留约 40% 余量。**改这个数前先重跑那个探针。**
+#
+# ⚠️ 另一条死路（记下来免得再试）：比「能点模板」与「灰模板」谁分高 —— 两者形状相同，
+# CCOEFF 把亮度差归一化掉了，分数几乎一样，分不开。
+REQUEST_BUTTON_ALIVE_RATIO = 1.70
+
+
+def request_button_relative_v(
+    screen: np.ndarray, region: tuple[int, int, int, int]
+) -> float:
+    """量「请求支援」按钮**相对整幅画面**的亮度：能点时 ≈2.3（亮白字）、已灰时 ≈1.2。
+
+    用比值而不是绝对亮度：整幅画面被压暗（页面淡入）时两边一起降、比值不变 ——
+    与 ``world_boss.weekly_chest_brightness_ratio`` 同一个思路。
+
+    取 V 的 **99.9 分位**而不是均值或最大值：
+    - 区域**均值**分不开（已灰那几张的底板反而更亮：0.597 vs 0.524，方向是反的）；
+    - **最大值**是单像素，容易被一个噪点顶起来；
+    - 99.9 分位落在「亮白文字」那一小撮上（约 30 个像素），既稳又有信号。
+
+    V 直接用 ``max(R,G,B)`` 算（HSV 的定义，实测与 ``cv2.cvtColor(..., HSV)[:, :, 2]``
+    **逐像素相同**）：这里只要亮度，不值得为它把整幅画面转一遍三通道 HSV。
+    """
+    scale_x = screen.shape[1] / REFERENCE_SIZE[0]
+    scale_y = screen.shape[0] / REFERENCE_SIZE[1]
+    x, y, width, height = region
+    patch = screen[
+        round(y * scale_y) : round(y * scale_y) + round(height * scale_y),
+        round(x * scale_x) : round(x * scale_x) + round(width * scale_x),
+    ]
+    if patch.size == 0:
+        return 0.0
+    frame_v = float(screen.max(axis=2).mean())
+    if frame_v <= 0.0:
+        return 0.0
+    return float(np.percentile(patch.max(axis=2), 99.9)) / frame_v
+
 
 def state_label(state: KnightsDonationState) -> str:
     return STATE_LABELS.get(state, state.value)
@@ -247,6 +344,10 @@ class KnightsDonationTemplates:
     reward_title: np.ndarray
     support_confirm_title: np.ndarray
     support_confirm_button: np.ndarray
+    # 数字字模（0~5），前置判据「材料不足就跳过」用；见 ``knights_support_digits.py``。
+    # ⚠️ 刻意**不给默认值**：字模是判据的一部分，漏了就会安静地退回「照旧点」，
+    # 属本项目最怕的「判据没接上」那类。要动它就得显式改这里。
+    digit_glyphs: dict[int, np.ndarray]
     evidence: object = None
 
 
@@ -270,6 +371,9 @@ def build_knights_donation_templates(template_dir: Path) -> KnightsDonationTempl
         reward_title=load("reward_title"),
         support_confirm_title=load("support_confirm_title"),
         support_confirm_button=load("support_confirm_button"),
+        # 缺任何一个数字字模都会在这里直接抛错 —— 宁可加载不动，也不要安静地
+        # 退回「点完没反应就重试」那条老路。
+        digit_glyphs=load_digit_glyphs(template_dir),
         evidence=build_knights_donation_evidence(template_dir),
     )
 
@@ -305,8 +409,10 @@ class KnightsDonationStateMachine:
         self.request_done = False
         # 支援列表下滑次数账本（每支援成功一次清零）。
         self.support_scrolls = 0
-        # ⚠️ 「已经试过、但确认之后什么都没发生」的行（记按钮中心的 y）。
-        # 实测（用户 2026-09-24 确认）：团员要的材料我持有 0 时，确认框点完行不会消失、
+        # ⚠️ 「这一格别再点了」的跳过表（记按钮中心的 y）。**两条来路共用**：
+        #   ① **点之前**读出「持有 < 需求」（材料不足，2026-09-25 补的前置判据）⇒ 没点；
+        #   ② 点过但回到列表页没等到「获得奖励」⇒ 那一下没生效。
+        # 实测（用户 2026-09-24 确认）：团员要的材料我持有不足时，确认框点完行不会消失、
         # 点数也不涨 —— 游戏只在下方**闪一行小字「材料不足」**，一闪就没（做不成判据，
         # 详见模块 docstring）⇒
         # 必须记住这一行、下一次挑**别的**绿按钮，否则会一直挑到同一行、
@@ -440,6 +546,19 @@ class KnightsDonationStateMachine:
             abs(y - skipped) <= SUPPORT_ROW_SKIP_TOLERANCE for skipped in self.skipped_rows
         )
 
+    def _request_button_still_alive(self, screen: np.ndarray) -> bool:
+        """右上「请求支援」现在还是亮的（= 今天还没请求过）吗？
+
+        ⚠️ **拿不准一律当作「还亮着」**（fail-open ⇒ 照旧去点）：只有明确量到
+        「暗了一大截」才跳过这一步。反过来误判成「已灰」会白丢当天唯一一次请求，
+        而且用户从画面上很难察觉 —— 所以不确定时宁可退回今天的行为。
+        """
+        region = self.templates.evidence.atom("request_support_button").region
+        ratio = request_button_relative_v(screen, region)
+        if ratio <= 0.0:  # 区域裁不出来 / 整幅全黑 ⇒ 量不到，别下结论
+            return True
+        return ratio >= REQUEST_BUTTON_ALIVE_RATIO
+
     def _at_resource_support(self, screen: np.ndarray):
         # 0) 先结算上一轮：**回到列表页就说明没等到「获得奖励」** ⇒ 那一下没生效，
         #    把那一行记进跳过表（实测 + 用户确认：材料不足时游戏只闪一行小字
@@ -451,20 +570,44 @@ class KnightsDonationStateMachine:
             self.skipped_rows.add(self.pending_support_y)
             self.pending_support_y = None
         # 1) 每天一次的「请求支援」。同一次运行里只做一次。
+        #
+        #    ⚠️ 还要看**今天是不是已经请求过了**（2026-09-25 用户实跑撞上）：额度用完
+        #    按钮会**变灰**，但形状没变 ⇒ 模板照样命中（灰帧 0.9846）⇒ 照点的话页面不变、
+        #    每次白等 42 秒转场超时 × 4 次、整条路线提前收工。变灰只体现在**亮度**上，
+        #    判据见 ``request_button_relative_v``。
+        #    这一步跳过时**不影响**「支援别人」—— 列表里的绿按钮跟这个额度无关，
+        #    当天第二个运行照样有人可以支援（用户那次现场就是这样）。
+        request_note = ""
         if not self.request_done:
             button = self._locate(screen, "request_support_button")
             if button is not None:
-                return self._action(
-                    "request-support",
-                    point=button.center,
-                    source_page=state_label(KnightsDonationState.RESOURCE_SUPPORT),
-                    target_pages=(state_label(KnightsDonationState.REQUEST_POPUP),),
-                    reason="资源支援页右上角「请求支援」，每天只能发一次",
-                )
+                if self._request_button_still_alive(screen):
+                    return self._action(
+                        "request-support",
+                        point=button.center,
+                        source_page=state_label(KnightsDonationState.RESOURCE_SUPPORT),
+                        target_pages=(state_label(KnightsDonationState.REQUEST_POPUP),),
+                        reason="资源支援页右上角「请求支援」，每天只能发一次",
+                    )
+                # 今天已经请求过了 ⇒ 只把账记上、往下走去支援别人，**绝不点它**。
+                self.request_done = True
+                request_note = "；今天已经请求过支援了（右上「请求支援」是灰的），跳过请求这一步"
         # 2) 支援别人。列表会重排，所以每轮都在整列里重新认绿色按钮；
         #    已经判定「吃不下」的行跳过，去点下一个。
+        #
+        #    前置判据（2026-09-25 补）：**点之前**先读这一行的「持有：N」与按钮上的
+        #    「支援 M 个」。``N < M`` 就是材料不足 —— 游戏不会让按钮变灰，点下去
+        #    什么都不发生，主循环会当成「没点到」重试 4 次然后把整条路线收工
+        #    （2026-09-25 实跑现场）。所以这一格**连点都不点**，直接记进跳过表。
+        #    ⚠️ 读不出（``verdict is None``）就照旧点 —— 退回下面那道兜底判据。
+        short_rows: list[str] = []
         for candidate in self._support_candidates(screen):
             if self._is_skipped(candidate.center[1]):
+                continue
+            numbers = self._row_numbers(screen, candidate.center)
+            if numbers.verdict is True:
+                self.skipped_rows.add(candidate.center[1])
+                short_rows.append(numbers.describe())
                 continue
             self.pending_support_y = candidate.center[1]
             return self._action(
@@ -476,7 +619,10 @@ class KnightsDonationStateMachine:
                     state_label(KnightsDonationState.SUPPORT_CONFIRM),
                     state_label(KnightsDonationState.REWARD_POPUP),
                 ),
-                reason=f"列表里有可支援的成员（绿色按钮@{candidate.center}）",
+                reason=(
+                    f"列表里有可支援的成员（绿色按钮@{candidate.center}，"
+                    f"{numbers.describe()}）{self._skipped_note(short_rows)}{request_note}"
+                ),
             )
         # 3) 视口内没有可点的 ⇒ 可能一屏放不下，下滑再看（有界）。
         if self.support_scrolls < MAX_SUPPORT_SCROLLS:
@@ -493,7 +639,10 @@ class KnightsDonationStateMachine:
                 point=tab.center,
                 source_page=state_label(KnightsDonationState.RESOURCE_SUPPORT),
                 in_page_evidence="列表整体上移（按钮行的 y 坐标变小 / 出现此前不可见的新行）",
-                reason=f"视口内没有可支援的成员，下滑第 {self.support_scrolls}/{MAX_SUPPORT_SCROLLS} 次",
+                reason=(
+                    f"视口内没有可支援的成员，下滑第 {self.support_scrolls}/{MAX_SUPPORT_SCROLLS} 次"
+                    f"{self._skipped_note(short_rows)}{request_note}"
+                ),
             )
         # 4) 支援收尾 ⇒ 去做每周任务。
         tab = self._required(screen, "tab_weekly_tasks")
@@ -502,8 +651,23 @@ class KnightsDonationStateMachine:
             point=tab.center,
             source_page=state_label(KnightsDonationState.RESOURCE_SUPPORT),
             target_pages=(state_label(KnightsDonationState.WEEKLY_TASKS),),
-            reason="已经没有可支援的成员了，切到「每周任务」",
+            reason=f"已经没有可支援的成员了，切到「每周任务」{self._skipped_note(short_rows)}{request_note}",
         )
+
+    def _row_numbers(self, screen: np.ndarray, button_center: tuple[int, int]) -> RowNumbers:
+        """读这一行的「持有：N」与按钮「支援 M 个」（读不出时两侧是 None）。"""
+        glyphs = self.templates.digit_glyphs
+        if not glyphs:
+            # 字模没接上：**不要猜**，一律当「不知道」⇒ 调用方照旧点。
+            return RowNumbers(None, None)
+        return read_row_numbers(screen, button_center, glyphs, reference_size=REFERENCE_SIZE)
+
+    @staticmethod
+    def _skipped_note(short_rows: list[str]) -> str:
+        """把「这一帧因为材料不足跳过了哪几格」写进动作理由，日志里看得见。"""
+        if not short_rows:
+            return ""
+        return f"；已跳过 {len(short_rows)} 格材料不足（{'、'.join(short_rows)}），没点它们"
 
     def _at_support_confirm(self, screen: np.ndarray):
         """「支援资源 / 确定要支援以下的资源吗?」确认框：点它里面的「支援1个」。
@@ -514,6 +678,8 @@ class KnightsDonationStateMachine:
         所以 ``target_pages`` 两个落点都写上了，它们都真实存在。
         ⚠️ 「材料不足」那行小字游戏**会**给（用户 2026-09-24 确认），但它一闪就没、
         漏检和没出现分不开 ⇒ 不拿它做判据（理由见模块 docstring）。
+        ⚠️ 材料不足的格子**本该在挑行时就被拦下**（``_at_resource_support`` 的前置判据），
+        走到这里就说明那一行的数字**没读出来** ⇒ 照旧点、按上面的方式结算。
         """
         button = self._required(screen, "support_confirm_button")
         return self._action(

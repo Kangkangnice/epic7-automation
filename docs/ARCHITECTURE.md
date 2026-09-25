@@ -187,7 +187,7 @@ auto_game_unified/
 竞技场和主线各有一个 `_resume_into_committed_battle()`（由 Runner 在 `resumed_from is <BATTLE 态>` 时调用），原因是 `next_action(BATTLE)` 那条路靠 `auto_off` 图标定位，而**自动战斗开着时这个图标根本不可见**，硬走会抛未识别并在超时后触发「回大厅重新导航」—— 等于在已经承诺的战斗里按 `Back`。
 远征复用 `ExpeditionRunner.run()` 既有的「无动作 + 状态是 `BATTLE` → 交战斗监督」分支，无需额外代码。
 
-**竞技场「战斗结果页」的排他判据**：结算页底部那条「战斗结果 / 确认」是竞技场和远征**共用**的通用结算条（实测竞技场 `result.png` 上 `confirm`=1.0000，远征 `result.png` 上也有 0.9448，都过了 0.90 阈值），光靠它分不出这是哪条路线的结算。所以加了两个竞技场专有内容锚点：`result_rating`（「积分」面板标题，**胜负都会出现**，做主判据）与 `result_victory`（「VICTORY」横幅，只有赢才有，做冗余）。它们在 `arena.result_arena` 页里与 `confirm` 组成合取判据，阈值 0.80 —— 依据是全仓库 196 张夹具里除那张结果页外 `result_rating` 最高 0.3460、`result_victory` 最高 0.2724，离 0.80 还有一倍距离。
+**竞技场「战斗结果页」的排他判据**：结算页底部那条「战斗结果 / 确认」是竞技场和远征**共用**的通用结算条（实测竞技场 `result.png` 上 `confirm`=1.0000，远征 `result.png` 上也有 0.9448，都过了 0.90 阈值），光靠它分不出这是哪条路线的结算。所以加了三个竞技场专有内容锚点：`result_rating`（「积分」面板标题，**胜负都会出现**）、`result_victory`（「VICTORY」横幅，只有赢才有）、`result_defeat`（「DEFEAT」横幅，只有输才有）。它们在 `arena.result_arena` 页里与 `confirm` 组成合取判据，阈值 0.80。⚠️ 2026-09-25 真机复测修正了依据：`result_rating` 在真机帧上只有 0.38（只在旧基准夹具上有效），真正在干活的是两个横幅 —— victory 在赢帧 0.8761~0.8816、defeat 在输帧 0.9871~1.0000，而全库 227 张夹具里除结果页外 victory 最高 0.2724、defeat 最高 0.3828。
 两个模板是 `games/epic7/templates/arena_result_rating.png`（73×41 @922,657）与 `arena_result_victory.png`（558×83 @683,378），2026-09-16 从 `tests/fixtures/epic7_arena/result.png` 按证据档案里的矩形实裁。
 
 **不相容的画面不接力**：买票弹窗压住的队伍页（`no_ticket` 显式排除）。局内不在 `detect_resume_state` 里认，改由 `detect_resume_point` 用 `battle_scene_visible` 兜住（4 张局内实时帧只有 1 张能靠 `auto_off` 认出来，按锚点判会误触发「回大厅」）。

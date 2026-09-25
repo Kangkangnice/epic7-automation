@@ -20,6 +20,7 @@
 """
 
 import unittest
+from dataclasses import replace
 from pathlib import Path
 
 import cv2
@@ -43,6 +44,7 @@ from auto_game_unified.games.epic7.evidence.knights_donation import (
 )
 from auto_game_unified.games.epic7.knights_donation import (
     MAX_SUPPORT_SCROLLS,
+    REQUEST_BUTTON_ALIVE_RATIO,
     REWARD_DISMISS_DY,
     SUPPORT_ROW_SKIP_TOLERANCE,
     KnightsDonationAction,
@@ -50,7 +52,12 @@ from auto_game_unified.games.epic7.knights_donation import (
     KnightsDonationState,
     KnightsDonationStateMachine,
     build_knights_donation_templates,
+    request_button_relative_v,
     state_label,
+)
+from auto_game_unified.games.epic7.knights_support_digits import (
+    HOLDINGS_DX,
+    HOLDINGS_DY,
 )
 from auto_game_unified.games.epic7.unknown_screen import UnrecognizedScreen
 
@@ -66,6 +73,10 @@ SUP_SCROLLED = "support_page_scrolled"
 # 2026-09-24 实跑采到的原始帧：列表里**同时有两个**绿色「支援1个」按钮
 # （上面那个要的材料我持有 0、点了不生效；下面那个能支援成功）。
 SUP_TWO = "support_page_two_buttons"
+# 2026-09-25 实跑采到的原始帧（**诊断帧原样**）：同样是「一屏两个绿按钮」，
+# 但卡住的原因是**材料不足**（上面那行持有 1、这一格要 2）—— 当时程序把它当成
+# 「没点到」连点 4 次、整条路线提前收工。「材料不足就跳过」这条判据的回归依据。
+SUP_SHORT = "support_page_short_material"
 WK_OK = "weekly_tasks_claimable"
 WK_DONE = "weekly_tasks_claimed"
 POP = "request_popup"
@@ -81,6 +92,7 @@ ALL_FIXTURES = (
     SUP,
     SUP_SCROLLED,
     SUP_TWO,
+    SUP_SHORT,
     WK_OK,
     WK_DONE,
     POP,
@@ -89,9 +101,9 @@ ALL_FIXTURES = (
     REWARD,
 )
 # 「资源支援」这一页的三种样子（是否带绿按钮、按钮几个、盖没盖弹窗）。
-SUPPORT_PAGES = (SUP, SUP_SCROLLED, SUP_TWO)
+SUPPORT_PAGES = (SUP, SUP_SCROLLED, SUP_TWO, SUP_SHORT, SUP_SHORT)
 # 骑士团活动界面里的所有子页（含两个页签页）。
-ACTIVITY_PAGES = (SUP, SUP_SCROLLED, SUP_TWO, WK_OK, WK_DONE)
+ACTIVITY_PAGES = (SUP, SUP_SCROLLED, SUP_TWO, SUP_SHORT, SUP_SHORT, WK_OK, WK_DONE)
 # 除「资源支援」外都不是这一页的夹具。
 NOT_SUPPORT = (GH_DOT, GH_BARE, WK_OK, WK_DONE, POP, POP_SEL, SCONF, REWARD)
 # 弹窗类的四张（三个弹窗 + 确认框）。
@@ -101,7 +113,7 @@ POPUP_FIXTURES = (POP, POP_SEL, SCONF, REWARD)
 EXPECTATIONS: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
     "activity_entry": (
         (GH_DOT, GH_BARE),
-        (SUP, SUP_SCROLLED, SUP_TWO, WK_OK, WK_DONE, POP, POP_SEL, SCONF, REWARD),
+        (SUP, SUP_SCROLLED, SUP_TWO, SUP_SHORT, WK_OK, WK_DONE, POP, POP_SEL, SCONF, REWARD),
     ),
     # panel_title 与两张页签**故意不排他**：同一段文字/标题在三个页签页上都在。
     # panel_title 只当「活动界面里页签没认出来」的兜底锚点，所以它必须命中全部活动页
@@ -128,47 +140,47 @@ EXPECTATIONS: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
     # 下滑后的帧上绿色按钮已经变灰 ⇒ 它属于 must_not（状态机因此才会去下滑）；
     # 两按钮那张上必须能认出**至少一个**（多按钮的情形另有用例专门测）。
     "support_one_button": (
-        (SUP, SUP_TWO),
+        (SUP, SUP_TWO, SUP_SHORT),
         (GH_DOT, GH_BARE, SUP_SCROLLED, WK_OK, WK_DONE, POP, POP_SEL, SCONF, REWARD),
     ),
     "points_label": (
         (WK_OK, WK_DONE),
-        (GH_DOT, GH_BARE, SUP, SUP_SCROLLED, SUP_TWO, POP, POP_SEL, SCONF, REWARD),
+        (GH_DOT, GH_BARE, SUP, SUP_SCROLLED, SUP_TWO, SUP_SHORT, POP, POP_SEL, SCONF, REWARD),
     ),
     # 已领完那帧没有「领取」按钮 ⇒ must_not。
     "claim_button": (
         (WK_OK,),
-        (GH_DOT, GH_BARE, SUP, SUP_SCROLLED, SUP_TWO, WK_DONE, POP, POP_SEL, SCONF, REWARD),
+        (GH_DOT, GH_BARE, SUP, SUP_SCROLLED, SUP_TWO, SUP_SHORT, WK_DONE, POP, POP_SEL, SCONF, REWARD),
     ),
     "popup_title": (
         (POP, POP_SEL),
-        (GH_DOT, GH_BARE, SUP, SUP_SCROLLED, SUP_TWO, WK_OK, WK_DONE, SCONF, REWARD),
+        (GH_DOT, GH_BARE, SUP, SUP_SCROLLED, SUP_TWO, SUP_SHORT, WK_OK, WK_DONE, SCONF, REWARD),
     ),
     "flower_cell": (
         (POP,),
-        (GH_DOT, GH_BARE, SUP, SUP_SCROLLED, SUP_TWO, WK_OK, WK_DONE, POP_SEL, SCONF, REWARD),
+        (GH_DOT, GH_BARE, SUP, SUP_SCROLLED, SUP_TWO, SUP_SHORT, WK_OK, WK_DONE, POP_SEL, SCONF, REWARD),
     ),
     "flower_cell_selected": (
         (POP_SEL,),
-        (GH_DOT, GH_BARE, SUP, SUP_SCROLLED, SUP_TWO, WK_OK, WK_DONE, POP, SCONF, REWARD),
+        (GH_DOT, GH_BARE, SUP, SUP_SCROLLED, SUP_TWO, SUP_SHORT, WK_OK, WK_DONE, POP, SCONF, REWARD),
     ),
     "popup_confirm": (
         (POP, POP_SEL),
-        (GH_DOT, GH_BARE, SUP, SUP_SCROLLED, SUP_TWO, WK_OK, WK_DONE, SCONF, REWARD),
+        (GH_DOT, GH_BARE, SUP, SUP_SCROLLED, SUP_TWO, SUP_SHORT, WK_OK, WK_DONE, SCONF, REWARD),
     ),
     "reward_title": (
         (REWARD,),
-        (GH_DOT, GH_BARE, SUP, SUP_SCROLLED, SUP_TWO, WK_OK, WK_DONE, POP, POP_SEL, SCONF),
+        (GH_DOT, GH_BARE, SUP, SUP_SCROLLED, SUP_TWO, SUP_SHORT, WK_OK, WK_DONE, POP, POP_SEL, SCONF),
     ),
     # 确认框自己的两个锚点：在本路线 11 张里**只**在确认框那一帧过阈
     # （其余 10 张最高 0.2079 / 0.2127，余量都在 0.58 以上）。
     "support_confirm_title": (
         (SCONF,),
-        (GH_DOT, GH_BARE, SUP, SUP_SCROLLED, SUP_TWO, WK_OK, WK_DONE, POP, POP_SEL, REWARD),
+        (GH_DOT, GH_BARE, SUP, SUP_SCROLLED, SUP_TWO, SUP_SHORT, WK_OK, WK_DONE, POP, POP_SEL, REWARD),
     ),
     "support_confirm_button": (
         (SCONF,),
-        (GH_DOT, GH_BARE, SUP, SUP_SCROLLED, SUP_TWO, WK_OK, WK_DONE, POP, POP_SEL, REWARD),
+        (GH_DOT, GH_BARE, SUP, SUP_SCROLLED, SUP_TWO, SUP_SHORT, WK_OK, WK_DONE, POP, POP_SEL, REWARD),
     ),
 }
 
@@ -183,6 +195,28 @@ def screen(name: str) -> np.ndarray:
     bgr = cv2.imread(str(FIXTURES / f"{name}.png"), cv2.IMREAD_COLOR)
     assert bgr is not None, f"读不到夹具 {name}"
     return cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+
+
+# 实拍标注帧（持久证据，见 ``evidence/knights_donation.py`` 的模块 docstring）。
+# 「请求支援」按钮**能点**时有两种底色：``02/07/09`` 是深蓝底，夹具 ``support_page`` 是
+# 褐底（悬浮高亮）。后者在 ``tests/fixtures`` 里也有，前者只有这里存着 ——
+# 想要「两种底色读数一致」这条判据，就必须读它。
+MANUAL_REVIEW = ROOT / "docs" / "manual_review" / "knights_donation"
+
+
+def manual_review_screen(name: str) -> np.ndarray:
+    bgr = cv2.imread(str(MANUAL_REVIEW / f"{name}.png"), cv2.IMREAD_COLOR)
+    assert bgr is not None, f"读不到实拍标注帧 {name}"
+    return cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+
+
+def fade(image: np.ndarray, factor: float) -> np.ndarray:
+    """把整幅画面乘一个亮度系数，模拟**页面淡入时的暗帧**（黑幕叠加）。
+
+    用于证明「请求支援按钮」那条判据取的是**相对亮度**：
+    绝对阈值在整屏压暗时会自己塌掉（world_boss 2026-09-23 的教训）。
+    """
+    return np.clip(image.astype(np.float32) * factor, 0, 255).astype(np.uint8)
 
 
 def search_zone(anchor: str) -> tuple[int, int, int, int]:
@@ -228,6 +262,40 @@ def locate(image: np.ndarray, key: str):
 
 def machine() -> KnightsDonationStateMachine:
     return KnightsDonationStateMachine(build_knights_donation_templates(TEMPLATES))
+
+
+def machine_without_digits() -> KnightsDonationStateMachine:
+    """字模没接上时的状态机（前置判据 abstain）。
+
+    「材料不足就跳过」是 2026-09-25 才补的**前置**判据；读不出数字时它必须
+    **退回 2026-09-25 之前的全部行为**（照旧点、点完没反应再靠跳过表接手）。
+    这些老用例靠它继续守着那条兜底路径 —— 那条路径今天仍然活着：
+    数字读不出的格子、以及**材料够但点击真丢了**的格子都走它。
+    """
+    return KnightsDonationStateMachine(
+        replace(build_knights_donation_templates(TEMPLATES), digit_glyphs={})
+    )
+
+
+def frame_with_every_row_short(name: str) -> np.ndarray:
+    """把第一行的「持有：N」文字带**原样搬**到第二行，造一张「每一格材料都不足」的帧。
+
+    ⚠️ 只用于**分支覆盖**（「全部不足 ⇒ 下滑而不是反复点」），不当识别准确率的证据：
+    搬的是同一张画面自己的像素（不画纯色、不贴字模），所以不引入假的纹理。
+    实测那两行的「持有」文字带相对按钮中心的偏移完全一样，直接整块换即可。
+    """
+    image = screen(name)
+    candidates = support_candidates(image)
+    assert len(candidates) >= 2, f"{name} 上不止两行绿按钮才谈得上「每行都不足」"
+    first, second = candidates[0].center, candidates[1].center
+    for dy, dx in ((HOLDINGS_DY, HOLDINGS_DX),):
+        source = image[
+            first[1] + dy[0] : first[1] + dy[1], first[0] + dx[0] : first[0] + dx[1]
+        ]
+        image[
+            second[1] + dy[0] : second[1] + dy[1], second[0] + dx[0] : second[0] + dx[1]
+        ] = source
+    return image
 
 
 def support_candidates(image: np.ndarray):
@@ -401,6 +469,7 @@ class KnightsDonationStateMachineTests(unittest.TestCase):
             SUP: KnightsDonationState.RESOURCE_SUPPORT,
             SUP_SCROLLED: KnightsDonationState.RESOURCE_SUPPORT,
             SUP_TWO: KnightsDonationState.RESOURCE_SUPPORT,
+            SUP_SHORT: KnightsDonationState.RESOURCE_SUPPORT,
             WK_OK: KnightsDonationState.WEEKLY_TASKS,
             WK_DONE: KnightsDonationState.WEEKLY_TASKS,
             POP: KnightsDonationState.REQUEST_POPUP,
@@ -492,6 +561,108 @@ class KnightsDonationStateMachineTests(unittest.TestCase):
 
         self.assertEqual("support-one", subject.next_action(screen(SUP)).name)
 
+    # ---- 「请求支援」今天已经用过 ⇒ 按钮变灰，不许再点 ----
+    #
+    #  2026-09-25 用户实跑撞上：当天第二次运行时额度已用掉、按钮变灰，但
+    #  `TM_CCOEFF_NORMED` 对亮度缩放不敏感 ⇒ 灰帧上模板仍得 0.9846 ⇒ 程序照点、
+    #  每次白等 42 秒转场超时 ×4，整条路线提前收工。
+    #  这一组测试守「变灰就别点，直接去支援别人」。
+
+    def test_a_greyed_request_button_is_not_clicked_and_the_route_moves_on(self):
+        """灰按钮：不点它、把账记上、直接去支援列表里那个还能支援的人。"""
+        subject = machine()
+        subject.request_done = False
+
+        action = subject.next_action(screen(SUP_TWO))
+
+        self.assertEqual("support-one", action.name, "灰掉的「请求支援」又被点了")
+        self.assertNotEqual((1654, 190), action.point)
+        self.assertTrue(subject.request_done, "跳过一次之后不能让下一轮又来试一遍")
+        self.assertIn("今天已经请求过支援", action.reason)
+
+    def test_an_alive_request_button_is_still_clicked_first(self):
+        """对照：按钮还亮着时**照旧**先请求支援（顺序是用户定的）。"""
+        subject = machine()
+        subject.request_done = False
+
+        action = subject.next_action(screen(SUP))
+
+        self.assertEqual("request-support", action.name)
+        self.assertEqual((1654, 190), action.point)
+        self.assertFalse(subject.request_done)
+
+    def test_an_unmeasurable_button_area_falls_back_to_clicking(self):
+        """量不出来（整幅全黑 / 区域裁不出来）⇒ 当作「还亮着」照旧点。
+
+        宁可多点一次（退回今天的行为），也不要因为量不到就白丢当天唯一一次请求 ——
+        而且「跳过请求」这件事用户从画面上很难察觉。
+        """
+        subject = machine()
+
+        self.assertTrue(
+            subject._request_button_still_alive(np.zeros((1132, 1982, 3), np.uint8))
+        )
+
+    def test_the_grey_reading_survives_a_page_fade(self):
+        """整屏压暗（页面淡入）时**读数不变** —— 这是判据取相对亮度而不是绝对亮度的理由。
+
+        world_boss 2026-09-23 已踩过这个坑：绝对亮度阈值在整屏压暗到 50% 时自己塌掉，
+        把「还有次数」误判成「次数用完」。这里把同一帧乘亮度系数复现那个场景。
+        """
+        subject = machine()
+        for factor in (1.0, 0.8, 0.6, 0.5, 0.4, 0.3):
+            with self.subTest(factor=factor):
+                self.assertTrue(
+                    subject._request_button_still_alive(fade(screen(SUP), factor)),
+                    f"能点的按钮被整屏压暗到 {factor} 之后误判成灰的 ⇒ 会白丢当天一次请求",
+                )
+                self.assertFalse(
+                    subject._request_button_still_alive(fade(screen(SUP_TWO), factor)),
+                    f"灰按钮在 {factor} 亮度下被当成了能点",
+                )
+
+    def test_the_threshold_sits_between_the_alive_and_grey_scores(self):
+        """阈值必须坐在「能点组下界」与「灰组上界」之间，两边都留余量。
+
+        用**真帧**把这条钉死：以后谁改区域或改统计量，先在这里看到余量还剩多少。
+        """
+        region = REGIONS["request_support_button"]
+        alive = [
+            request_button_relative_v(frame, region)
+            for frame in (
+                screen(SUP),
+                screen(SUP_SCROLLED),
+                manual_review_screen("02_resource_support"),
+                manual_review_screen("09_activity_opened"),
+            )
+        ]
+        grey = [
+            request_button_relative_v(frame, region)
+            for frame in (screen(SUP_TWO), screen(SUP_SHORT))
+        ]
+
+        self.assertGreater(
+            min(alive), REQUEST_BUTTON_ALIVE_RATIO, f"能点的帧里有读数掉到阈值以下的：{alive}"
+        )
+        self.assertLess(
+            max(grey), REQUEST_BUTTON_ALIVE_RATIO, f"灰的帧里有读数越过阈值的：{grey}"
+        )
+        # 两侧各留至少 25% 余量 —— 余量变薄就该重采样本了。
+        self.assertGreater(min(alive) / REQUEST_BUTTON_ALIVE_RATIO, 1.25)
+        self.assertGreater(REQUEST_BUTTON_ALIVE_RATIO / max(grey), 1.25)
+
+    def test_the_two_button_appearances_read_the_same(self):
+        """按钮「能点」时有两种底色（褐底悬浮 / 深蓝底），**读数必须接近**。
+
+        底色变了、亮度没变 —— 这正是判据只看亮度不看颜色的理由；
+        也顺手挡住「哪天换了配色就整个判据失效」。
+        """
+        region = REGIONS["request_support_button"]
+        brown = request_button_relative_v(manual_review_screen("02_resource_support"), region)
+        navy = request_button_relative_v(screen(SUP), region)
+
+        self.assertLess(abs(brown - navy), 0.15, f"两种底色读数差太多：{brown} vs {navy}")
+
     def test_support_list_reorders_so_the_point_is_rematched_every_time(self):
         """列表每支援一次就重排 ⇒ 绿色按钮每轮都要重新认，不能按固定行坐标点。"""
         subject = machine()
@@ -548,8 +719,8 @@ class KnightsDonationStateMachineTests(unittest.TestCase):
             abs(candidates[0].center[1] - candidates[1].center[1]),
             SUPPORT_ROW_SKIP_TOLERANCE,
         )
-        # 开局挑分数最高那个（被跳过之后必须能挑到第二个，见下面的跳过用例）。
-        subject = machine()
+        # 开局挑分数最高那个（材料不足的格子会被前置判据跳过，见下面那条用例）。
+        subject = machine_without_digits()
         subject.request_done = True
         self.assertEqual(candidates[0].center, subject.next_action(frame).point)
 
@@ -560,8 +731,11 @@ class KnightsDonationStateMachineTests(unittest.TestCase):
         **什么都不发生** —— 行不消失、今日支援上限也不涨。所以判据只能是「有没有弹奖励」。
         用户当天补充确认：游戏**会**在下方闪一行小字「材料不足」，但一闪就没
         ⇒ 那行字不做判据（理由见 `games/epic7/knights_donation.py` 的模块 docstring）。
+
+        ⚠️ 2026-09-25 起这是**兜底**判据：材料不足的格子本该在挑行时就被数字判据拦下，
+        所以这条用例用 `machine_without_digits()` 跑（= 数字读不出的情形）。
         """
-        subject = machine()
+        subject = machine_without_digits()
         subject.request_done = True
         frame = screen(SUP_TWO)
 
@@ -578,8 +752,11 @@ class KnightsDonationStateMachineTests(unittest.TestCase):
         """回到列表却没看到「获得奖励」⇒ 这一行吃不下，下一轮挑**别的**绿按钮。
 
         没有这一步就会在同一个按钮上白转 4 次、然后整条路线中止（实跑第一次的现场）。
+        ⚠️ 2026-09-25 起这是**兜底**路径：数字读得出时，材料不足的格子根本不会被点
+        （见 `test_a_row_that_is_short_of_material_is_never_clicked`）——
+        但**点击真丢了**的格子、以及数字读不出的格子仍然要靠它，所以必须留着。
         """
-        subject = machine()
+        subject = machine_without_digits()
         subject.request_done = True
         frame = screen(SUP_TWO)
         first, second = support_candidates(frame)
@@ -594,12 +771,72 @@ class KnightsDonationStateMachineTests(unittest.TestCase):
         self.assertEqual("support-one", again.name)
         self.assertEqual(second.center, again.point)
 
+    def test_a_row_that_is_short_of_material_is_never_clicked(self):
+        """材料不足的格子**连点都不点**：读「持有 0 < 需求 1」直接跳过，去点下一格。
+
+        这是 2026-09-25 补的前置判据要防的事故现场：那一格的绿按钮**不会变灰**，
+        点下去毫无反应，主循环会把它当成「没点到」连点 4 次、然后把整条路线收工。
+        ⚠️ 与上一条的区别就在**点没点**：那条先点、再靠跳过表回头；这条一步都不点。
+        """
+        subject = machine()
+        subject.request_done = True
+        frame = screen(SUP_TWO)
+        first, second = support_candidates(frame)
+
+        action = subject.next_action(frame)
+
+        # 挑中的是**第二个**按钮（第一格被数字判据跳过了）。
+        self.assertEqual("support-one", action.name)
+        self.assertEqual(second.center, action.point)
+        self.assertEqual(second.center[1], subject.pending_support_y)
+        # 第一格的 y 已经记进跳过表（这一帧不会再挑到它）。
+        self.assertEqual({first.center[1]}, subject.skipped_rows)
+        # 理由里带上读数与「跳过了哪几格」，日志里看得见，不用猜。
+        self.assertIn("持有 0 / 需求 1", action.reason)
+        self.assertIn("已跳过 1 格材料不足", action.reason)
+
+    def test_the_real_short_material_frame_skips_the_blocked_row(self):
+        """实跑事故帧：上一行「持有 1 / 需求 2」不足、下一行「持有 225 / 需求 4」可以。
+
+        这一帧就是 2026-09-25 那次中止的现场（``support_page_short_material.png``）。
+        当时程序对着上面那格连点 4 次、整条路线收工；现在它应该一步跨过去，
+        直接点下面那格能支援的。
+        """
+        subject = machine()
+        subject.request_done = True
+        frame = screen(SUP_SHORT)
+        first, second = support_candidates(frame)
+
+        action = subject.next_action(frame)
+
+        self.assertEqual(second.center, action.point)
+        self.assertEqual("support-one", action.name)
+        self.assertIn("持有 225 / 需求 4", action.reason)
+        self.assertIn("持有 1 / 需求 2", action.reason)
+        self.assertEqual({first.center[1]}, subject.skipped_rows)
+
+    def test_an_unreadable_row_falls_back_to_clicking_it(self):
+        """读不出数字 ⇒ **照旧点**（退回 2026-09-25 之前的行为），绝不因此瞎跳。
+
+        认错的代价是白丢积分，认不出只是帮不上忙 —— 所以这条兜底必须是「点」。
+        """
+        subject = machine_without_digits()
+        subject.request_done = True
+        frame = screen(SUP_SHORT)
+
+        action = subject.next_action(frame)
+
+        self.assertEqual(support_candidates(frame)[0].center, action.point)
+        self.assertEqual(set(), subject.skipped_rows)
+        self.assertIn("持有 ? / 需求 ?", action.reason)
+
     def test_when_every_visible_row_is_unreachable_it_scrolls_instead_of_repeating(self):
         """两个绿按钮都吃不下 ⇒ 不再重复点，改为下滑（且跳过表必须清空）。
 
         ⚠️ 清空是必需的：下滑会让整列位移，旧的 y 键就指到别人头上了。
+        这条走的是**兜底**路径（数字读不出）；全不足走数字判据那条见下一条。
         """
-        subject = machine()
+        subject = machine_without_digits()
         subject.request_done = True
         frame = screen(SUP_TWO)
 
@@ -611,6 +848,29 @@ class KnightsDonationStateMachineTests(unittest.TestCase):
         self.assertEqual("scroll-support", action.name)
         self.assertEqual(1, subject.support_scrolls)
         self.assertEqual(set(), subject.skipped_rows)
+
+    def test_when_every_row_is_short_of_material_it_scrolls_instead_of_repeating(self):
+        """**每一格**都材料不足 ⇒ 也是一个都不点，直接下滑（有界），绝不原地转圈。
+
+        构造帧（只覆盖分支，不是识别证据）：把第一行的「持有」文字带到第二行上，
+        于是两格都读成「持有 1」而不够。若不这么测，就要等真机上碰巧两格都不足。
+        """
+        subject = machine()
+        subject.request_done = True
+        frame = frame_with_every_row_short(SUP_SHORT)
+        self.assertEqual(2, len(support_candidates(frame)))
+
+        for candidate in support_candidates(frame):
+            self.assertTrue(
+                subject._row_numbers(frame, candidate.center).verdict is True,
+                "构造帧没做对：两格都应该读成材料不足",
+            )
+
+        action = subject.next_action(frame)
+
+        self.assertEqual("scroll-support", action.name)
+        self.assertIn("已跳过 2 格材料不足", action.reason)
+        self.assertEqual(set(), subject.skipped_rows)  # 下滑 ⇒ 清空
 
     def test_a_successful_support_invalidates_the_skip_ledger(self):
         """支援成功 ⇒ 该团员在原地变灰勾、整列**重排** ⇒ 按 y 记的跳过表全部失效。
@@ -771,6 +1031,14 @@ class KnightsDonationStateMachineTests(unittest.TestCase):
         subject.preview(screen(SUP))
         subject.preview(screen(SUP))
         self.assertEqual(0, subject.support_scrolls)
+
+        # ⚠️ 灰按钮那一支会在 next_action 里把 request_done 置位（「今天用过了」）——
+        #    它同样必须被 preview 还原，否则两次试算确认就会把它**提前**置位，
+        #    真正该请求的那次反而不请求了。
+        self.assertFalse(subject.request_done)
+        subject.preview(screen(SUP_TWO))
+        subject.preview(screen(SUP_TWO))
+        self.assertFalse(subject.request_done, "preview 把「今天已请求过」泄漏到了外面")
 
         # 跳过表与待结算的支援都是「这一帧试算出来的中间态」，同样不能留下痕迹。
         subject.request_done = True
@@ -973,6 +1241,89 @@ class KnightsDonationRunnerTests(unittest.TestCase):
         # 转场真的被验收过（不是「点了就算成功」），收工也留了结论。
         self.assertEqual(1, len([line for line in logs if "完成=open-activity" in line]))
         self.assertTrue(any("结论=" in line for line in logs))
+
+    def test_the_greyed_request_button_is_never_clicked_by_the_real_runner(self):
+        """当天第二次运行（按钮已灰）走**真 Runner**：那一下点必须**不存在**。
+
+        与 ``test_the_short_material_row_is_never_clicked_by_the_real_runner`` 同源：
+        判据只有在**主循环里**生效才算数。这里断言的是「点击列表里根本没有 (1654,190)」，
+        而不是「状态机想不想点它」—— 用户 2026-09-25 那次白等 42×4 秒就发生在这一层。
+        """
+        frames = [
+            screen(SUP_TWO),  # 今天已经请求过 ⇒ 右上「请求支援」是灰的
+            screen(SCONF),  # 直接去支援列表里那个能支援的人 → 先弹确认框
+            screen(REWARD),  # 确认 → 弹「获得奖励」
+            screen(WK_DONE),  # 收工
+        ]
+        clock = _Clock(frames, hold={index: 3 for index in range(len(frames))})
+        clicks: list[tuple[int, int]] = []
+        logs: list[str] = []
+        runtime = _RecordingRuntime(
+            clock.capture,
+            clicks.append,
+            emit=logs.append,
+            monotonic=lambda: clock.now,
+        )
+        subject = machine()
+        self.assertFalse(subject.request_done)  # 开局并不知道今天请求过
+        runner = KnightsDonationRunner(subject, runtime, sleep=clock.sleep)
+
+        completed = runner.run(max_cycles=1)
+
+        self.assertEqual(1, completed)
+        self.assertNotIn((1654, 190), clicks, "灰掉的「请求支援」被点了 —— 判据没接进主循环")
+        self.assertEqual(
+            ["support-one", "confirm-support", "dismiss-reward"], runtime.actions
+        )
+        # 「为什么没做请求支援」必须在日志里看得见。
+        self.assertTrue(
+            any("今天已经请求过支援" in line for line in logs),
+            "跳过请求这一步没写进日志，用户看不出为什么没请求",
+        )
+
+    def test_the_short_material_row_is_never_clicked_by_the_real_runner(self):
+        """2026-09-25 事故帧走**真 Runner**：材料不足那一格一次都不许被点。
+
+        ⚠️ 这条是冲着「状态机测通了、主循环截胡」那类失效来的 —— 上次的 bug
+        就发生在两层之间（状态机挑好了下一格，主循环的转场重试把它顶替回旧坐标）。
+        所以这条必须让**真 Runner + 假时钟**跑一遍，而不是只调 ``next_action``：
+        断言的是**真的点到哪儿了**，不是「状态机想点哪儿」。
+        """
+        incident = screen(SUP_SHORT)
+        blocked, usable = [c.center for c in support_candidates(incident)[:2]]
+        frames = [
+            incident,  # 列表：上面那格材料不足、下面那格能支援
+            screen(SCONF),  # 点了能支援的那格 → 先弹「支援资源」确认框
+            screen(REWARD),  # 确认 → 弹「获得奖励」
+            screen(WK_DONE),  # 收工
+        ]
+        clock = _Clock(frames, hold={index: 3 for index in range(len(frames))})
+        clicks: list[tuple[int, int]] = []
+        logs: list[str] = []
+        runtime = _RecordingRuntime(
+            clock.capture,
+            clicks.append,
+            emit=logs.append,
+            monotonic=lambda: clock.now,
+        )
+        subject = machine()
+        subject.request_done = True  # 事故发生在「请求支援」那一步之后
+        runner = KnightsDonationRunner(subject, runtime, sleep=clock.sleep)
+
+        completed = runner.run(max_cycles=1)
+
+        self.assertEqual(1, completed)
+        self.assertFalse(runner.resource_exhausted)
+        self.assertNotIn(blocked, clicks, "材料不足的那一格被点了 —— 判据又没接上")
+        self.assertEqual(usable, clicks[0], "第一下应该点在能支援的那一格上")
+        self.assertEqual(
+            ["support-one", "confirm-support", "dismiss-reward"], runtime.actions
+        )
+        # 跳过这件事必须**在日志里看得见**（「为什么这次没点那一格」）。
+        self.assertTrue(
+            any("已跳过 1 格材料不足" in line and "持有 1 / 需求 2" in line for line in logs),
+            f"日志里没有跳过记录：{logs}",
+        )
 
 if __name__ == "__main__":
     unittest.main()

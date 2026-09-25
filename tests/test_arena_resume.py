@@ -169,6 +169,17 @@ class ArenaResumeDetectionTests(unittest.TestCase):
         self.assertFalse(self.machine._visible(screen, "result_victory"))
         self.assertIsNone(detect_resume_state(self.machine, screen))
 
+    def test_a_real_defeat_result_page_is_still_resumed_as_the_result_page(self):
+        """真机**输局**结算页也要能接力。
+
+        ``result_rating`` 在真机上只有 0.38（它只在旧基准夹具上有效）。接力的紧判据里
+        没有 ``result_defeat`` 时，人停在输局结算页会被判成「认不出」，
+        然后退回「回大厅 → 重新导航」—— 而屏幕上明明就有个结算页等着确认。
+        """
+        self.assertEqual(
+            (ArenaState.RESULT, "战斗结果"), self.detect("result_defeat_live_20260925")
+        )
+
     def test_result_anchors_are_not_visible_on_the_rank_promotion_popup(self):
         """两步互斥：段位弹窗上结算锚点不可见，结算页上晋级箭头不可见。"""
         for name in RANK_PROMOTION_FIXTURES:
@@ -411,6 +422,9 @@ class ArenaResumedBattleTests(unittest.TestCase):
         machine = new_machine()
         machine.resume_from(ArenaState.BATTLE)
         runtime = mock.MagicMock()
+        # 每局结算都会读一帧判胜负（见 ArenaRunner._record_outcome），替身要能供上画面。
+        # 空白帧判不出结果，会记进「未知」那一格 —— 不影响本用例关心的「有没有交给监督」。
+        runtime.capture.return_value = np.zeros((1132, 1982, 3), np.uint8)
         supervisor = mock.MagicMock()
         supervisor.run.return_value = BattleOutcome.RESULT_REACHED
         runner = ArenaRunner(

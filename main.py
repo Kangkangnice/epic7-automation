@@ -52,6 +52,8 @@ MODE_LABELS = {
 class RunResult:
     completed_cycles: int
     resource_exhausted: bool = False
+    # 只有竞技场会给：一行「胜 2 / 负 1」的战绩文案；别的路线留 None，通知里就不显示。
+    outcome_summary: str | None = None
 
 
 def _elapsed_seconds(started_at: float) -> int:
@@ -66,6 +68,7 @@ def _notify_live(
     elapsed_seconds: int,
     completed_cycles: int | None = None,
     target_cycles: int | None = None,
+    outcome_summary: str | None = None,
     error: Exception | None = None,
 ) -> None:
     if not live:
@@ -80,6 +83,9 @@ def _notify_live(
     lines = [f"模式：{label}", f"耗时：{elapsed_seconds} 秒"]
     if completed_cycles is not None and target_cycles is not None:
         lines.insert(1, f"完成轮数：{completed_cycles}/{target_cycles}")
+    if outcome_summary is not None:
+        # 紧跟在「完成轮数」后面（没有那一行时就紧跟「模式」），仍在「耗时」之前。
+        lines.insert(len(lines) - 1, f"战绩：{outcome_summary}")
     if error is not None:
         lines.insert(1, f"原因：{error}")
         lines.append(
@@ -307,11 +313,16 @@ def run_mode(
         runner_options["recovery_gate"] = recovery_gate
     if spec.name == "arena" and not dry_run:
         runner_options["purchase_stamp_path"] = ROOT / "runtime_logs" / "arena_ticket_purchase.txt"
+        # 每局结算画面留一张盘，给「胜负判得对不对」留可回看的证据（见 ArenaRunner）。
+        runner_options["outcome_frame_dir"] = ROOT / "docs" / "manual_review" / "arena"
     runner = spec.runner_type(machine, runtime, **runner_options)
     completed = runner.run(max_cycles=max_cycles)
+    # 战绩文案只有竞技场会给；别的路线拿不到这个方法，就留 None（通知里不显示）。
+    summary = getattr(runner, "outcome_summary", None)
     return RunResult(
         completed_cycles=completed,
         resource_exhausted=bool(getattr(runner, "resource_exhausted", False)),
+        outcome_summary=summary() if summary is not None else None,
     )
 
 
@@ -402,8 +413,13 @@ def main(argv: list[str] | None = None) -> int:
         elapsed_seconds=_elapsed_seconds(started_at),
         completed_cycles=result.completed_cycles,
         target_cycles=args.max_cycles,
+        outcome_summary=result.outcome_summary,
     )
-    print(f"完成 模式={args.mode} 轮次={result.completed_cycles}", flush=True)
+    record = f" 战绩=({result.outcome_summary})" if result.outcome_summary else ""
+    print(
+        f"完成 模式={args.mode} 轮次={result.completed_cycles}{record}",
+        flush=True,
+    )
     return 2 if result.resource_exhausted else 0
 
 
