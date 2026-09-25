@@ -34,16 +34,28 @@ FREE_REFRESH_CONFIRM_REGION = (1050, 700, 400, 180)
 # （实测竞技场 result.png 上 confirm=1.0000，远征 result.png 上也有 0.9448 > 阈值），
 # 光靠它分不出这是哪条路线的结算页。下面两个是竞技场结果页专有的内容锚点：
 #
-# - ``result_rating``：「积分」= 评分面板标题。**胜负都会出现**（输了也是同一块面板，
-#   只是数值变红），所以它是结构性判据，做主判据。
-# - ``result_victory``：「VICTORY」横幅。只有赢才有（输了是 DEFEAT），但字形大、
-#   判据强，用来给已知的胜利场景加冗余。
+# - ``result_rating``：「积分」= 评分面板标题。**胜负都会出现**，原本当主判据用。
+#   ⚠️ 2026-09-25 拿真机结算帧复测：它只在**旧基准夹具**上有效，真机 5 张全部只有
+#   0.3815~0.3899（阈值 0.80）⇒ **真机上早就失效了**。没有立刻换掉它，是因为它同时
+#   被接力页判据引用、换模板会牵动多条测试；实际在干活的是下面两个横幅锚点。
+# - ``result_victory`` / ``result_defeat``：「VICTORY」/「DEFEAT」横幅，一局只会出现一个。
 #
-# 两个模板都是 2026-09-16 从 ``tests/fixtures/epic7_arena/result.png`` 按下面矩形实裁的，
-# 阈值 0.80 的依据是实测间隔：全仓库 196 张夹具里，除了那张结果页本身，
-# rating 最高只有 0.3460、victory 最高只有 0.2724，离 0.80 都还有一倍的距离。
+# 两个横幅**占的是同一块区域**（``ARENA_RESULT_BANNER_REGION``）：2026-09-25 真机帧实测，
+# 它们都落在这一带；共用搜索区，两个锚点才是同一把尺子。
+#
+# 阈值 0.80 的依据（2026-09-25 复测，数字来自 ``runtime_logs/_arena_defeat_probe.txt``）：
+# - ``result_victory``：真机赢局帧 0.8761~0.8816；全库 227 张夹具里除结果页外最高 0.2724。
+# - ``result_defeat``：真机输局帧 0.9871~1.0000；**赢局帧只有 0.1090~0.1129**；
+#   全库 227 张夹具里最高 **0.3828**（远征 result.png）—— 离 0.80 还差一倍。
+# - ``result_victory`` 模板是 2026-09-16 从 ``tests/fixtures/epic7_arena/result.png`` 实裁的；
+#   ``result_defeat`` 是 2026-09-25 从真机输局帧实裁的 —— 那天有两张帧被记成「未知」，
+#   其实都是输局。源帧出自 ``docs/manual_review/arena/..._unknown_r4.png``，
+#   但那个目录**只留最近 10 张、会被轮转删掉**，所以别把它当依赖；回归用的是
+#   ``tests/fixtures/epic7_arena/result_defeat_live_20260925.png``（原 r1，**另一张**）。
 ARENA_RESULT_RATING_REGION = (922, 657, 73, 41)
-ARENA_RESULT_VICTORY_REGION = (683, 378, 558, 83)
+ARENA_RESULT_BANNER_REGION = (683, 378, 558, 83)
+ARENA_RESULT_VICTORY_REGION = ARENA_RESULT_BANNER_REGION
+ARENA_RESULT_DEFEAT_REGION = ARENA_RESULT_BANNER_REGION
 
 REGIONS = {
     "list_ready": (700, 900, 520, 250),
@@ -63,6 +75,7 @@ REGIONS = {
     "quick_battle_switch": PRE_BATTLE_REGION,
     "result_rating": ARENA_RESULT_RATING_REGION,
     "result_victory": ARENA_RESULT_VICTORY_REGION,
+    "result_defeat": ARENA_RESULT_DEFEAT_REGION,
 }
 
 THRESHOLDS = {
@@ -79,6 +92,7 @@ THRESHOLDS = {
     # 文字贴在半透明结算面板上，跟 story/竞技场其它动态页一个量级看待。
     "result_rating": 0.80,
     "result_victory": 0.80,
+    "result_defeat": 0.80,
 }
 
 # 这里只列「在 PC 客户端上实测过」的锚点。``result_rating`` / ``result_victory``
@@ -116,6 +130,7 @@ _TEMPLATE_PATHS = {
     "quick_battle_switch": "global/quick_battle_switch.png",
     "result_rating": "arena_result_rating.png",
     "result_victory": "arena_result_victory.png",
+    "result_defeat": "arena_result_defeat.png",
 }
 
 
@@ -175,10 +190,14 @@ _PAGES = (
     PageEvidence("arena.result", required=("confirm",)),
     # ``arena.result_arena`` 是**接力期**用的紧判据：开局时屏幕上可能是任何路线，
     # 必须同时拿到竞技场专有的内容锚点才敢认，否则停在远征结算页会被误当竞技场结算。
+    #
+    # ⚠️ ``result_defeat`` 必须在这里：``result_rating`` 在真机帧上只有 0.38（见上方说明），
+    # 少了它，接力落在**输局**结算页时会认不出来，退回去走「回大厅 → 重新导航」。
+    # 而 ``result_defeat`` 在真机输局帧上是 0.9871~1.0000，在全库其它图上最高只有 0.3828。
     PageEvidence(
         "arena.result_arena",
         required=("confirm",),
-        any_of=(("result_rating", "result_victory"),),
+        any_of=(("result_rating", "result_victory", "result_defeat"),),
     ),
     # 结果确认中（= 段位提升弹窗）复用已有的 ``arena.rank_promotion``：判据完全一样
     # （arrow + rank_confirm 双锚点），就不再另立一个页面键了。

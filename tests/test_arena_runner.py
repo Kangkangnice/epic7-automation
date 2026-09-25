@@ -10,6 +10,7 @@ from auto_game_unified.core.battle_supervisor import BattleOutcome
 from auto_game_unified.core.runtime import Runtime
 from auto_game_unified.games.epic7.arena import (
     Action,
+    ArenaOutcome,
     ArenaRunner,
     ArenaState,
     ArenaStateMachine,
@@ -170,6 +171,9 @@ class ArenaRunnerTests(unittest.TestCase):
     def test_committed_battle_returns_control_to_result_state(self):
         machine = MagicMock()
         machine.state = ArenaState.BATTLE
+        # 结算页的胜负判读是这一趟的副作用（见 ArenaRunner._record_outcome）；
+        # 本用例只关心状态回到 RESULT，所以给替身一个明确的「认不出」。
+        machine.observe_outcome.return_value = ArenaOutcome.UNKNOWN
         supervisor = MagicMock()
         supervisor.run.return_value = BattleOutcome.RESULT_REACHED
         runner = ArenaRunner(

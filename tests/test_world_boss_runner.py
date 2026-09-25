@@ -27,6 +27,8 @@ from auto_game_unified.games.epic7.world_boss import (
     SELECT_TEAM_BAR_RELATIVE_V,
     SELECT_TEAM_ENABLED_GREEN_RATIO,
     WEEKLY_CHEST_BOX,
+    WEEKLY_CHEST_BRIGHTNESS_RATIO,
+    WEEKLY_CHEST_MAX_CLICKS,
     WEEKLY_CHEST_REGION,
     WEEKLY_CHEST_THRESHOLD,
     AttemptsExhausted,
@@ -41,6 +43,7 @@ from auto_game_unified.games.epic7.world_boss import (
     select_team_enabled,
     select_team_green_ratio,
     state_label,
+    weekly_chest_brightness_ratio,
     world_boss_battle_visible,
 )
 from auto_game_unified.games.epic7.unknown_screen import UnrecognizedScreen
@@ -311,6 +314,55 @@ class WorldBossWeeklyChestTests(unittest.TestCase):
         self.assertEqual(WEEKLY_CHEST_BOX[2], template.shape[1])
         self.assertEqual(WEEKLY_CHEST_BOX[3], template.shape[0])
 
+    def test_a_claimed_chest_from_a_darker_frame_is_not_reported_as_claimable(self):
+        """⚠️ **模板得分单独守不住** —— 2026-09-25 实跑就是死在这里。
+
+        同一个「已领（绿勾）」态，换一张截图（`worldboss_home_chest_claimed_dark`，
+        整幅偏暗）对可领模板却能得 **0.8069**，越过 0.80 的阈值 ⇒ 程序把已领的箱子
+        当成可领：点 4 次不生效 → 回大厅 → 重新导航进来 → 再点 4 次，把路线拖死；
+        而当时局内 0/2 本该直接收场。
+
+        所以这条**先断言原始得分确实越阈**（否则它就守不住那个现场），
+        再断言 ``find_weekly_chest`` 因为第二道亮度判据而没有判成可领。
+        """
+
+        template = WorldBossStateMachine(TEMPLATES).templates.weekly_chest
+        screen = fixture("worldboss_home_chest_claimed_dark")
+
+        best = find_best_template(screen, template, region=WEEKLY_CHEST_REGION)
+        self.assertGreater(
+            best.score,
+            WEEKLY_CHEST_THRESHOLD,
+            f"这张图的意义就在于它越阈（实测 {best.score:.4f}）；若它跌到阈值以下，"
+            "说明夹具换过了，这条回归也就守不住现场了",
+        )
+        self.assertIsNone(
+            find_weekly_chest(screen, template),
+            "它在「有没有发光」这道判据上不成立 ⇒ 不该判成可领（判错就是原地反复点）",
+        )
+
+    def test_brightness_ratio_separates_glowing_from_not_glowing(self):
+        """「有没有在发光」这道判据：可领明显过线，不发光的两态都远在阈值下方。
+
+        用**比值**而不是绝对亮度：整幅画面被压暗时两边一起降、比值不变，
+        所以它不会被「同一个状态换张截图/赶上淡入」骗过去 —— 这正是它比模板得分可靠之处。
+        """
+
+        lit = weekly_chest_brightness_ratio(fixture("worldboss_home_chest_claimable"))
+        self.assertGreater(
+            lit,
+            WEEKLY_CHEST_BRIGHTNESS_RATIO + 0.30,
+            f"可领那张要明显过线（实测 {lit:.3f}），否则这道判据没有余量",
+        )
+        for name in ("worldboss_home_chest_claimed_dark", "worldboss_home_chest_claimed"):
+            with self.subTest(page=name):
+                ratio = weekly_chest_brightness_ratio(fixture(name))
+                self.assertLess(
+                    ratio,
+                    WEEKLY_CHEST_BRIGHTNESS_RATIO - 0.30,
+                    f"{name} 没在发光，亮度比应远低于阈值（实测 {ratio:.3f}）",
+                )
+
 
 class WorldBossStateMachineTests(unittest.TestCase):
     def test_full_cycle_walks_every_page_in_order(self):
@@ -564,20 +616,26 @@ class WorldBossRunnerTests(unittest.TestCase):
         )
 
     def test_claiming_a_chest_that_never_goes_away_stops_after_bounded_tries(self):
-        """宝箱点了不消失 ⇒ 有界收场，**绝不无限点**。
+        """宝箱点了不消失 ⇒ **有界撒手**，落到次数判断上正常收场 —— 绝不无限点。
 
-        这是这条路线最容易踩的坑（2026-09-23 刚修完「0/2 还在一直点」）：
-        宝箱是**同页动作**，点完页面不变、判据（模板命中）也就没变，
-        所以一旦「点了没生效」没有上限，就会变成原地循环。
+        这是这条路线最容易踩的坑，2026-09-25 实跑又踩了一次：
+        宝箱是**同页动作**，点完页面不变、判据也就没变，一旦「点了没生效」没有上限，
+        就会变成「点 4 次 → 回大厅 → 重新导航进来 → 再点 4 次」的死循环 ——
+        而当时局内已经 0/2、本该直接收场，却被排在更前面的宝箱分支拖住。
+
+        现在的行为：**真的点了** ``WEEKLY_CHEST_MAX_CLICKS`` 次还在发光就**撒手**，
+        让流程落到「选择队伍」那一步。这张图上次数是 0/2、按钮已灰 ⇒ 抛
+        ``AttemptsExhausted`` ⇒ 正常收场（退出码口径 2），**不再**抛异常 + 回大厅重来。
+
+        ⚠️ 计数挂在 Runner 的点击后钩子上，不是状态机里 —— 状态机在等重试窗口的那几秒
+        里每帧都会被问一次，按它数会让「3 次」在第 2 次点击后就触发（本轮实测过）。
 
         帧序列一直停在「宝箱可领」的主页上 = 点了但箱子没消失。
-        用真实窗口（`_WEEKLY_CHEST_RETRY_SECONDS = 3.0`）+ `poll_seconds=1.0`：
-        若窗口还是默认的 45 秒，60 秒的假时钟根本走不到 5 次尝试，
-        终局错误会变成状态超时 —— 所以断言那句错误文案，也在顺带守住短窗口。
         """
 
         machine = WorldBossStateMachine(TEMPLATES)
         clicks: list[tuple[int, int]] = []
+        logs: list[str] = []
         clock = _FakeClock([fixture("worldboss_home_chest_claimable")] * 60)
         with TemporaryDirectory() as directory:
             runner = WorldBossRunner(
@@ -585,21 +643,28 @@ class WorldBossRunnerTests(unittest.TestCase):
                 Runtime(
                     clock.capture,
                     clicks.append,
-                    emit=lambda _: None,
+                    emit=logs.append,
                     diagnostic_dir=Path(directory),
                     monotonic=lambda: clock.now,
                 ),
                 sleep=clock.sleep,
             )
 
-            with self.assertRaises(RuntimeError) as caught:
-                runner.run(max_cycles=1)
+            completed = runner.run(max_cycles=1)
 
-        self.assertIn("点击4次后画面未推进", str(caught.exception))
+        self.assertEqual(0, completed)
         self.assertEqual(
-            [WorldBossWeeklyChestTests.CHEST_POINT] * 4,
+            [WorldBossWeeklyChestTests.CHEST_POINT] * WEEKLY_CHEST_MAX_CLICKS,
             clicks,
-            f"宝箱最多点 4 次就该收场，实际点击 {clicks}",
+            f"宝箱连点 {WEEKLY_CHEST_MAX_CLICKS} 次还在发光就该撒手，实际点击 {clicks}",
+        )
+        self.assertTrue(
+            runner.resource_exhausted,
+            "撒手之后落到次数判断；这张图是 0/2 ⇒ 正常收场（退出码 2）而不是故障",
+        )
+        self.assertTrue(
+            any("停止=今日次数已用完" in line for line in logs),
+            f"日志要能看出是「次数用完」收的场，实际 {logs}",
         )
 
     def test_claiming_the_chest_then_running_out_of_attempts_ends_the_cycle(self):

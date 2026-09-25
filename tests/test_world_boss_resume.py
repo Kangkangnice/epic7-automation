@@ -52,6 +52,9 @@ RESUMABLE_FIXTURES: dict[str, tuple[str, WorldBossState]] = {
     "worldboss_home": ("世界首领战主页", WorldBossState.HOME),
     "worldboss_home_chest_claimable": ("世界首领战主页", WorldBossState.HOME),
     "worldboss_home_chest_claimed": ("世界首领战主页", WorldBossState.HOME),
+    # 2026-09-25 实跑那帧：同一个「绿勾」态、整幅偏暗，对可领模板误得 0.8069 越阈。
+    # 页面身份不变，所以照样是主页。
+    "worldboss_home_chest_claimed_dark": ("世界首领战主页", WorldBossState.HOME),
     "worldboss_home_exhausted": ("世界首领战主页", WorldBossState.HOME),
     "team_select": ("选择辅助队伍", WorldBossState.TEAM_SELECT),
     "team_config": ("配置队伍", WorldBossState.TEAM_CONFIG),

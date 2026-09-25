@@ -330,6 +330,54 @@ WEEKLY_CHEST_REGION = (1535, 250, 250, 250)
 # ⇒ 0.80 下方余量 0.14、上方余量 0.31。**改这个数前先重跑那个探针。**
 WEEKLY_CHEST_THRESHOLD = 0.80
 
+# 「有没有在发光」这道判据：宝箱区亮度 ÷ 整幅画面亮度。
+#
+# 2026-09-25 实跑暴露：**光靠模板得分守不住**。真机上「已领（绿勾）」那一态对模板得
+# **0.8069**，越过了 0.80 的阈值 ⇒ 程序把已领的箱子当成可领，点 4 次不生效、回大厅重来、
+# 再点 4 次，把整条路线拖死；而局内 0/2 本该收场，因为宝箱分支在前，永远走不到次数判断。
+# 夹具上同一个「已领」态只有 0.7085 —— 当初按它算出的「下方余量 0.09」在真机上并不存在。
+#
+# 改用**两道取「与」**（用户的话：「外面有一圈光环才代表可以点」）：
+#   ① 形状像不像那个发光宝箱（模板得分 ≥ ``WEEKLY_CHEST_THRESHOLD``）
+#   ② 那一块在不在发光（亮度比 ≥ 本常量）
+# 全库 227 张实测（`runtime_logs/_wb_chest_brightness_scan.py`）：
+#   可领发光 **2.013**、真机已领 **1.081**；
+#   别的页面也有很亮的（最高 1.760），但它们形状分只有 0.10~0.31，被 ① 挡掉。
+# ⇒ 这两个数**必须成对使用**：单独放宽任一个都会误判（只放亮度 ⇒ 别的明亮页面中招；
+#   只放形状 ⇒ 真机已领中招）。
+WEEKLY_CHEST_BRIGHTNESS_RATIO = 1.5
+
+# 宝箱是「同页动作」：点完不换页，只能靠它自己不再发光来判断生效。
+# 有界收场 —— **真的点了**这么多次还在发光就不再点它（计数在 ``WorldBossRunner``
+# 的点击后钩子里，不在状态机里，理由见 ``WorldBossStateMachine._chest_given_up``），
+# 让流程继续走到「选择队伍」那一步正常收尾（次数用完 ⇒ 退出码 2），
+# 而不是靠「回大厅重来」把整条路线拖住。
+WEEKLY_CHEST_MAX_CLICKS = 3
+
+
+def weekly_chest_brightness_ratio(
+    screen: np.ndarray, reference_size=WORLD_BOSS_REFERENCE_SIZE
+) -> float:
+    """宝箱区亮度 ÷ 整幅画面亮度。发光时 ≈2.0，不发光时 ≤1.1。
+
+    用比值而不是绝对亮度：整幅画面被压暗（淡入淡出）时两边一起降，比值不变
+    —— 与 ``select_team_bar_relative_v`` 同一个思路。
+    """
+    x, y, width, height = WEEKLY_CHEST_BOX
+    scale_x = screen.shape[1] / reference_size[0]
+    scale_y = screen.shape[0] / reference_size[1]
+    patch = screen[
+        round(y * scale_y) : round(y * scale_y) + round(height * scale_y),
+        round(x * scale_x) : round(x * scale_x) + round(width * scale_x),
+    ]
+    if patch.size == 0:
+        return 0.0
+    frame_v = float(cv2.cvtColor(screen, cv2.COLOR_RGB2HSV)[:, :, 2].mean())
+    if frame_v <= 0.0:
+        return 0.0
+    box_v = float(cv2.cvtColor(patch, cv2.COLOR_RGB2HSV)[:, :, 2].mean())
+    return box_v / frame_v
+
 
 def find_weekly_chest(
     screen: np.ndarray,
@@ -338,7 +386,16 @@ def find_weekly_chest(
     region: tuple[int, int, int, int] = WEEKLY_CHEST_REGION,
     reference_size=WORLD_BOSS_REFERENCE_SIZE,
 ) -> Optional[Match]:
-    """在主页「每周贡献度」面板里找**发光（可领）**的宝箱。命中返回 Match。"""
+    """在主页「每周贡献度」面板里找**发光（可领）**的宝箱。命中返回 Match。
+
+    两道取「与」：**形状像**（模板）**且在发光**（亮度比）。理由与实测数据见
+    ``WEEKLY_CHEST_BRIGHTNESS_RATIO``。
+    """
+    if (
+        weekly_chest_brightness_ratio(screen, reference_size)
+        < WEEKLY_CHEST_BRIGHTNESS_RATIO
+    ):
+        return None
     return find_template(
         screen,
         template,
@@ -600,6 +657,12 @@ class WorldBossStateMachine:
         self.auto_click_attempted = False
         self._confirmed_page = ""
         self._stamina_material_clicked = False
+        # 「本轮别再碰那个宝箱了」的标记，由 Runner 在**点够次数仍不消失**后置位
+        # （见 ``WorldBossRunner._WEEKLY_CHEST_MAX_CLICKS``）。
+        # ⚠️ 计数不能做在状态机里：主循环在等重试窗口的那几秒里会反复调用
+        # ``next_action``，状态机数的是「被问了几次」而不是「点了几次」，
+        # 上限值对不上真实点击（实测 3 次上限会在第 2 次点击后就撒手）。
+        self._chest_given_up = False
         # 「接力」进来的落点；None = 本轮是正常从主页开始的。Runner 靠它认出
         # 「这一局不是本进程点开的，但已经打起来了」⇒ 跳过状态机直接交战斗监督。
         self.resumed_from: Optional[WorldBossState] = None
@@ -917,9 +980,9 @@ class WorldBossStateMachine:
             # 「领完宝箱之后才是一轮结束」）。用户的实拍截图正是「0/2 + 有宝箱可领」
             # 这个状态 —— 顺序反了会在次数用完那一刻直接收摊，宝箱就永远领不到。
             chest = find_weekly_chest(screen, self.templates.weekly_chest)
-            if chest is not None:
+            if chest is not None and not self._chest_given_up:
                 # 同页动作（点完箱子不发光，页面不变）⇒ ``target_pages`` 留空。
-                # 验收靠**页面内状态证据**：宝箱模板不再命中（同「自动配置」按钮橙→蓝）。
+                # 验收靠**页面内状态证据**：宝箱不再发光（同「自动配置」按钮橙→蓝）。
                 # 点它多按一次没副作用，所以重试窗口用短尺子（见 ``_action_retry_seconds``）。
                 return self._action(
                     "claim-weekly-chest",
@@ -930,6 +993,10 @@ class WorldBossStateMachine:
                         "宝箱不再发光（weekly_chest 模板由命中变成不命中）"
                     ),
                 )
+            # ``_chest_given_up`` 为真 = 已经点够次数、箱子却还亮着 ⇒ **撒手**，
+            # 落到下面的次数判断。不让它落进「点 4 次 → 回大厅 → 重新导航 → 再点 4 次」
+            # 那个环 —— 那个环在 2026-09-25 的实跑里把整条路线拖死，而当时局内已经 0/2、
+            # 本该直接收场。
             # ⚠️ 先看次数，再决定要不要点「选择队伍」（2026-09-23 实跑暴露的漏判）。
             # 少了这一步，主页在 0/2 时会一直报 open-team-select：
             # 灰按钮点不动 ⇒ 45 秒转场超时 ⇒ 重试 4 次 ⇒ 回大厅恢复 ⇒ 再点……
@@ -1138,9 +1205,28 @@ class WorldBossRunner(ModeRunnerBase):
             sleep=sleep,
         )
         self._battle_attempts = 0
+        # 「宝箱真的点了几次」，见 ``WEEKLY_CHEST_MAX_CLICKS`` 与 ``_after_action_click``。
+        self._chest_clicks = 0
 
     def _state_label(self, state: WorldBossState) -> str:
         return state_label(state)
+
+    def _after_action_click(self, action) -> None:
+        """宝箱连点够次数还在发光 ⇒ 撒手，别再原地磨。
+
+        ⚠️ 计数必须挂在这里而不是状态机里：状态机数的是「被问了几次 next_action」，
+        而主循环在等重试窗口的那几秒里每帧都会问一次，两者差着好几倍
+        （实测按状态机数 3 次，第 2 次点击后就撒手了）。
+        """
+        if getattr(action, "name", "") != "claim-weekly-chest":
+            return
+        self._chest_clicks += 1
+        if self._chest_clicks >= WEEKLY_CHEST_MAX_CLICKS:
+            self.machine._chest_given_up = True
+            self.runtime.log(
+                f"模式=世界首领战 宝箱=连点 {self._chest_clicks} 次仍在发光 "
+                "⇒ 放弃领取，转去判次数（不再回大厅重来）"
+            )
 
     def _action_retry_seconds(self, action_name: str) -> float:
         """给「全部开启」单独一把短尺子，别让领奖白等 45 秒。

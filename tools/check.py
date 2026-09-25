@@ -12,12 +12,18 @@
 - **只改 `tools/`、`.github/`**：只做编译检查（这些没有测试覆盖）。
 
 用法（在仓库根 `auto_game_unified` 下执行）：
-    python tools/check.py                # 按 git 暂存区（pre-commit 钩子用这个）
-    python tools/check.py --vs HEAD      # 按工作区相对 HEAD 的改动
+    python tools/check.py                # 按 git 暂存区（pre-commit 钩子用这个；日常首选）
+    python tools/check.py --files a.py b.py   # 小改动首选：只验改到的文件（约 1~2 分钟）
+    python tools/check.py --vs HEAD      # 按工作区相对 HEAD 的改动（见下方警告）
     python tools/check.py --since origin/main
-    python tools/check.py --files a.py b.py
     python tools/check.py --full         # 强制全量
     python tools/check.py --install-hook # 装上 pre-commit 钩子（每 clone 一次）
+
+⚠️ **小改动别用 `--vs HEAD`**：它取的是「工作区相对 HEAD 的**全部**改动」，上一轮没提交
+的东西也算进去。只要工作区里躺着任何一个共享模块的旧改动，就会被判成全量 —— 跟这次
+改了多大无关（2026-09-25 实测：改一行却连跑两次全量 408s / 457s，局部只要 28.7 秒）。
+日常姿势是「先 `git add` 本次的文件，再不带参数跑」，或直接 `--files`。
+护栏：`tests/test_check_gate.py`。
 
 装上钩子后，每次 `git commit` 都会自动跑本检查；`git commit --no-verify` 可跳过。
 
@@ -87,6 +93,9 @@ ROUTE_KEYWORDS = {
     # 护栏：`test_project_layout.py::test_every_route_is_known_to_the_local_check_gate`。
     "world_boss": "world_boss",
     "knights_donation": "knights_donation",
+    # 骑士团支援列表的「读数字」判据（前置判据：材料不足就跳过）。它不是路线文件、
+    # 名字里也没有路线关键词 ⇒ 不登记的话改它会让定向判定退回全量。
+    "knights_support_digits": "knights_donation",
 }
 
 DOC_SUFFIXES = (".md", ".txt", ".json", ".yaml", ".yml")
@@ -99,6 +108,29 @@ LAYOUT_TEST = "test_project_layout.py"
 # 所以**先不启用**，改为优先优化单进程本身。
 # 想启用就把这里改成 2 或 4：机器空闲时 4 路实测能把全量从 382 秒压到 191 秒。
 PARALLEL_WORKERS = 1
+
+# 全量时才说的话。目的不是拦人，而是**让「白跑」这件事在屏幕上变得刺眼**：
+# 门槛判成全量的常见成因不是「改动真的大」，而是用了 `--vs HEAD`，把上一轮未提交的
+# 共享模块改动一起算了进来。护栏：`tests/test_check_gate.py`。
+FULL_RUN_NOTICE = """[check] 本次将跑**全量**（约 7~8 分钟），原因：{reason}
+[check] 若只是小改动，改用：`python tools/check.py --files {files}`（约 1~2 分钟）
+[check] 或先 `git add <本次改的文件>` 再不带参数跑 —— 只验暂存区，不会被旧改动拖成全量"""
+
+# 暂存区为空时会退化成「按整个工作区判定」，那时得先说清楚，别让人以为验的是本次改动。
+WORKSPACE_MODE_NOTICE = (
+    "[check] 提示：暂存区为空，已按「整个工作区相对 HEAD」判定"
+    "（上一轮 / 别的会话未提交的改动也算进去了）。"
+    "若只改了一小块，先 `git add <文件>` 再跑，或用 --files 指定。"
+)
+
+
+def full_run_notice(reason: str, changed: list[str]) -> str:
+    """全量时的喊话：为什么全量 + 怎么改成定向。
+
+    ``changed`` 只取前几个拼进示例命令，免得长改动清单把提示刷成一堵墙。
+    """
+    files = " ".join(changed[:8]) or "<改到的文件>"
+    return FULL_RUN_NOTICE.format(reason=reason, files=files)
 
 
 def git(*args: str) -> list[str]:
@@ -445,6 +477,11 @@ def main() -> int:
         return install_hook()
 
     files = changed_files(args)
+    if not (args.files or args.since or args.vs) and not git(
+        "diff", "--cached", "--name-only"
+    ):
+        # 走到这里说明 `changed_files` 用的是「整个工作区」兜底，而不是暂存区。
+        print(WORKSPACE_MODE_NOTICE, flush=True)
     code_files = [
         path
         for path in files
@@ -542,6 +579,9 @@ def main() -> int:
     print(f"[check] 测试解释器：{' '.join(interpreter)}")
     if targets != all_targets:
         print(f"[check] 选中 {len(targets)} 个测试文件（共 {len(all_tests)} 个）")
+    elif not args.full:
+        # 自动判成全量时喊一嗓子：让「白跑 7 分钟」在屏幕上变得刺眼（见 FULL_RUN_NOTICE）。
+        print(full_run_notice(reason, files), flush=True)
     return run_tests(targets, interpreter)
 
 
