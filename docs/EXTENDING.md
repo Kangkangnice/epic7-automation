@@ -59,7 +59,9 @@ tests/test_hunt_runner.py
 
 页面流程为“点按钮 → 转场 → 新页面”的同构模式（当前包括主线和狗粮）必须继承 `runner_base.py` 的 `ModeRunnerBase`，只声明差异：
 
-- `_MODE_LABEL`：日志用模式名（中文）。
+- `_MODE_LABEL`：日志用模式名（中文）。**必须与 `ModeSpec.label` 一致** —— 它是
+  唯一无法派生的那处副本（Runner 不能 import `modes`，会成环），由
+  `route_metadata.py` 在 import 阶段比对。
 - `_TIMEOUT_SECONDS`：每个状态的页面超时表。
 - `_BATTLE_ENTRY_ACTION` + `_CLICK_BEFORE_BATTLE`：战斗移交方式。
 - `_run_committed_battle(cycle)`：战斗监控实现（`BattleSupervisor` 或自带循环）。
@@ -88,16 +90,55 @@ tests/test_hunt_runner.py
 ```python
 "hunt": ModeSpec(
     name="hunt",
+    label="狩猎",              # 中文名 —— 全项目唯一来源（见下）
     default_state=HuntState.ENTRY.value,
     states=frozenset(state.value for state in HuntState),
     build_machine=_build_hunt,
     runner_type=HuntRunner,
+    # 次数由游戏规则决定、不给用户选时：填 default_cycles 并把 cycles_editable 设 False。
+    # 用户自己填次数的路线不用写这两项（默认 1 / 可编辑）。
     # 开局接力：认出人停在本路线哪一步就就地接管。没有它就必须进 RESUME_EXEMPT 并写明理由。
-    resume_probe=_probe_hunt_resume,
+    # ⚠️ 探针本体**不要手写** —— 用工厂 `modes._resume_probe`（它会把「认落点 →
+    # 拨状态机 → 回填 ResumePoint」一次做对；手抄最容易漏掉拨状态，而漏了之后
+    # 接力看起来是命中的，Runner 却会原地干等到超时）。
+    #   落点包含**导航链中间站**（判据要看导航器认出的页名）时：加 use_navigator=True；
+    #   命中后还要做本路线专属动作时：加 on_hit=（如刷书签的 mark_resumed_at_shop）。
+    resume_probe=_resume_probe(detect_hunt_resume_point),
 ),
 ```
 
 构建器只负责载入模板和把字符串转换为该模式的 Enum。不要在 `main.py` 添加新的条件分支。
+
+⚠️ **路线专属的校验、路线专属的构造参数，走 `ModeSpec` 的两个可选钩子** ——
+2026-09-27 起 `main.run_mode` 只认「注册项上有没有钩子」，不认识任何具名路线；
+`route_metadata.py` 会扫 `main.py`，再冒出 `if spec.name == "hunt"` 这种分叉就报错。
+
+```python
+"hunt": ModeSpec(
+    ...
+    # 实跑前校验：(路线名, 是否干跑) -> 拒绝文案 | None。
+    # 会真花钱 / 不可逆的路线用它拦住实跑；干跑放不放行由钩子自己决定。
+    preflight=_preflight_hunt,
+    # 实跑才需要的构造参数：(仓库根, 是否干跑) -> 传给 Runner 构造函数的关键字。
+    # 落盘位置这类参数走这里 —— 干跑不该落盘，就别在干跑分支里返回它。
+    runner_options=_hunt_runner_options,
+),
+```
+
+- `preflight` 跑在**建 runtime 之前**（被拦下的路线不该先开一个窗口），
+  返回文案即拒绝运行、文案原样进异常；返回 `None` 才放行。
+- `runner_options` 的返回值会**合并进** `run_mode` 自己那套参数（`recovery_gate` 等），
+  同名键会被钩子覆盖 —— 别拿它改公共参数。
+- 没有专属需求的路线**不要挂钩子**（挂个空转的配置只会让读的人以为它有含义）。
+
+⚠️ **中文名只在 `ModeSpec.label` 里写一次**。CLI 输出、QQ 通知、导航日志、交互菜单、
+桌面助手全都从它派生（2026-09-27 收敛）。以前这些地方各有一份，实测漂移过
+（同一路线在界面叫「活动」、在通知里叫「幸存者」）—— **别在别处再抄一份名字表**，
+`games/epic7/route_metadata.py` 会在 import 阶段比对，抄漏了直接报错。
+
+⚠️ **默认次数同理**：只在 `ModeSpec.default_cycles` 定义一次，`main.py` / `launcher.py`
+里**不许**再出现 `if args.mode == "hunt": args.max_cycles = 3` 这种写法（同样会被
+`route_metadata.py` 拦下）。
 
 ⚠️ **「接力」是注册模式的必填项**：新路线要么挂 `resume_probe`，要么进 `RESUME_EXEMPT` 并写明
 「为什么不做」—— **两者都缺的话 `modes.py` 在 import 阶段直接抛错**（`_assert_resume_declared()`），
@@ -111,8 +152,9 @@ tests/test_hunt_runner.py
 `ModeRunnerBase.run()` 里）。另外两类 Runner 的开关**没人读**，打开是**摆设**，
 必须进豁免名单并在理由里写清「用自己的哪套机制验收」：
 
-- 自带独立主循环的裸定义（`class XxxRunner:`，`super()` 0 次）：`arena` / `shop_refresh` / `survivor`；
-- 继承**事务型**主循环基类 `TransactionalRunnerBase` 的：`expedition`（2026-09-26 从裸定义搬过去）。
+- 自带独立主循环的裸定义（`class XxxRunner:`，`super()` 0 次）：`shop_refresh` / `survivor`；
+- 继承**事务型**主循环基类 `TransactionalRunnerBase`（它**不是** `ModeRunnerBase` 的子类）的：
+  `arena` / `expedition`（`expedition` 2026-09-26 从裸定义搬过去，`arena` 同日迁完）。
 
 ⚠️ 判定规则只有一条：**打开开关 ⇄ 进豁免名单，二选一**（`_assert_transition_stance_declared`）。
 别把「它的动作没有 `target_pages`」直接推成「打开开关会抛错」—— 还要问一句

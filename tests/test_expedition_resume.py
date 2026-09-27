@@ -47,7 +47,7 @@ from auto_game_unified.games.epic7.expedition import (
     ExpeditionStateMachine,
     detect_resume_point,
 )
-from auto_game_unified.games.epic7.modes import _probe_expedition_resume, get_mode
+from auto_game_unified.games.epic7.modes import get_mode
 from auto_game_unified.games.epic7.navigation import (
     Epic7Navigator,
     build_navigation_templates,
@@ -273,7 +273,7 @@ class ExpeditionResumeProbeTests(unittest.TestCase):
     def test_matching_frame_moves_the_machine_onto_that_step(self):
         machine = new_machine()
 
-        point = _probe_expedition_resume(
+        point = get_mode("expedition").resume_probe(
             machine, expedition_fixture("team"), self.navigator
         )
 
@@ -285,7 +285,7 @@ class ExpeditionResumeProbeTests(unittest.TestCase):
     def test_entry_page_moves_the_machine_onto_the_home_state(self):
         machine = new_machine(ExpeditionState.POSTERS)
 
-        point = _probe_expedition_resume(
+        point = get_mode("expedition").resume_probe(
             machine, navigation_fixture("expedition_home"), self.navigator
         )
 
@@ -296,7 +296,9 @@ class ExpeditionResumeProbeTests(unittest.TestCase):
         machine = new_machine()
 
         self.assertIsNone(
-            _probe_expedition_resume(machine, navigation_fixture("lobby"), self.navigator)
+            get_mode("expedition").resume_probe(
+                machine, navigation_fixture("lobby"), self.navigator
+            )
         )
 
         self.assertIs(ExpeditionState.HOME, machine.state)
@@ -306,7 +308,9 @@ class ExpeditionResumeProbeTests(unittest.TestCase):
         """导航器缺席时不该崩：业务页那部分自己就能认。"""
         machine = new_machine()
 
-        point = _probe_expedition_resume(machine, expedition_fixture("posters"), None)
+        point = get_mode("expedition").resume_probe(
+            machine, expedition_fixture("posters"), None
+        )
 
         self.assertEqual("通缉传单列表", point.page)
 
@@ -324,12 +328,18 @@ class ExpeditionResumeProbeTests(unittest.TestCase):
     def test_resumed_cycle_is_not_counted_before_it_actually_finishes(self):
         machine = new_machine()
 
-        _probe_expedition_resume(machine, expedition_fixture("result"), self.navigator)
+        get_mode("expedition").resume_probe(
+            machine, expedition_fixture("result"), self.navigator
+        )
 
         self.assertEqual(0, machine.completed_cycles)
 
     def test_the_three_resume_enabled_routes_expose_a_probe(self):
-        self.assertIs(_probe_expedition_resume, get_mode("expedition").resume_probe)
+        # 探针 2026-09-27 起由工厂 ``modes._resume_probe`` 在注册处现造 ⇒
+        # 断言「注册的那个是用**本路线的判据**造的」。
+        self.assertIs(
+            detect_resume_point, get_mode("expedition").resume_probe.__wrapped__
+        )
         self.assertIsNotNone(get_mode("arena").resume_probe)
         self.assertIsNotNone(get_mode("story").resume_probe)
         for name in ("fodder", "hero_synthesis", "survivor"):

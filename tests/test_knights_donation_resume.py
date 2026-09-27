@@ -28,7 +28,6 @@ from auto_game_unified.games.epic7.knights_donation import (
     detect_resume_point,
 )
 from auto_game_unified.games.epic7.modes import (
-    _probe_knights_donation_resume,
     get_mode,
 )
 from auto_game_unified.games.epic7.navigation import (
@@ -221,13 +220,18 @@ def test_the_judgement_is_the_same_anchors_the_runtime_uses():
 
 
 def test_knights_donation_exposes_a_resume_probe():
-    """从「一律回大厅」改成「先看停在骑士团哪一页」。"""
+    """从「一律回大厅」改成「先看停在骑士团哪一页」。
 
-    assert get_mode("knights_donation").resume_probe is _probe_knights_donation_resume
+    探针 2026-09-27 起由工厂 ``modes._resume_probe`` 在注册处现造，没有模块级
+    私有函数了 ⇒ 改断言「注册的那个是用**本路线的判据**造的」（抄注册行最容易
+    漏改这个参数，把隔壁路线的判据挂上来）。
+    """
+
+    assert get_mode("knights_donation").resume_probe.__wrapped__ is detect_resume_point
 
 
 def test_the_probe_reports_the_point_in_the_modes_shape():
-    point = _probe_knights_donation_resume(
+    point = get_mode("knights_donation").resume_probe(
         _machine(),
         _knights("support_page"),
         None,
@@ -241,7 +245,7 @@ def test_the_probe_reports_the_point_in_the_modes_shape():
 
 def test_the_probe_misses_on_a_foreign_page():
     assert (
-        _probe_knights_donation_resume(
+        get_mode("knights_donation").resume_probe(
             _machine(),
             _screen("epic7_navigation", "lobby"),
             None,

@@ -13,8 +13,7 @@
 | ``main.MODE_LABELS`` | CLI 输出与 QQ 通知里的中文名 | 10 条 |
 | ``navigation.MODE_LABELS`` | 导航完成日志里的中文名 | 只有 ``needs_navigation=True`` 的 9 条 |
 | ``launcher.MENU_OPTIONS`` | 交互菜单的编号 → 中文名 | 只有能从菜单进的 9 条 |
-| ``desktop.catalog.ROUTES`` | 桌面助手的中文名、默认次数、是否可编辑 | 10 条 |
-| ``main.py`` / ``launcher.py`` / ``catalog.py`` | 固定次数路线的默认轮次 | 只有 4 条「每天固定 N 次」的 |
+| ``desktop.catalog.ROUTES`` | 桌面助手的中文名 | 10 条 |
 
 由此带来一类**没有任何机制能发现**的错。2026-09-27 审查时实测到两个活例子：
 
@@ -28,12 +27,35 @@
 
 ⇒ 本模块把「同一事实的多处副本必须一致」变成 **import 阶段报错**。
 
+## ⚠️ 批次 2 之后本模块的重心变了（2026-09-27）
+
+审查报告的 **批次 2**（A1 + B1）已经把**次数**收敛成单一来源：固定次数现在只在
+``ModeSpec.default_cycles`` 里定义，``main.py`` / ``launcher.py`` /
+``desktop/catalog.py`` 全部从它读 —— **没有副本了**。
+
+所以 ``default_cycles_consistency_errors`` 不再是「三处比对」，改成**防回潮**：
+``main.py`` / ``launcher.py`` 的源码里不该再冒出写死的次数（有人从旧代码抄回来
+就会各说各话）。
+
+**中文名**则仍有真副本 —— 上面那几张表现在都是**从 ``MODE_SPECS.label`` 派生**的，
+比对它们等于「验证派生链没被谁改成写死的」。各 Runner 的 ``_MODE_LABEL`` 是唯一
+无法派生的（Runner 不能 import ``modes``，会成环），必须靠本模块盯着。
+
+## 第三块：``main.py`` 里不许再出现路线特判（批次 3，2026-09-27）
+
+审查报告的 **批次 3**（C1）把 ``main.run_mode`` 里仅有的两处路线特判
+（``if spec.name == "shop_refresh"`` 的实跑闸门、``if spec.name == "arena"`` 的
+落盘参数）挪进了 ``ModeSpec.preflight`` / ``ModeSpec.runner_options``。
+那两处本来就违反 ``docs/EXTENDING.md`` 的「不要在 ``main.py`` 添加新的条件分支」，
+而且会随路线数量线性膨胀。
+
+挪完之后加这道**防回潮**（同 ``default_cycles`` 那条的思路）：``main.py`` 里再出现
+拿 ``spec.name`` 跟具体路线名比的分支就报错，逼作者改走注册钩子。
+
 ## 边界（刻意不做的）
 
 - **只查一致性，不查对不对**：不判断「世界首领战该 2 次还是 3 次」，
-  只判断「三个地方说的是不是同一个数」。业务判断归人。
-- **不做单一事实源重构**：那是审查报告里的 A1/B1 方案。
-  本模块是它之前的「先让漏改报错」这一步。
+  只判断「各处说的是不是同一个数」。业务判断归人。
 - **不查判据准不准**：同 ``modes._assert_resume_declared`` 的定位。
 - **不要求「所有副本覆盖所有路线」**：每个副本各有各的正当覆盖范围
   （见上表），硬要求全覆盖会把「刻意不登记」误报成漏改。
@@ -117,43 +139,30 @@ def default_cycles_consistency_errors(
     *,
     main_defaults: dict[str, int],
     launcher_defaults: dict[str, int],
-    catalog_defaults: dict[str, int],
 ) -> list[str]:
-    """校验「固定次数路线的默认轮次」在三处一致；返回错误文案（空 = 全一致）。
+    """校验「命令行 / 交互菜单里**没有**写死的固定次数」；返回错误文案（空 = 干净）。
 
-    三处副本服务不同入口：
+    ⚠️ 2026-09-27 起，固定次数只由 ``modes.MODE_SPECS`` 定义一次，
+    ``main.py`` / ``launcher.py`` / ``desktop/catalog.py`` 全部从它读。
+    所以本判据**不再是「三处比对」**（没有三处了），而是**防回潮**：
+    源码里不该再出现 ``if <mode> == "...": ... = <次数>`` 这种硬编码 ——
+    一旦出现，说明有人从旧代码/旧注释里抄回来了，那就会与 ``MODE_SPECS`` 各说各话。
 
-    - ``main.py``：命令行 ``--max-cycles`` 的兜底；
-    - ``launcher.py``：交互菜单不问次数时的取值；
-    - ``desktop/catalog.py``：桌面助手界面里那个（置灰的）次数框。
+    **写死就报错，哪怕值与 spec 恰好相同** —— 那是一份会漂移的副本，
+    留着它等于把刚拆掉的坑重新挖开。要固定次数请改 ``ModeSpec.default_cycles``。
 
-    ⚠️ 三处**只登记「不受用户控制的固定次数」路线**
-    （hero_synthesis / world_boss / knights_donation / labyrinth_stone）。
-    用户可自由填次数的路线（arena 等）不进来 —— 那些没有「默认值」这件事，
-    各入口都是问用户/弹输入框，不构成需要一致的事实。
-
-    规则两条：**键集合必须相同**（一处登记、另一处漏登记 = 漏改）；
-    **值必须相同**（同一个数抄在三处，要一起改）。
+    读源码而不是读运行时值，是因为要抓的正是「源码里写死了什么」。
     """
     errors: list[str] = []
-    keys = set(main_defaults) | set(launcher_defaults) | set(catalog_defaults)
-    for mode in sorted(keys):
-        values = {
-            "main.py": main_defaults.get(mode),
-            "launcher.py": launcher_defaults.get(mode),
-            "desktop/catalog.py": catalog_defaults.get(mode),
-        }
-        missing = sorted(name for name, value in values.items() if value is None)
-        if missing:
+    for source_name, table in (
+        ("main.py", main_defaults),
+        ("launcher.py", launcher_defaults),
+    ):
+        for mode in sorted(table):
             errors.append(
-                f"固定次数路线 {mode} 在 {missing} 里没有登记（其他入口登记了）；"
-                "漏登记会让该入口拿到一个错的（或没有）默认次数"
-            )
-            continue
-        if len(set(values.values())) != 1:
-            errors.append(
-                f"固定次数路线 {mode} 三处的默认次数不一致：{values}；"
-                "同一个数抄在三处，必须一起改"
+                f"{source_name} 里给 {mode} 写死了 {table[mode]} 次；"
+                "固定次数现在只在 MODE_SPECS 的 default_cycles 里定义一次，"
+                "请改回从那里读（要调次数就改那个字段）。"
             )
     return errors
 
@@ -183,6 +192,13 @@ def assert_route_metadata_consistent() -> None:
 
     # 各副本「该覆盖哪些」的划定 —— 每一条都对应一个真实现象，不是拍脑袋：
     #
+    # ⚠️ 批次 2 之后，下面这四份里除 Runner 的 ``_MODE_LABEL`` 外**都是派生的**
+    # （``main`` / ``navigation`` / ``launcher`` / ``catalog`` 统统读 ``MODE_SPECS.label``）。
+    # 比对它们不再是为了「发现漂移」，而是**验证派生链没被谁改回写死的** ——
+    # 例如有人把 ``catalog.RouteInfo.label`` 从 property 改回一个字面量字段，
+    # 只要值改了这里就报错。``_MODE_LABEL`` 是唯一真副本（Runner 不能 import
+    # ``modes``，会成环）。
+    #
     # - navigation：只服务导航完成的日志，needs_navigation=False 的路线
     #   （survivor）连导航器都不构建 ⇒ 不要求它。（survivor 那条漂移就是
     #   因为过去没这条规矩才没人发现；见模块开头。）
@@ -190,7 +206,7 @@ def assert_route_metadata_consistent() -> None:
     #   小游戏里才能跑，刻意不进菜单 ⇒ 不要求它。
     # - Runner 的 _MODE_LABEL：只有继承基类的路线才有这个类属性；
     #   shop_refresh / survivor 是裸主循环 ⇒ 只要求「有 _MODE_LABEL 的
-    #   必须与 main 一致」，不要求都有。
+    #   必须与 spec.label 一致」，不要求都有。
     # - catalog：桌面助手是唯一的路线总览面板 ⇒ 要求全覆盖（含 survivor）。
     runner_labels = {
         name: label
@@ -230,12 +246,16 @@ def assert_route_metadata_consistent() -> None:
     errors += default_cycles_consistency_errors(
         main_defaults=_main_fixed_cycles(),
         launcher_defaults=_launcher_fixed_cycles(),
-        catalog_defaults={
-            route.mode: route.default_cycles
-            for route in catalog.ROUTES
-            if not route.cycles_editable
-        },
     )
+
+    special_cases = _main_route_special_cases()
+    if special_cases:
+        errors.append(
+            f"main.py 里又出现了拿 spec.name 跟具体路线名比的分支：{special_cases}；"
+            "路线专属的校验请写进 modes.MODE_SPECS 的 preflight，"
+            "路线专属的构造参数请写进 runner_options —— "
+            "不要在 main.py 里加条件分支（docs/EXTENDING.md 明写）。"
+        )
 
     if errors:
         raise RuntimeError(
@@ -247,7 +267,11 @@ def assert_route_metadata_consistent() -> None:
 
 
 def _main_fixed_cycles() -> dict[str, int]:
-    """``main.py`` 里那串 ``if args.mode == ...`` 兜底 → {模式: 固定次数}。
+    """``main.py`` 源码里写死的固定次数 → {模式: 次数}。
+
+    正常情况**应当返回空字典**（次数从 ``MODE_SPECS`` 读）。返回非空只有两种可能：
+    有人把次数硬编码抄回来了，或者扫描器把无关的 ``if args.mode == "x": n = 1``
+    误认成了次数 —— 两种都该看一眼。
 
     ⚠️ **用 AST 解析源码，不用运行 ``main()``**：这里要的是「源码里写了什么」，
     不是「这次调用会得到什么」（那取决于命令行参数）。
@@ -256,12 +280,27 @@ def _main_fixed_cycles() -> dict[str, int]:
 
 
 def _launcher_fixed_cycles() -> dict[str, int]:
-    """``launcher.py`` 里 ``if mode == ...: cycles = N`` 那串 → {模式: 次数}。
+    """``launcher.py`` 源码里写死的固定次数 → {模式: 次数}。正常应返回空字典。
 
-    ⚠️ ``elif mode in ("a", "b"): cycles = 1`` 这种**元组形式**也要认，
-    否则「迷宫强化石」会漏掉（它跟 knights_donation 合并写在一行里）。
+    ⚠️ ``elif mode in ("a", "b"): cycles = 1`` 这种**元组形式**也要认 ——
+    旧代码正是这么写的（迷宫强化石与 knights_donation 合并在一行）。
     """
     return _fixed_cycles_from_source(_LAUNCHER_PATH, _LAUNCHER_VAR)
+
+
+def _main_route_special_cases() -> list[str]:
+    """``main.py`` 里拿 ``spec.name`` 跟具体路线名比的分支（正常应为**空列表**）。
+
+    路线专属的校验与构造参数现在都在 ``MODE_SPECS`` 注册项旁边
+    （``ModeSpec.preflight`` / ``ModeSpec.runner_options``）。这里返回非空，
+    说明有人又在 ``main.py`` 里写了 ``if spec.name == "某路线"`` ——
+    那会让 ``main.py`` 随路线数量线性膨胀，且新增路线的人不会想到要来这儿改。
+
+    ⚠️ **用 AST，不用文本匹配**：本模块的 docstring、``docs/EXTENDING.md`` 和
+    审查报告里都写着 ``if spec.name == "shop_refresh"`` 这种示例，字面量匹配会把
+    注释和文档里的示例当成真代码，护栏立刻变成误报机器。
+    """
+    return _route_special_cases_from_source(_MAIN_PATH)
 
 
 # ---- AST 解析实现 ---------------------------------------------------------
@@ -272,12 +311,17 @@ _LAUNCHER_PATH = _PACKAGE_ROOT / "launcher.py"
 # main.py 里比较的是 ``args.mode``（参数对象属性）；launcher.py 里是局部变量 ``mode``。
 _MAIN_ARG_ATTR = ("args", "mode")
 _LAUNCHER_VAR = ("mode",)
+# 路线特判认的是 ``spec.name``（``run_mode`` 拿到的那份路线注册项）。
+_ROUTE_HANDLE = ("spec", "name")
+# 次数赋值的目标名：``main.py`` 是 ``args.max_cycles``、``launcher.py`` 是 ``cycles``。
+_CYCLE_TARGET_NAMES = frozenset({"max_cycles", "cycles"})
 
 
 def _fixed_cycles_from_source(path: Path, subject: tuple[str, ...]) -> dict[str, int]:
-    """从一份 py 源码里刮出「固定次数」映射。
+    """从一份 py 源码里刮出「写死的固定次数」→ {模式: 次数}。
 
-    认这三种写法（项目里现存的就这三种）：
+    要抓的就是这种（2026-09-27 批次 2 之前 ``main.py`` / ``launcher.py``
+    里真实存在过、后来改成从 ``MODE_SPECS`` 读了）：
 
     ```python
     # main.py
@@ -293,10 +337,13 @@ def _fixed_cycles_from_source(path: Path, subject: tuple[str, ...]) -> dict[str,
         cycles = 1
     ```
 
-    ⚠️ 只认 ``if/elif`` 那一层，**不递归进函数体深处** —— 这里要的是「入口处的
-    固定次数表」，不是任何地方出现的赋值。刮到无法识别的形态就跳过（放过），
-    因为「解析不到」不该升级成「程序起不来」；真正的兜底是
-    ``default_cycles_consistency_errors`` 的键集合比对（少登记会报错）。
+    ⚠️ **只认赋给 ``max_cycles`` / ``cycles`` 的整数常量**（见
+    ``_assigned_int_constant``）—— 否则 ``if args.mode == "story": retries = 3``
+    会被误报成「写死了 story 跑 3 次」。
+
+    ⚠️ 刮不到就返回空字典（``OSError`` / ``SyntaxError`` 也吞）：这里要的是
+    「源码里写死了什么」，程序**正常状态下就该是空的**。解析失败不该升级成
+    「程序起不来」—— 真出了问题，``main`` / ``launcher`` 自己的行为会先露馅。
     """
     try:
         tree = ast.parse(path.read_text(encoding="utf-8"))
@@ -319,36 +366,42 @@ def _fixed_cycles_from_source(path: Path, subject: tuple[str, ...]) -> dict[str,
 
 
 def _matched_modes(test: ast.expr, subject: tuple[str, ...]) -> list[str]:
-    """这个条件表达式是不是 ``<subject> == "xxx"`` / ``<subject> in ("a", "b")``。
+    """这个条件表达式里有没有 ``<subject> == "xxx"`` / ``<subject> in ("a", "b")``。
 
-    返回它命中的模式名列表（不是就返回空列表）。
+    返回它命中的模式名列表（没有就返回空列表）。
+
+    ``and`` / ``or`` 链会**逐项看**，不只看最左边那个 —— 项目里的常见写法是
+    ``if args.mode == "world_boss" and args.max_cycles is None:``（模式在左边），
+    但 ``if not dry_run and args.mode == "arena":`` 这种反过来的也要认。
     """
-    # 去掉 ``and args.max_cycles is None`` 那种尾巴，只看最左边那一项。
-    if isinstance(test, ast.BoolOp) and isinstance(test.op, ast.And) and test.values:
-        candidate = test.values[0]
+    if isinstance(test, ast.BoolOp):
+        candidates = list(test.values)
     else:
-        candidate = test
+        candidates = [test]
 
-    if not isinstance(candidate, ast.Compare) or len(candidate.ops) != 1:
-        return []
-    if not _is_subject(candidate.left, subject):
-        return []
-    comparator = candidate.comparators[0]
-    op = candidate.ops[0]
-    if isinstance(op, ast.Eq) and isinstance(comparator, ast.Constant):
-        if isinstance(comparator.value, str):
-            return [comparator.value]
-    if isinstance(op, ast.In) and isinstance(comparator, (ast.Tuple, ast.List)):
-        return [
-            element.value
-            for element in comparator.elts
-            if isinstance(element, ast.Constant) and isinstance(element.value, str)
-        ]
+    for candidate in candidates:
+        if not isinstance(candidate, ast.Compare) or len(candidate.ops) != 1:
+            continue
+        if not _is_subject(candidate.left, subject):
+            continue
+        comparator = candidate.comparators[0]
+        op = candidate.ops[0]
+        if isinstance(op, ast.Eq) and isinstance(comparator, ast.Constant):
+            if isinstance(comparator.value, str):
+                return [comparator.value]
+        if isinstance(op, ast.In) and isinstance(comparator, (ast.Tuple, ast.List)):
+            return [
+                element.value
+                for element in comparator.elts
+                if isinstance(element, ast.Constant)
+                and isinstance(element.value, str)
+            ]
     return []
 
 
 def _is_subject(node: ast.expr, subject: tuple[str, ...]) -> bool:
     """``node`` 是不是 ``args.mode``（元组长度 2）或 ``mode``（长度 1）。"""
+
     if len(subject) == 2:
         return (
             isinstance(node, ast.Attribute)
@@ -360,16 +413,55 @@ def _is_subject(node: ast.expr, subject: tuple[str, ...]) -> bool:
 
 
 def _assigned_int_constant(body: list[ast.stmt]) -> int | None:
-    """这个 ``if`` 体里有没有 ``<某个目标> = <整数常量>``；有就返回那个整数。
+    """这个 ``if`` 体里有没有 ``<次数目标> = <整数常量>``；有就返回那个整数。
 
-    ⚠️ 目标名不强求 —— ``main.py`` 赋给 ``args.max_cycles``、``launcher.py``
-    赋给 ``cycles``。这里只要「体里有一个整数常量赋值」就认，因为
-    这两种入口的 if 体里本来就只有那一个赋值。
+    ⚠️ **要认赋值目标名**（``max_cycles`` / ``cycles``），不能「体里出现任何整数赋值
+    就算」—— 否则 ``if args.mode == "story": retries = 3`` 这种无关代码会被误报成
+    「写死了 story 跑 3 次」。护栏误报会逼人绕过它，那就白做了。
     """
     for statement in body:
         if not isinstance(statement, ast.Assign) or len(statement.targets) != 1:
+            continue
+        target = statement.targets[0]
+        if isinstance(target, ast.Attribute):
+            name = target.attr
+        elif isinstance(target, ast.Name):
+            name = target.id
+        else:
+            continue
+        if name not in _CYCLE_TARGET_NAMES:
             continue
         value = statement.value
         if isinstance(value, ast.Constant) and isinstance(value.value, int):
             return value.value
     return None
+
+
+def _route_special_cases_from_source(path: Path) -> list[str]:
+    """刮出一份 py 源码里「拿 ``spec.name`` 跟路线名比」的位置，形如 ``main.py:385``。
+
+    认四种比较：``==`` / ``!=`` / ``in`` / ``not in``。
+    **不认属性读取**（``f"模式={spec.name}"``、``HomeReturn(mode=spec.name)``、
+    ``spec.name`` 当参数传下去）—— 那些是正常用法，判据只针对「按路线名分叉」。
+
+    与 ``_fixed_cycles_from_source`` 同一套取舍：读不到 / 解析失败就返回空列表，
+    **不升级成启动失败**（程序正常状态下这里就该是空的）。
+    """
+    try:
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+    except (OSError, SyntaxError):
+        return []
+
+    found: list[int] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Compare):
+            continue
+        if not _is_subject(node.left, _ROUTE_HANDLE):
+            continue
+        if any(
+            isinstance(op, (ast.Eq, ast.NotEq, ast.In, ast.NotIn)) for op in node.ops
+        ):
+            found.append(node.lineno)
+    # 按行号排序再出文案：``ast.walk`` 是广度优先，出参顺序**不是**源码顺序
+    # （嵌套深的那个反而排在后面），报错时读起来会莫名其妙。
+    return [f"{path.name}:{lineno}" for lineno in sorted(found)]

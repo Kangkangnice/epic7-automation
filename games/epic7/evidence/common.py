@@ -21,6 +21,12 @@ class AtomEvidence:
     description: str = ""
     required: bool = True
     reference_size: tuple[int, int] = (1982, 1132)
+    # 同一个控件的**其它长相**（相对 template_root 的路径）。默认空 ⇒ 绝大多数锚点
+    # 仍是单模板。目前唯一使用者是大厅「秘密商店」入口：商店有未读内容时入口图标上
+    # 会盖一块红 N 角标，与干净模板的相似度只有 ~0.81（门槛 0.82）⇒ 会被判成
+    # 「锚点缺失」把整条路线打挂（详见 evidence/shop_refresh.py 的常量注释）。
+    # 判定语义：**任一候选过阈即算命中**，命中取过阈候选中分数最高的那个。
+    alt_template_paths: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)

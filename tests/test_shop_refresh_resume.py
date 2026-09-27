@@ -23,7 +23,7 @@ import numpy as np
 from auto_game_unified.games.epic7.evidence.shop_refresh import (
     build_shop_refresh_observer,
 )
-from auto_game_unified.games.epic7.modes import _probe_shop_refresh_resume, get_mode
+from auto_game_unified.games.epic7.modes import get_mode
 from auto_game_unified.games.epic7.shop_refresh import (
     ShopPhase,
     ShopRefreshStateMachine,
@@ -141,7 +141,7 @@ def test_shop_page_judgement_is_the_same_three_anchors_as_navigation():
 def test_mode_probe_marks_the_machine_without_touching_the_phase():
     machine = _machine()
 
-    point = _probe_shop_refresh_resume(
+    point = get_mode("shop_refresh").resume_probe(
         machine,
         _screen("epic7_shop_refresh", "shop_top_live"),
         None,
@@ -158,7 +158,7 @@ def test_mode_probe_marks_the_machine_without_touching_the_phase():
 def test_mode_probe_misses_on_a_foreign_page():
     machine = _machine()
 
-    point = _probe_shop_refresh_resume(
+    point = get_mode("shop_refresh").resume_probe(
         machine,
         _screen("epic7_navigation", "lobby"),
         None,
@@ -169,9 +169,13 @@ def test_mode_probe_misses_on_a_foreign_page():
 
 
 def test_shop_refresh_exposes_a_resume_probe():
-    """刷书签从「一律回大厅」改成「先看是不是已经停在商店页」。"""
+    """刷书签从「一律回大厅」改成「先看是不是已经停在商店页」。
 
-    assert get_mode("shop_refresh").resume_probe is _probe_shop_refresh_resume
+    探针 2026-09-27 起由工厂 ``modes._resume_probe`` 在注册处现造 ⇒ 改断言
+    「注册的那个是用**本路线的判据**造的」。
+    """
+
+    assert get_mode("shop_refresh").resume_probe.__wrapped__ is detect_resume_point
     assert get_mode("survivor").resume_probe is None
     assert get_mode("fodder").resume_probe is None
     assert get_mode("hero_synthesis").resume_probe is None

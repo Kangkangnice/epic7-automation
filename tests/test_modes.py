@@ -1,6 +1,8 @@
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
+from auto_game_unified.games.epic7.evidence import shop_refresh as shop_evidence
 from auto_game_unified.games.epic7.modes import MODE_SPECS, get_mode
 
 
@@ -135,6 +137,90 @@ class Epic7ModeRegistryTests(unittest.TestCase):
         self.assertEqual(0.90, arena._THRESHOLDS["battle_start"])
         self.assertEqual(0.75, hero._THRESHOLDS["filter_level_label"])
         self.assertEqual(0.50, hero._button_struct_min)
+
+
+class RouteHookRegistryTests(unittest.TestCase):
+    """路线级钩子（2026-09-27 批次 3 C1）：``preflight`` / ``runner_options``。
+
+    这两条钩子是「新路线需要专属校验 / 专属构造参数」时的唯一入口，取代了以前
+    写在 ``main.run_mode`` 里的 ``if spec.name == "..."``。它们绑在注册项上，
+    所以「忘记挂」不会有任何症状 —— 得靠这几条测试盯着。
+    """
+
+    def test_shop_refresh_preflight_blocks_live_until_the_evidence_flag_is_on(self):
+        """刷书签会真花钱 ⇒ 实证标志为假时**必须**拦下实跑，但干跑不受影响。"""
+        shop = get_mode("shop_refresh")
+        self.assertIsNotNone(shop.preflight, "刷书签的实跑闸门从注册项上掉了")
+
+        with patch.object(shop_evidence, "LIVE_TRANSACTIONS_VERIFIED", False):
+            blocked = shop.preflight("shop_refresh", False)
+            self.assertIsInstance(blocked, str)
+            self.assertIn("当前客户端实证", blocked)
+            # 干跑必须照旧放行 —— 采样是这个闸门存在的意义。
+            self.assertIsNone(shop.preflight("shop_refresh", True))
+
+        with patch.object(shop_evidence, "LIVE_TRANSACTIONS_VERIFIED", True):
+            self.assertIsNone(shop.preflight("shop_refresh", False))
+
+    def test_arena_runner_options_carry_the_two_live_paths_and_nothing_on_dry_run(self):
+        """竞技场实跑要落两个盘（买票记账 + 每局结算画面），干跑一个都不落。"""
+        arena = get_mode("arena")
+        self.assertIsNotNone(arena.runner_options, "竞技场的落盘参数从注册项上掉了")
+
+        self.assertEqual({}, arena.runner_options(ROOT, True))
+        self.assertEqual(
+            {
+                "purchase_stamp_path": ROOT / "runtime_logs" / "arena_ticket_purchase.txt",
+                "outcome_frame_dir": ROOT / "docs" / "manual_review" / "arena",
+            },
+            arena.runner_options(ROOT, False),
+        )
+
+    def test_routes_without_special_needs_declare_no_hooks(self):
+        """没需求的路线不该挂钩子 —— 挂了就是「空转的配置」，读的人会以为它有意义。"""
+        for name, spec in MODE_SPECS.items():
+            if name not in {"shop_refresh"}:
+                self.assertIsNone(spec.preflight, f"{name} 不该有 preflight")
+            if name not in {"arena"}:
+                self.assertIsNone(spec.runner_options, f"{name} 不该有 runner_options")
+
+
+class TemplateRootConventionTests(unittest.TestCase):
+    """每条路线的 ``build_machine`` 都必须在**真模板根**上构造得出来。
+
+    这是 2026-09-27 批次 5 普查的落地：10 个工厂里 ``template_root`` 与
+    ``template_root / "<路线名>"`` 两种写法并存（``arena`` / ``hero_synthesis`` /
+    ``shop_refresh`` / ``survivor`` 用根，其余 6 条用子目录）。
+
+    实测（2026-09-27）：传错一层会**当场** ``FileNotFoundError`` —— 不是静默失效。
+    所以这条测试守的不是「判据准不准」，而是「模板根这件事每条路线都有人验过一遍」，
+    顺带补上之前只覆盖 6 条的缺口（fodder / shop_refresh / survivor / labyrinth_stone
+    原先没有直接构造过）。
+    """
+
+    def test_every_route_builds_a_machine_from_the_real_template_root(self):
+        for name, spec in sorted(MODE_SPECS.items()):
+            with self.subTest(mode=name):
+                machine = spec.build_machine(TEMPLATES, spec.default_state, "emulator")
+                self.assertIsNotNone(machine, f"{name} 在真模板根上构造出了 None")
+
+    def test_a_wrong_template_root_fails_loudly_instead_of_silently(self):
+        """传错一层模板根**必须炸**，不能静默构造出一个「什么都认不出」的机器。
+
+        不写死异常类型（现在实测是 ``FileNotFoundError``）：要守的性质是
+        「不许静默通过」—— 哪天模板改成懒加载，错根就会一路漏到实跑，
+        以「认不出画面」的形式出现，那时候排查成本比现在高得多。
+        """
+        try:
+            get_mode("world_boss").build_machine(
+                TEMPLATES / "world_boss", "home", "emulator"
+            )
+        except Exception:
+            return
+        self.fail(
+            "模板根传错一层竟然构造成功了 —— 这个错会一路漏到实跑才暴露"
+            "（普查时实测是 FileNotFoundError）。"
+        )
 
 
 if __name__ == "__main__":

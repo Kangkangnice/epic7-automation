@@ -12,15 +12,28 @@
 > | 批次 | 内容 | 状态 |
 > | --- | --- | --- |
 > | 1 | A2 + B2（只加自查，不重构） | ✅ **已交付**（2026-09-27，`36a169e`）—— 见 `games/epic7/route_metadata.py` |
-> | 2 | A1 + B1（元数据单一源） | ⬜ 未动 |
-> | 3 | C1（路线级钩子，删 `main.py` 特判） | ⬜ 未动 |
-> | 4 | D1 + D2（探针工厂 + 兜底测试） | ⬜ 未动 |
-> | 5 | E1（工厂合并，需先普查签名） | ⬜ 未动 |
+> | 2 | A1 + B1（元数据单一源） | ✅ **已交付**（2026-09-27）—— `ModeSpec.label` / `default_cycles` / `cycles_editable` 成为唯一来源，`main` / `navigation` / `launcher` / `catalog` / `daily_tasks` 全部派生 |
+> | 3 | C1（路线级钩子，删 `main.py` 特判） | ✅ **代码完成、未提交**（2026-09-27，同一并发会话阻塞）—— `ModeSpec.preflight` / `ModeSpec.runner_options`，`main.run_mode` 两处 `if spec.name == ...` 已删，并加「`main.py` 不许再有路线特判」防回潮 |
+> | 4 | D1 + D2（探针工厂 + 兜底测试） | ✅ **代码完成、未提交**（2026-09-27）—— 7 个 `_probe_*` 收成一个 `_resume_probe` 工厂；D2 兜底断言进了 `test_resume_contracts.py`，并做过变异验证（关掉 `resume_from` ⇒ arena/expedition/story/world_boss 四条当场红） |
+> | 5 | E1（工厂合并，需先普查签名） | ✅ **已收敛：只做普查，不做合并**（2026-09-27，用户拍板）—— 普查（第五节末）显示只有 4 条逐字同构、且「传错模板根」实测会**当场**报错 ⇒ 合并只剩「少写 4 个函数」的收益，却要在注册表里引入第二种写法。普查结论已落成 `tests/test_modes.py::TemplateRootConventionTests` |
 >
 > 批次 1 落地时**顺带修掉了下面第一类的真实漂移**：survivor 在桌面助手里叫
 > 「活动」、在命令行与 QQ 通知里叫「幸存者」，用户拍板统一成「活动」。
+>
+> 批次 2 又抓到**第二处**同形态的真实漂移：`shop_refresh` 在每日任务里叫
+> 「商店刷新」、在其余四处叫「刷书签」，用户拍板统一成「刷书签」。
+> 它同时把批次 1 的护栏重心改了：固定次数不再是「三处比对」（没有三处了），
+> 改成「`main.py` / `launcher.py` 里不许再写死次数」的**防回潮**检查。
+>
 > ⚠️ 已知残留：`survivor.py` 的**内部诊断日志**仍硬编码 6 处「模式=幸存者」，
-> 留给批次 2 的 A1 一并收敛（它不是用户界面，故未混进批次 1）。
+> 留给后续一并收敛（它不是用户界面）。
+>
+> 批次 3 落地时按第三节 C1 的原始设计做（两个**可选回调**，不是声明式字段）：
+> `preflight(mode, dry_run) -> 拒绝文案 | None` 跑在建 runtime **之前**；
+> `runner_options(root, dry_run) -> dict` 的返回值合并进 `run_mode` 自己的那套参数。
+> 唯一的实现细节坑：刷书签闸门读的 `LIVE_TRANSACTIONS_VERIFIED` 必须**在调用时**
+> 从 `evidence.shop_refresh` 的模块属性上取 —— import 期 `from ... import` 绑一份名字，
+> 测试再 `patch.object` 就拦不住它，闸门会退化成空转（有测试钉住这一点）。
 
 ---
 
@@ -342,6 +355,37 @@ def _build_machine(machine_cls, state_enum, subdir, needs_backend):
 **我的建议**：E1，但**先做一次签名普查**（我可以先跑一个只读检查列出 10 个
 构造签名，确认哪些能合并、哪些必须留特例）。这条建议**排在其他四条之后**，
 因为它收益最小（错误会在空跑暴露）。
+
+### 普查结果（2026-09-27，已做，只读）
+
+**10 个工厂的签名普查**：
+
+| 形状 | 路线 | 构造方式 |
+| --- | --- | --- |
+| A：`(Path, initial_state=, backend=)` | expedition / world_boss / labyrinth_stone / knights_donation | **逐字同构**，只有类名/Enum/子目录名不同（模板根都是 `root / "<路线名>"`） |
+| B：`(模板对象, initial_state=, backend=)` | arena（`build_templates(root)`）/ hero_synthesis（`build_hero_templates(root)`）/ story（`build_story_templates(root/"story")`） | 模板由各自的 `build_*_templates` 造；**模板根两种写法都有**（arena/hero_synthesis 用根，story 用子目录） |
+| C：`(模板对象, initial_state=)` | fodder（`build_fodder_templates(root/"fodder")`） | **不接受 backend** |
+| D：observer 型 | shop_refresh（`(1, observer=...)`）/ survivor（`(observer=...)`） | 与上面三种都不同构 |
+
+**两个结论（都实测过）**：
+
+1. **能合并的只有 A 那 4 条**。B/C/D 要并进同一个工厂，就得引入
+   `needs_backend` / `templates_loader` / `observer` 之类开关 —— 那正是本项目
+   在别处明确拒绝的做法（见第六节 F2/F3：「只抽逐字相同的部分」）。合完还会让
+   注册表出现**两种写法**（工厂 + 手写建造器），可读性反而下降。
+2. ⚠️ **E1 的安全收益比原估计更低**：实测传错一层模板根会**当场
+   `FileNotFoundError`**（`templates/world_boss/world_boss/knights_title.png` 读不到），
+   **不是静默失效**；而且每条路线自己的测试本来就会在真模板根上构造一次。
+   ⇒ 它防的那个错**已经有更早、更响的暴露点**了。
+
+普查已经把 A 组「模板根不能传错」这条性质落成门槛测试（`tests/test_modes.py`
+的 `TemplateRootConventionTests`，同时补齐了 fodder / shop_refresh / survivor /
+labyrinth_stone 这 4 条原先没直接构造过的缺口）。
+
+**⇒ E1 的「合并」本身降级为可选项**（收益只剩少写 4 个函数）。
+**2026-09-27 用户拍板：不合并** —— 普查的收益（「模板根不能传错」这条性质有了门槛测试、
+10 条路线都验过一遍）已经拿到，不值得为此在注册表里引入「工厂 + 手写建造器」两种写法。
+以后真觉得照着写 4 行麻烦时再回头看这一段。
 
 ---
 

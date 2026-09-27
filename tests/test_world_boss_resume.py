@@ -28,7 +28,6 @@ from auto_game_unified.core.battle_supervisor import BattleOutcome
 from auto_game_unified.games.epic7.evidence.world_boss import REGIONS as WORLD_BOSS_REGIONS
 from auto_game_unified.games.epic7.knights_donation import KNIGHTS_GUILD_HOME_PAGE
 from auto_game_unified.games.epic7.modes import (
-    _probe_world_boss_resume,
     get_mode,
 )
 from auto_game_unified.games.epic7.world_boss import (
@@ -270,13 +269,17 @@ def test_the_judgement_is_the_same_anchors_the_runtime_uses(name: str, atom: str
 
 
 def test_world_boss_exposes_a_resume_probe():
-    """从「一律回大厅」改成「先看停在世界首领战哪一页」。"""
+    """从「一律回大厅」改成「先看停在世界首领战哪一页」。
 
-    assert get_mode("world_boss").resume_probe is _probe_world_boss_resume
+    探针 2026-09-27 起由工厂 ``modes._resume_probe`` 在注册处现造 ⇒ 改断言
+    「注册的那个是用**本路线的判据**造的」（抄注册行最容易漏改这个参数）。
+    """
+
+    assert get_mode("world_boss").resume_probe.__wrapped__ is detect_resume_point
 
 
 def test_the_probe_reports_the_point_in_the_modes_shape():
-    point = _probe_world_boss_resume(_machine(), _wb("team_config"), None)
+    point = get_mode("world_boss").resume_probe(_machine(), _wb("team_config"), None)
 
     assert point is not None
     assert point.page == "配置队伍"
@@ -290,7 +293,7 @@ def test_the_probe_puts_the_point_state_into_the_machine():
 
     machine = _machine()
 
-    _probe_world_boss_resume(machine, _wb("battle"), None)
+    get_mode("world_boss").resume_probe(machine, _wb("battle"), None)
 
     assert machine.state is WorldBossState.BATTLE
     assert machine.resumed_from is WorldBossState.BATTLE
@@ -302,14 +305,14 @@ def test_the_probe_leaves_the_machine_unmarked_when_landing_on_the_navigation_ch
 
     machine = _machine()
 
-    _probe_world_boss_resume(machine, _wb("knights_home"), None)
+    get_mode("world_boss").resume_probe(machine, _wb("knights_home"), None)
 
     assert machine.resumed_from is None
 
 
 def test_the_probe_misses_on_a_foreign_page():
     assert (
-        _probe_world_boss_resume(
+        get_mode("world_boss").resume_probe(
             _machine(),
             _screen("epic7_navigation", "lobby"),
             None,

@@ -2,26 +2,33 @@
 
 ## 这个文件守什么
 
-`games/epic7/route_metadata.py` 把两类「同一事实抄在多处」变成 import 阶段报错：
+`games/epic7/route_metadata.py` 把「同一事实抄在多处、只改了一部分」变成
+import 阶段报错。它盯两块：
 
-1. **模式中文名**（抄在 Runner 的 ``_MODE_LABEL`` / ``main.MODE_LABELS`` /
-   ``navigation.MODE_LABELS`` / ``launcher.MENU_OPTIONS`` / ``desktop.catalog.ROUTES``）；
-2. **固定次数路线的默认轮次**（抄在 ``main.py`` / ``launcher.py`` / ``catalog.py``）。
+1. **模式中文名** —— ``main`` / ``navigation`` / ``launcher`` / ``desktop`` 那几张表
+   在 2026-09-27 批次 2 之后都**派生自** ``modes.MODE_SPECS.label``；比对它们等于
+   验证「派生链没被谁改回写死的」。各 Runner 的 ``_MODE_LABEL`` 是唯一无法派生的
+   真副本（Runner 不能 import ``modes``，会成环）。
+2. **固定次数** —— 批次 2 之后只在 ``ModeSpec.default_cycles`` 定义一次，
+   所以判据从「三处比对」变成**防回潮**：``main.py`` / ``launcher.py`` 源码里
+   再有写死的次数就报错。
 
 这两类错在 2026-09-27 审查时都**实测到活的**：``survivor`` 一个名字在界面叫
-「活动」、在命令行通知里叫「幸存者」；默认轮次那三处注释都写着「被测试钉住」，
-**实际只钉住了 catalog**。
+「活动」、在命令行通知里叫「幸存者」；``shop_refresh`` 在每日任务里叫「商店刷新」、
+别处叫「刷书签」；默认轮次那三处注释都写着「被测试钉住」，**实际只钉住了 catalog**。
 
-本文件守四件事：
+本文件守五件事：
 
-- 判据本身在四种错误形态下都报错（缺条目 / 值不一致 / 多出幽灵路线 / 次数不一致）；
-- **当前仓库是合规的**（基线，改完 survivor 名字之后必须能过）；
+- 判据本身在各种错误形态下都报错（缺条目 / 值不一致 / 多出幽灵路线 / 写死次数）；
+- **当前仓库是合规的**（基线）；
 - 自查**真的被生产代码调用**（不是只在测试里跑的摆设 —— 这个坑项目里踩过）；
-- AST 刮源码那部分**真的能刮到东西**，且不会把 ``main.py`` 里
-  别的整数赋值误当成固定次数。
+- AST 刮源码那部分**真的能刮到写死的次数**、且不把无关的整数赋值误报；
+- 同一套 AST 刮法**真的能刮到 ``main.py`` 里的路线特判**、且不把属性读取误报。
 """
 
 import ast
+import shutil
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -87,70 +94,97 @@ class LabelConsistencyTests(unittest.TestCase):
 
 
 class DefaultCyclesTests(unittest.TestCase):
-    """默认轮次判据：三处必须键集合相同、值相同。"""
+    """固定次数判据（批次 2 之后）：main / launcher 里**不许**再写死次数。
 
-    def test_the_current_fixed_cycles_agree(self):
-        """基线：当前三处刮出来的固定次数必须一致。"""
-        main = rm._main_fixed_cycles()
-        launcher = rm._launcher_fixed_cycles()
+    批次 2 把次数收敛进 ``ModeSpec.default_cycles``，三处副本没了 ⇒ 判据从
+    「三处比对」变成「防回潮」：源码里再冒出写死的次数就报错。
+    """
+
+    def test_the_repository_hardcodes_no_cycles(self):
+        """基线：``main.py`` / ``launcher.py`` 里已经没有写死的次数。
+
+        这条同时是扫描器的**反向确认** —— 它得先能刮到东西，才谈得上「刮不到」。
+        （刮到东西的能力由 ``SourceScanTests`` 用假源码验证。）
+        """
+        self.assertEqual({}, rm._main_fixed_cycles())
+        self.assertEqual({}, rm._launcher_fixed_cycles())
         self.assertEqual(
             [],
             rm.default_cycles_consistency_errors(
-                main_defaults=main,
-                launcher_defaults=launcher,
-                catalog_defaults=main,
+                main_defaults=rm._main_fixed_cycles(),
+                launcher_defaults=rm._launcher_fixed_cycles(),
             ),
         )
 
-    def test_disagreeing_cycles_are_rejected(self):
+    def test_a_hardcoded_main_cycle_is_rejected(self):
         errors = rm.default_cycles_consistency_errors(
-            main_defaults={"x": 2},
-            launcher_defaults={"x": 3},
-            catalog_defaults={"x": 2},
+            main_defaults={"world_boss": 2}, launcher_defaults={}
         )
         self.assertEqual(1, len(errors))
-        self.assertIn("不一致", errors[0])
+        self.assertIn("main.py", errors[0])
+        self.assertIn("world_boss", errors[0])
 
-    def test_a_route_registered_in_only_one_place_is_rejected(self):
-        """一处登记、另一处漏登记 ⇒ 报错（这比「值不同」更隐蔽）。"""
+    def test_a_hardcoded_launcher_cycle_is_rejected(self):
         errors = rm.default_cycles_consistency_errors(
-            main_defaults={"x": 2},
-            launcher_defaults={},
-            catalog_defaults={"x": 2},
+            main_defaults={}, launcher_defaults={"hero_synthesis": 1}
         )
         self.assertEqual(1, len(errors))
         self.assertIn("launcher.py", errors[0])
 
 
 class SourceScanTests(unittest.TestCase):
-    """AST 刮源码：要真刮到，且不误抓。"""
+    """AST 刮源码：要真刮到写死的次数，且不误抓无关代码。"""
 
-    def test_the_scanner_finds_the_real_fixed_cycle_routes(self):
-        """四个「每天固定 N 次」的路线必须被刮出来，次数正确。
+    def _scan(self, source: str, subject: tuple[str, ...] = rm._MAIN_ARG_ATTR):
+        directory = tempfile.mkdtemp()
+        path = Path(directory) / "sample.py"
+        path.write_text(source, encoding="utf-8")
+        try:
+            return rm._fixed_cycles_from_source(path, subject)
+        finally:
+            shutil.rmtree(directory, ignore_errors=True)
 
-        这不是冗余 —— 它是 ``default_cycles_consistency_errors`` 的输入。
-        扫描器若退回空字典，那条判据会**恒过**（三份空表当然一致），
-        等于整个 B2 护栏失效。
+    def test_the_scanner_finds_hardcoded_cycles_in_all_three_shapes(self):
+        """项目历史上真实出现过的三种写法都要刮到。
+
+        这条是「判据恒过」的反向确认：若扫描器退回空字典，
+        ``DefaultCyclesTests`` 那条基线会**恒过**（空表当然干净），
+        整个防回潮就失效了。
         """
-        self.assertEqual(
-            {
-                "hero_synthesis": 1,
-                "world_boss": 2,
-                "knights_donation": 1,
-                "labyrinth_stone": 1,
-            },
-            rm._main_fixed_cycles(),
+        source = (
+            "def main(args):\n"
+            '    if args.mode == "world_boss" and args.max_cycles is None:\n'
+            "        args.max_cycles = 2\n"
+            "    if args.mode in (\"knights_donation\", \"labyrinth_stone\"):\n"
+            "        args.max_cycles = 1\n"
         )
-        # launcher 用的是变量 ``mode`` 而不是 ``args.mode``，两条路径都要能刮。
         self.assertEqual(
-            {
-                "hero_synthesis": 1,
-                "world_boss": 2,
-                "knights_donation": 1,
-                "labyrinth_stone": 1,
-            },
-            rm._launcher_fixed_cycles(),
+            {"world_boss": 2, "knights_donation": 1, "labyrinth_stone": 1},
+            self._scan(source),
         )
+        # launcher 用的是局部变量 ``mode`` / ``cycles``，另一条主体路径。
+        launcher_source = (
+            "def run(mode):\n"
+            '    if mode == "hero_synthesis":\n'
+            "        cycles = 1\n"
+        )
+        self.assertEqual(
+            {"hero_synthesis": 1}, self._scan(launcher_source, rm._LAUNCHER_VAR)
+        )
+
+    def test_the_scanner_ignores_unrelated_integer_assignments(self):
+        """``if args.mode == "story": retries = 3`` 不是「写死了次数」。
+
+        护栏误报会逼人绕过它（``--no-verify``），那就白做了 —— 所以扫描器
+        必须认赋值目标名。
+        """
+        source = (
+            "def main(args):\n"
+            '    if args.mode == "story":\n'
+            "        retries = 3\n"
+            "        workers = 8\n"
+        )
+        self.assertEqual({}, self._scan(source))
 
     def test_the_scanner_reads_ast_not_text(self):
         """扫描必须用 AST —— 否则文档里写一句 ``if args.mode == "x"`` 就误报。
@@ -158,20 +192,94 @@ class SourceScanTests(unittest.TestCase):
         本模块自己的 docstring 里就写着那几行示例代码，字符串匹配会把它们
         当成真的固定次数。
         """
-        self.assertEqual({}, rm._fixed_cycles_from_source(
-            Path(rm.__file__), rm._MAIN_ARG_ATTR
-        ))
+        self.assertEqual(
+            {}, rm._fixed_cycles_from_source(Path(rm.__file__), rm._MAIN_ARG_ATTR)
+        )
 
     def test_a_missing_file_yields_nothing_rather_than_raising(self):
         """文件读不到 ⇒ 返回空表放过，**不升级成启动失败**。
 
-        设计取舍：解析不到不该让程序起不来（真正的兜底是键集合比对 ——
-        少登记会让另一处多出来的键被抓到）。
+        设计取舍：解析不到不该让程序起不来。
         """
         self.assertEqual(
-            {}, rm._fixed_cycles_from_source(
+            {},
+            rm._fixed_cycles_from_source(
                 PACKAGE_DIR / "本文件不存在.py", rm._MAIN_ARG_ATTR
-            )
+            ),
+        )
+
+
+class RouteSpecialCaseTests(unittest.TestCase):
+    """批次 3（C1）：``main.py`` 里不许再拿 ``spec.name`` 跟具体路线名分叉。
+
+    那两处（刷书签实跑闸门、竞技场落盘参数）已经搬进 ``ModeSpec.preflight`` /
+    ``ModeSpec.runner_options``。这条判据是**防回潮**：再写回去就报错。
+    """
+
+    def _scan(self, source: str):
+        directory = tempfile.mkdtemp()
+        path = Path(directory) / "sample.py"
+        path.write_text(source, encoding="utf-8")
+        try:
+            return rm._route_special_cases_from_source(path)
+        finally:
+            shutil.rmtree(directory, ignore_errors=True)
+
+    def test_the_real_main_module_has_no_route_special_cases(self):
+        """基线：``main.py`` 里已经没有路线特判（搬进注册钩子了）。
+
+        这条同时是扫描器的**反向确认** —— 它得先能刮到东西，才谈得上「刮不到」。
+        刮到的能力由下面两条用假源码验证。
+        """
+        self.assertEqual([], rm._main_route_special_cases())
+
+    def test_the_scanner_finds_route_special_cases_in_all_shapes(self):
+        """``==`` / ``!=`` / ``in`` 三种写法都要刮到（项目历史上出现过前两种）。"""
+        source = (
+            "def run_mode(spec, dry_run):\n"
+            '    if spec.name == "shop_refresh" and not dry_run:\n'
+            "        raise RuntimeError('停')\n"
+            '    if spec.name in ("arena", "expedition"):\n'
+            "        pass\n"
+            '    if spec.name != "story":\n'
+            "        pass\n"
+        )
+        self.assertEqual(
+            ["sample.py:2", "sample.py:4", "sample.py:6"], self._scan(source)
+        )
+
+    def test_the_scanner_ignores_plain_attribute_reads(self):
+        """``spec.name`` 当文案/参数用是正常写法，不是路线特判。
+
+        误报会逼人绕过护栏（``--no-verify``），那就白做了 —— 所以判据只认
+        **比较**（``Compare`` 节点），不认属性读取。
+        """
+        source = (
+            "def run_mode(spec, dry_run):\n"
+            '    runtime.log(f"模式={spec.name}")\n'
+            "    runtime.save_diagnostic(f\"enter_mode_failed_{spec.name}\")\n"
+            "    spec.validate_backend('emulator')\n"
+            "    spec.name.upper()\n"
+        )
+        self.assertEqual([], self._scan(source))
+
+    def test_the_scanner_reads_ast_not_text(self):
+        """扫描必须用 AST —— 否则本模块 docstring 里的示例就被当成真代码。
+
+        这条在本仓库是**真实风险**，不是假想：``route_metadata.py`` 与
+        ``docs/EXTENDING.md`` 里都写着一模一样的 ``if spec.name == "shop_refresh"``。
+        """
+        self.assertEqual(
+            [], rm._route_special_cases_from_source(Path(rm.__file__))
+        )
+
+    def test_a_missing_file_yields_nothing_rather_than_raising(self):
+        """文件读不到 ⇒ 返回空列表放过，**不升级成启动失败**（同固定次数那条）。"""
+        self.assertEqual(
+            [],
+            rm._route_special_cases_from_source(
+                PACKAGE_DIR / "本文件不存在.py"
+            ),
         )
 
 

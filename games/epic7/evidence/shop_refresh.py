@@ -114,6 +114,17 @@ THRESHOLDS = {
 }
 
 
+# 大厅「秘密商店」入口是全项目**唯一会挂通知角标**的导航入口：商店有未读内容 /
+# 有免费刷新时，一块红 N 会盖在入口图标上。实测（1982x1132，门槛 0.82）：
+#   干净帧：主模板 0.9642~1.0000（余量充足）
+#   带角标帧：主模板 0.8097~0.8098（**差 0.01 不过阈**）⇒ 被当成「锚点缺失」，
+#   而该 raise 发生在 main.run_mode 的 try 之外，每日任务只收到一个无声的 ✗。
+# 证据帧：runtime_diagnostics/epic7_shop_refresh/20260927_173023_003603_enter_mode_failed_shop_refresh.png
+#   （已存档为 tests/fixtures/epic7_shop_refresh/lobby_shop_entry_notified_20260927.png）
+# 故这颗锚点登记第二张「带角标」候选模板；两张实测互补（各自在对方的状态下都 <0.82）。
+LOBBY_SHOP_ENTRY_ALT_TEMPLATES = ("shop_refresh/lobby_shop_entry_notified.png",)
+
+
 def build_shop_refresh_evidence(template_root: Path) -> EvidenceProfile:
     atoms = {
         key: AtomEvidence(
@@ -122,6 +133,9 @@ def build_shop_refresh_evidence(template_root: Path) -> EvidenceProfile:
             region=REGIONS[key],
             threshold=THRESHOLDS[key],
             reference_size=REFERENCE_SIZE,
+            alt_template_paths=(
+                LOBBY_SHOP_ENTRY_ALT_TEMPLATES if key == "lobby_shop_entry" else ()
+            ),
         )
         for key in REGIONS
     }

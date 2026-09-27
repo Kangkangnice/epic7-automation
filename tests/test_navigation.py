@@ -104,6 +104,56 @@ class NavigationTests(unittest.TestCase):
         self.assertTrue(35 <= clicks[0][0] <= 130)
         self.assertTrue(485 <= clicks[0][1] <= 555)
 
+    def test_shop_navigation_accepts_entry_with_unread_badge(self):
+        """回归守卫（2026-09-27 每日任务实跑）：大厅「秘密商店」入口会挂「未读新内容」的
+        红 N 角标，那一帧上主模板只有 **0.8098**（门槛 0.82，差 0.01）⇒ 曾经被判
+        「缺少导航锚点 lobby_shop_entry」，整条 shop_refresh 在每日任务里静默 ✗。
+
+        该锚点登记第二张「带角标」候选模板后，同一帧应当**第一下就命中**——不再依赖
+        「重等稳定来源页」那种等不到东西的重试。夹具就是当天那张真实失败帧。
+        """
+        clicks: list[tuple[int, int]] = []
+        logs: list[str] = []
+        navigator = self.navigator(
+            [shop_fixture("shop_top_live"), shop_fixture("shop_top_live")],
+            clicks=clicks,
+            logs=logs,
+        )
+
+        navigator.navigate(
+            "shop_refresh",
+            lobby_screen=shop_fixture("lobby_shop_entry_notified_20260927"),
+        )
+
+        self.assertEqual(1, len(clicks))
+        self.assertTrue(40 <= clicks[0][0] <= 150)
+        self.assertTrue(480 <= clicks[0][1] <= 610)
+        self.assertTrue(any("模式=刷书签 状态=导航完成" in log for log in logs))
+        self.assertFalse(
+            any("重试=重新等待稳定来源页" in log for log in logs),
+            "角标帧应当直接被第二张候选模板认出来，而不是去等角标消失",
+        )
+
+    def test_shop_entry_candidates_cover_clean_and_badged_lobby(self):
+        """两颗候选模板必须**互补**：干净大厅靠主模板过阈、带角标大厅靠第二张过阈，
+        且各自在对方的状态下都不过阈。少了任何一半，这条判据就是摆设。"""
+        base, badged = build_navigation_templates(TEMPLATES).lobby_shop_entry
+        region = (0, 430, 220, 230)
+        threshold = 0.82
+
+        def best(image, template) -> float:
+            return find_best_template(
+                image, template, region=region, reference_size=REFERENCE_SIZE
+            ).score
+
+        clean = shop_fixture("lobby_shop_entry_low_score_20260831")
+        badged_frame = shop_fixture("lobby_shop_entry_notified_20260927")
+
+        self.assertGreaterEqual(best(clean, base), threshold)
+        self.assertLess(best(clean, badged), threshold)
+        self.assertLess(best(badged_frame, base), threshold)
+        self.assertGreaterEqual(best(badged_frame, badged), threshold)
+
     def test_shop_navigation_recovers_from_transitional_lobby_frame(self):
         """回归守卫：home_return v2 是「第一帧认出大厅就返回」，偶尔会把一个还在动画的
         过渡大厅帧交进来；这种帧上 ``lobby_shop_entry``（大厅左侧入口）可能没过阈，

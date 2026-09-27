@@ -14,7 +14,16 @@ from auto_game_unified.core.qqbot import APP_ID_ENV, CLIENT_SECRET_ENV, USER_OPE
 from auto_game_unified.core.recovery import RecoveryGate
 from auto_game_unified.core.runtime import ManualStop
 from auto_game_unified.main import RunResult
+from auto_game_unified.games.epic7 import modes as modes_module
+from auto_game_unified.games.epic7.evidence import shop_refresh as shop_refresh_evidence
 from auto_game_unified.games.epic7.modes import get_mode
+
+
+class _NeverBuiltRunner:
+    """假 Runner：被 ``preflight`` 拦下的路线根本不该走到构造它的那一步。"""
+
+    def __init__(self, *_args, **_kwargs):
+        raise AssertionError("闸门拦下之后不该再去构造 Runner")
 
 
 def fake_return_home(*, returns=None, on_call=None):
@@ -224,8 +233,12 @@ class MainStoryTests(unittest.TestCase):
         build_runtime.assert_not_called()
 
     def test_shop_refresh_live_is_blocked_before_runtime_until_current_evidence_exists(self):
+        # ⚠️ 打到 ``evidence.shop_refresh`` 的模块属性上，不是 ``main_module`` 上：
+        # 这条闸门 2026-09-27 起由 ``modes._preflight_shop_refresh`` 在**调用时**读那个
+        # 模块属性（路线级钩子，见 ``modes.ModeSpec.preflight``）。以前它读的是
+        # ``main`` 里 import 的那份名字，所以打到 ``main_module`` 上；现在打那边不再生效。
         with (
-            patch.object(main_module, "LIVE_TRANSACTIONS_VERIFIED", False),
+            patch.object(shop_refresh_evidence, "LIVE_TRANSACTIONS_VERIFIED", False),
             patch.object(main_module, "_build_runtime") as build_runtime,
         ):
             with self.assertRaisesRegex(RuntimeError, "当前客户端实证"):
@@ -238,6 +251,82 @@ class MainStoryTests(unittest.TestCase):
                 )
 
         build_runtime.assert_not_called()
+
+    def test_the_preflight_hook_stops_the_route_before_any_runtime_exists(self):
+        """通用接线：``run_mode`` 认的是「注册项上有没有钩子」，不认具名路线。
+
+        ⚠️ 为什么要单独钉一条：钩子写进注册项、却忘了在 ``run_mode`` 里取用，
+        **一点症状都没有** —— 路线照跑，只是闸门不生效。上面那条刷书签的用例
+        只能证明「这条路线被拦住了」，证明不了「拦它的是钩子机制」。
+        """
+        spec = modes_module.ModeSpec(
+            name="fake_hook_route",
+            label="假路线",
+            default_state="x",
+            states=frozenset({"x"}),
+            build_machine=lambda *_a, **_k: None,
+            runner_type=_NeverBuiltRunner,
+            preflight=lambda mode, dry_run: f"闸门拦下了 {mode}",
+        )
+
+        with patch.object(main_module, "_build_runtime") as build_runtime:
+            with self.assertRaisesRegex(RuntimeError, "闸门拦下了 fake_hook_route"):
+                main_module.run_mode(
+                    spec=spec,
+                    dry_run=False,
+                    max_cycles=1,
+                    start_state="x",
+                    window_backend="emulator",
+                )
+
+        # 闸门必须在建 runtime **之前**生效（拦下的路线不该先开个窗口）。
+        build_runtime.assert_not_called()
+
+    def test_the_runner_options_hook_reaches_the_runner_constructor(self):
+        """通用接线：``runner_options`` 的返回值要合进 Runner 的构造参数。
+
+        竞技场的两个落盘位置就是从 ``if spec.name == "arena"`` 挪到这条钩子上的；
+        钩子不生效的症状是「不落盘」，只在需要复盘胜负时才看得出来。
+        """
+        seen: dict = {}
+
+        class _SpyRunner:
+            def __init__(self, machine, runtime, **options):
+                seen.update(options)
+
+            def run(self, max_cycles=None):
+                seen["cycles"] = max_cycles
+                return 1
+
+        spec = modes_module.ModeSpec(
+            name="fake_hook_route",
+            label="假路线",
+            default_state="x",
+            states=frozenset({"x"}),
+            build_machine=lambda *_a, **_k: object(),
+            runner_type=_SpyRunner,
+            # 钩子拿到的必须是**主线的仓库根**，不是 modes 自己猜的一个。
+            runner_options=lambda root, dry_run: {"收到的根": root, "干跑": dry_run},
+        )
+
+        with (
+            patch.object(main_module, "_build_runtime"),
+            patch.object(main_module, "_install_finish_home"),
+        ):
+            result = main_module.run_mode(
+                spec=spec,
+                dry_run=True,
+                max_cycles=1,
+                start_state="x",
+                window_backend="emulator",
+            )
+
+        self.assertEqual(main_module.ROOT, seen["收到的根"])
+        self.assertIs(True, seen["干跑"])
+        # recovery_gate 由 run_mode 自己给，不该被路线钩子挤掉。
+        self.assertIn("recovery_gate", seen)
+        self.assertEqual(1, seen["cycles"])
+        self.assertEqual(1, result.completed_cycles)
 
     def test_shop_refresh_pc_cli_fails_with_a_clear_message(self):
         with self.assertRaisesRegex(SystemExit, "刷书签当前仅支持模拟器"):

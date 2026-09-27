@@ -8,7 +8,7 @@
 |---|---|
 | ① 表上必须表态 | 本文件（`RESUME_EXEMPT` 与 `resume_probe` 必须二选一）+ `modes.py` 的加载期自查 |
 | ② 接线必须真通 | `main.py::_enter_mode` 校验 `_ResumeWatch.asked > 0`（本文件用替身 navigator 钉住「吃掉探针必须报错」） |
-| ③ 判据必须真认得准 | 本文件拿每条路线**自己的夹具**跑真的 `detect_resume_point` |
+| ③ 判据必须真认得准（且命中后状态机真被拨对） | 本文件拿每条路线**自己的夹具**跑**注册好的探针**（`spec.resume_probe`） |
 
 ⚠️ 跨路线负例扫描（全库夹具取最高分）**不进门槛**：227 张要跑约半分钟，跟实跑抢内存。
 它留在 `runtime_logs/_audit_*_cross_route.py`，结论写进 `docs/RESUME_COVERAGE.md`。
@@ -202,15 +202,28 @@ def test_the_probe_recognises_at_least_one_of_its_own_fixtures(name: str):
     frames = _reference_frames(name)
 
     assert frames, f"{name} 没有可用夹具，这条测试等于没跑"
-    recognised = [
-        point
-        for point in (spec.resume_probe(machine, frame, None) for frame in frames)
-        if point is not None
-    ]
+    recognised = []
+    for frame in frames:
+        point = spec.resume_probe(machine, frame, None)
+        if point is None:
+            continue
+        recognised.append(point)
+        assert point.page, f"{name} 的探针返回了空页面名，日志会看不出落在哪"
+        # ⚠️ 兜底断言（2026-09-27 批次 4 的 D2）：探针报「该拨到 X」时，状态机必须
+        # **真的已经是 X**。漏掉 ``machine.resume_from(found.state)`` 时接力看起来是
+        # 命中的（日志照打「开局=接力」），但状态机没拨过去，Runner 会原地干等到超时。
+        # 现在 ``modes._resume_probe`` 工厂把这一步写死了，这条断言是第二道 —— 万一
+        # 将来某条路线绕开工厂自带一套拨法，它会立刻现形。
+        #
+        # ⚠️ 必须**紧跟在那一次探针调用后面**断言：探针会改状态机，攒完再统一断言
+        # 比的是「最后一帧之后的状态」与「每一帧报的落点」，会误报。
+        if point.state is not None:
+            assert machine.state.value == point.state, (
+                f"{name} 的探针报了落点状态 {point.state}，但状态机还停在 "
+                f"{machine.state.value} —— resume_from 没接上。"
+            )
 
     assert recognised, (
         f"{name} 的探针在自己的 {len(frames)} 张夹具上一帧都认不出 —— "
         "接线在、判据不在。"
     )
-    for point in recognised:
-        assert point.page, f"{name} 的探针返回了空页面名，日志会看不出落在哪"
