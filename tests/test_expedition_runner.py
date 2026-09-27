@@ -278,7 +278,6 @@ class ExpeditionRunnerTests(unittest.TestCase):
 
     def test_failed_battle_start_never_returns_to_lobby(self):
         clock = Clock()
-        recoveries = []
         machine = BattleStartMachine()
         machine.observe_battle = MagicMock()
         supervisor = MagicMock()
@@ -292,16 +291,23 @@ class ExpeditionRunnerTests(unittest.TestCase):
             sleep=clock.sleep,
             poll_seconds=60,
             now=clock.now,
-            recovery=lambda: recoveries.append(True),
             battle_supervisor=supervisor,
         )
 
         with self.assertRaisesRegex(RuntimeError, "未稳定进入"):
             runner.run(max_cycles=1)
 
-        self.assertEqual([], recoveries)
+        # ⚠️ 这里原先是 `self.assertEqual([], recoveries)`（「一次恢复都没调」）。
+        # 2026-09-26 起那条通道整段删除 ⇒ 只剩「抛错结束」这一个断言，
+        # 而「有没有退路」由 test_story_runner 与 test_battle_safety_invariants 守。
 
     def test_failed_transition_clicks_four_times_then_stops(self):
+        """海报页卡住 ⇒ 点 4 次就**收工**，不换别的办法、更不回大厅重来。
+
+        ⚠️ 这里原本还有一条 ``test_failed_transition_uses_only_one_recovery_for_a_poster``
+        （「同一张海报最多只恢复一次」）。2026-09-26 恢复通道整段删除 ⇒ 那条用例
+        与这条完全等价，已合并进来。
+        """
         clock = Clock()
         clicks = []
         machine = ActionMachine(transition=False)
@@ -322,29 +328,6 @@ class ExpeditionRunnerTests(unittest.TestCase):
                 runner.run(max_cycles=1)
 
             self.assertEqual(4, len(clicks))
-
-    def test_failed_transition_uses_only_one_recovery_for_a_poster(self):
-        clock = Clock()
-        recoveries = []
-        machine = ActionMachine(transition=False)
-        with TemporaryDirectory() as directory:
-            runner = ExpeditionRunner(
-                machine,
-                Runtime(
-                    lambda: np.zeros((60, 100, 3), dtype=np.uint8),
-                    lambda _: None,
-                    diagnostic_dir=Path(directory),
-                ),
-                sleep=clock.sleep,
-                poll_seconds=1,
-                now=clock.now,
-                recovery=lambda: recoveries.append(True),
-            )
-
-            with self.assertRaisesRegex(RuntimeError, "未稳定进入"):
-                runner.run(max_cycles=1)
-
-            self.assertEqual([], recoveries)
 
     def test_recorded_poster_page_emits_departure_retries_without_unknown_wake(self):
         clock = Clock()

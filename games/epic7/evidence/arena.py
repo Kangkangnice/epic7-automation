@@ -66,6 +66,14 @@ REGIONS = {
     "no_ticket": (700, 150, 700, 300),
     "friendship_ticket_offer": (540, 470, 440, 230),
     "ticket_purchase_button": (900, 760, 500, 260),
+    # 「购买旗帜」弹窗的**双锚点**：票耗尽时路线要先把这颗弹窗关掉再回家
+    # （终点必须在非浮层页上，口径见 docs/maintenance/route_finish_points.md）。
+    #
+    # ⚠️ 为什么非要两个锚点：单靠「取消」两个字**会串门** —— 实测
+    # 迷宫「购买确认」0.9757 / 迷宫「放弃确认」0.9758 都会命中（「取消」是通用文字）。
+    # 加上标题后，那两张分别掉到 0.8044 / 0.4981，**只有票耗尽这张双过线**。
+    "purchase_title": (830, 255, 350, 90),
+    "purchase_cancel": (695, 845, 215, 100),
     "rank_promotion_arrow": RANK_PROMOTION_ARROW_REGION,
     "rank_confirm": RANK_PROMOTION_CONFIRM_REGION,
     "refresh_title": FREE_REFRESH_TITLE_REGION,
@@ -87,6 +95,10 @@ THRESHOLDS = {
     "no_ticket": 0.90,
     "friendship_ticket_offer": 0.92,
     "ticket_purchase_button": 0.92,
+    # 双锚点都取 0.90：本尊两处实测都是 1.0000，空间充足；
+    # 而最近的干扰项（迷宫购买确认的标题）只有 0.8044，留了 0.096 的余量。
+    "purchase_title": 0.90,
+    "purchase_cancel": 0.90,
     "quick_battle_button": QUICK_BUTTON_THRESHOLD,
     "quick_battle_switch": QUICK_SWITCH_THRESHOLD,
     # 文字贴在半透明结算面板上，跟 story/竞技场其它动态页一个量级看待。
@@ -123,6 +135,8 @@ _TEMPLATE_PATHS = {
     "no_ticket": "no_ticket.png",
     "friendship_ticket_offer": "friendship_ticket_offer.png",
     "ticket_purchase_button": "ticket_purchase_button.png",
+    "purchase_title": "arena_purchase_title.png",
+    "purchase_cancel": "arena_purchase_cancel.png",
     "refresh_title": "arena_refresh_title.png",
     "refresh_free": "arena_refresh_free.png",
     "refresh_confirm": "arena_refresh_confirm.png",

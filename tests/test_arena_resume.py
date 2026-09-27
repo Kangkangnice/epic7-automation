@@ -459,7 +459,13 @@ class ArenaResumedBattleTests(unittest.TestCase):
 
 
 class ArenaResumeEntryTests(unittest.TestCase):
-    """开局入口：接力命中就跳过「回大厅 → 按路线导航」。"""
+    """开局入口：接力命中就跳过「回大厅 → 按路线导航」。
+
+    ⚠️ 2026-09-25：竞技场切到「回大厅」新流程（v2）之后，这里替换的对象从
+    ``navigator.return_home`` 改成了 ``main.HomeReturn`` —— 因为「回大厅」现在
+    由后者分派（白名单路线走 v2、其余走老流程），再去替换导航器身上那个方法等于
+    什么也没替换到。``HomeReturn`` 本身就是这一步的正式接口，替换它才是对的。
+    """
 
     def run_arena(self, screens: list[np.ndarray]):
         runtime = mock.MagicMock()
@@ -467,7 +473,7 @@ class ArenaResumeEntryTests(unittest.TestCase):
         observer = real_navigator()
 
         def fake_return_home(*, stop_probe=None):
-            """照 ``Epic7Navigator.return_home`` 的语义：每帧问一次，命中就停。"""
+            """照 ``return_home`` 的语义：每帧问一次，命中就停。"""
             for screen in screens:
                 if stop_probe is not None and stop_probe(screen):
                     return screen
@@ -480,9 +486,10 @@ class ArenaResumeEntryTests(unittest.TestCase):
         with (
             mock.patch.object(main_module, "_build_runtime", return_value=runtime),
             mock.patch.object(main_module, "Epic7Navigator") as navigator_type,
+            mock.patch.object(main_module, "HomeReturn") as home_return_type,
             mock.patch.object(ArenaRunner, "run", fake_run),
         ):
-            navigator_type.return_value.return_home.side_effect = fake_return_home
+            home_return_type.return_value.side_effect = fake_return_home
             navigator_type.return_value.observe.side_effect = observer.observe
             result = main_module.run_mode(
                 spec=get_mode("arena"),
@@ -549,8 +556,13 @@ class ArenaResumeEntryTests(unittest.TestCase):
         self.assertIs(ArenaState.LIST, machine.state)
         self.assertEqual(1, navigator.navigate.call_count)
 
-    def test_non_arena_routes_keep_calling_return_home_without_a_probe(self):
-        """没接力的路线调用签名不变，行为与加这个功能之前完全一致。"""
+    def test_routes_without_a_probe_call_the_same_return_home(self):
+        """⚠️ 2026-09-26 翻转：**所有路线走同一套回家流程**，没有「带探针 / 不带探针」两档。
+
+        以前这里是「非竞技场路线保持无参调用」——那是**白名单两套并存**时代的契约
+        （用户 2026-09-26 拍板删掉）。现在 ``HomeReturn`` 是纯转发，没接力的路线
+        传 ``stop_probe=None``，走的是同一个 v2 流程。
+        """
         spec = get_mode("fodder")
         runtime = mock.MagicMock()
         lobby = navigation_fixture("lobby")
@@ -569,7 +581,7 @@ class ArenaResumeEntryTests(unittest.TestCase):
                 start_state=spec.default_state,
             )
 
-        navigator_type.return_value.return_home.assert_called_once_with()
+        navigator_type.return_value.return_home.assert_called_once_with(stop_probe=None)
         navigator_type.return_value.navigate.assert_called_once_with(
             "fodder", lobby_screen=lobby
         )

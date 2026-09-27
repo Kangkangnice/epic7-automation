@@ -3,8 +3,7 @@
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from time import sleep as default_sleep
-from typing import Callable, NamedTuple, Optional
+from typing import NamedTuple, Optional
 
 import cv2
 import numpy as np
@@ -13,17 +12,11 @@ from auto_game_unified.core.battle_supervisor import (
     AutoBattleState,
     BattleConfig,
     BattleObservation,
-    BattleOutcome,
-    BattleSupervisor,
     valid_game_frame,
 )
-from auto_game_unified.core.evidence_diagnostics import (
-    save_runtime_evidence_diagnostic,
-)
 from auto_game_unified.core.matcher import Match, find_template, load_template
-from auto_game_unified.core.recovery import RecoveryGate
-from auto_game_unified.core.runtime import Runtime, StaminaExhausted
-from auto_game_unified.core.supervisor import StableObservation, meaningful_change
+from auto_game_unified.core.runtime import StaminaExhausted
+from auto_game_unified.core.supervisor import meaningful_change
 from auto_game_unified.games.epic7.battle_controls import (
     BattleControls,
     battle_scene_visible,
@@ -35,11 +28,10 @@ from auto_game_unified.games.epic7.pre_battle import (
     load_simulator_quick_battle_detector,
     observe_pre_battle,
 )
-from auto_game_unified.games.epic7.unknown_screen import (
-    UnrecognizedScreen,
-    UnknownScreenWake,
-    UnknownWakeResult,
+from auto_game_unified.games.epic7.transactional_runner_base import (
+    TransactionalRunnerBase,
 )
+from auto_game_unified.games.epic7.unknown_screen import UnrecognizedScreen
 from auto_game_unified.games.epic7.evidence.common import EvidenceProfile
 from auto_game_unified.games.epic7.evidence.expedition import (
     REFERENCE_SIZE as EXPEDITION_REFERENCE_SIZE,
@@ -86,7 +78,14 @@ def state_label(state: ExpeditionState) -> str:
 
 
 class PostersExhausted(StaminaExhausted):
-    """No card-level wanted-poster departure action remains."""
+    """No card-level wanted-poster departure action remains.
+
+    ``stop_label`` 要自己给：继承来的是 ``StaminaExhausted`` 的「生命之叶耗尽」，
+    但远征缺的是**通缉传单** —— 主循环统一把 ``停止=`` 后面的文案取异常自带的那一个
+    （见 ``core.runtime.ResourceExhausted`` 的约定），写错东西会被日志带偏。
+    """
+
+    stop_label = "通缉传单耗尽"
 
 
 @dataclass(frozen=True)
@@ -829,251 +828,47 @@ def detect_resume_point(
     return None
 
 
-class ExpeditionRunner:
-    """远征专用事务循环：稳定观察目标页面后才提交状态。"""
+class ExpeditionRunner(TransactionalRunnerBase):
+    """远征 Runner：**事务型主循环**（见 ``transactional_runner_base``）。
 
+    ⚠️ 2026-09-26 之前，本类是「自带独立主循环」的裸定义（``super()`` 0 次）——
+    与 ``ArenaRunner`` **各抄了一份**主循环、转场验收、失败诊断、收尾回首页、
+    战斗看护接线（约 750 行重复），而且两份已经开始各改各的（超时口径
+    40/40/60/60/120/45 对 45 秒一刀切、失败诊断函数两个名字）。
+    现在这些都来自 ``TransactionalRunnerBase``，本类只剩**远征自己的业务规则**。
+
+    ⚠️ 收尾回首页的注入契约**没变**：``finish_home`` 仍是实例属性
+    （基类 ``__init__`` 里赋值），由 ``main._install_finish_home`` 注入。
+    ⚠️ 它**不是** ``ModeRunnerBase`` 的子类 —— 那是另一套主循环，理由见基类模块
+    docstring 与 ``modes.TRANSITION_EXEMPT`` / ``CONCLUSION_GATE_DECLARATION`` 里的表态。
+    """
+
+    _MODE_LABEL = "远征"
+    # 一个 45 秒走天下（不分页面档）。
     _STATE_TIMEOUT_SECONDS = 45
+    # 状态 → 状态机里的落点，供基类判「战斗有没有打起来」「有没有打到结算页」。
+    _BATTLE_STATE = ExpeditionState.BATTLE
+    _RESULT_STATE = ExpeditionState.RESULT
+    # 停在局内、状态机又没有别的活要干 ⇒ 直接把这一局交给战斗监督等结算。
+    _SETTLED_BATTLE_STATE = ExpeditionState.BATTLE
+    # 转场确认**落到战斗页** ⇒ 交战斗监督。
+    # ⚠️ 为什么要认两个动作名、而不是只认 ``battle-start``：``prepare-battle`` 也可能
+    # **直接**落到战斗页（游戏跳过队伍选择）。漏了它会让状态卡在 BATTLE 却没人驱动，
+    # 白等到状态超时再走恢复。
+    _HANDOFF_AFTER_TRANSITION_ACTIONS = frozenset({"battle-start", "prepare-battle"})
 
-    def __init__(
-        self,
-        machine: ExpeditionStateMachine,
-        runtime: Runtime,
-        *,
-        sleep: Callable[[float], None] = default_sleep,
-        poll_seconds: float = 1.0,
-        now: Callable[[], float] | None = None,
-        recovery: Callable[[], None] | None = None,
-        recovery_gate: RecoveryGate | None = None,
-        battle_supervisor: BattleSupervisor | None = None,
-    ) -> None:
-        self.machine = machine
-        self.runtime = runtime
-        self.sleep = sleep
-        self.poll_seconds = poll_seconds
-        self.now = now or runtime.now
-        self.recovery_gate = recovery_gate or RecoveryGate(recovery)
-        self.recovery = self.recovery_gate.recover if recovery is not None else None
-        self.unknown_screen_wake = UnknownScreenWake(
-            runtime, recovery_gate=self.recovery_gate
-        )
-        self.resource_exhausted = False
-        # 「收尾回首页」钩子：由 main.run_mode 在 runner.run() 正常返回后注入。
-        # ⚠️ 本路线**自带独立主循环**（裸定义、`super()` 0 次），走不到基类
-        # `ModeRunnerBase._close_out`，所以这里必须自己声明、自己调用。
-        # 契约同基类：**绝不抛异常**，失败返回原因字符串（退出码不变）。
-        self.finish_home: Callable[[], Optional[str]] | None = None
-        self.battle_supervisor = battle_supervisor or BattleSupervisor(
-            runtime,
-            self.recovery_gate,
-            BattleConfig(
-                mode="expedition",
-                absolute_seconds=20 * 60,
-                no_business_progress_seconds=20 * 60,
-            ),
-            now=self.now,
-            sleep=sleep,
-        )
+    def _battle_config(self) -> BattleConfig:
+        """战斗看护的两条时限按远征的实际节奏放宽到 20 分钟。
 
-    def _run_committed_battle(self, *, cycle: int) -> None:
-        outcome = self.battle_supervisor.run(
-            self.machine.observe_battle,
-            cycle=cycle,
-        )
-        if outcome is BattleOutcome.PRE_BATTLE_BUSINESS:
-            self.machine.state = ExpeditionState.BATTLE
-            return
-        if outcome is not BattleOutcome.RESULT_REACHED:
-            raise RuntimeError(f"远征战斗出现意外结果：{outcome.value}")
-        self.machine.state = ExpeditionState.RESULT
-
-    def _save_frame(self, screen: np.ndarray) -> None:
-        if self.runtime.diagnostic_dir is not None:
-            self.runtime.save_current_frame(screen)
-
-    def _diagnostic(
-        self,
-        label: str,
-        screen: np.ndarray,
-        *,
-        action: ExpeditionAction | None = None,
-        attempt: int = 1,
-        conclusion: str = "页面识别失败",
-    ):
-        if self.runtime.diagnostic_dir is None:
-            return "not-configured"
-        diagnostic = self.runtime.save_diagnostic(label, screen)
-        templates = getattr(self.machine, "templates", None)
-        save_runtime_evidence_diagnostic(
-            self.runtime,
-            screen,
-            getattr(templates, "evidence", None),
-            legacy_path=diagnostic,
-            mode="远征",
-            action=action.name if action is not None else "observe",
-            source=(
-                action.source_page
-                if action is not None
-                else state_label(self.machine.state)
-            ),
-            targets=action.target_pages if action is not None else (),
-            attempt=attempt,
-            conclusion=conclusion,
-        )
-        return diagnostic
-
-    def _execute_transition(self, action: ExpeditionAction) -> None:
-        if action.source_state is None or not action.target_states:
-            raise RuntimeError(f"远征动作[{action.name}]缺少来源/目标合同")
-        attempts = 1
-        source_stable = StableObservation(required=2)
-        target_stable = StableObservation(required=2)
-        source_left = False
-        started = self.now()
-        self.runtime.log(
-            f"模式=远征 当前页面={action.source_page} 判断依据={action.reason}"
-        )
-        self.runtime.log(
-            f"模式=远征 执行点击 动作={action.name} 尝试={attempts}/4 "
-            f"坐标={action.point} 目标页面={'/'.join(action.target_pages)}"
-        )
-        self.runtime.click(action.point, action.name)
-        while self.now() - started < self._STATE_TIMEOUT_SECONDS:
-            self.sleep(self.poll_seconds)
-            screen = self.runtime.capture()
-            self._save_frame(screen)
-            target = self.machine.action_target_state(screen, action)
-            if target_stable.update(target.value if target is not None else "other") and target is not None:
-                self.machine.commit(action, target)
-                self.runtime.log(
-                    f"模式=远征 转场确认 动作={action.name} "
-                    f"从={action.source_page} 到={state_label(target)} 目标连续=2"
-                )
-                return
-            source_visible = self.machine.action_source_visible(screen, action)
-            if source_stable.update("source" if source_visible else "other") and source_visible:
-                if source_left:
-                    continue
-                if attempts < 4:
-                    attempts += 1
-                    self.runtime.log(
-                        f"模式=远征 转场重试 动作={action.name} 来源={action.source_page}仍在 "
-                        f"尝试={attempts}/4 坐标={action.point}"
-                    )
-                    self.runtime.click(action.point, action.name)
-                    source_stable.reset()
-                    continue
-            elif not source_visible and not source_left:
-                source_left = True
-                self.runtime.log(
-                    f"模式=远征 等待转场 动作={action.name} 来源={action.source_page}已离开 "
-                    f"目标={'/'.join(action.target_pages)}待稳定"
-                )
-        diagnostic = self._diagnostic(
-            f"no_transition_{action.name}",
-            screen,
-            action=action,
-            attempt=attempts,
-            conclusion="来源页面未退出或目标页面未稳定出现",
-        )
-        raise RuntimeError(
-            f"动作[{action.name}]未稳定进入[{'/'.join(action.target_pages)}]；"
-            f"已保存诊断 {diagnostic}"
-        )
-
-    def run(self, max_cycles: int | None = None) -> int:
-        if self.runtime.dry_run:
-            screen = self.runtime.capture()
-            action = self.machine.next_action(screen)
-            if action is not None:
-                self.runtime.log(f"模式=远征 动作={action.name} 状态=诊断")
-            return self.machine.completed_cycles
-        stable = StableObservation(required=2)
-        state_started = self.now()
-        recovered = False
-        while max_cycles is None or self.machine.completed_cycles < max_cycles:
-            screen = self.runtime.capture()
-            self._save_frame(screen)
-            state_before = self.machine.state
-            cycles_before = self.machine.completed_cycles
-            try:
-                preview, _ = self.machine.preview(screen)
-                signature = preview.name if preview is not None else f"settled:{state_before.value}"
-                if not stable.update(signature):
-                    self.sleep(self.poll_seconds)
-                    continue
-                action = self.machine.next_action(screen)
-                stable.reset()
-            except StaminaExhausted as error:
-                self.resource_exhausted = True
-                self.runtime.log(f"模式=远征 停止=通缉传单耗尽 详情={error}")
-                self._close_out()
-                return self.machine.completed_cycles
-            except UnrecognizedScreen as error:
-                wake = self.unknown_screen_wake.handle(
-                    screen, context=f"远征:{state_label(state_before)}"
-                )
-                if wake in {UnknownWakeResult.WAITING, UnknownWakeResult.CLICKED}:
-                    self.sleep(self.poll_seconds)
-                    continue
-                if self.now() - state_started < self._STATE_TIMEOUT_SECONDS:
-                    self.sleep(self.poll_seconds)
-                    continue
-                diagnostic = self._diagnostic(
-                    f"timeout_{state_before.value}",
-                    screen,
-                    conclusion=f"未知页面持续超时：{error}",
-                )
-                raise RuntimeError(
-                    f"远征未知页面：{error}；已保存诊断 {diagnostic}"
-                ) from error
-            if action is None:
-                if self.machine.state is ExpeditionState.BATTLE:
-                    self._run_committed_battle(cycle=self.machine.completed_cycles + 1)
-                    state_started = self.now()
-                    continue
-                self.sleep(self.poll_seconds)
-                continue
-            self._execute_transition(action)
-            state_started = self.now()
-            # 只要转场把状态落到了「战斗中」，就交给战斗监督 —— 不再只认 battle-start：
-            # prepare-battle 也可能**直接**落到战斗页（见 next_action 里的契约注释），
-            # 漏了这一步会让状态卡在 BATTLE 却没人驱动，白等到状态超时再走恢复。
-            if (
-                action.name in {"battle-start", "prepare-battle"}
-                and self.machine.state is ExpeditionState.BATTLE
-            ):
-                self.runtime.log(
-                    f"模式=远征 动作={action.name} 状态=直接进入战斗，移交战斗监督"
-                )
-                self._run_committed_battle(cycle=self.machine.completed_cycles + 1)
-                state_started = self.now()
-            if self.machine.completed_cycles > cycles_before:
-                recovered = False
-                self.runtime.log(f"模式=远征 业务完成 cycles={self.machine.completed_cycles}")
-                if max_cycles is not None and self.machine.completed_cycles >= max_cycles:
-                    self._close_out()
-                    return self.machine.completed_cycles
-            if self.now() - state_started >= self._STATE_TIMEOUT_SECONDS and self.recovery and not recovered:
-                recovered = True
-                self.recovery()
-                self.machine.state = ExpeditionState.HOME
-        self._close_out()
-        return self.machine.completed_cycles
-
-    def _close_out(self) -> None:
-        """收尾回首页（远征自己的那一份，语义同 ``ModeRunnerBase._close_out``）。
-
-        ⚠️ 两类退出**刻意不接**：``ManualStop``（用户喊停）与异常（跑到一半挂了，
-        硬按 Back 有丢局风险）—— 两者都在 ``run()`` 里直接 raise，走不到这里。
-
-        ⚠️ **干跑也不接**：``run()`` 的 dry_run 短路在**调用本方法之前**就 return 了
-        （那是「只观察一帧」的诊断路径，不点任何东西，也就不该动游戏）。
+        远征一局比竞技场长得多（难度三还要算上战败重来），用 ``BattleConfig``
+        的默认值会在打到一半时被判「无业务进展」而收手。
         """
-        if self.finish_home is None:
-            return
-        failure = self.finish_home()
-        if failure is not None:
-            self.runtime.log(
-                f"模式=远征 收尾=回首页失败 原因={failure} "
-                "处理=已忽略（不影响本次运行结论）"
-            )
+        return BattleConfig(
+            mode="expedition",
+            absolute_seconds=20 * 60,
+            no_business_progress_seconds=20 * 60,
+        )
+
+    def _state_label(self, state: ExpeditionState) -> str:
+        """用远征自己的中文页面名，别退回枚举的 ``value``（日志和诊断都靠它）。"""
+        return state_label(state)

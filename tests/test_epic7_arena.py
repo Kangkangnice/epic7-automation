@@ -282,19 +282,6 @@ class Epic7ArenaStateMachineTests(unittest.TestCase):
 
         self.assertNotEqual(first.point, second.point)
 
-    def test_recovery_to_list_discards_an_unconfirmed_cycle(self):
-        machine = ArenaStateMachine(
-            build_templates(TEMPLATES),
-            initial_state=ArenaState.CONFIRMING,
-        )
-
-        machine.reset_after_recovery()
-        refresh = machine.next_action(make_all_failed_screen(machine))
-        machine.commit(refresh, ArenaState.LIST)
-
-        self.assertEqual(ArenaState.LIST, machine.state)
-        self.assertEqual(0, machine.completed_cycles)
-
     def test_confirmed_result_counts_once_before_refresh_decision(self):
         machine = ArenaStateMachine(
             build_templates(TEMPLATES),

@@ -4,7 +4,7 @@ from pathlib import Path
 from datetime import date, datetime
 import random
 from time import sleep as default_sleep
-from typing import Callable, NamedTuple, Optional, Sequence
+from typing import Any, Callable, NamedTuple, Optional, Sequence
 
 import cv2
 import numpy as np
@@ -13,7 +13,6 @@ from auto_game_unified.core.battle_supervisor import (
     AutoBattleState,
     BattleConfig,
     BattleObservation,
-    BattleOutcome,
     BattleSupervisor,
     valid_game_frame,
 )
@@ -21,11 +20,9 @@ from auto_game_unified.core.matcher import Match, find_template, load_template
 from auto_game_unified.core.recovery import RecoveryGate
 from auto_game_unified.core.runtime import ManualStop, Runtime
 from auto_game_unified.core.supervisor import (
+    ConclusionGate,
     StableObservation,
     meaningful_change,
-)
-from auto_game_unified.core.evidence_diagnostics import (
-    save_runtime_evidence_diagnostic,
 )
 from auto_game_unified.games.epic7.battle_controls import (
     BattleControls,
@@ -38,9 +35,11 @@ from auto_game_unified.games.epic7.pre_battle import (
     load_simulator_quick_battle_detector,
     observe_pre_battle,
 )
+from auto_game_unified.games.epic7.transactional_runner_base import (
+    TransactionalRunnerBase,
+)
 from auto_game_unified.games.epic7.unknown_screen import (
     UnrecognizedScreen,
-    UnknownScreenWake,
     UnknownWakeResult,
 )
 from auto_game_unified.games.epic7.evidence.arena import (
@@ -271,6 +270,11 @@ class ArenaTemplates:
     no_ticket: np.ndarray
     friendship_ticket_offer: np.ndarray
     ticket_purchase_button: np.ndarray
+    # 「购买旗帜」弹窗的双锚点。票耗尽时人**停在浮层里**，必须先点「取消」
+    # 退回对手列表，再从那里回家（终点必须在非浮层页上，见
+    # docs/maintenance/route_finish_points.md 注①）。
+    purchase_title: np.ndarray
+    purchase_cancel: np.ndarray
     refresh_title: np.ndarray
     refresh_free: np.ndarray
     refresh_confirm: np.ndarray
@@ -302,6 +306,8 @@ def build_templates(
         no_ticket=load_template(str(template_dir / "no_ticket.png")),
         friendship_ticket_offer=load_template(str(template_dir / "friendship_ticket_offer.png")),
         ticket_purchase_button=load_template(str(template_dir / "ticket_purchase_button.png")),
+        purchase_title=load_template(str(template_dir / "arena_purchase_title.png")),
+        purchase_cancel=load_template(str(template_dir / "arena_purchase_cancel.png")),
         refresh_title=load_template(str(template_dir / "arena_refresh_title.png")),
         refresh_free=load_template(str(template_dir / "arena_refresh_free.png")),
         refresh_confirm=load_template(str(template_dir / "arena_refresh_confirm.png")),
@@ -408,16 +414,12 @@ class ArenaStateMachine:
             self.completed_cycles += 1
             self._cycle_pending = False
 
-    def reset_after_recovery(self) -> None:
-        self.state = ArenaState.LIST
-        self._selected_opponent = None
-        self._cycle_pending = False
-
     def resume_from(self, state: ArenaState) -> None:
         """拨到用户停下的那一步，原样接管进度继续往下跑。
 
-        与 ``reset_after_recovery`` 的区别：那个是「退回列表重开一轮」，这个是
-        「保留当前进度」—— 比如停在对手详情页就继续点挑战，而不是退回列表重选对手。
+        语义是「**保留当前进度**」—— 比如停在对手详情页就继续点挑战，而不是退回列表
+        重选对手。（2026-09-26 之前另有一个 ``reset_after_recovery`` 做「退回列表重开
+        一轮」，随用户「回家就是结束」的拍板一起删除。）
 
         落在 RESULT / CONFIRMING 时的计数口径：这两页都已经在「这一局打完」之后
         （RESULT 是结算页、还没点确认；CONFIRMING 是确认之后、段位弹窗那一步）。
@@ -999,9 +1001,10 @@ def detect_resume_point(
     **局内**用 ``battle_scene_visible`` 认（实测 197 张夹具命中 20 张：19 张是真局内，
     含主线/远征/狗粮；1 张误报 ``epic7_fodder/replay.png`` —— 战后结算页走兜底分支被判成
     局内。它不影响已接力的四条路线，但做狗粮接力前必须先解决）。注意这个判据分不出
-    「这是哪条路线的战斗」—— 停在别的路线战斗里启动竞技场，也会先把这一局监督完再回大厅
-    重新导航；这比老流程好：老流程在局内会一直卡在「未知画面等待唤醒」直到返回大厅预算
-    耗尽，然后退出码 1。
+    「这是哪条路线的战斗」—— 停在别的路线战斗里启动竞技场，也会先把这一局监督完
+    **再原地接着往下走**（2026-09-26 之前是「监督完再回大厅重新导航」，那条恢复通道
+    已随用户「回家就是结束」的拍板整段删除）；这比老流程好：老流程在局内会一直卡在
+    「未知画面等待唤醒」直到返回大厅预算耗尽，然后退出码 1。
     """
     if observed_page == ARENA_ENTRY_PAGE:
         return ArenaResumePoint("竞技场模式选择", None, ARENA_ENTRY_PAGE)
@@ -1014,8 +1017,23 @@ def detect_resume_point(
     return None
 
 
-class ArenaRunner:
-    """Execute the state machine, stopping with a screenshot on UI drift or timeout."""
+class ArenaRunner(TransactionalRunnerBase):
+    """竞技场 Runner。
+
+    ⚠️ 2026-09-26 起它是 ``TransactionalRunnerBase`` 的子类，但**保留自己的
+    ``run()``** —— 这是评估后的取舍，不是漏改：
+
+    与远征共享的是**机制**（转场的两帧验收 + 四次重试、失败诊断证据包、
+    战斗看护移交、收尾回首页骨架、逐帧存图）。**循环策略不共享**，因为两边
+    真的不一样，硬合要把基类变成一张十几个开关的配置表：
+    竞技场有「开局接手一局已经在打的战斗」「每轮重置未知画面唤醒器」
+    「两个动作走自家验收（开始战斗直接交看护 / 刷新对手等含安全对手的列表）」
+    「买票前拦停 + 买完记账」「干跑是真点一下」「票耗尽自成一类异常」这些做法，
+    远征一条都没有；反过来远征「每一步都判状态超时」的兜底竞技场也没有。
+    ⇒ 在这里，「抽公共基类」的含义是**只抽掉逐字相同的部分**。
+    """
+
+    _MODE_LABEL = "竞技场"
 
     _TIMEOUT_SECONDS = {
         ArenaState.LIST: 40,
@@ -1030,6 +1048,10 @@ class ArenaRunner:
     # frame where the next screen has not rendered yet.
     _SETTLE_SECONDS = 1.5
 
+    # 战斗看护的落点，基类 ``_run_committed_battle`` 读这两个。
+    _BATTLE_STATE = ArenaState.BATTLE
+    _RESULT_STATE = ArenaState.RESULT
+
     def __init__(
         self,
         machine: ArenaStateMachine,
@@ -1037,29 +1059,21 @@ class ArenaRunner:
         *,
         sleep: Callable[[float], None] = default_sleep,
         poll_seconds: float = 1.0,
-        recovery: Callable[[], None] | None = None,
         recovery_gate: RecoveryGate | None = None,
         battle_supervisor: BattleSupervisor | None = None,
         purchase_stamp_path: Path | None = None,
         outcome_frame_dir: Path | None = None,
     ) -> None:
-        self.machine = machine
-        self.runtime = runtime
-        self.sleep = sleep
-        self.now = runtime.now
-        self.poll_seconds = poll_seconds
-        self.recovery_gate = recovery_gate or RecoveryGate(recovery)
-        self.recovery = self.recovery_gate.recover if recovery is not None else None
-        self.battle_supervisor = battle_supervisor or BattleSupervisor(
+        # ⚠️ ``now`` / ``recovery_gate`` / ``unknown_screen_wake`` /
+        # ``battle_supervisor`` / ``resource_exhausted`` / ``finish_home`` 全部由基类
+        # 建好，这里一个都不重复（重复就会有两份、迟早各改各的）。
+        super().__init__(
+            machine,
             runtime,
-            self.recovery_gate,
-            BattleConfig(mode="arena", mode_label="竞技场"),
-            now=self.now,
             sleep=sleep,
-        )
-        self.unknown_screen_wake = UnknownScreenWake(
-            runtime,
-            recovery_gate=self.recovery_gate,
+            poll_seconds=poll_seconds,
+            recovery_gate=recovery_gate,
+            battle_supervisor=battle_supervisor,
         )
         self.purchase_stamp_path = purchase_stamp_path
         # 每局结算画面的落盘目录（实跑由 main.py 注入 docs/manual_review/arena/）。
@@ -1067,16 +1081,172 @@ class ArenaRunner:
         self.outcome_frame_dir = outcome_frame_dir
         # 本进程的战绩：胜 / 负 / 认不出。「认不出」单列，不并入负（见 ArenaOutcome）。
         self.outcome_tally = {outcome: 0 for outcome in ArenaOutcome}
-        self.resource_exhausted = False
-        # 「收尾回首页」钩子：由 main.run_mode 在 runner.run() 正常返回后注入。
-        # ⚠️ 竞技场**自带独立主循环**（裸定义、`super()` 0 次），走不到基类
-        # `ModeRunnerBase._close_out`，所以这里必须自己声明、自己调用。
-        # 契约同基类：**绝不抛异常**，失败返回原因字符串（退出码不变）。
-        self.finish_home: Callable[[], Optional[str]] | None = None
+
+    # ---- 基类钩子：竞技场口径 ----
+
+    def _battle_config(self) -> BattleConfig:
+        return BattleConfig(mode="arena", mode_label="竞技场")
+
+    def _state_label(self, state: Optional[ArenaState]) -> str:
+        return state_label(state)
+
+    def _transition_budget(self, action: Action) -> tuple[float, float]:
+        """转场验收的两条时限 —— 竞技场按**目标页面的**超时算，不是当前页面。
+
+        取目标里最宽的那一档、再夹到 180 秒；「画面多久没动」固定夹到 45 秒。
+        ⚠️ 与远征的差别（那边是「当前状态超时」两档相等、45 秒一刀切）是**真差别**，
+        抽取时原样保留：远征的路线节拍与竞技场不是一回事。
+        """
+        absolute = min(
+            180,
+            max(self._TIMEOUT_SECONDS[target] for target in action.target_states),
+        )
+        return absolute, min(45, absolute)
+
+    def _transition_diagnostic_label(self, action: Action) -> str:
+        """按**页面**命名诊断图（``no_transition_<来源>_to_<目标…>``）。
+
+        ⚠️ 与远征的 ``no_transition_<动作名>`` 不同是**刻意保留**的：
+        仓库里现存的竞技场现场诊断图就是按这个格式命名的，改名会让
+        「照着日志去找那张图」的操作失效。
+        """
+        return (
+            f"no_transition_{action.source_state.value}_to_"
+            f"{'_or_'.join(target.value for target in action.target_states)}"
+        )
+
+    def _log_transition_start(self, action: Action) -> None:
+        """不记：竞技场在自己的主循环里已经每轮记过「轮次/页面/动作候选/依据」。"""
+        del action
+
+    def _log_transition_failed(
+        self, action: Action, attempts: int, diagnostic: Any
+    ) -> None:
+        self.runtime.log(
+            f"模式=竞技场 状态=转场失败 动作={action.name} "
+            f"从={state_label(action.source_state)} "
+            f"到={'/'.join(state_label(target) for target in action.target_states)} "
+            f"尝试={attempts}/4 诊断={diagnostic}"
+        )
+
+    def _transition_failure_message(
+        self, action: Action, attempts: int, diagnostic: Any
+    ) -> Optional[str]:
+        del attempts
+        return (
+            f"点击 {action.name} 后画面未稳定进入"
+            f"[{'/'.join(state_label(target) for target in action.target_states)}]；"
+            f"已保存诊断 {diagnostic}"
+        )
+
+    def _dismiss_purchase_popup(self) -> bool:
+        """票耗尽时人停在「购买旗帜」弹窗里 —— 先点「取消」退回对手列表。
+
+        **为什么要这一步**（2026-09-25 定，见 docs/maintenance/route_finish_points.md 注①）：
+        路线终点必须落在**非浮层页**上，回家流程才能安全起手（浮层里右上角那颗蓝色
+        四格是灰的、点不动，但模板匹配照样认得，回家流程会去点它）。
+        实机日志证明票耗尽时画面正是这颗弹窗（现场帧
+        ``runtime_diagnostics/epic7_arena/20260925_081722_997139_ticket_exhausted.png``）。
+
+        **判据是双锚点**（``purchase_title`` + ``purchase_cancel``）：
+        单靠「取消」两个字会串门 —— 实测迷宫的「购买确认」「放弃确认」都能命中
+        （0.9757 / 0.9758），它们**不该**被这里点掉。
+
+        返回 True 表示「确实关掉了」（弹窗在、点了、画面已离开弹窗）；
+        False 表示「本来就没弹窗」或「认不出 / 点了没反应」。
+        **不抛异常**：这是收尾的最后一步，失败不该改退出码，交给上层记日志。
+        """
+        try:
+            screen = self.runtime.capture()
+        except Exception:  # noqa: BLE001 —— 收尾阶段不因读不到画面而中断
+            return False
+        if not self._purchase_popup_visible(screen):
+            return False
+        try:
+            cancel = find_template(
+                screen,
+                self.machine.templates.purchase_cancel,
+                ARENA_THRESHOLDS["purchase_cancel"],
+                region=ARENA_REGIONS["purchase_cancel"],
+                reference_size=ARENA_REFERENCE_SIZE,
+            )
+        except (AttributeError, TypeError):  # 打桩环境（MagicMock）下的兜底
+            return False
+        if cancel is None:  # 理论上不可达（刚判过双锚点），防御性兜底
+            return False
+        self.runtime.log(
+            f"模式=竞技场 收尾=关闭购买弹窗 动作=dismiss-purchase "
+            f"坐标={cancel.center} 目标页面=对手列表"
+        )
+        self.runtime.click(cancel.center, "dismiss-purchase")
+        # 等画面真的离开弹窗（最多 5 秒）：关掉了才算终点已下移。
+        # 关不掉也不硬来 —— 返回 False，让上层照旧收尾并把这个事实记进日志。
+        for _ in range(10):
+            self.sleep(self.poll_seconds)
+            try:
+                screen = self.runtime.capture()
+            except Exception:  # noqa: BLE001
+                return False
+            if not self._purchase_popup_visible(screen):
+                self.runtime.log("模式=竞技场 收尾=购买弹窗已关闭 状态=人已退回对手列表")
+                return True
+        self.runtime.log(
+            "模式=竞技场 收尾=购买弹窗未关闭 处理=照旧收尾（终点可能仍在浮层里）"
+        )
+        return False
+
+    def _purchase_popup_visible(self, screen: np.ndarray) -> bool:
+        """「购买旗帜」弹窗在不在 —— **双锚点**，且**不经过状态机的 ``_visible``**。
+
+        ⚠️ 为什么自己调 matcher 而不走 ``machine._visible``：收尾路径会被各种测试
+        用 ``MagicMock()`` 当状态机跑（``test_arena_runner`` 里有好几个），
+        那时 ``machine._visible`` 返回的是 MagicMock 对象、**真值为真** ⇒
+        会凭空多出一次「取消」点击，把那些测试全打红。
+        这里要的是「这一帧上有没有这两样东西」，与状态机状态无关，自己量更准。
+
+        ⚠️ 任何取不到模板 / 量不出来的情况一律**当成「不在弹窗上」**（fail-closed）：
+        这是收尾阶段的加分动作，判不出来就老老实实什么都不做。
+        """
+        try:
+            templates = self.machine.templates
+            title = templates.purchase_title
+            cancel = templates.purchase_cancel
+        except AttributeError:
+            return False
+        # ⚠️ 三个输入都必须是真数组才能量：测试里常把 runtime / machine 打成
+        # ``MagicMock``，那时 ``capture()`` 返回的也是 MagicMock，直接喂给
+        # ``find_template`` 会在 ``abs(scale_x - scale_y)`` 上抛 TypeError。
+        # 收尾是加分动作，量不出来就当「不在弹窗上」，绝不能让它把收尾整个炸掉。
+        if not isinstance(screen, np.ndarray):
+            return False
+        if not isinstance(title, np.ndarray) or not isinstance(cancel, np.ndarray):
+            return False
+        return bool(
+            find_template(
+                screen,
+                title,
+                ARENA_THRESHOLDS["purchase_title"],
+                region=ARENA_REGIONS["purchase_title"],
+                reference_size=ARENA_REFERENCE_SIZE,
+            )
+            is not None
+            and find_template(
+                screen,
+                cancel,
+                ARENA_THRESHOLDS["purchase_cancel"],
+                region=ARENA_REGIONS["purchase_cancel"],
+                reference_size=ARENA_REFERENCE_SIZE,
+            )
+            is not None
+        )
 
     def _close_out(self) -> None:
-        """收尾回首页（竞技场自己的那一份，语义同 ``ModeRunnerBase._close_out``）。
+        """收尾回首页 —— 比基类多一步前置动作（关购买弹窗），其余交给基类。
 
+        ⚠️ 与基类的关系（2026-09-26）：正文（读哪个钩子、什么时候调、失败怎么办）
+        **全在** ``TransactionalRunnerBase._close_out`` 里，这里只加前置动作、
+        不重写一遍 —— 重写就会有两份，迟早各改各的。
+        
         ⚠️ 两类退出**刻意不接**：``ManualStop``（用户喊停）与异常（跑到一半挂了，
         硬按 Back 有丢局风险）—— 两者都在 ``run()`` 里直接 raise，走不到这里。
 
@@ -1084,33 +1254,26 @@ class ArenaRunner:
         任务已经做完了，按用户 2026-09-25 的诉求就该回首页（后面要串下一个任务）。
         「接力只补一局、不擅自回家」听起来更保守，但那样接力启动会留下**唯一一个
         做完不回首页**的口子，串任务时正好卡在那儿。
-        """
-        if self.finish_home is None:
-            return
-        failure = self.finish_home()
-        if failure is not None:
-            self.runtime.log(
-                f"模式=竞技场 收尾=回首页失败 原因={failure} "
-                "处理=已忽略（不影响本次运行结论）"
-            )
 
-    def _run_committed_battle(self, *, cycle: int) -> None:
-        outcome = self.battle_supervisor.run(
-            self.machine.observe_battle,
-            cycle=cycle,
-        )
-        if outcome is BattleOutcome.PRE_BATTLE_BUSINESS:
-            self.machine.state = ArenaState.BATTLE
-            return
-        if outcome is not BattleOutcome.RESULT_REACHED:
-            raise RuntimeError(f"竞技场战斗出现意外结果：{outcome.value}")
-        self.machine.state = ArenaState.RESULT
+        ⚠️ **先把「购买旗帜」弹窗关掉**（``_dismiss_purchase_popup``）：
+        票耗尽那条路是停在弹窗里的，不关掉的话终点就落在浮层上，回家流程会撞灰按钮。
+        放在这里而不是各个调用点，是为了让**所有**收尾出口都统一经过这一步。
+        """
+        self._dismiss_purchase_popup()
+        super()._close_out()
+
+    def _after_result_state(self, *, cycle: int) -> None:
+        """战斗打到结算页、状态已拨到 ``_RESULT_STATE`` 之后 ⇒ 记下这一局的胜负。
+
+        基类 ``_run_committed_battle`` 正常打完时调这里（竞技场口径的落点）。
+        """
         self._record_outcome(cycle=cycle)
 
     def _record_outcome(self, *, cycle: int) -> None:
         """结算页刚确认，就地记下这一局的胜负。
 
-        **每局恰好走一次**：调用点只有 ``_run_committed_battle``（每局战斗打一次），
+        **每局恰好走一次**：调用点只有 ``_after_result_state``（由基类
+        ``_run_committed_battle`` 在正常打到结算页时调，每局一次），
         不像 ``next_action`` 那样每帧都会被问、也不会被 ``preview`` 的空跑回滚。
 
         判定复用 ``machine.observe_outcome``（与接力同源）。认不出照样入账，进 ``未知``
@@ -1181,42 +1344,16 @@ class ArenaRunner:
             text += f"（未知 {unknown}）"
         return text
 
-    def _save_failure_diagnostic(
-        self,
-        legacy_path: Path,
-        screen: np.ndarray,
-        *,
-        action: Action | None,
-        attempt: int,
-        conclusion: str,
-    ):
-        templates = getattr(self.machine, "templates", None)
-        return save_runtime_evidence_diagnostic(
-            self.runtime,
-            screen,
-            getattr(templates, "evidence", None),
-            legacy_path=legacy_path,
-            mode="竞技场",
-            action=action.name if action is not None else "observe",
-            source=(
-                state_label(action.source_state)
-                if action is not None and action.source_state is not None
-                else state_label(self.machine.state)
-            ),
-            targets=(
-                tuple(state_label(state) for state in action.target_states)
-                if action is not None
-                else ()
-            ),
-            attempt=attempt,
-            conclusion=conclusion,
-        )
+    # ``_save_failure_diagnostic`` 不再自己实现：基类那份是**本族口径**（收 label、
+    # 自己落盘、没配诊断目录就返回 ``"not-configured"``）。刻意没有像
+    # ``ModeRunnerBase`` 那一支那样改成「收已存好的路径」—— 两条路线都只需要一个
+    # 入口，多一种签名就多一个能把路径当标签用错的口子（2026-09-26 抽取时定的）。
 
     def _resume_into_committed_battle(self) -> None:
         """接力直接落在局内：这一局不是本进程点开的，但已经打起来了。
 
         不能走 ``next_action(BATTLE)`` —— 那条路靠 ``auto_off`` 图标定位，而**自动战斗开着
-        时这个图标根本不可见** → 抛未识别 → 60 秒后触发「回大厅重新导航」，
+        时这个图标根本不可见** → 抛未识别 → 60 秒后安全停止，
         等于在已经承诺的战斗里按 Back。这里直接交给战斗监督等结算：
         它自己会在明确 ``MANUAL`` 时点自动，并用心跳和多重超时兜底。
         """
@@ -1229,7 +1366,7 @@ class ArenaRunner:
     def run(self, max_cycles: int | None = None) -> int:
         state_started = self.now()
         stable = StableObservation(required=2)
-        recovered = False
+        conclusion_gate = ConclusionGate()
         if self.machine.resumed_from is ArenaState.BATTLE:
             # 先把这一局监督完，再把 state_started 拨到「当前」，否则后面判结果页超时
             # 会拿一个陈旧的起点，一进 RESULT 就直接判超时。
@@ -1241,12 +1378,24 @@ class ArenaRunner:
                 screen = self.runtime.capture()
                 if self.runtime.diagnostic_dir is not None:
                     self.runtime.save_current_frame(screen)
-                preview_action, _ = self.machine.preview(screen)
+                try:
+                    preview_action, _ = self.machine.preview(screen)
+                except RuntimeError as error:
+                    # 结论也要两帧：单帧就宣布「票没了 / 认不出画面」会提前结束整轮。
+                    if not conclusion_gate.admit(error):
+                        self.runtime.log(
+                            f"模式=竞技场 结论待确认={type(error).__name__} "
+                            f"依据=需连续两帧一致才采信 详情={error}"
+                        )
+                        self.sleep(self.poll_seconds)
+                        continue
+                    raise
                 if not stable.update(preview_action.name):
                     self.sleep(self.poll_seconds)
                     continue
                 action = self.machine.next_action(screen)
                 stable.reset()
+                conclusion_gate.reset()
             except TicketExhausted as error:
                 diagnostic = None
                 if self.runtime.diagnostic_dir is not None:
@@ -1271,31 +1420,16 @@ class ArenaRunner:
                         screen,
                         context=f"竞技场:{state_label(self.machine.state)}",
                     )
-                    if wake_result in {
-                        UnknownWakeResult.WAITING,
-                        UnknownWakeResult.CLICKED,
-                    }:
-                        if wake_result is UnknownWakeResult.CLICKED:
-                            state_started = self.now()
+                    if wake_result is UnknownWakeResult.WAITING:
                         self.sleep(self.poll_seconds)
                         continue
                 timeout = self._TIMEOUT_SECONDS[self.machine.state]
                 if self.now() - state_started >= timeout:
-                    if self.recovery is not None and not recovered:
-                        recovered = True
-                        self.runtime.log(
-                            f"模式=竞技场 页面={state_label(self.machine.state)} 恢复=回大厅重新导航"
-                        )
-                        self.recovery()
-                        self.machine.reset_after_recovery()
-                        state_started = self.now()
-                        stable.reset()
-                        continue
-                    diagnostic = self.runtime.save_diagnostic(
-                        f"timeout_{self.machine.state.value}", screen
-                    )
-                    self._save_failure_diagnostic(
-                        diagnostic,
+                    # 认不出这一页、等到超时 ⇒ **结束这一轮**（回家由 main 收尾）。
+                    # ⚠️ 2026-09-26：以前这里是「回大厅重新导航、然后接着跑」，
+                    # 用户拍板「回家就是结束，不可能再回来」。
+                    diagnostic = self._save_failure_diagnostic(
+                        f"timeout_{self.machine.state.value}",
                         screen,
                         action=None,
                         attempt=1,
@@ -1313,7 +1447,6 @@ class ArenaRunner:
 
             self.unknown_screen_wake.reset()
             if max_cycles is not None and self.machine.completed_cycles >= max_cycles:
-                recovered = False
                 self.runtime.log(
                     f"模式=竞技场 轮次={self.machine.completed_cycles} "
                     "业务完成=结算返回对手列表 目标连续=2"
@@ -1345,18 +1478,15 @@ class ArenaRunner:
                 )
                 state_started = self.now()
                 stable.reset()
+                conclusion_gate.reset()
                 continue
 
             if action.name == "refresh-opponents":
                 self.runtime.click(action.point, action.name)
                 if not self._wait_until_safe_list(action):
                     failure_screen = self.runtime.capture()
-                    diagnostic = self.runtime.save_diagnostic(
+                    diagnostic = self._save_failure_diagnostic(
                         "refresh_opponents_failed",
-                        failure_screen,
-                    )
-                    self._save_failure_diagnostic(
-                        diagnostic,
                         failure_screen,
                         action=action,
                         attempt=1,
@@ -1372,13 +1502,13 @@ class ArenaRunner:
                 self.machine.state = ArenaState.LIST
                 state_started = self.now()
                 stable.reset()
+                conclusion_gate.reset()
                 continue
 
             self._execute_transition(action)
             if action.name == "purchase-friendship-ticket":
                 self._record_purchase_today()
             if self.machine.completed_cycles > cycles_before:
-                recovered = False
                 self.runtime.log(
                     f"模式=竞技场 轮次={self.machine.completed_cycles} "
                     "业务完成=结算返回对手列表 目标连续=2"
@@ -1391,102 +1521,11 @@ class ArenaRunner:
         self._close_out()
         return self.machine.completed_cycles
 
-    def _execute_transition(self, action: Action) -> None:
-        """Click and commit only after the declared target is stable for two frames."""
-        if action.source_state is None or not action.target_states:
-            raise RuntimeError(f"竞技场动作[{action.name}]缺少来源/目标合同")
-        attempts = 1
-        self.runtime.click(action.point, action.name)
-        self.sleep(self._SETTLE_SECONDS)
-        started = progressed = self.now()
-        previous: Optional[np.ndarray] = None
-        source_stable = StableObservation(required=2)
-        target_stable = StableObservation(required=2)
-        source_gone_logged = False
-        source_has_gone = False
-        absolute = min(
-            180,
-            max(self._TIMEOUT_SECONDS[target] for target in action.target_states),
-        )
-        no_progress = min(45, absolute)
-
-        while self.now() - started < absolute:
-            screen = self.runtime.capture()
-            self._save_frame(screen)
-            target = self.machine.action_target_state(screen, action)
-            target_visible = target is not None
-            source_visible = self.machine.action_source_visible(screen, action)
-
-            target_key = target.value if target is not None else "other"
-            if target_stable.update(target_key) and target is not None:
-                self.machine.commit(action, target)
-                self.runtime.log(
-                    f"模式=竞技场 转场确认 动作={action.name} "
-                    f"从={state_label(action.source_state)} 到={state_label(target)} "
-                    "目标连续=2"
-                )
-                return
-
-            if source_stable.update("source" if source_visible else "other") and source_visible:
-                if not source_has_gone and attempts < 4:
-                    attempts += 1
-                    self.runtime.log(
-                        f"模式=竞技场 转场重试 动作={action.name} "
-                        f"来源={state_label(action.source_state)}仍在 "
-                        f"尝试={attempts}/4 坐标={action.point}"
-                    )
-                    self.runtime.click(action.point, action.name)
-                    source_stable.reset()
-                    self.sleep(self._SETTLE_SECONDS)
-                    continue
-            elif not source_visible:
-                source_has_gone = True
-                if not source_gone_logged:
-                    source_gone_logged = True
-                    targets = "/".join(
-                        state_label(item) for item in action.target_states
-                    )
-                    self.runtime.log(
-                        f"模式=竞技场 等待转场 动作={action.name} "
-                        f"来源={state_label(action.source_state)}已离开 目标={targets}待稳定"
-                    )
-
-            if meaningful_change(previous, screen):
-                progressed = self.now()
-            previous = screen
-            if self.now() - progressed >= no_progress:
-                break
-            self.sleep(self.poll_seconds)
-
-        diagnostic = None
-        if self.runtime.diagnostic_dir is not None:
-            diagnostic = self.runtime.save_diagnostic(
-                f"no_transition_{action.source_state.value}_to_"
-                f"{'_or_'.join(target.value for target in action.target_states)}",
-                screen,
-            )
-            self._save_failure_diagnostic(
-                diagnostic,
-                screen,
-                action=action,
-                attempt=attempts,
-                conclusion="来源页面已离开或点击耗尽，但目标页面未稳定出现",
-            )
-        self.runtime.log(
-            f"模式=竞技场 状态=转场失败 动作={action.name} "
-            f"从={state_label(action.source_state)} "
-            f"到={'/'.join(state_label(target) for target in action.target_states)} "
-            f"尝试={attempts}/4 诊断={diagnostic}"
-        )
-        raise RuntimeError(
-            f"点击 {action.name} 后画面未稳定进入"
-            f"[{'/'.join(state_label(target) for target in action.target_states)}]；"
-            f"已保存诊断 {diagnostic}"
-        )
-
-    def _save_frame(self, screen: np.ndarray) -> None:
-        if self.runtime.diagnostic_dir is not None:
-            self.runtime.save_current_frame(screen)
+    # ``_execute_transition`` 与 ``_save_frame`` 不再自己实现 —— 基类那两份就是本族
+    # 口径（目标页连续两帧才 commit、源页还在最多重试 4 次、失败诊断落盘、逐帧存图）。
+    # 竞技场的差异全部通过钩子注入，注入点见本类上半部分的「基类钩子」一节。
+    # 删除前逐条对过：重构后竞技场在转场这一段的行为与 2026-09-26 之前**逐字一致**
+    # （含日志文案），只有两处刻意保留的小差异，理由都写在钩子那边。
 
     def _wait_until_safe_list(self, action: Action | None = None) -> bool:
         self.sleep(self._SETTLE_SECONDS)
