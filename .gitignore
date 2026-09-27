@@ -17,3 +17,6 @@ runtime_diagnostics/
 /_*.png
 /_*.ps1
 games/epic7/templates_pc/tools/
+# 工作区根待清理清单：`tools/report_workspace_tidy.py` 生成的**本地视图**，不进版本库
+# （它随工作区现状变、还老是过期，2026-09-27 从仓库删除 ⇒ 要看时重跑脚本即可）
+/docs/WORKSPACE_TIDY.md
