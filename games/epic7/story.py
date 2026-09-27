@@ -396,9 +396,9 @@ class StoryStateMachine:
     def resume_from(self, state: StoryState) -> None:
         """拨到用户停下的那一步，原样接管进度继续往下跑。
 
-        与 ``_apply_recovery_state`` 的区别：那个是「退回关卡入口重开一轮」，
-        这个是「保留当前进度」—— 比如停在通关提示就继续收奖励，而不是退回大厅
-        把这一局的结算丢掉。
+        与「从头再来」的区别：接力是「保留当前进度」—— 比如停在通关提示就继续收奖励，
+        而不是退回大厅把这一局的结算丢掉。（2026-09-26 之前另有一条「恢复导航」通道
+        专门做「退回关卡入口重开一轮」，随用户「回家就是结束」的拍板整段删除。）
 
         战斗相关的标志一并复位：接力进来的这一局不是本进程点开的，
         ``battle_controls`` 要从 TRANSITION 重新观测，``auto_click_attempted``
@@ -1044,7 +1044,6 @@ class StoryRunner(ModeRunnerBase):
         *,
         sleep: Callable[[float], None] = default_sleep,
         poll_seconds: float = 1.0,
-        recovery: Callable[[], None] | None = None,
         recovery_gate: RecoveryGate | None = None,
         battle_supervisor: BattleSupervisor | None = None,
     ) -> None:
@@ -1053,7 +1052,6 @@ class StoryRunner(ModeRunnerBase):
             runtime,
             sleep=sleep,
             poll_seconds=poll_seconds,
-            recovery=recovery,
             recovery_gate=recovery_gate,
         )
         self.battle_supervisor = battle_supervisor or BattleSupervisor(
@@ -1096,11 +1094,6 @@ class StoryRunner(ModeRunnerBase):
 
     def _state_label(self, state: StoryState) -> str:
         return state_label(state)
-
-    def _apply_recovery_state(self) -> None:
-        self.machine.state = StoryState.STAGE
-        self.machine.auto_enabled = False
-        self.machine._confirmed_page = ""
 
     def _after_action_click(self, action: StoryAction) -> None:
         record_click = getattr(self.machine, "action_clicked", None)

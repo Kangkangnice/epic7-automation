@@ -2043,7 +2043,6 @@ class HeroSynthRunner(ModeRunnerBase):
         *,
         sleep: Callable[[float], None] = None,
         poll_seconds: float = 1.0,
-        recovery: Callable[[], None] | None = None,
         recovery_gate: RecoveryGate | None = None,
     ) -> None:
         if sleep is None:
@@ -2055,7 +2054,6 @@ class HeroSynthRunner(ModeRunnerBase):
             runtime,
             sleep=sleep,
             poll_seconds=poll_seconds,
-            recovery=recovery,
             recovery_gate=recovery_gate,
         )
         self._needs_navigation_settle = machine.templates.pc_client
@@ -2091,20 +2089,6 @@ class HeroSynthRunner(ModeRunnerBase):
         if action_name.startswith("next_card"):
             return self._NEXT_CARD_RETRY_SECONDS
         return super()._action_retry_seconds(action_name)
-
-    def _apply_recovery_state(self) -> None:
-        self.machine.state = HeroSynthState.HERO_LIST
-        self.machine.filter_verified = False
-        self.machine.prev_card_grey = False
-        self.machine._filter_session_done = False  # 恢复后允许重新进入筛选流程
-        self.machine._awaiting_star3_confirmation = False
-        self.machine._filter_close_pending = False
-        self.machine._confirmed_page = ""
-        self._needs_navigation_settle = self.machine.templates.pc_client
-        self._card_switch_motion_confirmed = False
-        self._card_switch_motion_observer = None
-        if self.machine.pending_transmit_target:
-            self.machine.transmit_continuity_intact = False
 
     def _stable_next_action(self, screen: np.ndarray, stable: Any):
         if self._needs_navigation_settle:

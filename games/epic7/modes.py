@@ -1,3 +1,4 @@
+import inspect
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Optional
@@ -51,11 +52,18 @@ from auto_game_unified.games.epic7.survivor import (
     SurvivorState,
     SurvivorStateMachine,
 )
+from auto_game_unified.games.epic7.runner_base import ModeRunnerBase
 from auto_game_unified.games.epic7.knights_donation import (
     KnightsDonationRunner,
     KnightsDonationState,
     KnightsDonationStateMachine,
     detect_resume_point as detect_knights_donation_resume_point,
+)
+from auto_game_unified.games.epic7.labyrinth_stone import (
+    LabyrinthStoneRunner,
+    LabyrinthStoneState,
+    LabyrinthStoneStateMachine,
+    detect_resume_point as detect_labyrinth_stone_resume_point,
 )
 from auto_game_unified.games.epic7.world_boss import (
     WorldBossRunner,
@@ -350,6 +358,25 @@ def _build_survivor(
     )
 
 
+def _probe_labyrinth_stone_resume(
+    machine: Any,
+    screen: np.ndarray,
+    navigator: Any,
+) -> Optional[ResumePoint]:
+    """迷宫强化石接力探针：认出人停在哪一页就就地接管。
+
+    判据直接用状态机自己的 ``observe_page`` —— 与运行期**同源**。
+    停在「已经进过迷宫」的那几页时，``detect_resume_point`` 会顺手把
+    ``entered`` 拨对（否则回到详情页会被当成还没进场、又点一次「选择队伍」）。
+    停在大厅上返回 None —— 那是这条路线的**终点**，认不出才对。
+    """
+    del navigator
+    found = detect_labyrinth_stone_resume_point(machine, screen)
+    if found is None:
+        return None
+    return ResumePoint(page=found.page, state=found.state, entry=found.entry)
+
+
 def _build_world_boss(
     template_root: Path,
     state: str,
@@ -358,6 +385,19 @@ def _build_world_boss(
     return WorldBossStateMachine(
         template_root / "world_boss",
         initial_state=WorldBossState(state),
+        backend=backend,
+    )
+
+
+def _build_labyrinth_stone(
+    template_root: Path,
+    state: str,
+    backend: str = "emulator",
+) -> LabyrinthStoneStateMachine:
+    # 模板子目录是 templates/labyrinth_stone；工厂必须把它当根，不能当 templates 根。
+    return LabyrinthStoneStateMachine(
+        template_root / "labyrinth_stone",
+        initial_state=LabyrinthStoneState(state),
         backend=backend,
     )
 
@@ -417,13 +457,17 @@ RESUME_EXEMPT = {
 # 把缺口写在明处，比假装它不存在强。它们各自的补法写在理由里。
 TRANSITION_EXEMPT = {
     "arena": (
-        "自带独立主循环（`ArenaRunner` 是裸定义、`super()` 0 次），**走不到**基类那段"
-        "校验；它用 `Action.source_state` / `target_states` 对账，"
-        "`_execute_transition` 缺任一**直接 raise** —— 比开关更严。"
+        "继承**事务型主循环基类** `TransactionalRunnerBase`，但**保留自己的 `run()`**"
+        "（循环策略与远征不同，见 `arena.ArenaRunner` 的类 docstring）⇒ 这个开关的"
+        "读取点在 `ModeRunnerBase.run()` 里，对它无效。转场那一段走基类的 "
+        "`_execute_transition`：`Action.source_state` / `target_states` 缺任一"
+        "**直接 raise**，且目标页要连续两帧才算转场成功 —— 比开关更严。"
     ),
     "expedition": (
-        "同上：自带独立主循环，`ExpeditionAction` 用 `source_state` / `target_states`，"
-        "`_execute_transition` 缺任一**直接 raise**。"
+        "继承**事务型主循环基类** `TransactionalRunnerBase`（2026-09-26 从裸定义搬过去的），"
+        "**不是** `ModeRunnerBase` ⇒ 这个开关的读取点在基类 `run()` 里，对它一样无效。"
+        "它走 `ExpeditionAction.source_page` / `target_pages` ＋ 基类 `_execute_transition`："
+        "来源/目标合同缺任一**直接 raise**，且目标页要连续两帧才算转场成功。"
     ),
     "shop_refresh": (
         "自带独立主循环，验收靠自己的 `_wait_stable` / `_open_with_retry`："
@@ -516,7 +560,7 @@ MODE_SPECS = {
         build_machine=_build_survivor,
         runner_type=SurvivorRunner,
         # 起点是用户人工推进到的活动小游戏内部页面，不需要从大厅导航过来，
-        # 也不做回大厅恢复（Back 会退回活动主页那个未知状态）。
+        # 出问题时也不做任何「回大厅」动作（Back 会退回活动主页那个未知状态）。
         needs_navigation=False,
         supported_backends=frozenset({"emulator"}),
     ),
@@ -547,6 +591,21 @@ MODE_SPECS = {
         # 三个弹窗与活动界面兜底页不接（不可逆 / 判据不排他 / 无正例），
         # 见 knights_donation._RESUMABLE_STATES 上方的理由。
         resume_probe=_probe_knights_donation_resume,
+    ),
+    "labyrinth_stone": ModeSpec(
+        name="labyrinth_stone",
+        # 导航把画面停在战斗菜单（「一般」页），第一步就是点迷宫卡片。
+        default_state=LabyrinthStoneState.BATTLE_MENU.value,
+        states=frozenset(
+            state.value
+            for state in LabyrinthStoneState
+            if state is not LabyrinthStoneState.FINISHED
+        ),
+        build_machine=_build_labyrinth_stone,
+        runner_type=LabyrinthStoneRunner,
+        # 开局不无脑回大厅：停在战斗菜单 / 迷宫列表 / 详情页 / 准备战斗页时接着往里走，
+        # 停在迷宫里 / 暂停菜单 / 放弃确认框 / 快捷菜单时接着往外走。
+        resume_probe=_probe_labyrinth_stone_resume,
     ),
 }
 
@@ -584,6 +643,90 @@ def _assert_resume_declared() -> None:
             )
 
 
+# 「结论门槛」的登记表：**必须写明这条路线靠什么保证「不一帧下结论」**。
+#
+# ⚠️ 背景（2026-09-25 实跑）：动作要连续两帧一致才敢点，这条规矩早就有了；但
+# **收工 / 认不出画面这类终止性结论**是从 ``preview()`` 里直接抛到主循环的，
+# 压根没过那道门槛 ⇒ 一帧就能宣布「今天打完了」、一帧没认出画面就去点屏幕中间。
+# 动作要两帧、结论只要一帧，等于门只掩了一半。
+#
+# 判定规则（``_assert_conclusion_gate_declared``）：继承 ``ModeRunnerBase``、且没重写
+# ``_stable_next_action`` 的路线自动达标（基类里已经接了 ``ConclusionGate``）；
+# 其余（自带独立主循环的，以及 2026-09-26 起的 ``TransactionalRunnerBase`` 那一族）
+# 必须在这张表里写明自己靠什么达标。
+CONCLUSION_GATE_DECLARATION = {
+    "arena": (
+        "继承**事务型主循环基类** ``TransactionalRunnerBase``，但**保留自己的 "
+        "``run()``**（循环策略与远征不同，见 ``arena.ArenaRunner`` 的类 docstring）。"
+        "``ConclusionGate`` 接在它自己的 ``run()`` 里：``preview`` 抛出的终止性结论"
+        "先过门槛、两帧一致才允许按结论处理。覆盖见 "
+        "``tests/test_conclusion_gate.py::ArenaLoopConclusionTests``。"
+    ),
+    "expedition": (
+        "继承**事务型主循环基类** ``TransactionalRunnerBase``（不是 ``ModeRunnerBase``）。"
+        "``ConclusionGate`` 接在基类 ``run()`` 里：``preview`` 抛出的终止性结论先过门槛、"
+        "两帧一致才允许按结论处理。覆盖见 "
+        "``tests/test_conclusion_gate.py::ExpeditionLoopConclusionTests``。"
+    ),
+    "shop_refresh": (
+        "不是「每帧下一结论」的形态：全程靠 ``_wait_stable`` / ``_observe_stable`` "
+        "先等画面稳定再判定，认不出也只有**超时之后**才失败，不存在单帧收工。"
+    ),
+    "survivor": (
+        "同上：靠 ``_observe_stable(page, timeout)`` 验收，``_failure`` 全部发生在"
+        "「页面已稳定确认」或「超时」之后，不存在单帧收工。"
+    ),
+}
+
+
+def _base_conclusion_gate_protected(runner_type: type) -> bool:
+    """这条路线的 Runner 是否真的走得到基类那道结论门槛。
+
+    重写 ``_stable_next_action`` **不等于绕过门槛** —— ``HeroSynthRunner`` 就重写了它
+    （为了导航后先等画面稳一稳），但内部调了 ``super()``，门槛照样生效。所以判据是：
+    没重写 = 达标；重写了 = 必须把基类的实现调回去（``super()._stable_next_action``）。
+    """
+
+    if not issubclass(runner_type, ModeRunnerBase):
+        return False
+    overridden = "_stable_next_action" in runner_type.__dict__
+    if not overridden:
+        return True
+    return "super()._stable_next_action" in inspect.getsource(
+        runner_type._stable_next_action
+    )
+
+
+def _assert_conclusion_gate_declared() -> None:
+    """加载期自查：每条路线都必须对「不一帧下结论」表态。
+
+    两种合法表态，二选一，**不能两边都写、也不能两边都不写**：
+
+    - 走 ``ModeRunnerBase`` 主循环、且门槛没被自己绕过去（见
+      ``_base_conclusion_gate_protected``）；
+    - 进 ``CONCLUSION_GATE_DECLARATION`` 并写明「自己靠什么保证」。
+
+    与 ``_assert_transition_stance_declared`` 是同一类护栏的两半：那个管「点了
+    之后有没有回头看」，这个管「下结论之前有没有看够两帧」。
+    """
+    for name, spec in MODE_SPECS.items():
+        runner_type = spec.runner_type
+        guarded = _base_conclusion_gate_protected(runner_type)
+        declared = name in CONCLUSION_GATE_DECLARATION
+        if guarded and declared:
+            raise RuntimeError(
+                f"路线 {name} 走基类主循环、门槛已经生效，却又躺在 "
+                "CONCLUSION_GATE_DECLARATION 里；两边只能写一边（走基类就把登记划掉）。"
+            )
+        if not guarded and not declared:
+            raise RuntimeError(
+                f"路线 {name} 既不在基类门槛的保护下、也没登记自己的结论门槛。"
+                "要么别重写 _stable_next_action（让基类的 ConclusionGate 生效），"
+                "要么在 CONCLUSION_GATE_DECLARATION 里写清「自己靠什么保证不一帧下结论」；"
+                "规矩见 docs/TRANSITION_CONTRACTS.md「结论门槛（全局强制）」。"
+            )
+
+
 def _assert_transition_stance_declared() -> None:
     """加载期自查：每条路线都必须对「动作的出口验收」表态。
 
@@ -593,11 +736,12 @@ def _assert_transition_stance_declared() -> None:
       ``target_pages`` / ``in_page_evidence``）；
     - 进 ``TRANSITION_EXEMPT`` 并写清「用自己的什么机制验收」。
 
-    ⚠️ **只认继承基类的路线**：``arena`` / ``expedition`` / ``shop_refresh`` /
-    ``survivor`` 是自带独立主循环的裸定义，连这个属性都没有 ⇒ 开关对它们无效
-    （属性设了也没人读），所以它们必然落在豁免名单里，理由写「用自己的哪套机制」。
-    别把「它的动作没有 ``target_pages``」直接推成「打开开关会抛错」——
-    还要问一句「它的 runner 走得到那段代码吗」。
+    ⚠️ **只认继承 ``ModeRunnerBase`` 的路线**（读开关的代码在那儿）。
+    ``shop_refresh`` / ``survivor`` 是自带独立主循环的裸定义，连这个属性都没有；
+    ``arena`` / ``expedition`` 继承的是 ``TransactionalRunnerBase``（另一族基类，
+    2026-09-26 起）—— 四者的共同点是「属性设了也没人读」⇒ 必然落在豁免名单里，
+    理由写「用自己的哪套机制」。别把「它的动作没有 ``target_pages``」直接推成
+    「打开开关会抛错」—— 还要问一句「它的 runner 走得到那段代码吗」。
 
     只查结构，不跑判据 —— 判据准不准要靠拿真夹具跑一遍
     （``tests/test_transition_contracts.py`` 与各路线自己的 ``test_*_runner``）。
@@ -620,7 +764,3 @@ def _assert_transition_stance_declared() -> None:
                 "TRANSITION_EXEMPT 里写清「用自己的什么机制验收」；"
                 "规矩见 docs/TRANSITION_CONTRACTS.md。"
             )
-
-
-_assert_resume_declared()
-_assert_transition_stance_declared()

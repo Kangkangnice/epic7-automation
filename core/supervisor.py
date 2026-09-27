@@ -29,6 +29,51 @@ class StableObservation:
 
 
 @dataclass
+class ConclusionGate:
+    """「下结论」也要两帧：单帧不许收工、不许宣布认不出画面。
+
+    ⚠️ 为什么它不是可选项（2026-09-25 实跑的两条事故，都是**一帧**惹的祸）：
+
+    - 世界首领战：``next_action`` 里「今天没场次了」的异常从 ``preview()``
+      **直接穿到主循环**，早于两帧稳定确认 ⇒ 一帧就宣布整条路线收工，
+      宝箱还没看、就先说打完了；
+    - 通用：``UnrecognizedScreen`` 同样一帧穿出去 ⇒ 一帧没认出画面就去点屏幕
+      中间（用户看到的就是「眼睛瞎了一直点中间」）。
+
+    动作要两帧、结论却只要一帧，等于门槛只把门掩了一半 —— 真正会终止路线的
+    恰恰是这些结论，它们反而最宽松。所以结论必须走同一道门槛。
+
+    用法：主循环捕获到终止性异常时先问 ``admit(error)``；返回 False 就当这一帧
+    没看见（继续观察），返回 True 才允许按结论处理（收工 / 唤醒 / 报错）。
+
+    ``ManualStop`` 是唯一的例外：那是**用户按了停止键**，不是程序下的结论，
+    必须立刻响应，等两帧会让停止键迟钝。
+    """
+
+    _stable: StableObservation = field(
+        default_factory=lambda: StableObservation(required=2)
+    )
+    # 按类型名判断而不是 import 具体类：core 不该认识 games 层的异常，
+    # 也不用担心和 core.runtime 形成循环导入。
+    _immediate_names: frozenset[str] = frozenset({"ManualStop"})
+
+    def admit(self, error: BaseException) -> bool:
+        if type(error).__name__ in self._immediate_names:
+            return True
+        return self._stable.update(self.signature(error))
+
+    @staticmethod
+    def signature(error: BaseException) -> str:
+        """结论签名：类型 + ``stop_label``（缺什么），不同结论不互相背书。"""
+
+        label = getattr(error, "stop_label", "")
+        return f"conclusion:{type(error).__name__}:{label}"
+
+    def reset(self) -> None:
+        self._stable.reset()
+
+
+@dataclass
 class Watchdog:
     """Track both a no-progress timeout and an absolute operation deadline."""
 

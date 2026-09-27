@@ -342,10 +342,10 @@ class ShopRefreshRunner:
         poll_seconds: float = 0.5,
         transaction_timeout: float = 20.0,
         open_retry_seconds: float = 2.0,
-        recovery=None,
         recovery_gate=None,
     ) -> None:
-        del recovery, recovery_gate
+        # 本路线没有战斗 ⇒ 用不上战斗锁；main 统一注入的选项在这里显式丢弃。
+        del recovery_gate
         self.machine = machine
         self.runtime = runtime
         self.observer = observer or machine.observer

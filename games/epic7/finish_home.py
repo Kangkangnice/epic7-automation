@@ -27,6 +27,9 @@ from typing import Optional
 
 from auto_game_unified.games.epic7.modes import MODE_SPECS
 from auto_game_unified.games.epic7.runner_base import ModeRunnerBase
+from auto_game_unified.games.epic7.transactional_runner_base import (
+    TransactionalRunnerBase,
+)
 
 
 FINISH_HOME_EXEMPT = {
@@ -59,15 +62,28 @@ def _finish_home_verdict(
     没有源码，不该把「读不到」升级成「程序起不来」。真实路线都是磁盘上的文件。
     """
     if inherits_base:
-        # 基类路线：`ModeRunnerBase.run()` 统一收尾。**但它可能自己覆写 run()
-        # 后忘了调 super()** —— 那就等于把收尾丢了，必须查出来。
-        if own_run_source is not None and "super().run(" not in own_run_source:
-            return (
-                f"路线 {name} 继承了 ModeRunnerBase，但自己覆写了 run() "
-                "却没在里面调 super().run() ⇒ 基类的收尾逻辑（`_close_out`）"
-                "被整个跳过了，跑完不会回首页。要么别覆写 run()、要么记得调 super()。"
-            )
-        return None
+        # 走基类主循环的路线（两族都算）：默认收尾在基类 `run()` 里统一接了。
+        # **但它可能自己覆写 run()** —— 那时要问一个更要紧的问题：
+        # 「你的退出口前面**还调不调** `_close_out()`？」
+        #
+        # 两种写法都合法：
+        # ① 覆写了 run() 但把主循环委托给基类（``super().run(...)``）；
+        # ② 覆写了 run() 且**自己**在退出口调了 ``_close_out()``（竞技场就是这样：
+        #    它的循环策略与远征不同，不能委托，但收尾一步没落下）。
+        # 只有第三种（覆写了、既没委托、也没自己调）才是真会把收尾丢掉 —— 必须拦。
+        if own_run_source is None:
+            return None
+        if "super().run(" in own_run_source:
+            return None
+        if _calls_close_out(own_run_source):
+            return None
+        return (
+            f"路线 {name} 继承了主循环基类（ModeRunnerBase / "
+            "TransactionalRunnerBase），但自己覆写了 run()，"
+            "既没在里面调 super().run()、也没自己调 `_close_out()` ⇒ "
+            "基类的收尾逻辑（`_close_out`）被整个跳过了，跑完不会回首页。"
+            "要么别覆写 run()、要么调 super()、要么在自己的每个退出口前面调 `_close_out()`。"
+        )
     if own_source is None:
         return None
     calls_close_out = _calls_close_out(own_source)
@@ -80,7 +96,7 @@ def _finish_home_verdict(
         return (
             f"路线 {name} 既不收尾回首页、也不在 FINISH_HOME_EXEMPT 里。"
             "要么在它的正常退出口前面调 `_close_out()`"
-            "（裸定义路线自己声明一份，语义照 ModeRunnerBase._close_out），"
+            "（自带独立主循环的路线自己声明一份，语义照 ModeRunnerBase._close_out），"
             "要么在 FINISH_HOME_EXEMPT 里写明为什么不做；"
             "规矩见 main._install_finish_home。"
         )
@@ -122,14 +138,25 @@ def _assert_finish_home_declared() -> None:
     - 进 ``FINISH_HOME_EXEMPT`` 并写明理由（不做收尾）。
 
     ⚠️ **判据是「源码里真的调了 `_close_out()`」，不是「有没有那个方法」**：
-    继承 ``ModeRunnerBase`` 的路线**天然有** ``_close_out``（基类定义），
+    走基类主循环的路线**天然有** ``_close_out``（基类定义），
     光看 ``hasattr`` 十条路线全过 —— 等于这条自查白写。真正的分界是
     「它的退出口前面有没有调用」，而这只有源码能回答。**而且必须是真调用**：
     注释掉的、文档串里举例提到的都不算（``_calls_close_out`` 用 ast 判定）。
 
-    ⚠️ 因此本判据**只对裸定义（自带独立主循环）的路线有区分力**：基类路线的
-    ``_close_out`` 调用在 ``ModeRunnerBase.run()`` 里，不在自己文件里。
-    对它们改查「覆写了 run() 却没调 super() 吗」—— 那才是基类路线真会踩的坑。
+    ⚠️ 因此本判据**只对自带独立主循环的路线有区分力**：走基类主循环的路线，
+    ``_close_out`` 的调用在基类 ``run()`` 里，不在自己文件里。
+    对它们改查「覆写了 run() 却没调 super() 吗」—— 那才是它们真会踩的坑。
+
+    ⚠️ **两族基类都算「走基类主循环」**：``ModeRunnerBase``（6 条）与
+    ``TransactionalRunnerBase``（2026-09-26 起：远征先搬，竞技场随后）。
+    只认前者的那次事故是：远征搬过去之后，它自己文件里不再出现 ``_close_out()``
+    ⇒ 被误判成「既不收尾也不豁免」，**import 阶段直接报错**。
+
+    ⚠️ **继承了基类、但自己覆写 ``run()`` 的路线，判据换成「它有没有自己调
+    ``_close_out()``」**（2026-09-26 竞技场入库时发现）：它不能委托给基类的
+    ``run()``（循环策略不同），所以「必须出现 ``super().run()``」这条会把它误判死。
+    竞技场在**每一个**正常退出口前面都调了 ``_close_out()`` —— 这正是这条自查
+    真正想守的东西，比「有没有委托」更贴近事实。
 
     ⚠️ **查的是「源码文件里怎么写的」，不是「此刻对象上挂着什么」**：测试里常有
     ``mock.patch.object(StoryRunner, "run", fake_run)``，这时 ``StoryRunner.__dict__["run"]``
@@ -208,7 +235,10 @@ def _assert_finish_home_declared() -> None:
 
     for name, spec in MODE_SPECS.items():
         runner_type = spec.runner_type
-        inherits_base = issubclass(runner_type, ModeRunnerBase)
+        # 两族主循环基类都算「收尾在基类里」—— 只认 ModeRunnerBase 那次事故见 docstring。
+        inherits_base = issubclass(
+            runner_type, (ModeRunnerBase, TransactionalRunnerBase)
+        )
         if inherits_base:
             # ⚠️ 不再用 runner_type.__dict__.get("run")：那会被 mock 掉（见 docstring）。
             own_run_source = _own_run_source_on_disk(runner_type)
