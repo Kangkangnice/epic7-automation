@@ -22,22 +22,27 @@ def static_game_screen() -> np.ndarray:
 
 
 @pytest.mark.parametrize(
-    ("runner_type", "state", "timeout_name", "expected_clicks"),
+    ("runner_type", "state", "timeout_name"),
     [
-        (StoryRunner, StoryState.STAGE, "_TIMEOUT_SECONDS", []),
-        (ArenaRunner, ArenaState.LIST, "_TIMEOUT_SECONDS", [(991, 566)] * 4),
+        (StoryRunner, StoryState.STAGE, "_TIMEOUT_SECONDS"),
+        (ArenaRunner, ArenaState.LIST, "_TIMEOUT_SECONDS"),
         (
             ExpeditionRunner,
             ExpeditionState.HOME,
             "_STATE_TIMEOUT_SECONDS",
-            [(991, 566)] * 4,
         ),
-        (FodderRunner, FodderState.STAGE, "_TIMEOUT_SECONDS", [(991, 566)] * 4),
+        (FodderRunner, FodderState.STAGE, "_TIMEOUT_SECONDS"),
     ],
 )
-def test_live_runner_unknown_screen_policy_matches_route_safety_contract(
-    runner_type, state, timeout_name, expected_clicks
+def test_live_runner_never_clicks_an_unknown_screen(
+    runner_type, state, timeout_name
 ):
+    """认不出画面的页面上，**任何一条路线都不许点屏幕中央**。
+
+    ⚠️ 2026-09-26 翻过来的用例：以前竞技场 / 远征 / 狗粮三条都预期「点中央 4 次」。
+    用户实跑原话「眼睛瞎了一直点中间」—— 那是事故。现在统一为「只等、只报、
+    不动手」，超时后由主循环报错收尾。
+    """
     screen = static_game_screen()
     clicks: list[tuple[int, int]] = []
     machine = MagicMock()
@@ -59,4 +64,4 @@ def test_live_runner_unknown_screen_policy_matches_route_safety_contract(
         with pytest.raises(RuntimeError, match="unknown page"):
             runner.run(max_cycles=1)
 
-    assert clicks == expected_clicks
+    assert clicks == [], f"认不出的页面上动手了：{clicks}"

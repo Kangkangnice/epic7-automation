@@ -12,7 +12,6 @@ from auto_game_unified.core.runtime import Runtime
 from auto_game_unified.core.supervisor import (
     StableObservation,
     left_page,
-    page_or_picture_changed,
 )
 from auto_game_unified.games.epic7.arena import (
     ARENA_ENTRY_PAGE,
@@ -24,6 +23,11 @@ from auto_game_unified.games.epic7.global_popups import (
     find_friendship_points_popup_close,
     find_gift_support_close,
     find_knights_signin_close,
+)
+from auto_game_unified.games.epic7.home_return import (
+    HomeReturnTemplates,
+    build_home_return_templates,
+    return_home_v2,
 )
 from auto_game_unified.games.epic7.expedition import (
     EXPEDITION_BATTLE_MENU_PAGE,
@@ -65,6 +69,9 @@ from auto_game_unified.games.epic7.unknown_screen import (
 
 
 REFERENCE_SIZE = (1982, 1132)
+
+# 「回家」那套模板（v2 要用，其中六个直接复用迷宫那条路的模板文件）。
+TEMPLATE_ROOT = Path(__file__).resolve().parent / "templates"
 
 
 @dataclass(frozen=True)
@@ -111,6 +118,7 @@ MODE_LABELS = {
     "shop_refresh": "刷书签",
     "world_boss": "世界首领战",
     "knights_donation": "骑士团捐赠",
+    "labyrinth_stone": "迷宫强化石",
 }
 
 
@@ -124,6 +132,10 @@ _RESUME_ENTRY_PAGES = {
     # 骑士团捐赠的导航链只有一级，所以「在导航链上」的落点只有骑士团主页一个。
     # 业务链里的页面（资源支援 / 每周任务）探针把 ``entry`` 留空 ⇒ 根本不会走到这里。
     "knights_donation": frozenset({KNIGHTS_GUILD_HOME_PAGE}),
+    # 迷宫强化石的接力落点全在**业务链**上（战斗菜单 → 迷宫列表 → … → 大厅），
+    # 探针一律就地接管、不返回 ``entry`` ⇒ 这里没有需要导航对接的页面。
+    # 空集合是合法值：``already_at`` 为 None 时上面的判断根本不会走到。
+    "labyrinth_stone": frozenset(),
 }
 
 
@@ -377,6 +389,8 @@ class Epic7Navigator:
         self.poll_seconds = poll_seconds
         self.transition_frames = transition_frames
         self.unknown_screen_wake = UnknownScreenWake(runtime)
+        # 「回家」用的那套模板（v2）。懒构建：大部分路线压根不回家，别白读 10 张图。
+        self._home_return_templates: Optional[HomeReturnTemplates] = None
 
     def _locate(self, screen: np.ndarray, name: str, threshold: float = 0.82) -> Optional[Match]:
         return find_template(
@@ -685,203 +699,63 @@ class Epic7Navigator:
         *,
         stop_probe: Optional[Callable[[np.ndarray], bool]] = None,
     ) -> np.ndarray:
-        """受控返回大厅。
+        """受控返回大厅 —— **实现就是 v2**（``home_return.return_home_v2``）。
 
-        ``stop_probe`` 是「接力」钩子：每确认一帧稳定画面就先问它一次，返回 True 表示
-        当前这帧已经是本路线的接力点，立刻停止返回并把这一帧交还给调用方
-        （不再按 Back、也不走后面的唤醒/剧情恢复）。
+        ⚠️ 2026-09-26：老的那套循环（只会按 ESC、认不出就点屏幕中央）已**整段删除**，
+        10 条路线现在只有一套回家实现。这里保留方法名与签名，是为了让调用方
+        （``main.HomeReturn`` / ``daily_tasks`` / 一众测试替身）**一个字都不用改** ——
+        它现在是 v2 的薄封装，负责把**只有导航层才有**的三样能力喂进去：
 
-        这样「用户停在竞技场某一页」和「用户停在别的支线页面」两种开局用同一条循环：
-        前者第一帧就被拦下从当前这一步接着跑；后者每返回一页都会被重新检查一次，
-        一直返回直到落回大厅、或者中途扫到一个竞技场页面就在这里接管。
+        - ``observe``：页面身份（v2 靠它做「动作发出去之后回头看生效没有」）；
+        - ``dismiss``：清路障（系统弹窗 / 退出确认框 / 剧情演出）；
+        - ``stop_probe``：接力钩子（原样转发，语义不变）。
+
+        ⚠️ 不要把这三样改回「v2 自己认一遍」：那等于把判据抄成两份，迟早漂移
+        （退出确认框那份更要命 —— 那种框上按 ESC 等于「确认退出游戏」）。
         """
-        self.runtime.log("模式=导航 目标=大厅 状态=开始")
-        stable = StableObservation(required=2)
-        back_count = 0
-        last_back_at: Optional[float] = None
-        # 「按一次、验收一次」：记住返回前那一页的画面，等转场窗口结束后回头比一次。
-        # 没有它，返回没生效也只能靠「连按 8 次都回不去」才发现，白白磨两分钟。
-        last_back_page: Optional[str] = None
-        last_back_screen: Optional[np.ndarray] = None
-        used_in_page_back = False
-        back_wait_logged = False
-        invalid_count = 0
+        if self._home_return_templates is None:
+            self._home_return_templates = build_home_return_templates(
+                TEMPLATE_ROOT, self.templates
+            )
         story_recovery = _StoryRecoveryAttempts()
-        for _ in range(self.transition_frames * 4):
-            screen, observation = self._capture()
-            is_stable = stable.update(observation.name)
-            if observation.name == "invalid":
-                invalid_count += 1
-                if invalid_count >= self.transition_frames:
-                    diagnostic = self._diagnostic("black_or_non_game")
-                    raise RuntimeError(
-                        f"画面持续黑屏或非游戏帧；已保存诊断 {diagnostic}"
-                    )
-                self.sleep(self.poll_seconds)
-                continue
-            invalid_count = 0
-            if not is_stable:
-                self.sleep(self.poll_seconds)
-                continue
-            if observation.name != "unknown":
-                self.unknown_screen_wake.reset()
-            if self._dismiss_global_popup(screen, observation):
-                last_back_at = None
-                last_back_page = None
-                last_back_screen = None
-                back_wait_logged = False
-                stable.reset()
-                self.sleep(1.0)
-                continue
-            if self._recover_story(screen, observation, story_recovery):
-                last_back_at = None
-                last_back_page = None
-                last_back_screen = None
-                back_wait_logged = False
-                stable.reset()
-                self.sleep(1.0)
-                continue
-            self.runtime.log(
-                f"模式=导航 页面={page_label(observation.name)} "
-                f"置信度={observation.confidence:.3f}"
-            )
-            # 接力钩子必须排在 unknown 唤醒之前：放在之后的话，一个没被页面识别命中的
-            # 竞技场页面会先被「点屏幕中央唤醒」点一下，接力点当场就被点掉了。
-            # （放在 lobby 判定之前是安全的：大厅上三个接力锚点都不可见，钩子必然返回 False。）
-            if stop_probe is not None and stop_probe(screen):
-                self.runtime.log(
-                    f"模式=导航 页面={page_label(observation.name)} "
-                    "动作=接力点命中 状态=停止返回大厅"
-                )
-                return screen
-            if observation.name == "lobby":
-                self.runtime.log("模式=导航 页面=大厅 状态=已确认")
-                return screen
-            if observation.name == "exit_dialog":
-                cancel = self._locate(screen, "exit_cancel") or self._locate(
-                    screen, "exit_cancel_updated"
-                )
-                if cancel is None:
-                    raise RuntimeError("退出确认框缺少取消按钮锚点")
-                self.runtime.click(cancel.center, "取消退出游戏")
-                last_back_at = self.now()
-                last_back_page = None
-                last_back_screen = None
-                back_wait_logged = False
-                stable.reset()
-                self.sleep(1.0)
-                continue
-            if last_back_at is not None:
-                since_back = self.now() - last_back_at
-                if since_back < self._BACK_RETRY_SECONDS:
-                    if not back_wait_logged:
-                        remaining = self._BACK_RETRY_SECONDS - since_back
-                        self.runtime.log(
-                            f"模式=导航 页面={page_label(observation.name)} "
-                            f"等待=返回后确认转场 剩余={remaining:.1f}秒"
-                        )
-                        back_wait_logged = True
-                    self.sleep(self.poll_seconds)
-                    continue
-            if observation.name == "unknown":
-                wake_result = self.unknown_screen_wake.handle(
-                    screen,
-                    context="导航:回大厅",
-                )
-                if wake_result in {
-                    UnknownWakeResult.WAITING,
-                    UnknownWakeResult.CLICKED,
-                }:
-                    self.sleep(self.poll_seconds)
-                    continue
-            if back_count >= 8:
-                diagnostic = self._diagnostic("return_home_failed")
-                raise RuntimeError(
-                    f"受控返回8次后仍未回到大厅；已保存诊断 {diagnostic}"
-                )
-            # 验收：上一次返回已经等满转场窗口，画面却还是原来那一页 —— 说明这一下
-            # 返回对这个页面根本不起作用，再按多少次都一样。改成换一条路走，
-            # 而不是把同一个没用的动作重复到 8 次。
-            if last_back_page is not None:
-                if page_or_picture_changed(
-                    last_back_page, last_back_screen, observation.name, screen
-                ):
-                    used_in_page_back = False
-                    self.runtime.log(
-                        f"模式=导航 返回验收=生效 "
-                        f"从={page_label(last_back_page)} "
-                        f"到={page_label(observation.name)}"
-                    )
-                else:
-                    self.runtime.log(
-                        f"模式=导航 返回验收=无效 页面={page_label(observation.name)} "
-                        "原因=返回前后画面一致 后续=不再重复受控返回"
-                    )
-                    last_back_page = observation.name
-                    last_back_screen = screen.copy()
-                    arrow = (
-                        None
-                        if used_in_page_back
-                        else self._locate(
-                            screen, "story_back", self._IN_PAGE_BACK_THRESHOLD
-                        )
-                    )
-                    if arrow is not None:
-                        used_in_page_back = True
-                        back_count += 1
-                        self.runtime.log(
-                            f"模式=导航 页面={page_label(observation.name)} "
-                            f"动作=改用页内返回箭头 重试={back_count}/8"
-                        )
-                        self.runtime.click(arrow.center, "click-in-page-back")
-                        self.unknown_screen_wake.reset()
-                        last_back_at = self.now()
-                        back_wait_logged = False
-                        stable.reset()
-                        self.sleep(1.0)
-                        continue
-                    diagnostic = self._diagnostic("back_has_no_effect")
-                    raise RuntimeError(
-                        f"页面[{page_label(observation.name)}]返回无效："
-                        f"受控返回后画面没有变化，也没有可用的页内返回箭头；"
-                        f"已保存诊断 {diagnostic}"
-                    )
-            if observation.name == "story_ready":
-                back = self._locate(screen, "story_back", 0.90)
-                if back is None:
-                    raise RuntimeError("主线入口页面缺少可见的返回按钮")
-                back_count += 1
-                used_in_page_back = True
-                last_back_page = observation.name
-                last_back_screen = screen.copy()
-                self.runtime.log(
-                    f"模式=导航 页面=主线入口 动作=点击游戏内返回 "
-                    f"重试={back_count}/8"
-                )
-                self.runtime.click(back.center, "click-story-back")
-                self.unknown_screen_wake.reset()
-                last_back_at = self.now()
-                back_wait_logged = False
-                stable.reset()
-                self.sleep(1.0)
-                continue
-            back_count += 1
-            last_back_page = observation.name
-            last_back_screen = screen.copy()
-            self.runtime.log(
-                f"模式=导航 页面={page_label(observation.name)} "
-                f"动作=受控返回 重试={back_count}/8"
-            )
-            self.runtime.back("受控返回大厅")
-            self.unknown_screen_wake.reset()
-            last_back_at = self.now()
-            back_wait_logged = False
-            stable.reset()
-            self.sleep(1.0)
-        diagnostic = self._diagnostic("return_home_timeout")
-        raise RuntimeError(
-            f"返回大厅超过120秒观测预算；已保存诊断 {diagnostic}"
+        return return_home_v2(
+            templates=self._home_return_templates,
+            runtime=self.runtime,
+            observe=lambda screen: self.observe(screen).name,
+            dismiss=lambda screen: self._dismiss_roadblock(screen, story_recovery),
+            stop_probe=stop_probe,
+            # 黑屏上限沿用本导航器的转场规格（老流程就是 ``transition_frames``）。
+            invalid_frame_limit=self.transition_frames,
+            sleep=self.sleep,
+            poll_seconds=self.poll_seconds,
         )
+
+    def _dismiss_roadblock(
+        self, screen: np.ndarray, story_recovery: _StoryRecoveryAttempts
+    ) -> bool:
+        """清掉挡在回家路上的东西；返回 True 表示这一帧已经动过手，重新观察。
+
+        三样都是**老流程有、v2 不认识**的：
+
+        1. 系统弹窗（友情点数 / 竞技场段位晋升）—— 点掉它，不然它一直盖着页面；
+        2. 剧情演出（播放中 / 跳过确认）—— 跳完，不然一直停在剧情页；
+        3. **退出确认框** —— 必须点「取消」。⚠️ 这一条最要命：那种框上按 ESC
+           在很多游戏里等同于「确认」，v2 的 ESC 兜底会把游戏**真的退掉**。
+        """
+        observation = self.observe(screen)
+        if self._dismiss_global_popup(screen, observation):
+            return True
+        if self._recover_story(screen, observation, story_recovery):
+            return True
+        if observation.name == "exit_dialog":
+            cancel = self._locate(screen, "exit_cancel") or self._locate(
+                screen, "exit_cancel_updated"
+            )
+            if cancel is None:
+                raise RuntimeError("退出确认框缺少取消按钮锚点")
+            self.runtime.click(cancel.center, "取消退出游戏")
+            return True
+        return False
 
     def navigate(
         self,
@@ -1074,6 +948,19 @@ class Epic7Navigator:
                     "进入骑士团",
                     source_screen=lobby_screen,
                 )
+        elif mode == "labyrinth_stone":
+            # 导航链只有一级：大厅 → 战斗菜单。后面「点迷宫卡片 → 选迷宫 → 选区域 →
+            # 选择队伍 → 战斗开始」全在 ``labyrinth_stone.py`` 的状态机里。
+            # ⚠️ 只认战斗菜单（「一般」页）：迷宫卡片只在那一页上，
+            # 落到「赛季」页会当场报错而不是静默往下走 —— 那页需要另补一个
+            # 「一般」页签模板才能处理，现在没有正例，不做猜。
+            self._transition(
+                "lobby",
+                "battle_menu",
+                "lobby_battle",
+                "进入战斗菜单",
+                source_screen=lobby_screen,
+            )
         else:
             raise ValueError(f"导航不支持的模式：{mode}")
         if mode == "hero_synthesis":
@@ -1089,6 +976,10 @@ class Epic7Navigator:
         elif mode == "knights_donation":
             self.runtime.log(
                 "模式=骑士团捐赠 状态=导航完成 前提=骑士团主页已就绪"
+            )
+        elif mode == "labyrinth_stone":
+            self.runtime.log(
+                "模式=迷宫强化石 状态=导航完成 前提=战斗菜单「一般」页已就绪"
             )
         else:
             self.runtime.log(f"模式={MODE_LABELS.get(mode, mode)} 状态=导航完成")
@@ -1110,9 +1001,24 @@ class Epic7Navigator:
             threshold = 0.80 if anchor == "lobby_story" else 0.82
             match = self._locate(source_screen, anchor, threshold)
             if match is None:
-                raise RuntimeError(
-                    f"页面[{page_label(source)}]缺少导航锚点 {anchor}"
+                # ⚠️ 传入的 ``source_screen`` 可能是刚回家时的**过渡帧**（大厅还在
+                # 动画 / 未稳定）—— 老 ``return_home`` 会等「连续两帧稳定认出大厅」
+                # 才返回，v2 是「第一帧认出大厅就返回」，于是偶尔会把一个还没稳下来的
+                # 大厅帧交进来。个别锚点（尤其大厅左侧那排入口，常是最后渲染的控件）
+                # 在这种帧上会暂时没过阈，直接判「缺少锚点」会把整条路线打挂，
+                # 而且这个 raise 发生在 ``_enter_mode`` 里、跑在 ``run_mode`` 的
+                # try 之外，连日志和诊断都不会留下，只剩每日任务里一个无声的 ``✗``。
+                # 这里先重新等一帧**稳定的**来源页再认一次（正常帧不会进这个分支）。
+                self.runtime.log(
+                    f"模式=导航 页面={page_label(source)} 目标={target_label} "
+                    f"动作={action} 重试=重新等待稳定来源页（过渡帧锚点未过阈）"
                 )
+                source_screen = self._wait_for_page(source)
+                match = self._locate(source_screen, anchor, threshold)
+                if match is None:
+                    raise RuntimeError(
+                        f"页面[{page_label(source)}]缺少导航锚点 {anchor}"
+                    )
             self.runtime.log(
                 f"模式=导航 页面={page_label(source)} 目标={target_label} "
                 f"动作={action} 尝试={attempt}/4"
@@ -1148,10 +1054,7 @@ class Epic7Navigator:
                         screen,
                         context=f"导航:{page_label(source)}→{target_label}",
                     )
-                    if wake_result in {
-                        UnknownWakeResult.WAITING,
-                        UnknownWakeResult.CLICKED,
-                    }:
+                    if wake_result is UnknownWakeResult.WAITING:
                         self.sleep(self.poll_seconds)
                         continue
                 elif is_stable:
@@ -1317,10 +1220,7 @@ class Epic7Navigator:
                     screen,
                     context=f"导航:等待{page_label(expected)}",
                 )
-                if wake_result in {
-                    UnknownWakeResult.WAITING,
-                    UnknownWakeResult.CLICKED,
-                }:
+                if wake_result is UnknownWakeResult.WAITING:
                     self.sleep(self.poll_seconds)
                     continue
             elif is_stable:

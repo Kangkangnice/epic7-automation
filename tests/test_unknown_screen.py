@@ -35,7 +35,13 @@ def battle_screen() -> np.ndarray:
     return np.asarray(Image.open(path).convert("RGB"))[:1132, :1982]
 
 
-def test_static_unknown_clicks_center_four_times_then_exhausts_with_diagnostics():
+def test_static_unknown_never_clicks_and_hands_back_to_the_caller():
+    """静止的未知页面：**一个点都不点**，直接交还上层（上层按超时收尾）。
+
+    ⚠️ 2026-09-26 这条用例整个翻过来：它以前守的是「点屏幕中央 4 次」，
+    而那正是用户当场抓包的现象（「眼睛瞎了一直点中间」）。点中央没有判据、
+    常常落在列表空白处，是瞎猜不是处理。现在只等、只报、不动手。
+    """
     screen = static_game_screen()
     clicks: list[tuple[int, int]] = []
     logs: list[str] = []
@@ -48,26 +54,20 @@ def test_static_unknown_clicks_center_four_times_then_exhausts_with_diagnostics(
         )
         wake = UnknownScreenWake(runtime)
 
-        results = [wake.handle(screen, context="story:results") for _ in range(10)]
+        results = [wake.handle(screen, context="story:results") for _ in range(4)]
 
         diagnostics = sorted(path.name for path in Path(directory).glob("*.png"))
 
-    assert results == [
-        UnknownWakeResult.WAITING,
-        UnknownWakeResult.CLICKED,
-        UnknownWakeResult.WAITING,
-        UnknownWakeResult.CLICKED,
-        UnknownWakeResult.WAITING,
-        UnknownWakeResult.CLICKED,
-        UnknownWakeResult.WAITING,
-        UnknownWakeResult.CLICKED,
+    # 第一帧记基准、第二帧与基准一致 ⇒ 「静止且认不出」这个结论有两帧证据，
+    # 从第二帧起就交还上层，此后保持 EXHAUSTED（不再有任何多余动作）。
+    assert results[:2] == [
         UnknownWakeResult.WAITING,
         UnknownWakeResult.EXHAUSTED,
     ]
-    assert clicks == [(991, 566), (991, 566), (991, 566), (991, 566)]
-    assert any(name.endswith("_unknown_before_wake.png") for name in diagnostics)
-    assert any(name.endswith("_unknown_after_wake_failed.png") for name in diagnostics)
-    assert sum("动作=wake-unknown-screen 坐标=" in line for line in logs) == 4
+    assert set(results[2:]) == {UnknownWakeResult.EXHAUSTED}
+    assert clicks == []
+    assert any(name.endswith("_unknown_screen_unresolved.png") for name in diagnostics)
+    assert any("不点任何地方" in line for line in logs)
 
 
 def test_animated_unknown_page_stops_waiting_after_frame_limit():
@@ -134,7 +134,7 @@ def test_colorful_non_game_frame_without_render_borders_is_never_clicked():
 def test_locked_recovery_and_dry_run_never_click():
     screen = static_game_screen()
     clicks: list[tuple[int, int]] = []
-    gate = RecoveryGate(None)
+    gate = RecoveryGate()
     gate.lock(mode="story", cycle=1)
     live = UnknownScreenWake(
         Runtime(lambda: screen, clicks.append, emit=lambda _: None),
@@ -154,36 +154,30 @@ def test_locked_recovery_and_dry_run_never_click():
     assert clicks == []
 
 
-def test_reset_restores_two_click_budget_for_a_new_unknown_page():
+def test_reset_restarts_the_observation_for_a_new_unknown_page():
+    """换了一页（reset）就要从头重新观察，不能拿上一页的结论直接判死。"""
     screen = static_game_screen()
     clicks: list[tuple[int, int]] = []
     wake = UnknownScreenWake(Runtime(lambda: screen, clicks.append, emit=lambda _: None))
 
     assert wake.handle(screen, context="arena:list") is UnknownWakeResult.WAITING
-    assert wake.handle(screen, context="arena:list") is UnknownWakeResult.CLICKED
     wake.reset()
     assert wake.handle(screen, context="arena:list") is UnknownWakeResult.WAITING
-    assert wake.handle(screen, context="arena:list") is UnknownWakeResult.CLICKED
 
-    assert clicks == [(991, 566), (991, 566)]
+    assert clicks == []
 
 
-def test_unsafe_intermediate_frame_does_not_restore_click_budget():
+def test_unsafe_intermediate_frame_does_not_change_the_verdict():
+    """中间夹了黑屏 / 战斗帧（不该动的画面）⇒ 重新观察，结论不提前下。"""
     screen = static_game_screen()
     clicks: list[tuple[int, int]] = []
     wake = UnknownScreenWake(Runtime(lambda: screen, clicks.append, emit=lambda _: None))
 
     assert wake.handle(screen, context="fodder:results") is UnknownWakeResult.WAITING
-    assert wake.handle(screen, context="fodder:results") is UnknownWakeResult.CLICKED
     assert wake.handle(np.zeros_like(screen), context="fodder:results") is UnknownWakeResult.SKIPPED
     assert wake.handle(screen, context="fodder:results") is UnknownWakeResult.WAITING
-    assert wake.handle(screen, context="fodder:results") is UnknownWakeResult.CLICKED
     assert wake.handle(battle_screen(), context="fodder:results") is UnknownWakeResult.SKIPPED
-    assert wake.handle(screen, context="fodder:results") is UnknownWakeResult.WAITING
-    assert wake.handle(screen, context="fodder:results") is UnknownWakeResult.CLICKED
-    assert wake.handle(screen, context="fodder:results") is UnknownWakeResult.WAITING
-    assert wake.handle(screen, context="fodder:results") is UnknownWakeResult.CLICKED
     assert wake.handle(screen, context="fodder:results") is UnknownWakeResult.WAITING
     assert wake.handle(screen, context="fodder:results") is UnknownWakeResult.EXHAUSTED
 
-    assert clicks == [(991, 566), (991, 566), (991, 566), (991, 566)]
+    assert clicks == []
