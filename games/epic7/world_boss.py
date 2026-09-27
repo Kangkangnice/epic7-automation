@@ -104,14 +104,17 @@ HOME            回主页 → **先看「每周贡献度」宝箱**（发光=可
 而页面识别用的 `TM_CCOEFF_NORMED` 对亮度缩放不敏感，两边一凑会把「还有次数」误判成
 「次数用完」。实测表见 `docs/WORLD_BOSS_DESIGN.md` 第十二节。
 
-## 每周贡献度宝箱（2026-09-23 用户实拍补充）
+## 每周贡献度宝箱（#1 = 2026-09-23、#2 = 2026-09-25 用户实拍补充）
 
 主页右上角「每周贡献度」进度条上有两档宝箱，按累计贡献解锁：
 
-| 档位 | 位置 | 画布坐标 |
-|---|---|---|
-| 宝箱 #1 | `27,500,000`，进度条**左侧** | 包围盒 (1594,308,126,128)，中心 **(1657,372)** |
-| 宝箱 #2 | `44,000,000`，进度条**右侧** | 尚未采集「可领」样本，**没做**（见下） |
+| 档位 | 位置 | 画布坐标 | 模板 |
+|---|---|---|---|
+| 宝箱 #1 | `27,500,000`，进度条**左侧** | 包围盒 (1594,308,126,128)，中心 **(1657,372)** | `weekly_chest_lit.png` |
+| 宝箱 #2 | `44,000,000`，进度条**右侧** | 包围盒 (1761,463,126,128)，中心 **(1824,527)** | `weekly_chest2_lit.png` |
+
+两档**必须各用一份模板 + 各管一段搜索区**：#2 发光态对 #1 的模板只有 **0.5161**，
+外观不是同一个东西；而 #1 的搜索区右边界收在 1785 本来就是为了避开 #2。
 
 「够量了」的宝箱会**发光**（金色边框 + 亮青白箱体 + 四角星芒），没有的只是普通暗色箱子；
 **领过之后**箱子原地变成**绿色对勾**（2026-09-23 用户补图确认，**不弹任何窗口**）。
@@ -134,12 +137,26 @@ HOME            回主页 → **先看「每周贡献度」宝箱**（发光=可
 同一区域有面积大得多的金色块 ⇒ 颜色判据完全不排他。模板匹配能分开，是因为
 「亮箱体 / 暗箱体」的**明暗结构**差异，不是「有没有金色」。
 
-⚠️ **宝箱 #2（44,000,000）没做**：它的「可领」外观没有样本，阈值定不了
-（项目规矩：没量过不写死数字）。已量到的是它**未到档**时的外观
-（`_wb_chest_after_claim_probe.py`）：对宝箱 #1 的模板得 **0.7833**，
-离阈值只有 0.017 —— 好在匹配中心在 x=1825，**落在搜索区右边界 1785 之外**，
-所以不会误触发。⇒ **搜索区的右边界是承重的**，收紧/放宽前先看这条线。
-补 #2 需要：① 一张 44M 宝箱发光状态的截图 → ② 裁模板 + 单独搜索区 → ③ 重跑全库排他扫描。
+✅ **宝箱 #2（44,000,000）已做**（2026-09-25）：那条「没样本就没做」的欠账已补齐，
+采样窗口是「#1 已领（绿勾）/ #2 可领（发光）」的主页实拍（只读截图，见模块常量的注释）。
+全库 234 张实测（`runtime_logs/_wb_chest2_assets.py`）：
+
+| 画面 | #2 模板在 #2 搜索区内的最高分 |
+|---|---|
+| 可领（`worldboss_home_chest2_claimable.png`） | **1.0000** |
+| #1 已领的暗帧（`worldboss_home_chest_claimed_dark.png`） | 0.4928 |
+| #1 的三种态 | 0.4873 |
+| **未点亮主页两版（= #2 未到档）** | **0.2593** |
+
+⇒ #2 沿用同一个阈值 `WEEKLY_CHEST_THRESHOLD = 0.80` 时，下方余量 0.31、上方余量 0.20，
+比 #1 干净（#1 真机「已领」态会顶到 0.80 以上，得靠亮度比第二道挡）。
+旧的「#2 未到档对 #1 模板得 0.7833、靠搜索区右边界兜住」那条结论**仍然成立且仍要守**：
+它说的是 #1 的搜索区，与 #2 自己的模板无关。⇒ **#1 搜索区的右边界仍是承重的**。
+
+⚠️ **「没找到宝箱」也要留结论**（2026-09-26 用户要求）：停在主页、两个槽位都没命中时，
+``_chest_scan_report()`` 会把**实测数字**（形状最高分 + 亮度比 + 门槛）写进后面那一步的
+理由里 —— 2026-09-25 23:01 那次实跑就是**哑判**：直接「次数用完」收摊，日志里一句宝箱的话
+都没有，事后分不清「当时没有」和「判据漏了」。**不许只写「没有宝箱」，更不许写「多半是…」。**
 
 ✅ **点完宝箱之后是什么画面：已确认** —— 原地变绿勾，**不弹窗、不换页**。
 所以这一步的验收仍然是「**宝箱不再发光**」= 模板不再命中，与「自动配置」按钮橙→蓝同构；
@@ -169,7 +186,12 @@ from auto_game_unified.core.battle_supervisor import (
     BattleSupervisor,
     valid_game_frame,
 )
-from auto_game_unified.core.matcher import Match, find_template, load_template
+from auto_game_unified.core.matcher import (
+    Match,
+    find_best_template,
+    find_template,
+    load_template,
+)
 from auto_game_unified.core.recovery import RecoveryGate
 from auto_game_unified.core.runtime import (
     ResourceExhausted,
@@ -352,18 +374,50 @@ WEEKLY_CHEST_BRIGHTNESS_RATIO = 1.5
 # 的点击后钩子里，不在状态机里，理由见 ``WorldBossStateMachine._chest_given_up``），
 # 让流程继续走到「选择队伍」那一步正常收尾（次数用完 ⇒ 退出码 2），
 # 而不是靠「回大厅重来」把整条路线拖住。
+#
+# ⚠️ 两个槽位**共用**这把尺子（谁先发光就先点谁，总共最多点这么多次）：
+# 磨不动通常意味着判据本身出了偏差，此时两个槽位一起撒手是更保守的选择。
 WEEKLY_CHEST_MAX_CLICKS = 3
+
+# ── 宝箱 #2（`44,000,000`，进度条右侧那一档）────────────────────────────────
+#
+# 2026-09-25 晚上补上了这条一直挂着的欠账所需的样本：用户把游戏停在
+# 「#1 已领（绿勾）/ #2 可领（发光）」的主页上，用 `tools/capture_fixture.py`
+# **只读**截下整幅画布（没有点击、没有改游戏状态）。
+#
+# 包围盒由**亮度峰值**定位（不是拿 #1 的模板去套）：发光箱体 + 金色光环是这块
+# 最亮的东西 —— 在候选区里滑一个 126x128 窗口找平均 V 最大的位置，峰值中心
+# **(1824, 527)**，与「#1 模板在 #2 处的最佳匹配」只差几个像素，互为佐证。
+#
+# ⚠️ **#2 不能复用 #1 的模板**：实测 #2 发光态对 `weekly_chest_lit.png` 只有
+# **0.5161**（#1 对它是 1.0000）—— 两档宝箱的外观不是同一个东西。当初 #1 的
+# 搜索区右边界收在 1785，本来也就是为了避开 #2；两个槽位必须各管一段。
+#
+# 全库 234 张 1982x1132 夹具实测（`runtime_logs/_wb_chest2_assets.py`）：
+#   正例（#2 可领）**1.0000**；次高 0.4928（#1 已领的暗帧）、#1 的三种态 0.4873；
+#   **两版未点亮主页 0.2593（= #2 未到档）** ⇒ 阈值 0.80 下方余量 0.31、上方余量 0.20。
+# 比 #1 还干净（#1 的真机「已领」态会顶到 0.80 以上，得靠亮度比第二道挡）。
+WEEKLY_CHEST2_BOX = (1761, 463, 126, 128)
+# 搜索区只套住 #2：x 上界 1920 就是模拟器渲染区的右边界，不再往外扩到画布黑边
+# （黑边是固定内容，扩进去只会让搜索窗口失去「只框这一个槽位」的意义）。
+WEEKLY_CHEST2_REGION = (1700, 440, 220, 320)
 
 
 def weekly_chest_brightness_ratio(
-    screen: np.ndarray, reference_size=WORLD_BOSS_REFERENCE_SIZE
+    screen: np.ndarray,
+    reference_size=WORLD_BOSS_REFERENCE_SIZE,
+    *,
+    box: tuple[int, int, int, int] = WEEKLY_CHEST_BOX,
 ) -> float:
     """宝箱区亮度 ÷ 整幅画面亮度。发光时 ≈2.0，不发光时 ≤1.1。
 
     用比值而不是绝对亮度：整幅画面被压暗（淡入淡出）时两边一起降，比值不变
     —— 与 ``select_team_bar_relative_v`` 同一个思路。
+
+    ``box`` 默认宝箱 #1；宝箱 #2 传 ``WEEKLY_CHEST2_BOX``（两档位置不同，
+    这块区域必须跟着槽位走，否则量的是隔壁箱子）。
     """
-    x, y, width, height = WEEKLY_CHEST_BOX
+    x, y, width, height = box
     scale_x = screen.shape[1] / reference_size[0]
     scale_y = screen.shape[0] / reference_size[1]
     patch = screen[
@@ -384,15 +438,20 @@ def find_weekly_chest(
     template: np.ndarray,
     *,
     region: tuple[int, int, int, int] = WEEKLY_CHEST_REGION,
+    box: tuple[int, int, int, int] = WEEKLY_CHEST_BOX,
     reference_size=WORLD_BOSS_REFERENCE_SIZE,
 ) -> Optional[Match]:
     """在主页「每周贡献度」面板里找**发光（可领）**的宝箱。命中返回 Match。
 
     两道取「与」：**形状像**（模板）**且在发光**（亮度比）。理由与实测数据见
     ``WEEKLY_CHEST_BRIGHTNESS_RATIO``。
+
+    默认量的是宝箱 #1（`27,500,000`）；宝箱 #2（`44,000,000`）传自己的模板
+    加 ``region=WEEKLY_CHEST2_REGION, box=WEEKLY_CHEST2_BOX`` ——
+    两档的外观与位置都不同，**不能混用**（理由见 ``WEEKLY_CHEST2_BOX``）。
     """
     if (
-        weekly_chest_brightness_ratio(screen, reference_size)
+        weekly_chest_brightness_ratio(screen, reference_size, box=box)
         < WEEKLY_CHEST_BRIGHTNESS_RATIO
     ):
         return None
@@ -567,6 +626,9 @@ class WorldBossTemplates:
     battle_skip: np.ndarray
     # 主页「每周贡献度」宝箱 #1 的**可领（发光）**外观。未点亮时同位置得分掉到 0.66。
     weekly_chest: np.ndarray
+    # 宝箱 #2 的**可领（发光）**外观。与 #1 不是同一个形状（#2 对 #1 的模板只有
+    # 0.5161），所以必须是各自一份模板与各自的搜索区。未到档时得分 0.2593。
+    weekly_chest2: np.ndarray
     stamina_popup: np.ndarray
     stamina_material: np.ndarray
     stamina_confirm: np.ndarray
@@ -594,6 +656,7 @@ def build_world_boss_templates(
         result_title=load("result_title"),
         battle_skip=load("battle_skip"),
         weekly_chest=load("weekly_chest_lit"),
+        weekly_chest2=load("weekly_chest2_lit"),
         **asdict(load_stamina_templates(template_root / "story")),
         evidence=build_world_boss_evidence(template_dir),
     )
@@ -663,6 +726,9 @@ class WorldBossStateMachine:
         # ``next_action``，状态机数的是「被问了几次」而不是「点了几次」，
         # 上限值对不上真实点击（实测 3 次上限会在第 2 次点击后就撒手）。
         self._chest_given_up = False
+        # 本次停在主页时「宝箱扫描」的一句话结论（**只用于写日志**，见
+        # ``_chest_scan_report``）。离开主页要去别处时清空，下次回主页重新量。
+        self._chest_scan_note = ""
         # 「接力」进来的落点；None = 本轮是正常从主页开始的。Runner 靠它认出
         # 「这一局不是本进程点开的，但已经打起来了」⇒ 跳过状态机直接交战斗监督。
         self.resumed_from: Optional[WorldBossState] = None
@@ -670,8 +736,9 @@ class WorldBossStateMachine:
     def resume_from(self, state: WorldBossState) -> None:
         """拨到用户停下的那一步，原样接管进度继续往下跑。
 
-        与 ``_apply_recovery_state`` 的区别：那个是「退回主页重开一轮」，这个是
-        「保留当前进度」—— 停在奖励弹窗就接着领，而不是退回大厅把这一局的结算丢掉。
+        与「从头再来」的区别：接力是「保留当前进度」—— 停在奖励弹窗就接着领，
+        而不是退回大厅把这一局的结算丢掉。（2026-09-26 之前另有一条「恢复导航」通道
+        专门做「退回主页重开一轮」，随用户「回家就是结束」的拍板整段删除。）
 
         ⚠️ 本状态机**几乎不需要**拨状态：``next_action`` 每一页都用 ``observe_page``
         现判并覆盖 ``self.state``（唯一例外是 ``RESULT`` 那一支 —— 它靠
@@ -877,6 +944,57 @@ class WorldBossStateMachine:
             pre_battle_business_visible=self._locate(screen, "stamina_popup") is not None,
         )
 
+    def _find_claimable_chest(
+        self, screen: np.ndarray
+    ) -> tuple[Optional[Match], str]:
+        """找出主页两个槽位里**正发光**的那个，返回 ``(命中, 槽位标签)``。
+
+        #1 排在前面：两档同时可领时先领 #1、下一帧再领 #2，从左到右，日志也好读。
+        两个槽位用各自的模板与搜索区（外观不同、位置不同，理由见 ``WEEKLY_CHEST2_BOX``）。
+        """
+        chest = find_weekly_chest(screen, self.templates.weekly_chest)
+        if chest is not None:
+            return chest, "#1"
+        chest = find_weekly_chest(
+            screen,
+            self.templates.weekly_chest2,
+            region=WEEKLY_CHEST2_REGION,
+            box=WEEKLY_CHEST2_BOX,
+        )
+        if chest is not None:
+            return chest, "#2"
+        return None, ""
+
+    def _chest_scan_report(self, screen: np.ndarray) -> str:
+        """主页上「没有可领宝箱」时的一句话结论，**只用于写日志**。
+
+        ⚠️ 2026-09-26：这一步以前是**哑判** —— 没找到宝箱就什么都不说，直接往下判
+        次数。2026-09-25 23:01 那次实跑就是这么收的场：日志里一句关于宝箱的话都没
+        有，事后**根本分不清**「当时确实没有宝箱」和「判据漏了（本来该领没领）」。
+        所以现在把两个槽位的**实测数字**写进日志：形状得分、亮度比、以及各自的门槛。
+
+        数字的作用是让人一眼看出「差得远」还是「差一点」—— 后者意味着判据需要修，
+        前者说明当时就是没有宝箱。⇒ **不许只写「没有宝箱」四个字**。
+        """
+        parts = []
+        for slot, template, region, box in (
+            ("#1", self.templates.weekly_chest, WEEKLY_CHEST_REGION, WEEKLY_CHEST_BOX),
+            ("#2", self.templates.weekly_chest2, WEEKLY_CHEST2_REGION, WEEKLY_CHEST2_BOX),
+        ):
+            best = find_best_template(
+                screen, template, region=region, reference_size=self._REFERENCE_SIZE
+            )
+            shape = best.score if best is not None else 0.0
+            lit = weekly_chest_brightness_ratio(
+                screen, self._REFERENCE_SIZE, box=box
+            )
+            parts.append(f"{slot} 形状{shape:.2f}/亮度比{lit:.2f}")
+        return (
+            "宝箱扫描=" + "，".join(parts)
+            + f"（可领门槛：形状≥{WEEKLY_CHEST_THRESHOLD} 且 亮度比≥{WEEKLY_CHEST_BRIGHTNESS_RATIO}）"
+            "⇒ 这一屏没有可领的宝箱"
+        )
+
     def next_action(self, screen: np.ndarray) -> Optional[WorldBossAction]:
         stamina = self._handle_stamina(screen)
         if stamina is not None:
@@ -979,7 +1097,13 @@ class WorldBossStateMachine:
             # ⚠️ **宝箱要排在次数前面**（2026-09-23 用户明确要求：「先领宝箱，再判次数」，
             # 「领完宝箱之后才是一轮结束」）。用户的实拍截图正是「0/2 + 有宝箱可领」
             # 这个状态 —— 顺序反了会在次数用完那一刻直接收摊，宝箱就永远领不到。
-            chest = find_weekly_chest(screen, self.templates.weekly_chest)
+            # 两个槽位**一帧只处理一个**：#1 优先，领完它下一帧再领 #2
+            # （#1 领掉之后 #2 该发光还是照样发光，不会被漏掉）。
+            chest, chest_slot = self._find_claimable_chest(screen)
+            if chest is None and not self._chest_scan_note:
+                # ⚠️ 不许哑判（2026-09-26 用户要求）：「没有宝箱」也是一条结论，
+                # 必须带着实测数字进日志，理由见 ``_chest_scan_report``。
+                self._chest_scan_note = self._chest_scan_report(screen)
             if chest is not None and not self._chest_given_up:
                 # 同页动作（点完箱子不发光，页面不变）⇒ ``target_pages`` 留空。
                 # 验收靠**页面内状态证据**：宝箱不再发光（同「自动配置」按钮橙→蓝）。
@@ -988,7 +1112,10 @@ class WorldBossStateMachine:
                     "claim-weekly-chest",
                     source_page=state_label(WorldBossState.HOME),
                     point=chest.center,
-                    reason=f"每周贡献度宝箱发光（得分 {chest.score:.4f}）= 可领",
+                    reason=(
+                        f"每周贡献度宝箱{chest_slot}发光"
+                        f"（得分 {chest.score:.4f}）= 可领"
+                    ),
                     in_page_evidence=(
                         "宝箱不再发光（weekly_chest 模板由命中变成不命中）"
                     ),
@@ -1004,15 +1131,20 @@ class WorldBossStateMachine:
             #
             # 单帧就敢下结论，是因为 ``select_team_enabled`` 已经对「淡入变暗」免疫
             # （两道判据取或，见它的 docstring）—— 不必再叠一层「连续两帧」的门。
+            # ⚠️ 把这个结论带进日志（2026-09-26）：停在「次数用完」时更要带上 ——
+            # 那正是 2026-09-25 23:01 那次实跑的路径，日志里一句宝箱的话都没有，
+            # 事后无从判断「没领」是没得领还是判据漏了。
+            note, self._chest_scan_note = self._chest_scan_note, ""
             if not select_team_enabled(screen):
                 raise AttemptsExhausted(
                     "主页「选择队伍」已变灰（今天次数已用完）"
+                    + (f"；{note}" if note else "")
                 )
             return self._action(
                 "open-team-select",
                 source_page=state_label(WorldBossState.HOME),
                 target_pages=(state_label(WorldBossState.TEAM_SELECT),),
-                reason="主页点「选择队伍」进辅助队伍页",
+                reason="主页点「选择队伍」进辅助队伍页" + (f"；{note}" if note else ""),
             )
 
         # 战斗演出/过场：画面既不匹配任何已知页面，也不该乱点，等下一帧。
@@ -1031,6 +1163,7 @@ class WorldBossStateMachine:
             self.auto_click_attempted,
             self._confirmed_page,
             self._stamina_material_clicked,
+            self._chest_scan_note,
         )
         try:
             action = self.next_action(screen)
@@ -1043,6 +1176,7 @@ class WorldBossStateMachine:
                 self.auto_click_attempted,
                 self._confirmed_page,
                 self._stamina_material_clicked,
+                self._chest_scan_note,
             ) = snapshot
 
 
@@ -1175,7 +1309,6 @@ class WorldBossRunner(ModeRunnerBase):
         *,
         sleep: Callable[[float], None] = default_sleep,
         poll_seconds: float = 1.0,
-        recovery: Callable[[], None] | None = None,
         recovery_gate: RecoveryGate | None = None,
         battle_supervisor: BattleSupervisor | None = None,
     ) -> None:
@@ -1184,7 +1317,6 @@ class WorldBossRunner(ModeRunnerBase):
             runtime,
             sleep=sleep,
             poll_seconds=poll_seconds,
-            recovery=recovery,
             recovery_gate=recovery_gate,
         )
         self.battle_supervisor = battle_supervisor or BattleSupervisor(
@@ -1239,12 +1371,6 @@ class WorldBossRunner(ModeRunnerBase):
         if action_name == "claim-weekly-chest":
             return self._WEEKLY_CHEST_RETRY_SECONDS
         return super()._action_retry_seconds(action_name)
-
-    def _apply_recovery_state(self) -> None:
-        self.machine.state = WorldBossState.HOME
-        # 恢复导航已经把画面换掉了，旧的「已确认页面」作废 —— 留着会让主循环
-        # 拿过期页面去对账转场契约（story 的 _apply_recovery_state 同样清空）。
-        self.machine._confirmed_page = ""
 
     def run(self, max_cycles: int | None = None) -> int:
         # 接力落在局内：先把这一局监督完再进主循环。空跑不碰战斗监督（干跑只观察）。

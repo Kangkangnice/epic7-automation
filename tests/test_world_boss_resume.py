@@ -56,6 +56,9 @@ RESUMABLE_FIXTURES: dict[str, tuple[str, WorldBossState]] = {
     # 页面身份不变，所以照样是主页。
     "worldboss_home_chest_claimed_dark": ("世界首领战主页", WorldBossState.HOME),
     "worldboss_home_exhausted": ("世界首领战主页", WorldBossState.HOME),
+    # 2026-09-25 实跑那帧：同一个主页、#1 已领（亮度比 1.011）、#2 还亮着（3.197）。
+    # 落地宝箱 #2 那道判据的回归依据 —— 只认 #1 会把这一屏当成「没有可领」。
+    "worldboss_home_chest2_claimable": ("世界首领战主页", WorldBossState.HOME),
     "team_select": ("选择辅助队伍", WorldBossState.TEAM_SELECT),
     "team_config": ("配置队伍", WorldBossState.TEAM_CONFIG),
     "team_config_configured": ("配置队伍", WorldBossState.TEAM_CONFIG),
