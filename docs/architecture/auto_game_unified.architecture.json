@@ -1,0 +1,412 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "auto_game_unified 架构总览 · 第七史诗视觉自动化",
+    "locale": "zh-CN",
+    "output": "docs/architecture/auto_game_unified.html",
+    "quality_profile": "showcase",
+    "views": [
+      {
+        "id": "start_one_route",
+        "label": "启动到跑完一条路线",
+        "focus": [
+          "entries_ui",
+          "entry_cli",
+          "runner_base",
+          "epic7_shared",
+          "core_vision",
+          "target"
+        ],
+        "note": "从一个入口进来，装配路线，最后落在屏幕上的点击。"
+      },
+      {
+        "id": "two_families",
+        "label": "两条主循环家族",
+        "focus": [
+          "entry_cli",
+          "runner_base",
+          "routes_own",
+          "epic7_shared"
+        ],
+        "note": "6 条路线共享主循环，4 条自己写循环。"
+      },
+      {
+        "id": "evidence_first",
+        "label": "每一步凭什么判断",
+        "focus": [
+          "epic7_shared",
+          "evidence",
+          "core_vision"
+        ],
+        "note": "先认页面再动手，点完还要再验一次。"
+      },
+      {
+        "id": "core_reuse",
+        "label": "可复用的核心引擎",
+        "focus": [
+          "core_vision",
+          "core_time",
+          "core_safety",
+          "target"
+        ],
+        "note": "这一层不认识第七史诗，换游戏可以整层带走。"
+      },
+      {
+        "id": "daily_run",
+        "label": "每日任务编排",
+        "focus": [
+          "daily",
+          "entry_cli",
+          "runner_base"
+        ],
+        "note": "世界首领 → 骑士团捐赠 → 竞技场，循环调 run_mode。"
+      }
+    ]
+  },
+  "layout": {
+    "mode": "grid",
+    "origin": [
+      40,
+      70
+    ],
+    "cols": 4,
+    "gapX": 120,
+    "gapY": 46,
+    "cellW": 230,
+    "cellH": 72
+  },
+  "components": [
+    {
+      "id": "daily",
+      "type": "backend",
+      "label": "每日任务编排",
+      "sublabel": "daily_tasks.py",
+      "row": 0,
+      "col": 1,
+      "size": [
+        230,
+        72
+      ]
+    },
+    {
+      "id": "entries_ui",
+      "type": "frontend",
+      "label": "交互入口",
+      "sublabel": "launcher / desktop",
+      "row": 1,
+      "col": 0,
+      "size": [
+        230,
+        72
+      ]
+    },
+    {
+      "id": "entry_cli",
+      "type": "backend",
+      "label": "main.py 装配与调度",
+      "sublabel": "MODE_SPECS · 退出码",
+      "row": 1,
+      "col": 1,
+      "size": [
+        230,
+        72
+      ]
+    },
+    {
+      "id": "runner_base",
+      "type": "backend",
+      "label": "6 条路线 · 共享主循环",
+      "sublabel": "ModeRunnerBase",
+      "tag": "家族 A",
+      "row": 2,
+      "col": 1,
+      "size": [
+        230,
+        72
+      ]
+    },
+    {
+      "id": "routes_own",
+      "type": "backend",
+      "label": "4 条路线 · 自写循环",
+      "sublabel": "arena / shop / survivor",
+      "tag": "家族 B",
+      "row": 2,
+      "col": 2,
+      "size": [
+        230,
+        72
+      ]
+    },
+    {
+      "id": "epic7_shared",
+      "type": "backend",
+      "label": "第七史诗共用机制",
+      "sublabel": "导航 · 弹窗 · 回家",
+      "row": 3,
+      "col": 1,
+      "size": [
+        230,
+        72
+      ]
+    },
+    {
+      "id": "battle",
+      "type": "backend",
+      "label": "战斗看护",
+      "sublabel": "AUTO / MANUAL / UNKNOWN",
+      "row": 3,
+      "col": 2,
+      "size": [
+        230,
+        72
+      ]
+    },
+    {
+      "id": "evidence",
+      "type": "backend",
+      "label": "视觉判据层",
+      "sublabel": "evidence/ 11 个模块",
+      "row": 4,
+      "col": 1,
+      "size": [
+        230,
+        72
+      ]
+    },
+    {
+      "id": "target",
+      "type": "external",
+      "label": "游戏客户端",
+      "sublabel": "模拟器 / PC 客户端",
+      "row": 5,
+      "col": 0,
+      "size": [
+        230,
+        72
+      ]
+    },
+    {
+      "id": "core_vision",
+      "type": "backend",
+      "label": "截图与识别",
+      "sublabel": "window · matcher",
+      "row": 5,
+      "col": 1,
+      "size": [
+        230,
+        72
+      ]
+    },
+    {
+      "id": "core_time",
+      "type": "backend",
+      "label": "时钟与稳定观测",
+      "sublabel": "runtime · supervisor",
+      "row": 5,
+      "col": 2,
+      "size": [
+        230,
+        72
+      ]
+    },
+    {
+      "id": "core_safety",
+      "type": "security",
+      "label": "逃生与通知",
+      "sublabel": "recovery · hotkey",
+      "row": 5,
+      "col": 3,
+      "size": [
+        230,
+        72
+      ]
+    }
+  ],
+  "boundaries": [
+    {
+      "kind": "region",
+      "label": "入口与启动方式",
+      "wraps": [
+        "daily",
+        "entries_ui",
+        "entry_cli"
+      ],
+      "pad": 16
+    },
+    {
+      "kind": "region",
+      "label": "第七史诗专用 · games/epic7/",
+      "wraps": [
+        "runner_base",
+        "routes_own",
+        "epic7_shared",
+        "battle",
+        "evidence"
+      ],
+      "pad": 16
+    },
+    {
+      "kind": "region",
+      "label": "核心引擎 · core/ 与具体游戏无关，可整层复用",
+      "wraps": [
+        "core_vision",
+        "core_time",
+        "core_safety"
+      ],
+      "pad": 16
+    }
+  ],
+  "connections": [
+    {
+      "from": "daily",
+      "to": "entry_cli",
+      "label": "循环调 run_mode",
+      "variant": "dashed",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "labelDy": 24
+    },
+    {
+      "from": "entries_ui",
+      "to": "entry_cli",
+      "label": "run_mode",
+      "variant": "emphasis",
+      "fromSide": "right",
+      "toSide": "left"
+    },
+    {
+      "from": "entry_cli",
+      "to": "runner_base",
+      "label": "6 条主路线",
+      "variant": "emphasis",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "labelDy": 24
+    },
+    {
+      "from": "entry_cli",
+      "to": "routes_own",
+      "label": "另 4 条",
+      "variant": "emphasis",
+      "fromSide": "right",
+      "toSide": "top"
+    },
+    {
+      "from": "runner_base",
+      "to": "epic7_shared",
+      "label": "共用机制",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "labelDy": 24
+    },
+    {
+      "from": "routes_own",
+      "to": "battle",
+      "label": "共用机制",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "variant": "dashed",
+      "labelDy": 24
+    },
+    {
+      "from": "epic7_shared",
+      "to": "battle",
+      "label": "战斗移交与看护",
+      "fromSide": "right",
+      "toSide": "left"
+    },
+    {
+      "from": "epic7_shared",
+      "to": "evidence",
+      "label": "每步进出场判据",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "labelDy": 24
+    },
+    {
+      "from": "evidence",
+      "to": "core_vision",
+      "label": "读帧 + 判定",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "labelDy": 24
+    },
+    {
+      "from": "battle",
+      "to": "core_time",
+      "label": "心跳 / 看门狗",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "labelDy": 24
+    },
+    {
+      "from": "entry_cli",
+      "to": "core_safety",
+      "label": "逃生 + 通知",
+      "fromSide": "right",
+      "toSide": "right"
+    },
+    {
+      "from": "core_vision",
+      "to": "target",
+      "label": "截图 / 点击",
+      "variant": "emphasis",
+      "fromSide": "left",
+      "toSide": "right"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "两条主循环家族",
+      "items": [
+        "6 条继承 ModeRunnerBase：fodder / hero_synthesis / knights_donation / labyrinth_stone / story / world_boss",
+        "4 条自写循环：arena / expedition / shop_refresh / survivor",
+        "不是漏掉：arena 与 expedition 比 runner_base 早 9 天；survivor 是另一套交互；shop_refresh 是事务式流程",
+        "两条并存是明确决定：不拿稳定换整齐"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "跨项目通用层 core/",
+      "items": [
+        "window / pc_window：窗口与截图，被最小化会自动还原",
+        "matcher：区域限定模板匹配，find_all_templates 处理一屏多个同款按钮",
+        "runtime / supervisor：时钟、稳定观测、结论门、看门狗",
+        "recovery / hotkey / qqbot：逃生闸门、P 键急停、通知通道",
+        "这一层不认识第七史诗，换一个游戏可以整层带走"
+      ]
+    },
+    {
+      "dot": "violet",
+      "title": "第七史诗专用层 games/epic7/",
+      "items": [
+        "modes：MODE_SPECS 路线注册表，新增路线要登记的第一处",
+        "navigation / global_popups：大厅导航与全局弹窗",
+        "battle_controls / battle_supervisor：战斗控件识别与看护",
+        "home_return / finish_home：收尾回大厅"
+      ]
+    },
+    {
+      "dot": "amber",
+      "title": "每一步都要交代进出场",
+      "items": [
+        "evidence/ 11 个判据模块：先认页面再动手，点完再验一次",
+        "转场契约：动作必须声明源页面 + 目标页面或页内证据",
+        "判据不准 与 判据没接进主循环 是两类不同的 bug"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "安全与工程护栏",
+      "items": [
+        "干跑默认；实跑要 --live --confirm RUN 加正的 --max-cycles",
+        "危险按钮绝不点：survivor 的确认与重新抽取、arena 的买票",
+        "退出码：0 完成 / 1 故障 / 2 资源耗尽 / 130 手动停",
+        "tools/check.py 按改动范围决定局部还是全量，只有共享模块才需要全量"
+      ]
+    }
+  ]
+}

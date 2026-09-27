@@ -7,6 +7,8 @@
 | 业务闭环与两条判据的完整说明 | `games/epic7/knights_donation.py` 模块 docstring |
 | 「材料不足就跳过」判据本体 | `games/epic7/knights_support_digits.py` |
 | 「请求支援今天用过了 ⇒ 灰了」判据 | `games/epic7/knights_donation.py`（`request_button_relative_v`） |
+| 「今日支援上限满没满」判据 | `games/epic7/knights_donation.py`（`support_limit_full`） |
+| 里程碑「哪一档能领」的角标搜索区与形态判据 | `games/epic7/evidence/knights_donation.py`（`DOT_ZONES["milestone"]` + `DOT_MIN_FILL_RATIO`） |
 | 模板（含数字字模 `digits/`） | `games/epic7/templates/knights_donation/` |
 | 锚点区域 `REGIONS` | `games/epic7/evidence/knights_donation.py` |
 | 回归夹具 | `tests/fixtures/epic7_knights_donation/` |
@@ -69,6 +71,152 @@ D:/anaconda/python.exe auto_game_unified/runtime_logs/_probe_request_verdict.py
 改了 `request_support_button` 的**区域**、或换了那个模板，**必须重跑上面两个探针**，
 再跑文末的测试 —— 其中 `test_the_threshold_sits_between_the_alive_and_grey_scores`
 会把「两侧余量还剩多少」直接算给你看（余量掉到 25% 以下就该重采样本了）。
+
+## 「今日支援上限」满没满（2026-09-26 加）
+
+上限满了之后**列表里的绿按钮照样是绿的**、点下去连提示都不弹（游戏也不弹用户说的
+「已经到了资源上限」那行字）⇒ 以前只能靠「`support-one` 连点 4 次推不动」**倒推**，
+日志里写的是猜测「多半是今日支援上限已满」。两处代价：
+
+1. 一天里第二次跑捐赠，又要白点 4 次、再**原地掉头**一次，才得出同一结论；
+2. 「没推进」也可能是别的原因（点击丢了 / 那一格真吃不下），却一律记成「上限满了」。
+
+**现在直接读那一行的数字**：右上角「今日支援上限 N/200」的**整串**当一张模板匹配，
+命中 `200/200` = 满了 ⇒ 一个支援按钮都不点，直接切「每周任务」。
+
+| 东西 | 值 / 位置 |
+| --- | --- |
+| 判据本体 | `games/epic7/knights_donation.py::support_limit_full` |
+| 模板 | `games/epic7/templates/knights_donation/support_limit_full.png`（110×27） |
+| 裁框 / 搜索区 | `SUPPORT_LIMIT_BOX = (1242,197,110,27)` / `SUPPORT_LIMIT_REGION = (1150,175,280,70)` |
+| 阈值 | `SUPPORT_LIMIT_FULL_THRESHOLD = 0.90` |
+
+实测（`runtime_logs/_kd_limit_build_assets.py`，全库 **257** 张基准尺寸夹具）：
+
+| 画面 | 得分 |
+| --- | --- |
+| 正例 `support_limit_full.png`（**200/200**） | **1.0000** |
+| `support_page_short_material.png`（**90/200**） | 0.8167 ← 最高干扰 |
+| `support_page_two_buttons` / `support_confirm` / `support_page_scrolled` / `support_page`（**30/200**） | 0.7792 ~ 0.7895 |
+| 其它路线最高（英雄页转送按钮） | 0.2720 |
+
+⇒ 阈值 0.90：对「没满」余量 0.083、对正例余量 0.10。
+⚠️ **同页干扰天然就高**（整串与 `200/200` 共享 `0/200` 尾巴）⇒ 阈值**不能**放到 0.85 以下。
+
+- **认不出当「没满」**（fail-open）：模板没命中就照旧去点支援按钮。判成「已满」会白丢
+  当天整个支援环节（补不回来）；判成「没满」最坏只是退回今天的行为。
+- **两条来路的日志分得开**：画面证据写「…已经满（整串 200/200，得分 0.93xx @(1297,210)）」；
+  兜底那条写「…连点 4 次都没推进过（当时没读到上限数字）」。**不许再出现「多半」**。
+- 兜底仍在：判据读不到数字时，`support_closed`（Runner 在 `support-one` 4 次推不动后置位）
+  照旧接管。
+
+### 怎么复核 / 重采
+
+```
+D:/anaconda/python.exe auto_game_unified/runtime_logs/_kd_limit_build_assets.py
+D:/anaconda/python.exe auto_game_unified/runtime_logs/_kd_limit_peek_all.py
+```
+
+前者**会重写模板与夹具**（源帧 = `runtime_diagnostics/epic7_knights_donation/20260925_213803_468044_knights_support-one_stuck.png`）
+并把全库得分表打出来；后者只把每个夹具那一行裁出来拼成一张对照图，肉眼确认
+「哪些帧是满的、哪些是没满的」。**改阈值 / 改裁框 / 换客户端前先跑后者看一眼。**
+
+## 里程碑档位：能领的那一档会随积分别处移动（2026-09-26 加）
+
+「每周任务」页的骑士团点数进度条上有 **7 个档位**（500 / 1000 / 1500 / 2000 / 2400 / 2800 …），
+**哪一档能领取决于当前积分**：积分涨到哪一档，那一档图标左上角才出现角标。
+⇒ 「可领档位」的位置**是活的**，不是固定在某一格。
+
+⚠️ **事故**（用户 2026-09-26 现场帧）：那天积分 1660，可领的是 **1500** 档，而当时搜索区是
+**写死的 50×50 小方块** `(1050,264,50,50)`，只罩得住 500 档那一格（角标中心 x≈1073）。
+角标实际跑到 x=1260、**偏出搜索区 160px** ⇒ 认不出角标 ⇒ 状态机走「每周任务已经没有可领的
+点数档位和可领的任务了」**直接收工**，1500 那档奖励白丢。日志上完全看不出来 ——
+那句收工理由读起来天经地义。
+
+**修法**：搜索区从「写死的小方块」改成**整条里程碑带**，并把「角标长什么形状」补进判据。
+
+| 东西 | 值 / 位置 |
+| --- | --- |
+| 搜索区 | `games/epic7/evidence/knights_donation.py::DOT_ZONES["milestone"]` = `(672,264,1101,50)` |
+| 形态判据 | 同文件 `DOT_MIN_FILL_RATIO = 0.60` |
+| 判据本体 | 同文件 `find_dot()` |
+| 点击点 | 同文件 `milestone_claim_point()`：角标中心 + `MILESTONE_ICON_OFFSET = (34,32)` |
+
+### 带的左右边界怎么来的（不许写死一个没来源的数）
+
+量轨道上 **7 个白色刻度点**的 x（`weekly_tasks_claimable.png`，y≈367）：
+`730 / 918 / 1106 / 1293 / 1481 / 1631 / 1781`
+
+```
+图标中心 = 刻度 + 1        →  731 / 919 / 1107 / 1294 / 1482 / 1632 / 1782
+角标中心 = 图标中心 − 34   →  697 / 885 / 1073 / 1260 / 1448 / 1598 / 1748
+```
+
+- 第 3 档 **1073**、第 4 档 **1260** 有**实测角标**直接对上（老夹具 @500 / 现场帧 @1500）。
+- 左边界 = 697 − 25 = **672**，右边界 = 1748 + 25 = **1773**（25 = 旧 50 宽方块的半宽余量）。
+- **纵向 (264,50) 不动**：往下扩会把「已领」的绿✓（15×9 / 面积 76 @ y 305~313）整个框进来。
+
+### 为什么要加「填充率」这道形态判据
+
+搜索区放宽之后，**资源支援页第 1 行的「持有: 5,133」也落进了带子里**。它是**绿字**，
+和角标一样「高饱和 + 高亮」，面积/宽高也全都过筛 —— **掩膜根本分不开**：
+
+| 团块 | 尺寸 / 面积 | 填充率（面积 ÷ 外接矩形） | 结果 |
+| --- | --- | --- | --- |
+| **实心角标**（蓝或橙） | 17×17 / 219 | **0.758** | ✅ 要的就是它 |
+| 「持有」绿字 | 21×21 / 85、11×21 / 66、12×21 / 67 | 0.193 / 0.286 / 0.266 | ❌ 挡掉 |
+| 「可领」图标自身的亮块 | 16×14 / 84 | 0.375 | ❌ 挡掉 |
+| 已领绿✓ | 15×9 / 76 | 0.563 | ❌ 本来靠「贴 ROI 底边」挡，现在是双保险 |
+
+⇒ 角标是**实心圆点**、文字笔画是**细线**，只有形态分得开。取 **0.60**：卡在实测最高非角标
+（0.563）与实测正例（0.758）之间 —— 正例余量 +0.158，反例余量 +0.037（且它还另有一道
+「贴底边」兜着）。
+
+### 全库对照（`find_dot(…, "milestone")`：13 张夹具 + `manual_review/` 下 10 张全屏实拍帧）
+
+| 帧 | 结果 |
+| --- | --- |
+| 夹具 `weekly_tasks_claimable.png`（可领 500） | `(1073, 286)` → 点 `(1107, 318)` ✅ |
+| 夹具 `weekly_tasks_claimable_at_1500.png`（可领 1500，**2026-09-26 新增**） | `(1260, 286)` → 点 `(1294, 318)` ✅ |
+| 夹具 `weekly_tasks_claimed.png`（全领完） | `None` ✅ |
+| 资源支援页 **5 张** + 主页 2 张 + 弹窗 3 张 | 全部 `None` ✅ |
+| 实拍 `01_weekly_tasks` | `(1073, 286)` ✅ |
+| 实拍 `10_…_at_1500`（现场帧） | `(1260, 286)` ✅ |
+| 实拍 `02_resource_support` / `07_list_after_one_support` / `09_activity_opened` | `None` ✅ |
+
+⚠️ **可信度边界**：正向样本只有 **2 张**（500 档 / 1500 档），同一台模拟器、同一分辨率。
+**换客户端（PC）或换分辨率时，7 个档位要各采一次**才敢说「整条带子」成立。
+
+⚠️ **顺手更正两处旧描述**（都记在这里，免得下次又按错的推）：
+1. 本判据以前被写成「角标是**蓝色**（H≈110）」—— 现场帧证明同一颗角标是**橙的**
+   （RGB≈(175,71,20)，H≈28）。判据本来就不看色相，所以结论没受影响，但当时**只有一张
+   正向样本，把偶然当成了规律**。
+2. 「绿✓ 是 38×24、超出尺寸上限所以被挡掉」与实测不符 —— 掩膜切出来是 **15×9 / 面积 76**，
+   它真正被挡掉的原因是**贴 ROI 底边**（`find_dot` 的边界规则），不是尺寸上限。
+
+### 一次只领一档，不是缺陷
+
+`find_dot()` 返回**连通域光栅顺序的第一个**过筛团块 ⇒ 一屏多个档位同时可领时，每帧领最靠上的
+那一个，下一帧继续领下一个。所以「一次领一个」是**先到先得**的结果，不是漏检。
+
+⚠️ 这条顺序假设有个前提：同一档的可领图标**自身**也会产生几个小碎块（实测 16×14 / 面积 84，
+填充率 0.375），它现在被形态判据挡掉了。**以后要放宽 `DOT_MIN_FILL_RATIO` 时，先确认它不会
+插到角标前面** —— 顺序一旦反了，就会去点图标而不是点档位。
+
+### 怎么复核 / 重采
+
+```
+D:/anaconda/python.exe auto_game_unified/runtime_logs/_kd_milestone_peek.py
+```
+
+只读探针（`runtime_logs/` 被 gitignore，全新克隆里没有，按本节口径重写即可）。它做三件事：
+
+1. 逐帧跑**生产函数** `find_dot(…, "milestone")`，打印角标中心与点击点（全库夹具 + 实拍帧）；
+2. 把搜索区那一带裁出来拼成 `runtime_logs/_kd_milestone_band.png`，肉眼确认角标在不在带子里；
+3. 列出带子里**过了面积/宽高筛**的全部团块及其**填充率** —— 这就是形态判据的依据表。
+
+**改了 `DOT_ZONES["milestone"]` / `DOT_MIN_FILL_RATIO` / 掩膜阈值、或换了客户端之后，
+先跑它，再跑文末的测试。**
 
 ## 数字字模（`templates/knights_donation/digits/`）
 
@@ -158,7 +306,7 @@ A 帧**原样**存成了夹具 `tests/fixtures/epic7_knights_donation/support_pa
 3. 加**新路线**（不是新文件）还要动 `games/epic7/modes.py`、`desktop/catalog.py`、
    `launcher.py` 三处 —— 见 `AGENTS`/项目记忆里的「新增路线登记四处」。
 
-## 守这两条判据的测试
+## 守这些判据的测试
 
 ```
 D:/anaconda/python.exe -m pytest auto_game_unified/tests/test_knights_support_digits.py \
@@ -174,10 +322,23 @@ D:/anaconda/python.exe -m pytest auto_game_unified/tests/test_knights_support_di
 - `test_knights_donation.py` · 请求支援灰按钮：灰了不点且照常往下走 / 还亮着照旧请求 /
   量不出来当作还亮着 / **整屏压暗到 30% 仍分得开** / **阈值坐在两组之间且两侧余量 >25%** /
   两种底色读数一致。
-- **两条「真 Runner 级」用例**（各一个）：
-  `test_the_short_material_row_is_never_clicked_by_the_real_runner` 与
-  `test_the_greyed_request_button_is_never_clicked_by_the_real_runner`。
+- `test_knights_donation.py` · 上限判据（`KnightsDonationSupportLimitTests`）：
+  200/200 那一帧认得出且坐标对得上 / ⚠️ **同页 30/200、90/200 五张一张都不许被判成满**
+  （反向守门，这条最要紧）/ 满了的页面直接切每周任务且理由带**得分** /
+  没满的页面照旧点支援按钮 / **两条来路（画面证据 vs 连点推不动）在理由里分得开**。
+- `test_knights_donation.py` · 里程碑档位（`KnightsDonationDotTests` + 状态机那两条）：
+  **现场帧上角标在 x=1260 时仍认得出且点 (1294,318)**（换档回归，改回旧小方块就红）/
+  **状态机在这一帧上真的发 `claim-milestone`**（业务后果层面，老代码这里返回 `None` 直接收工）/
+  **资源支援页 4 张一张都不许在带子里读出角标**（守形态判据，去掉 `DOT_MIN_FILL_RATIO` 就红）/
+  填充率阈值坐在实测正例 0.758 与最高反例 0.563 之间 / 已领那帧仍 `None`（守面积下限）/
+  搜索区同时罩得住老位置 1073 与新位置 1260。
+- **三条「真 Runner 级」用例**（各一个）：
+  `test_the_short_material_row_is_never_clicked_by_the_real_runner`、
+  `test_the_greyed_request_button_is_never_clicked_by_the_real_runner` 与
+  `test_the_real_runner_skips_the_support_section_on_a_capped_page`。
   它们是**唯一**守住「判据真的接进了主循环」的测试：2026-09-25 那两次事故都发生在
   **状态机与主循环之间**，单测状态机抓不到。改路由 / 改主循环相关的东西，**必须**跑过。
-- 换 `templates/knights_donation/` 下的模板、`digits/` 字模或 `REGIONS` 里的区域，
-  除上面两个文件外还要跑路线级夹具回归（`test_knights_donation_resume.py`）。
+- 换 `templates/knights_donation/` 下的模板、`digits/` 字模、`REGIONS` 里的区域，或
+  `DOT_ZONES` 里的角标搜索区，除上面两个文件外还要跑路线级夹具回归
+  （`test_knights_donation_resume.py`），并跑 `test_project_layout.py`
+  （它断言夹具目录的**精确文件集**）。
