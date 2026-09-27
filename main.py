@@ -24,6 +24,9 @@ from auto_game_unified.games.epic7.finish_home import _assert_finish_home_declar
 from auto_game_unified.games.epic7.public_flow_verification import (
     assert_public_flow_verification_declared,
 )
+from auto_game_unified.games.epic7.route_metadata import (
+    assert_route_metadata_consistent,
+)
 from auto_game_unified.games.epic7.modes import (
     MODE_SPECS,
     ModeSpec,
@@ -51,7 +54,11 @@ MODE_LABELS = {
     "fodder": "狗粮",
     "hero_synthesis": "英雄合成",
     "shop_refresh": "刷书签",
-    "survivor": "幸存者",
+    # 与 desktop/catalog.py 的 RouteInfo.label 保持一致（用户 2026-09-27 拍板：
+    # 桌面助手是主入口，以它的叫法为准）。曾有段时间这里是「幸存者」、
+    # 界面是「活动」，同一路线两个名字 —— 现在有 route_metadata 那边的一致性
+    # 自查钉住，改一处漏另一处会 import 报错。
+    "survivor": "活动",
     "world_boss": "世界首领战",
     "knights_donation": "骑士团捐赠",
     "labyrinth_stone": "迷宫强化石",
@@ -344,6 +351,13 @@ def _install_finish_home(
     # 它要读磁盘源码，是开发期的检查，放在 `tests/test_public_flow_verification.py`
     # 里每次跑测试都过一遍就够，不该让每次实跑都去扫一遍文件。
     assert_public_flow_verification_declared()
+    # 「同一事实抄在多处、只改了一部分」的自查：模式中文名与固定次数。
+    #
+    # ⚠️ 它**要读磁盘源码**（AST 扫 main.py / launcher.py 里的固定次数），
+    # 但比 public_flow_verification 的反向护栏便宜得多（只 parse 两个小文件），
+    # 所以放在生产路径上跑 —— 这样「新路线漏改中文名」在实跑启动时就报错，
+    # 而不是等用户从另一个入口启动才发现。
+    assert_route_metadata_consistent()
 
     if home_return is None:
         return
