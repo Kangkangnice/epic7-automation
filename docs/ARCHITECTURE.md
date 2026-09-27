@@ -9,7 +9,7 @@ auto_game_unified/
 │  ├─ runtime.py            # 截图、点击、中文日志、当前帧和失败诊断
 │  ├─ supervisor.py         # 两帧稳定、画面变化、状态轮询和超时监督
 │  ├─ battle_supervisor.py  # 战斗监控：心跳、画面变化进展、结算移交
-│  ├─ recovery.py           # 恢复额度门控（一轮最多恢复一次）
+│  ├─ recovery.py           # 战斗锁：已承诺战斗期间禁止打断（只有 lock/unlock）
 │  ├─ hotkey.py             # Windows P 键停止
 │  ├─ qqbot.py             # 官方 QQ 机器人开放平台 C2C 私聊推送
 │  └─ window.py             # 游戏窗口捕获与局部坐标点击
@@ -19,7 +19,8 @@ auto_game_unified/
 │  ├─ unknown_screen.py     # 未知画面唤醒（萤火待机等）与安全停止
 │  ├─ battle_controls.py    # 战斗内 Auto/加速按钮识别
 │  ├─ stamina.py            # 体力弹窗共享：区域、模板、补体力决策
-│  ├─ runner_base.py        # 同构模式公共主循环（ModeRunnerBase）
+│  ├─ runner_base.py        # 同构模式公共主循环（ModeRunnerBase；点一次→每帧重问状态机）
+│  ├─ transactional_runner_base.py  # 事务型公共主循环（目标页连续两帧才提交状态；远征/竞技场这一族）
 │  ├─ arena.py              # 竞技场状态机和 Runner
 │  ├─ story.py              # 主线状态机和 Runner
 │  ├─ expedition.py         # 远征状态机和 Runner
@@ -72,8 +73,17 @@ auto_game_unified/
 普通动作需要同一页面和动作连续两帧一致。执行一次点击后，Runner 继续截图，直到目标状态满足稳定条件才算转场完成。
 
 - 动作重试额度由 Runner 明确控制并写入日志；`ModeRunnerBase` 当前上限为四次，独立 Runner 需单独审计。
-- 首次耗尽后，允许的前置业务状态可以回大厅重新导航一次。
-- 同一轮内不能无限恢复；完成一轮后才重置恢复额度。
+- 上限用尽后，给路线**一次**原地「换个办法」的机会（`_self_heal_used`）：换成了别的动作就照常点，
+  换回来还是同一个动作就直接安全停止。⚠️ 这**不是**点击额度的重置 —— 同一个动作一共只点四次。
+- ⚠️ 2026-09-26 用户拍板：**回家就是结束**，程序不会再回大厅重新导航接着跑。
+  「首次耗尽 / 状态超时 ⇒ `recovery()`（回大厅重开）⇒ 接着跑」整套已删除，改为直接安全停止
+  （回家由 `main` 收尾）。**连带清掉的死零件**：`runner_base` 的 `recovery` 回调与
+  `_apply_recovery_state` 钩子（含 6 条路线的覆写）、`main` 的 `recover_to_mode` /
+  `report_blocked_recovery` / `runner_options["recovery"]`、`core/recovery.py` 的
+  `recover()` / `RecoveryBlocked` / `on_blocked`、`ArenaStateMachine.reset_after_recovery`。
+  剩下的那个闸门**只有**「已承诺战斗期间禁止打断」一个职责（见 `core/recovery.py`）。
+- 结论门槛：收工 / 认不出画面这类**终止性结论**同样要连续两帧一致才采信，
+  不能一帧就宣布整条路线结束（规矩见 [页面转场契约](TRANSITION_CONTRACTS.md)「结论门槛（全局强制）」）。
 - 未知页面不能盲点业务按钮。
 
 英雄合成动作已经携带来源页面、允许目标页面、原因和转场类型；其他路线尚未全部补齐这些字段。后续统一时以 [页面转场契约](TRANSITION_CONTRACTS.md) 为准，审计状态见 [自动化稳健性待办](TODO.md)，不能把当前部分实现写成所有路线已经完整具备。
@@ -97,9 +107,11 @@ auto_game_unified/
 `runner_base.py` 的 `ModeRunnerBase` 统一实现主线和狗粮两条同构线的公共主循环：
 
 - 空跑短路、两帧稳定确认、同动作 45 秒转场等待、4 次点击上限。
-- 未知画面唤醒、状态超时恢复（回大厅重新导航一次）、结算等待与绝对超时熔断。
+- 结论门槛（收工 / 认不出画面也要连续两帧一致）。
+- 未知画面唤醒、结算等待与绝对超时熔断；动作循环检测与状态超时**直接安全停止**
+  （不再「回大厅重新导航一次」）。
 
-各模式只通过钩子注入差异：超时表、战斗移交方式（先点击再移交 / 战斗监督代点 / 停留战斗态直接移交）、恢复落点状态、战斗监控实现（`BattleSupervisor` 或自带循环）。
+各模式只通过钩子注入差异：超时表、战斗移交方式（先点击再移交 / 战斗监督代点 / 停留战斗态直接移交）、战斗监控实现（`BattleSupervisor` 或自带循环）。
 
 竞技场和远征保留独立 Runner，但状态轮询统一委托 `core/supervisor.py` 的 `wait_until_target`。
 
@@ -125,9 +137,9 @@ auto_game_unified/
 模式=主线 停止=生命之叶耗尽 详情=生命之叶已耗尽或生命之叶选项不可用
 ```
 
-- 固定键：`模式`、`轮次`、`页面`、`动作`、`阶段`、`状态`、`停止`、`恢复`。
+- 固定键：`模式`、`轮次`、`页面`、`动作`、`阶段`、`状态`、`停止`、`结论`。
 - 页面名使用中文画面描述（如“队伍选择”、“结算确认”），不用 Enum 值。
-- 停止和恢复原因必须写明业务含义（如“生命之叶耗尽”、“回大厅重新导航”）。
+- 停止原因必须写明业务含义（如“生命之叶耗尽”、“页面识别超时”）。
 - 新增日志必须遵循同一格式，保证 grep 单个键（如 `模式=`）即可过滤整条链路。
 
 改变页面或业务状态的日志还应区分“动作候选、执行点击、等待确认、转场确认、业务成功”。目标证据出现前不得输出业务成功；具体字段见 [页面转场契约](TRANSITION_CONTRACTS.md)。
@@ -181,17 +193,22 @@ auto_game_unified/
 - `expedition._EXPEDITION_RESUME_ORDER`：先收战斗菜单/赛季菜单（只有导航器认得出来，靠 `observe().name`），再收局内，然后按 `HOME → RETURNING → POSTERS → DIFFICULTY_CONFIRM → DIFFICULTY → OUTCOME → RECRUIT_CONFIRM → READY → RECRUIT_RETURN → TEAM → RESULT → BATTLE` 逐状态判。`HOME` 必须排在 `RETURNING` 前（后者的第一判据就是主页可见）；`OUTCOME` 必须排在 `READY` 前（否则会丢掉还没领的招募）。
 
 **状态机必须拨准，不能指望第一帧自愈**：主线 `next_action` 里有两支依赖进来时的状态才肯点击（`prepare_battle` 在 `WAIT_COMPLETE`/`WAIT_NEXT_STAGE` 下只记轮次不点；战斗控件分支只在 `WAIT_SKIP_CONFIRM`/`WAIT_BATTLE`/`ACTIVE` 下跑），远征 `next_action` 则是纯状态驱动的，拨错会走到 `_required` 失败或点错按钮。
-`<Route>StateMachine.resume_from()` 与 `reset_after_recovery()` 的区别是保留进度而非重开一轮。
+`<Route>StateMachine.resume_from()` 只做一件事：把「保留当前进度」这一个语义记下来
+（2026-09-26 之前的另一半 `reset_after_recovery()`「退回重开一轮」已随恢复通道删除）。
 
 **局内接力**：三条路线都支持，且都不按 `Back`、不重新导航，而是把这一局直接交给战斗监督等结算。
-竞技场和主线各有一个 `_resume_into_committed_battle()`（由 Runner 在 `resumed_from is <BATTLE 态>` 时调用），原因是 `next_action(BATTLE)` 那条路靠 `auto_off` 图标定位，而**自动战斗开着时这个图标根本不可见**，硬走会抛未识别并在超时后触发「回大厅重新导航」—— 等于在已经承诺的战斗里按 `Back`。
-远征复用 `ExpeditionRunner.run()` 既有的「无动作 + 状态是 `BATTLE` → 交战斗监督」分支，无需额外代码。
+竞技场和主线各有一个 `_resume_into_committed_battle()`（由 Runner 在 `resumed_from is <BATTLE 态>` 时调用），原因是 `next_action(BATTLE)` 那条路靠 `auto_off` 图标定位，而**自动战斗开着时这个图标根本不可见**，硬走会抛未识别并在超时后安全停止 —— 等于在已经承诺的战斗里按 `Back`（2026-09-26 之前那次超时会去「回大厅重新导航」，现在不会了）。
+远征复用主循环既有的「无动作 + 状态是 `BATTLE` → 交战斗监督」分支
+（`TransactionalRunnerBase._SETTLED_BATTLE_STATE`；2026-09-26 之前这段在 `ExpeditionRunner.run()` 里），无需额外代码。
 
 **竞技场「战斗结果页」的排他判据**：结算页底部那条「战斗结果 / 确认」是竞技场和远征**共用**的通用结算条（实测竞技场 `result.png` 上 `confirm`=1.0000，远征 `result.png` 上也有 0.9448，都过了 0.90 阈值），光靠它分不出这是哪条路线的结算。所以加了三个竞技场专有内容锚点：`result_rating`（「积分」面板标题，**胜负都会出现**）、`result_victory`（「VICTORY」横幅，只有赢才有）、`result_defeat`（「DEFEAT」横幅，只有输才有）。它们在 `arena.result_arena` 页里与 `confirm` 组成合取判据，阈值 0.80。⚠️ 2026-09-25 真机复测修正了依据：`result_rating` 在真机帧上只有 0.38（只在旧基准夹具上有效），真正在干活的是两个横幅 —— victory 在赢帧 0.8761~0.8816、defeat 在输帧 0.9871~1.0000，而全库 227 张夹具里除结果页外 victory 最高 0.2724、defeat 最高 0.3828。
 两个模板是 `games/epic7/templates/arena_result_rating.png`（73×41 @922,657）与 `arena_result_victory.png`（558×83 @683,378），2026-09-16 从 `tests/fixtures/epic7_arena/result.png` 按证据档案里的矩形实裁。
 
 **不相容的画面不接力**：买票弹窗压住的队伍页（`no_ticket` 显式排除）。局内不在 `detect_resume_state` 里认，改由 `detect_resume_point` 用 `battle_scene_visible` 兜住（4 张局内实时帧只有 1 张能靠 `auto_off` 认出来，按锚点判会误触发「回大厅」）。
-**恢复（recovery）路径刻意不带探针**：恢复的语义是「退回已知起点重开」，紧接着就 `reset_after_recovery()`，半路接管会跟它打架。
+**探针只挂在开局那一次「回大厅」上**：`_enter_mode` 用 `home_return(stop_probe=...)` 起步，
+「回家」途中每确认一帧稳定画面就问一次探针，人在那儿就**就地接管**。2026-09-26 之前另有一条
+「恢复导航」（退回已知起点重开），它**刻意不带探针**—— 半路接管会跟它打架；那条路已随用户
+「回家就是结束」的拍板整段删除。
 
 ## 模板和回归素材
 

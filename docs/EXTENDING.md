@@ -63,9 +63,9 @@ tests/test_hunt_runner.py
 - `_TIMEOUT_SECONDS`：每个状态的页面超时表。
 - `_BATTLE_ENTRY_ACTION` + `_CLICK_BEFORE_BATTLE`：战斗移交方式。
 - `_run_committed_battle(cycle)`：战斗监控实现（`BattleSupervisor` 或自带循环）。
-- 需要时覆写 `_apply_recovery_state`、`_after_battle`、`_state_label` 等钩子。
+- 需要时覆写 `_after_battle`、`_state_label`、`_on_action_exhausted` 等钩子。
 
-禁止在新模式中复制粘贴主循环代码（两帧稳定、45 秒转场等待、4 次点击上限、恢复门控、超时熔断均已由基类实现）。只有交互模型根本不同时（如竞技场、远征的自定义流程）才允许独立 Runner，且状态轮询应复用 `core/supervisor.py` 的 `wait_until_target`。独立 Runner 必须自行声明重试额度，并保证日志分母和实际额度一致。
+禁止在新模式中复制粘贴主循环代码（两帧稳定、45 秒转场等待、4 次点击上限、战斗锁、超时熔断均已由基类实现）。只有交互模型根本不同时（如竞技场、远征的自定义流程）才允许独立 Runner，且状态轮询应复用 `core/supervisor.py` 的 `wait_until_target`。独立 Runner 必须自行声明重试额度，并保证日志分母和实际额度一致。
 
 ## 3. 先写截图流程测试
 
@@ -107,8 +107,16 @@ tests/test_hunt_runner.py
 `_REQUIRE_TRANSITION_CONTRACT = True`，要么进 `TRANSITION_EXEMPT` 并写明「用自己的什么机制验收」
 —— 两者都缺的话同样在 import 阶段抛错（`_assert_transition_stance_declared()`）。
 两类表态形状相同、理由写法相同，放在 `modes.py` 里相邻的两份名单中。
-⚠️ 注意：**只有继承 `ModeRunnerBase` 的 Runner 才走得到那段校验**，自带独立主循环的路线
-（`class XxxRunner:` 裸定义）必须进豁免名单 —— 给它们打开开关是**摆设**，没人读。
+⚠️ 注意：**只有继承 `ModeRunnerBase` 的 Runner 才走得到那段校验**（读开关的代码在
+`ModeRunnerBase.run()` 里）。另外两类 Runner 的开关**没人读**，打开是**摆设**，
+必须进豁免名单并在理由里写清「用自己的哪套机制验收」：
+
+- 自带独立主循环的裸定义（`class XxxRunner:`，`super()` 0 次）：`arena` / `shop_refresh` / `survivor`；
+- 继承**事务型**主循环基类 `TransactionalRunnerBase` 的：`expedition`（2026-09-26 从裸定义搬过去）。
+
+⚠️ 判定规则只有一条：**打开开关 ⇄ 进豁免名单，二选一**（`_assert_transition_stance_declared`）。
+别把「它的动作没有 `target_pages`」直接推成「打开开关会抛错」—— 还要问一句
+「它的 runner 走得到那段代码吗」（2026-09-24 踩过这个坑，护栏测试有专门一条钉住它）。
 
 写一条路线的接力要动哪些文件、「什么算可停靠环节」，见
 [TRANSITION_CONTRACTS.md](TRANSITION_CONTRACTS.md)「接力契约」；判据准不准由
