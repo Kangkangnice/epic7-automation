@@ -107,10 +107,11 @@ DIR_NOTES = {
     "_walk": ("空目录", "可直接删。目录名为空，0 个文件。"),
     "docs": ("空目录", "工作区根的 docs/ 是空的；真正的文档目录是 auto_game_unified/docs/。可直接删。"),
     "runtime_logs": (
-        "临时输出（含调研帧集）",
-        "排查期间写的临时脚本与输出（工作区根不是仓库，不被 git 跟踪）；"
-        "真正的运行日志目录是 auto_game_unified/runtime_logs/。"
-        "⚠️ 目前里头还有 `knights/` 一批骑士团调研的**真机帧**，删前先确认是否还要回看。",
+        "临时输出（已清过，只剩脚本/文本）",
+        "工作区根的临时脚本与输出（不被 git 跟踪）；真正的运行日志目录是 "
+        "`auto_game_unified/runtime_logs/`。2026-09-27 清过一次：真机截图只留"
+        "「被代码/文档点名」或「与仓库有版本副本重叠」的，其余删除；"
+        "剩下的脚本与文本总共约 0.4 MB，一律保留。",
     ),
     "templates_backup_20260829_1854": (
         "模板历史快照",
@@ -239,9 +240,10 @@ def render() -> str:
         for _dirpath, _dirnames, _filenames in os.walk(root_logs_dir):
             root_logs_files += len(_filenames)
     add(
-        "| **L0 可删** | 空目录 + 根 `runtime_logs` | "
-        f"{2 + root_logs_files} | `_walk`、`docs` 是空的；根 `runtime_logs` 里有 "
-        f"{root_logs_files} 个临时文件（含子目录） | 确认后可删 |"
+        "| ✅ 已清完 | 空目录 + 根 `runtime_logs` 里的临时输出 | "
+        f"{root_logs_files} | 空目录（`_walk` / `docs`）已在 2026-09-23 清掉；"
+        f"根 `runtime_logs` 现在只剩 {root_logs_files} 个脚本与文本输出（约 0.4 MB），"
+        "真机截图已在 2026-09-27 按「有引用 / 有版本副本」筛过 | 不用再清 |"
     )
     add(
         "| **L1 需你确认** | `templates_用户修改版_20260829` | 16 | "
