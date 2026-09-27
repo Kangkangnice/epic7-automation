@@ -3,39 +3,59 @@
 from collections.abc import Callable
 
 from auto_game_unified import main as main_module
+from auto_game_unified.games.epic7.daily_tasks import DAILY_TASKS
+from auto_game_unified.games.epic7.modes import MODE_SPECS, get_mode
 
 
 # 「每日任务」在菜单里的标识。它没有对应的 MODE_SPECS 条目，所以用一个
 # 不可能跟模式名撞车的值；`run_interactive` 见到它就切到 --daily 分支。
 DAILY_MENU_ID = "__daily__"
 
-MENU_OPTIONS = {
-    "1": ("主线", "story"),
-    "2": ("竞技场", "arena"),
-    "3": ("远征", "expedition"),
-    "4": ("狗粮", "fodder"),
-    "5": ("英雄合成", "hero_synthesis"),
-    "6": ("刷书签", "shop_refresh"),
-    "7": ("世界首领战", "world_boss"),
-    "8": ("骑士团捐赠", "knights_donation"),
-    "9": ("迷宫强化石", "labyrinth_stone"),
-    # 每日任务不是单条路线，是一个编排入口（见 games/epic7/daily_tasks.py）。
-    "10": ("每日任务", DAILY_MENU_ID),
-}
+DAILY_LABEL = "每日任务"
+
+# 每日任务那条菜单项里列的路线次序 —— 从 ``DAILY_TASKS`` 派生，与执行次序同源。
+_DAILY_ORDER = " → ".join(get_mode(task.mode).label for task in DAILY_TASKS)
+
+
+def _menu_label(mode: str) -> str:
+    """菜单上显示的名字。每日任务不是路线，单独给一个常量。"""
+    return DAILY_LABEL if mode == DAILY_MENU_ID else MODE_SPECS[mode].label
+
+
+# 菜单：**编号、次序、以及每项后面的括号说明**是本模块自己的交互设计
+# （用户已经习惯了这套编号，别按别处的顺序重排）；**中文名不写在这儿**，
+# 从 ``modes.MODE_SPECS`` 取（那边是唯一来源）。
+#
+# 每日任务那行列的路线清单也是派生的 —— 它曾经手抄成
+# 「世界首领战 → 骑士团捐赠 → 竞技场」，漏了后来加进去的两条。
+_MENU_ITEMS: tuple[tuple[str, str, str], ...] = (
+    ("1", "story", ""),
+    ("2", "arena", ""),
+    ("3", "expedition", ""),
+    ("4", "fodder", "（特别的时间之书 3-7）"),
+    ("5", "hero_synthesis", "（三星刻印合成，跑完一遍列表自动结束）"),
+    ("6", "shop_refresh", "（实验功能，只支持模拟器）"),
+    ("7", "world_boss", "（骑士团每日任务，每场 20 体力，不够自动用树叶买）"),
+    (
+        "8",
+        "knights_donation",
+        "（骑士团每日捐赠，请求支援 + 支援团员 + 每周任务，跑一遍结束）",
+    ),
+    (
+        "9",
+        "labyrinth_stone",
+        "（迷宫每日采购：传送到流浪商人，商店只买强化石，跑一遍结束）",
+    ),
+    ("10", DAILY_MENU_ID, f"（{_DAILY_ORDER}，依次跑完；每步自动回首页）"),
+)
+
+MENU_OPTIONS = {key: (_menu_label(mode), mode) for key, mode, _ in _MENU_ITEMS}
 
 MENU_LINES = (
     "请选择功能：",
-    "1. 主线",
-    "2. 竞技场",
-    "3. 远征",
-    "4. 狗粮（特别的时间之书 3-7）",
-    "5. 英雄合成（三星刻印合成，跑完一遍列表自动结束）",
-    "6. 刷书签（实验功能，只支持模拟器）",
-    "7. 世界首领战（骑士团每日任务，每场 20 体力，不够自动用树叶买）",
-    "8. 骑士团捐赠（骑士团每日捐赠，请求支援 + 支援团员 + 每周任务，跑一遍结束）",
-    "9. 迷宫强化石（迷宫每日采购：传送到流浪商人，商店只买强化石，跑一遍结束）",
-    "10. 每日任务（世界首领战 → 骑士团捐赠 → 竞技场，依次跑完；每步自动回首页）",
+    *(f"{key}. {_menu_label(mode)}{note}" for key, mode, note in _MENU_ITEMS),
 )
+
 
 # 运行平台选择：模拟器（LDPlayer）与 PC 客户端共用同一套业务代码与模板资产，
 # 仅窗口捕获/输入后端不同。模拟器为默认，PC 为新接入后端。
@@ -88,16 +108,13 @@ def run_interactive(
                 "RUN",
             ]
         )
-    if mode == "hero_synthesis":
-        cycles = 1
-    elif mode == "world_boss":
-        # 每天固定 2 次（游戏主页「剩余/上限」就是 2），不给用户选。
-        # 与 desktop/catalog.py 的 default_cycles / main.py 的兜底保持一致。
-        cycles = 2
-    elif mode in ("knights_donation", "labyrinth_stone"):
-        # 每天跑一遍就够（请求支援一天只能发一次 / 迷宫采购一天一次），不给用户选。
-        # 同上，与 desktop/catalog.py / main.py 三处保持一致。
-        cycles = 1
+    # 次数由游戏规则决定的路线（``cycles_editable=False``）直接采用默认值、
+    # 不问用户；其余路线让用户填。次数只在 ``modes.MODE_SPECS`` 里定义一次。
+    # （以前这里是三条写死的 ``if mode == ...`` 分支，与 main.py / catalog.py
+    # 三处手工对齐，改漏了没人知道。）
+    spec = get_mode(mode)
+    if not spec.cycles_editable:
+        cycles = spec.default_cycles
     else:
         while True:
             raw_cycles = input_fn("请输入运行次数：").strip()

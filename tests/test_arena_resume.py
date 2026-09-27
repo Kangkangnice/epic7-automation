@@ -45,7 +45,6 @@ from auto_game_unified.games.epic7.arena import (
     find_rank_promotion_confirm,
 )
 from auto_game_unified.games.epic7.modes import (
-    _probe_arena_resume,
     get_mode,
 )
 from auto_game_unified.games.epic7.navigation import (
@@ -316,7 +315,9 @@ class ArenaResumeProbeTests(unittest.TestCase):
 
     def probe(self, machine, directory: Path, name: str):
         screen = _load(directory, name)
-        return _probe_arena_resume(machine, screen, self.navigator)
+        # 探针 2026-09-27 起由工厂 ``modes._resume_probe`` 在注册处现造（没有模块级
+        # 私有函数了）⇒ 直接取**注册好的那一个**，与生产用的是同一个对象。
+        return get_mode("arena").resume_probe(machine, screen, self.navigator)
 
     def test_matching_frame_moves_the_machine_onto_that_step(self):
         machine = new_machine()
@@ -401,8 +402,12 @@ class ArenaResumeProbeTests(unittest.TestCase):
         self.assertEqual(0, machine.completed_cycles)
 
     def test_resume_enabled_routes_expose_a_probe(self):
-        """竞技场/主线/远征/刷书签各有一个接力探针，其余路线保持「一律回大厅」不变。"""
-        self.assertIs(_probe_arena_resume, get_mode("arena").resume_probe)
+        """竞技场/主线/远征/刷书签各有一个接力探针，其余路线保持「一律回大厅」不变。
+
+        探针 2026-09-27 起由工厂 ``modes._resume_probe`` 在注册处现造 ⇒ 改断言
+        「注册的那个是用**本路线的判据**造的」（抄注册行最容易漏改这个参数）。
+        """
+        self.assertIs(detect_resume_point, get_mode("arena").resume_probe.__wrapped__)
         self.assertIsNotNone(get_mode("story").resume_probe)
         self.assertIsNotNone(get_mode("expedition").resume_probe)
         self.assertIsNotNone(get_mode("shop_refresh").resume_probe)

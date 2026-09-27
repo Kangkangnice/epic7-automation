@@ -147,6 +147,7 @@ class TransitionStanceTests(unittest.TestCase):
         """
         spec = modes.ModeSpec(
             name=self.FAKE,
+            label="假路线",
             default_state="x",
             states=frozenset({"x"}),
             build_machine=lambda *_a, **_k: None,

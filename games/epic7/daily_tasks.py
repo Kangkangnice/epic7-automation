@@ -1,7 +1,7 @@
 """「每日任务」：把几条路线按固定次序串起来一次跑完。
 
 用户诉求（2026-09-25）：每天点一下，把该做的日常任务依次跑完。
-默认串五条 —— 世界首领战 → 骑士团捐赠 → 商店刷新 → 迷宫强化石 → 竞技场；界面上可以只勾其中几条。
+默认串五条 —— 世界首领战 → 骑士团捐赠 → 刷书签 → 迷宫强化石 → 竞技场；界面上可以只勾其中几条。
 
 **为什么不塞进 ``MODE_SPECS``**：路线是「一个状态机 + 一个 Runner」的固定形状，
 而这里是**编排**（循环调用 ``main.run_mode``）。硬塞进去会污染 ``--mode`` 的
@@ -9,8 +9,8 @@
 
 **为什么次序是写死的、界面上不给排序**：用户明确说「顺序不重要」（= 不想操心
 先后）。次序在这里定：世界首领战与骑士团捐赠都从骑士团进、路径相近放一起；
-商店刷新（秘密商店）与迷宫强化石各自独立；竞技场入口不同、最灵活，放最后。
-⚠️ 商店刷新的 ``cycles`` 是「付费刷新次数」，**花天空石、点了不可撤销**，
+商店刷新（秘密商店，界面上叫「刷书签」）与迷宫强化石各自独立；竞技场入口不同、最灵活，放最后。
+⚠️ 刷书签的 ``cycles`` 是「付费刷新次数」，**花天空石、点了不可撤销**，
 所以默认只 1 次且界面上可改（同竞技场），别在这里写大数。要调整就改 ``DAILY_TASKS``，不必动界面。
 
 **每段之间「确保在首页」**（用户拍板：先看再拉）：
@@ -36,27 +36,33 @@ from auto_game_unified.games.epic7.modes import get_mode
 
 @dataclass(frozen=True)
 class DailyTask:
-    """每日任务里的一项：跑哪条路线、跑几次。"""
+    """每日任务里的一项：跑哪条路线。
+
+    ⚠️ **只存模式名**。中文名与默认次数都从 ``modes.MODE_SPECS`` 取 —— 以前它们是
+    本类的字段，等于又抄了一份，实测漂移过（这里写「商店刷新」、别处写「刷书签」）。
+    """
 
     mode: str
-    label: str
-    cycles: int
+
+    @property
+    def label(self) -> str:
+        return get_mode(self.mode).label
+
+    @property
+    def cycles(self) -> int:
+        return get_mode(self.mode).default_cycles
 
 
 # 次序即执行次序（与 ``mode`` 的字母序无关，别用 sorted 覆盖它）。
-# cycles 是**默认次数**，界面上可以改（改的值走 ``run_daily_tasks(cycles_override=...)``）：
-#   - world_boss 每天固定 2 次（主页「剩余/上限」就是 2）⇒ 界面上置灰、不给改；
-#   - knights_donation 请求支援一天只能发一次 ⇒ 1 次，同样置灰；
-#   - shop_refresh 默认 1 次「付费刷新」（花**天空石**、**不可逆**）⇒ 界面可改（同 arena）；
-#   - labyrinth_stone 跑一遍就结束 ⇒ 1 次；
-#   - arena 没有每日上限，默认 1 场，用户想多跑几场就自己填。
-# 三处「默认次数」必须一致：这里、desktop/catalog.py 与 main.py 的兜底（都有测试钉住）。
+# 次数不写在这儿 —— 它跟着 ``MODE_SPECS`` 的 default_cycles 走（界面上可以改，
+# 改的值走 ``run_daily_tasks(cycles_override=...)``）。各路线为什么是那个次数，
+# 写在各自的 ModeSpec 上。
 DAILY_TASKS: tuple[DailyTask, ...] = (
-    DailyTask(mode="world_boss", label="世界首领战", cycles=2),
-    DailyTask(mode="knights_donation", label="骑士团捐赠", cycles=1),
-    DailyTask(mode="shop_refresh", label="商店刷新", cycles=1),
-    DailyTask(mode="labyrinth_stone", label="迷宫强化石", cycles=1),
-    DailyTask(mode="arena", label="竞技场", cycles=1),
+    DailyTask(mode="world_boss"),
+    DailyTask(mode="knights_donation"),
+    DailyTask(mode="shop_refresh"),
+    DailyTask(mode="labyrinth_stone"),
+    DailyTask(mode="arena"),
 )
 
 DAILY_BY_MODE = {task.mode: task for task in DAILY_TASKS}

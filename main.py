@@ -12,9 +12,6 @@ from auto_game_unified.core.recovery import RecoveryGate
 from auto_game_unified.core.runtime import ManualStop, Runtime
 from auto_game_unified.core.window import Epic7Window
 from auto_game_unified.core.pc_window import Epic7PcWindow
-from auto_game_unified.games.epic7.evidence.shop_refresh import (
-    LIVE_TRANSACTIONS_VERIFIED,
-)
 from auto_game_unified.games.epic7.daily_tasks import (
     DAILY_TASKS,
     DailyReport,
@@ -28,6 +25,7 @@ from auto_game_unified.games.epic7.route_metadata import (
     assert_route_metadata_consistent,
 )
 from auto_game_unified.games.epic7.modes import (
+    MODE_LABELS,
     MODE_SPECS,
     ModeSpec,
     ResumePoint,
@@ -47,22 +45,9 @@ from auto_game_unified.games.epic7.global_popups import (
 
 
 ROOT = Path(__file__).resolve().parent
-MODE_LABELS = {
-    "story": "主线",
-    "arena": "竞技场",
-    "expedition": "远征",
-    "fodder": "狗粮",
-    "hero_synthesis": "英雄合成",
-    "shop_refresh": "刷书签",
-    # 与 desktop/catalog.py 的 RouteInfo.label 保持一致（用户 2026-09-27 拍板：
-    # 桌面助手是主入口，以它的叫法为准）。曾有段时间这里是「幸存者」、
-    # 界面是「活动」，同一路线两个名字 —— 现在有 route_metadata 那边的一致性
-    # 自查钉住，改一处漏另一处会 import 报错。
-    "survivor": "活动",
-    "world_boss": "世界首领战",
-    "knights_donation": "骑士团捐赠",
-    "labyrinth_stone": "迷宫强化石",
-}
+# 中文名从 ``modes.MODE_SPECS`` 派生（那边是唯一来源），本模块不再自己写一份。
+# 以前这里是第二张表，与 ``navigation.MODE_LABELS`` 各自维护 ⇒ 实测漂移过
+# （survivor 一处有、一处没有）。
 
 
 @dataclass(frozen=True)
@@ -393,15 +378,13 @@ def run_mode(
     stop_file: Path | None = None,
 ) -> RunResult:
     spec.validate_backend(window_backend)
-    if (
-        spec.name == "shop_refresh"
-        and not dry_run
-        and not LIVE_TRANSACTIONS_VERIFIED
-    ):
-        raise RuntimeError(
-            "刷书签目标商品和购买价格尚未通过当前客户端实证，"
-            "当前只允许空跑采样"
-        )
+    # 路线级的运行前闸门（比如「刷书签会真花钱，没实证过就不许实跑」）。
+    # ⚠️ 必须留在建 runtime **之前**：闸门拦下的路线，不该先开一个窗口再报错。
+    # 闸门本体与路线绑在 ``modes.MODE_SPECS`` 里，这里不认识任何具名路线。
+    if spec.preflight is not None:
+        blocked = spec.preflight(spec.name, dry_run)
+        if blocked is not None:
+            raise RuntimeError(blocked)
     runtime = _build_runtime(
         spec.name,
         dry_run,
@@ -469,10 +452,10 @@ def run_mode(
     # ``report_blocked_recovery``）。闸门现在只剩「战斗中禁止打断」一个职责，
     # 由 battle_supervisor 上锁/解锁、unknown_screen 读它（见 core/recovery.py）。
     runner_options["recovery_gate"] = RecoveryGate()
-    if spec.name == "arena" and not dry_run:
-        runner_options["purchase_stamp_path"] = ROOT / "runtime_logs" / "arena_ticket_purchase.txt"
-        # 每局结算画面留一张盘，给「胜负判得对不对」留可回看的证据（见 ArenaRunner）。
-        runner_options["outcome_frame_dir"] = ROOT / "docs" / "manual_review" / "arena"
+    # 路线级的额外构造参数（比如竞技场实跑要落两个盘）。同样按注册表取，
+    # 这里不认具名路线 —— 新增路线需要专属参数时，在 ``modes.py`` 注册项旁边写。
+    if spec.runner_options is not None:
+        runner_options.update(spec.runner_options(ROOT, dry_run))
     runner = spec.runner_type(machine, runtime, **runner_options)
     _install_finish_home(runner, home_return, runtime, mode=spec.name)
     try:
@@ -662,6 +645,27 @@ def _run_daily(args: argparse.Namespace) -> int:
     return 0
 
 
+def _apply_fixed_cycles(args: argparse.Namespace) -> None:
+    """次数由游戏规则决定的路线（``cycles_editable=False``）直接填上默认次数。
+
+    例：世界首领战每天上限就是 2 次、英雄合成跑完一遍列表就结束 —— 这些路线
+    命令行**不必**再传 ``--max-cycles``。
+
+    ⚠️ 次数只在 ``modes.MODE_SPECS`` 里定义一次。以前这里是三条写死的 ``if``
+    （各带一个魔数），与 ``launcher.py`` / ``desktop/catalog.py`` 三处手工对齐；
+    注释虽写着「都被测试钉住」，实际只钉住了 catalog 一处，另两处改漏了没人知道。
+
+    ⚠️ 用 ``.get()`` 而不是 ``get_mode()``：``--mode`` 写了不存在的名字时，要让它
+    照旧在后面 ``get_mode()`` 那里报错，不能在这里提前抛 —— 否则会抢在
+    「实跑需要 --confirm RUN」等参数校验前面，报错信息变得莫名其妙。
+    """
+    if args.max_cycles is not None:
+        return
+    spec = MODE_SPECS.get(args.mode)
+    if spec is not None and not spec.cycles_editable:
+        args.max_cycles = spec.default_cycles
+
+
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     if args.daily:
@@ -670,18 +674,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.live and args.confirm != "RUN":
             raise SystemExit("实跑模式需要附加参数：--live --confirm RUN")
         return _run_daily(args)
-    if args.mode == "hero_synthesis" and args.max_cycles is None:
-        # 英雄合成固定跑一遍列表，无需指定次数
-        args.max_cycles = 1
-    if args.mode == "world_boss" and args.max_cycles is None:
-        # 世界首领战每天固定 2 次（主页「剩余/上限」就是 2），无需指定次数。
-        # 与 launcher.py / desktop/catalog.py 三处保持一致（都被测试钉住）。
-        args.max_cycles = 2
-    if args.mode in ("knights_donation", "labyrinth_stone") and args.max_cycles is None:
-        # 骑士团捐赠每天跑一遍就够：请求支援一天只能发一次、红点领完就没了。
-        # 迷宫强化石同理：迷宫采购一天一次。
-        # 同上，与 launcher.py / desktop/catalog.py 三处保持一致。
-        args.max_cycles = 1
+    _apply_fixed_cycles(args)
     if args.live and args.confirm != "RUN":
         raise SystemExit("实跑模式需要附加参数：--live --confirm RUN")
     if args.live and (args.max_cycles is None or args.max_cycles <= 0):

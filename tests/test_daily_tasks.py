@@ -32,7 +32,7 @@ from auto_game_unified.games.epic7.daily_tasks import (
 
 
 def test_daily_list_keeps_the_agreed_order():
-    """次序是用户拍板的（世界首领战 → 骑士团捐赠 → 商店刷新 → 迷宫强化石 → 竞技场），别被 sorted 覆盖。"""
+    """次序是用户拍板的（世界首领战 → 骑士团捐赠 → 刷书签 → 迷宫强化石 → 竞技场），别被 sorted 覆盖。"""
     assert [task.mode for task in DAILY_TASKS] == [
         "world_boss",
         "knights_donation",
@@ -40,13 +40,29 @@ def test_daily_list_keeps_the_agreed_order():
         "labyrinth_stone",
         "arena",
     ]
+    # 名字从 ``modes.MODE_SPECS.label`` 派生 —— 这里改叫「刷书签」是用户
+    # 2026-09-27 拍板的（原先是「商店刷新」，与别处的「刷书签」不一致）。
     assert [task.label for task in DAILY_TASKS] == [
         "世界首领战",
         "骑士团捐赠",
-        "商店刷新",
+        "刷书签",
         "迷宫强化石",
         "竞技场",
     ]
+
+
+def test_daily_task_labels_come_from_mode_specs():
+    """名字与次数都派生自 ``MODE_SPECS``，本模块不再自己留一份。
+
+    这条防「又抄回去」：如果哪天有人给 ``DailyTask`` 加回 ``label`` / ``cycles``
+    字段，这条会立刻发现。
+    """
+    from auto_game_unified.games.epic7.modes import MODE_SPECS
+
+    for task in DAILY_TASKS:
+        spec = MODE_SPECS[task.mode]
+        assert task.label == spec.label
+        assert task.cycles == spec.default_cycles
 
 
 def test_every_daily_mode_exists_in_mode_specs():
@@ -63,7 +79,7 @@ def test_every_daily_mode_exists_in_mode_specs():
 def test_daily_cycles_are_positive_and_match_known_daily_limits():
     assert all(task.cycles > 0 for task in DAILY_TASKS)
     # 世界首领战每天固定 2 次；骑士团捐赠请求支援一天一次；
-    # 商店刷新默认 1 次付费刷新（花天空石、不可逆，界面可改）；迷宫强化石跑一遍。
+    # 刷书签默认 1 次付费刷新（花天空石、不可逆，界面可改）；迷宫强化石跑一遍。
     assert cycles_for("world_boss") == 2
     assert cycles_for("knights_donation") == 1
     assert cycles_for("shop_refresh") == 1

@@ -7,7 +7,11 @@ from typing import Callable, Optional
 
 import numpy as np
 
-from auto_game_unified.core.matcher import Match, find_template, load_template
+from auto_game_unified.core.matcher import (
+    Match,
+    find_best_template,
+    load_template,
+)
 from auto_game_unified.core.runtime import Runtime
 from auto_game_unified.core.supervisor import (
     StableObservation,
@@ -62,6 +66,7 @@ from auto_game_unified.games.epic7.evidence.world_boss import (
     build_world_boss_evidence,
 )
 from auto_game_unified.games.epic7.world_boss import WORLD_BOSS_ENTRY_PAGE
+from auto_game_unified.games.epic7.modes import MODE_LABELS
 from auto_game_unified.games.epic7.unknown_screen import (
     UnknownScreenWake,
     UnknownWakeResult,
@@ -108,18 +113,13 @@ PAGE_LABELS = {
     "unknown": "未知画面",
 }
 
-# 日志用模式名：模式标识 -> 中文模式名
-MODE_LABELS = {
-    "story": "主线",
-    "arena": "竞技场",
-    "expedition": "远征",
-    "fodder": "狗粮",
-    "hero_synthesis": "英雄合成",
-    "shop_refresh": "刷书签",
-    "world_boss": "世界首领战",
-    "knights_donation": "骑士团捐赠",
-    "labyrinth_stone": "迷宫强化石",
-}
+# 日志用模式名：模式标识 -> 中文模式名。
+#
+# ⚠️ 直接用 ``modes.MODE_LABELS``（那边的 ``ModeSpec.label`` 是唯一来源），
+# **不要**在这里再写一份。这里曾经有一张自己的表，而且漏了 ``survivor`` ——
+# 下面 ``.get(mode, mode)`` 有默认值兜底，漏了不会报错，只会把日志悄悄写成英文名。
+# （因为 survivor ``needs_navigation=False`` 走不到那条日志，一直没人发现。）
+# 现在这份引用是**全量**的（含 survivor），比原来那张手抄表更正确。
 
 
 # 「接力」白名单：模式 -> 允许 ``navigate(already_at=...)`` 的导航链页面。
@@ -187,7 +187,9 @@ class NavigationTemplates:
     episode_adventure: np.ndarray
     fodder_stage_title: np.ndarray
     fodder_prepare_battle: np.ndarray
-    lobby_shop_entry: np.ndarray
+    # 「秘密商店」入口是唯一会挂通知角标的大厅入口，故它的候选模板**不止一张**
+    # （干净版 + 带角标版），任一过阈即可命中。其余锚点仍是单张 ndarray。
+    lobby_shop_entry: tuple[np.ndarray, ...]
     lobby_knights: np.ndarray
     worldboss_entry: np.ndarray
     lobby_worldboss_select_team: np.ndarray
@@ -270,8 +272,9 @@ def build_navigation_templates(template_root: Path) -> NavigationTemplates:
         fodder_prepare_battle=load_template(
             str(template_root / "fodder" / "prepare_battle.png")
         ),
-        lobby_shop_entry=load_template(
-            str(template_root / shop_entry.template_path)
+        lobby_shop_entry=tuple(
+            load_template(str(template_root / path))
+            for path in (shop_entry.template_path, *shop_entry.alt_template_paths)
         ),
         lobby_knights=load_template(str(navigation / "lobby_knights.png")),
         worldboss_entry=load_template(str(navigation / "worldboss_entry.png")),
@@ -393,13 +396,30 @@ class Epic7Navigator:
         self._home_return_templates: Optional[HomeReturnTemplates] = None
 
     def _locate(self, screen: np.ndarray, name: str, threshold: float = 0.82) -> Optional[Match]:
-        return find_template(
-            screen,
-            getattr(self.templates, name),
-            threshold,
-            region=self._REGIONS[name],
-            reference_size=REFERENCE_SIZE,
-        )
+        """在锚点区域内找到**最高分且过阈**的匹配。
+
+        一个锚点可以登记多个候选模板（``NavigationTemplates`` 里那类字段是
+        ``tuple[np.ndarray, ...]``）—— 典型是大厅「秘密商店」入口：它有时会挂
+        「未读新内容」的红 N 角标，和干净模板的相似度只有 ~0.81（门槛 0.82）。
+        多条候选之间**任一过阈即算命中**，命中取过阈候选里分数最高的那个，
+        所以「带角标」和「不带角标」两种长相都能进店，不必等角标消失。
+        """
+        candidates = getattr(self.templates, name)
+        if isinstance(candidates, np.ndarray):
+            candidates = (candidates,)
+        best: Optional[Match] = None
+        for template in candidates:
+            match = find_best_template(
+                screen,
+                template,
+                region=self._REGIONS[name],
+                reference_size=REFERENCE_SIZE,
+            )
+            if match is None or match.score < threshold:
+                continue
+            if best is None or match.score > best.score:
+                best = match
+        return best
 
     def _click_offset(self, anchor: str) -> tuple[int, int]:
         if anchor == "lobby_story":

@@ -38,7 +38,7 @@ from PIL import Image
 from auto_game_unified import main as main_module
 from auto_game_unified.core.battle_supervisor import BattleOutcome
 from auto_game_unified.core.runtime import Runtime
-from auto_game_unified.games.epic7.modes import _probe_story_resume, get_mode
+from auto_game_unified.games.epic7.modes import get_mode
 from auto_game_unified.games.epic7.navigation import (
     Epic7Navigator,
     build_navigation_templates,
@@ -248,7 +248,9 @@ class StoryResumeProbeTests(unittest.TestCase):
     def test_matching_frame_moves_the_machine_onto_that_step(self):
         machine = new_machine()
 
-        point = _probe_story_resume(machine, story_fixture("team_live_20260809"), self.navigator)
+        point = get_mode("story").resume_probe(
+            machine, story_fixture("team_live_20260809"), self.navigator
+        )
 
         self.assertEqual("队伍准备", point.page)
         self.assertEqual(StoryState.TEAM.value, point.state)
@@ -258,7 +260,9 @@ class StoryResumeProbeTests(unittest.TestCase):
     def test_entry_page_moves_the_machine_to_the_stage_state(self):
         machine = new_machine()
 
-        point = _probe_story_resume(machine, story_fixture("stage"), self.navigator)
+        point = get_mode("story").resume_probe(
+            machine, story_fixture("stage"), self.navigator
+        )
 
         self.assertEqual(STORY_ENTRY_PAGE, point.entry)
         self.assertIs(StoryState.STAGE, machine.state)
@@ -267,7 +271,9 @@ class StoryResumeProbeTests(unittest.TestCase):
         machine = new_machine()
 
         self.assertIsNone(
-            _probe_story_resume(machine, navigation_fixture("lobby"), self.navigator)
+            get_mode("story").resume_probe(
+                machine, navigation_fixture("lobby"), self.navigator
+            )
         )
 
         self.assertIs(StoryState.STAGE, machine.state)
@@ -277,19 +283,21 @@ class StoryResumeProbeTests(unittest.TestCase):
         """导航器缺席时不该崩：锚点那部分自己就能认。"""
         machine = new_machine()
 
-        point = _probe_story_resume(machine, story_fixture("reward"), None)
+        point = get_mode("story").resume_probe(machine, story_fixture("reward"), None)
 
         self.assertEqual("奖励结算", point.page)
 
     def test_resumed_cycle_is_not_counted_before_it_actually_finishes(self):
         machine = new_machine()
 
-        _probe_story_resume(machine, story_fixture("results"), self.navigator)
+        get_mode("story").resume_probe(machine, story_fixture("results"), self.navigator)
 
         self.assertEqual(0, machine.completed_cycles)
 
     def test_only_arena_story_and_expedition_expose_a_probe(self):
-        self.assertIs(_probe_story_resume, get_mode("story").resume_probe)
+        # 探针 2026-09-27 起由工厂 ``modes._resume_probe`` 在注册处现造 ⇒
+        # 断言「注册的那个是用**本路线的判据**造的」。
+        self.assertIs(detect_resume_point, get_mode("story").resume_probe.__wrapped__)
         self.assertIsNotNone(get_mode("arena").resume_probe)
         self.assertIsNotNone(get_mode("expedition").resume_probe)
         for name in ("fodder", "hero_synthesis", "survivor"):
