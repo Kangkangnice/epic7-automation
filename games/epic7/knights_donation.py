@@ -135,10 +135,15 @@
 （原先按红点决定进不进，已拿掉）。``guild_home_with_dot.png`` 仍然留着，用途变成
 ``activity_entry`` 余量最薄的回归依据（红点盖住图标左上角 ⇒ 0.9259）。
 
-**没跑过「支援到 200 点上限」**那一路 —— 用户描述到上限时会浮出一行「已经到了资源上限」
-的字。本模块**不依赖**那行字：上限一旦到达，列表里的绿色按钮会自己变灰（同一玩家一天
-只能支援一次），状态机找不到绿按钮就自然收尾。
-**换客户端（PC）或换分辨率时，角标判据必须重采正向样本**。
+**「支援到上限」这一路已经跑到了（2026-09-25 晚实跑，2026-09-26 补齐判据）** ——
+⚠️ 原先这里写着「上限一旦到达，列表里的绿色按钮会自己变灰，状态机找不到绿按钮就自然收尾」，
+**这条假设是错的**：上限满了之后列表里的绿按钮**照样是绿的**、点下去连提示都不弹
+（用户描述的「已经到了资源上限」那行小字在实跑里也没等到）。
+现在上限由右上角「今日支援上限 N/200」**整串**判据直接读出来
+（``support_limit_full``，命中 ``200/200`` = 满了 ⇒ 一个支援按钮都不点、直接切每周任务）；
+判据没读到数字时才退回「连点 4 次推不动」那条老路（见 ``support_closed``）。
+
+**换客户端（PC）或换分辨率时，角标判据与上限判据都要重采正向样本**。
 """
 
 from dataclasses import dataclass
@@ -307,6 +312,59 @@ def request_button_relative_v(
     return float(np.percentile(patch.max(axis=2), 99.9)) / frame_v
 
 
+# ---- 「今日支援上限」满没满（2026-09-26 补的**画面判据**）----
+#
+# 以前这条只能靠「``support-one`` 连点 4 次推不动」倒推，日志里写的是**推测**：
+# 「多半是今日支援上限已满」。两处代价（2026-09-25 实跑都撞上了）：
+#   ① 一天里第二次跑捐赠，又要白点 4 次、再恢复导航一次，才得出同一结论；
+#   ② 「没推进」也可能是别的原因（点丢了 / 那一行真的吃不下），却一律写成「上限满了」。
+#
+# 现在直接读右上角那一行「今日支援上限 N/200」的**数字本身**：
+# 整串当一张模板匹配（用户 2026-09-26 定的做法），命中「200/200」= 满了。
+#
+# 模板来源：2026-09-25 21:38 那次实跑的现场帧
+# （``runtime_diagnostics/epic7_knights_donation/20260925_213803_468044_knights_support-one_stuck.png``，
+# 就是 support-one 推不动的那一帧，右上角正是 200/200）。裁框由字形探针定位：
+# 7 个字形落在画布 x 1244..1350、y 199..221。
+SUPPORT_LIMIT_BOX = (1242, 197, 110, 27)
+# 搜索区：套住右上角那一整行、不越到别的区域（左侧的进度图标留在框外，
+# 图标在不同帧里会变颜色，把它包进来只会平白多一个变量）。
+SUPPORT_LIMIT_REGION = (1150, 175, 280, 70)
+#
+# 阈值 0.90 由**全库实测**定（``runtime_logs/_kd_limit_build_assets.py``，
+# 257 张基准尺寸夹具）：
+# - 正例（``support_limit_full``，200/200）：**1.0000**
+# - 最高干扰：**0.8167** —— ``support_page_short_material``（同页但是 **90/200**）；
+#   同页 30/200 的四张 0.7792~0.7895（整串与「200/200」共享 ``0/200`` 尾巴，
+#   所以同页干扰天然就高，这也是不能把阈值往 0.85 以下放的原因）
+# - 其它路线最高只有 **0.2720**（英雄页的转送按钮）
+# ⇒ 阈值 0.90：对「没满」余量 0.083、对正例余量 0.10。**改它之前重跑那个探针。**
+SUPPORT_LIMIT_FULL_THRESHOLD = 0.90
+
+
+def support_limit_full(
+    screen: np.ndarray,
+    template: np.ndarray,
+    *,
+    region: tuple[int, int, int, int] = SUPPORT_LIMIT_REGION,
+    reference_size: tuple[int, int] = REFERENCE_SIZE,
+) -> Optional[Match]:
+    """右上角「今日支援上限」是不是已经满了（整串 ``200/200`` 命中）。命中返回 Match。
+
+    认不出/读不到（框被弹窗盖住、页面淡入到看不见字、分辨率不符）⇒ 返回 ``None``
+    = **当作没满**，照旧去点支援按钮。这个方向是刻意选的：判成「已满」会跳过整个
+    支援环节，而这一天的支援机会不可能补回来；判成「没满」最坏也就是退回今天的行为
+    （点不动 ⇒ 4 次之后 ``support_closed`` 兜底）。
+    """
+    return find_template(
+        screen,
+        template,
+        SUPPORT_LIMIT_FULL_THRESHOLD,
+        region=region,
+        reference_size=reference_size,
+    )
+
+
 def state_label(state: KnightsDonationState) -> str:
     return STATE_LABELS.get(state, state.value)
 
@@ -344,6 +402,9 @@ class KnightsDonationTemplates:
     reward_title: np.ndarray
     support_confirm_title: np.ndarray
     support_confirm_button: np.ndarray
+    # 右上角「今日支援上限 200/200」的**整串**外观：命中 = 今天支援到顶了。
+    # 判据见 ``support_limit_full``（含全库实测的阈值依据）。
+    support_limit_full: np.ndarray
     # 数字字模（0~5），前置判据「材料不足就跳过」用；见 ``knights_support_digits.py``。
     # ⚠️ 刻意**不给默认值**：字模是判据的一部分，漏了就会安静地退回「照旧点」，
     # 属本项目最怕的「判据没接上」那类。要动它就得显式改这里。
@@ -371,6 +432,7 @@ def build_knights_donation_templates(template_dir: Path) -> KnightsDonationTempl
         reward_title=load("reward_title"),
         support_confirm_title=load("support_confirm_title"),
         support_confirm_button=load("support_confirm_button"),
+        support_limit_full=load("support_limit_full"),
         # 缺任何一个数字字模都会在这里直接抛错 —— 宁可加载不动，也不要安静地
         # 退回「点完没反应就重试」那条老路。
         digit_glyphs=load_digit_glyphs(template_dir),
@@ -424,6 +486,16 @@ class KnightsDonationStateMachine:
         # 本轮已经点下去、还在等结果的支援（按钮中心的 y）。它表达的是
         # 「这一下到底生效没有」的待结算状态，画面里看不出来。
         self.pending_support_y: Optional[int] = None
+        # 「支援这一节到此为止」：``support-one`` 连点 4 次都没推进时由 Runner 置上
+        # （见 ``_on_action_exhausted``）。置上之后**一个支援按钮都不点**，
+        # 进到资源支援页直接切「每周任务」—— 用户 2026-09-25 的要求：
+        # 「碰到了捐赠上限，那就跳过这个环节，那就直接到下一步那个每周任务」。
+        #
+        # ⚠️ 2026-09-26 更正：原注释写「画面里看不出上限满了，只能靠推不动推出来」——
+        # 前半句只对了一半：**列表里的绿按钮**确实看不出（照样是绿的、点下去连提示都不弹），
+        # 但右上角那一行「今日支援上限 N/200」是清清楚楚的。现在有画面判据
+        # ``support_limit_full``，这条标志退化成**兜底**（判据没读到数字时才用得上）。
+        self.support_closed = False
         # 收工理由（写进运行日志的「结论=」，认页面时不出来，只在 _finish 里写）。
         self.finish_reason = ""
         self._confirmed_page = ""
@@ -560,6 +632,36 @@ class KnightsDonationStateMachine:
         return ratio >= REQUEST_BUTTON_ALIVE_RATIO
 
     def _at_resource_support(self, screen: np.ndarray):
+        # 0') 支援这一节已经收工 ⇒ **一个按钮都不点**，直接切「每周任务」。
+        #
+        #    触发场景（2026-09-25 晚实跑）：右上角「今日支援上限 200/200」满了，
+        #    列表里的绿按钮却**照样是绿的**、点下去什么都不发生 ⇒ ``support-one``
+        #    连点 4 次推不动 ⇒ Runner 置上 ``support_closed``，主循环**原地**重新
+        #    决策一次（不再回大厅重新导航）。重新决策落到这一页时就在这里掉头：
+        #    支援不做了，但**每周任务照做**（这正是用户要的「跳过这一节，走下一步」；
+        #    改了之前会整条路线收工、把每周任务一起丢掉）。
+        #    ② 另外一路**不进这页**也能收工：右上角「今日支援上限 200/200」是**看得见的**
+        #    画面证据（2026-09-26 补的判据 ``support_limit_full``）。它比「推不动」更早、
+        #    也更准 —— 后者只是症状，前者是原因。两条来路在日志里**分开写**，不混。
+        limit = support_limit_full(screen, self.templates.support_limit_full)
+        if self.support_closed or limit is not None:
+            tab = self._required(screen, "tab_weekly_tasks")
+            if limit is not None:
+                evidence = (
+                    f"右上角「今日支援上限」已经满（整串 200/200，得分 {limit.score:.4f}"
+                    f" @{limit.center}）"
+                )
+            else:
+                evidence = "本轮的支援按钮连点 4 次都没推进过（当时没读到上限数字）"
+            return self._action(
+                "open-weekly-tab",
+                point=tab.center,
+                source_page=state_label(KnightsDonationState.RESOURCE_SUPPORT),
+                target_pages=(state_label(KnightsDonationState.WEEKLY_TASKS),),
+                reason=(
+                    f"支援这一节收工：{evidence} ⇒ 不再点任何支援按钮，直接去做每周任务"
+                ),
+            )
         # 0) 先结算上一轮：**回到列表页就说明没等到「获得奖励」** ⇒ 那一下没生效，
         #    把那一行记进跳过表（实测 + 用户确认：材料不足时游戏只闪一行小字
         #    「材料不足」，行不消失、点数不涨、也不弹奖励 ⇒ 就是「吃不下」）。
@@ -872,7 +974,6 @@ class KnightsDonationRunner(ModeRunnerBase):
         *,
         sleep: Callable[[float], None] = default_sleep,
         poll_seconds: float = 1.0,
-        recovery: Callable[[], None] | None = None,
         recovery_gate: RecoveryGate | None = None,
     ) -> None:
         super().__init__(
@@ -880,7 +981,6 @@ class KnightsDonationRunner(ModeRunnerBase):
             runtime,
             sleep=sleep,
             poll_seconds=poll_seconds,
-            recovery=recovery,
             recovery_gate=recovery_gate,
         )
 
@@ -908,26 +1008,39 @@ class KnightsDonationRunner(ModeRunnerBase):
             "knights-support-scroll",
         )
 
-    def _apply_recovery_state(self) -> None:
-        # 恢复导航的落点就是「骑士团主页」（``navigate("knights_donation")`` 只走
-        # 大厅 → 骑士团这一级），所以状态回到 GUILD_HOME、与落点一致。
-        self.machine.state = KnightsDonationState.GUILD_HOME
-        # 恢复导航已经把画面换掉了，旧的「已确认页面」作废（story / world_boss 同样清空）。
-        self.machine._confirmed_page = ""
-        # 正在等结果的那次支援作废（点了没点完，画面已经换掉了）。
-        self.machine.pending_support_y = None
-        # ⚠️ 刻意**不重置** skipped_rows：那是「这一行吃不下」的事实，恢复不改变它；
-        # 重置会导致恢复后在同一行上再白转一轮。
-        # 「今天这一次请求支援已经发出去了」是**跨帧进度**，恢复后画面里看不出来；
-        # 但恢复只发生在页面没进展时，此时请求支援那一支早已走完 —— 保留原值即可。
-        # 这里刻意不重置 request_done：重置会导致恢复后重复请求（一天只能一次）。
-
     def _on_action_exhausted(self, action: KnightsDonationAction, screen) -> bool:
-        """点 4 次都推不动 ⇒ 明确失败，记日志 + 留诊断后正常停止。
+        """点 4 次都推不动：**支援这一节与别的动作处理不同**。
 
-        绝不无限重试：支撑到上限时列表里的绿按钮会自己变灰（同一玩家一天只能支援
-        一次），所以「绿色按钮一直点不动」不是「到上限」，而是真的出了问题。
+        ⚠️ 原注释写着「支撑到上限时列表里的绿按钮会自己变灰（同一玩家一天只能支援
+        一次），所以绿色按钮一直点不动 = 真的出了问题」—— 这条假设 **2026-09-25 晚
+        被实跑证伪**：那时右上角「今日支援上限 200/200」已经满了，而列表里的绿按钮
+        **照样是绿的**、点下去什么都不发生（游戏连提示都不弹）。
+        旧行为是返回 True 就地收尾 ⇒ **整条路线提前结束**，后面的「每周任务」领奖
+        跟着一起丢掉。
+
+        所以 ``support-one`` 推不动时：置上「支援这一节收工」，返回 False 交给
+        ``run()`` 去给一次「换个办法」的机会 —— 主循环**原地**重新决策一次，
+        状态机在资源支援页看到那个标志就把流程推进到「每周任务」。
+        代价为零（不用再回大厅重新导航那二十几秒），
+        换回的是「这一天的每周任务照做」。
+
+        ⚠️ 2026-09-26 更正：这段注释原来写的是「返回 False 放行走**恢复导航**
+        （回大厅重新导航再回来）」。用户当天拍板「回家就是结束，不可能再回到
+        这个任务」⇒ ``runner_base`` 那条「回大厅重新导航然后接着跑」整段删掉，
+        改成**原地**让路线重新决策一次。这条路线要的语义没变，只是少绕一趟大厅。
+
+        ⚠️ 「换个办法」**只给一次**（``runner_base._self_heal_used``）：重新决策
+        如果还是 ``support-one`` 本身，主循环立刻收手，**不会**再多点 4 次。
+
+        其它动作推不动 ⇒ 维持原样（优雅收尾）：那才是真的出了问题。
         """
+        if action.name == "support-one":
+            self.machine.support_closed = True
+            self.runtime.log(
+                f"模式={self._MODE_LABEL} 支援=连点 4 次没能推进"
+                " ⇒ 结束支援这一节，接下来直接去做每周任务（不再点任何支援按钮）"
+            )
+            return False
         diagnostic = self.runtime.save_diagnostic(f"knights_{action.name}_stuck", screen)
         self._save_failure_diagnostic(
             diagnostic,

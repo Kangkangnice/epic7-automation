@@ -31,6 +31,8 @@ from auto_game_unified.games.epic7.world_boss import (
     WEEKLY_CHEST_MAX_CLICKS,
     WEEKLY_CHEST_REGION,
     WEEKLY_CHEST_THRESHOLD,
+    WEEKLY_CHEST2_BOX,
+    WEEKLY_CHEST2_REGION,
     AttemptsExhausted,
     WorldBossAction,
     WorldBossRunner,
@@ -305,6 +307,27 @@ class WorldBossWeeklyChestTests(unittest.TestCase):
 
         self.assertEqual("open-team-select", action.name)
 
+    def test_a_home_without_a_chest_reports_the_scan_instead_of_staying_silent(self):
+        """⚠️ 不许哑判（2026-09-26 用户要求）：「没有宝箱」也是结论，要带**实测数字**。
+
+        2026-09-25 23:01 那次实跑：到主页两秒后就以「今日次数已用完」收场，日志里
+        **一句关于宝箱的话都没有** —— 事后根本分不清「当时确实没得领」还是
+        「判据漏了、本来该领没领」。所以两个槽位的形状分/亮度比都要写进结论里，
+        让人一眼看出是「差得远」还是「差一点」。
+        """
+
+        machine = WorldBossStateMachine(TEMPLATES)
+
+        with self.assertRaises(AttemptsExhausted) as caught:
+            machine.next_action(fixture("worldboss_home_exhausted"))
+
+        message = str(caught.exception)
+        self.assertIn(
+            "宝箱扫描", message, f"没有宝箱时的结论必须带扫描数字，实际 {message}"
+        )
+        for slot in ("#1", "#2"):
+            self.assertIn(slot, message, f"两个槽位都要量到，实际 {message}")
+
     def test_chest_box_matches_the_template_size(self):
         """裁框与模板必须同尺寸 —— 模板换了、框不跟着改，得分会莫名其妙变低。"""
 
@@ -362,6 +385,128 @@ class WorldBossWeeklyChestTests(unittest.TestCase):
                     WEEKLY_CHEST_BRIGHTNESS_RATIO - 0.30,
                     f"{name} 没在发光，亮度比应远低于阈值（实测 {ratio:.3f}）",
                 )
+
+
+class WorldBossWeeklyChest2Tests(unittest.TestCase):
+    """宝箱 #2（`44,000,000`，进度条右侧那一档）—— 2026-09-25 补齐的那一档。
+
+    守三件事：
+    1. 它在实测中心（画布 **(1824,527)**）认得出；
+    2. ⚠️ **两个槽位互不串台** —— 两档外观不同（#2 发光态对 #1 的模板只有 0.5161），
+       混用不是「效果差一点」，而是漏领或点错箱子；
+    3. 未到档（两版未点亮主页）认不出，且余量足够。
+    """
+
+    #: 宝箱 #2 实测中心（画布坐标，由亮度峰值定位，见 `runtime_logs/_wb_chest2_assets.py`）。
+    CHEST2_POINT = (1824, 527)
+
+    def _find2(self, name: str):
+        machine = WorldBossStateMachine(TEMPLATES)
+        return find_weekly_chest(
+            fixture(name),
+            machine.templates.weekly_chest2,
+            region=WEEKLY_CHEST2_REGION,
+            box=WEEKLY_CHEST2_BOX,
+        )
+
+    def test_claimable_chest2_is_found_at_the_measured_centre(self):
+        match = self._find2("worldboss_home_chest2_claimable")
+
+        self.assertIsNotNone(match, "第二个宝箱发光时必须认得出")
+        self.assertGreater(match.score, WEEKLY_CHEST_THRESHOLD)
+        self.assertLessEqual(abs(match.center[0] - self.CHEST2_POINT[0]), 3)
+        self.assertLessEqual(abs(match.center[1] - self.CHEST2_POINT[1]), 3)
+
+    def test_the_two_slots_do_not_cross_talk(self):
+        """⚠️ 两个槽位各有模板与搜索区，**谁都不许认到对面的箱子**。
+
+        串台的后果分别是：认漏（该领的没领）和认错（点着一个领不动的箱子磨到撒手）。
+        所以两个方向都要断言，而不是只测「正例能命中」。
+        """
+
+        machine = WorldBossStateMachine(TEMPLATES)
+
+        # 方向一：#2 发光那张图里，**#1 的判据**必须认不出（#1 那格是绿勾）。
+        self.assertIsNone(
+            find_weekly_chest(
+                fixture("worldboss_home_chest2_claimable"), machine.templates.weekly_chest
+            ),
+            "#1 的判据不该认到 #2 的箱子（会把点击落到错的位置）",
+        )
+        # 方向二：#1 发光那张图里，**#2 的判据**必须认不出。
+        self.assertIsNone(
+            self._find2("worldboss_home_chest_claimable"),
+            "#2 的判据不该认到 #1 的箱子",
+        )
+
+    def test_unlit_chest2_is_not_reported_as_claimable(self):
+        """#2 没到档（两版未点亮主页）不许判成可领，并断言余量够厚。"""
+
+        template = WorldBossStateMachine(TEMPLATES).templates.weekly_chest2
+
+        for name in ("worldboss_home", "worldboss_home_exhausted"):
+            with self.subTest(page=name):
+                best = find_best_template(
+                    fixture(name), template, region=WEEKLY_CHEST2_REGION
+                )
+                self.assertLess(
+                    best.score,
+                    WEEKLY_CHEST_THRESHOLD - 0.20,
+                    f"{name} 的 #2 槽位没到档，得分离阈值太近（{best.score:.4f}）",
+                )
+                self.assertIsNone(
+                    self._find2(name), f"{name} 的 #2 没到档，不该判成可领"
+                )
+
+    def test_no_other_world_boss_page_looks_like_chest2(self):
+        """本路线其它页一张都不许被 #2 的判据认成可领（含 #1 的三种态）。"""
+
+        hits = {
+            path.name
+            for path in sorted(FIXTURES.glob("*.png"))
+            if self._find2(path.stem) is not None
+        }
+
+        self.assertEqual({"worldboss_home_chest2_claimable.png"}, hits)
+
+    def test_chest2_box_matches_the_template_size(self):
+        """裁框与模板必须同尺寸 —— 模板换了框不跟着改，得分会莫名其妙变低。"""
+
+        template = WorldBossStateMachine(TEMPLATES).templates.weekly_chest2
+
+        self.assertEqual(WEEKLY_CHEST2_BOX[2], template.shape[1])
+        self.assertEqual(WEEKLY_CHEST2_BOX[3], template.shape[0])
+
+    def test_home_with_chest2_claimable_claims_that_slot(self):
+        """站在「#2 可领」的主页上：动作要指向 #2 的中心，日志要能看出是哪个槽位。"""
+
+        machine = WorldBossStateMachine(TEMPLATES)
+        screen = fixture("worldboss_home_chest2_claimable")
+
+        self.assertIs(WorldBossState.HOME, machine.observe_page(screen))
+        action = machine.next_action(screen)
+
+        self.assertEqual("claim-weekly-chest", action.name)
+        self.assertEqual(self.CHEST2_POINT, action.point)
+        self.assertIn("#2", action.reason, "日志要写明是哪个槽位，否则看不出现场")
+
+    def test_brightness_ratio_is_measured_on_the_matching_slot(self):
+        """亮度比必须量**对应槽位**的那一块：量错箱子，这道判据就等于没有。
+
+        #2 发光那张图上：按 #2 的框量明显过线（≈3.2），按 #1 的框量不过线（≈1.0）。
+        这就是为什么 ``weekly_chest_brightness_ratio`` 要带 ``box`` 参数。
+        """
+
+        screen = fixture("worldboss_home_chest2_claimable")
+
+        self.assertGreater(
+            weekly_chest_brightness_ratio(screen, box=WEEKLY_CHEST2_BOX),
+            WEEKLY_CHEST_BRIGHTNESS_RATIO + 0.30,
+        )
+        self.assertLess(
+            weekly_chest_brightness_ratio(screen, box=WEEKLY_CHEST_BOX),
+            WEEKLY_CHEST_BRIGHTNESS_RATIO - 0.30,
+        )
 
 
 class WorldBossStateMachineTests(unittest.TestCase):
@@ -613,6 +758,33 @@ class WorldBossRunnerTests(unittest.TestCase):
         self.assertTrue(
             any("停止=今日次数已用完" in line for line in logs),
             f"日志要能一眼看出缺的是什么，实际 {logs}",
+        )
+
+    def test_running_out_of_attempts_logs_the_chest_scan_numbers(self):
+        """真 Runner 跑一遍：日志里**必须**看得到宝箱扫描的实测数字。
+
+        上面那条（``test_a_home_without_a_chest_reports_the_scan_...``）只证明
+        「异常对象里带了数字」，这条证明**数字真的进了日志** —— 2026-09-25 23:01
+        那次实跑缺的就是这一行，所以它要跑真主循环来守。
+        """
+
+        machine = WorldBossStateMachine(TEMPLATES)
+        logs: list[str] = []
+        runner = WorldBossRunner(
+            machine,
+            Runtime(
+                lambda: fixture("worldboss_home_exhausted"),
+                lambda _point: None,
+                emit=logs.append,
+            ),
+            sleep=lambda _: None,
+        )
+
+        runner.run(max_cycles=3)
+
+        self.assertTrue(
+            any("宝箱扫描" in line for line in logs),
+            f"日志里必须留一条宝箱扫描结论，否则事后分不清「没得领」还是「漏判」，实际 {logs}",
         )
 
     def test_claiming_a_chest_that_never_goes_away_stops_after_bounded_tries(self):

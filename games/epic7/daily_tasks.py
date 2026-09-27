@@ -1,15 +1,17 @@
 """「每日任务」：把几条路线按固定次序串起来一次跑完。
 
 用户诉求（2026-09-25）：每天点一下，把该做的日常任务依次跑完。
-默认串三条 —— 世界首领战 → 骑士团捐赠 → 竞技场；界面上可以只勾其中一两条。
+默认串五条 —— 世界首领战 → 骑士团捐赠 → 商店刷新 → 迷宫强化石 → 竞技场；界面上可以只勾其中几条。
 
 **为什么不塞进 ``MODE_SPECS``**：路线是「一个状态机 + 一个 Runner」的固定形状，
 而这里是**编排**（循环调用 ``main.run_mode``）。硬塞进去会污染 ``--mode`` 的
 枚举、``ROUTES``、接力 ``ResumePoint`` 这些本该只管真路线的机制。
 
 **为什么次序是写死的、界面上不给排序**：用户明确说「顺序不重要」（= 不想操心
-先后）。次序在这里定：骑士团那两条路径相近放一起，竞技场入口不同放最后。
-要调整就改 ``DAILY_TASKS``，不必动界面。
+先后）。次序在这里定：世界首领战与骑士团捐赠都从骑士团进、路径相近放一起；
+商店刷新（秘密商店）与迷宫强化石各自独立；竞技场入口不同、最灵活，放最后。
+⚠️ 商店刷新的 ``cycles`` 是「付费刷新次数」，**花天空石、点了不可撤销**，
+所以默认只 1 次且界面上可改（同竞技场），别在这里写大数。要调整就改 ``DAILY_TASKS``，不必动界面。
 
 **每段之间「确保在首页」**（用户拍板：先看再拉）：
 上一条不管正常结束还是异常结束，本条开跑前先看一眼当前帧 —— 已在大厅就跳过
@@ -26,7 +28,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Callable, Mapping, Optional
 
 from auto_game_unified.core.runtime import ManualStop
 from auto_game_unified.games.epic7.modes import get_mode
@@ -42,13 +44,18 @@ class DailyTask:
 
 
 # 次序即执行次序（与 ``mode`` 的字母序无关，别用 sorted 覆盖它）。
-# cycles 与各路线在 desktop/catalog.py / main.py 里的「每日默认次数」保持一致：
-#   - world_boss 每天固定 2 次（主页「剩余/上限」就是 2）；
-#   - knights_donation 请求支援一天只能发一次 ⇒ 1 次；
-#   - arena 没有每日上限，先按 1 场走，用户要更多就在界面上改（见 ``cycles_for``）。
+# cycles 是**默认次数**，界面上可以改（改的值走 ``run_daily_tasks(cycles_override=...)``）：
+#   - world_boss 每天固定 2 次（主页「剩余/上限」就是 2）⇒ 界面上置灰、不给改；
+#   - knights_donation 请求支援一天只能发一次 ⇒ 1 次，同样置灰；
+#   - shop_refresh 默认 1 次「付费刷新」（花**天空石**、**不可逆**）⇒ 界面可改（同 arena）；
+#   - labyrinth_stone 跑一遍就结束 ⇒ 1 次；
+#   - arena 没有每日上限，默认 1 场，用户想多跑几场就自己填。
+# 三处「默认次数」必须一致：这里、desktop/catalog.py 与 main.py 的兜底（都有测试钉住）。
 DAILY_TASKS: tuple[DailyTask, ...] = (
     DailyTask(mode="world_boss", label="世界首领战", cycles=2),
     DailyTask(mode="knights_donation", label="骑士团捐赠", cycles=1),
+    DailyTask(mode="shop_refresh", label="商店刷新", cycles=1),
+    DailyTask(mode="labyrinth_stone", label="迷宫强化石", cycles=1),
     DailyTask(mode="arena", label="竞技场", cycles=1),
 )
 
@@ -127,18 +134,26 @@ def ensure_at_lobby(
     navigator: object,
     runtime: object,
     mode_label: str,
+    home_return: Optional[Callable[..., object]] = None,
 ) -> Optional[str]:
     """确认「人在大厅」；不在就拉回来。返回失败原因，成功（含本来就到了）返回 None。
 
     ⚠️ 契约（与 ``ModeRunnerBase._close_out`` 一致）：**绝不抛异常** —— 由调用方
     决定怎么处理失败（这里是「放弃剩余任务并汇总」）。失败原因是要给人看的一句话。
+
+    ``home_return`` 是「回大厅」这一步的具体做法（走新流程还是老流程，由
+    ``main.HomeReturn`` 按路线白名单决定）。**传 None 就用导航器自带的那套** ——
+    这条兜底是给不关心分流的调用方留的，正常串任务时都应该传。
     """
     try:
         if _observe_lobby(navigator, runtime) == "lobby":
             runtime.log(f"模式={mode_label} 段间检查=已在首页 动作=跳过返回")
             return None
         runtime.log(f"模式={mode_label} 段间检查=不在首页 动作=受控返回大厅")
-        navigator.return_home()
+        if home_return is None:
+            navigator.return_home()
+        else:
+            home_return()
         return None
     except Exception as error:  # noqa: BLE001 —— 契约要求绝不外抛
         return f"{type(error).__name__}: {error}"
@@ -147,19 +162,30 @@ def ensure_at_lobby(
 def run_daily_tasks(
     *,
     selected: object = None,
+    cycles_override: Optional[Mapping[str, int]] = None,
     dry_run: bool,
     window_backend: str = "emulator",
     stop_file: Path | None = None,
     run_mode: Callable[..., object],
     build_probe: Optional[Callable[[], tuple[object, object]]] = None,
+    build_home_return: Optional[
+        Callable[[object, object, str], Callable[..., object]]
+    ] = None,
 ) -> DailyReport:
     """按 ``DAILY_TASKS`` 的次序把选中的路线逐条跑完，返回汇总。
 
-    参数里的两个可注入点是为了可测：
+    ``cycles_override`` 是「这几条不要用 ``DAILY_TASKS`` 里的默认次数」——
+    例如竞技场想连跑 3 场。**没写进来的路线一律用默认次数**，所以它是一张
+    稀疏覆盖表，不是必须齐全的对照表。
+
+    参数里的可注入点都是为了可测：
 
     - ``run_mode``：跑单条路线的函数（就是 ``main.run_mode``）。测试传替身。
     - ``build_probe``：建「段间检查」用的 ``(runtime, navigator)`` 的函数，
       只有实跑（非 dry_run）才会被调用。测试传替身，避免真去连窗口。
+    - ``build_home_return``：按「(navigator, runtime, mode)」造出「回大厅」这一步
+      怎么做（就是 ``main.HomeReturn``）。**不传就走导航器自带的那套**，
+      留给不关心路线分流的调用方。
 
     ⚠️ 干跑（``dry_run``）下**不做段间回大厅**：干跑本来就不碰游戏，
     没有 navigator 可建，硬做会假报「回不了家」。这与路线收尾的处理一致。
@@ -170,6 +196,12 @@ def run_daily_tasks(
     probe_builder = build_probe if not dry_run else None
     probe: tuple[object, object] | None = None
 
+    def home_return_builder(mode: str) -> Optional[Callable[..., object]]:
+        if build_home_return is None or probe is None:
+            return None
+        navigator, runtime = probe[1], probe[0]
+        return build_home_return(navigator, runtime, mode)
+
     def ensure_probe() -> tuple[object, object] | None:
         nonlocal probe
         if probe_builder is None:
@@ -178,8 +210,11 @@ def run_daily_tasks(
             probe = probe_builder()
         return probe
 
+    overrides = dict(cycles_override or {})
+
     for mode in modes:
         task = DAILY_BY_MODE[mode]
+        cycles = overrides.get(mode, task.cycles)
 
         # 段间检查：这一段之前先确保人在大厅（第一条不用 —— 开局本来就该在大厅，
         # 且第一条的 _enter_mode 自己会处理）。
@@ -191,6 +226,9 @@ def run_daily_tasks(
                     navigator=probe_navigator,
                     runtime=probe_runtime,
                     mode_label=task.label,
+                    # 按**即将要跑的那条路线**决定怎么回家：上一段就是被这条路线
+                    # 收尾留在半路的，用同一条路线的口径拉回来最合适。
+                    home_return=home_return_builder(task.mode),
                 )
                 if failure is not None:
                     report.aborted_reason = (
@@ -211,7 +249,7 @@ def run_daily_tasks(
             result = run_mode(
                 spec=spec,
                 dry_run=dry_run,
-                max_cycles=task.cycles,
+                max_cycles=cycles,
                 start_state=spec.default_state,
                 window_backend=window_backend,
                 stop_file=stop_file,

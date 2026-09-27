@@ -19,6 +19,7 @@
    构造出来，只用来覆盖分支，不当识别准确率的证据。
 """
 
+import tempfile
 import unittest
 from dataclasses import replace
 from pathlib import Path
@@ -34,6 +35,7 @@ from auto_game_unified.games.epic7.evidence.common import (
 )
 from auto_game_unified.games.epic7.evidence.knights_donation import (
     DEFAULT_THRESHOLD,
+    DOT_MIN_FILL_RATIO,
     DOT_ZONES,
     REFERENCE_SIZE,
     REGIONS,
@@ -46,6 +48,7 @@ from auto_game_unified.games.epic7.knights_donation import (
     MAX_SUPPORT_SCROLLS,
     REQUEST_BUTTON_ALIVE_RATIO,
     REWARD_DISMISS_DY,
+    SUPPORT_LIMIT_FULL_THRESHOLD,
     SUPPORT_ROW_SKIP_TOLERANCE,
     KnightsDonationAction,
     KnightsDonationRunner,
@@ -54,6 +57,7 @@ from auto_game_unified.games.epic7.knights_donation import (
     build_knights_donation_templates,
     request_button_relative_v,
     state_label,
+    support_limit_full,
 )
 from auto_game_unified.games.epic7.knights_support_digits import (
     HOLDINGS_DX,
@@ -77,8 +81,19 @@ SUP_TWO = "support_page_two_buttons"
 # 但卡住的原因是**材料不足**（上面那行持有 1、这一格要 2）—— 当时程序把它当成
 # 「没点到」连点 4 次、整条路线提前收工。「材料不足就跳过」这条判据的回归依据。
 SUP_SHORT = "support_page_short_material"
+# 2026-09-25 21:38 实跑的**诊断帧原样**：右上角「今日支援上限 200/200」已满，
+# 而列表里的绿按钮**照样是绿的**（点它什么都不发生）。两个用途：
+#   ① 「上限满了」这条**画面判据**（``support_limit_full``）的正例、模板来源；
+#   ② 同页 30/200 / 90/200 那几张是它的反向对照 —— 整串匹配必须分得开，
+#      否则误判成「满了」会白丢一整天的支援机会。
+SUP_FULL = "support_limit_full"
 WK_OK = "weekly_tasks_claimable"
 WK_DONE = "weekly_tasks_claimed"
+# 2026-09-26 用户现场帧（**原始帧**，不是按矩形裁的）：骑士团点数 1660，
+# 500/1000 已领，**可领档位是 1500**（角标中心 (1260,286)，不是老夹具的 (1073,286)）。
+# 用途：里程碑搜索区从「写死的 50×50 小方块」放宽成「整条里程碑带」的正例。
+# 老判据在这一帧上返回 None ⇒ 状态机判「已经没有可领档位」直接收工，1500 的奖励白丢。
+WK_1500 = "weekly_tasks_claimable_at_1500"
 POP = "request_popup"
 POP_SEL = "request_popup_selected"
 # 2026-09-24 实跑采到的原始帧：点列表「支援1个」之后弹的「支援资源」确认框
@@ -93,19 +108,31 @@ ALL_FIXTURES = (
     SUP_SCROLLED,
     SUP_TWO,
     SUP_SHORT,
+    SUP_FULL,
     WK_OK,
     WK_DONE,
+    WK_1500,
     POP,
     POP_SEL,
     SCONF,
     REWARD,
 )
 # 「资源支援」这一页的三种样子（是否带绿按钮、按钮几个、盖没盖弹窗）。
-SUPPORT_PAGES = (SUP, SUP_SCROLLED, SUP_TWO, SUP_SHORT, SUP_SHORT)
+SUPPORT_PAGES = (SUP, SUP_SCROLLED, SUP_TWO, SUP_SHORT, SUP_SHORT, SUP_FULL)
 # 骑士团活动界面里的所有子页（含两个页签页）。
-ACTIVITY_PAGES = (SUP, SUP_SCROLLED, SUP_TWO, SUP_SHORT, SUP_SHORT, WK_OK, WK_DONE)
+ACTIVITY_PAGES = (
+    SUP,
+    SUP_SCROLLED,
+    SUP_TWO,
+    SUP_SHORT,
+    SUP_SHORT,
+    SUP_FULL,
+    WK_OK,
+    WK_DONE,
+    WK_1500,
+)
 # 除「资源支援」外都不是这一页的夹具。
-NOT_SUPPORT = (GH_DOT, GH_BARE, WK_OK, WK_DONE, POP, POP_SEL, SCONF, REWARD)
+NOT_SUPPORT = (GH_DOT, GH_BARE, WK_OK, WK_DONE, WK_1500, POP, POP_SEL, SCONF, REWARD)
 # 弹窗类的四张（三个弹窗 + 确认框）。
 POPUP_FIXTURES = (POP, POP_SEL, SCONF, REWARD)
 
@@ -113,7 +140,7 @@ POPUP_FIXTURES = (POP, POP_SEL, SCONF, REWARD)
 EXPECTATIONS: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
     "activity_entry": (
         (GH_DOT, GH_BARE),
-        (SUP, SUP_SCROLLED, SUP_TWO, SUP_SHORT, WK_OK, WK_DONE, POP, POP_SEL, SCONF, REWARD),
+        (SUP, SUP_SCROLLED, SUP_TWO, SUP_FULL, SUP_SHORT, WK_OK, WK_DONE, WK_1500, POP, POP_SEL, SCONF, REWARD),
     ),
     # panel_title 与两张页签**故意不排他**：同一段文字/标题在三个页签页上都在。
     # panel_title 只当「活动界面里页签没认出来」的兜底锚点，所以它必须命中全部活动页
@@ -135,52 +162,54 @@ EXPECTATIONS: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
     # 判据 —— 靠的是 `_PAGE_STATES` 里 support_confirm 排在 resource_support **前面**。
     "request_support_button": (
         SUPPORT_PAGES + (SCONF,),
-        (GH_DOT, GH_BARE, WK_OK, WK_DONE, POP, POP_SEL, REWARD),
+        (GH_DOT, GH_BARE, WK_OK, WK_DONE, WK_1500, POP, POP_SEL, REWARD),
     ),
     # 下滑后的帧上绿色按钮已经变灰 ⇒ 它属于 must_not（状态机因此才会去下滑）；
     # 两按钮那张上必须能认出**至少一个**（多按钮的情形另有用例专门测）。
     "support_one_button": (
-        (SUP, SUP_TWO, SUP_SHORT),
-        (GH_DOT, GH_BARE, SUP_SCROLLED, WK_OK, WK_DONE, POP, POP_SEL, SCONF, REWARD),
+        (SUP, SUP_TWO, SUP_FULL, SUP_SHORT),
+        (GH_DOT, GH_BARE, SUP_SCROLLED, WK_OK, WK_DONE, WK_1500, POP, POP_SEL, SCONF, REWARD),
     ),
+    # 现场帧 @1500 也是每周任务页 ⇒ points_label 必须命中（实测 0.8660）。
     "points_label": (
-        (WK_OK, WK_DONE),
-        (GH_DOT, GH_BARE, SUP, SUP_SCROLLED, SUP_TWO, SUP_SHORT, POP, POP_SEL, SCONF, REWARD),
+        (WK_OK, WK_DONE, WK_1500),
+        (GH_DOT, GH_BARE, SUP, SUP_SCROLLED, SUP_TWO, SUP_FULL, SUP_SHORT, POP, POP_SEL, SCONF, REWARD),
     ),
-    # 已领完那帧没有「领取」按钮 ⇒ must_not。
+    # 已领完那帧没有「领取」按钮 ⇒ must_not。现场帧 @1500 下面三条每周任务也都是打勾的
+    # （实测 claim_button 0.4071）⇒ 同样 must_not。
     "claim_button": (
         (WK_OK,),
-        (GH_DOT, GH_BARE, SUP, SUP_SCROLLED, SUP_TWO, SUP_SHORT, WK_DONE, POP, POP_SEL, SCONF, REWARD),
+        (GH_DOT, GH_BARE, SUP, SUP_SCROLLED, SUP_TWO, SUP_FULL, SUP_SHORT, WK_DONE, WK_1500, POP, POP_SEL, SCONF, REWARD),
     ),
     "popup_title": (
         (POP, POP_SEL),
-        (GH_DOT, GH_BARE, SUP, SUP_SCROLLED, SUP_TWO, SUP_SHORT, WK_OK, WK_DONE, SCONF, REWARD),
+        (GH_DOT, GH_BARE, SUP, SUP_SCROLLED, SUP_TWO, SUP_FULL, SUP_SHORT, WK_OK, WK_DONE, WK_1500, SCONF, REWARD),
     ),
     "flower_cell": (
         (POP,),
-        (GH_DOT, GH_BARE, SUP, SUP_SCROLLED, SUP_TWO, SUP_SHORT, WK_OK, WK_DONE, POP_SEL, SCONF, REWARD),
+        (GH_DOT, GH_BARE, SUP, SUP_SCROLLED, SUP_TWO, SUP_FULL, SUP_SHORT, WK_OK, WK_DONE, WK_1500, POP_SEL, SCONF, REWARD),
     ),
     "flower_cell_selected": (
         (POP_SEL,),
-        (GH_DOT, GH_BARE, SUP, SUP_SCROLLED, SUP_TWO, SUP_SHORT, WK_OK, WK_DONE, POP, SCONF, REWARD),
+        (GH_DOT, GH_BARE, SUP, SUP_SCROLLED, SUP_TWO, SUP_FULL, SUP_SHORT, WK_OK, WK_DONE, WK_1500, POP, SCONF, REWARD),
     ),
     "popup_confirm": (
         (POP, POP_SEL),
-        (GH_DOT, GH_BARE, SUP, SUP_SCROLLED, SUP_TWO, SUP_SHORT, WK_OK, WK_DONE, SCONF, REWARD),
+        (GH_DOT, GH_BARE, SUP, SUP_SCROLLED, SUP_TWO, SUP_FULL, SUP_SHORT, WK_OK, WK_DONE, WK_1500, SCONF, REWARD),
     ),
     "reward_title": (
         (REWARD,),
-        (GH_DOT, GH_BARE, SUP, SUP_SCROLLED, SUP_TWO, SUP_SHORT, WK_OK, WK_DONE, POP, POP_SEL, SCONF),
+        (GH_DOT, GH_BARE, SUP, SUP_SCROLLED, SUP_TWO, SUP_FULL, SUP_SHORT, WK_OK, WK_DONE, WK_1500, POP, POP_SEL, SCONF),
     ),
-    # 确认框自己的两个锚点：在本路线 11 张里**只**在确认框那一帧过阈
-    # （其余 10 张最高 0.2079 / 0.2127，余量都在 0.58 以上）。
+    # 确认框自己的两个锚点：在本路线 12 张里**只**在确认框那一帧过阈
+    # （其余 11 张最高 0.2079 / 0.2166，余量都在 0.58 以上）。
     "support_confirm_title": (
         (SCONF,),
-        (GH_DOT, GH_BARE, SUP, SUP_SCROLLED, SUP_TWO, SUP_SHORT, WK_OK, WK_DONE, POP, POP_SEL, REWARD),
+        (GH_DOT, GH_BARE, SUP, SUP_SCROLLED, SUP_TWO, SUP_FULL, SUP_SHORT, WK_OK, WK_DONE, WK_1500, POP, POP_SEL, REWARD),
     ),
     "support_confirm_button": (
         (SCONF,),
-        (GH_DOT, GH_BARE, SUP, SUP_SCROLLED, SUP_TWO, SUP_SHORT, WK_OK, WK_DONE, POP, POP_SEL, REWARD),
+        (GH_DOT, GH_BARE, SUP, SUP_SCROLLED, SUP_TWO, SUP_FULL, SUP_SHORT, WK_OK, WK_DONE, WK_1500, POP, POP_SEL, REWARD),
     ),
 }
 
@@ -444,6 +473,51 @@ class KnightsDonationDotTests(unittest.TestCase):
         self.assertGreater(point[1], dot[1])
         self.assertEqual((1107, 318), point)
 
+    def test_a_milestone_that_moved_off_the_old_spot_is_still_found(self):
+        """2026-09-26 事故回归：可领档位换到别的档之后，老判据直接漏掉。
+
+        老搜索区是写死的 50×50 小方块 ``(1050,264,50,50)``，只罩得住角标中心 x≈1073
+        （500 分档）。用户现场帧（1660 分、可领的是 **1500** 档）上角标在 x=1260，
+        偏出搜索区 160px ⇒ ``find_dot`` 返回 None ⇒ 状态机判「每周任务已经没有可领的
+        点数档位」**直接收工**，那档奖励白丢。现在搜索区是整条里程碑带。
+        """
+        dot = find_dot(screen(WK_1500), "milestone")
+
+        self.assertEqual((1260, 286), dot)
+        # 点的是那一档图标中心（角标 + 实测偏移），实测坐标正好是 1500 那个宝箱。
+        self.assertEqual((1294, 318), milestone_claim_point(dot))
+        # 带子必须**同时**罩得住老位置和新位置，否则只是把漏检换了个档位。
+        x, _y, width, _height = DOT_ZONES["milestone"]
+        self.assertLessEqual(x, 1073)
+        self.assertGreaterEqual(x + width, 1260)
+
+    def test_the_widened_band_does_not_pick_up_the_holdings_text(self):
+        """放宽成整条带子之后，资源支援页的「持有: N」绿字**也落进了带子**。
+
+        它是绿字、同样「高饱和 + 高亮」，掩膜分不开；面积/宽高也全都过筛
+        （实测 21×21/85、11×21/66、12×21/67）。只有**形态**分得开：角标是实心圆点
+        （填充率 0.758），文字笔画是细线（0.19~0.33）。这条用例守的就是那道形态判据 ——
+        把它删掉，下面四张帧会立刻被读成「有可领档位」并去点列表里的名字。
+        """
+        for name in (
+            SUP,
+            SUP_TWO,
+            SUP_SHORT,
+            SUP_FULL,
+        ):
+            with self.subTest(fixture=name):
+                self.assertIsNone(find_dot(screen(name), "milestone"))
+
+    def test_the_fill_ratio_sits_between_the_dot_and_the_text_strokes(self):
+        """填充率阈值必须夹在「实测正例」与「实测最高非角标」之间。
+
+        - 实心角标：219 / (17×17) = 0.758（两种颜色、两张正向样本都是这个值）
+        - 最高的非角标：已领绿✓ 76 / (15×9) = 0.563（本来靠「贴 ROI 底边」排除，
+          这里是第二道保险）；「持有」绿字只有 0.19~0.29；可领图标亮块 0.375。
+        """
+        self.assertGreater(DOT_MIN_FILL_RATIO, 76 / float(15 * 9))
+        self.assertLess(DOT_MIN_FILL_RATIO, 219 / float(17 * 17))
+
     def test_the_dot_zones_do_not_overlap(self):
         """两个搜索区必须各自独立，否则一个角标会被当两次。"""
         boxes = []
@@ -472,6 +546,7 @@ class KnightsDonationStateMachineTests(unittest.TestCase):
             SUP_SHORT: KnightsDonationState.RESOURCE_SUPPORT,
             WK_OK: KnightsDonationState.WEEKLY_TASKS,
             WK_DONE: KnightsDonationState.WEEKLY_TASKS,
+            WK_1500: KnightsDonationState.WEEKLY_TASKS,
             POP: KnightsDonationState.REQUEST_POPUP,
             POP_SEL: KnightsDonationState.REQUEST_POPUP,
             SCONF: KnightsDonationState.SUPPORT_CONFIRM,
@@ -954,6 +1029,22 @@ class KnightsDonationStateMachineTests(unittest.TestCase):
         self.assertTrue(action.in_page_evidence)
         self.assertEqual((), action.target_pages)
 
+    def test_the_machine_claims_a_milestone_that_moved_off_the_old_spot(self):
+        """2026-09-26 事故回归（业务后果层面）：可领档位换档之后，状态机必须照样去领。
+
+        现场帧：骑士团点数 1660，500/1000 已领，**可领的是 1500 档**（角标中心 x=1260）。
+        老搜索区（写死的 50×50 小方块，只罩得住 x≈1073 的 500 档）在这一帧上认不出角标
+        ⇒ 状态机走「每周任务已经没有可领的点数档位和可领的任务了」**直接收工**
+        ⇒ 1500 那档奖励白丢，而且日志上完全看不出来（收工理由看起来天经地义）。
+        这条用例断言它现在真的去点那个宝箱。
+        """
+        action = machine().next_action(screen(WK_1500))
+
+        self.assertEqual("claim-milestone", action.name)
+        self.assertEqual((1294, 318), action.point)
+        self.assertEqual((), action.target_pages)
+        self.assertTrue(action.in_page_evidence)
+
     def test_weekly_tasks_claims_the_rows_when_no_milestone_is_left(self):
         """角标没了但还有「领取」按钮 ⇒ 去领任务行（按短窗口重试）。"""
         frame = frame_without_anchor(WK_OK, "milestone")
@@ -1119,6 +1210,22 @@ class _RecordingRuntime(Runtime):
 
     def click(self, point, action) -> None:
         self.actions.append(action)
+        super().click(point, action)
+
+
+class _PairRecordingRuntime(_RecordingRuntime):
+    """在 ``_RecordingRuntime`` 之上再记一份「（动作名, 坐标）」对。
+
+    给它写用例的「假游戏」要看**点了什么**才决定下一帧是什么画面（点了「每周任务」
+    页签之后才真的切到每周任务页）—— ``_RecordingRuntime`` 只留动作名，凑不出这一步。
+    """
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.pairs: list[tuple[str, tuple[int, int]]] = []
+
+    def click(self, point, action) -> None:
+        self.pairs.append((action, point))
         super().click(point, action)
 
 
@@ -1324,6 +1431,248 @@ class KnightsDonationRunnerTests(unittest.TestCase):
             any("已跳过 1 格材料不足" in line and "持有 1 / 需求 2" in line for line in logs),
             f"日志里没有跳过记录：{logs}",
         )
+
+    def test_the_real_runner_skips_the_support_section_on_a_capped_page(self):
+        """上限已满那一帧走**真 Runner**：支援这一节整段跳过，**一次都不点支援按钮**，
+        每周任务照做（绝不许整条路线提前结束）。
+
+        现场是 2026-09-25 21:38 的事故：「今日支援上限 200/200，列表里的绿按钮却照样
+        是绿的」—— 点它什么都不弹、什么都不变，旧行为在同一坐标连点 4 次后耗尽、
+        就地收尾 ⇒ 那一天的每周任务领奖跟着一起丢掉。
+
+        ⚠️ 2026-09-26 起上限由右上角那一行**数字本身**判出来（整串 200/200），
+        所以掉头发生在**第一次要支援之前**：这条用例最要紧的断言因此是
+        「点击列表里根本没有支援按钮」，而不是「状态机想不想点」——
+        上次两个事故都发生在状态机与主循环**之间**。
+        """
+
+        frames = [
+            screen(SUP_FULL),  # 上限 200/200 ⇒ 直接切每周任务，一下都不点
+            screen(WK_DONE),  # 每周任务也没得领 ⇒ 这一轮正常收工
+        ]
+        clock = _Clock(frames, hold={index: 3 for index in range(len(frames))})
+        clicks: list[tuple[int, int]] = []
+        logs: list[str] = []
+        runtime = _RecordingRuntime(
+            clock.capture,
+            clicks.append,
+            emit=logs.append,
+            monotonic=lambda: clock.now,
+        )
+        subject = machine()
+        subject.request_done = True  # 事故发生在「请求支援」那一步之后
+        runner = KnightsDonationRunner(subject, runtime, sleep=clock.sleep)
+
+        completed = runner.run(max_cycles=1)
+
+        self.assertEqual(1, completed)
+        self.assertFalse(runner.resource_exhausted)
+        self.assertEqual(
+            ["open-weekly-tab"],
+            runtime.actions,
+            f"上限满了就该直接切每周任务、别的动作一个都不许有，实际={runtime.actions}",
+        )
+        # 为什么整段跳过必须在日志里看得见，而且带**得分**（不是「多半是」）。
+        self.assertTrue(
+            any("今日支援上限" in line and "得分" in line for line in logs),
+            f"日志里没有说明上限已满，用户看不出为什么没支援：{logs}",
+        )
+
+    def test_the_four_futile_clicks_end_the_support_section_in_place(self):
+        """兜底防线走**真 Runner**：上限数字没读到、绿按钮点不动 ⇒ 4 次点击之后
+        **原地**掉头去做每周任务，**不做第 5 次点击**，当天这一轮照常走完。
+
+        ⚠️ 这条守的是 ``support_closed`` 那个兜底 —— 它是「路线自己换个办法」这套
+        自救机制**唯一**的真实用户，而它在状态机级根本测不出来：状态机只负责把标志
+        置上、返回 False，真正执行掉头的是主循环里那段自救分支。把自救整段删掉，
+        **任何一条现有用例都不会变红**（这正是 2026-09-26 补它的原因）。
+
+        ⚠️ 画面**跟着点击走**（``fake_game``）：点完「每周任务」页签才真的切过去。
+        这与实机一致，也正是「掉头是不是真的落到了每周任务页」能被验收的前提。
+
+        ⚠️ 4 次点击必须打在**同一格**上（``len(set(futile)) == 1``）：这一格才是
+        事故现场那格「点了什么都不发生」的绿按钮；要是 4 次打在 4 格上，那就是
+        「换着格子试」的另一样子，不是这条兜底要守的场景。
+        """
+        incident = screen(SUP_TWO)  # 绿按钮照样是绿的，点它什么都不发生
+        weekly_ok = screen(WK_OK)  # 每周任务：还有一档点数可领
+        weekly_done = screen(WK_DONE)  # 每周任务：都没得领了 ⇒ 收工
+        clock = _Clock([incident], {})  # 只借它的假时间；画面由 fake_game 决定
+
+        clicks: list[tuple[int, int]] = []
+        logs: list[str] = []
+
+        def fake_game() -> np.ndarray:
+            """点了什么就换什么画面（点之前画面一动不动）。"""
+            names = [name for name, _ in runtime.pairs]
+            if "claim-milestone" in names:
+                return weekly_done
+            if "open-weekly-tab" in names:
+                return weekly_ok
+            return incident
+
+        with tempfile.TemporaryDirectory() as workspace:
+            runtime = _PairRecordingRuntime(
+                fake_game,
+                clicks.append,
+                emit=logs.append,
+                monotonic=lambda: clock.now,
+                # 走上「没自救成功」那条错路时会保存失败诊断，给个真目录
+                # 才能看到「动作 support-one 点击4次后画面未推进」这句人话。
+                diagnostic_dir=Path(workspace),
+            )
+            subject = machine()
+            subject.request_done = True  # 事故发生在「请求支援」那一步之后
+            runner = KnightsDonationRunner(subject, runtime, sleep=clock.sleep)
+
+            completed = runner.run(max_cycles=1)
+
+        self.assertEqual(1, completed)
+        self.assertFalse(runner.resource_exhausted)
+        self.assertEqual(
+            ["support-one"] * 4 + ["open-weekly-tab", "claim-milestone"],
+            runtime.actions,
+            f"兜底自救的动作序列不对（多点了一次 / 掉头没落到每周任务）："
+            f"实际={runtime.actions}",
+        )
+        futile = [point for name, point in runtime.pairs if name == "support-one"]
+        self.assertEqual(4, len(futile), "「4 次之后才退出来」是用户定的口径")
+        self.assertEqual(
+            1, len(set(futile)), "4 次重试必须打在同一格上（打不同格是另一回事）"
+        )
+        # 自救与掉头都必须在日志里看得见 —— 用户要能从日志看出「为什么没支援」。
+        self.assertTrue(
+            any("交给路线自己换个办法" in line for line in logs),
+            f"日志里看不出发生过自救：{logs}",
+        )
+        self.assertTrue(
+            any("支援=连点 4 次没能推进" in line for line in logs),
+            f"日志里看不出支援这一节为什么收工：{logs}",
+        )
+        # 这一天没有白跑：支援那一段掉头之后，每周任务**照做**、并且收工在每周任务那一段。
+        self.assertTrue(
+            any("结论=" in line and "每周任务" in line for line in logs),
+            f"掉头之后没走到每周任务：{logs}",
+        )
+
+
+class KnightsDonationClosedSupportTests(unittest.TestCase):
+    """「支援这一节收工」之后的行为（``support_closed``）。"""
+
+    def test_a_closed_support_section_goes_straight_to_the_weekly_tab(self):
+        """站回资源支援页时，一个支援按钮都不点，直接切每周任务。
+
+        ⚠️ 关键在于「站回这一页也不点」：恢复导航之后画面又会回到这一页，
+        如果这里又重新挑绿按钮，就会在「上限已满」的页面上无限循环下去。
+        """
+
+        subject = machine()
+        subject.support_closed = True
+
+        action = subject.next_action(screen(SUP_TWO))
+
+        self.assertEqual("open-weekly-tab", action.name)
+        self.assertEqual(
+            state_label(KnightsDonationState.RESOURCE_SUPPORT), action.source_page
+        )
+        self.assertEqual(
+            (state_label(KnightsDonationState.WEEKLY_TASKS),), action.target_pages
+        )
+        self.assertIn("支援这一节收工", action.reason)
+
+    def test_an_open_support_section_still_clicks_the_green_button(self):
+        """反向守门：没收工的时候不许提前跳到每周任务（原有行为不回退）。"""
+
+        subject = machine()
+        subject.request_done = True
+        self.assertFalse(subject.support_closed)
+
+        action = subject.next_action(screen(SUP_TWO))
+
+        self.assertEqual("support-one", action.name)
+
+
+class KnightsDonationSupportLimitTests(unittest.TestCase):
+    """右上角「今日支援上限 200/200」—— 2026-09-26 补的**画面判据**。
+
+    以前「上限满了」只能靠 ``support-one`` 连点 4 次推不动**倒推**，日志里写的是
+    猜测（"多半是今日支援上限已满"）。代价是：一天里第二次跑捐赠又要白点 4 次、
+    再恢复导航一次才得出同一结论；而且「没推进」也可能是别的原因，却一律记成「上限满了」。
+    现在直接读数字：整串 ``200/200`` 命中 = 满了。
+    """
+
+    def test_the_full_frame_is_recognised_as_capped(self):
+        subject = machine()
+
+        match = support_limit_full(screen(SUP_FULL), subject.templates.support_limit_full)
+
+        self.assertIsNotNone(match, "200/200 那一帧必须认得出")
+        self.assertGreater(match.score, SUPPORT_LIMIT_FULL_THRESHOLD)
+        self.assertLessEqual(abs(match.center[0] - 1297), 3)
+        self.assertLessEqual(abs(match.center[1] - 210), 3)
+
+    def test_the_uncapped_frames_are_never_read_as_capped(self):
+        """⚠️ 反向守门，这条最要紧：同页 30/200、90/200 **不许**判成「满了」。
+
+        误判的代价是**白丢当天整个支援环节**（补不回来）；而整串与 200/200 共享
+        ``0/200`` 尾巴，所以同页这几张的干扰天然就高（实测最高 0.8167）——
+        阈值 0.90 正是为它们定的，改阈值前先重跑
+        ``runtime_logs/_kd_limit_build_assets.py``。
+        """
+
+        subject = machine()
+
+        for name in (SUP, SUP_SCROLLED, SUP_TWO, SUP_SHORT, SCONF):
+            with self.subTest(fixture=name):
+                self.assertIsNone(
+                    support_limit_full(screen(name), subject.templates.support_limit_full),
+                    f"{name} 的上限不是 200/200，不该判成已满",
+                )
+
+    def test_a_capped_page_goes_straight_to_the_weekly_tab(self):
+        """接线：站在这张 200/200 的帧上 ⇒ 一个支援按钮都不点，直接切每周任务。
+
+        ⚠️ 理由里必须带**得分**（不是「多半是」）—— 判据给出的数字就是这段结论的证据，
+        少了它，日志又变回推测。这正是用户 2026-09-26 要求「上限判据纳入流程」的点。
+        """
+
+        subject = machine()
+        subject.request_done = True
+
+        action = subject.next_action(screen(SUP_FULL))
+
+        self.assertEqual("open-weekly-tab", action.name)
+        self.assertIn("今日支援上限", action.reason)
+        self.assertIn("得分", action.reason)
+        self.assertNotIn("多半", action.reason)
+
+    def test_an_uncapped_page_still_clicks_the_green_button(self):
+        """反向守门：没满的帧不许提前跳到每周任务（原有行为不回退）。"""
+
+        subject = machine()
+        subject.request_done = True
+
+        action = subject.next_action(screen(SUP_TWO))
+
+        self.assertEqual("support-one", action.name)
+
+    def test_the_two_ways_of_closing_the_section_are_told_apart(self):
+        """两条来路必须在日志里**分得开**：画面证据 vs 「连点推不动」这个症状。"""
+
+        by_picture = machine()
+        by_picture.request_done = True
+        picture_reason = by_picture.next_action(screen(SUP_FULL)).reason
+
+        by_symptom = machine()
+        by_symptom.request_done = True
+        by_symptom.support_closed = True
+        symptom_reason = by_symptom.next_action(screen(SUP_TWO)).reason
+
+        self.assertIn("得分", picture_reason)
+        self.assertNotIn("连点 4 次", picture_reason)
+        self.assertIn("连点 4 次", symptom_reason)
+        self.assertNotIn("得分", symptom_reason)
+
 
 if __name__ == "__main__":
     unittest.main()
