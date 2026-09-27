@@ -2,12 +2,16 @@
 
 主循环协议在此统一实现：
 - 空跑短路（单帧诊断）
-- 两帧稳定确认 + 同动作 45 秒转场等待 + 2 次点击上限
+- 两帧稳定确认 + 同动作 45 秒转场等待 + 4 次点击上限
+- 上限用尽 → 给路线**一次**原地「换个办法」的机会（``_self_heal_used``）；
+  换回来的还是同一个动作就直接安全停止
 - 未知画面唤醒（UnknownScreenWake）
 - 唤醒持续 WAITING（画面变化无法触发唤醒点击）同样受状态超时约束
-- 状态超时 → 恢复一次（回大厅重新导航）→ 仍超时则安全停止
+- 状态超时 / 循环检测 → **直接安全停止**（回家由 ``main`` 收尾）
+  ⚠️ 2026-09-26 用户拍板：回家就是结束，程序**不会**再回家重新导航接着跑
+  —— 原先那套 ``recovery()``（回大厅重开）已整段删除，见 ``run()`` 里的注释。
 - 结算等待超时与绝对超时熔断
-各模式仅通过钩子注入差异（战斗移交方式、恢复落点、超时表等）。
+各模式仅通过钩子注入差异（战斗移交方式、超时表等）。
 """
 
 from time import sleep as default_sleep
@@ -19,7 +23,7 @@ from auto_game_unified.core.evidence_diagnostics import (
 )
 from auto_game_unified.core.recovery import RecoveryGate
 from auto_game_unified.core.runtime import ManualStop, ResourceExhausted, Runtime
-from auto_game_unified.core.supervisor import StableObservation
+from auto_game_unified.core.supervisor import ConclusionGate, StableObservation
 from auto_game_unified.games.epic7.unknown_screen import (
     UnrecognizedScreen,
     UnknownScreenWake,
@@ -69,7 +73,6 @@ class ModeRunnerBase:
         *,
         sleep: Callable[[float], None] = default_sleep,
         poll_seconds: float = 1.0,
-        recovery: Callable[[], None] | None = None,
         recovery_gate: RecoveryGate | None = None,
     ) -> None:
         self.machine = machine
@@ -77,12 +80,17 @@ class ModeRunnerBase:
         self.sleep = sleep
         self.now = runtime.now
         self.poll_seconds = poll_seconds
-        self.recovery_gate = recovery_gate or RecoveryGate(recovery)
-        self.recovery = self.recovery_gate.recover if recovery is not None else None
+        # ⚠️ 这个闸门现在**只有一个职责**：已承诺战斗期间禁止打断（见
+        # ``core.recovery`` 的模块 docstring）。「回大厅恢复」那条通道
+        # 2026-09-26 已整段删除（用户拍板「回家就是结束」）。
+        self.recovery_gate = recovery_gate or RecoveryGate()
         self.unknown_screen_wake = UnknownScreenWake(
             runtime, recovery_gate=self.recovery_gate
         )
         self.resource_exhausted = False
+        # 「下结论」的门槛：收工 / 认不出画面这类终止性结论同样要连续两帧一致，
+        # 否则一帧就能结束整条路线（详见 core.supervisor.ConclusionGate）。
+        self.conclusion_gate = ConclusionGate()
 
     # ---- 子类钩子（差异点） ----
 
@@ -91,9 +99,6 @@ class ModeRunnerBase:
 
     def _timeout_for(self, state: Any) -> float:
         return self._TIMEOUT_SECONDS[state]
-
-    def _apply_recovery_state(self) -> None:
-        """恢复导航后设置落点状态（含业务标志重置）。"""
 
     def _after_action_click(self, action: Any) -> None:
         """Optional short observation immediately after an action click."""
@@ -131,7 +136,8 @@ class ModeRunnerBase:
     def _check_cycle_completed(self, cycles_before: int, max_cycles: Optional[int]) -> bool:
         """完成一轮后的日志与 max_cycles 提前返回；返回 True 表示结束 run()。"""
         if self.machine.completed_cycles > cycles_before:
-            self._recovered = False
+            # 真的完成了一轮业务 ⇒ 自救机会重新给一次。
+            self._self_heal_used = False
             self._log_cycle_completed()
             if max_cycles is not None and self.machine.completed_cycles >= max_cycles:
                 return True
@@ -273,9 +279,38 @@ class ModeRunnerBase:
             f"内部状态={self._state_label(self.machine.state)} 诊断={diagnostic}"
         )
 
+    def _reset_observation(self, stable: StableObservation) -> None:
+        """换页 / 恢复 / 黑屏后同时清空「动作」与「结论」两本账。
+
+        只清一本会留下隐患：页面都换了，上一页那个「打完了」的结论还挂在门槛上，
+        下一帧再来一次同样的结论就直接凑够两帧 —— 那是**两个不同页面**各看了一帧，
+        不是同一页连看两帧。
+        """
+
+        stable.reset()
+        self.conclusion_gate.reset()
+
     def _stable_next_action(self, screen, stable: StableObservation):
-        """两帧稳定确认后返回 next_action；未稳定时返回 NOT_STABLE。"""
-        preview_action, outcome = self.machine.preview(screen)
+        """两帧稳定确认后返回 next_action；未稳定时返回 NOT_STABLE。
+
+        ⚠️ **结论也要过这道门槛**。``preview`` 里抛出的终止性异常（收工 / 认不出
+        画面）过去是直接穿到主循环的 —— 动作要两帧、结论只要一帧，一帧就能宣布
+        整条路线结束。这里先把结论变成签名交给门槛，两帧一致才允许穿出去。
+        规矩见 docs/TRANSITION_CONTRACTS.md「结论门槛（全局强制）」。
+        """
+        try:
+            preview_action, outcome = self.machine.preview(screen)
+        except ManualStop:
+            # 用户按了停止键：不是程序下的结论，不受门槛约束。
+            raise
+        except RuntimeError as error:
+            if not self.conclusion_gate.admit(error):
+                self.runtime.log(
+                    f"模式={self._MODE_LABEL} 结论待确认={type(error).__name__} "
+                    f"依据=需连续两帧一致才采信 详情={error}"
+                )
+                return NOT_STABLE
+            raise
         self.unknown_screen_wake.reset()
         signature = self._stable_action_signature(preview_action, outcome)
         # 一次性副作用动作：直接 click 跳过 stable——这种动作的副作用必须
@@ -286,10 +321,10 @@ class ModeRunnerBase:
                 committed_action is None
                 or committed_action.name != preview_action.name
             ):
-                stable.reset()
+                self._reset_observation(stable)
                 return NOT_STABLE
             self.runtime.click(committed_action.point, committed_action.name)
-            stable.reset()
+            self._reset_observation(stable)
             # 状态由真正 next_action 提交；下一帧重新观察点击结果。
             return NOT_STABLE
         if not stable.update(signature):
@@ -321,35 +356,53 @@ class ModeRunnerBase:
     # ---- 公共主循环 ----
 
     def _dry_run(self) -> int:
+        # 空跑只跑一帧，但**结论不能只看一帧**：撞上终止性结论就再截一帧复核，
+        # 两帧一致才采信（规矩同实跑，见 core.supervisor.ConclusionGate）。
         screen = self.runtime.capture()
-        try:
-            action = self.machine.next_action(screen)
-        except ManualStop:
-            # 空跑也必须能被 P 键/界面停止打断，且不能被下面那条「包装成运行失败」
-            # 的分支吞掉（ManualStop 是 RuntimeError 的子类）。
-            raise
-        except ResourceExhausted as error:
-            # 空跑碰上「没本钱了」也是一个正常结论，别被下面那条包装成
-            # 「空跑未识别画面」—— 空跑本来就是给用户先看一眼用的，
-            # 报「认不出这一页」会把人往错的方向带。
-            self.resource_exhausted = True
-            self.runtime.log(
-                f"模式={self._MODE_LABEL} 空跑 停止={error.stop_label} 详情={error}"
-            )
-            return self.machine.completed_cycles
-        except RuntimeError as error:
+        action = None
+        confirmed: Optional[RuntimeError] = None
+        pending: Optional[RuntimeError] = None
+        for _ in range(2):
+            try:
+                action = self.machine.next_action(screen)
+                break
+            except ManualStop:
+                # 空跑也必须能被 P 键/界面停止打断，且不能被下面那条「包装成运行失败」
+                # 的分支吞掉（ManualStop 是 RuntimeError 的子类）。
+                raise
+            except RuntimeError as error:
+                pending = error
+                if self.conclusion_gate.admit(error):
+                    confirmed = error
+                    break
+                screen = self.runtime.capture()
+        if confirmed is None and pending is not None:
+            # 两帧结论不一致（多半正卡在转场动画里）：不拿任何一帧下结论，
+            # 按「没认出来」报出去，让用户自己看诊断图。
+            confirmed = pending
+        if confirmed is not None:
+            if isinstance(confirmed, ResourceExhausted):
+                # 空跑碰上「没本钱了」也是一个正常结论，别被下面那条包装成
+                # 「空跑未识别画面」—— 空跑本来就是给用户先看一眼用的，
+                # 报「认不出这一页」会把人往错的方向带。
+                self.resource_exhausted = True
+                self.runtime.log(
+                    f"模式={self._MODE_LABEL} 空跑 停止={confirmed.stop_label} "
+                    f"详情={confirmed}"
+                )
+                return self.machine.completed_cycles
             diagnostic = self.runtime.save_diagnostic(
                 f"dry_run_{self.machine.state.value}", screen
             )
             self._save_failure_diagnostic(
                 diagnostic,
                 screen,
-                conclusion=f"空跑未识别画面：{error}",
+                conclusion=f"空跑未识别画面：{confirmed}",
             )
             raise RuntimeError(
                 f"空跑未识别画面[{self._state_label(self.machine.state)}]；"
                 f"已保存诊断 {diagnostic}"
-            ) from error
+            ) from confirmed
         if action is not None:
             self.runtime.log(
                 f"模式={self._MODE_LABEL} 页面={self._state_label(self.machine.state)} "
@@ -365,7 +418,8 @@ class ModeRunnerBase:
         if self.runtime.dry_run:
             return self._dry_run()
 
-        self._recovered = False
+        # 「路线自己换个办法」的机会，一条路线一轮只用一次（用完就结束，不再原地打转）。
+        self._self_heal_used = False
         state_started = self.now()
         absolute_started = state_started
         stable = StableObservation(required=2)
@@ -432,7 +486,7 @@ class ModeRunnerBase:
                         f"已等待={elapsed:.0f}秒/{black_timeout:.0f}秒"
                     )
                     last_black_log_at = current
-                stable.reset()
+                self._reset_observation(stable)
                 self.sleep(self.poll_seconds)
                 continue
 
@@ -453,37 +507,35 @@ class ModeRunnerBase:
             # 但状态和 cycle 都没推进 → 切卡动画中同位置反复点击，
             # 触发回收（受主循环 4 次 retry 机制覆盖不到的场景）。
             if (
-                not self._recovered
-                and len(recent_actions) >= 15
+                len(recent_actions) >= 15
                 and len(set(recent_actions[-15:])) == 1
                 and recent_actions[-1] == "next_card"
-                and self.recovery is not None
                 and self.now() - state_started >= 30.0
             ):
-                self._recovered = True
-                self.runtime.log(
-                    f"模式={self._MODE_LABEL} "
-                    f"页面={self._state_label(self.machine.state)} "
-                    f"循环检测=最近 15 次均为 {recent_actions[-1]} 且 30 秒未推进，"
-                    "回大厅重新导航"
-                )
+                # 卡在同一个动作上原地打转 ⇒ **结束这条路线**（回家由 main 收尾）。
+                #
+                # ⚠️ 2026-09-26：以前这里是「回大厅重新导航、然后接着跑」，
+                # 用户拍板「回家就是结束，不可能再回来」。
                 diagnostic = None
                 if self.runtime.diagnostic_dir is not None:
                     diagnostic = self.runtime.save_diagnostic(
                         f"loop_{recent_actions[-1]}", screen
                     )
-                self.recovery()
-                self._apply_recovery_state()
-                state_started = self.now()
-                absolute_started = state_started
-                last_action_name = None
-                last_action_clicked_at = None
-                last_transition_action = None
-                retry_wait_logged = False
-                action_attempts = 0
-                stable.reset()
-                recent_actions.clear()
-                continue
+                self._save_failure_diagnostic(
+                    diagnostic,
+                    screen,
+                    conclusion=f"最近 15 次均为 {recent_actions[-1]}，30 秒未推进",
+                )
+                self.runtime.log(
+                    f"模式={self._MODE_LABEL} "
+                    f"页面={self._state_label(self.machine.state)} "
+                    f"停止=循环检测（最近 15 次均为 {recent_actions[-1]}，"
+                    f"30 秒未推进）现场={diagnostic}"
+                )
+                raise RuntimeError(
+                    f"动作 {recent_actions[-1]} 连续 15 次、30 秒未推进；"
+                    f"已保存诊断 {diagnostic}"
+                )
             try:
                 action = self._stable_next_action(screen, stable)
             except ResourceExhausted as error:
@@ -514,15 +566,10 @@ class ModeRunnerBase:
                         screen,
                         context=f"{self._MODE_LABEL}:{self._state_label(self.machine.state)}",
                     )
-                    if wake_result is UnknownWakeResult.CLICKED:
-                        consecutive_waiting = 0
-                        state_started = self.now()
-                        self.sleep(self.poll_seconds)
-                        continue
                     if wake_result is UnknownWakeResult.WAITING:
                         consecutive_waiting += 1
                         # 首次 WAITING 仅记录基准帧；连续等待（画面持续变化，
-                        # 唤醒点击无法触发）超过状态超时则落入下方恢复/熔断
+                        # 认不出是哪一页）超过状态超时则落入下方超时收尾
                         if consecutive_waiting == 1 or (
                             self.now() - state_started
                             < self._timeout_for(self.machine.state)
@@ -532,24 +579,10 @@ class ModeRunnerBase:
                     # 静态画面唤醒耗尽（EXHAUSTED）等情形：落入下方状态超时处理
                 elapsed = self.now() - state_started
                 if elapsed >= self._timeout_for(self.machine.state):
-                    if self.recovery is not None and not self._recovered:
-                        self._recovered = True
-                        self.runtime.log(
-                            f"模式={self._MODE_LABEL} "
-                            f"页面={self._state_label(self.machine.state)} "
-                            "恢复=回大厅重新导航"
-                        )
-                        self.recovery()
-                        self._apply_recovery_state()
-                        state_started = self.now()
-                        absolute_started = state_started
-                        last_action_name = None
-                        last_action_clicked_at = None
-                        last_transition_action = None
-                        retry_wait_logged = False
-                        action_attempts = 0
-                        stable.reset()
-                        continue
+                    # 认不出这一页、等到超时 ⇒ **结束这条路线**（回家由 main 收尾）。
+                    #
+                    # ⚠️ 2026-09-26：以前这里是「回大厅重新导航、然后接着跑」，
+                    # 用户拍板「回家就是结束，不可能再回来」。
                     diagnostic = self.runtime.save_diagnostic(
                         f"timeout_{self.machine.state.value}", screen
                     )
@@ -568,7 +601,7 @@ class ModeRunnerBase:
                 self.sleep(self.poll_seconds)
                 continue
             consecutive_waiting = 0
-            stable.reset()
+            self._reset_observation(stable)
 
             confirmed_page = getattr(self.machine, "_confirmed_page", "")
             if last_transition_action is not None and self._transition_completed(
@@ -610,7 +643,7 @@ class ModeRunnerBase:
                 last_transition_action = None
                 retry_wait_logged = False
                 action_attempts = 0
-                stable.reset()
+                self._reset_observation(stable)
                 continue
 
             # 新路线准入：开了强制开关的路线，动作必须「长眼睛」才允许发出。
@@ -653,7 +686,7 @@ class ModeRunnerBase:
                 last_transition_action = None
                 retry_wait_logged = False
                 action_attempts = 0
-                stable.reset()
+                self._reset_observation(stable)
                 continue
 
             if action is not None:
@@ -692,23 +725,37 @@ class ModeRunnerBase:
                     if self._on_action_exhausted(action, screen):
                         self._close_out()
                         return self.machine.completed_cycles
-                    if self.recovery is not None and not self._recovered:
-                        self._recovered = True
+                    if not self._self_heal_used:
+                        # 路线说自己还有别的办法（例：捐赠支援这一节收工了 ⇒
+                        # **原地**切去每周任务）⇒ 不再回大厅重来，让它用新的判据
+                        # 重新决策一次。
+                        #
+                        # ⚠️ 2026-09-26 用户拍板：回家就是结束，「回大厅重新导航
+                        # 然后接着跑」这套要删掉 —— 实跑里它表现为「又从头做了一遍」。
+                        # ⚠️ 只给**一次**机会：再来一次同样的耗尽就直接结束，
+                        # 否则会在原地无限打转。完成一轮业务后机会重置。
+                        self._self_heal_used = True
                         self.runtime.log(
                             f"模式={self._MODE_LABEL} 动作={action.name} "
-                            "恢复=四次点击未转场，回大厅重新导航"
+                            "四次点击未转场 ⇒ 交给路线自己换个办法（不回大厅重来），仅此一次"
                         )
-                        self.recovery()
-                        self._apply_recovery_state()
                         state_started = self.now()
                         absolute_started = state_started
-                        last_action_name = None
-                        last_action_clicked_at = None
                         last_transition_action = None
                         retry_wait_logged = False
-                        action_attempts = 0
-                        stable.reset()
+                        self._reset_observation(stable)
                         recent_actions.clear()
+                        # ⚠️ **动作账本刻意不重置**（``last_action_name`` /
+                        # ``last_action_clicked_at`` / ``action_attempts``）：
+                        # 自救多给的是「**换个办法**」的机会，不是「再点 4 次」的预算。
+                        #   ① 换成别的动作 ⇒ ``action.name == last_action_name`` 不成立，
+                        #      主循环按新动作自然开一本新账（``action_attempts`` 归 1）、
+                        #      照常点，一次不少；
+                        #   ② 换回来还是同一个动作 ⇒ 它并没有别的办法，账本仍是
+                        #      「已耗尽」⇒ 下一帧直接收手，**一次都不多点**。
+                        # 这里若跟着清零，同一个动作会被再点 4 次（实测 4 → 8 次点击，
+                        # story 那档每点白等 45 秒转场 ⇒ 多耗约 3 分钟），
+                        # 而「4 次之后退回出来」是用户 2026-09-26 明确的口径。
                         continue
                     diagnostic = self.runtime.save_diagnostic(
                         f"retry_exhausted_{action.name}", screen
@@ -789,7 +836,7 @@ class ModeRunnerBase:
                         last_transition_action = None
                         retry_wait_logged = False
                         action_attempts = 0
-                        stable.reset()
+                        self._reset_observation(stable)
                         continue
                     self._on_battle_started()
                     if self._after_battle(max_cycles):
@@ -802,7 +849,7 @@ class ModeRunnerBase:
                     last_transition_action = None
                     retry_wait_logged = False
                     action_attempts = 0
-                    stable.reset()
+                    self._reset_observation(stable)
                     continue
             else:
                 # 有目标契约的动作遇到短暂未知帧时保留同一重试账本；

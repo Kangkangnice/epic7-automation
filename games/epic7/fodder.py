@@ -341,7 +341,6 @@ class FodderRunner(ModeRunnerBase):
         *,
         sleep: Callable[[float], None] = default_sleep,
         poll_seconds: float = 1.0,
-        recovery: Callable[[], None] | None = None,
         recovery_gate: RecoveryGate | None = None,
         battle_supervisor: BattleSupervisor | None = None,
     ) -> None:
@@ -350,7 +349,6 @@ class FodderRunner(ModeRunnerBase):
             runtime,
             sleep=sleep,
             poll_seconds=poll_seconds,
-            recovery=recovery,
             recovery_gate=recovery_gate,
         )
         self.battle_supervisor = battle_supervisor or BattleSupervisor(
@@ -363,9 +361,6 @@ class FodderRunner(ModeRunnerBase):
 
     def _state_label(self, state: FodderState) -> str:
         return state_label(state)
-
-    def _apply_recovery_state(self) -> None:
-        self.machine.state = FodderState.STAGE
 
     def _on_battle_entry(
         self,

@@ -243,12 +243,11 @@ class SurvivorRunner:
         observer: SurvivorObserver | None = None,
         sleep: Callable[[float], None] = default_sleep,
         poll_seconds: float = 0.5,
-        recovery=None,
         recovery_gate=None,
     ) -> None:
-        # 本路线不做回大厅恢复：整轮都在活动小游戏内部，任何 Back 都可能退回活动主页
-        # 那个「一大堆未知状态」。所以这里显式丢弃 recovery 相关选项。
-        del recovery, recovery_gate
+        # 本路线没有战斗（整轮都在活动小游戏内部）⇒ 用不上战斗锁；
+        # main 统一注入的选项在这里显式丢弃。
+        del recovery_gate
         self.machine = machine
         self.runtime = runtime
         self.observer = observer or machine.observer
