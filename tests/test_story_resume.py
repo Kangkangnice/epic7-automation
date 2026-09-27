@@ -502,8 +502,13 @@ class StoryResumeEntryTests(unittest.TestCase):
         self.assertIs(StoryState.STAGE, machine.state)
         self.assertEqual(1, navigator.navigate.call_count)
 
-    def test_routes_without_a_probe_keep_calling_return_home_without_arguments(self):
-        """没接力的路线调用签名不变，行为与加这个功能之前完全一致。"""
+    def test_routes_without_a_probe_call_the_same_return_home(self):
+        """⚠️ 2026-09-26 翻转：**所有路线走同一套回家流程**，没有「带探针 / 不带探针」两档。
+
+        以前这里是「非竞技场路线保持无参调用」——那是**白名单两套并存**时代的契约
+        （用户 2026-09-26 拍板删掉）。现在 ``HomeReturn`` 是纯转发，没接力的路线
+        传 ``stop_probe=None``，走的是同一个 v2 流程。
+        """
         spec = get_mode("fodder")
         runtime = mock.MagicMock()
         lobby = navigation_fixture("lobby")
@@ -522,7 +527,7 @@ class StoryResumeEntryTests(unittest.TestCase):
                 start_state=spec.default_state,
             )
 
-        navigator_type.return_value.return_home.assert_called_once_with()
+        navigator_type.return_value.return_home.assert_called_once_with(stop_probe=None)
         navigator_type.return_value.navigate.assert_called_once_with(
             "fodder", lobby_screen=lobby
         )

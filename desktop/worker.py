@@ -11,7 +11,7 @@ import subprocess
 import sys
 import tempfile
 import threading
-from typing import Callable
+from typing import Callable, Mapping
 
 
 @dataclass(frozen=True)
@@ -23,6 +23,10 @@ class RunRequest:
     # （元素是要跑的路线名，此时 ``mode``/``cycles`` 不参与 —— 各条路线有自己的
     # 每日次数）。空元组是非法的（界面拦住「至少勾一项」），由 ``start`` 复查。
     daily_tasks: tuple[str, ...] | None = None
+    # 每日任务里**改过次数**的那几条（稀疏覆盖：没写的用每日默认值）。
+    # 界面每次都把选中项的次数原样传下来 —— 这样命令行里写的就是「看到的」，
+    # 出问题照着日志能原样重跑。
+    daily_cycles: Mapping[str, int] | None = None
 
     @property
     def is_daily(self) -> bool:
@@ -76,6 +80,8 @@ class WorkerController:
         if request.is_daily:
             if not request.daily_tasks:
                 raise ValueError("每日任务至少要勾选一项")
+            if any(count <= 0 for count in (request.daily_cycles or {}).values()):
+                raise ValueError("运行次数必须是正整数")
         elif request.cycles <= 0:
             raise ValueError("运行次数必须是正整数")
 
@@ -88,10 +94,15 @@ class WorkerController:
         self._stop_requested = False
         self._request = request
         if request.is_daily:
-            # 每日任务：次数由各条路线自己的每日默认值决定（games/epic7/daily_tasks），
-            # 界面上不传 --max-cycles；勾选哪几条用 --daily-tasks 传进去。
-            # ``Joinable``：daily_tasks 是已校验的模式名，不会有逗号。
-            daily_arg = ",".join(request.daily_tasks or ())
+            # 每日任务：界面上不传 --max-cycles，每条的次数写在 --daily-tasks 里
+            # （``世界首领战:2,竞技场:3``）；没带次数的就用该路线自己的每日默认值
+            # （games/epic7/daily_tasks.DAILY_TASKS）。
+            # ``Joinable``：daily_tasks 是已校验的模式名，不会有逗号或冒号。
+            overrides = request.daily_cycles or {}
+            daily_arg = ",".join(
+                f"{mode}:{overrides[mode]}" if mode in overrides else mode
+                for mode in request.daily_tasks or ()
+            )
             command = [
                 sys.executable,
                 "-u",

@@ -18,6 +18,7 @@ MENU_OPTIONS = {
     "6": ("刷书签", "shop_refresh"),
     "7": ("世界首领战", "world_boss"),
     "8": ("骑士团捐赠", "knights_donation"),
+    "9": ("迷宫强化石", "labyrinth_stone"),
     # 每日任务不是单条路线，是一个编排入口（见 games/epic7/daily_tasks.py）。
     "10": ("每日任务", DAILY_MENU_ID),
 }
@@ -32,6 +33,7 @@ MENU_LINES = (
     "6. 刷书签（实验功能，只支持模拟器）",
     "7. 世界首领战（骑士团每日任务，每场 20 体力，不够自动用树叶买）",
     "8. 骑士团捐赠（骑士团每日捐赠，请求支援 + 支援团员 + 每周任务，跑一遍结束）",
+    "9. 迷宫强化石（迷宫每日采购：传送到流浪商人，商店只买强化石，跑一遍结束）",
     "10. 每日任务（世界首领战 → 骑士团捐赠 → 竞技场，依次跑完；每步自动回首页）",
 )
 
@@ -92,8 +94,8 @@ def run_interactive(
         # 每天固定 2 次（游戏主页「剩余/上限」就是 2），不给用户选。
         # 与 desktop/catalog.py 的 default_cycles / main.py 的兜底保持一致。
         cycles = 2
-    elif mode == "knights_donation":
-        # 每天跑一遍就够（请求支援一天只能发一次），不给用户选。
+    elif mode in ("knights_donation", "labyrinth_stone"):
+        # 每天跑一遍就够（请求支援一天只能发一次 / 迷宫采购一天一次），不给用户选。
         # 同上，与 desktop/catalog.py / main.py 三处保持一致。
         cycles = 1
     else:

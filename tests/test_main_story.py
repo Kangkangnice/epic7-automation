@@ -102,11 +102,21 @@ class MainStoryTests(unittest.TestCase):
                         return_value=gift_support_templates,
                     ),
                     patch.object(main_module, "Epic7Navigator") as navigator_type,
+                    patch.object(main_module, "HomeReturn") as home_return_type,
                 ):
                     # 竞技场/主线/远征会带 stop_probe（接力观察窗）进来，狗粮不带；
                     # 两条路径都必须发生在弹窗守卫装好之后，所以这里二者都接受。
                     # 带 stop_probe 时替身必须转发它，否则 `_enter_mode` 会判定接线断了。
+                    #
+                    # ⚠️ 2026-09-25：竞技场切到「回大厅」新流程（v2）之后，这里替换的
+                    # 对象从 `navigator.return_home` 改成了 `main.HomeReturn` ——
+                    # 白名单路线走 v2、压根不碰导航器那个方法，再替换它记不到事件。
                     navigator_type.return_value.return_home.side_effect = (
+                        fake_return_home(
+                            on_call=lambda: events.append("navigation")
+                        )
+                    )
+                    home_return_type.return_value.side_effect = (
                         fake_return_home(
                             on_call=lambda: events.append("navigation")
                         )
@@ -171,7 +181,9 @@ class MainStoryTests(unittest.TestCase):
 
         options = runner_type.call_args.kwargs
         self.assertIsInstance(options["recovery_gate"], RecoveryGate)
-        self.assertEqual(options["recovery"], options["recovery_gate"].recover)
+        # ⚠️ 只给闸门，**不给**任何「恢复」回调：那条通道 2026-09-26 整段删除
+        # （用户拍板「回家就是结束」）。谁把它加回来，这里立刻红。
+        self.assertNotIn("recovery", options)
 
     def test_runtime_routes_only_campfire_wake_to_the_window_wake_channel(self):
         window = unittest.mock.MagicMock()

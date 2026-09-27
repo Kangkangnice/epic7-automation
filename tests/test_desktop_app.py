@@ -340,6 +340,67 @@ def test_controller_rejects_unknown_daily_mode():
         controller.toggle_daily_item("nope", True)
 
 
+def test_daily_cycles_default_to_each_route_daily_count():
+    controller = DesktopController(worker=FakeWorker())
+
+    assert controller.daily_cycles == {
+        "world_boss": 2,
+        "knights_donation": 1,
+        "shop_refresh": 1,
+        "labyrinth_stone": 1,
+        "arena": 1,
+    }
+
+
+def test_edited_daily_cycle_reaches_the_worker():
+    worker = FakeWorker()
+    controller = DesktopController(worker=worker)
+    controller.apply_preflight(passed_preflight())
+
+    controller.set_daily_cycles("arena", 4)
+    controller.start_daily()
+
+    assert worker.request.daily_tasks == (
+        "world_boss",
+        "knights_donation",
+        "shop_refresh",
+        "labyrinth_stone",
+        "arena",
+    )
+    assert worker.request.daily_cycles == {
+        "world_boss": 2,
+        "knights_donation": 1,
+        "shop_refresh": 1,
+        "labyrinth_stone": 1,
+        "arena": 4,
+    }
+
+
+def test_daily_cycle_of_a_capped_route_is_snapped_back_to_its_default():
+    """世界首领战每天就 2 次、骑士团捐赠就 1 次 ⇒ 界面给多少都打回默认值。"""
+    controller = DesktopController(worker=FakeWorker())
+
+    controller.set_daily_cycles("world_boss", 9)
+    controller.set_daily_cycles("knights_donation", 9)
+
+    assert controller.daily_cycles["world_boss"] == 2
+    assert controller.daily_cycles["knights_donation"] == 1
+
+
+def test_daily_cycle_must_be_a_positive_integer():
+    controller = DesktopController(worker=FakeWorker())
+
+    with pytest.raises(ValueError, match="正整数"):
+        controller.set_daily_cycles("arena", 0)
+
+
+def test_daily_cycle_rejects_unknown_route():
+    controller = DesktopController(worker=FakeWorker())
+
+    with pytest.raises(ValueError):
+        controller.set_daily_cycles("nope", 3)
+
+
 def test_controller_starts_daily_worker_with_the_selection():
     worker = FakeWorker()
     controller = DesktopController(worker=worker)
@@ -349,7 +410,12 @@ def test_controller_starts_daily_worker_with_the_selection():
     controller.start_daily()
 
     assert worker.request.is_daily is True
-    assert worker.request.daily_tasks == ("world_boss", "knights_donation")
+    assert worker.request.daily_tasks == (
+        "world_boss",
+        "knights_donation",
+        "shop_refresh",
+        "labyrinth_stone",
+    )
 
 
 def test_controller_refuses_daily_start_with_empty_selection():
@@ -375,6 +441,111 @@ def test_daily_panel_renders_a_checkbox_per_task(tmp_path, tk_window):
     assert all(var.get() for var in app.daily_vars.values())
 
 
+def test_route_panel_uses_two_columns_to_keep_the_window_short(tmp_path, tk_window):
+    """用户 2026-09-25 反馈「UI 有点太长了」⇒ 路线列表摊成两列，用宽度换高度。"""
+    from auto_game_unified.desktop.catalog import ROUTES
+
+    app = DesktopApp(
+        tk_window,
+        controller=DesktopController(worker=FakeWorker()),
+        project_root=tmp_path,
+    )
+    tk_window.update_idletasks()
+
+    cells = [
+        (
+            int(button.grid_info()["row"]),
+            int(button.grid_info()["column"]),
+        )
+        for button in app._route_buttons
+    ]
+    assert {column for _, column in cells} == {0, 1}
+    assert max(row for row, _ in cells) == -(-len(ROUTES) // 2)
+
+
+def test_daily_panel_offers_a_cycle_input_per_task(tmp_path, tk_window):
+    """每条日常后面那个次数框：默认值来自各路线，有每日上限的置灰。"""
+    from auto_game_unified.games.epic7.daily_tasks import DAILY_TASKS
+
+    app = DesktopApp(
+        tk_window,
+        controller=DesktopController(worker=FakeWorker()),
+        project_root=tmp_path,
+    )
+    tk_window.update_idletasks()
+
+    assert list(app.daily_cycle_vars) == [task.mode for task in DAILY_TASKS]
+    assert app.daily_cycle_vars["world_boss"].get() == "2"
+    assert app.daily_cycle_vars["arena"].get() == "1"
+    assert str(app._daily_cycle_inputs["world_boss"].cget("state")) == "disabled"
+    assert str(app._daily_cycle_inputs["arena"].cget("state")) == "normal"
+
+
+def test_a_capped_daily_cycle_typed_in_the_panel_is_snapped_back(tmp_path, tk_window):
+    """框是灰的也拦不住有人往里塞字符 ⇒ 收的时候打回默认值并回显。"""
+    app = DesktopApp(
+        tk_window,
+        controller=DesktopController(worker=FakeWorker()),
+        project_root=tmp_path,
+    )
+    tk_window.update_idletasks()
+
+    app.daily_cycle_vars["world_boss"].set("9")
+
+    assert app._collect_daily_cycles() is True
+    assert app.daily_cycle_vars["world_boss"].get() == "2"
+
+
+def test_an_invalid_daily_cycle_blocks_the_start(tmp_path, tk_window):
+    """填坏了就当场拦下，别带着一个看不懂的次数开跑。"""
+    worker = FakeWorker()
+    controller = DesktopController(worker=worker)
+    controller.apply_preflight(passed_preflight())
+    app = DesktopApp(
+        tk_window,
+        controller=controller,
+        project_root=tmp_path,
+        preflight_runner=passed_preflight,
+        thread_factory=ImmediateThread,
+    )
+    tk_window.update_idletasks()
+    app.daily_cycle_vars["arena"].set("0")
+
+    with patch(
+        "auto_game_unified.desktop.app.messagebox.showerror"
+    ) as showerror:
+        app._start_daily()
+    tk_window.update()
+
+    assert worker.request is None
+    assert showerror.called
+    assert app.daily_cycle_vars["arena"].get() == "1"
+
+
+def test_daily_start_uses_the_edited_panel_cycle(tmp_path, tk_window):
+    """从界面一路走到 worker 命令：填了 4 场就得是 4 场。"""
+    worker = FakeWorker()
+    controller = DesktopController(worker=worker)
+    app = DesktopApp(
+        tk_window,
+        controller=controller,
+        project_root=tmp_path,
+        preflight_runner=passed_preflight,
+        thread_factory=ImmediateThread,
+    )
+    tk_window.update_idletasks()
+    app.daily_cycle_vars["arena"].set("4")
+
+    with patch(
+        "auto_game_unified.desktop.app.messagebox.askyesno",
+        return_value=True,
+    ):
+        app._start_daily()
+    tk_window.update()
+
+    assert worker.request.daily_cycles["arena"] == 4
+
+
 def test_unchecking_a_daily_task_updates_the_controller(tmp_path, tk_window):
     controller = DesktopController(worker=FakeWorker())
     app = DesktopApp(tk_window, controller=controller, project_root=tmp_path)
@@ -383,7 +554,12 @@ def test_unchecking_a_daily_task_updates_the_controller(tmp_path, tk_window):
     app.daily_vars["arena"].set(False)
     app._on_daily_toggle("arena")
 
-    assert controller.daily_selection == ["world_boss", "knights_donation"]
+    assert controller.daily_selection == [
+        "world_boss",
+        "knights_donation",
+        "shop_refresh",
+        "labyrinth_stone",
+    ]
     assert app.daily_vars["arena"].get() is False
 
 
@@ -409,7 +585,13 @@ def test_daily_start_runs_preflight_then_starts_worker(tmp_path, tk_window):
 
     assert calls == ["emulator"]
     assert worker.request is not None
-    assert worker.request.daily_tasks == ("world_boss", "knights_donation", "arena")
+    assert worker.request.daily_tasks == (
+        "world_boss",
+        "knights_donation",
+        "shop_refresh",
+        "labyrinth_stone",
+        "arena",
+    )
 
 
 def test_daily_start_aborts_when_preflight_blocks(tmp_path, tk_window):
@@ -450,6 +632,35 @@ def test_daily_start_cancelled_when_selection_changes_mid_check(tmp_path, tk_win
         controller=controller,
         project_root=tmp_path,
         preflight_runner=preflight_and_flip,
+        thread_factory=ImmediateThread,
+    )
+
+    with patch(
+        "auto_game_unified.desktop.app.messagebox.askyesno",
+        return_value=True,
+    ):
+        app._start_daily()
+    tk_window.update()
+
+    assert worker.request is None
+    assert "已变化" in app.environment_var.get()
+
+
+def test_daily_start_cancelled_when_cycles_change_mid_check(tmp_path, tk_window):
+    """次数也是「他看到的那一套」的一部分 ⇒ 复检期间改了同样要作废。"""
+    worker = FakeWorker()
+    controller = DesktopController(worker=worker)
+    controller.apply_preflight(passed_preflight())
+
+    def preflight_and_edit(window_backend):
+        controller.set_daily_cycles("arena", 6)
+        return passed_preflight()
+
+    app = DesktopApp(
+        tk_window,
+        controller=controller,
+        project_root=tmp_path,
+        preflight_runner=preflight_and_edit,
         thread_factory=ImmediateThread,
     )
 

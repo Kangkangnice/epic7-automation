@@ -5,7 +5,6 @@ import pytest
 from PIL import Image
 
 from auto_game_unified.core.battle_supervisor import AutoBattleState
-from auto_game_unified.core.recovery import RecoveryBlocked
 from auto_game_unified.core.runtime import Runtime
 from auto_game_unified.games.epic7.modes import get_mode
 
@@ -47,13 +46,7 @@ def runner_case(tmp_path):
             diagnostic_dir=tmp_path / mode,
             emit=lambda line: None,
         )
-        recoveries: list[str] = []
-        runner = spec.runner_type(
-            machine,
-            runtime,
-            recovery=lambda: recoveries.append("recover"),
-        )
-        return runner, recoveries
+        return spec.runner_type(machine, runtime)
 
     return build
 
@@ -76,15 +69,22 @@ def test_result_anchor_is_outside_the_committed_battle(mode, adapter_case):
 
 @pytest.mark.parametrize("mode", ["story", "arena", "expedition", "fodder"])
 def test_runner_uses_the_same_recovery_gate_as_its_supervisor(mode, runner_case):
-    runner, _ = runner_case(mode)
+    runner = runner_case(mode)
     assert runner.battle_supervisor.gate is runner.recovery_gate
 
 
 @pytest.mark.parametrize("mode", ["story", "arena", "expedition", "fodder"])
-def test_committed_battle_blocks_every_mode_recovery_callback(mode, runner_case):
-    runner, recoveries = runner_case(mode)
+def test_a_committed_battle_has_no_channel_that_can_leave_it(mode, runner_case):
+    """已承诺战斗期间：锁必须锁上，而且 runner 上**没有任何**「恢复」入口。
+
+    2026-09-26 之前这条是「锁住各模式的恢复回调」；用户拍板「回家就是结束」之后，
+    回调本身已整段删除（``recover()`` / ``RecoveryBlocked``）⇒ 断言换成
+    「锁还在 + 那条通道不存在」。这条是跨路线的：四条路线一起守，谁单独加回来都会红。
+    """
+    runner = runner_case(mode)
+
     runner.recovery_gate.lock(mode=mode, cycle=1)
-    with pytest.raises(RecoveryBlocked):
-        runner.recovery("cross-mode invariant")
-    runner.recovery_gate.unlock()
-    assert recoveries == []
+
+    assert runner.recovery_gate.locked is True
+    for absent in ("recovery", "recover"):
+        assert not hasattr(runner, absent), f"{mode} 又多了一条离开战斗的通道：{absent}"

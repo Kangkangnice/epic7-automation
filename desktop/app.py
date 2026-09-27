@@ -29,6 +29,7 @@ from auto_game_unified.desktop.worker import (
     WorkerController,
     WorkerEvent,
 )
+from auto_game_unified.games.epic7.daily_tasks import cycles_for
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -66,9 +67,13 @@ class DesktopController:
         self.selected_backend = "emulator"
         self.cycles = 1
         self.preflight_report: PreflightReport | None = None
-        # 「每日任务」勾选：默认全勾（按 DAILY_TASKS 的次序）。它是**独立于**
-        # selected_mode 的一套状态 —— 单路线单选与每日任务多选互不干扰。
+        # 「每日任务」勾选与每条跑几次：默认全勾（按 DAILY_TASKS 的次序）、
+        # 次数取各路线自己的每日默认值。它是**独立于** selected_mode 的一套状态
+        # —— 单路线单选与每日任务多选互不干扰。
         self.daily_selection: list[str] = [mode for mode, _ in daily_items()]
+        self.daily_cycles: dict[str, int] = {
+            mode: cycles_for(mode) for mode, _ in daily_items()
+        }
 
     @property
     def route(self):
@@ -89,17 +94,43 @@ class DesktopController:
         elif not checked and mode in self.daily_selection:
             self.daily_selection.remove(mode)
 
+    def set_daily_cycles(self, mode: str, cycles: int) -> None:
+        """改每日任务里某条路线的次数（界面上那个输入框）。
+
+        固定次数的路线（世界首领战每天 2 次、骑士团捐赠每天 1 次）**不接受输入**：
+        游戏本身就有每日上限，填个大数字只会在主页空转到「次数已用完」，
+        所以直接打回默认值 —— 与单路线面板的 ``set_cycles`` 同一套口径。
+        """
+        if self.worker.running:
+            raise RuntimeError("运行期间不能修改每日任务")
+        if mode not in self.daily_cycles:
+            raise ValueError(f"每日任务里没有这条路线：{mode}")
+        if not route_by_name(mode).cycles_editable:
+            self.daily_cycles[mode] = cycles_for(mode)
+            return
+        if cycles <= 0:
+            raise ValueError("运行次数必须是正整数")
+        self.daily_cycles[mode] = cycles
+
+    def daily_plan(self) -> tuple[tuple[str, int], ...]:
+        """这次要跑的「路线 + 次数」—— 界面上看到的那一套，就是它是唯一出处。"""
+        return tuple(
+            (mode, self.daily_cycles[mode]) for mode in self.daily_selection
+        )
+
     def start_daily(self) -> None:
         if not self.can_start:
             raise RuntimeError("请先完成环境检测")
-        if not self.daily_selection:
+        plan = self.daily_plan()
+        if not plan:
             raise RuntimeError("每日任务至少要勾选一项")
         self.worker.start(
             RunRequest(
                 self.selected_mode,
                 self.cycles,
                 self.selected_backend,
-                daily_tasks=tuple(self.daily_selection),
+                daily_tasks=tuple(mode for mode, _ in plan),
+                daily_cycles=dict(plan),
             )
         )
 
@@ -160,6 +191,14 @@ class DesktopController:
 
 
 class DesktopApp:
+    # 「选择功能」排几列。十条路线一字排开会把窗口顶得很长（用户 2026-09-25 反馈
+    # 「UI 有点太长了」），所以摊成两列、把高度换宽度。
+    _ROUTE_COLUMNS = 2
+    # 卡片里的说明文字多宽换行 —— 这个值直接决定左栏高度。实测（Tk 里一行中文
+    # 约 23px 宽、39px 高）：每日任务那段说明 152 字，按 340 换行要 15 行、564px 高，
+    # 占了整栏一多半；放到跟「选择功能」两列网格同宽（≈540）后只要 6 行，
+    # 整窗自然高度从 2000 掉到 ~1540。**别再往小调。**
+    _WRAP_LENGTH = 540
     _BACKGROUND = "#f4f4f5"
     _SURFACE = "#ffffff"
     _TEXT = "#18181b"
@@ -318,10 +357,11 @@ class DesktopApp:
         panel = ttk.Frame(parent, style="Card.TFrame", padding=14)
         panel.grid(row=0, column=0, sticky="new", padx=(0, 14))
         ttk.Label(panel, text="选择功能", style="Section.TLabel").grid(
-            row=0, column=0, sticky="w", pady=(0, 8)
+            row=0, column=0, columnspan=self._ROUTE_COLUMNS, sticky="w", pady=(0, 8)
         )
         self.route_var = tk.StringVar(value=self.controller.selected_mode)
-        for index, route in enumerate(ROUTES, start=1):
+        for index, route in enumerate(ROUTES):
+            row, column = divmod(index, self._ROUTE_COLUMNS)
             marker = "正式" if not route.experimental else "实验"
             button = ttk.Radiobutton(
                 panel,
@@ -331,29 +371,42 @@ class DesktopApp:
                 command=self._on_route_change,
                 style="Route.TRadiobutton",
             )
-            button.grid(row=index, column=0, sticky="w", pady=5)
+            button.grid(row=row + 1, column=column, sticky="w", pady=5, padx=(0, 18))
             self._route_buttons.append(button)
         self.route_description_var = tk.StringVar()
+        rows = -(-len(ROUTES) // self._ROUTE_COLUMNS)
         ttk.Label(
             panel,
             textvariable=self.route_description_var,
             style="Body.TLabel",
-            wraplength=250,
-        ).grid(row=len(ROUTES) + 1, column=0, sticky="w", pady=(14, 0))
+            wraplength=self._WRAP_LENGTH,
+        ).grid(
+            row=rows + 1,
+            column=0,
+            columnspan=self._ROUTE_COLUMNS,
+            sticky="w",
+            pady=(14, 0),
+        )
 
     def _build_daily_panel(self, parent: ttk.Frame) -> None:
         """「每日任务」区块：多选 + 独立启动按钮。
 
         ⚠️ 与上面的单路线单选面板**是两套独立的东西**：上面选「跑哪一条」，
-        这里选「日常串哪几条」。所以它有自己的启动按钮，不复用「开始运行」，
+        这里选「日常串哪几条、各跑几次」。所以它有自己的启动按钮，不复用「开始运行」，
         免得两种模式互相干扰（各自的勾选/次数语义完全不同）。
+
+        每条后面那个次数框就是「默认值 + 可选值」：默认填各路线自己的每日次数，
+        想多跑就自己改（竞技场这类没有每日上限的）。有每日上限的路线（世界首领战、
+        骑士团捐赠）框是灰的 —— 见 ``DesktopController.set_daily_cycles``。
         """
         panel = ttk.Frame(parent, style="Card.TFrame", padding=14)
         panel.grid(row=1, column=0, sticky="new", padx=(0, 14), pady=(14, 0))
         ttk.Label(panel, text=DAILY_LABEL, style="Section.TLabel").grid(
-            row=0, column=0, sticky="w"
+            row=0, column=0, columnspan=3, sticky="w"
         )
         self.daily_vars: dict[str, tk.BooleanVar] = {}
+        self.daily_cycle_vars: dict[str, tk.StringVar] = {}
+        self._daily_cycle_inputs: dict[str, ttk.Spinbox] = {}
         row_index = 1
         for mode, label in daily_items():
             var = tk.BooleanVar(value=mode in self.controller.daily_selection)
@@ -366,20 +419,33 @@ class DesktopApp:
             )
             checkbox.grid(row=row_index, column=0, sticky="w", pady=3)
             self._daily_buttons.append(checkbox)
+
+            count_var = tk.StringVar(value=str(self.controller.daily_cycles[mode]))
+            self.daily_cycle_vars[mode] = count_var
+            spinbox = ttk.Spinbox(
+                panel, from_=1, to=999, width=5, textvariable=count_var
+            )
+            spinbox.grid(row=row_index, column=1, sticky="w", padx=(10, 4), pady=3)
+            self._daily_cycle_inputs[mode] = spinbox
+            ttk.Label(panel, text="次", style="Body.TLabel").grid(
+                row=row_index, column=2, sticky="w", pady=3
+            )
             row_index += 1
         ttk.Label(
             panel,
             text=DAILY_DESCRIPTION,
             style="Body.TLabel",
-            wraplength=250,
-        ).grid(row=row_index, column=0, sticky="w", pady=(10, 0))
+            wraplength=self._WRAP_LENGTH,
+        ).grid(row=row_index, column=0, columnspan=3, sticky="w", pady=(10, 0))
         self.daily_button = ttk.Button(
             panel,
             text="开始每日任务",
             style="Accent.TButton",
             command=self._start_daily,
         )
-        self.daily_button.grid(row=row_index + 1, column=0, sticky="w", pady=(10, 0))
+        self.daily_button.grid(
+            row=row_index + 1, column=0, columnspan=3, sticky="w", pady=(10, 0)
+        )
 
     def _build_action_panel(self, parent: ttk.Frame) -> None:
         panel = ttk.Frame(parent, style="Card.TFrame", padding=14)
@@ -470,12 +536,31 @@ class DesktopApp:
             return
         self._refresh_controls()
 
+    def _collect_daily_cycles(self) -> bool:
+        """把界面上填的次数收进 controller；填坏了就弹框并返回 False。
+
+        只收**勾选了的**那几条 —— 没勾的那行填了什么都不该挡住启动。收完再回显一次：
+        固定次数的路线会被打回默认值，不回显就会在框里留一个不会生效的数字。
+        """
+        for mode in self.controller.daily_selection:
+            var = self.daily_cycle_vars[mode]
+            try:
+                self.controller.set_daily_cycles(mode, int(var.get()))
+            except (TypeError, ValueError) as error:
+                messagebox.showerror("运行次数无效", str(error), parent=self.root)
+                var.set(str(self.controller.daily_cycles[mode]))
+                return False
+            var.set(str(self.controller.daily_cycles[mode]))
+        return True
+
     def _start_daily(self) -> None:
         """启动每日任务：与单路线共用同一套「先复检环境」的前置流程。"""
         if not self.controller.daily_selection:
             messagebox.showwarning(
                 "每日任务", "至少要勾选一项再开始。", parent=self.root
             )
+            return
+        if not self._collect_daily_cycles():
             return
         # 每日任务里含实验功能路线（世界首领战/骑士团捐赠都是），照单路线那样提醒一次。
         confirmed = messagebox.askyesno(
@@ -489,7 +574,8 @@ class DesktopApp:
         self.environment_var.set("正在复检运行环境……")
         self.environment_label.configure(foreground=self._PRIMARY)
         self._refresh_controls()
-        selection = tuple(self.controller.daily_selection)
+        # 快照「路线 + 次数」：复检期间用户改了这个快照里的任何一样，这次启动就作废。
+        plan = self.controller.daily_plan()
 
         def check() -> None:
             report = self._preflight_runner(
@@ -497,7 +583,7 @@ class DesktopApp:
             )
             self.root.after(
                 0,
-                lambda: self._finish_daily_start_check(selection, report),
+                lambda: self._finish_daily_start_check(plan, report),
             )
 
         self._thread_factory(
@@ -508,7 +594,7 @@ class DesktopApp:
 
     def _finish_daily_start_check(
         self,
-        selection: tuple[str, ...],
+        plan: tuple[tuple[str, int], ...],
         report: PreflightReport,
     ) -> None:
         self._checking = False
@@ -519,8 +605,8 @@ class DesktopApp:
             self._append_log(f"运行前复检失败：{report.message}")
             self._refresh_controls()
             return
-        if tuple(self.controller.daily_selection) != selection:
-            self.environment_var.set("每日任务勾选已变化，本次启动已取消。")
+        if self.controller.daily_plan() != plan:
+            self.environment_var.set("每日任务的勾选或次数已变化，本次启动已取消。")
             self.environment_label.configure(foreground=self._ERROR)
             self._refresh_controls()
             return
@@ -532,7 +618,11 @@ class DesktopApp:
             messagebox.showerror("无法开始", str(error), parent=self.root)
             self._refresh_controls()
             return
-        self._append_log(f"开始每日任务：共 {len(selection)} 项")
+        labels = dict(daily_items())
+        self._append_log(
+            "开始每日任务："
+            + "、".join(f"{labels[mode]} {count} 次" for mode, count in plan)
+        )
         self._refresh_controls()
 
     def _on_backend_change(self) -> None:
@@ -723,6 +813,14 @@ class DesktopApp:
         else:
             self.cycles_input.configure(
                 state=tk.NORMAL if self.controller.route.cycles_editable else tk.DISABLED
+            )
+        for mode, spinbox in self._daily_cycle_inputs.items():
+            spinbox.configure(
+                state=(
+                    tk.NORMAL
+                    if route_by_name(mode).cycles_editable and not running and not self._checking
+                    else tk.DISABLED
+                )
             )
 
     def _append_log(self, message: str) -> None:

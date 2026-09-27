@@ -715,32 +715,40 @@ class TransmitTransactionTests(unittest.TestCase):
 
         self.assertTrue(runner._transition_completed(selected, abort, "传送选择"))
 
-    def test_recovery_does_not_clear_unfinished_transmit_target(self):
+    def test_a_broken_picture_never_clears_the_unfinished_transmit_target(self):
+        """画面在传送途中被换掉（连续性断了）⇒ **一个键都不许点**，但目标也不许清掉。
+
+        ⚠️ 这条原来叫 ``test_recovery_does_not_clear_unfinished_transmit_target``：
+        那时靠 ``_apply_recovery_state``（随恢复导航一起删除）把
+        ``transmit_continuity_intact`` 置假。现在连续性由状态机自己守
+        （``transmit_continuity_intact`` 默认假、只有本进程真的走到那一步才置真），
+        所以这里**直接**把它置假 —— 这正是「换了进程 / 画面被换掉」的真实状态。
+
+        清掉目标＝把玩家那一次没做完的传送忘掉，下一次会拿别的卡当目标重传；
+        所以「拒绝点击」与「目标还在」必须在同一条用例里一起守。
+        """
         m = machine(verify_filter=True)
         m.transmit_phase = TransmitPhase.CONFIRMING
         m.transmit_target_observation = "card-copy-7"
-        runner = HeroSynthRunner(m, Runtime(lambda: None, lambda *_: None))
+        m.transmit_continuity_intact = False
 
-        runner._apply_recovery_state()
-
+        self.assertIsNone(m.next_action(fixture("transmit_confirm")))
         self.assertIs(m.transmit_phase, TransmitPhase.CONFIRMING)
         self.assertEqual("card-copy-7", m.transmit_target_observation)
 
-    def test_recovery_breaks_continuity_and_blocks_pending_transmit(self):
+    def test_a_pending_transmit_without_continuity_is_fail_closed(self):
+        """待完成的传送 + 连续性断了 ⇒ 英雄列表页也不许动手（先去把目标找回来）。"""
         m = machine(verify_filter=True)
         m.transmit_phase = TransmitPhase.PENDING
         m.transmit_target_observation = m._hero_identity_fingerprint(
             fixture("list_reddot")
         )
-        m.transmit_continuity_intact = True
-        runner = HeroSynthRunner(m, Runtime(lambda: None, lambda *_: None))
+        m.transmit_continuity_intact = False
 
-        runner._apply_recovery_state()
-
-        self.assertFalse(m.transmit_continuity_intact)
         self.assertIsNone(m.next_action(fixture("list_reddot")))
 
-    def test_recovery_blocks_transmit_selection_and_confirmation_side_effects(self):
+    def test_a_broken_picture_blocks_transmit_selection_and_confirmation(self):
+        """连续性断了 ⇒ 传送选择页 / 确认页上的每一处副作用都不许发生。"""
         cases = (
             (TransmitPhase.OPENING, fixture("transmit_select")),
             (TransmitPhase.SELECTING, fixture("transmit_confirm")),
@@ -751,12 +759,7 @@ class TransmitTransactionTests(unittest.TestCase):
                 m = machine(verify_filter=True)
                 m.transmit_phase = phase
                 m.transmit_target_observation = "saved-card"
-                m.transmit_continuity_intact = True
-                runner = HeroSynthRunner(
-                    m, Runtime(lambda: None, lambda *_: None)
-                )
-
-                runner._apply_recovery_state()
+                m.transmit_continuity_intact = False
 
                 self.assertIsNone(m.next_action(screen))
 
@@ -2486,8 +2489,14 @@ class RunnerFlowTests(unittest.TestCase):
         )
 
     def test_successful_card_transitions_do_not_arm_loop_recovery(self):
+        """连续 16 次成功的同动作转场不许被当成「原地打转」。
+
+        ⚠️ 2026-09-26 起这条不再靠「看 recovery 有没有被调」来断言 ——
+        回大厅恢复那条通道整段删除了。现在只看两条：**抛的是什么错**
+        （这里是测试自己喂完 preview 触发的 ``StopIteration``，不是循环检测）与
+        **日志里有没有循环检测**。
+        """
         clock = FakeClock()
-        recoveries = []
         logs = []
         runner = HeroSynthRunner(
             machine(verify_filter=True),
@@ -2498,7 +2507,6 @@ class RunnerFlowTests(unittest.TestCase):
                 monotonic=clock,
             ),
             sleep=clock.sleep,
-            recovery=lambda: recoveries.append("recovered"),
         )
         runner.machine._confirmed_page = "英雄列表"
         actions = [
@@ -2523,7 +2531,6 @@ class RunnerFlowTests(unittest.TestCase):
             with self.assertRaises(StopIteration):
                 runner.run(max_cycles=1)
 
-        self.assertEqual([], recoveries)
         self.assertNotIn("循环检测=", "\n".join(logs))
 
     def test_close_filter_uses_normal_stability_path(self):
@@ -2898,22 +2905,6 @@ class RunnerFlowTests(unittest.TestCase):
             names,
         )
 
-    def test_recovery_resets_to_hero_list(self):
-        m = HeroSynthStateMachine(build_hero_templates(TEMPLATES))
-        m.state = HeroSynthState.IMPRINT_CONFIRM
-        m.prev_card_grey = True
-        m.filter_verified = True
-        m._filter_close_pending = True
-        m._confirmed_page = "筛选面板（三星已选中）"
-        runtime = Runtime(lambda: None, lambda *_: None)
-        runner = HeroSynthRunner(m, runtime, sleep=lambda _: None)
-        runner._apply_recovery_state()
-        self.assertIs(m.state, HeroSynthState.HERO_LIST)
-        self.assertFalse(m.filter_verified)
-        self.assertFalse(m.prev_card_grey)
-        self.assertFalse(m._filter_close_pending)
-        self.assertEqual("", m._confirmed_page)
-
     def test_changing_unknown_screen_times_out_instead_of_hanging(self):
         """持续变化的未识别画面（如带动画的列表）不能无限等待。"""
         import itertools
@@ -2939,13 +2930,12 @@ class RunnerFlowTests(unittest.TestCase):
 
 
 class BlackScreenTests(unittest.TestCase):
-    def runner(self, *, runtime=None, clock=None, recovery=None):
+    def runner(self, *, runtime=None, clock=None):
         runtime = runtime or Runtime(lambda: None, lambda _: None)
         return HeroSynthRunner(
             machine(),
             runtime,
             sleep=(clock.sleep if clock is not None else (lambda _: None)),
-            recovery=recovery,
         )
 
     def test_simulator_black_classifier_ignores_legacy_top_padding(self):
@@ -2963,7 +2953,6 @@ class BlackScreenTests(unittest.TestCase):
         black = np.zeros((1132, 1982, 3), dtype=np.uint8)
         clicks = []
         wakes = []
-        recoveries = []
         logs = []
         with TemporaryDirectory() as tmp:
             runtime = Runtime(
@@ -2974,11 +2963,7 @@ class BlackScreenTests(unittest.TestCase):
                 diagnostic_dir=Path(tmp),
                 monotonic=clock,
             )
-            runner = self.runner(
-                runtime=runtime,
-                clock=clock,
-                recovery=lambda: recoveries.append("recovered"),
-            )
+            runner = self.runner(runtime=runtime, clock=clock)
             runner._TIMEOUT_SECONDS = {
                 state: 5 for state in HeroSynthState
             }
@@ -2989,7 +2974,6 @@ class BlackScreenTests(unittest.TestCase):
             self.assertTrue(list(Path(tmp).glob("*_black_screen_timeout.png")))
         self.assertEqual([], clicks)
         self.assertEqual([], wakes)
-        self.assertEqual([], recoveries)
         self.assertIn("最长等待=60秒", "\n".join(logs))
 
     def test_recovered_black_time_does_not_trigger_filter_retry(self):

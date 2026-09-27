@@ -61,6 +61,10 @@ SHARED_PATHS = {
     # 所以必须显式登记在这里，让改了它就退回全量。
     "tests/conftest.py",
     "games/epic7/runner_base.py",
+    # ⚠️ 「事务型」那一族的主循环基类（arena / expedition）。与 runner_base.py 同性质：
+    # 改了它两条路线一起变。**不登记也不会漏测试** —— route_of() 认不出它会退回全量，
+    # 但那个「退回」是不透明的，改一行也要白等 7~8 分钟，且理由看不出来。
+    "games/epic7/transactional_runner_base.py",
     "games/epic7/modes.py",
     "games/epic7/navigation.py",
     "games/epic7/battle_controls.py",
@@ -96,6 +100,7 @@ ROUTE_KEYWORDS = {
     # 骑士团支援列表的「读数字」判据（前置判据：材料不足就跳过）。它不是路线文件、
     # 名字里也没有路线关键词 ⇒ 不登记的话改它会让定向判定退回全量。
     "knights_support_digits": "knights_donation",
+    "labyrinth_stone": "labyrinth_stone",
 }
 
 DOC_SUFFIXES = (".md", ".txt", ".json", ".yaml", ".yml")

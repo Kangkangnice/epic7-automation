@@ -32,13 +32,21 @@ from auto_game_unified.games.epic7.daily_tasks import (
 
 
 def test_daily_list_keeps_the_agreed_order():
-    """次序是用户拍板的（世界首领战 → 骑士团捐赠 → 竞技场），别被 sorted 覆盖。"""
+    """次序是用户拍板的（世界首领战 → 骑士团捐赠 → 商店刷新 → 迷宫强化石 → 竞技场），别被 sorted 覆盖。"""
     assert [task.mode for task in DAILY_TASKS] == [
         "world_boss",
         "knights_donation",
+        "shop_refresh",
+        "labyrinth_stone",
         "arena",
     ]
-    assert [task.label for task in DAILY_TASKS] == ["世界首领战", "骑士团捐赠", "竞技场"]
+    assert [task.label for task in DAILY_TASKS] == [
+        "世界首领战",
+        "骑士团捐赠",
+        "商店刷新",
+        "迷宫强化石",
+        "竞技场",
+    ]
 
 
 def test_every_daily_mode_exists_in_mode_specs():
@@ -54,9 +62,12 @@ def test_every_daily_mode_exists_in_mode_specs():
 
 def test_daily_cycles_are_positive_and_match_known_daily_limits():
     assert all(task.cycles > 0 for task in DAILY_TASKS)
-    # 世界首领战每天固定 2 次；骑士团捐赠请求支援一天一次。
+    # 世界首领战每天固定 2 次；骑士团捐赠请求支援一天一次；
+    # 商店刷新默认 1 次付费刷新（花天空石、不可逆，界面可改）；迷宫强化石跑一遍。
     assert cycles_for("world_boss") == 2
     assert cycles_for("knights_donation") == 1
+    assert cycles_for("shop_refresh") == 1
+    assert cycles_for("labyrinth_stone") == 1
 
 
 # --------------------------------------------------------------------------
@@ -65,14 +76,24 @@ def test_daily_cycles_are_positive_and_match_known_daily_limits():
 
 
 def test_no_selection_means_run_everything():
-    assert normalize_selection(None) == ("world_boss", "knights_donation", "arena")
+    assert normalize_selection(None) == (
+        "world_boss",
+        "knights_donation",
+        "shop_refresh",
+        "labyrinth_stone",
+        "arena",
+    )
 
 
 def test_shuffled_selection_is_reordered_to_the_list_order():
     assert normalize_selection(["arena", "world_boss"]) == ("world_boss", "arena")
-    assert normalize_selection(["arena", "knights_donation", "world_boss"]) == (
+    assert normalize_selection(
+        ["arena", "labyrinth_stone", "world_boss", "shop_refresh", "knights_donation"]
+    ) == (
         "world_boss",
         "knights_donation",
+        "shop_refresh",
+        "labyrinth_stone",
         "arena",
     )
 
@@ -184,8 +205,8 @@ def test_runs_each_selected_mode_once_in_order():
         run_mode=run_mode,
     )
 
-    assert calls == ["world_boss", "knights_donation", "arena"]
-    assert [o.status for o in report.outcomes] == ["completed"] * 3
+    assert calls == ["world_boss", "knights_donation", "shop_refresh", "labyrinth_stone", "arena"]
+    assert [o.status for o in report.outcomes] == ["completed"] * 5
     assert report.any_failed is False
     assert report.aborted_reason is None
 
@@ -216,7 +237,59 @@ def test_cycles_are_passed_from_the_daily_list():
 
     run_daily_tasks(selected=None, dry_run=True, run_mode=run_mode)
 
-    assert seen == [("world_boss", 2), ("knights_donation", 1), ("arena", 1)]
+    assert seen == [
+        ("world_boss", 2),
+        ("knights_donation", 1),
+        ("shop_refresh", 1),
+        ("labyrinth_stone", 1),
+        ("arena", 1),
+    ]
+
+
+def test_cycles_override_replaces_only_the_named_modes():
+    """界面上改过的次数要真的传进 ``run_mode``；没改的仍用默认值。
+
+    这张表是**稀疏覆盖**（不是必须齐全的对照表），所以这里只给 arena 一条。
+    """
+    seen = []
+
+    def run_mode(**kwargs):
+        seen.append((kwargs["spec"].name, kwargs["max_cycles"]))
+        return FakeResult()
+
+    run_daily_tasks(
+        selected=None,
+        dry_run=True,
+        run_mode=run_mode,
+        cycles_override={"arena": 5},
+    )
+
+    assert seen == [
+        ("world_boss", 2),
+        ("knights_donation", 1),
+        ("shop_refresh", 1),
+        ("labyrinth_stone", 1),
+        ("arena", 5),
+    ]
+
+
+def test_cycles_override_is_ignored_for_unselected_modes():
+    """覆盖表里有没勾的路线 ⇒ 不跑它，也就不该有任何副作用。"""
+    seen = []
+
+    def run_mode(**kwargs):
+        seen.append(kwargs["spec"].name)
+        return FakeResult()
+
+    report = run_daily_tasks(
+        selected=["arena"],
+        dry_run=True,
+        run_mode=run_mode,
+        cycles_override={"arena": 2, "world_boss": 9},
+    )
+
+    assert seen == ["arena"]
+    assert [o.label for o in report.outcomes] == ["竞技场"]
 
 
 def test_a_failing_task_is_skipped_and_the_rest_still_run():
@@ -232,8 +305,8 @@ def test_a_failing_task_is_skipped_and_the_rest_still_run():
 
     report = run_daily_tasks(selected=None, dry_run=True, run_mode=run_mode)
 
-    assert calls == ["world_boss", "knights_donation", "arena"]
-    assert [o.status for o in report.outcomes] == ["completed", "failed", "completed"]
+    assert calls == ["world_boss", "knights_donation", "shop_refresh", "labyrinth_stone", "arena"]
+    assert [o.status for o in report.outcomes] == ["completed", "failed", "completed", "completed", "completed"]
     assert report.any_failed is True
     assert "模板缺失" in report.outcomes[1].detail
 
@@ -400,6 +473,58 @@ def test_main_daily_selection_parser_defaults_to_all():
         "arena",
         "knights_donation",
     ]
+
+
+def test_main_daily_selection_parser_strips_the_cycle_suffix():
+    """``arena:3`` 里的次数不归它管，名字要干净地切出来。"""
+    from auto_game_unified.main import _parse_daily_selection
+
+    assert _parse_daily_selection("arena:3") == ["arena"]
+    assert _parse_daily_selection("arena:3, knights_donation") == [
+        "arena",
+        "knights_donation",
+    ]
+
+
+def test_main_daily_cycles_parser_takes_only_the_explicit_ones():
+    """没写次数的路线不出现在结果里 ⇒ 执行器照用默认次数。"""
+    from auto_game_unified.main import _parse_daily_cycles
+
+    assert _parse_daily_cycles("world_boss,arena:3") == {"arena": 3}
+    assert _parse_daily_cycles("") == {}
+
+
+def test_main_daily_cycles_parser_fails_closed_on_bad_numbers():
+    """命令行入口写错了就报错 —— 静默退回默认值等于把「我写了 3」吞掉。"""
+    from auto_game_unified.main import _parse_daily_cycles
+
+    with pytest.raises(SystemExit, match="整数"):
+        _parse_daily_cycles("arena:三")
+    with pytest.raises(SystemExit, match="正整数"):
+        _parse_daily_cycles("arena:0")
+
+
+def test_main_run_daily_passes_the_edited_cycles(monkeypatch):
+    """接线：``_run_daily`` 必须把解析出来的次数覆盖表传下去。"""
+    from auto_game_unified.main import _run_daily, parse_args
+
+    captured = {}
+
+    def fake_run_daily_tasks(**kwargs):
+        captured.update(kwargs)
+        return DailyReport()
+
+    monkeypatch.setattr("auto_game_unified.main.run_daily_tasks", fake_run_daily_tasks)
+    monkeypatch.setattr("auto_game_unified.main._notify_daily", lambda **kwargs: None)
+
+    _run_daily(
+        parse_args(
+            ["--daily", "--daily-tasks", "arena:4,world_boss", "--live", "--confirm", "RUN"]
+        )
+    )
+
+    assert captured["selected"] == ["arena", "world_boss"]
+    assert captured["cycles_override"] == {"arena": 4}
 
 
 def test_main_run_daily_wires_the_real_run_mode(monkeypatch):
