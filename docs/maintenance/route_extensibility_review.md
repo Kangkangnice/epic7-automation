@@ -48,8 +48,11 @@
 | 6 | `desktop/catalog.py` | `RouteInfo("arena", "竞技场", ...)` |
 | 7 | `games/epic7/daily_tasks.py` | `DailyTask(mode="arena", label="竞技场", ...)` |
 
-**一共 7 处**（其中 4 处是整表复制）。而且 `main.MODE_LABELS` 与
-`navigation.MODE_LABELS` 是**两张同内容的表**，只是没人发现。
+**一共 7 处**。其中 `main.py` 与 `navigation.py` 各有一张**同名同内容的字典**
+（`MODE_LABELS`），`launcher.py` / `desktop/catalog.py` / `daily_tasks.py`
+则各自把中文名写在自己的数据结构里（菜单项 / `RouteInfo` / `DailyTask`）。
+**`main.MODE_LABELS` 与 `navigation.MODE_LABELS` 这两张本该同内容的表，
+已经不一致了**（见下）。
 
 ### 新增路线时会怎么犯错
 
@@ -57,6 +60,24 @@
   而不是中文名**，实跑时才看见，测试不红。
 - 或者更隐蔽：`navigation.MODE_LABELS.get(mode, mode)` 有默认值兜底 ⇒
   日志里悄悄退化成英文名，**没有任何报错**。
+
+### ⚠️ 这个漂移**已经发生了**（2026-09-27 实测证据，不是推测）
+
+```python
+from auto_game_unified.main import MODE_LABELS as main_labels
+from auto_game_unified.games.epic7.navigation import MODE_LABELS as nav_labels
+
+set(main_labels) - set(nav_labels)   # → {'survivor'}   ← main 有、nav 没有
+set(nav_labels) - set(main_labels)   # → set()          ← 反向没有
+nav_labels.get('survivor', 'survivor')  # → 'survivor'  ← 悄悄退化成英文名
+```
+
+`main.MODE_LABELS` 里有 `survivor: "幸存者"`，而 `navigation.MODE_LABELS`
+**整条漏了 `survivor`**。后果目前**很轻**（`survivor` 是 `needs_navigation=False`，
+走不到 navigation 那条日志），所以没人发现 —— 但这正是本方案要防的形态：
+**漏改一处，不报错、不测试红、后果随机**。
+
+修完之后这两种表现都会变成 import 阶段报错。
 
 ### 方案 A1（推荐）：收敛成 `modes.py` 里的单一元数据源
 
