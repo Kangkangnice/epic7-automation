@@ -66,9 +66,10 @@ def blank() -> np.ndarray:
 class _Hooked:
     """把「收尾钩子」装进 runner 并记下调用次数。
 
-    两条路线的钩子**不在同一个地方**：基类路线读类属性 ``_finish_home``，
-    竞技场读实例属性 ``finish_home``（它是裸定义、连这个属性都没有）。
-    这里两个都设，与 ``main._install_finish_home`` 保持一致。
+    两条路线的钩子**不在同一个地方**：``ModeRunnerBase`` 路线读类属性
+    ``_finish_home``；事务型那一族（竞技场 / 远征）读实例属性 ``finish_home``
+    （由 ``TransactionalRunnerBase.__init__`` 赋值）。这里两个都设，
+    与 ``main._install_finish_home`` 保持一致。
     """
 
     def __init__(self, failure: str | None = None) -> None:
@@ -600,6 +601,42 @@ class FinishHomeDeclarationTests(unittest.TestCase):
             own_run_source="def run(self, max_cycles=None):\n    return super().run(max_cycles)\n",
         )
         self.assertIsNone(error)
+
+    def test_a_base_runner_with_its_own_run_that_calls_close_out_passes(self):
+        """⚠️ 2026-09-26 竞技场入库时的真实形态：继承了基类、**不能**委托 ``super().run()``
+        （循环策略不同），于是自己覆写 ``run()` 并在每个退出口前调 ``_close_out()``。
+
+        旧判据（只认 ``super().run()``）会把它误判成「跑完不回首页」，
+        **import 阶段直接报错** —— 这是加这一条的原因。
+        """
+        own = (
+            "def run(self, max_cycles=None):\n"
+            "    self._close_out()\n"
+            "    return 1\n"
+        )
+        error = _finish_home_verdict(
+            "fake_own_run",
+            inherits_base=True,
+            exempt=False,
+            own_source=None,
+            own_run_source=own,
+        )
+        self.assertIsNone(error)
+
+    def test_a_base_runner_with_its_own_run_that_forgets_close_out_is_rejected(self):
+        """反证：覆写了 ``run()``、既不委托也不自己收尾 ⇒ 必须拦住。
+
+        没有这一条，上面那条放宽就成了「写个空 run() 也能过」的后门。
+        """
+        error = _finish_home_verdict(
+            "fake_own_run_bad",
+            inherits_base=True,
+            exempt=False,
+            own_source=None,
+            own_run_source="def run(self, max_cycles=None):\n    return 1\n",
+        )
+        self.assertIsNotNone(error)
+        self.assertIn("_close_out()", error)
 
     def test_missing_source_is_fail_open(self):
         """取不到源码（替身 / REPL 造的类）⇒ 放过，别让 import 崩掉。"""

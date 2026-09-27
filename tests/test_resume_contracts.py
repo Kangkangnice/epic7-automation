@@ -99,6 +99,16 @@ def _story_machine():
     return spec, spec.build_machine(TEMPLATE_ROOT, spec.default_state, "emulator")
 
 
+def _legacy_home_return(navigator):
+    """造一个「照旧转发给导航器」的回大厅对象。
+
+    ``story`` 不在 ``HOME_RETURN_V2_MODES`` 里，所以 ``HomeReturn`` 走 legacy 分支、
+    原样把调用转给 ``navigator.return_home`` —— 正是这两条契约想测的东西
+    （它们只关心「探针有没有被传下去」，不关心回家本身怎么走）。
+    """
+    return main_module.HomeReturn(navigator, MagicMock(), mode="story")
+
+
 def test_enter_mode_refuses_a_navigator_that_swallows_the_resume_probe():
     """探针被吃掉了就不许当没事发生。
 
@@ -113,7 +123,9 @@ def test_enter_mode_refuses_a_navigator_that_swallows_the_resume_probe():
     navigator.return_home.return_value = BLANK_FRAME
 
     with pytest.raises(RuntimeError, match="一次都没问过"):
-        main_module._enter_mode(spec, machine, navigator, MagicMock())
+        main_module._enter_mode(
+            spec, machine, navigator, MagicMock(), _legacy_home_return(navigator)
+        )
 
 
 def test_enter_mode_falls_back_to_the_old_route_when_the_probe_misses():
@@ -128,7 +140,9 @@ def test_enter_mode_falls_back_to_the_old_route_when_the_probe_misses():
 
     navigator.return_home.side_effect = return_home
 
-    main_module._enter_mode(spec, machine, navigator, MagicMock())
+    main_module._enter_mode(
+        spec, machine, navigator, MagicMock(), _legacy_home_return(navigator)
+    )
 
     navigator.navigate.assert_called_once_with("story", lobby_screen=BLANK_FRAME)
 

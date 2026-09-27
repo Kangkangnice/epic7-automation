@@ -13,10 +13,11 @@ def test_catalog_lists_every_route_in_menu_order():
         "survivor",
         "world_boss",
         "knights_donation",
+        "labyrinth_stone",
     ]
     assert route_by_name("hero_synthesis").status == "正式功能"
     assert route_by_name("story").status == "正式功能"
-    assert sum(route.experimental for route in ROUTES) == 5
+    assert sum(route.experimental for route in ROUTES) == 6
 
 
 def test_survivor_is_experimental_and_explains_the_manual_entry_page():

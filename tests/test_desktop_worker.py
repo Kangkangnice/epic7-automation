@@ -218,11 +218,55 @@ def test_worker_builds_daily_command_without_max_cycles(tmp_path):
     assert command[command.index("--confirm") + 1] == "RUN"
 
 
+def test_worker_writes_edited_daily_cycles_into_the_task_argument(tmp_path):
+    """界面上改过的次数要跟着 ``--daily-tasks`` 走；没改的仍写成朴素的名字。
+
+    两种写法并存是刻意的：命令行里写出来的就是「用户看到的那一套」，
+    出问题照着日志能原样重跑；没改的那些保持短写，人看着不累。
+    """
+    calls = []
+    worker = WorkerController(
+        repo_parent=tmp_path,
+        popen=lambda command, **kwargs: calls.append(command) or FakeProcess(),
+    )
+
+    worker.start(
+        RunRequest(
+            "arena",
+            1,
+            daily_tasks=(
+                "world_boss",
+                "knights_donation",
+                "shop_refresh",
+                "labyrinth_stone",
+                "arena",
+            ),
+            daily_cycles={"arena": 3},
+        )
+    )
+    worker.join_reader()
+
+    command = calls[0]
+    assert command[command.index("--daily-tasks") + 1] == (
+        "world_boss,knights_donation,shop_refresh,labyrinth_stone,arena:3"
+    )
+    assert "--max-cycles" not in command
+
+
 def test_worker_rejects_daily_without_any_task(tmp_path):
     worker = WorkerController(repo_parent=tmp_path)
 
     with pytest.raises(ValueError, match="至少"):
         worker.start(RunRequest("arena", 1, daily_tasks=()))
+
+
+def test_worker_rejects_non_positive_daily_cycles(tmp_path):
+    worker = WorkerController(repo_parent=tmp_path)
+
+    with pytest.raises(ValueError, match="正整数"):
+        worker.start(
+            RunRequest("arena", 1, daily_tasks=("arena",), daily_cycles={"arena": 0})
+        )
 
 
 def test_worker_evidence_labels_daily_runs(tmp_path):

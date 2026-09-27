@@ -11,7 +11,7 @@ from auto_game_unified.core.battle_supervisor import (
     BattleOutcome,
     BattleSupervisor,
 )
-from auto_game_unified.core.recovery import RecoveryBlocked, RecoveryGate
+from auto_game_unified.core.recovery import RecoveryGate
 from auto_game_unified.core.runtime import Runtime
 
 
@@ -50,7 +50,7 @@ def make_supervisor(observations, *, changing_frames=True, config_overrides=None
     runtime.save_diagnostic = (
         lambda label, screen=None: diagnostics.append(label) or label
     )
-    gate = RecoveryGate(lambda: None)
+    gate = RecoveryGate()
     iterator = iter(observations)
     config = BattleConfig(
         mode="test",
@@ -553,20 +553,27 @@ def test_dynamic_battle_still_has_an_absolute_limit():
     assert diagnostics == ["battle_absolute_timeout"]
 
 
-def test_recovery_request_is_blocked_during_observation():
+def test_the_battle_lock_is_engaged_while_observing():
+    """战斗中**每一帧**都必须是锁上的 —— 这就是「不许有任何东西打断这一局」。
+
+    ⚠️ 2026-09-26 之前这里叫 ``test_recovery_request_is_blocked_during_observation``：
+    那时锁的作用是「挡住回大厅恢复的回调」。用户拍板「回家就是结束」之后那条通道
+    整段删除（连 ``recover()`` 一起）⇒ 锁成了**唯一**还活着的那一半，
+    这条改成直接盯锁本身：观察期间它必须一直是锁着的。
+    """
     auto = BattleObservation(False, True, False, True, AutoBattleState.AUTO)
     result = replace(auto, battle_visible=False, result_visible=True)
     supervisor, gate, base_observe, clicks, logs, diagnostics = make_supervisor(
         [auto, auto, result, result]
     )
-    blocked: list[bool] = []
+    observed_locked: list[bool] = []
 
     def observe(screen, previous):
-        if not blocked:
-            with pytest.raises(RecoveryBlocked):
-                gate.recover("test probe")
-            blocked.append(True)
+        observed_locked.append(gate.locked)
         return base_observe(screen, previous)
 
     assert supervisor.run(observe, cycle=12) is BattleOutcome.RESULT_REACHED
-    assert blocked == [True]
+    assert observed_locked, "观察器一次都没被调到，这条用例就没测到东西"
+    assert all(observed_locked), "战斗中闸门松了 —— 这一局随时可能被打断"
+    # 认出结算页之后必须解锁，否则下一局永远动不了。
+    assert gate.locked is False

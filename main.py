@@ -2,7 +2,7 @@ import argparse
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 import numpy as np
 
@@ -21,6 +21,9 @@ from auto_game_unified.games.epic7.daily_tasks import (
     run_daily_tasks,
 )
 from auto_game_unified.games.epic7.finish_home import _assert_finish_home_declared
+from auto_game_unified.games.epic7.public_flow_verification import (
+    assert_public_flow_verification_declared,
+)
 from auto_game_unified.games.epic7.modes import (
     MODE_SPECS,
     ModeSpec,
@@ -51,6 +54,7 @@ MODE_LABELS = {
     "survivor": "幸存者",
     "world_boss": "世界首领战",
     "knights_donation": "骑士团捐赠",
+    "labyrinth_stone": "迷宫强化石",
 }
 
 
@@ -191,11 +195,77 @@ class _ResumeWatch:
         return True
 
 
+class HomeReturn:
+    """"回大厅"这一步的统一入口：**10 条路线一律走 v2**。
+
+    ⚠️ 这里原本是「这条路线走新流程还是老流程」的分派器（一张 ``HOME_RETURN_V2_MODES``
+    白名单 + 一段 ``if``）。2026-09-26 用户拍板「肯定要替换的，怎么可能并存呢」，
+    白名单整表删除、**老流程整段删除**，所以现在**没有分叉了**：本对象只是把调用
+    转给 ``Epic7Navigator.return_home``（它自己就是 v2 的薄封装）。
+
+    为什么要继续留这么一个对象，而不是让 4 个调用点直接 ``navigator.return_home()``：
+
+    - **可替换**。「回大厅」是条慢路径（真跑要走好几个页面），测试想拿假实现顶掉
+      它来单测别的逻辑时，替换这一个对象就行，不用去动 ``Epic7Navigator``
+      身上那套真实能力。
+    - **日志/调试**：``repr`` 里带路线名，出问题时一眼能看出是谁在回家。
+
+    接口与导航器同形：``(*, stop_probe=None)``，返回「到家」的那一帧。
+    """
+
+    def __init__(
+        self,
+        navigator: Epic7Navigator,
+        runtime: Runtime,
+        *,
+        mode: str,
+    ) -> None:
+        self._navigator = navigator
+        self._runtime = runtime
+        self._mode = mode
+
+    def __call__(
+        self, *, stop_probe: Optional[Callable[[np.ndarray], bool]] = None
+    ) -> np.ndarray:
+        return self._navigator.return_home(stop_probe=stop_probe)
+
+    def __repr__(self) -> str:  # pragma: no cover - 只为人看日志/调试
+        return f"<HomeReturn mode={self._mode} flow=v2>"
+
+
+def _try_return_home_after_failure(
+    home_return: HomeReturn,
+    runtime: Runtime,
+    *,
+    mode: str,
+) -> None:
+    """异常退出前，尽力把游戏带回大厅。
+
+    与收尾（``_install_finish_home``）的差别：**失败一律吞掉**。异常已经在往外抛了，
+    这里再抛一个只会把真正的错因盖掉，用户看到的还是「回不了家」而不是「为什么挂」。
+
+    另外**不再问用户**、也不重试 —— 异常现场已经存档（diagnostic），回家只是顺手
+    收拾一下，不是纠错。
+    """
+    try:
+        home_return()
+    except ManualStop:
+        runtime.log(f"模式={mode} 异常收尾=回首页被手动停止 处理=放弃收尾")
+    except Exception as error:  # noqa: BLE001 —— 绝不能盖掉真正的错因
+        runtime.log(
+            f"模式={mode} 异常收尾=回首页失败 "
+            f"原因={type(error).__name__}: {error} 处理=已忽略（原异常照旧抛出）"
+        )
+    else:
+        runtime.log(f"模式={mode} 异常收尾=已回到首页 状态=可以衔接下一个任务")
+
+
 def _enter_mode(
     spec: ModeSpec,
     machine: Any,
     navigator: Epic7Navigator,
     runtime: Runtime,
+    home_return: HomeReturn,
 ) -> None:
     """把游戏送进本路线的起始位置。
 
@@ -205,11 +275,11 @@ def _enter_mode(
     否则一直返回到大厅再走老流程。
     """
     if spec.resume_probe is None:
-        lobby_screen = navigator.return_home()
+        lobby_screen = home_return()
         navigator.navigate(spec.name, lobby_screen=lobby_screen)
         return
     watch = _ResumeWatch(spec.resume_probe, machine, navigator)
-    resume_screen = navigator.return_home(stop_probe=watch)
+    resume_screen = home_return(stop_probe=watch)
     # 接线检查：`return_home` 的两条正常返回路径都在问过探针**之后**，
     # 所以「返回了却没问过」只可能是接线断了（比如 stop_probe 忘了传）。
     # 这时候探针等于白写 —— 人停在半路照样退回大厅重走，而日志里一片祥和。
@@ -239,7 +309,7 @@ def _enter_mode(
 
 def _install_finish_home(
     runner: Any,
-    navigator: Optional[Epic7Navigator],
+    home_return: Optional[HomeReturn],
     runtime: Runtime,
     *,
     mode: str,
@@ -256,19 +326,31 @@ def _install_finish_home(
     ⚠️ **还没接「收尾回首页」的路线**（``games/epic7/finish_home.FINISH_HOME_EXEMPT``）：
     目前只有 ``survivor`` 一条，理由与取舍见那张表。**其余 9 条全部已接**（2026-09-25 完成）。
 
-    ⚠️ 干跑 / 不需要导航的路线传进来的 ``navigator`` 是 ``None``，这里直接不装 ——
+    ⚠️ 干跑 / 不需要导航的路线传进来的 ``home_return`` 是 ``None``，这里直接不装 ——
     少了钩子，Runner 那边就是「零行为」，不需要各处加 dry_run 特判。
     """
     # 「每条路线都得对收尾表态」的自查在这里触发（import 阶段就报错，不会拖到串任务时）。
     # 放在本函数里是为了让它跟着「收尾回首页」这一整套规矩走，且不必动 modes.py。
     _assert_finish_home_declared()
+    # 「每个公共流程都得对『动作验收』表态」的自查，同样在这里触发。
+    #
+    # ⚠️ **这一行是补上去的，原因值得记一笔**：`public_flow_verification` 那两个
+    # `assert_*` 刚写出来时**只有测试在调**，生产代码一处都没有 ——
+    # 也就是说文档承诺的「加载期报错」跟 `modes._assert_resume_declared` 一样
+    # 是句空话。用户 2026-09-25 的原话是「我希望以后这些这个东西可以避免
+    # **以文档和代码的形式严格遵循**」——「只在测试里跑」不算代码约束。
+    #
+    # 反向护栏（扫源码的 `assert_module_inventory_matches`）**不在这里调**：
+    # 它要读磁盘源码，是开发期的检查，放在 `tests/test_public_flow_verification.py`
+    # 里每次跑测试都过一遍就够，不该让每次实跑都去扫一遍文件。
+    assert_public_flow_verification_declared()
 
-    if navigator is None:
+    if home_return is None:
         return
 
     def finish_at_home() -> Optional[str]:
         try:
-            navigator.return_home()
+            home_return()
         except ManualStop:
             # 用户在收尾阶段按了 P：这不是「回不了家」，是「别动了」。
             # 照实记一笔就收手，既不重试也不改结论。
@@ -318,6 +400,7 @@ def run_mode(
         template_root, start_state, window_backend
     )
     navigator = None
+    home_return = None
     if not dry_run:
         runtime.set_capture_guard(
             Epic7GlobalPopupGuard(
@@ -348,32 +431,50 @@ def run_mode(
                 runtime,
                 backend=window_backend,
             )
-            _enter_mode(spec, machine, navigator, runtime)
+            # 「回大厅」走新流程还是老流程，由这一个对象说了算（口径见 HomeReturn）。
+            home_return = HomeReturn(navigator, runtime, mode=spec.name)
+            try:
+                _enter_mode(spec, machine, navigator, runtime, home_return)
+            except BaseException as error:
+                # ⚠️ ``_enter_mode``（含里面的 ``navigator.navigate``）跑在下面
+                # 「业务主循环」的 try 之外 —— 这里一旦炸，原本会直接逃出 ``run_mode``，
+                # 每日任务只收到一个无声的 ``✗``，连原因都没有（2026-09-26 刷书签
+                # 那次就是这么漏掉的）。所以这里先把原因记进日志、留一张诊断，
+                # 再原样抛出让上层照常判定「本路线失败」。
+                runtime.log(
+                    f"模式={spec.name} 进入路线失败 "
+                    f"原因={type(error).__name__}: {error}"
+                )
+                if runtime.diagnostic_dir is not None:
+                    runtime.save_diagnostic(f"enter_mode_failed_{spec.name}")
+                raise
     runner_options: dict[str, Any] = {}
-    if navigator is not None:
-        def recover_to_mode() -> None:
-            # 恢复**不带**接力探针：恢复的语义是「退回本路线的已知起点重开」，
-            # 调用方紧接着就会 reset_after_recovery()，半路接管会跟它打架。
-            lobby_screen = navigator.return_home()
-            navigator.navigate(spec.name, lobby_screen=lobby_screen)
-
-        def report_blocked_recovery(message: str) -> None:
-            runtime.log(message)
-            runtime.save_diagnostic("recovery_blocked")
-
-        recovery_gate = RecoveryGate(
-            recover_to_mode,
-            on_blocked=report_blocked_recovery,
-        )
-        runner_options["recovery"] = recovery_gate.recover
-        runner_options["recovery_gate"] = recovery_gate
+    # ⚠️ 这里**只**给闸门，不给任何「恢复」回调：2026-09-26 用户拍板
+    # 「回家触发完之后，回到首页，说明这个就结束了，不可能会再回到这个任务」⇒
+    # 「回大厅重新导航、然后接着跑」整段删除（连带 ``recover_to_mode`` /
+    # ``report_blocked_recovery``）。闸门现在只剩「战斗中禁止打断」一个职责，
+    # 由 battle_supervisor 上锁/解锁、unknown_screen 读它（见 core/recovery.py）。
+    runner_options["recovery_gate"] = RecoveryGate()
     if spec.name == "arena" and not dry_run:
         runner_options["purchase_stamp_path"] = ROOT / "runtime_logs" / "arena_ticket_purchase.txt"
         # 每局结算画面留一张盘，给「胜负判得对不对」留可回看的证据（见 ArenaRunner）。
         runner_options["outcome_frame_dir"] = ROOT / "docs" / "manual_review" / "arena"
     runner = spec.runner_type(machine, runtime, **runner_options)
-    _install_finish_home(runner, navigator, runtime, mode=spec.name)
-    completed = runner.run(max_cycles=max_cycles)
+    _install_finish_home(runner, home_return, runtime, mode=spec.name)
+    try:
+        completed = runner.run(max_cycles=max_cycles)
+    except ManualStop:
+        # 用户按 P 喊停 ⇒ 一个字都不动游戏（这是全线统一口径，见 runner_base._close_out）。
+        raise
+    except BaseException:
+        # 异常也回家（**所有路线**，2026-09-26 起不再有白名单分叉）。
+        # 用户 2026-09-25 拍板——「异常了也该走回大厅，包括战斗里，直接放弃这一局」。
+        # 以前不回家的理由是「硬按 Back 可能把已承诺的战斗弄丢」，而 v2 处理这个问题
+        # 的办法是**显式放弃**（暂停 → 放弃战斗 → 放弃确认），比撒手不管更干净。
+        # ⚠️ 回家本身**绝不改退出码**：回到家也照旧往外抛，结论还是「运行失败」。
+        if home_return is not None:
+            _try_return_home_after_failure(home_return, runtime, mode=spec.name)
+        raise
     # 战绩文案只有竞技场会给；别的路线拿不到这个方法，就留 None（通知里不显示）。
     summary = getattr(runner, "outcome_summary", None)
     return RunResult(
@@ -397,6 +498,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default="",
         help=(
             "每日任务要跑哪些路线（逗号分隔）；留空=全部。"
+            "每条可以带次数，例如 arena:3；不带就用该路线的每日默认次数。"
             f"可选：{','.join(task.mode for task in DAILY_TASKS)}"
         ),
     )
@@ -414,15 +516,51 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+def _daily_pieces(raw: str) -> list[tuple[str, str]]:
+    """把 ``--daily-tasks`` 切成 ``(路线名, 次数原文)``；次数没写就是空串。
+
+    这一层只做切分与去空白，**不校验名字、也不解析次数** —— 那分别归
+    ``normalize_selection``（会报成一句人话）与 ``_parse_daily_cycles``。
+    """
+    pieces: list[tuple[str, str]] = []
+    for piece in raw.split(","):
+        name, _, count = piece.partition(":")
+        name, count = name.strip(), count.strip()
+        if name:
+            pieces.append((name, count))
+    return pieces
+
+
 def _parse_daily_selection(raw: str) -> list[str]:
     """把 ``--daily-tasks`` 的逗号分隔串解析成模式名列表；留空 = 全部。
 
-    只做切分与去空白，**不在这里校验名字**（那是 ``normalize_selection`` 的事，
-    它会把未知名字报成一句人话）。
+    每一项可以带次数（``arena:3``）—— **次数在这里被丢掉**，它归
+    ``_parse_daily_cycles`` 管。
     """
     if not raw.strip():
         return [task.mode for task in DAILY_TASKS]
-    return [piece.strip() for piece in raw.split(",") if piece.strip()]
+    return [name for name, _ in _daily_pieces(raw)]
+
+
+def _parse_daily_cycles(raw: str) -> dict[str, int]:
+    """取出 ``--daily-tasks`` 里**显式写了次数**的那几条（``arena:3``）。
+
+    没写次数的路线不出现在返回值里 ⇒ 执行器照用 ``DAILY_TASKS`` 的默认次数。
+    次数写坏了（不是正整数）在命令行入口就报错：静默退回默认值会让
+    「我明明写了 3」变成一个没人发现的坑。
+    """
+    overrides: dict[str, int] = {}
+    for name, count in _daily_pieces(raw):
+        if not count:
+            continue
+        try:
+            value = int(count)
+        except ValueError as error:
+            raise SystemExit(f"每日任务的次数不是整数：{name}:{count}") from error
+        if value <= 0:
+            raise SystemExit(f"每日任务的次数必须是正整数：{name}:{count}")
+        overrides[name] = value
+    return overrides
 
 
 def _build_daily_probe(
@@ -486,6 +624,7 @@ def _run_daily(args: argparse.Namespace) -> int:
     started_at = time.monotonic()
     report = run_daily_tasks(
         selected=_parse_daily_selection(args.daily_tasks),
+        cycles_override=_parse_daily_cycles(args.daily_tasks),
         dry_run=not args.live,
         window_backend=args.window_backend,
         stop_file=Path(args.stop_file) if args.stop_file else None,
@@ -493,6 +632,10 @@ def _run_daily(args: argparse.Namespace) -> int:
         build_probe=lambda: _build_daily_probe(
             window_backend=args.window_backend,
             stop_file=Path(args.stop_file) if args.stop_file else None,
+        ),
+        # 段间回大厅也走「按路线分流」这条口径（见 HomeReturn）。
+        build_home_return=lambda navigator, runtime, mode: HomeReturn(
+            navigator, runtime, mode=mode
         ),
     )
     elapsed = _elapsed_seconds(started_at)
@@ -520,8 +663,9 @@ def main(argv: list[str] | None = None) -> int:
         # 世界首领战每天固定 2 次（主页「剩余/上限」就是 2），无需指定次数。
         # 与 launcher.py / desktop/catalog.py 三处保持一致（都被测试钉住）。
         args.max_cycles = 2
-    if args.mode == "knights_donation" and args.max_cycles is None:
+    if args.mode in ("knights_donation", "labyrinth_stone") and args.max_cycles is None:
         # 骑士团捐赠每天跑一遍就够：请求支援一天只能发一次、红点领完就没了。
+        # 迷宫强化石同理：迷宫采购一天一次。
         # 同上，与 launcher.py / desktop/catalog.py 三处保持一致。
         args.max_cycles = 1
     if args.live and args.confirm != "RUN":

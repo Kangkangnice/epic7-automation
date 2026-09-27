@@ -64,60 +64,57 @@ class StoryRunnerTests(unittest.TestCase):
         supervisor.run.assert_called_once_with(machine.observe_battle, cycle=12)
         self.assertEqual(StoryState.WAIT_BATTLE, machine.state)
 
-    def test_recovery_resets_only_when_completed_cycle_count_increases(self):
+    def test_a_stuck_action_ends_the_route_without_any_way_back(self):
+        """卡住就结束 —— 程序里**根本不存在**「回大厅重新导航然后接着跑」这条通道。
+
+        用户 2026-09-26 拍板：「回家触发完之后，回到首页，说明这个就结束了，不可能会再
+        回到这个任务」。以前这里的行为是「连点不动 ⇒ ``recovery()``（回大厅重新导航）
+        ⇒ 接着跑」，实跑里的表现就是「又从头做了一遍」。
+
+        两条一起守：① **行为上** —— 4 次点击之后直接抛错结束，一次都不多点
+        （``test_same_action_stops_after_four_failed_clicks``）；
+        ② **结构上** —— Runner 上连一个「恢复」入口都没有（这条）。
+        谁把那条通道加回来，这里立刻红。
+        """
+
         class FakeMachine:
-            def __init__(self, next_cycles: int) -> None:
+            def __init__(self) -> None:
                 self.state = StoryState.STAGE
                 self.completed_cycles = 0
                 self.auto_enabled = False
                 self.auto_click_attempted = False
-                self.phase = "stuck"
-                self.next_cycles = next_cycles
 
             def preview(self, _screen):
-                if self.phase == "complete_first":
-                    return None, (StoryState.STAGE, self.next_cycles)
                 return StoryAction("stuck", (1, 1)), (
                     StoryState.STAGE,
                     self.completed_cycles,
                 )
 
             def next_action(self, _screen):
-                if self.phase == "complete_first":
-                    self.completed_cycles = self.next_cycles
-                    self.phase = "stuck"
-                    return None
                 return StoryAction("stuck", (1, 1))
 
-        for next_cycles, expected_recoveries in ((1, [0, 1]), (-1, [0])):
-            with self.subTest(next_cycles=next_cycles):
-                machine = FakeMachine(next_cycles)
-                recoveries: list[int] = []
+        runtime = Runtime(
+            lambda: np.zeros((1132, 1982, 3), dtype=np.uint8),
+            lambda _: None,
+            emit=lambda _: None,
+        )
+        machine = FakeMachine()
+        runner = StoryRunner(machine, runtime, sleep=lambda _: None)
+        runner._ACTION_RETRY_SECONDS = 0
 
-                def recover() -> None:
-                    recoveries.append(machine.completed_cycles)
-                    if machine.completed_cycles == 0:
-                        machine.phase = "complete_first"
+        with patch.object(
+            runtime, "save_diagnostic", return_value=Path("diagnostic.png")
+        ):
+            with self.assertRaisesRegex(
+                RuntimeError, r"动作 stuck 点击4次后画面未推进"
+            ):
+                runner.run(max_cycles=2)
 
-                runtime = Runtime(
-                    lambda: np.zeros((1132, 1982, 3), dtype=np.uint8),
-                    lambda _: None,
-                    emit=lambda _: None,
-                )
-                runner = StoryRunner(
-                    machine, runtime, sleep=lambda _: None, recovery=recover
-                )
-                runner._ACTION_RETRY_SECONDS = 0
-
-                with patch.object(
-                    runtime, "save_diagnostic", return_value=Path("diagnostic.png")
-                ):
-                    with self.assertRaisesRegex(
-                        RuntimeError, r"动作 stuck 点击4次后画面未推进"
-                    ):
-                        runner.run(max_cycles=2)
-
-                self.assertEqual(expected_recoveries, recoveries)
+        self.assertEqual(0, machine.completed_cycles)
+        for absent in ("recovery", "recover", "_apply_recovery_state"):
+            self.assertFalse(
+                hasattr(runner, absent), f"Runner 上又多了一条退路：{absent}"
+            )
 
     def test_updated_battle_stage_uses_prepare_battle_action(self):
         machine = StoryStateMachine(build_story_templates(TEMPLATES))
@@ -174,9 +171,6 @@ class StoryRunnerTests(unittest.TestCase):
         def wait(_: float) -> None:
             now[0] += 20.0
 
-        def unexpected_recovery() -> None:
-            raise AssertionError("retry inherited the first click's expired timeout")
-
         runner = StoryRunner(
             StoryStateMachine(build_story_templates(TEMPLATES)),
             Runtime(
@@ -186,7 +180,6 @@ class StoryRunnerTests(unittest.TestCase):
                 monotonic=lambda: now[0],
             ),
             sleep=wait,
-            recovery=unexpected_recovery,
         )
 
         completed = runner.run(max_cycles=1)
@@ -285,6 +278,86 @@ class StoryRunnerTests(unittest.TestCase):
                 runner.run(max_cycles=1)
 
         self.assertEqual(4, len(clicks))
+
+    def test_the_self_heal_lets_a_different_action_through(self):
+        """卡住之后路线**换个办法** ⇒ 新动作照常点（自救没有被做成「直接放弃」）。
+
+        与上面那条是一对：``test_same_action_stops_after_four_failed_clicks`` 守
+        「换回来还是原样 ⇒ 立刻收手」，这条守「真换了办法 ⇒ 继续干活」。
+        两条合起来才是自救的形状 —— **多给一次「换个办法」的机会，不是多给点击预算**。
+
+        ⚠️ 为什么必须有这条：骑士团捐赠**就靠这个机制**活着 ——
+        「支援连点 4 次推不动 ⇒ 原地切每周任务」（``support_closed``）。
+        把自救整个删掉（第一次耗尽就直接收手）**不会让别的任何测试变红**，
+        所以只能在这里钉住；少了它，那一天的每周任务领奖会整条丢掉。
+        """
+
+        class SwitchingRunner(StoryRunner):
+            def _on_action_exhausted(self, action, screen) -> bool:
+                # 学捐赠：推不动就置上「这一节收工」，交给主循环原地再决策一次。
+                self.machine.switched = True
+                return False
+
+        class FakeMachine:
+            """推不动就一直给 ``stuck``；自救之后改成 ``switched``（换了个办法）。
+
+            换成的那个动作**先要被点**，点完这一轮才算做成 ⇒ 一路走完 ``completed_cycles``
+            才会 +1（照捐赠「切到每周任务、把奖领了收工」的形状）。
+            """
+
+            def __init__(self) -> None:
+                self.state = StoryState.STAGE
+                self.completed_cycles = 0
+                self.auto_enabled = False
+                self.auto_click_attempted = False
+                self.switched = False
+                self.switched_clicked = False
+
+            def preview(self, _screen):
+                if self.switched and self.switched_clicked:
+                    return None, (StoryState.STAGE, self.completed_cycles)
+                name = "switched" if self.switched else "stuck"
+                return StoryAction(name, (2, 2) if self.switched else (1, 1)), (
+                    StoryState.STAGE,
+                    self.completed_cycles,
+                )
+
+            def next_action(self, _screen):
+                if not self.switched:
+                    return StoryAction("stuck", (1, 1))
+                if self.switched_clicked:
+                    self.completed_cycles = 1  # 换个办法做成了 ⇒ 这一轮走完
+                    return None
+                return StoryAction("switched", (2, 2))
+
+        machine = FakeMachine()
+        clicks: list[tuple[int, int]] = []
+
+        def click(point: tuple[int, int]) -> None:
+            clicks.append(point)
+            if point == (2, 2):
+                machine.switched_clicked = True
+
+        with TemporaryDirectory() as directory:
+            # 给诊断目录：万一自救被删掉，这里会在**抛错**时把「动作 stuck …」
+            # 带出来（比「未配置诊断截图目录」好读得多）。
+            runtime = Runtime(
+                lambda: np.zeros((1132, 1982, 3), dtype=np.uint8),
+                click,
+                diagnostic_dir=Path(directory),
+                emit=lambda _: None,
+            )
+            runner = SwitchingRunner(machine, runtime, sleep=lambda _: None)
+            runner._ACTION_RETRY_SECONDS = 0
+
+            completed = runner.run(max_cycles=1)
+
+        self.assertEqual(1, completed)
+        self.assertEqual(
+            [(1, 1)] * 4 + [(2, 2)],
+            clicks,
+            f"自救之后应该点新动作（(2,2)）而不是收手，实际={clicks}",
+        )
 
     def test_source_departure_without_target_never_repeats_old_transition_click(self):
         screens = iter(

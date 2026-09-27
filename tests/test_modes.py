@@ -21,6 +21,7 @@ class Epic7ModeRegistryTests(unittest.TestCase):
                 "survivor",
                 "world_boss",
                 "knights_donation",
+                "labyrinth_stone",
             },
             set(MODE_SPECS),
         )
@@ -33,6 +34,7 @@ class Epic7ModeRegistryTests(unittest.TestCase):
         self.assertEqual("card", get_mode("survivor").default_state)
         self.assertEqual("home", get_mode("world_boss").default_state)
         self.assertEqual("guild_home", get_mode("knights_donation").default_state)
+        self.assertEqual("battle_menu", get_mode("labyrinth_stone").default_state)
 
     def test_shop_refresh_is_simulator_only(self):
         shop = get_mode("shop_refresh")

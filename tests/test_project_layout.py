@@ -42,6 +42,9 @@ class ProjectLayoutTests(unittest.TestCase):
             "free_refresh_confirm_live_20260814.png",
             "quick_battle_selected_live_20260826.png",
             "normal_battle_ready_live_20260826.png",
+            # 2026-09-25 真机票耗尽帧。它钉住了「竞技场的终点是购买旗帜弹窗」这个
+            # 事实 —— 收尾的 `_dismiss_purchase_popup` 就是照它写的判据。
+            "ticket_exhausted_popup.png",
         }
         fixture_dir = ROOT / "tests" / "fixtures" / "epic7_arena"
         self.assertEqual(expected, {path.name for path in fixture_dir.glob("*.png")})
@@ -185,6 +188,10 @@ class ProjectLayoutTests(unittest.TestCase):
             # 回大厅重来 → 再点 4 次，把路线拖死；而当时局内 0/2 本该直接收场。
             # ⇒ 这是「模板得分单独守不住」的现场复现件，也是亮度比那道判据的回归依据。
             "worldboss_home_chest_claimed_dark.png",
+            # 2026-09-25 第四次实跑：主页「每周贡献度」宝箱 **#2**（7,500,000）可领那一态。
+            # 与上面那张 #1 是同一屏的两个箱子：实跑日志里 #1 已被领掉（亮度比 1.011），
+            # #2 还亮着（3.197）却没被领 —— 顺序反了、判据又没接线，两件事一起犯。
+            "worldboss_home_chest2_claimable.png",
         }
         fixture_dir = ROOT / "tests" / "fixtures" / "epic7_world_boss"
         self.assertEqual(expected, {path.name for path in fixture_dir.glob("*.png")})
@@ -225,6 +232,17 @@ class ProjectLayoutTests(unittest.TestCase):
             # 是角标判据「面积下限 60」的回归依据。
             "weekly_tasks_claimable.png",
             "weekly_tasks_claimed.png",
+            # 2026-09-26 用户现场帧（**原始帧**）：骑士团点数 1660、500/1000 已领，
+            # **可领的是 1500 档**（角标中心 (1260,286)，老夹具那张是 (1073,286)）。
+            # 当时搜索区是写死的 50×50 小方块、只罩得住 500 档 ⇒ 这一帧直接判
+            # 「没有可领档位」收工，1500 的奖励白丢。它是「整条里程碑带 + 形态判据」
+            # 的唯一回归依据（也是第二个里程碑正向样本）。
+            "weekly_tasks_claimable_at_1500.png",
+            # 2026-09-25 21:38 那次实跑的**原始诊断帧**（support-one 连点推不动的现场）：
+            # 右上角正是「今日支援上限 200/200」。它是「上限满了」这条判据的正例来源
+            # （模板就从这个框里切），也是「上限满了绿按钮照样是绿的」这个事实的证据 ——
+            # 同页 30/200、90/200 那几张是它的**反向对照**（整串匹配必须分得开）。
+            "support_limit_full.png",
         }
         fixture_dir = ROOT / "tests" / "fixtures" / "epic7_knights_donation"
         self.assertEqual(expected, {path.name for path in fixture_dir.glob("*.png")})

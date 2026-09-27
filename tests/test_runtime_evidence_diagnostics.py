@@ -19,6 +19,9 @@ from auto_game_unified.games.epic7.expedition import ExpeditionRunner, Expeditio
 from auto_game_unified.games.epic7.hero_synthesis import HeroSynthRunner
 from auto_game_unified.games.epic7.runner_base import ModeRunnerBase
 from auto_game_unified.games.epic7.story import StoryRunner
+from auto_game_unified.games.epic7.transactional_runner_base import (
+    TransactionalRunnerBase,
+)
 
 
 class FakeRuntime:
@@ -212,10 +215,20 @@ def test_formal_route_failure_entry_points_write_evidence_packs(tmp_path):
         state=ExpeditionState.HOME,
     )
     expedition.runtime = runtime
-    expedition._diagnostic("expedition_timeout", screen)
+    # ⚠️ 2026-09-26：远征的失败诊断入口从自有方法 ``_diagnostic(label)`` 并入了
+    # ``TransactionalRunnerBase._save_failure_diagnostic(label, ...)``。
+    # 两族的**同名方法签名不同**，各自自洽：本族（远征/竞技场迁移后）收 label、
+    # 自己落盘；``ModeRunnerBase`` 那一支（主线/杂交/骑士团……）收已存好的路径。
+    expedition_output = expedition._save_failure_diagnostic(
+        "expedition_timeout", screen
+    )
 
     assert story_output.is_file()
     assert arena_output.is_file()
+    assert expedition_output.is_file()
     assert (runtime.diagnostic_dir / "expedition_timeout" / "evidence.json").is_file()
     assert issubclass(StoryRunner, ModeRunnerBase)
     assert issubclass(HeroSynthRunner, ModeRunnerBase)
+    # 远征走的是**另一族**主循环 —— 它是本用例唯一不继承 ModeRunnerBase 的路线。
+    assert issubclass(ExpeditionRunner, TransactionalRunnerBase)
+    assert not issubclass(ExpeditionRunner, ModeRunnerBase)
