@@ -96,17 +96,21 @@ DIR_NOTES = {
         "它不是缓存。",
     ),
     ".tools": (
-        "工具缓存（待确认）",
-        "24.4 MB，体积最大。疑为外部工具/解释器的缓存目录，删前先确认是谁在用。",
+        "本地工具环境（保留）",
+        "adb（`platform-tools`）等本地工具链。`docs/superpowers/specs/"
+        "2026-08-12-repository-cleanup-and-human-ai-workflow-design.md` 已定性："
+        "「`.tools/` 和 `.workbuddy/` 属于本地工具环境，保留在工作区但不纳入 Git 仓库」。"
+        "**不是缓存，别删。**",
     ),
     ".trae": ("IDE 配置", "外部 IDE（Trae）的工程配置，与自动化项目无关，可留可删看你还用不用。"),
     ".pytest_cache": ("pytest 缓存", "跑测试留下的缓存，可再生。删了下次跑测试会重建。"),
     "_walk": ("空目录", "可直接删。目录名为空，0 个文件。"),
     "docs": ("空目录", "工作区根的 docs/ 是空的；真正的文档目录是 auto_game_unified/docs/。可直接删。"),
     "runtime_logs": (
-        "临时输出",
+        "临时输出（含调研帧集）",
         "排查期间写的临时脚本与输出（工作区根不是仓库，不被 git 跟踪）；"
-        "真正的运行日志目录是 auto_game_unified/runtime_logs/。删掉不影响程序。",
+        "真正的运行日志目录是 auto_game_unified/runtime_logs/。"
+        "⚠️ 目前里头还有 `knights/` 一批骑士团调研的**真机帧**，删前先确认是否还要回看。",
     ),
     "templates_backup_20260829_1854": (
         "模板历史快照",
@@ -224,9 +228,10 @@ def render() -> str:
     add("| 级别 | 对象 | 数量 | 说明 | 建议 |")
     add("| --- | --- | --- | --- | --- |")
     add(
-        "| **L0 可删** | 根目录 `_*` 探针脚本与输出（类别 A1–A6） | "
+        "| **⚠️ 别删** | 根目录 `_*` 探针脚本与输出（类别 A1–A6） | "
         f"{sum(len(buckets.get(k, [])) for k in ('A1','A2','A3','A4','A5','A6'))} | "
-        "为定位具体问题临时产出，结论已进正式代码/文档 | 确认后可整批删 |"
+        "看着像临时产物，但**剩下这批已被代码 / 测试 / 文档 / 记忆按名字引用**"
+        "（2026-09-23 定性为「引用中，保留」） | 删前必须 grep 引用，见下 |"
     )
     root_logs_files = 0
     root_logs_dir = os.path.join(ROOT, "runtime_logs")
@@ -253,6 +258,22 @@ def render() -> str:
         f"{len(buckets.get('B', [])) + len(buckets.get('C', []))} | "
         "体积占大头；脚本位置不对 | 看一眼再删 |"
     )
+    add("")
+    add("## ⚠️ 根目录 `_*` 探针**不是**垃圾（2026-09-23 定性，别再当 L0 删）")
+    add("")
+    add("`.gitignore` 里对它们写着「跑完即弃」，所以早先的清单把它们整批标成「可删」。")
+    add("**这个判级是错的**：保留下来的这 10 个被**代码 / 测试 / 文档 / 记忆**按名字引用")
+    add("（`_layout_probe.py`、`_ocr_probe.py`、`_img_probe.py`、`_card_color_probe.py`、")
+    add("`_survivor_probe.py`、`_survivor_region_view.py`、`_survivor_timing.py`、")
+    add("`_fixture_sizes.py`、`_diag_stuck_state.py`、`_del.txt`）——")
+    add("删了会让注释里的「实测脚本」变成**死链接**。")
+    add("")
+    add("**做法**：先 grep 引用再删；清理走回收站；目录「先删文件再 rmdir」。")
+    add("完整保留清单与判据见 `.workbuddy/memory/2026-09-23.md` 的「清理判据」一节。")
+    add("")
+    add("上面 10 个之外，后来还多了 `_knight_probe.py` —— 它没有被别处引用，但本身是")
+    add("**带 CLI 的可复用实机探针**（`shot` / `click` / `swipe` / `back` / `where`），")
+    add("与 `_survivor_probe.py` 同类，同样建议留着。")
     add("")
 
     add("## L1：那 16 张「用户修改版」模板要紧在哪")
