@@ -77,6 +77,7 @@ REFUSED_FIXTURES = (
     "knights_signin_popup",
     "lobby_with_knights",
     "stamina_popup",
+    "knights_weekly_reward_popup",
 )
 
 ALL_FIXTURES = tuple(RESUMABLE_FIXTURES) + KNIGHTS_HOME_FIXTURES + REFUSED_FIXTURES
