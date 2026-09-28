@@ -122,9 +122,9 @@ python -u -m auto_game_unified.main --mode shop_refresh --window-backend emulato
 
 - **滑动**：骑士团捐赠 / 迷宫强化石 / 刷书签 / 幸存者四条路线在 PC 上**实跑会报
   「未配置滑动动作」**（PC 后端还没实现滑动）。**干跑看不出来**，别用干跑证明「PC 能用」。
-- **老的 PC 截图不能当基准**：2026-08-29 之前采集的 PC 截图（`epic7_pc_story/`、`epic7_pc_hero/`）
-  是被整帧拉伸过的，拿它们对比会得出「两边位置不一样」的错误结论。判别方法见
-  [PC 客户端接入指南](PC_TEMPLATE_MIGRATION.md) 第 1.2 节。
+- **PC 没有专属素材、老的 PC 截图已删除**：2026-08-29 之前采集的 PC 截图（`epic7_pc_story/`、
+  `epic7_pc_hero/` 等 `epic7_pc_*` 目录）已于 2026-09-28 全部删除。PC 现在只靠回落共享模板；
+  若以后要补 PC 图，按 [PC 客户端接入指南](PC_TEMPLATE_MIGRATION.md) 第 1.2 节口径采（别再整帧拉伸）。
 
 只在采集/验证场景使用 PC 干跑：
 

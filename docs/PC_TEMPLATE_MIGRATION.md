@@ -26,6 +26,7 @@
 **三句话版本：**
 
 1. **认页面 / 认按钮** —— 共享模板直接可用，改法只有一种：往 `templates/<路线>/pc/<同名图>.png` 丢图。
+   （2026-09-28 起：**没有任何 `pc/` 专属图**，全部回落共享模板；只有实跑发现某页 PC 真认不出，才往 `pc/` 丢图。）
 2. **战斗界面** —— 不用管，它和其它判据一样在 PC 上直接成立（理由见 §1）。
 3. **要跑骑士团捐赠 / 迷宫强化石 / 刷书签 / 幸存者** —— 先给 `Epic7PcWindow` 补滑动，这四条在 PC 上实跑会在滑动那步报错（见 §2.2）。
 
@@ -68,9 +69,12 @@ PC 后端**存图的方式换过一次**，而夹具文件本身**不记录自�
 
 判据：**`frame[:52]` 全黑 且 `frame[:, 1920:]` 全黑** ⇒ 新口径。
 两者都不全黑 ⇒ 老口径（整帧拉伸）。
-批量跑一遍用 `runtime_logs/_probe_pc_convention.py`（只读，扫 `tests/fixtures/epic7_pc_*`）。
+（原 `runtime_logs/_probe_pc_convention.py` 只读脚本用来扫 `tests/fixtures/epic7_pc_*` 识别老素材；
+现目录已删，这条脚本也不再需要。）
 
-| 目录 | 采集 | 口径 |
+> **2026-09-28：以上 5 个 `epic7_pc_*` 目录已全部删除。** 决策：PC 现在**只有框架（代码机制）、没有任何专属素材**；所有路线在 PC 上跑都靠「缺图回落共享图」（`games/epic7/template_paths.py`）。下面这张表保留为历史口径档案，方便将来若真要补 PC 图时避坑。
+
+| 目录（已删除） | 采集 | 口径 |
 | --- | --- | --- |
 | `tests/fixtures/epic7_pc_story/`（29 张，含全部战斗帧） | 08-20 | ❌ **老口径** |
 | `tests/fixtures/epic7_pc_hero/`（14 张） | 08-21 | ❌ **老口径** |
@@ -78,7 +82,7 @@ PC 后端**存图的方式换过一次**，而夹具文件本身**不记录自�
 | `tests/fixtures/epic7_pc_navigation/arena_list_legacy_20260830.png` | 08-30 | ✅ 新口径 |
 | `tests/fixtures/epic7_pc_arena/team_20260830.png` | 08-30 | ✅ 新口径 |
 
-⚠️ 例外：`epic7_pc_navigation/lobby_1920x1080.png` 是**未合成的原始客户区**截图，
+⚠️ 例外（历史）：`epic7_pc_navigation/lobby_1920x1080.png` 是**未合成的原始客户区**截图，
 天然没有黑边，不能按上面判据归到老口径。
 （这条是唯一的例外，别据此怀疑判据本身。）
 
@@ -159,18 +163,22 @@ PC 后端**存图的方式换过一次**，而夹具文件本身**不记录自�
 2. **时长语义必须重新标定** —— `survivor.py:82-97` 那条「一次滑动里角色只在按住那段时间在动，
    `duration` 从 500ms 提到 700ms」的结论，是在 **adb `input swipe`** 上量出来的，换到 PC 不成立。
 
-### 2.3 不是「不一样」，是「还没在 PC 上量过」
+### 2.3 现状：PC 没有专属素材，验证只在真机实跑时做
 
-所有判据阈值与页面锚点**只在模拟器帧上验证过**。放对 PC 图之后通常就好，
-但**没有 PC 帧就不算验证过**。这正是 `tools/report_pc_template_scores.py` 要量的东西。
+**2026-09-28 起，PC 没有任何专属素材**（`tests/fixtures/epic7_pc_*` 全部删除，
+离线测量工具 `tools/report_pc_template_scores.py` 一并删除）。所有路线在 PC 上跑
+都直接回落共享模板（`games/epic7/template_paths.py` 的 `resolve_template_dir`）。
 
-⚠️ **量之前先按 §1.2 把老口径夹具排除**（`epic7_pc_story/`、`epic7_pc_hero/`）。
-否则那份报告的 PC 侧分数被系统性压低，会把「采集口径 artifact」读成「PC 认不出来」。
+因此：
 
-同一个陷阱已经污染过一处结论：[接力覆盖率](RESUME_COVERAGE.md) 里
-「PC 英雄列表一个原子都命中不了、需要单独采锚点」是拿 **08-21 的老口径** `epic7_pc_hero/` 量的。
-反还原复测显示口径确实在扣分（`filter_button` 0.963 → **0.997**，16 个模板里 10 个上升），
-**值得重新量一遍再下结论**。
+- **没有离线夹具可量**：PC 页面识别得好不好，只能靠 `--window-backend pc` 实跑观察，
+  不再有「跑个分数表」这一步。
+- **「没在 PC 上验证过」≠「PC 认不出」**：共享模板在模拟器上已验证，PC 与模拟器
+  画面逐像素一致（§1.1），回落共享图本就该直接命中。PC 上认不出的页面，先怀疑
+  「该页在 PC 客户端真有渲染差异」，再决定要不要往 `pc/` 丢图，不要无脑补图。
+- [接力覆盖率](RESUME_COVERAGE.md) 里那条「PC 英雄列表一个原子都命中不了」的结论，
+  是拿 **08-21 老口径** `epic7_pc_hero/` 量的，量它的素材已删；现应视为**「未验证」**，
+  而非「PC 认不出」——实际 PC 用共享图，大概率直接命中。
 
 ---
 
@@ -188,12 +196,9 @@ templates/<路线>/pc/xxx.png     ← 存在则 PC 优先用它，不存在自�
 
 ### 步骤
 
-1. **先跑一遍基线。** 用共享模板在该路线上做 PC 干跑，把认不出的页面记下来。
-   ```powershell
-   D:\anaconda\python.exe auto_game_unified\tools\report_pc_template_scores.py `
-       --out runtime_logs\pc_scores.md --json runtime_logs\pc_scores.json
-   ```
-   ⚠️ 先确认输入帧是新口径（§1.2）；⚠️ 调试前先删掉上一轮的 `--out` 产物，否则会读到旧结果。
+1. **先跑一遍基线（实跑观察，无离线工具）。** 用共享模板在该路线上做 `--window-backend pc`
+   实跑（或观察级干跑），把认不出的页面记下来。PC 没有离线测量工具，这一步靠真机观察，
+   不是跑分数表。必要时把认不出的页面**完整截图留档**（后台 `1920×1080` 客户区，按 §1.1 补边）。
 2. **只给真正认不出的锚点补图**，不是 210 张全复制：
    - 把 PC 客户端停在该页面，**后台**采集完整 `1920×1080` 客户区截图；
    - 走统一补边函数生成 `1982×1132` 兼容画布，**不做插值缩放**；
@@ -267,7 +272,6 @@ templates/<路线>/pc/xxx.png     ← 存在则 PC 优先用它，不存在自�
 | 平台参数传递 | `main.py`（`resolve_template_dir`） | 只在最上游注入一次；`modes.py` / 状态机 / `evidence` 都不许再收 `backend` |
 | 各路线区域与阈值 | `games/epic7/evidence/<路线>.py` | 每个证据只有一套 `THRESHOLDS`（模拟器基线） |
 | 战斗 HUD 布局 | `games/epic7/battle_controls.py` | 一套坐标，两边通用 |
-| PC 测量工具 | `tools/report_pc_template_scores.py` | 只读；输出是快照，写进 gitignore 的 `runtime_logs/` |
 
 改完记得：新增模式或后端时同步更新 README、用户手册、架构、转场契约示例、路线矩阵与本文。
 
@@ -289,9 +293,12 @@ templates/<路线>/pc/xxx.png     ← 存在则 PC 优先用它，不存在自�
 
 ### 还欠着的（如实记，未处理）
 
-- `epic7_pc_story/`（29 张）与 `epic7_pc_hero/`（14 张）共 **43 张老口径素材仍在盘上**，
-  会被 `tools/report_pc_template_scores.py` 计入 PC 侧测量。**要么重采，要么在工具里排除。**
-- 所有基于这两批素材得出的 PC 侧结论（含 `RESUME_COVERAGE.md` 的 PC hero 缺口）都需要重测。
+- **PC 各路线的页面识别没有离线夹具**：`tests/fixtures/epic7_pc_*` 已全删、
+  `report_pc_template_scores.py` 已删，PC 验证只能靠真机实跑。哪条路线要在 PC 上正式验收，
+  就在实跑时记录认不出的页面、必要时往 `templates/<路线>/pc/` 丢图，再跑该路线的顺序测试。
+- `RESUME_COVERAGE.md` 那条「PC 英雄列表一个原子都命中不了」的结论，量它的老素材已删，
+  现视为**「未验证」**；PC 用共享图，优先按真机实跑确认，不要照旧结论补 PC 专属锚点。
+- **滑动**仍是唯一真实能力缺口（§2.2）：四条用到滑动的路线在 PC 实跑会报「未配置滑动动作」。
 
 ---
 

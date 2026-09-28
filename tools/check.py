@@ -516,7 +516,9 @@ def main() -> int:
         targets, reason = list(all_targets), "按要求强制全量"
     else:
         changed_tests = [
-            path for path in files if path.startswith("tests/") and path.endswith(".py")
+            path
+            for path in files
+            if path.startswith("tests/") and path.endswith(".py") and (PACKAGE_DIR / path).exists()
         ]
         assets = [path for path in files if path.startswith(ASSET_PREFIXES)]
         routes: set[str] = set()

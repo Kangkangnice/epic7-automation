@@ -108,7 +108,7 @@ def test_other_routes_pages_are_not_shop_resume_points():
         ("epic7_hero", "list_reddot"),
         ("epic7_survivor", "result"),
         ("epic7_global", "network_reconnect"),
-        ("epic7_pc_story", "battle_hud"),
+        ("epic7_story", "battle_auto_on_live_20260809"),
     )
 
     for group, name in others:

@@ -84,8 +84,9 @@
 | knights_donation | 无 PC 图 | 待补齐 | 待验收 | 待验收 | 待验收 | 未开工 |
 | labyrinth_stone | 无 PC 图 | 待补齐 | 待验收 | 待验收 | 待验收 | 未开工 |
 
-**验收状态的判定仍然一样严**（“能启动”不算数），但**改法只有一种**：往对应目录放 PC 截图，
-然后跑两张表（`tools/report_pc_template_scores.py`）看是放对了还是该换锚点。
+**验收状态的判定仍然一样严**（“能启动”不算数），但**改法只有一种**：往对应目录放 PC 截图
+（目前所有路线都没有 `pc/` 专属图，全部回落共享模板）。PC 验证靠真机实跑观察，
+没有离线测量工具（原 `tools/report_pc_template_scores.py` 已删）。
 
 ⚠️ **战斗界面（`battle_controls.py`）不是例外。** 它不靠模板匹配，而是按坐标找底座排 ——
 但那套坐标**两边通用**，PC 不需要任何额外的东西。
@@ -96,9 +97,9 @@
 （`knights_donation` / `labyrinth_stone` / `shop_refresh` / `survivor`）在 PC 实跑会报
 「未配置滑动动作」（**干跑不报**）。要跑这四条必须先给 PC 补滑动能力，不是图片问题。
 
-⚠️ **两批老口径 PC 夹具仍在盘上**：`epic7_pc_story/`（29 张）、`epic7_pc_hero/`（14 张），
-会被 `tools/report_pc_template_scores.py` 计入 PC 侧测量、把分数系统性压低。
-**量之前先排除，或重采。**
+⚠️ **PC 没有专属素材**：`epic7_pc_story/`（29 张）、`epic7_pc_hero/`（14 张）等 `epic7_pc_*` 目录
+已于 2026-09-28 全部删除，PC 现在只靠回落共享模板。若要给某路线补 PC 图，往
+`templates/<路线>/pc/` 丢图即可，不再有离线测量步骤。
 
 详细采集与验收顺序见 [PC 客户端接入指南](PC_TEMPLATE_MIGRATION.md)。
 
