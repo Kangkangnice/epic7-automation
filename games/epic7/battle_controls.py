@@ -13,9 +13,18 @@ class BattleControls(Enum):
 _REFERENCE_SIZE = (1982, 1132)
 _CONTROL_ROI = (1400, 940, 520, 192)
 _AUTO_CONTROL_CENTERS = (1505, 1623, 1740, 1858)
-_PC_AUTO_CONTROL_CENTERS = (1553, 1674, 1795, 1918)
 _MANUAL_CONTROL_CENTERS = (1534, 1683, 1834)
-_PC_MANUAL_CONTROL_CENTERS = (1599, 1737, 1885)
+
+# ⚠️ 这里**只有一套布局**：模拟器与 PC 客户端通用。
+#
+# 曾经存在过一套「PC 专用坐标」（自动 1553/1674/1795/1918、手动 1599/1737/1885），
+# 2026-09-28 已删除。它**不是平台差异** —— 那几个数字恰好等于上面这套坐标乘
+# 1982/1920（=1.0323），是当初量在一张**被整帧拉伸过的老口径 PC 截图**上写下来的。
+# 截图口径已于 2026-08-29 改为「客户区 1920×1080 原样贴入画布」，两边坐标逐像素一致
+# （实测：同一模板在两个客户端的战斗帧上落点相差 1 像素）。
+#
+# ⇒ 不要因为「PC 上认不出」就往这里加第二套坐标。先按
+# `docs/PC_TEMPLATE_MIGRATION.md` 第 1.2 节确认你手上的帧是不是老口径。
 
 
 def _reference_frame(screen: np.ndarray) -> np.ndarray:
@@ -69,11 +78,6 @@ def observe_battle_controls(screen: np.ndarray) -> BattleControls:
         )
 
     hsv = cv2.cvtColor(frame, cv2.COLOR_RGB2HSV)
-    battle_canvas = cv2.cvtColor(frame[150:900, 100:1400], cv2.COLOR_RGB2GRAY)
-    pc_skill_animation = (
-        float(np.mean(battle_canvas < 30)) >= 0.90
-        or float(np.mean(battle_canvas > 220)) >= 0.20
-    )
 
     def has_auto_layout(expected_xs: tuple[int, ...], expected_y: int) -> bool:
         """自动布局 = 底座排确实存在 + 至少 1 格底座是**蓝色（有活人）**。
@@ -126,10 +130,7 @@ def observe_battle_controls(screen: np.ndarray) -> BattleControls:
     # 只能擦到 2 个自动槽位（1534→1505、1834→1858，另有 2 个按钮落在槽位窗口外），
     # 所以放宽「亮 >= 1」不会被手动布局误命中；全库 176 张夹具 + 187 张实跑
     # 诊断图上，「圆 >= 3」只出现在真实战斗画面里。
-    if has_auto_layout(_AUTO_CONTROL_CENTERS, 1047) or (
-        not pc_skill_animation
-        and has_auto_layout(_PC_AUTO_CONTROL_CENTERS, 1021)
-    ):
+    if has_auto_layout(_AUTO_CONTROL_CENTERS, 1047):
         return BattleControls.AUTO_CONTROLS
 
     yy, xx = np.ogrid[: frame.shape[0], : frame.shape[1]]
@@ -142,20 +143,13 @@ def observe_battle_controls(screen: np.ndarray) -> BattleControls:
             borders.append(float(np.mean(hsv[:, :, 2][border] > 120)) >= 0.35)
         return borders
 
-    emulator_manual_borders = manual_borders(_MANUAL_CONTROL_CENTERS)
+    manual_border_hits = manual_borders(_MANUAL_CONTROL_CENTERS)
     manual_circle_count = aligned_count(
         _MANUAL_CONTROL_CENTERS, 1040, (55, 82), 38
     )
     legacy_canvas = not frame[:52].any() and not frame[:, 1920:].any()
     if manual_circle_count == len(_MANUAL_CONTROL_CENTERS) and (
-        all(emulator_manual_borders) or legacy_canvas
-    ):
-        return BattleControls.MANUAL_CONTROLS
-    pc_manual_circle_count = aligned_count(
-        _PC_MANUAL_CONTROL_CENTERS, 1040, (55, 82), 38
-    )
-    if pc_manual_circle_count == len(_PC_MANUAL_CONTROL_CENTERS) and all(
-        manual_borders(_PC_MANUAL_CONTROL_CENTERS)
+        all(manual_border_hits) or legacy_canvas
     ):
         return BattleControls.MANUAL_CONTROLS
     return BattleControls.TRANSITION

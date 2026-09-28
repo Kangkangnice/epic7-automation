@@ -316,12 +316,9 @@ class StoryTemplates:
     evidence: EvidenceProfile | None = None
 
 
-def build_story_templates(
-    template_dir: Path,
-    *,
-    backend: str = "emulator",
-) -> StoryTemplates:
-    evidence = build_story_evidence(template_dir, backend=backend)
+def build_story_templates(template_dir: Path) -> StoryTemplates:
+    """主线模板。阈值只有模拟器基线一套；平台差异收敛到图片。"""
+    evidence = build_story_evidence(template_dir)
     return StoryTemplates(
         battle_guide_title=load_template(str(template_dir / "battle_guide_title.png")),
         battle_guide_dont_show=load_template(
@@ -367,11 +364,8 @@ class StoryStateMachine:
         self,
         templates: StoryTemplates,
         initial_state: StoryState = StoryState.STAGE,
-        *,
-        backend: str = "emulator",
     ) -> None:
         self.templates = templates
-        self.backend = backend
         self.state = initial_state
         if templates.evidence is not None:
             self._REGIONS = {
@@ -544,7 +538,10 @@ class StoryStateMachine:
         auto_match = self._locate(screen, "auto_off")
         auto_score = "无" if auto_match is None else f"{auto_match.score:.4f}"
         auto_evidence = f"布局={controls.value} 自动关图标={auto_score}"
-        if auto_match is not None and self.backend == "emulator":
+        # 「右上角关自动图标 ⇒ 判定为手动」：按钮布局判成 transition（看不出长相）
+        # 时靠这个图标兜底 —— 否则那一帧会停在「未知」，而「未知」按安全设计是
+        # 不许点自动的，战斗就会干等到超时。图标认不到就不覆盖上面的布局判定。
+        if auto_match is not None:
             auto_state = AutoBattleState.MANUAL
             auto_evidence += " 来源=右上角自动关闭图标"
         stamina_popup = (

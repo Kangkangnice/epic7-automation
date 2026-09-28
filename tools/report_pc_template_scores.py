@@ -3,12 +3,13 @@
 背景
 ----
 PC 客户端已经能截图和点击，但所有路线仍在使用**同一套为模拟器采集的**模板。
-两边字体、抗锯齿、亮度不同 ⇒ 同一张图在 PC 上匹配分数被压低，
-于是代码里长出一批「PC 专用阈值」补丁（`evidence/{story,arena,hero_synthesis}.py`
-的 `PC_THRESHOLD_OVERRIDES`，以及 arena / navigation / hero_synthesis 里就地写死的三元表达式）。
+两边字体、抗锯齿、亮度不同 ⇒ 同一张图在 PC 上匹配分数被压低，于是代码里长出一批
+「PC 专用阈值」补丁（`evidence/{story,arena,hero_synthesis}.py` 的
+`PC_THRESHOLD_OVERRIDES`，以及 arena / navigation / hero_synthesis 里就地写死的三元表达式）。
 
-要把这批补丁消掉，正确做法是只给**真正长得不一样**的锚点补一张 PC 专属图。
-本工具回答的就是这个问题：**哪些锚点真的需要那张图。**
+**2026-09-28：那批补丁已经全删了。** 平台差异现在只允许存在于**图片**
+（`templates/<路线>/pc/<同名图>.png`，机制见 `games/epic7/template_paths.py`）。
+所以本工具的结论从「要不要多一列阈值」变成一句话：**哪些锚点真的需要那张 PC 图。**
 
 判据
 ----
@@ -304,19 +305,6 @@ def resolve_profile(plan: RoutePlan) -> tuple[Path | None, object | None, str]:
     return None, None, "；".join(notes) or "没有可用候选目录"
 
 
-def pc_thresholds(plan: RoutePlan, root: Path) -> dict[str, float]:
-    """PC 侧实际生效的阈值，用来展示「代码里那层补丁长什么样」。
-
-    部分路线（骑士团捐赠 / 迷宫强化石 / 世界首领战 / 刷书签 / 活动）的
-    证据构建器还没有 ``backend`` 形参，拿不到就让字典为空。
-    """
-    try:
-        profile = call_builder(plan.builder, root, "pc")
-    except Exception:
-        return {}
-    return {key: atom.threshold for key, atom in profile.atoms.items()}
-
-
 def measure(profile, root: Path, frames) -> tuple[dict, dict, list]:
     """逐帧求每个锚点的区域限定最高分，同时统计页面成立情况。
 
@@ -421,8 +409,6 @@ def measure_route(plan: RoutePlan) -> dict:
         pc_scores, pc_pages, pc_frames_without_page = measure(profile, root, pc_frames)
     else:
         pc_scores, pc_pages, pc_frames_without_page = {}, {}, []
-    overrides = pc_thresholds(plan, root)
-
     record["emu_pages"] = emu_pages
     record["pc_pages"] = pc_pages
     record["pc_frames_without_page"] = pc_frames_without_page
@@ -432,7 +418,6 @@ def measure_route(plan: RoutePlan) -> dict:
     for key, atom in profile.atoms.items():
         emu_max = emu_scores.get(key, (None, ""))[0]
         pc_max, pc_frame = pc_scores.get(key, (None, ""))
-        pc_threshold = overrides.get(key)
         owner_pages = pages_of_atom.get(key, ())
         # 这个锚点所属的页面，有没有在 PC 帧上成功成立过？
         # 成立过 ⇒ 页面本身能认出来，同页其它锚点的问题就是真的。
@@ -443,12 +428,10 @@ def measure_route(plan: RoutePlan) -> dict:
             )
         else:
             page_covered = None
-        # 现有的「PC 专用阈值」补丁到底救不救得了这个锚点？
-        # 救得了 ⇒ 补丁在干活；救不了 ⇒ 光靠降阈值已经到极限，必须换图或改判据。
-        if pc_threshold is not None and pc_max is not None:
-            patch_rescues: bool | None = pc_max >= pc_threshold
-        else:
-            patch_rescues = None
+        # ⚠️ 2026-09-28：原来这里还有「PC 专用阈值补丁救不救得了」一列。
+        # 门槛分叉已经从代码里删干净了（平台差异只存在于图片），那一列永远等于
+        # 模拟器基线 ⇒ 留着只会让人以为「还有一层补丁在干活」。要看够不够，
+        # 看「余量」列就行（余量 = pc_max - 模拟器阈值）。
         rows.append(
             {
                 "key": key,
@@ -458,11 +441,9 @@ def measure_route(plan: RoutePlan) -> dict:
                 "pages": list(owner_pages),
                 "page_covered": page_covered,
                 "emu_threshold": atom.threshold,
-                "pc_threshold": pc_threshold,
                 "emu_max": emu_max,
                 "pc_max": pc_max,
                 "pc_frame": pc_frame,
-                "patch_rescues": patch_rescues,
                 "verdict": classify(emu_max, pc_max, atom.threshold),
             }
         )
@@ -580,22 +561,20 @@ def render_markdown(records: list[dict], top: int) -> str:
             lines.append(note)
             lines.append("")
             lines.append(
-                "| 路线 | 锚点 | 所属页面 | 模板文件 | 模拟器阈值 | PC 覆盖阈值 | emu_max | pc_max "
-                "| 余量 | 现有补丁救得回？ | pc_max 所在帧 |"
+                "| 路线 | 锚点 | 所属页面 | 模板文件 | 模拟器阈值 | emu_max | pc_max "
+                "| 余量 | pc_max 所在帧 |"
             )
             lines.append(
-                "| --- | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | --- | --- |"
+                "| --- | --- | --- | --- | ---: | ---: | ---: | ---: | --- |"
             )
             for route, atom in rows_in:
                 margin = atom["pc_max"] - atom["emu_threshold"]
-                rescues = atom["patch_rescues"]
-                rescues_text = "-" if rescues is None else ("是" if rescues else "**否**")
                 pages = "、".join(f"`{page}`" for page in atom["pages"]) or "-"
                 lines.append(
                     f"| {route} | `{atom['key']}` | {pages} | `{atom['template_path']}` "
-                    f"| {_cell(atom['emu_threshold'])} | {_cell(atom['pc_threshold'])} "
+                    f"| {_cell(atom['emu_threshold'])} "
                     f"| {_cell(atom['emu_max'])} | {_cell(atom['pc_max'])} "
-                    f"| {margin:+.3f} | {rescues_text} | `{atom['pc_frame']}` |"
+                    f"| {margin:+.3f} | `{atom['pc_frame']}` |"
                 )
             lines.append("")
 
@@ -711,10 +690,10 @@ def render_markdown(records: list[dict], top: int) -> str:
             lines.append("")
 
         lines.append(
-            "| 锚点 | 所属页面 | 页面 PC 成立过？ | 模拟器阈值 | PC 覆盖阈值 | emu_max | pc_max | 余量 | 现有补丁救得回？ | 判定 | pc_max 所在帧 |"
+            "| 锚点 | 所属页面 | 页面 PC 成立过？ | 模拟器阈值 | emu_max | pc_max | 余量 | 判定 | pc_max 所在帧 |"
         )
         lines.append(
-            "| --- | --- | :---: | ---: | ---: | ---: | ---: | ---: | --- | --- | --- |"
+            "| --- | --- | :---: | ---: | ---: | ---: | ---: | --- | --- |"
         )
         for atom in record["atoms"]:
             margin = (
@@ -722,14 +701,12 @@ def render_markdown(records: list[dict], top: int) -> str:
                 if atom["pc_max"] is not None
                 else "-"
             )
-            rescues = atom["patch_rescues"]
-            rescues_text = "-" if rescues is None else ("是" if rescues else "**否**")
             pages = "、".join(f"`{page}`" for page in atom["pages"]) or "-"
             lines.append(
                 f"| `{atom['key']}` | {pages} | {_covered_cell(atom['page_covered'])} "
                 f"| {_cell(atom['emu_threshold'])} "
-                f"| {_cell(atom['pc_threshold'])} | {_cell(atom['emu_max'])} "
-                f"| {_cell(atom['pc_max'])} | {margin} | {rescues_text} "
+                f"| {_cell(atom['emu_max'])} "
+                f"| {_cell(atom['pc_max'])} | {margin} "
                 f"| {atom['verdict']} | `{atom['pc_frame']}` |"
             )
         lines.append("")
@@ -753,8 +730,9 @@ def render_markdown(records: list[dict], top: int) -> str:
         "**不要**把它当成「阈值标定良好」的证据，它只说明该锚点不是死的。"
     )
     lines.append(
-        "- 「现有补丁救得回？」= 用代码里那个 `PC_THRESHOLD_OVERRIDES` 值判 `pc_max`。"
-        "**否** 表示光靠降阈值已经到极限 —— 这类锚点必须换图或改判据，继续降阈值就是盲点。"
+        "- 「余量」= `pc_max - 模拟器阈值`。**负得越多，越需要一张该锚点的 PC 图**。"
+        "2026-09-28 起代码里已经没有 PC 门槛表了（平台差异只允许存在于图片），"
+        "所以不再有「降阈值救得回」这一列 —— 阈值就是唯一那套模拟器基线。"
     )
     lines.append(
         "- 本报告只回答「哪里需要一张 PC 图」，不代表任何路线已完成 PC 迁移；"

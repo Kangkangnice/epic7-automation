@@ -21,8 +21,9 @@ from auto_game_unified.games.epic7.arena import (
     ARENA_ENTRY_PAGE,
     find_rank_promotion_confirm,
 )
-from auto_game_unified.games.epic7.evidence.arena import thresholds_for as arena_thresholds_for
-from auto_game_unified.games.epic7.evidence.story import thresholds_for as story_thresholds_for
+from auto_game_unified.games.epic7.evidence.arena import THRESHOLDS as ARENA_THRESHOLDS
+from auto_game_unified.games.epic7.evidence.story import THRESHOLDS as STORY_THRESHOLDS
+from auto_game_unified.games.epic7.template_paths import resolve_template_dir
 from auto_game_unified.games.epic7.global_popups import (
     find_friendship_points_popup_close,
     find_gift_support_close,
@@ -74,6 +75,11 @@ from auto_game_unified.games.epic7.unknown_screen import (
 
 
 REFERENCE_SIZE = (1982, 1132)
+
+# 段位提升确认框的「箭头 + 确认」联合判据门槛。以前这个值按平台分叉
+# （PC 0.85 / 模拟器 0.90），分叉的原因是拿模拟器的图去认 PC 的按钮；
+# 现在差异收敛到图片，阈值只剩模拟器基线这一套。
+ARENA_RANK_CONFIRM_THRESHOLD = 0.90
 
 # 「回家」那套模板（v2 要用，其中六个直接复用迷宫那条路的模板文件）。
 TEMPLATE_ROOT = Path(__file__).resolve().parent / "templates"
@@ -380,13 +386,20 @@ class Epic7Navigator:
         sleep: Callable[[float], None] = default_sleep,
         poll_seconds: float = 0.5,
         transition_frames: int = 90,
-        backend: str = "emulator",
+        template_root: Path | None = None,
     ) -> None:
         self.templates = templates
         self.runtime = runtime
-        self.backend = backend
-        self._story_thresholds = story_thresholds_for(backend)
-        self._arena_thresholds = arena_thresholds_for(backend)
+        # 平台差异只在最上游注入一次（``main`` 传进来的模板根已经会按平台挑图）。
+        # 不传就用模块级默认根 —— 测试替身与离线脚本走这条路。
+        self._template_root = (
+            resolve_template_dir(TEMPLATE_ROOT)
+            if template_root is None
+            else template_root
+        )
+        # 只有模拟器基线一套阈值；平台差异收敛到图片（templates/**/pc/*.png）。
+        self._story_thresholds = STORY_THRESHOLDS
+        self._arena_thresholds = ARENA_THRESHOLDS
         self.sleep = sleep
         self.now = runtime.now
         self.poll_seconds = poll_seconds
@@ -466,7 +479,7 @@ class Epic7Navigator:
             screen,
             self.templates.arena_rank_promotion_arrow,
             self.templates.arena_rank_confirm,
-            0.85 if self.backend == "pc" else 0.90,
+            ARENA_RANK_CONFIRM_THRESHOLD,
         )
         if rank_confirm is not None:
             return PageObservation("arena_rank_promotion", rank_confirm.score)
@@ -648,7 +661,7 @@ class Epic7Navigator:
                 screen,
                 self.templates.arena_rank_promotion_arrow,
                 self.templates.arena_rank_confirm,
-                0.85 if self.backend == "pc" else 0.90,
+                ARENA_RANK_CONFIRM_THRESHOLD,
             )
             action = "确认竞技场段位提升"
         else:
@@ -735,7 +748,7 @@ class Epic7Navigator:
         """
         if self._home_return_templates is None:
             self._home_return_templates = build_home_return_templates(
-                TEMPLATE_ROOT, self.templates
+                self._template_root, self.templates
             )
         story_recovery = _StoryRecoveryAttempts()
         return return_home_v2(

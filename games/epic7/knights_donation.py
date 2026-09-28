@@ -176,6 +176,7 @@ from auto_game_unified.games.epic7.knights_support_digits import (
 )
 from auto_game_unified.games.epic7.runner_base import ModeRunnerBase
 from auto_game_unified.games.epic7.unknown_screen import UnrecognizedScreen
+from auto_game_unified.games.epic7.template_paths import is_template_root
 
 
 class KnightsDonationState(Enum):
@@ -457,12 +458,10 @@ class KnightsDonationStateMachine:
         templates: KnightsDonationTemplates | Path,
         *,
         initial_state: KnightsDonationState = KnightsDonationState.RESOURCE_SUPPORT,
-        backend: str = "emulator",
     ) -> None:
-        self.backend = backend
         self.templates = (
             build_knights_donation_templates(templates)
-            if isinstance(templates, Path)
+            if is_template_root(templates)
             else templates
         )
         self.state = initial_state

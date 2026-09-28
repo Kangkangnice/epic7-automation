@@ -128,6 +128,7 @@ from auto_game_unified.games.epic7.evidence.labyrinth_stone import (
 )
 from auto_game_unified.games.epic7.runner_base import ModeRunnerBase
 from auto_game_unified.games.epic7.unknown_screen import UnrecognizedScreen
+from auto_game_unified.games.epic7.template_paths import is_template_root
 
 
 class LabyrinthStoneState(Enum):
@@ -402,12 +403,10 @@ class LabyrinthStoneStateMachine:
         templates: LabyrinthStoneTemplates | Path,
         *,
         initial_state: LabyrinthStoneState = LabyrinthStoneState.BATTLE_MENU,
-        backend: str = "emulator",
     ) -> None:
-        self.backend = backend
         self.templates = (
             build_labyrinth_stone_templates(templates)
-            if isinstance(templates, Path)
+            if is_template_root(templates)
             else templates
         )
         self.state = initial_state

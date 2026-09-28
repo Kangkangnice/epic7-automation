@@ -107,22 +107,7 @@ THRESHOLDS = {
     "result_defeat": 0.80,
 }
 
-# 这里只列「在 PC 客户端上实测过」的锚点。``result_rating`` / ``result_victory``
-# 没有 PC 实测数据，就不编一个覆盖值 —— 它们会用 THRESHOLDS 里的 0.80。
-PC_THRESHOLD_OVERRIDES = {
-    # 两次 PC 实跑队伍页均为 0.711；现有 160 张非目标画面最高为 0.561。
-    "list_ready": 0.75,
-    "challenge": 0.85,
-    "battle_start": 0.70,
-    "auto_off": 0.80,
-    "confirm": 0.85,
-    "no_ticket": 0.85,
-    "friendship_ticket_offer": 0.87,
-    "ticket_purchase_button": 0.87,
-}
-
 DEFAULT_THRESHOLD = 0.90
-PC_DEFAULT_THRESHOLD = 0.85
 
 _TEMPLATE_PATHS = {
     "rank_promotion_arrow": "global/arena_rank_promotion_arrow.png",
@@ -230,22 +215,15 @@ _PAGES = (
 )
 
 
-def thresholds_for(backend: str) -> dict[str, float]:
-    thresholds = dict(THRESHOLDS)
-    if backend == "pc":
-        thresholds.update(PC_THRESHOLD_OVERRIDES)
-    return thresholds
+def build_arena_evidence(template_dir: Path) -> EvidenceProfile:
+    """竞技场证据画像。
 
-
-def build_arena_evidence(
-    template_dir: Path,
-    *,
-    backend: str = "emulator",
-) -> EvidenceProfile:
-    thresholds = thresholds_for(backend)
-    default_threshold = (
-        PC_DEFAULT_THRESHOLD if backend == "pc" else DEFAULT_THRESHOLD
-    )
+    ⚠️ 阈值只有模拟器基线一套。以前的 `PC_THRESHOLD_OVERRIDES` 是「拿模拟器的图
+    去认 PC 的按钮」导致的补丁（队伍页「战斗开始」PC 实测只有 0.711，所以才降到
+    0.70）；现在平台差异收敛到图片本身（`templates/pc/*.png`），阈值不分平台。
+    """
+    thresholds = THRESHOLDS
+    default_threshold = DEFAULT_THRESHOLD
     atoms = {
         key: AtomEvidence(
             key=key,

@@ -96,7 +96,7 @@ BLANK_FRAME = np.zeros((REFERENCE_HEIGHT, REFERENCE_WIDTH, 3), dtype=np.uint8)
 
 def _story_machine():
     spec = get_mode("story")
-    return spec, spec.build_machine(TEMPLATE_ROOT, spec.default_state, "emulator")
+    return spec, spec.build_machine(TEMPLATE_ROOT, spec.default_state)
 
 
 def _legacy_home_return(navigator):
@@ -198,7 +198,7 @@ def test_the_probe_recognises_at_least_one_of_its_own_fixtures(name: str):
     """
 
     spec = MODE_SPECS[name]
-    machine = spec.build_machine(TEMPLATE_ROOT, spec.default_state, "emulator")
+    machine = spec.build_machine(TEMPLATE_ROOT, spec.default_state)
     frames = _reference_frames(name)
 
     assert frames, f"{name} 没有可用夹具，这条测试等于没跑"

@@ -287,12 +287,14 @@ class ArenaTemplates:
     evidence: EvidenceProfile | None = None
 
 
-def build_templates(
-    template_dir: Path,
-    *,
-    backend: str = "emulator",
-) -> ArenaTemplates:
-    evidence = build_arena_evidence(template_dir, backend=backend)
+def build_templates(template_dir: Path) -> ArenaTemplates:
+    """竞技场模板。
+
+    ⚠️ 以前这里有个 ``backend`` 形参，只用来给结果页门槛按平台分叉（PC 0.93 /
+    模拟器 0.98）。分叉的原因是拿模拟器的图去认 PC 的按钮；现在平台差异收敛到
+    图片本身（``templates/pc/*.png``），门槛只剩模拟器基线这一套。
+    """
+    evidence = build_arena_evidence(template_dir)
     return ArenaTemplates(
         rank_promotion_arrow=load_template(
             str(template_dir / "global" / "arena_rank_promotion_arrow.png")
@@ -315,7 +317,7 @@ def build_templates(
         result_victory=load_template(str(template_dir / "arena_result_victory.png")),
         result_defeat=load_template(str(template_dir / "arena_result_defeat.png")),
         quick_battle=load_simulator_quick_battle_detector(template_dir),
-        threshold=0.93 if backend == "pc" else 0.98,
+        threshold=0.98,
         evidence=evidence,
     )
 
@@ -376,10 +378,8 @@ class ArenaStateMachine:
         *,
         initial_state: ArenaState = ArenaState.LIST,
         choose_opponent: Callable[[Sequence[int]], int] = random.choice,
-        backend: str = "emulator",
     ) -> None:
         self.templates = templates
-        self.backend = backend
         self.state = initial_state
         self.completed_cycles = 0
         self.choose_opponent = choose_opponent
@@ -668,7 +668,10 @@ class ArenaStateMachine:
         auto_match = self._locate(screen, "auto_off")
         auto_score = "无" if auto_match is None else f"{auto_match.score:.4f}"
         auto_evidence = f"布局={controls.value} 自动关图标={auto_score}"
-        if auto_match is not None and self.backend == "emulator":
+        # 「右上角关自动图标 ⇒ 判定为手动」：按钮布局判成 transition（看不出长相）
+        # 时靠这个图标兜底 —— 否则那一帧会停在「未知」，而「未知」按安全设计是
+        # 不许点自动的，战斗就会干等到超时。图标认不到就不覆盖上面的布局判定。
+        if auto_match is not None:
             auto_state = AutoBattleState.MANUAL
             auto_evidence += " 来源=右上角自动关闭图标"
         result = self._locate(screen, "confirm")

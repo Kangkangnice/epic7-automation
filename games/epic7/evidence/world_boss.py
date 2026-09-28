@@ -79,9 +79,6 @@ REGIONS = {
 
 THRESHOLDS = {key: DEFAULT_THRESHOLD for key in REGIONS}
 
-# 没有 PC 客户端的实测数据，就不编一个覆盖值：统一用 DEFAULT_THRESHOLD。
-PC_THRESHOLD_OVERRIDES: dict[str, float] = {}
-
 _TEMPLATE_PATHS = {
     key: f"{key}.png" for key in REGIONS
 }

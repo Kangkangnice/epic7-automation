@@ -31,7 +31,6 @@ REGIONS = {
 }
 
 THRESHOLDS = {"campfire_idle": 0.82, "auto_off": 0.80, "public_recruit": 0.85}
-PC_THRESHOLD_OVERRIDES: dict[str, float] = {}
 
 _TEMPLATE_NAMES = (
     "home",
@@ -59,14 +58,9 @@ _TEMPLATE_NAMES = (
 _OPTIONAL_TEMPLATES = {"empty_posters", "defeated_confirm"}
 
 
-def build_expedition_evidence(
-    template_dir: Path,
-    *,
-    backend: str = "emulator",
-) -> EvidenceProfile:
-    thresholds = dict(THRESHOLDS)
-    if backend == "pc":
-        thresholds.update(PC_THRESHOLD_OVERRIDES)
+def build_expedition_evidence(template_dir: Path) -> EvidenceProfile:
+    """远征证据画像。阈值只有模拟器基线一套；平台差异收敛到图片。"""
+    thresholds = THRESHOLDS
     atoms = {
         name: AtomEvidence(
             key=name,

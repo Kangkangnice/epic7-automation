@@ -205,6 +205,23 @@ class MainStoryTests(unittest.TestCase):
         window.wake.assert_called_once_with((1000, 600))
         window.click.assert_called_once_with((1062, 1045))
 
+    def test_runtime_checks_the_emulator_input_channel_only_when_live(self):
+        """干跑不点击，不该去动 adb 服务；实跑必须先自检一次通道。
+
+        背景：模拟器重启后 host 侧 adb server 常还挂在旧连接上（设备 offline），
+        表现是「画面看得见、点不动」，上层只看到「点击验收无效」。
+        2026-09-24 / 2026-09-28 各实机踩过一次。
+        """
+        dry_window = unittest.mock.MagicMock()
+        with patch.object(main_module, "Epic7Window", return_value=dry_window):
+            main_module._build_runtime("story", dry_run=True)
+        dry_window.ensure_input_channel.assert_not_called()
+
+        live_window = unittest.mock.MagicMock()
+        with patch.object(main_module, "Epic7Window", return_value=live_window):
+            main_module._build_runtime("story", dry_run=False)
+        live_window.ensure_input_channel.assert_called_once_with()
+
     def test_emulator_runtime_routes_swipe_to_the_ldplayer_channel(self):
         window = unittest.mock.MagicMock()
         with patch.object(main_module, "Epic7Window", return_value=window):
@@ -218,19 +235,6 @@ class MainStoryTests(unittest.TestCase):
         )
 
         window.swipe.assert_called_once_with((1300, 850), (1300, 220), 500)
-
-    def test_shop_refresh_rejects_pc_before_runtime_is_created(self):
-        with patch.object(main_module, "_build_runtime") as build_runtime:
-            with self.assertRaisesRegex(ValueError, "仅支持模拟器"):
-                main_module.run_mode(
-                    spec=get_mode("shop_refresh"),
-                    dry_run=True,
-                    max_cycles=1,
-                    start_state="scan_top",
-                    window_backend="pc",
-                )
-
-        build_runtime.assert_not_called()
 
     def test_shop_refresh_live_is_blocked_before_runtime_until_current_evidence_exists(self):
         # ⚠️ 打到 ``evidence.shop_refresh`` 的模块属性上，不是 ``main_module`` 上：
@@ -328,19 +332,6 @@ class MainStoryTests(unittest.TestCase):
         self.assertEqual(1, seen["cycles"])
         self.assertEqual(1, result.completed_cycles)
 
-    def test_shop_refresh_pc_cli_fails_with_a_clear_message(self):
-        with self.assertRaisesRegex(SystemExit, "刷书签当前仅支持模拟器"):
-            main_module.main(
-                [
-                    "--mode",
-                    "shop_refresh",
-                    "--window-backend",
-                    "pc",
-                    "--max-cycles",
-                    "1",
-                ]
-            )
-
     def test_pc_runtime_calibrates_window_and_logs_actual_geometry(self):
         window = unittest.mock.MagicMock()
         window.ensure_render_size.return_value = unittest.mock.MagicMock(
@@ -362,7 +353,11 @@ class MainStoryTests(unittest.TestCase):
         self.assertIs(runtime._capture, window.capture)
         self.assertIn("调整前=1280x720", output.getvalue())
         self.assertIn("调整后=1920x1080", output.getvalue())
-        self.assertIn("模板来源=共享模拟器模板", output.getvalue())
+        # 文案 2026-09-28 改过：PC 现在可以往 templates/<路线>/pc/ 放专属图，
+        # 不再是「一律用共享模拟器模板」。
+        self.assertIn(
+            "模板来源=templates（PC 专属图优先，缺图回落共享图）", output.getvalue()
+        )
 
     def test_pc_run_uses_shared_template_root(self):
         runtime = unittest.mock.MagicMock()
@@ -386,7 +381,9 @@ class MainStoryTests(unittest.TestCase):
 
         template_root = build_machine.call_args.args[0]
         self.assertEqual("templates", template_root.name)
-        self.assertEqual("pc", build_machine.call_args.args[2])
+        # 平台差异只在「模板根」这一个对象里：跑 PC 时它会自动去
+        # ``templates/**/pc/`` 找专属图，找不到就退回模拟器图。工厂不再收平台参数。
+        self.assertEqual("pc", template_root.backend)
 
     def test_parser_accepts_internal_stop_file(self):
         args = main_module.parse_args(["--stop-file", r"D:\temp\stop.signal"])

@@ -76,7 +76,7 @@ from auto_game_unified.games.epic7.world_boss import (
 )
 
 
-MachineFactory = Callable[[Path, str, str], Any]
+MachineFactory = Callable[[Path, str], Any]
 
 
 @dataclass(frozen=True)
@@ -128,7 +128,6 @@ class ModeSpec:
     default_cycles: int = 1
     cycles_editable: bool = True
     needs_navigation: bool = True
-    supported_backends: frozenset[str] = frozenset({"emulator", "pc"})
     resume_probe: Optional[ResumeProbe] = None
     # 路线级的运行前闸门与额外构造参数，见上面两个类型别名的说明。
     # ⚠️ 这两个钩子就是「新路线需要专属校验 / 专属参数」时的唯一入口 ——
@@ -143,82 +142,44 @@ class ModeSpec:
             raise ValueError(f"起始状态 {state!r} 不适用于模式 {self.name}；可选：{choices}")
         return state
 
-    def validate_backend(self, backend: str) -> None:
-        if backend in self.supported_backends:
-            return
-        if self.name == "shop_refresh":
-            raise ValueError("刷书签当前仅支持模拟器")
-        raise ValueError(f"模式 {self.name} 不支持后端 {backend}")
-
-
-def _build_arena(
-    template_root: Path,
-    state: str,
-    backend: str = "emulator",
-) -> ArenaStateMachine:
+def _build_arena(template_root: Path, state: str) -> ArenaStateMachine:
     return ArenaStateMachine(
-        build_templates(template_root, backend=backend),
+        build_templates(template_root),
         initial_state=ArenaState(state),
-        backend=backend,
     )
 
 
-def _build_story(
-    template_root: Path,
-    state: str,
-    backend: str = "emulator",
-) -> StoryStateMachine:
+def _build_story(template_root: Path, state: str) -> StoryStateMachine:
     return StoryStateMachine(
-        build_story_templates(template_root / "story", backend=backend),
+        build_story_templates(template_root / "story"),
         initial_state=StoryState(state),
-        backend=backend,
     )
 
 
-def _build_expedition(
-    template_root: Path,
-    state: str,
-    backend: str = "emulator",
-) -> ExpeditionStateMachine:
+def _build_expedition(template_root: Path, state: str) -> ExpeditionStateMachine:
     return ExpeditionStateMachine(
         template_root / "expedition",
         initial_state=ExpeditionState(state),
-        backend=backend,
     )
 
 
-def _build_fodder(
-    template_root: Path,
-    state: str,
-    backend: str = "emulator",
-) -> FodderStateMachine:
+def _build_fodder(template_root: Path, state: str) -> FodderStateMachine:
     return FodderStateMachine(
         build_fodder_templates(template_root / "fodder"),
         initial_state=FodderState(state),
     )
 
 
-def _build_hero_synthesis(
-    template_root: Path,
-    state: str,
-    backend: str = "emulator",
-) -> HeroSynthStateMachine:
+def _build_hero_synthesis(template_root: Path, state: str) -> HeroSynthStateMachine:
     return HeroSynthStateMachine(
-        build_hero_templates(template_root, backend=backend),
+        build_hero_templates(template_root),
         initial_state=HeroSynthState(state),
-        backend=backend,
     )
 
 
-def _build_shop_refresh(
-    template_root: Path,
-    state: str,
-    backend: str = "emulator",
-) -> ShopRefreshStateMachine:
+def _build_shop_refresh(template_root: Path, state: str) -> ShopRefreshStateMachine:
     if state != ShopPhase.SCAN_TOP.value:
         raise ValueError(f"刷书签起始阶段无效：{state}")
-    if backend != "emulator":
-        raise ValueError("刷书签当前仅支持模拟器")
     return ShopRefreshStateMachine(
         1,
         observer=build_shop_refresh_observer(template_root),
@@ -285,57 +246,36 @@ def _resume_probe(
     return probe
 
 
-def _build_survivor(
-    template_root: Path,
-    state: str,
-    backend: str = "emulator",
-) -> SurvivorStateMachine:
+def _build_survivor(template_root: Path, state: str) -> SurvivorStateMachine:
     # 整轮循环都在活动小游戏内部，起点固定是用户人工停好的「选第一张卡」页，
     # 所以只允许这一个起始状态。
     if state != SurvivorState.CARD.value:
         raise ValueError(f"幸存者起始状态无效：{state}")
-    if backend != "emulator":
-        raise ValueError("幸存者当前仅支持模拟器")
     return SurvivorStateMachine(
         observer=build_survivor_observer(template_root),
     )
 
 
-def _build_world_boss(
-    template_root: Path,
-    state: str,
-    backend: str = "emulator",
-) -> WorldBossStateMachine:
+def _build_world_boss(template_root: Path, state: str) -> WorldBossStateMachine:
     return WorldBossStateMachine(
         template_root / "world_boss",
         initial_state=WorldBossState(state),
-        backend=backend,
     )
 
 
-def _build_labyrinth_stone(
-    template_root: Path,
-    state: str,
-    backend: str = "emulator",
-) -> LabyrinthStoneStateMachine:
+def _build_labyrinth_stone(template_root: Path, state: str) -> LabyrinthStoneStateMachine:
     # 模板子目录是 templates/labyrinth_stone；工厂必须把它当根，不能当 templates 根。
     return LabyrinthStoneStateMachine(
         template_root / "labyrinth_stone",
         initial_state=LabyrinthStoneState(state),
-        backend=backend,
     )
 
 
-def _build_knights_donation(
-    template_root: Path,
-    state: str,
-    backend: str = "emulator",
-) -> KnightsDonationStateMachine:
+def _build_knights_donation(template_root: Path, state: str) -> KnightsDonationStateMachine:
     # 模板子目录是 templates/knights_donation；工厂必须把它当根，不能当 templates 根。
     return KnightsDonationStateMachine(
         template_root / "knights_donation",
         initial_state=KnightsDonationState(state),
-        backend=backend,
     )
 
 
@@ -527,7 +467,6 @@ MODE_SPECS = {
             detect_shop_resume_point,
             on_hit=lambda machine: machine.mark_resumed_at_shop(),
         ),
-        supported_backends=frozenset({"emulator"}),
         # 这条路线会真花钱 ⇒ 目标商品与购买价格没在当前客户端实证过就不许实跑
         # （干跑不受影响）。闸门本体见 ``_preflight_shop_refresh``。
         preflight=_preflight_shop_refresh,
@@ -544,7 +483,6 @@ MODE_SPECS = {
         # 起点是用户人工推进到的活动小游戏内部页面，不需要从大厅导航过来，
         # 出问题时也不做任何「回大厅」动作（Back 会退回活动主页那个未知状态）。
         needs_navigation=False,
-        supported_backends=frozenset({"emulator"}),
     ),
     "world_boss": ModeSpec(
         name="world_boss",
