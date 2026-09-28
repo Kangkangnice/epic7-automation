@@ -376,6 +376,100 @@ class Epic7Window:
                 + output.decode("utf-8", "replace").strip()
             )
 
+    # 探测点击通道用的无害命令：走的是和真实点击**同一条** `ldconsole adb` 链路，
+    # 但只在设备里执行 `echo`，不碰游戏画面。通道通时必须回显 `ping`
+    # （2026-09-24 实测：成功时 `ldconsole adb` 的输出为空，所以这里用 echo 造回显）。
+    _INPUT_PROBE_COMMAND = "shell echo ping"
+    # 通道不可用时重建 adb 服务的两次操作。⚠️ 只用这两条：
+    # `adb reconnect offline` / `adb connect 127.0.0.1:5555` 两次实测都**无效**，
+    # 别往这里加（详见 .workbuddy/memory/topics/click_channel.md）。
+    _ADB_REBUILD_COMMANDS = (("kill-server",), ("start-server",))
+
+    def ensure_input_channel(self, attempts: int = 3, settle_seconds: float = 2.0) -> None:
+        """开跑前自检模拟器输入通道（点击/滑动/返回），坏了就用代码把它拉起来。
+
+        背景：host 侧 adb server 是**长驻进程**，模拟器重启后若连接没重建，设备就停在
+        `offline`，`ldconsole adb` 会回 `adb.exe: device offline`（退出码却仍是 0）——
+        表现是「画面看得见、点不动」。2026-09-24 与 2026-09-28 各实测一次，
+        **两次都是 adb server 比模拟器早起十几小时**，两次都是
+        `adb kill-server` → `start-server` 一步到位。
+
+        只在实跑前调用（`main._build_runtime` 的 `not dry_run` 分支）：
+        干跑不点击，不该去动 adb 服务。窗口本身不存在时 `_window()` 会先抛错，
+        所以不会引入新的失败模式。
+        """
+        last_error: Exception | None = None
+        for attempt in range(1, attempts + 1):
+            try:
+                self._probe_input_channel()
+            except (RuntimeError, subprocess.SubprocessError, OSError) as error:
+                last_error = error
+                self._emit(
+                    f"模拟器通道 状态=不可用 尝试={attempt}/{attempts} 动作=重启adb服务"
+                )
+                self._restart_adb_server()
+                sleep(settle_seconds)
+                continue
+            self._emit(
+                "模拟器通道 状态=可用"
+                if attempt == 1
+                else f"模拟器通道 状态=已恢复 尝试={attempt}/{attempts}"
+            )
+            return
+        raise RuntimeError(
+            f"模拟器输入通道不可用，自动重建 adb 服务 {attempts} 次仍未恢复：{last_error}"
+        )
+
+    def _probe_input_channel(self) -> None:
+        """走真实点击那条 `ldconsole adb` 链路发一条无害命令，确认有回显。"""
+        console_path, instance_index, _ = self._instance_channel()
+        result = subprocess.run(
+            [
+                str(console_path),
+                "adb",
+                "--index",
+                instance_index,
+                "--command",
+                self._INPUT_PROBE_COMMAND,
+            ],
+            check=True,
+            capture_output=True,
+            timeout=10,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        # 设备 offline 时 ldconsole 的退出码仍是 0，失败只写在输出里 ⇒ 必须看内容。
+        self._ensure_input_delivered(result)
+        output = b"".join(
+            bytes(stream)
+            for stream in (result.stdout, result.stderr)
+            if isinstance(stream, (bytes, bytearray))
+        )
+        if b"ping" not in output.lower():
+            raise RuntimeError(
+                "模拟器输入通道探测无回显："
+                + output.decode("utf-8", "replace").strip()
+            )
+
+    def _restart_adb_server(self) -> None:
+        """`adb kill-server` → `start-server`，只重建 host 侧 adb 服务。
+
+        **不动模拟器、不重启游戏**（两次实测都是一步到位）。
+        这里刻意 `check=False`：server 没在跑时 `kill-server` 也可能给非 0，
+        真正的判据是重建之后再探一次通道有没有回显。
+        """
+        console_path, _, _ = self._instance_channel()
+        adb_path = console_path.with_name("adb.exe")
+        if not adb_path.exists():
+            raise RuntimeError(f"未在 {console_path.parent} 找到 adb.exe，无法重建输入通道")
+        for arguments in self._ADB_REBUILD_COMMANDS:
+            subprocess.run(
+                [str(adb_path), *arguments],
+                check=False,
+                capture_output=True,
+                timeout=20,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+
     def _send_render_tap(self, point: tuple[int, int]) -> None:
         console_path, instance_index, _ = self._instance_channel()
         result = subprocess.run(
