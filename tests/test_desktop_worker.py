@@ -49,6 +49,31 @@ class BlockingProcess:
         return self.returncode
 
 
+class StuckProcess:
+    """卡在一次底层调用里、**读不到停止信号**的进程（2026-09-28 实机现场）。
+
+    ``BlockingOutput`` 让读输出的线程一起卡住 —— 真实的卡死正是这个形态：进程不退、
+    管道那头也不吐字，界面于是既等不到 ``事件=结束``、又等不到新日志。
+    """
+
+    def __init__(self, *, release, pid=8224):
+        self.stdout = BlockingOutput(release)
+        self.returncode = None
+        self.killed = False
+        self.pid = pid
+
+    def wait(self):
+        self.returncode = 130
+        return 130
+
+    def poll(self):
+        return self.returncode
+
+    def kill(self):
+        self.killed = True
+        self.returncode = -9
+
+
 def test_worker_builds_existing_live_cli_and_streams_logs(tmp_path):
     calls = []
     worker = WorkerController(
@@ -107,6 +132,49 @@ def test_worker_stop_creates_signal_file_before_process_exits(tmp_path):
     )
 
 
+def test_force_stop_is_a_noop_when_nothing_is_running(tmp_path):
+    worker = WorkerController(repo_parent=tmp_path)
+
+    assert worker.force_stop() is False
+
+
+def test_force_stop_kills_a_worker_that_never_reads_the_stop_signal(tmp_path):
+    """2026-09-28 实机：卡在一次 adb 点击里的进程，停止信号永远读不到。
+
+    ``request_stop`` 只把 ``stop.signal`` 写下去，那条信号要等下一次「动作之间」才被
+    读到；卡在调用内部的进程轮不到那一步 ⇒ 只能强行结束，而且必须**立刻**见效：
+    界面靠 ``running`` 变 False 解锁，等不到 ``事件=结束``。
+    """
+    release = threading.Event()
+    process = StuckProcess(release=release, pid=8224)
+    log_path = tmp_path / "desktop_worker.log"
+    worker = WorkerController(
+        repo_parent=tmp_path,
+        popen=lambda *args, **kwargs: process,
+        log_path=log_path,
+    )
+    worker.start(RunRequest("world_boss", 2))
+
+    worker.request_stop()
+
+    assert worker.stop_file is not None and worker.stop_file.exists()
+    assert worker.running is True, "写了停止信号不等于进程会退"
+    assert worker.force_stop() is True
+    assert process.killed is True
+    assert worker.running is False, "强行结束后界面必须能立刻解锁"
+    assert "事件=强行结束 PID=8224" in log_path.read_text(encoding="utf-8")
+
+    release.set()
+    worker.join_reader()
+
+    # 强行结束用的是 TerminateProcess，退出码 1 与「运行失败」同码 ⇒ 靠标记区分开，
+    # 否则界面上会一边说「已强行结束」、一边报「运行失败」。
+    assert worker.drain_events()[-1] == WorkerEvent(
+        "finished", "已强行结束", exit_code=130
+    )
+    assert "强行结束=是" in log_path.read_text(encoding="utf-8")
+
+
 def test_worker_persists_process_exit_evidence(tmp_path):
     log_path = tmp_path / "desktop_worker.log"
     worker = WorkerController(
@@ -120,7 +188,12 @@ def test_worker_persists_process_exit_evidence(tmp_path):
 
     evidence = log_path.read_text(encoding="utf-8")
     assert "事件=启动 模式=arena 后端=pc PID=2468" in evidence
-    assert "事件=结束 PID=2468 退出码=0 停止请求=否 最后输出=第二行" in evidence
+    # 「强行结束」必须**显式记否** —— 只有「是」而没有「否」的话，排查时读不出
+    # 这一条到底带没带这个字段。
+    assert (
+        "事件=结束 PID=2468 退出码=0 停止请求=否 强行结束=否 最后输出=第二行"
+        in evidence
+    )
 
 
 def test_worker_reports_and_persists_abnormal_exit_code(tmp_path):
@@ -149,7 +222,10 @@ def test_worker_reports_and_persists_abnormal_exit_code(tmp_path):
     evidence = log_path.read_text(encoding="utf-8")
     assert "事件=子进程输出 PID=1357 内容=第一行" in evidence
     assert "事件=子进程输出 PID=1357 内容=第二行" in evidence
-    assert "事件=结束 PID=1357 退出码=23 停止请求=否 最后输出=第二行" in evidence
+    assert (
+        "事件=结束 PID=1357 退出码=23 停止请求=否 强行结束=否 最后输出=第二行"
+        in evidence
+    )
     snapshots = list(
         (
             tmp_path
