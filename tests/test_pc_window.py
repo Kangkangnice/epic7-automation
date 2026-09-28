@@ -1,10 +1,20 @@
+import inspect
 import unittest
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import numpy as np
 
 from auto_game_unified.core import pc_window
 from auto_game_unified.core.pc_window import Epic7PcWindow, WindowRect
+from auto_game_unified.core.runtime import Runtime
+from auto_game_unified.games.epic7.navigation import (
+    Epic7Navigator,
+    build_navigation_templates,
+)
+
+ROOT = Path(__file__).resolve().parents[1]
+SHARED_TEMPLATES = ROOT / "games" / "epic7" / "templates"
 
 
 class PcWindowSafetyTests(unittest.TestCase):
@@ -457,6 +467,30 @@ class _FakeImage:
 
     def __array__(self, dtype=None):
         return self.array.astype(dtype) if dtype is not None else self.array
+
+
+class PcSharedNavigationContractTests(unittest.TestCase):
+    """PC 与模拟器共用同一套模板与几何：页面判定和坐标都不许按平台分叉。
+
+    2026-09-28：原 ``test_pc_shared_navigation.py`` 里依赖 PC 专属夹具（随 PC 素材全删）
+    的两条用例被移除；下面两条是**框架级**断言，不依赖任何素材，迁到本文件保留。
+    """
+
+    def test_navigation_builder_has_no_legacy_pc_directory_switch(self):
+        self.assertNotIn(
+            "templates" + "_pc",
+            inspect.getsource(build_navigation_templates),
+        )
+
+    def test_black_pc_frame_is_not_recognized_as_lobby(self):
+        screen = Epic7PcWindow._legacy_canvas(
+            np.zeros((1080, 1920, 3), dtype=np.uint8)
+        )
+        navigator = Epic7Navigator(
+            build_navigation_templates(SHARED_TEMPLATES),
+            Runtime(lambda: screen, lambda _point: None),
+        )
+        self.assertEqual(navigator.observe(screen).name, "invalid")
 
 
 if __name__ == "__main__":
