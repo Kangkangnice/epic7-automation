@@ -39,7 +39,6 @@ from auto_game_unified.games.epic7.runner_base import NOT_STABLE
 
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURES = ROOT / "tests" / "fixtures" / "epic7_hero"
-PC_SHARED_FIXTURES = ROOT / "tests" / "fixtures" / "epic7_pc_shared_hero"
 NAV_FIXTURES = ROOT / "tests" / "fixtures" / "epic7_navigation"
 TEMPLATES = ROOT / "games" / "epic7" / "templates"
 
@@ -50,23 +49,8 @@ def fixture(name: str):
     )
 
 
-def pc_shared_fixture(name: str):
-    return cv2.cvtColor(
-        cv2.imread(str(PC_SHARED_FIXTURES / f"{name}.png")), cv2.COLOR_BGR2RGB
-    )
-
-
 def machine(verify_filter: bool = False) -> HeroSynthStateMachine:
     m = HeroSynthStateMachine(build_hero_templates(TEMPLATES))
-    m.filter_verified = verify_filter
-    return m
-
-
-def pc_machine(verify_filter: bool = False) -> HeroSynthStateMachine:
-    m = HeroSynthStateMachine(
-        build_hero_templates(TEMPLATES, backend="pc"),
-        backend="pc",
-    )
     m.filter_verified = verify_filter
     return m
 
@@ -1025,67 +1009,24 @@ class TemplateTests(unittest.TestCase):
 
 class FilterObservationTests(unittest.TestCase):
     def test_current_hero_threshold_policy(self):
-        emulator = build_hero_evidence(TEMPLATES)
-        pc = build_hero_evidence(TEMPLATES, backend="pc")
+        """英雄合成门槛只有模拟器基线一档。
+
+        以前这里还对比一份「PC 专用」证据档案（filter 类锚点整体放低 0.10）。
+        那套放宽是拿模拟器图认 PC 画面的止痛药；平台差异现在由
+        ``templates/hero/pc/*.png`` 承担，所以只剩这一档。
+        """
+        profile = build_hero_evidence(TEMPLATES)
 
         self.assertEqual(
-            0.75, emulator.atom("filter_level_label").threshold
+            0.75, profile.atom("filter_level_label").threshold
         )
         self.assertEqual(
-            0.65, pc.atom("filter_level_label").threshold
+            0.75, profile.atom("filter_attribute_label").threshold
         )
-        self.assertEqual(
-            0.75, emulator.atom("filter_attribute_label").threshold
-        )
-        self.assertEqual(
-            0.65, pc.atom("filter_attribute_label").threshold
-        )
-        self.assertEqual(0.86, emulator.atom("filter_star3_unselected").threshold)
-        self.assertEqual(0.76, pc.atom("filter_star3_unselected").threshold)
-        self.assertEqual(0.90, emulator.atom("rating_sss").threshold)
-        self.assertEqual(0.90, pc.atom("rating_sss").threshold)
-        self.assertEqual(0.80, emulator.atom("sss_material").threshold)
-        self.assertEqual(0.80, pc.atom("sss_material").threshold)
-        self.assertEqual(0.90, emulator.atom("transmit_reward_title").threshold)
-        self.assertEqual(0.80, pc.atom("transmit_reward_title").threshold)
-
-    def test_current_pc_filter_open_is_recognized_as_unselected(self):
-        m = pc_machine()
-        screen = pc_shared_fixture("filter_open_unselected_20260829")
-
-        observation = m._observe_filter(screen)
-        action = m.next_action(screen)
-
-        self.assertIs(
-            FilterObservation.FILTER_OPEN_STAR3_UNSELECTED,
-            observation,
-        )
-        self.assertEqual("select_star3", action.name)
-        self.assertEqual((1110, 636), action.point)
-
-    def test_current_pc_filter_closed_is_not_misread_as_open(self):
-        observation = pc_machine()._observe_filter(
-            pc_shared_fixture("filter_closed_20260829")
-        )
-
-        self.assertNotIn(
-            observation,
-            {
-                FilterObservation.FILTER_OPEN_STAR3_SELECTED,
-                FilterObservation.FILTER_OPEN_STAR3_UNSELECTED,
-            },
-        )
-
-    def test_current_pc_filter_action_reason_contains_scores(self):
-        action = pc_machine().next_action(
-            pc_shared_fixture("filter_open_unselected_20260829")
-        )
-
-        self.assertIn("级别=", action.reason)
-        self.assertIn("属性=", action.reason)
-        self.assertIn("三星未选=", action.reason)
-        self.assertIn("/0.65", action.reason)
-        self.assertIn("/0.76", action.reason)
+        self.assertEqual(0.86, profile.atom("filter_star3_unselected").threshold)
+        self.assertEqual(0.90, profile.atom("rating_sss").threshold)
+        self.assertEqual(0.80, profile.atom("sss_material").threshold)
+        self.assertEqual(0.90, profile.atom("transmit_reward_title").threshold)
 
     def test_closed_hero_list_requires_list_anchors_and_no_panel_anchors(self):
         m = machine()

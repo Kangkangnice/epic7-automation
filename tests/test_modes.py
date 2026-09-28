@@ -38,22 +38,12 @@ class Epic7ModeRegistryTests(unittest.TestCase):
         self.assertEqual("guild_home", get_mode("knights_donation").default_state)
         self.assertEqual("battle_menu", get_mode("labyrinth_stone").default_state)
 
-    def test_shop_refresh_is_simulator_only(self):
-        shop = get_mode("shop_refresh")
-
-        shop.validate_backend("emulator")
-        with self.assertRaisesRegex(ValueError, "仅支持模拟器"):
-            shop.validate_backend("pc")
-
     def test_survivor_starts_inside_the_activity_without_navigation(self):
         survivor = get_mode("survivor")
 
         # 起点固定是用户人工停好的「选第一张卡」页，只有这一个合法起始状态。
-        survivor.validate_backend("emulator")
         self.assertEqual("card", survivor.resolve_state(None))
         self.assertFalse(survivor.needs_navigation)
-        with self.assertRaisesRegex(ValueError, "不支持后端 pc"):
-            survivor.validate_backend("pc")
         with self.assertRaisesRegex(ValueError, "不适用于模式 survivor"):
             survivor.resolve_state("battle")
 
@@ -68,7 +58,7 @@ class Epic7ModeRegistryTests(unittest.TestCase):
         world_boss = get_mode("world_boss")
 
         # 模板子目录是 templates/world_boss；工厂必须把它当根，不能当 templates 根。
-        machine = world_boss.build_machine(TEMPLATES, "home", "emulator")
+        machine = world_boss.build_machine(TEMPLATES, "home")
 
         self.assertEqual("home", machine.state.value)
         self.assertEqual(
@@ -90,7 +80,7 @@ class Epic7ModeRegistryTests(unittest.TestCase):
         donation = get_mode("knights_donation")
 
         # 模板子目录是 templates/knights_donation；工厂必须把它当根，不能当 templates 根。
-        machine = donation.build_machine(TEMPLATES, "guild_home", "emulator")
+        machine = donation.build_machine(TEMPLATES, "guild_home")
 
         self.assertEqual("guild_home", machine.state.value)
         self.assertEqual(
@@ -111,32 +101,26 @@ class Epic7ModeRegistryTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "不适用于模式 knights_donation"):
             donation.resolve_state("finished")
 
-    def test_formal_pc_modes_receive_pc_evidence_without_old_hero_coordinates(self):
-        story = get_mode("story").build_machine(TEMPLATES, "stage", "pc")
-        arena = get_mode("arena").build_machine(TEMPLATES, "list", "pc")
-        expedition = get_mode("expedition").build_machine(TEMPLATES, "home", "pc")
-        hero = get_mode("hero_synthesis").build_machine(
-            TEMPLATES, "hero_list", "pc"
-        )
+    def test_every_backend_shares_the_emulator_baseline_thresholds(self):
+        """平台差异收敛到图片之后，阈值只剩模拟器基线这一套。
 
-        self.assertEqual(0.55, story._THRESHOLDS["skip"])
-        self.assertEqual(0.70, arena._THRESHOLDS["battle_start"])
-        self.assertEqual("pc", expedition.backend)
-        self.assertEqual(0.65, hero._THRESHOLDS["filter_level_label"])
-        self.assertEqual(0.40, hero._button_struct_min)
-        self.assertFalse(hero.templates.pc_client)
-
-    def test_emulator_defaults_remain_separate_from_pc_overrides(self):
-        story = get_mode("story").build_machine(TEMPLATES, "stage", "emulator")
-        arena = get_mode("arena").build_machine(TEMPLATES, "list", "emulator")
-        hero = get_mode("hero_synthesis").build_machine(
-            TEMPLATES, "hero_list", "emulator"
-        )
+        以前 story / arena / hero_synthesis 各有一份「PC 专用门槛表」，跑 PC 时
+        整体放宽一档。实测那些放宽只是拿模拟器图去认 PC 画面的止痛药（见
+        ``docs/PC_TEMPLATE_MIGRATION.md``），真要做 PC 应该换图而不是放门槛。
+        ⇒ 这里钉死「工厂不再接受平台参数、阈值恒为模拟器基线」。
+        """
+        story = get_mode("story").build_machine(TEMPLATES, "stage")
+        arena = get_mode("arena").build_machine(TEMPLATES, "list")
+        hero = get_mode("hero_synthesis").build_machine(TEMPLATES, "hero_list")
 
         self.assertEqual(0.65, story._THRESHOLDS["skip"])
         self.assertEqual(0.90, arena._THRESHOLDS["battle_start"])
         self.assertEqual(0.75, hero._THRESHOLDS["filter_level_label"])
         self.assertEqual(0.50, hero._button_struct_min)
+        # 旧的「PC 坐标开关」（``pc_client``）连同那 8 个 `_PC_*` 坐标**一并删掉**了。
+        # 实测（2026-09-28）：PC 帧上「三星」按钮的真实落位与模拟器常量只差 1 像素，
+        # 与那套 PC 常量差 37 像素 ⇒ 那套坐标是统一画布之前的遗留，是错的。
+        self.assertFalse(hasattr(hero.templates, "pc_client"))
 
 
 class RouteHookRegistryTests(unittest.TestCase):
@@ -201,7 +185,7 @@ class TemplateRootConventionTests(unittest.TestCase):
     def test_every_route_builds_a_machine_from_the_real_template_root(self):
         for name, spec in sorted(MODE_SPECS.items()):
             with self.subTest(mode=name):
-                machine = spec.build_machine(TEMPLATES, spec.default_state, "emulator")
+                machine = spec.build_machine(TEMPLATES, spec.default_state)
                 self.assertIsNotNone(machine, f"{name} 在真模板根上构造出了 None")
 
     def test_a_wrong_template_root_fails_loudly_instead_of_silently(self):
@@ -212,9 +196,7 @@ class TemplateRootConventionTests(unittest.TestCase):
         以「认不出画面」的形式出现，那时候排查成本比现在高得多。
         """
         try:
-            get_mode("world_boss").build_machine(
-                TEMPLATES / "world_boss", "home", "emulator"
-            )
+            get_mode("world_boss").build_machine(TEMPLATES / "world_boss", "home")
         except Exception:
             return
         self.fail(

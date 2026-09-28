@@ -33,6 +33,7 @@ from auto_game_unified.games.epic7.transactional_runner_base import (
 )
 from auto_game_unified.games.epic7.unknown_screen import UnrecognizedScreen
 from auto_game_unified.games.epic7.evidence.common import EvidenceProfile
+from auto_game_unified.games.epic7.template_paths import is_template_root
 from auto_game_unified.games.epic7.evidence.expedition import (
     REFERENCE_SIZE as EXPEDITION_REFERENCE_SIZE,
     REGIONS as EXPEDITION_REGIONS,
@@ -126,11 +127,7 @@ class ExpeditionTemplates:
     evidence: EvidenceProfile | None = None
 
 
-def build_expedition_templates(
-    template_dir: Path,
-    *,
-    backend: str = "emulator",
-) -> ExpeditionTemplates:
+def build_expedition_templates(template_dir: Path) -> ExpeditionTemplates:
     def load(name: str) -> np.ndarray:
         return load_template(str(template_dir / f"{name}.png"))
 
@@ -161,7 +158,7 @@ def build_expedition_templates(
         expedition_list=load("expedition_list"),
         back=load("back"),
         quick_battle=load_simulator_quick_battle_detector(template_dir),
-        evidence=build_expedition_evidence(template_dir, backend=backend),
+        evidence=build_expedition_evidence(template_dir),
     )
 
 
@@ -179,12 +176,10 @@ class ExpeditionStateMachine:
         templates: ExpeditionTemplates | Path,
         *,
         initial_state: ExpeditionState = ExpeditionState.HOME,
-        backend: str = "emulator",
     ) -> None:
-        self.backend = backend
         self.templates = (
-            build_expedition_templates(templates, backend=backend)
-            if isinstance(templates, Path)
+            build_expedition_templates(templates)
+            if is_template_root(templates)
             else templates
         )
         self.state = initial_state
@@ -475,7 +470,10 @@ class ExpeditionStateMachine:
         auto = self._locate(screen, "auto_off")
         auto_score = "无" if auto is None else f"{auto.score:.4f}"
         auto_evidence = f"布局={controls.value} 自动关图标={auto_score}"
-        if auto is not None and self.backend == "emulator":
+        # 「右上角关自动图标 ⇒ 判定为手动」：按钮布局判成 transition（看不出长相）
+        # 时靠这个图标兜底 —— 否则那一帧会停在「未知」，而「未知」按安全设计是
+        # 不许点自动的，战斗就会干等到超时。图标认不到就不覆盖上面的布局判定。
+        if auto is not None:
             auto_state = AutoBattleState.MANUAL
             auto_evidence += " 来源=右上角自动关闭图标"
         battle = self._locate(screen, "battle_anchor")

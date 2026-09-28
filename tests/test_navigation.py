@@ -194,19 +194,17 @@ class NavigationTests(unittest.TestCase):
             any("模式=刷书签 状态=导航完成" in log for log in logs)
         )
 
-    def test_navigator_selects_platform_thresholds_explicitly(self):
-        runtime = Runtime(lambda: fixture("lobby"), lambda _point: None)
-        emulator = Epic7Navigator(build_navigation_templates(TEMPLATES), runtime)
-        pc = Epic7Navigator(
-            build_navigation_templates(TEMPLATES),
-            runtime,
-            backend="pc",
-        )
+    def test_navigator_uses_the_single_emulator_baseline_thresholds(self):
+        """导航阈值只剩模拟器基线一套 —— 平台差异改由图片承担。
 
-        self.assertEqual(0.65, emulator._story_thresholds["skip"])
-        self.assertEqual(0.55, pc._story_thresholds["skip"])
-        self.assertEqual(0.88, emulator._arena_thresholds["list_ready"])
-        self.assertEqual(0.75, pc._arena_thresholds["list_ready"])
+        以前导航器内部按平台挑两张门槛表（PC 整体放宽一档），那是拿模拟器图
+        去认 PC 画面的止痛药。现在没有第二张表可挑，这里钉死「只有一套」。
+        """
+        runtime = Runtime(lambda: fixture("lobby"), lambda _point: None)
+        navigator = Epic7Navigator(build_navigation_templates(TEMPLATES), runtime)
+
+        self.assertEqual(0.65, navigator._story_thresholds["skip"])
+        self.assertEqual(0.88, navigator._arena_thresholds["list_ready"])
 
     def test_classifies_friendship_points_popup(self):
         navigator = self.navigator([])

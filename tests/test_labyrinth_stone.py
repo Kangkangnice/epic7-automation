@@ -45,7 +45,7 @@ def build_machine(**flags):
     from auto_game_unified.games.epic7.modes import get_mode
 
     spec = get_mode("labyrinth_stone")
-    machine = spec.build_machine(TEMPLATE_ROOT, spec.default_state, "emulator")
+    machine = spec.build_machine(TEMPLATE_ROOT, spec.default_state)
     for key, value in flags.items():
         setattr(machine, key, value)
     return machine

@@ -29,7 +29,6 @@ from auto_game_unified.games.epic7.unknown_screen import UnrecognizedScreen
 from auto_game_unified.games.epic7.evidence.common import EvidenceProfile
 from auto_game_unified.games.epic7.evidence.hero_synthesis import (
     FILTER_ATTRIBUTE_SMALL_THRESHOLD,
-    PC_FILTER_ATTRIBUTE_SMALL_THRESHOLD,
     REFERENCE_SIZE as HERO_REFERENCE_SIZE,
     REGIONS as HERO_REGIONS,
     THRESHOLDS as HERO_THRESHOLDS,
@@ -176,16 +175,11 @@ class HeroTemplates:
     transmit_reward_title: Optional[np.ndarray] = None
     transmit_reward_close: Optional[np.ndarray] = None
     threshold: float = 0.80
-    pc_client: bool = False
     assume_non_max_rating: bool = False
     evidence: EvidenceProfile | None = None
 
 
-def build_hero_templates(
-    template_root: Path,
-    *,
-    backend: str = "emulator",
-) -> HeroTemplates:
+def build_hero_templates(template_root: Path) -> HeroTemplates:
     hero = template_root / "hero"
     navigation = template_root / "navigation"
     result_title = hero / "imprint_result_title.png"
@@ -197,7 +191,7 @@ def build_hero_templates(
     filter_star3_unselected = hero / "filter_star3_unselected.png"
     transmit_reward_title = hero / "transmit_reward_title.png"
     transmit_reward_close = hero / "transmit_reward_close.png"
-    evidence = build_hero_evidence(template_root, backend=backend)
+    evidence = build_hero_evidence(template_root)
     return HeroTemplates(
         filter_button=load_template(str(hero / "filter_button.png")),
         filter_level_label=load_template(str(hero / "filter_level_label.png")),
@@ -238,7 +232,6 @@ def build_hero_templates(
             if transmit_reward_close.exists()
             else None
         ),
-        pc_client=False,
         assume_non_max_rating=False,
         threshold=evidence.atom("filter_button").threshold,
         evidence=evidence,
@@ -263,13 +256,10 @@ class HeroSynthStateMachine:
     _BUTTON_ZONE = (1000, 900, 250, 200)
     _BUTTON_TL = (1028, 925)  # 140x140 按钮模板的标准落位左上角
     _DOT_MASK = (1030, 935, 50, 50)  # 红点角标区（刻印按钮左上角），匹配时双向屏蔽
-    _PC_BUTTON_TL = (1045, 920)
-    _PC_DOT_MASK = (1065, 935, 32, 32)
     _BUTTON_CENTER = (1098, 995)
     _BUTTON_DISC_RADIUS = 58
     _BUTTON_STRUCT_MIN = 0.50  # 结构匹配下限：确认按钮存在（不限颜色）
     _REDDOT_ZONE = (1030, 942, 32, 35)  # 模拟器按用户标框收紧的刻印按钮红点区
-    _PC_REDDOT_ZONE = (1030, 935, 50, 50)  # PC 保留原红点区
     _MATERIAL_CARD_ZONE = (1460, 390, 522, 610)
     _CARD_BELOW_ZONE = (1450, 537, 520, 83)
     _DETAIL_CONTENT_ZONE = (150, 350, 550, 300)
@@ -284,6 +274,9 @@ class HeroSynthStateMachine:
         (970, 845, 370, 110),
     )
     _UP_BADGE_ZONE = (1370, 390, 95, 600)
+    # 右侧卡片条区域。⚠️ 生产判据已改成「Up 角标行 + 可见材料卡轮廓」
+    # （``_up_badge_rows`` / ``_find_visible_material_card``），不再靠这块区域找卡片；
+    # 现在只有测试用它构造「右边缘被遮住」的画面，别当成死常量删掉。
     _UP_STRIP_ZONE = (1880, 380, 50, 620)
     _IMPRINT_COST_ZONE = (1020, 1025, 75, 50)
     _GREEN_BTN_ZONE = (900, 1020, 500, 90)
@@ -293,7 +286,6 @@ class HeroSynthStateMachine:
     _REWARD_STRIP_ZONE = (880, 825, 160, 35)
     _TRANSMIT_STRIP_ZONE = (1400, 200, 250, 800)
     _TRANSMIT_GRID_ZONE = (50, 305, 620, 405)
-    _DETAIL_FP_ZONE = (150, 350, 550, 300)
     _SIMULATOR_DETAIL_FP_ZONE = (150, 180, 550, 170)
     _LIST_FP_ZONE = (1450, 200, 532, 780)
     _HERO_IDENTITY_ZONE = (145, 165, 280, 145)
@@ -304,7 +296,6 @@ class HeroSynthStateMachine:
     # 模拟器截图是 1920x1080 渲染画面上方补 52px 的旧画布；
     # 点击下一张卡的主体区域，不点击战力数字或卡片边界。
     _NEXT_CARD_POINT = (1800, 591)
-    _PC_NEXT_CARD_POINT = (1710, 570)
     _IMPRINT_BUTTON_POINT = (1098, 995)  # 刻印按钮硬编码坐标：模板匹配失败时的兜底
     _UP_CARD_X = 1710
     _GREEN_BTN_POINT = (1149, 1078)
@@ -316,11 +307,6 @@ class HeroSynthStateMachine:
     _TRANSMIT_ENTRY_POINT = (1735, 1060)
     _HERO_INFO_TAB_POINT = HERO_INFORMATION_TAB_POINT
     _BACK_OFFSET = (-26, -6)
-    _PC_FUNNEL_POINT = (1612, 141)
-    _PC_STAR3_POINT = (1148, 613)
-    _PC_IMPRINT_BUTTON_POINT = (1115, 991)
-    _PC_GREEN_BTN_POINT = (1200, 1041)
-    _PC_BACK_OFFSET = (11, -4)
     _CARD_BELOW_BRIGHT_MIN = 2000
     _DETAIL_CONTENT_BRIGHT_MIN = 5000
     _SELECTED_TAB_BLUE_MIN = 1000
@@ -339,11 +325,8 @@ class HeroSynthStateMachine:
         self,
         templates: HeroTemplates,
         initial_state: HeroSynthState = HeroSynthState.HERO_LIST,
-        *,
-        backend: str = "emulator",
     ) -> None:
         self.templates = templates
-        self.backend = backend
         self.state = initial_state
         if templates.evidence is not None:
             self._REGIONS = {
@@ -355,17 +338,12 @@ class HeroSynthStateMachine:
         self.completed_cycles = 0
         self.filter_verified = False
         self.prev_card_grey = False
-        self._button_struct_min = 0.40 if backend == "pc" else self._BUTTON_STRUCT_MIN
-        self._filter_attribute_small_min = (
-            PC_FILTER_ATTRIBUTE_SMALL_THRESHOLD
-            if backend == "pc"
-            else FILTER_ATTRIBUTE_SMALL_THRESHOLD
-        )
-        self._button_tl = self._PC_BUTTON_TL if templates.pc_client else self._BUTTON_TL
-        self._dot_mask = self._PC_DOT_MASK if templates.pc_client else self._DOT_MASK
-        self._reddot_zone = (
-            self._PC_REDDOT_ZONE if templates.pc_client else self._REDDOT_ZONE
-        )
+        # 结构匹配下限只有模拟器基线一套；平台差异收敛到图片。
+        self._button_struct_min = self._BUTTON_STRUCT_MIN
+        self._filter_attribute_small_min = FILTER_ATTRIBUTE_SMALL_THRESHOLD
+        self._button_tl = self._BUTTON_TL
+        self._dot_mask = self._DOT_MASK
+        self._reddot_zone = self._REDDOT_ZONE
         grey_template = (
             templates.imprint_normal
             if templates.assume_non_max_rating
@@ -409,8 +387,6 @@ class HeroSynthStateMachine:
             self.transmit_continuity_intact = False
 
     def _confirm_page(self, label: str) -> None:
-        if self.templates.pc_client:
-            return
         self._confirmed_page = label
 
     def _simulator_transition_action(
@@ -424,8 +400,6 @@ class HeroSynthStateMachine:
         source_observation: str = "",
         transition_kind: str = "",
     ) -> HeroAction:
-        if self.templates.pc_client:
-            return HeroAction(name, point)
         return HeroAction(
             name,
             point,
@@ -503,13 +477,6 @@ class HeroSynthStateMachine:
             round(point[0] * screen.shape[1] / self._REFERENCE_SIZE[0]),
             round(point[1] * screen.shape[0] / self._REFERENCE_SIZE[1]),
         )
-
-    def _point(
-        self,
-        emulator_point: tuple[int, int],
-        pc_point: tuple[int, int],
-    ) -> tuple[int, int]:
-        return pc_point if self.templates.pc_client else emulator_point
 
     def _scaled_zone(
         self, screen: np.ndarray, zone: tuple[int, int, int, int]
@@ -615,7 +582,7 @@ class HeroSynthStateMachine:
             zone,
             (0, 120, 120),
             (25, 255, 255),
-            min_area=20 if self.templates.pc_client else 100,
+            100,
             max_area=1200,
             morph=3,
         )
@@ -624,16 +591,14 @@ class HeroSynthStateMachine:
             zone,
             (165, 120, 120),
             (180, 255, 255),
-            min_area=20 if self.templates.pc_client else 100,
+            100,
             max_area=1200,
             morph=3,
         )
-        if self.templates.pc_client:
-            return bool(blobs or extra)
         return any(is_centered_dot(blob) for blob in (*blobs, *extra))
 
     def _material_page_sss_score(self, screen: np.ndarray) -> float:
-        if self.templates.pc_client or self.templates.sss_material is None:
+        if self.templates.sss_material is None:
             return -1.0
         inset = self._SSS_TEMPLATE_INSET
         template = self.templates.sss_material[inset:-inset, inset:-inset]
@@ -648,8 +613,6 @@ class HeroSynthStateMachine:
 
     def _classify_material_page(self, screen: np.ndarray) -> SafetyClass:
         """先对整列材料做 SSS 安全分类；不确定时禁止点击任何卡。"""
-        if self.templates.pc_client:
-            return SafetyClass.NON_SSS
         if self.templates.sss_material is None:
             return SafetyClass.UNKNOWN
         score = self._material_page_sss_score(screen)
@@ -667,8 +630,7 @@ class HeroSynthStateMachine:
     def _sss_material_warning_close(self, screen: np.ndarray) -> Optional[Match]:
         """返回 SSS 材料风险提示层的关闭控件，避免点击覆盖层下的按钮。"""
         if (
-            self.templates.pc_client
-            or self.templates.sss_material_warning_title is None
+            self.templates.sss_material_warning_title is None
             or self.templates.sss_material_warning_close is None
         ):
             return None
@@ -731,27 +693,8 @@ class HeroSynthStateMachine:
             if int((mask[start:end] > 0).sum()) >= self._UP_BADGE_MIN_PIXELS
         ]
 
-    def _up_strip_blobs(self, screen: np.ndarray) -> list[tuple[int, int, int, int]]:
-        """PC 版右侧卡片条；其布局不会与中间材料槽重叠。"""
-        blobs = self._blobs(
-            screen,
-            self._UP_STRIP_ZONE,
-            (5, 120, 160),
-            (25, 255, 255),
-            min_area=100,
-            morph=5,
-        )
-        return [blob for blob in blobs if blob[3] >= 60]
-
     def _find_up_card(self, screen: np.ndarray) -> Optional[tuple[int, int, str]]:
         """返回最上方的普通 Up 材料卡，SSS 材料永远不可点击。"""
-        if self.templates.pc_client:
-            cards = self._up_strip_blobs(screen)
-            if not cards:
-                return None
-            top = min(cards, key=lambda blob: blob[1])
-            return (self._UP_CARD_X, top[1] + top[3] // 2, str(len(cards)))
-
         # Up 窄区可能被英雄武器动画扫过。没有右侧橙色材料卡轮廓时，
         # 橙色行只能算动画噪声，不能生成点击动作。
         if self._find_visible_material_card(screen) is None:
@@ -791,7 +734,7 @@ class HeroSynthStateMachine:
         *,
         region_override: tuple[int, int, int, int] | None = None,
     ) -> float:
-        if self.templates.pc_client or self.templates.sss_material is None:
+        if self.templates.sss_material is None:
             return -1.0
         start, end = row
         material_region = self._region("sss_material")
@@ -818,8 +761,6 @@ class HeroSynthStateMachine:
     def _classify_material_row(
         self, screen: np.ndarray, row: tuple[int, int]
     ) -> SafetyClass:
-        if self.templates.pc_client:
-            return SafetyClass.NON_SSS
         if self.templates.sss_material is None:
             return SafetyClass.UNKNOWN
         score = self._material_sss_score(screen, row)
@@ -942,8 +883,6 @@ class HeroSynthStateMachine:
         return low <= count <= high
 
     def _transmit_reward_present(self, screen: np.ndarray) -> bool:
-        if self.templates.pc_client:
-            return self._reward_strip_present(screen)
         if (
             self.templates.transmit_reward_title is None
             or self.templates.transmit_reward_close is None
@@ -1021,8 +960,6 @@ class HeroSynthStateMachine:
         screen: np.ndarray,
         card: tuple[int, int, str] | None,
     ) -> SafetyClass:
-        if self.templates.pc_client:
-            return SafetyClass.NON_SSS
         if card is None or self.templates.sss_material is None:
             return SafetyClass.UNKNOWN
         _, y, _ = card
@@ -1057,7 +994,7 @@ class HeroSynthStateMachine:
             best is not None and best.score >= self._button_struct_min
         ) or self._is_max_rating(screen) or self._red_dot_present(screen)
         return base_ready and (
-            self.templates.pc_client or self._detail_content_present(screen)
+            self._detail_content_present(screen)
         )
 
     def _observe_filter(self, screen: np.ndarray) -> FilterObservation:
@@ -1213,20 +1150,14 @@ class HeroSynthStateMachine:
         if back is None:
             return None
         # match.center 已是屏幕坐标，仅做箭头热区向左偏移
-        offset = self._point(self._BACK_OFFSET, self._PC_BACK_OFFSET)
+        offset = self._BACK_OFFSET
         point = (back.center[0] + offset[0], back.center[1] + offset[1])
         return HeroAction("back_to_list", point)
 
     # ---- 遍历决策 ----
 
     def _detail_fingerprint(self, screen: np.ndarray) -> str:
-        """模拟器用标题和选中卡列表确认确实翻到了下一张；PC 保持原指纹。"""
-        if self.templates.pc_client:
-            gray = self._zone_gray(screen, self._DETAIL_FP_ZONE)
-            gray = cv2.GaussianBlur(gray, (11, 11), 0)
-            small = cv2.resize(gray, (5, 3), interpolation=cv2.INTER_AREA)
-            return hashlib.sha1((small // 32).astype(np.uint8).tobytes()).hexdigest()[:8]
-
+        """用标题和选中卡列表确认确实翻到了下一张。"""
         parts = []
         for zone, size in (
             (self._SIMULATOR_DETAIL_FP_ZONE, (8, 3)),
@@ -1258,8 +1189,7 @@ class HeroSynthStateMachine:
         current_identity = self._active_card_observation
         self._previous_card_context = None
         if (
-            self.templates.pc_client
-            or previous_context is None
+            previous_context is None
             or previous_context[1] is not SafetyClass.SSS
             or previous_context[0] != current_identity
         ):
@@ -1279,8 +1209,7 @@ class HeroSynthStateMachine:
     def arm_adjacent_sss_context(self, action: HeroAction) -> None:
         """只在翻卡动态证据已确认后，记录刚离开的 SSS 卡。"""
         if (
-            self.templates.pc_client
-            or action.transition_kind != "card_change"
+            action.transition_kind != "card_change"
             or "当前英雄为SSS" not in action.reason
             or not action.source_observation
         ):
@@ -1333,27 +1262,22 @@ class HeroSynthStateMachine:
         return HeroAction(
             f"next_card_{sig}",
             self._scaled_point(
-                screen, self._point(self._NEXT_CARD_POINT, self._PC_NEXT_CARD_POINT)
+                screen, self._NEXT_CARD_POINT
             ),
-            source_page="" if self.templates.pc_client else "英雄列表",
-            target_pages=() if self.templates.pc_client else ("英雄列表",),
-            reason=(
-                ""
-                if self.templates.pc_client
-                else f"{skip_reason}，详情指纹={fp}，等待下一英雄或列表末尾"
-            ),
+            source_page="英雄列表",
+            target_pages=("英雄列表",),
+            reason=f"{skip_reason}，详情指纹={fp}，等待下一英雄或列表末尾",
             source_observation=(
-                "" if self.templates.pc_client else self._hero_identity_fingerprint(screen)
+                self._hero_identity_fingerprint(screen)
             ),
-            transition_kind="" if self.templates.pc_client else "card_change",
+            transition_kind="card_change",
         )
 
     # ---- 主决策 ----
 
     def next_action(self, screen: np.ndarray) -> Optional[HeroAction]:
         self._last_screen = screen
-        if not self.templates.pc_client:
-            self._confirmed_page = ""
+        self._confirmed_page = ""
         # 1. SSS 材料风险提示层必须先关闭，不能点击覆盖层下的按钮。
         warning_close = self._sss_material_warning_close(screen)
         if warning_close is not None:
@@ -1385,12 +1309,9 @@ class HeroSynthStateMachine:
             transmit_ctx = self._locate(screen, "auto_select_label") is not None
             if transmit_ctx or self.state.value.startswith("transmit"):
                 if (
-                    not self.templates.pc_client
-                    and (
-                        self.transmit_phase
-                        not in (TransmitPhase.SELECTING, TransmitPhase.CONFIRMING)
-                        or not self.transmit_continuity_intact
-                    )
+                    self.transmit_phase
+                    not in (TransmitPhase.SELECTING, TransmitPhase.CONFIRMING)
+                    or not self.transmit_continuity_intact
                 ):
                     return None
                 self._confirm_page("传送确认")
@@ -1468,7 +1389,7 @@ class HeroSynthStateMachine:
 
         # 5. 传送选择界面：四个锚点齐全才算真正进入。
         if self._locate(screen, "auto_select_label"):
-            if not self.templates.pc_client and (
+            if (
                 self.transmit_phase
                 not in (TransmitPhase.OPENING, TransmitPhase.SELECTING)
                 or self.transmit_target_observation is None
@@ -1525,7 +1446,6 @@ class HeroSynthStateMachine:
 
         if (
             self.state is HeroSynthState.IMPRINT_CONFIRM
-            and not self.templates.pc_client
             and self._back_action(screen) is not None
         ):
             raise UnrecognizedScreen("合成结果覆盖层未完整识别，禁止点击底层返回")
@@ -1535,10 +1455,7 @@ class HeroSynthStateMachine:
         complete_imprint_page = (
             green_button_present and self._imprint_slots_present(screen)
         )
-        if (
-            not self.templates.pc_client
-            and self.state is HeroSynthState.IMPRINT_REWARD
-        ):
+        if self.state is HeroSynthState.IMPRINT_REWARD:
             if complete_imprint_page:
                 self._confirm_page("合成后刻印页")
                 back = self._back_action(screen)
@@ -1560,10 +1477,7 @@ class HeroSynthStateMachine:
         material_page_class = SafetyClass.NON_SSS
         up = None
         if complete_imprint_page:
-            if (
-                not self.templates.pc_client
-                and self.state is HeroSynthState.HERO_LIST
-            ):
+            if self.state is HeroSynthState.HERO_LIST:
                 self.state = HeroSynthState.IMPRINT_ADD
             sss_material_present = self._sss_material_present(screen)
             if sss_material_present:
@@ -1623,14 +1537,13 @@ class HeroSynthStateMachine:
             self._imprint_empty_observations = 0
             return None
         if (
-            not self.templates.pc_client
-            and green_button_present
+            green_button_present
             and not complete_imprint_page
             and not imprint_abort_returned
         ):
             return None
         if green_button_present and (
-            self.templates.pc_client or complete_imprint_page
+            complete_imprint_page
         ):
             filled_slots = self._imprint_filled_slot_count(screen)
             if up is not None:
@@ -1687,15 +1600,11 @@ class HeroSynthStateMachine:
                     < self._READINESS_OBSERVATIONS
                 ):
                     return None
-                if self.templates.pc_client:
-                    self._imprint_empty_observations = 0
-                    self.state = HeroSynthState.IMPRINT_CONFIRM
-                else:
-                    self._imprint_empty_observations = self._READINESS_OBSERVATIONS
+                self._imprint_empty_observations = self._READINESS_OBSERVATIONS
                 return self._simulator_transition_action(
                     "start_synthesis",
                     self._scaled_point(
-                        screen, self._point(self._GREEN_BTN_POINT, self._PC_GREEN_BTN_POINT)
+                        screen, self._GREEN_BTN_POINT
                     ),
                     source_page="刻印加材料",
                     target_pages=("合成确认", "合成结果"),
@@ -1716,83 +1625,25 @@ class HeroSynthStateMachine:
         # 7. 筛选面板（级别标签为锚点）
         # 一次性入场：close_filter 后置 _filter_session_done=True，
         # 之后无论模板是否误识别 filter_level_label，都不再进此分支。
-        if not self.templates.pc_client:
-            handled, filter_action = self._next_simulator_filter_action(screen)
-            if handled:
-                return filter_action
-            if self._equipment_tab_selected(screen):
-                if (
-                    self._locate(screen, "filter_button") is None
-                    and not self._hero_list_ready(screen)
-                ):
-                    return None
-                self._confirm_page("英雄装备页")
-                return HeroAction(
-                    "select_hero_info_tab",
-                    self._scaled_point(screen, self._HERO_INFO_TAB_POINT),
-                    source_page="英雄装备页",
-                    target_pages=("英雄列表",),
-                    reason="英雄装备标签为蓝色选中，先切回英雄信息页再开始筛选",
-                )
-            if not self._hero_info_tab_selected(screen):
+        handled, filter_action = self._next_simulator_filter_action(screen)
+        if handled:
+            return filter_action
+        if self._equipment_tab_selected(screen):
+            if (
+                self._locate(screen, "filter_button") is None
+                and not self._hero_list_ready(screen)
+            ):
                 return None
-
-        filter_level = self._locate(screen, "filter_level_label")
-        star3_selected = self._locate(screen, "filter_star3_selected")
-        if (
-            self.templates.pc_client
-            and not self._filter_session_done
-            and self._awaiting_star3_confirmation
-        ):
-            self.state = HeroSynthState.FILTER
-            if star3_selected is not None:
-                self._awaiting_star3_confirmation = False
-                self.filter_verified = True
-                self._filter_session_done = True
-                return HeroAction(
-                    "close_filter",
-                    self._scaled_point(
-                        screen, self._point(self._FUNNEL_POINT, self._PC_FUNNEL_POINT)
-                    ),
-                )
-            if filter_level is None:
-                return None
+            self._confirm_page("英雄装备页")
             return HeroAction(
-                "select_star3",
-                self._scaled_point(
-                    screen, self._point(self._STAR3_POINT, self._PC_STAR3_POINT)
-                ),
+                "select_hero_info_tab",
+                self._scaled_point(screen, self._HERO_INFO_TAB_POINT),
+                source_page="英雄装备页",
+                target_pages=("英雄列表",),
+                reason="英雄装备标签为蓝色选中，先切回英雄信息页再开始筛选",
             )
-        if (
-            self.templates.pc_client
-            and not self._filter_session_done
-            and (filter_level or star3_selected)
-        ):
-            self.state = HeroSynthState.FILTER
-            if star3_selected is None:
-                self._awaiting_star3_confirmation = True
-                self.filter_verified = False
-                return HeroAction(
-                    "select_star3",
-                    self._scaled_point(
-                        screen, self._point(self._STAR3_POINT, self._PC_STAR3_POINT)
-                    ),
-                )
-            if not self.filter_verified:
-                # 首次确认星3已选，关闭筛选面板（一次性入场标志，关闭后永远不再进筛选分支）
-                self.filter_verified = True
-                self._filter_session_done = True
-                return HeroAction(
-                    "close_filter",
-                    self._scaled_point(
-                        screen, self._point(self._FUNNEL_POINT, self._PC_FUNNEL_POINT)
-                    ),
-                )
-            # filter_level_label 仍然匹配：toggle_filter 已发过，重复点击会让漏斗
-            # 切换回 open；不再相信筛选面板分支，直接落到英雄列表。
-            self._filter_session_done = True
-            self.filter_verified = False
-            self.state = HeroSynthState.HERO_LIST
+        if not self._hero_info_tab_selected(screen):
+            return None
 
         # 8. 英雄列表：评级是唯一决策依据（SSS 满级 → 跳过，否则看是否有红点）
         # 上一版靠"按钮灰/蓝颜色"和"上一张是不是 SSS"的双保险推断都被颜色变种击穿；
@@ -1833,7 +1684,7 @@ class HeroSynthStateMachine:
                 ),
                 source_observation=card_observation,
             )
-        if not self.templates.pc_client and self._hero_list_ready(screen):
+        if self._hero_list_ready(screen):
             self._active_card_observation = self._hero_identity_fingerprint(screen)
         struct_n = self._locate_button(screen, self._masked_normal, 0.0)
         struct_g = (
@@ -1852,13 +1703,9 @@ class HeroSynthStateMachine:
                 return HeroAction(
                     "open_filter",
                     self._scaled_point(
-                        screen, self._point(self._FUNNEL_POINT, self._PC_FUNNEL_POINT)
+                        screen, self._FUNNEL_POINT
                     ),
-                    source_observation=(
-                        self._hero_identity_fingerprint(screen)
-                        if not self.templates.pc_client
-                        else ""
-                    ),
+                    source_observation=self._hero_identity_fingerprint(screen),
                 )
             if hero_class is SafetyClass.SSS:
                 self.prev_card_grey = True
@@ -1868,28 +1715,14 @@ class HeroSynthStateMachine:
             if self._red_dot_present(screen):
                 self.prev_card_grey = False
                 self._previous_card_context = None
-                if self.templates.pc_client:
-                    self.state = HeroSynthState.IMPRINT_ADD
                 self._imprint_empty_observations = 0
                 return HeroAction(
                     "open_imprint",
                     best.center,
-                    source_page="" if self.templates.pc_client else "英雄列表",
-                    target_pages=(
-                        ()
-                        if self.templates.pc_client
-                        else ("刻印加材料", "刻印SSS材料")
-                    ),
-                    reason=(
-                        ""
-                        if self.templates.pc_client
-                        else "当前英雄非SSS且刻印按钮红点存在"
-                    ),
-                    source_observation=(
-                        self._hero_identity_fingerprint(screen)
-                        if not self.templates.pc_client
-                        else ""
-                    ),
+                    source_page="英雄列表",
+                    target_pages=("刻印加材料", "刻印SSS材料"),
+                    reason="当前英雄非SSS且刻印按钮红点存在",
+                    source_observation=self._hero_identity_fingerprint(screen),
                 )
             transmit = self._adjacent_sss_duplicate_transmit_action(screen)
             if transmit is not None:
@@ -1897,15 +1730,9 @@ class HeroSynthStateMachine:
             self.prev_card_grey = False
             return self._advance_or_finish(screen)
 
-        # 按钮结构匹配不上（视觉变种如绿色菱形）时，模拟器只接受明确
-        # 的 SSS/普通证据；未知帧停等。PC 保持原来的线索门槛。
-        if not self.templates.pc_client and not self._hero_list_ready(screen):
-            raise UnrecognizedScreen(
-                f"英雄合成画面[{state_label(self.state)}]未识别"
-            )
-        if self.templates.pc_client and not (
-            self._is_max_rating(screen) or self._red_dot_present(screen)
-        ):
+        # 按钮结构匹配不上（视觉变种如绿色菱形）时，只接受明确的 SSS/普通证据；
+        # 未知帧停等。
+        if not self._hero_list_ready(screen):
             raise UnrecognizedScreen(
                 f"英雄合成画面[{state_label(self.state)}]未识别"
             )
@@ -1915,13 +1742,9 @@ class HeroSynthStateMachine:
             return HeroAction(
                 "open_filter",
                 self._scaled_point(
-                    screen, self._point(self._FUNNEL_POINT, self._PC_FUNNEL_POINT)
+                    screen, self._FUNNEL_POINT
                 ),
-                source_observation=(
-                    self._detail_fingerprint(screen)
-                    if not self.templates.pc_client
-                    else ""
-                ),
+                source_observation=self._detail_fingerprint(screen),
             )
         if hero_class is SafetyClass.SSS:
             self.prev_card_grey = True
@@ -1934,33 +1757,14 @@ class HeroSynthStateMachine:
             return self._advance_or_finish(screen)
         self.prev_card_grey = False
         self._previous_card_context = None
-        if self.templates.pc_client:
-            self.state = HeroSynthState.IMPRINT_ADD
         self._imprint_empty_observations = 0
         return HeroAction(
             "open_imprint",
-            self._scaled_point(
-                screen,
-                self._point(
-                    self._IMPRINT_BUTTON_POINT, self._PC_IMPRINT_BUTTON_POINT
-                ),
-            ),
-            source_page="" if self.templates.pc_client else "英雄列表",
-            target_pages=(
-                ()
-                if self.templates.pc_client
-                else ("刻印加材料", "刻印SSS材料")
-            ),
-            reason=(
-                ""
-                if self.templates.pc_client
-                else "当前英雄非SSS且刻印按钮红点存在"
-            ),
-            source_observation=(
-                self._hero_identity_fingerprint(screen)
-                if not self.templates.pc_client
-                else ""
-            ),
+            self._scaled_point(screen, self._IMPRINT_BUTTON_POINT),
+            source_page="英雄列表",
+            target_pages=("刻印加材料", "刻印SSS材料"),
+            reason="当前英雄非SSS且刻印按钮红点存在",
+            source_observation=self._hero_identity_fingerprint(screen),
         )
 
     def preview(self, screen: np.ndarray):
@@ -2056,20 +1860,16 @@ class HeroSynthRunner(ModeRunnerBase):
             poll_seconds=poll_seconds,
             recovery_gate=recovery_gate,
         )
-        self._needs_navigation_settle = machine.templates.pc_client
+        self._needs_navigation_settle = False
         self._card_switch_motion_confirmed = False
         self._card_switch_motion_observer: CardSwitchMotionObserver | None = None
         self._last_imprint_abort_wait_log_at: float | None = None
         self._hero_subpage_wait_started_at: float | None = None
         self._last_hero_subpage_wait_log_at: float | None = None
-        # 本次安全策略只作用于模拟器；PC 保持既有未知画面唤醒行为。
-        if machine.templates.pc_client:
-            self._BLACK_SCREEN_TIMEOUT_SECONDS = None
-        self._ALLOW_UNKNOWN_SCREEN_WAKE = machine.templates.pc_client
+        # 本次安全策略只作用于模拟器。
+        self._ALLOW_UNKNOWN_SCREEN_WAKE = False
 
     def _is_black_screen(self, screen: np.ndarray) -> bool:
-        if self.machine.templates.pc_client:
-            return False
         render = screen[52:] if screen.shape[:2] == (1132, 1982) else screen
         gray = cv2.cvtColor(render, cv2.COLOR_RGB2GRAY)
         return float(gray.mean()) <= 8.0 and float((gray <= 12).mean()) >= 0.985
@@ -2078,7 +1878,7 @@ class HeroSynthRunner(ModeRunnerBase):
         return state_label(state)
 
     def _action_retry_seconds(self, action_name: str) -> float:
-        if not self.machine.templates.pc_client and action_name in self._FILTER_ACTIONS:
+        if action_name in self._FILTER_ACTIONS:
             return 5
         if action_name == "abort_imprint_to_transmit":
             return 12
@@ -2101,8 +1901,7 @@ class HeroSynthRunner(ModeRunnerBase):
             return super()._stable_next_action(self.runtime.capture(), stable)
         result = super()._stable_next_action(screen, stable)
         if (
-            not self.machine.templates.pc_client
-            and self.machine.state is HeroSynthState.HERO_LIST
+            self.machine.state is HeroSynthState.HERO_LIST
             and result is None
         ):
             self._log_hero_subpage_wait(screen)
@@ -2225,12 +2024,12 @@ class HeroSynthRunner(ModeRunnerBase):
         )
 
     def _is_instant_action(self, action_name: Optional[str]) -> bool:
-        return self.machine.templates.pc_client and action_name == "close_filter"
+        # 没有任何动作是「点完立刻生效」的：一律等两帧稳定。
+        return False
 
     def _stable_action_signature(self, preview_action: Any, outcome: Any) -> str:
         if (
-            not self.machine.templates.pc_client
-            and preview_action is not None
+            preview_action is not None
             and preview_action.name.startswith("next_card_")
         ):
             decision = (
@@ -2241,8 +2040,7 @@ class HeroSynthRunner(ModeRunnerBase):
                 f"{preview_action.source_observation}"
             )
         if (
-            not self.machine.templates.pc_client
-            and preview_action is not None
+            preview_action is not None
             and preview_action.source_page == "英雄列表"
             and preview_action.source_observation
         ):
@@ -2254,8 +2052,7 @@ class HeroSynthRunner(ModeRunnerBase):
 
     def _after_action_click(self, action: HeroAction) -> None:
         if (
-            self.machine.templates.pc_client
-            or action.transition_kind != "card_change"
+            action.transition_kind != "card_change"
             or self.machine._last_screen is None
         ):
             return

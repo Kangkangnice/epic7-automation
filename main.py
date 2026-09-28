@@ -21,6 +21,7 @@ from auto_game_unified.games.epic7.finish_home import _assert_finish_home_declar
 from auto_game_unified.games.epic7.public_flow_verification import (
     assert_public_flow_verification_declared,
 )
+from auto_game_unified.games.epic7.template_paths import resolve_template_dir
 from auto_game_unified.games.epic7.route_metadata import (
     assert_route_metadata_consistent,
 )
@@ -118,6 +119,12 @@ def _build_runtime(
     else:
         game_window = Epic7Window()
         game_window.activate()
+        if not dry_run:
+            # 实跑才需要点击通道。开跑前自检一次：模拟器重启后 host 侧 adb server
+            # 常还挂在旧连接上（设备 offline），此时画面看得见、点不动，
+            # 上层只会看到「点击验收无效」并把整条路线打挂。
+            # 自检发现不可用就用代码重建 adb 服务（2026-09-24 / 2026-09-28 各踩一次）。
+            game_window.ensure_input_channel()
     stop_hotkey = None if dry_run else WindowsPStopHotkey()
 
     def stop_requested() -> bool:
@@ -146,7 +153,7 @@ def _build_runtime(
             "目标=1920x1080 "
             f"调整后={calibration.after.width}x{calibration.after.height} "
             f"是否调整={'是' if calibration.adjusted else '否'} "
-            "识别画布=1982x1132 模板来源=共享模拟器模板"
+            "识别画布=1982x1132 模板来源=templates（PC 专属图优先，缺图回落共享图）"
         )
     return runtime
 
@@ -377,7 +384,6 @@ def run_mode(
     window_backend: str = "emulator",
     stop_file: Path | None = None,
 ) -> RunResult:
-    spec.validate_backend(window_backend)
     # 路线级的运行前闸门（比如「刷书签会真花钱，没实证过就不许实跑」）。
     # ⚠️ 必须留在建 runtime **之前**：闸门拦下的路线，不该先开一个窗口再报错。
     # 闸门本体与路线绑在 ``modes.MODE_SPECS`` 里，这里不认识任何具名路线。
@@ -391,11 +397,13 @@ def run_mode(
         window_backend=window_backend,
         stop_file=stop_file,
     )
-    template_root = ROOT / "games" / "epic7" / "templates"
-    # 先把状态机建好：接力探针要用它的锚点去认画面（只认，不点）。
-    machine: Any = spec.build_machine(
-        template_root, start_state, window_backend
+    # ⚠️ 平台差异只在最上游注入一次：往下所有 ``template_root / "story"`` 之类
+    # 得到的都是同一个「会按平台挑图」的目录，业务代码不需要知道平台的存在。
+    template_root = resolve_template_dir(
+        ROOT / "games" / "epic7" / "templates", window_backend
     )
+    # 先把状态机建好：接力探针要用它的锚点去认画面（只认，不点）。
+    machine: Any = spec.build_machine(template_root, start_state)
     navigator = None
     home_return = None
     if not dry_run:
@@ -426,7 +434,7 @@ def run_mode(
             navigator = Epic7Navigator(
                 build_navigation_templates(template_root),
                 runtime,
-                backend=window_backend,
+                template_root=template_root,
             )
             # 「回大厅」走新流程还是老流程，由这一个对象说了算（口径见 HomeReturn）。
             home_return = HomeReturn(navigator, runtime, mode=spec.name)
@@ -577,11 +585,13 @@ def _build_daily_probe(
         window_backend=window_backend,
         stop_file=stop_file,
     )
-    template_root = ROOT / "games" / "epic7" / "templates"
+    template_root = resolve_template_dir(
+        ROOT / "games" / "epic7" / "templates", window_backend
+    )
     navigator = Epic7Navigator(
         build_navigation_templates(template_root),
         runtime,
-        backend=window_backend,
+        template_root=template_root,
     )
     return runtime, navigator
 
@@ -682,10 +692,6 @@ def main(argv: list[str] | None = None) -> int:
     if args.live and args.start_state is not None:
         raise SystemExit("--start-state 仅在空跑诊断模式可用")
     spec = get_mode(args.mode)
-    try:
-        spec.validate_backend(args.window_backend)
-    except ValueError as error:
-        raise SystemExit(str(error)) from error
     try:
         start_state = spec.resolve_state(args.start_state)
     except ValueError as error:

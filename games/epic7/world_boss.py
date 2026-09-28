@@ -217,6 +217,7 @@ from auto_game_unified.games.epic7.stamina import (
     next_stamina_decision,
 )
 from auto_game_unified.games.epic7.unknown_screen import UnrecognizedScreen
+from auto_game_unified.games.epic7.template_paths import is_template_root
 
 
 class AttemptsExhausted(ResourceExhausted):
@@ -636,11 +637,7 @@ class WorldBossTemplates:
     evidence: object = None
 
 
-def build_world_boss_templates(
-    template_dir: Path,
-    *,
-    backend: str = "emulator",
-) -> WorldBossTemplates:
+def build_world_boss_templates(template_dir: Path) -> WorldBossTemplates:
     template_root = template_dir.parent
 
     def load(name: str) -> np.ndarray:
@@ -698,12 +695,10 @@ class WorldBossStateMachine:
         templates: WorldBossTemplates | Path,
         *,
         initial_state: WorldBossState = WorldBossState.HOME,
-        backend: str = "emulator",
     ) -> None:
-        self.backend = backend
         self.templates = (
-            build_world_boss_templates(templates, backend=backend)
-            if isinstance(templates, Path)
+            build_world_boss_templates(templates)
+            if is_template_root(templates)
             else templates
         )
         self.state = initial_state

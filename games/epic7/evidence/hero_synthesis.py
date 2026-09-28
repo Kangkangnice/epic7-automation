@@ -47,26 +47,8 @@ THRESHOLDS = {
     "transmit_reward_close": 0.92,
 }
 
-PC_THRESHOLD_OVERRIDES = {
-    "filter_button": 0.70,
-    "filter_level_label": 0.65,
-    "filter_attribute_label": 0.65,
-    "filter_star3_selected": 0.80,
-    "filter_star3_unselected": 0.76,
-    "auto_select_label": 0.65,
-    "story_back": 0.80,
-    "sss_material_warning_title": 0.72,
-    "sss_material_warning_close": 0.72,
-    "imprint_result_title": 0.72,
-    "imprint_result_close": 0.68,
-    "transmit_reward_title": 0.80,
-    "transmit_reward_close": 0.70,
-}
-
 DEFAULT_THRESHOLD = 0.80
-PC_DEFAULT_THRESHOLD = 0.70
 FILTER_ATTRIBUTE_SMALL_THRESHOLD = 0.75
-PC_FILTER_ATTRIBUTE_SMALL_THRESHOLD = 0.65
 
 _TEMPLATE_PATHS = {
     "filter_button": "hero/filter_button.png",
@@ -106,22 +88,13 @@ _OPTIONAL_TEMPLATES = {
 }
 
 
-def thresholds_for(backend: str) -> dict[str, float]:
-    thresholds = dict(THRESHOLDS)
-    if backend == "pc":
-        thresholds.update(PC_THRESHOLD_OVERRIDES)
-    return thresholds
+def build_hero_evidence(template_root: Path) -> EvidenceProfile:
+    """英雄合成证据画像。
 
-
-def build_hero_evidence(
-    template_root: Path,
-    *,
-    backend: str = "emulator",
-) -> EvidenceProfile:
-    thresholds = thresholds_for(backend)
-    default_threshold = (
-        PC_DEFAULT_THRESHOLD if backend == "pc" else DEFAULT_THRESHOLD
-    )
+    ⚠️ 阈值只有模拟器基线一套；平台差异收敛到图片（``templates/hero/pc/*.png``）。
+    """
+    thresholds = THRESHOLDS
+    default_threshold = DEFAULT_THRESHOLD
     atoms: dict[str, AtomEvidence] = {}
     for key, relative_path in _TEMPLATE_PATHS.items():
         region_key = _REGION_FOR_TEMPLATE.get(key, key)

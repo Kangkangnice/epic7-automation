@@ -258,7 +258,7 @@ class RouteSpecialCaseTests(unittest.TestCase):
             "def run_mode(spec, dry_run):\n"
             '    runtime.log(f"模式={spec.name}")\n'
             "    runtime.save_diagnostic(f\"enter_mode_failed_{spec.name}\")\n"
-            "    spec.validate_backend('emulator')\n"
+            "    spec.resolve_state(args.start_state)\n"
             "    spec.name.upper()\n"
         )
         self.assertEqual([], self._scan(source))

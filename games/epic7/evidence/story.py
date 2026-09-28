@@ -48,21 +48,7 @@ THRESHOLDS = {
     "select_team": 0.75,
 }
 
-PC_THRESHOLD_OVERRIDES = {
-    # PC 客户端的文字渲染与模拟器不同；平台覆盖不得改写模拟器基线。
-    "watch_story": 0.70,
-    "prepare_battle": 0.80,
-    "skip": 0.55,
-    "skip_confirm": 0.70,
-    "battle_guide_title": 0.75,
-    "battle_guide_dont_show": 0.75,
-    "auto_off": 0.70,
-    "auto_on": 0.70,
-    "select_team": 0.65,
-}
-
 DEFAULT_THRESHOLD = 0.80
-PC_DEFAULT_THRESHOLD = 0.70
 
 _TEMPLATE_NAMES = (
     "battle_guide_title",
@@ -91,22 +77,15 @@ _TEMPLATE_NAMES = (
 _OPTIONAL_TEMPLATES = {"stamina_popup", "stamina_material", "stamina_confirm"}
 
 
-def thresholds_for(backend: str) -> dict[str, float]:
-    thresholds = dict(THRESHOLDS)
-    if backend == "pc":
-        thresholds.update(PC_THRESHOLD_OVERRIDES)
-    return thresholds
+def build_story_evidence(template_dir: Path) -> EvidenceProfile:
+    """主线证据画像。
 
-
-def build_story_evidence(
-    template_dir: Path,
-    *,
-    backend: str = "emulator",
-) -> EvidenceProfile:
-    thresholds = thresholds_for(backend)
-    default_threshold = (
-        PC_DEFAULT_THRESHOLD if backend == "pc" else DEFAULT_THRESHOLD
-    )
+    ⚠️ 这里**只有一套阈值**，就是模拟器基线。以前有一张 `PC_THRESHOLD_OVERRIDES`
+    给 PC 客户端单独降阈值，那是「拿模拟器的图去认 PC 的按钮」导致的补丁；
+    现在平台差异收敛到图片本身（`templates/story/pc/*.png`），阈值不再分平台。
+    """
+    thresholds = THRESHOLDS
+    default_threshold = DEFAULT_THRESHOLD
     atoms = {
         name: AtomEvidence(
             key=name,

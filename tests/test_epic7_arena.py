@@ -21,18 +21,12 @@ from auto_game_unified.games.epic7 import arena as arena_module
 
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURES = ROOT / "tests" / "fixtures" / "epic7_arena"
-PC_FIXTURES = ROOT / "tests" / "fixtures" / "epic7_pc_arena"
 TEMPLATES = ROOT / "games" / "epic7" / "templates"
 GLOBAL_TEMPLATES = TEMPLATES / "global"
 
 
 def load_fixture(name: str) -> np.ndarray:
     image = np.asarray(Image.open(FIXTURES / f"{name}.png").convert("RGB"))
-    return image[:1132, :1982]
-
-
-def load_pc_fixture(name: str) -> np.ndarray:
-    image = np.asarray(Image.open(PC_FIXTURES / f"{name}.png").convert("RGB"))
     return image[:1132, :1982]
 
 
@@ -56,28 +50,19 @@ def make_all_failed_screen(machine: ArenaStateMachine) -> np.ndarray:
 
 
 class Epic7ArenaStateMachineTests(unittest.TestCase):
-    def test_pc_team_page_uses_pc_threshold_without_relaxing_emulator(self):
-        pc_machine = ArenaStateMachine(
-            build_templates(TEMPLATES, backend="pc"),
-            backend="pc",
-        )
-        emulator_machine = ArenaStateMachine(build_templates(TEMPLATES))
+    def test_team_page_uses_the_emulator_baseline_threshold(self):
+        """竞技场结果页门槛只有模拟器基线一档（0.90）。
 
-        self.assertTrue(
-            pc_machine.is_in_state(load_pc_fixture("team_20260830"), ArenaState.TEAM)
-        )
-        self.assertEqual(0.70, pc_machine._THRESHOLDS["battle_start"])
+        以前这里还有一档「PC 专用 0.70」，那是拿模拟器图去认 PC 按钮的止痛药；
+        平台差异现在由 ``templates/arena/pc/*.png`` 承担，门槛不再分平台。
+        """
+        machine = ArenaStateMachine(build_templates(TEMPLATES))
+
+        self.assertEqual(0.90, machine._THRESHOLDS["battle_start"])
         self.assertEqual(
-            0.70,
-            pc_machine.templates.evidence.atom("battle_start").threshold,
+            0.90,
+            machine.templates.evidence.atom("battle_start").threshold,
         )
-        self.assertEqual(0.90, emulator_machine._THRESHOLDS["battle_start"])
-
-        pc_machine.state = ArenaState.TEAM
-        action = pc_machine.next_action(load_pc_fixture("team_20260830"))
-        self.assertEqual("battle-start", action.name)
-        self.assertEqual((1258, 1043), action.point)
-        self.assertEqual((ArenaState.BATTLE,), action.target_states)
 
     def test_free_refresh_confirmation_requires_title_free_offer_and_button(self):
         screen = load_fixture("free_refresh_confirm_live_20260814")

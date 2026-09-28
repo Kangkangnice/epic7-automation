@@ -1,3 +1,13 @@
+"""PC 客户端与模拟器共用一套模板：页面判定与坐标几何都不许按平台分叉。
+
+⚠️ 2026-09-28：竞技场列表那两条 PC 用例**已删除**。它们当初能过，靠的是
+「PC 专用门槛表」（list_ready 0.75 而不是模拟器基线的 0.88）—— 实测那张 PC
+帧在模拟器基线下只有 <0.88，也就是说**它不是靠共享图认出来的，是靠放水**。
+门槛表删掉之后这两条必然红，留着只会骗人。将来真要做 PC 竞技场，往
+``games/epic7/templates/arena/pc/`` 放 PC 截图即可（机制见
+``games/epic7/template_paths.py``），那时再把这两条用例加回来。
+"""
+
 import inspect
 from pathlib import Path
 
@@ -21,13 +31,6 @@ FIXTURE = (
     / "epic7_pc_navigation"
     / "lobby_1920x1080.png"
 )
-ARENA_LIST_FIXTURE = (
-    ROOT
-    / "tests"
-    / "fixtures"
-    / "epic7_pc_navigation"
-    / "arena_list_legacy_20260830.png"
-)
 
 
 def _load_raw_pc_lobby() -> np.ndarray:
@@ -40,7 +43,6 @@ def _navigator(screen: np.ndarray) -> Epic7Navigator:
     return Epic7Navigator(
         build_navigation_templates(SHARED_TEMPLATES),
         Runtime(lambda: screen, lambda _point: None),
-        backend="pc",
     )
 
 
@@ -51,43 +53,6 @@ def test_real_pc_lobby_is_recognized_with_shared_emulator_templates():
 
     assert observation.name == "lobby"
     assert observation.confidence >= 0.82
-
-
-def test_real_pc_arena_list_confirms_navigation_destination():
-    image = cv2.imread(str(ARENA_LIST_FIXTURE), cv2.IMREAD_COLOR)
-    assert image is not None
-    screen = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-
-    observation = _navigator(screen).observe(screen)
-
-    assert observation.name == "arena_ready"
-    assert observation.confidence >= 0.75
-
-
-def test_real_pc_arena_navigation_reaches_the_recorded_list_without_wake_clicks():
-    lobby = Epic7PcWindow._legacy_canvas(_load_raw_pc_lobby())
-    arena_mode_bgr = cv2.imread(
-        str(ROOT / "tests" / "fixtures" / "epic7_navigation" / "arena_mode.png"),
-        cv2.IMREAD_COLOR,
-    )
-    arena_list_bgr = cv2.imread(str(ARENA_LIST_FIXTURE), cv2.IMREAD_COLOR)
-    assert arena_mode_bgr is not None
-    assert arena_list_bgr is not None
-    arena_mode = cv2.cvtColor(arena_mode_bgr, cv2.COLOR_BGR2RGB)
-    arena_list = cv2.cvtColor(arena_list_bgr, cv2.COLOR_BGR2RGB)
-    screens = iter((arena_mode, arena_mode, arena_list, arena_list))
-    clicks: list[tuple[int, int]] = []
-    navigator = Epic7Navigator(
-        build_navigation_templates(SHARED_TEMPLATES),
-        Runtime(lambda: next(screens), clicks.append),
-        backend="pc",
-        sleep=lambda _seconds: None,
-        transition_frames=4,
-    )
-
-    navigator.navigate("arena", lobby_screen=lobby)
-
-    assert clicks == [(1793, 636), (710, 995)]
 
 
 def test_navigation_builder_has_no_legacy_pc_directory_switch():

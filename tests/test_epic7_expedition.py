@@ -22,15 +22,14 @@ SIZE = (1132, 1982, 3)
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_expedition_pc_profile_keeps_emulator_thresholds_without_evidence_override():
+def test_expedition_profile_declares_current_thresholds():
+    """远征门槛只有一档（模拟器基线）—— 以前这里还对比过一份「PC 同样值」的
+    证据档案，用来证明 PC 没被门槛表放松。门槛表删掉之后，那份对比也没了。"""
     template_dir = ROOT / "games" / "epic7" / "templates" / "expedition"
-    emulator = build_expedition_evidence(template_dir)
-    pc = build_expedition_evidence(template_dir, backend="pc")
+    profile = build_expedition_evidence(template_dir)
 
-    assert emulator.atom("campfire_idle").threshold == 0.82
-    assert pc.atom("campfire_idle").threshold == 0.82
-    assert emulator.atom("battle_start").threshold == 0.88
-    assert pc.atom("battle_start").threshold == 0.88
+    assert profile.atom("campfire_idle").threshold == 0.82
+    assert profile.atom("battle_start").threshold == 0.88
 
 
 def pattern(seed: int) -> np.ndarray:

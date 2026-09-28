@@ -208,9 +208,6 @@ THRESHOLDS = {key: DEFAULT_THRESHOLD for key in REGIONS}
 # 抬到 0.85 让两页这层更干净。
 THRESHOLDS["labyrinth_entry"] = 0.85
 
-# 没有 PC 客户端的实测数据，就不编一个覆盖值：统一用上表。
-PC_THRESHOLD_OVERRIDES: dict[str, float] = {}
-
 _TEMPLATE_PATHS = {key: f"{key}.png" for key in REGIONS}
 
 # 页面键 -> 判定顺序（**顺序即意图**）。下面几条是刻意的：

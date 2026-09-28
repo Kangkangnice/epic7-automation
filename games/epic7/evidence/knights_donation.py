@@ -252,9 +252,6 @@ THRESHOLDS["panel_title"] = 0.85
 THRESHOLDS["flower_cell"] = 0.88
 THRESHOLDS["flower_cell_selected"] = 0.85
 
-# 没有 PC 客户端的实测数据，就不编一个覆盖值：统一用上表。
-PC_THRESHOLD_OVERRIDES: dict[str, float] = {}
-
 _TEMPLATE_PATHS = {key: f"{key}.png" for key in REGIONS}
 
 _PAGES = (

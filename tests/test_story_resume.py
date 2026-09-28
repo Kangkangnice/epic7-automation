@@ -133,7 +133,7 @@ def navigation_fixture(name: str) -> np.ndarray:
 
 def new_machine() -> StoryStateMachine:
     return StoryStateMachine(
-        build_story_templates(STORY_TEMPLATES, backend="emulator")
+        build_story_templates(STORY_TEMPLATES)
     )
 
 
