@@ -68,6 +68,7 @@ class WorkerController:
         self._last_output = "-"
         self._recent_output: deque[str] = deque(maxlen=50)
         self._stop_requested = False
+        self._force_stopped = False
         self._request: RunRequest | None = None
 
     @property
@@ -92,6 +93,7 @@ class WorkerController:
         self._last_output = "-"
         self._recent_output.clear()
         self._stop_requested = False
+        self._force_stopped = False
         self._request = request
         if request.is_daily:
             # 每日任务：界面上不传 --max-cycles，每条的次数写在 --daily-tasks 里
@@ -183,6 +185,40 @@ class WorkerController:
         )
         self._events.put(WorkerEvent("stopping", "正在安全停止"))
 
+    def force_stop(self) -> bool:
+        """**强行**结束工作进程 —— 停止信号喊不动时的兜底，不是常规路径。
+
+        只有一种情况会走到这里：工作进程卡在**某次底层调用的内部**，永远轮不到
+        「动作之间查停止信号」那一步（2026-09-28 实机取证：`epic7_world_boss.log`
+        停在 `执行点击 动作=进入骑士团`、进程 CPU 差值为 0、`stop.signal` 已写出）。
+        那时界面会一直等，而它永远不会自己退 —— 只能直接结束它。
+
+        ⚠️ **不等它收尾**：卡住的进程不可能再自己退出，也别指望 ``事件=结束``
+        一定会写出来（读输出的线程可能正卡在那条阻塞的管道上）。
+        ⇒ 所以调用方必须**自己**把界面状态收回来，不能等 ``finished`` 事件。
+
+        ⚠️ 它派生的孙进程（``ldconsole.exe`` 拉起的 ``adb.exe``）**不会跟着结束**，
+        会变成孤儿挂着；这不影响界面解锁，也不影响下次运行。
+
+        返回是否真的结束了进程（没在跑就返回 ``False``）。
+        """
+        if not self.running:
+            return False
+        process = self._process
+        assert process is not None
+        pid = getattr(process, "pid", "-")
+        # 标记要在 kill **之前**设：读输出的线程会在子进程一死就被唤醒，它靠这个标记
+        # 把「被强行结束」和自己的退出码区分开（见 ``_read_output``）。
+        self._force_stopped = True
+        try:
+            process.kill()
+        except OSError as error:
+            self._force_stopped = False
+            self._write_evidence(f"事件=强行结束失败 PID={pid} 原因={error}")
+            return False
+        self._write_evidence(f"事件=强行结束 PID={pid}")
+        return True
+
     def drain_events(self) -> list[WorkerEvent]:
         events: list[WorkerEvent] = []
         while True:
@@ -212,10 +248,16 @@ class WorkerController:
                 2: "资源耗尽",
                 130: "用户停止",
             }
-            message = messages.get(
-                exit_code,
-                f"工作进程异常结束（退出码 {exit_code}）",
-            )
+            if self._force_stopped:
+                # 强行结束走的是 TerminateProcess，退出码是 **1** —— 与「运行失败」同码。
+                # 不看这个标记就会把「用户点了停止、助手替它收尾」报成「运行失败」，
+                # 跟界面上的「已强行结束」自相矛盾。
+                message = "已强行结束"
+            else:
+                message = messages.get(
+                    exit_code,
+                    f"工作进程异常结束（退出码 {exit_code}）",
+                )
             snapshot = self._snapshot_current_frame(exit_code)
             if exit_code not in {0, 2, 130}:
                 for output in self._recent_output:
@@ -227,6 +269,7 @@ class WorkerController:
                 f"事件=结束 PID={getattr(self._process, 'pid', '-')} "
                 f"退出码={exit_code} "
                 f"停止请求={'是' if self._stop_requested else '否'} "
+                f"强行结束={'是' if self._force_stopped else '否'} "
                 f"最后输出={self._last_output} "
                 f"现场={snapshot if snapshot is not None else '-'}"
             )

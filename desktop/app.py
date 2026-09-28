@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 import threading
+import time
 import tkinter as tk
 from tkinter import filedialog, messagebox, scrolledtext, ttk
 from typing import Callable
@@ -46,6 +47,16 @@ BACKEND_LABELS = {
     "emulator": "模拟器（雷电）",
     "pc": "PC 客户端",
 }
+# 点了「安全停止」之后的宽限期：过了还不退，就强行结束这个卡住的运行。
+#
+# 依据（2026-08-31 ~ 2026-09-28 的 ``desktop_worker.log``）：88 次正常停止**全部**
+# 在 1~2 秒内以退出码 130 结束，只有 2 次「停止请求之后没有任何结束」——都是运行卡在
+# 一次底层调用里（见 ``docs/TROUBLESHOOTING.md``）。所以 30 秒 = 正常路径的十几倍。
+# ⚠️ **别调小**：万一停止正好落在一次**正常收尾**的动作里，强行结束会让它跳过回家流程
+# （游戏停在半路）。宁可多等，也不误杀。
+STOP_GRACE_SECONDS = 30.0
+# 宽限期内的轮询间隔 —— 只决定「多久发现它其实已经退了」，不是超时精度。
+STOP_POLL_SECONDS = 0.5
 
 
 def fit_window_size(
@@ -217,6 +228,9 @@ class DesktopApp:
         preflight_runner: Callable[..., PreflightReport] = run_preflight,
         route_validator: Callable[[str, Path], None] = validate_route_templates,
         thread_factory: Callable[..., threading.Thread] = threading.Thread,
+        stop_grace_seconds: float = STOP_GRACE_SECONDS,
+        clock: Callable[[], float] = time.monotonic,
+        sleep: Callable[[float], None] = time.sleep,
     ) -> None:
         self.root = root
         self.controller = controller
@@ -225,6 +239,12 @@ class DesktopApp:
         self._preflight_runner = preflight_runner
         self._route_validator = route_validator
         self._thread_factory = thread_factory
+        self._stop_grace_seconds = stop_grace_seconds
+        self._clock = clock
+        self._sleep = sleep
+        # 第几次「开始运行」。停止兜底带着它一起等：等完之后这个号变了，就说明用户
+        # 已经开了新的一次运行，兜底必须**放弃**，绝不能误杀新进程。
+        self._run_generation = 0
         self._route_buttons: list[ttk.Radiobutton] = []
         self._backend_buttons: list[ttk.Radiobutton] = []
         self._daily_buttons: list[ttk.Checkbutton] = []
@@ -618,6 +638,7 @@ class DesktopApp:
             messagebox.showerror("无法开始", str(error), parent=self.root)
             self._refresh_controls()
             return
+        self._run_generation += 1
         labels = dict(daily_items())
         self._append_log(
             "开始每日任务："
@@ -762,6 +783,7 @@ class DesktopApp:
             messagebox.showerror("无法开始", str(error), parent=self.root)
             self._refresh_controls()
             return
+        self._run_generation += 1
         self._append_log(
             f"开始运行：{self.controller.route.label}，次数={self.controller.cycles}"
         )
@@ -771,6 +793,64 @@ class DesktopApp:
         self.controller.stop()
         self._append_log("已请求安全停止，等待当前检查点退出……")
         self.stop_button.configure(state=tk.DISABLED)
+        self._arm_force_stop_watchdog()
+
+    def _arm_force_stop_watchdog(self) -> None:
+        """点过「安全停止」之后再加一道兜底：宽限期内不退就强行结束。
+
+        为什么必须有（2026-09-28 实机取证）：停止是「在两次动作**之间**查一次信号
+        文件」，而工作进程有可能**卡在一次底层调用的内部**（等一次点击的回执）——
+        卡在里面就永远轮不到下一次检查，信号写了也白写。原先这里只做「写信号 ＋
+        把按钮变灰」，没有第二手，界面就只能一直等下去。
+        ⚠️ 它**在后台线程里等**，不会冻住界面；时间来源是注入的，测试里不用真等。
+        """
+        generation = self._run_generation
+
+        def watch() -> None:
+            self._watch_stop(generation)
+
+        self._thread_factory(
+            target=watch,
+            name="epic7-stop-watchdog",
+            daemon=True,
+        ).start()
+
+    def _watch_stop(self, generation: int) -> None:
+        if self._wait_for_exit(self._stop_grace_seconds):
+            return
+        if generation != self._run_generation:
+            return
+        # 收界面状态必须回主线程（Tk 不是线程安全的）。
+        self.root.after(0, self._force_stop_worker)
+
+    def _wait_for_exit(self, timeout: float) -> bool:
+        """等它自己退出：等到了返回 ``True``，超时还没退返回 ``False``。"""
+        deadline = self._clock() + timeout
+        while True:
+            if not self.controller.worker.running:
+                return True
+            if self._clock() >= deadline:
+                return False
+            self._sleep(STOP_POLL_SECONDS)
+
+    def _force_stop_worker(self) -> None:
+        if not self.controller.worker.running:
+            return
+        seconds = self._stop_grace_seconds
+        if self.controller.worker.force_stop():
+            self._append_log(
+                f"等待 {seconds:.0f} 秒仍无响应，已强行结束这个卡住的运行。"
+                "它卡在一次底层调用里读不到停止信号，这次走不完回家流程，"
+                "游戏可能停在半路；重新开始前请先确认模拟器运行正常。"
+            )
+        else:
+            self._append_log(
+                f"等待 {seconds:.0f} 秒仍无响应，并且无法结束这个运行；"
+                "请在任务管理器中手动结束助手进程。"
+            )
+        # 强行结束时读输出的线程可能还卡在那条阻塞的管道上（``事件=结束`` 不会来），
+        # 所以这里必须自己把按钮状态收回来，不能等 ``finished`` 事件。
+        self._refresh_controls()
 
     def _poll_worker(self) -> None:
         for event in self.controller.drain_events():

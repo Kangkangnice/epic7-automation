@@ -15,6 +15,7 @@ class FakeWorker:
         self.running = False
         self.request = None
         self.stopped = False
+        self.force_stopped = False
 
     def start(self, request):
         self.request = request
@@ -23,8 +24,26 @@ class FakeWorker:
     def request_stop(self):
         self.stopped = True
 
+    def force_stop(self):
+        self.force_stopped = True
+        self.running = False
+        return True
+
     def drain_events(self):
         return []
+
+
+class FakeClock:
+    """假时钟：``sleep`` 直接把时间往前推，测试里不用真的等满宽限期。"""
+
+    def __init__(self):
+        self.now = 0.0
+
+    def __call__(self):
+        return self.now
+
+    def sleep(self, seconds):
+        self.now += seconds
 
 
 class ImmediateThread:
@@ -694,3 +713,100 @@ def test_declining_experimental_warning_does_not_start_daily(tmp_path, tk_window
     tk_window.update()
 
     assert worker.request is None
+
+
+# --------------------------------------------------------------------------
+# 「安全停止」的第二手兜底
+# --------------------------------------------------------------------------
+
+
+def test_stop_grace_is_orders_of_magnitude_above_a_normal_stop():
+    """正常停止实测 1~2 秒（8-31~9-28 共 88 次退出码 130 的日志）⇒ 要留足余量；
+    但也不能长到用户以为界面又卡住了。"""
+    assert 10 <= app_module.STOP_GRACE_SECONDS <= 60
+
+
+def test_stop_forces_the_worker_off_when_it_never_exits(tmp_path, tk_window):
+    """2026-09-28 实机：卡住的运行读不到停止信号 ⇒ 干等没用，必须强行结束。
+
+    「安全停止」写下的信号要等**两次动作之间**才被读到；卡在一次底层调用内部的进程
+    永远轮不到那一步。这条钉住「等满宽限期就真的强行结束」。
+    """
+    worker = FakeWorker()
+    worker.running = True
+    clock = FakeClock()
+    app = DesktopApp(
+        tk_window,
+        controller=DesktopController(worker=worker),
+        project_root=tmp_path,
+        thread_factory=ImmediateThread,
+        clock=clock,
+        sleep=clock.sleep,
+        stop_grace_seconds=30.0,
+    )
+
+    app._stop()
+    tk_window.update()
+
+    assert worker.stopped is True
+    assert worker.force_stopped is True
+    assert clock.now >= 30.0, "必须等满宽限期才动手"
+    assert "强行结束" in app.log_text.get("1.0", tk.END)
+
+
+def test_stop_leaves_a_worker_that_exits_within_the_grace_period_alone(
+    tmp_path, tk_window
+):
+    """平时那 88 次：1~2 秒就退 ⇒ 绝不能把它也强行结束（会跳过回家流程）。"""
+    worker = FakeWorker()
+    worker.running = True
+    clock = FakeClock()
+
+    def sleep(seconds):
+        clock.sleep(seconds)
+        worker.running = False
+
+    app = DesktopApp(
+        tk_window,
+        controller=DesktopController(worker=worker),
+        project_root=tmp_path,
+        thread_factory=ImmediateThread,
+        clock=clock,
+        sleep=sleep,
+        stop_grace_seconds=30.0,
+    )
+
+    app._stop()
+    tk_window.update()
+
+    assert worker.force_stopped is False
+    assert clock.now < 30.0
+    assert "强行结束" not in app.log_text.get("1.0", tk.END)
+
+
+def test_the_window_is_usable_again_after_a_forced_kill(tmp_path, tk_window):
+    """强行结束的全部价值就在这里：界面必须**立刻**能继续用。
+
+    卡死时读输出的线程还挂在阻塞的管道上，``finished`` 事件永远不会来 ⇒
+    「重新可用」不能依赖那条事件，只能自己把状态收回来。
+    """
+    worker = FakeWorker()
+    worker.running = True
+    clock = FakeClock()
+    controller = DesktopController(worker=worker)
+    controller.apply_preflight(passed_preflight())
+    app = DesktopApp(
+        tk_window,
+        controller=controller,
+        project_root=tmp_path,
+        thread_factory=ImmediateThread,
+        clock=clock,
+        sleep=clock.sleep,
+    )
+    tk_window.update_idletasks()
+
+    app._stop()
+    tk_window.update()
+
+    assert str(app.stop_button.cget("state")) == "disabled"
+    assert str(app.start_button.cget("state")) == "normal"
