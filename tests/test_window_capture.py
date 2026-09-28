@@ -373,6 +373,110 @@ class WindowViewportTests(unittest.TestCase):
         ):
             game._send_render_tap((1790, 274))
 
+    def test_input_channel_probe_accepts_a_healthy_channel(self):
+        """通道本来就通时只探一次，绝不能顺手去 kill/start adb 服务。"""
+        game = Epic7Window()
+        calls: list[list[str]] = []
+
+        def run(args, **_kwargs):
+            calls.append(list(args))
+            return subprocess.CompletedProcess(
+                args=[], returncode=0, stdout=b"ping\n", stderr=b""
+            )
+
+        with (
+            patch.object(
+                game,
+                "_instance_channel",
+                return_value=(Path("D:/epic7/ldconsole.exe"), "0", 456),
+            ),
+            patch("auto_game_unified.core.window.subprocess.run", side_effect=run),
+            patch("auto_game_unified.core.window.sleep"),
+        ):
+            game.ensure_input_channel()
+
+        self.assertEqual(
+            [
+                [
+                    "D:\\epic7\\ldconsole.exe",
+                    "adb",
+                    "--index",
+                    "0",
+                    "--command",
+                    "shell echo ping",
+                ]
+            ],
+            calls,
+        )
+
+    def test_input_channel_rebuilds_adb_when_the_device_is_offline(self):
+        """设备 offline 时 `ldconsole` 的退出码仍是 0，失败只写在输出里。
+
+        自检必须①认得这种失败 ②用 `adb kill-server` → `start-server` 重建
+        ③**重建之后再探一次**，而不是修完就假定好了。
+        （2026-09-24、2026-09-28 两次实机都是这两条命令一步到位。）
+        """
+        game = Epic7Window()
+        calls: list[list[str]] = []
+        probes = [b"adb.exe: device offline\n", b"ping\n"]
+
+        def run(args, **_kwargs):
+            calls.append(list(args))
+            if "--command" in args:
+                return subprocess.CompletedProcess(
+                    args=[], returncode=0, stdout=probes.pop(0), stderr=b""
+                )
+            return subprocess.CompletedProcess(
+                args=[], returncode=0, stdout=b"", stderr=b""
+            )
+
+        with (
+            patch.object(
+                game,
+                "_instance_channel",
+                return_value=(Path("D:/epic7/ldconsole.exe"), "0", 456),
+            ),
+            patch.object(Path, "exists", return_value=True),
+            patch("auto_game_unified.core.window.subprocess.run", side_effect=run),
+            patch("auto_game_unified.core.window.sleep"),
+        ):
+            game.ensure_input_channel()
+
+        adb = str(Path("D:/epic7/adb.exe"))
+        self.assertIn([adb, "kill-server"], calls)
+        self.assertIn([adb, "start-server"], calls)
+        self.assertEqual([], probes, "重建后必须再探一次通道")
+        self.assertEqual(2, sum(1 for call in calls if "--command" in call))
+
+    def test_input_channel_fails_loudly_when_adb_never_recovers(self):
+        """重建也救不回来时必须显式失败，而不是放行让第一条路线默默打挂。"""
+        game = Epic7Window()
+
+        def run(args, **_kwargs):
+            if "--command" in args:
+                return subprocess.CompletedProcess(
+                    args=[],
+                    returncode=0,
+                    stdout=b"adb.exe: device offline\n",
+                    stderr=b"",
+                )
+            return subprocess.CompletedProcess(
+                args=[], returncode=0, stdout=b"", stderr=b""
+            )
+
+        with (
+            patch.object(
+                game,
+                "_instance_channel",
+                return_value=(Path("D:/epic7/ldconsole.exe"), "0", 456),
+            ),
+            patch.object(Path, "exists", return_value=True),
+            patch("auto_game_unified.core.window.subprocess.run", side_effect=run),
+            patch("auto_game_unified.core.window.sleep"),
+            self.assertRaisesRegex(RuntimeError, "自动重建 adb 服务 3 次仍未恢复"),
+        ):
+            game.ensure_input_channel()
+
     def test_legacy_swipe_is_converted_and_sent_through_indexed_adb(self):
         game = Epic7Window()
         with (
