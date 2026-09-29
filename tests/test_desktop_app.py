@@ -309,6 +309,35 @@ def test_controller_passes_selected_backend_to_worker():
     assert worker.request.backend == "pc"
 
 
+def test_the_ui_hides_the_pc_backend_by_default(tk_window, tmp_path):
+    """界面上只该有雷电模拟器一个后端按钮（理由见 catalog.visible_backends）。"""
+    app = DesktopApp(
+        tk_window,
+        controller=DesktopController(worker=FakeWorker()),
+        project_root=tmp_path,
+    )
+
+    assert len(app._backend_buttons) == 1
+    assert app.backend_var.get() == "emulator"
+
+
+def test_the_ui_shows_the_pc_backend_under_the_dev_switch(
+    tk_window, tmp_path, monkeypatch
+):
+    """开发开关打开时，按钮要真的多出来一个 —— 否则「收起来」会变成「够不着」。"""
+    monkeypatch.setenv("EPIC7_SHOW_PC_BACKEND", "1")
+
+    app = DesktopApp(
+        tk_window,
+        controller=DesktopController(worker=FakeWorker()),
+        project_root=tmp_path,
+    )
+
+    assert len(app._backend_buttons) == 2
+    labels = [button.cget("text") for button in app._backend_buttons]
+    assert labels == ["模拟器（雷电）", "PC 客户端"]
+
+
 def test_controller_rejects_unknown_backend():
     controller = DesktopController(worker=FakeWorker())
 

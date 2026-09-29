@@ -1,12 +1,40 @@
 """User-facing route metadata for the desktop application."""
 
+import os
 from dataclasses import dataclass
+from typing import Mapping
 
 from auto_game_unified.games.epic7.modes import MODE_SPECS
 
 
 PRODUCT_NAME = "第七史诗自动助手"
 PRODUCT_VERSION = "0.1.0-dev"
+
+# ── 界面上露不露面：窗口后端 ───────────────────────────────────────────────────
+#
+# ⚠️ PC 客户端**默认不在界面上露面**（2026-09-30 用户拍板「把它收起来」）。理由：
+#   截止这天，**十一条路线没有一条通过 PC 验收**，而且其中四条（骑士团捐赠 / 迷宫强化石 /
+#   刷书签 / 活动）在 PC 上会直接报「未配置滑动动作」—— 用户在界面上选中它，得到的是一次
+#   **必然失败**的实跑，而失败原因看起来像程序坏了。
+#   采模板 / 开发验证仍然要用 PC 后端，所以留一个开发开关（而不是删掉）。
+#
+# ⚠️ 收起来的只是**界面按钮**：命令行 `--window-backend pc` 与
+#   `DesktopController.select_backend("pc")` 都不受影响（后者被测试用着）。
+BASE_BACKENDS: tuple[str, ...] = ("emulator",)
+DEV_BACKENDS: tuple[str, ...] = ("pc",)
+DEV_BACKEND_ENV = "EPIC7_SHOW_PC_BACKEND"
+
+
+def visible_backends(environ: Mapping[str, str] | None = None) -> tuple[str, ...]:
+    """界面上应该出现哪些窗口后端。
+
+    默认只有雷电模拟器；设 `EPIC7_SHOW_PC_BACKEND=1` 才把 PC 客户端一起露出来
+    （采集模板 / 开发验证时用）。`environ` 只为测试注入，正常调用不传。
+    """
+    env = os.environ if environ is None else environ
+    if env.get(DEV_BACKEND_ENV, "") == "1":
+        return BASE_BACKENDS + DEV_BACKENDS
+    return BASE_BACKENDS
 
 
 @dataclass(frozen=True)

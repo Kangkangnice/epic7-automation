@@ -18,6 +18,7 @@ from auto_game_unified.desktop.catalog import (
     PRODUCT_VERSION,
     ROUTES,
     route_by_name,
+    visible_backends,
 )
 from auto_game_unified.desktop.diagnostics import export_diagnostics
 from auto_game_unified.desktop.preflight import (
@@ -352,7 +353,10 @@ class DesktopApp:
         backend_row = ttk.Frame(bar, style="Bar.TFrame")
         backend_row.grid(row=0, column=2, sticky="e")
         self.backend_var = tk.StringVar(value=self.controller.selected_backend)
-        for backend, label in BACKEND_LABELS.items():
+        # ⚠️ 只画 visible_backends() 里的后端：PC 客户端默认不露面（理由见
+        # catalog.visible_backends）。收起来的只是按钮 —— 控制器与命令行照旧接受它。
+        for backend in visible_backends():
+            label = BACKEND_LABELS[backend]
             button = ttk.Radiobutton(
                 backend_row,
                 text=label,
