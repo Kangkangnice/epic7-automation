@@ -3,7 +3,12 @@ from pathlib import Path
 
 import numpy as np
 
-import auto_game_unified.games.epic7.hero_synthesis as hero_module
+# ⚠️ 这两条 patch 目标必须是 `hero_vision` 而不是 `hero_synthesis`：
+# 2026-09-30 把「只看画面」的那 50 个方法抽到 `hero_vision.HeroVisionMixin` 之后，
+# `_is_max_rating` / `_classify_material_page` 调的是 **hero_vision 里的** `find_template`。
+# 若图省事在 hero_synthesis 上再导出一次、继续 patch 那边，测试会**照样通过但什么也没验到**
+# （patch 到了一个没人调的名）。patch 目标要跟着代码走。
+import auto_game_unified.games.epic7.hero_vision as vision_module
 from auto_game_unified.games.epic7.hero_synthesis import (
     HeroSynthStateMachine,
     build_hero_templates,
@@ -38,7 +43,7 @@ def test_rating_sss_match_uses_profile_region_and_threshold(monkeypatch):
         observed.update(threshold=threshold, region=region)
         return None
 
-    monkeypatch.setattr(hero_module, "find_template", fake_find_template)
+    monkeypatch.setattr(vision_module, "find_template", fake_find_template)
 
     machine._is_max_rating(np.zeros((1132, 1982, 3), dtype=np.uint8))
 
@@ -54,9 +59,9 @@ def test_material_sss_classification_uses_profile_threshold_and_region(monkeypat
 
     def fake_find_template(screen, template, threshold, *, region, reference_size):
         observed.update(region=region)
-        return replace(hero_module.Match((1, 1), 0.62), score=0.62)
+        return replace(vision_module.Match((1, 1), 0.62), score=0.62)
 
-    monkeypatch.setattr(hero_module, "find_template", fake_find_template)
+    monkeypatch.setattr(vision_module, "find_template", fake_find_template)
     screen = np.zeros((1132, 1982, 3), dtype=np.uint8)
 
     assert machine._classify_material_page(screen) is SafetyClass.SSS
