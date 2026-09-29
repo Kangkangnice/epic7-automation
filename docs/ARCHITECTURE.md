@@ -14,7 +14,8 @@ auto_game_unified/
 │  ├─ qqbot.py             # 官方 QQ 机器人开放平台 C2C 私聊推送
 │  └─ window.py             # 游戏窗口捕获与局部坐标点击
 ├─ games/epic7/
-│  ├─ navigation.py         # 从支持页面受控返回大厅并进入目标模式
+│  ├─ navigation.py         # 从支持页面受控返回大厅并进入目标模式（导航链的**执行器**）
+│  ├─ navigation_plan.py    # 导航链的声明式数据（纯 dataclass，不含任何路线知识）
 │  ├─ global_popups.py      # 全局弹窗守卫：断网/亲密度/友情点数/好友申请
 │  ├─ unknown_screen.py     # 未知画面唤醒（萤火待机等）与安全停止
 │  ├─ battle_controls.py    # 战斗内 Auto/加速按钮识别
@@ -183,7 +184,11 @@ auto_game_unified/
 - 钩子排在页面日志之后、`unknown` 唤醒之前。放在唤醒之后的话，一个没被页面识别命中的支线页面会先被「点屏幕中央」点掉。排在 `lobby` 判定之前是安全的（大厅上各接力锚点都不可见）。
 - 钩子只在连续两帧稳定后才被询问，命中就当场 `return`，不再按 `Back`，并把这一帧原样交还调用方。
 - 命中 → 跳过 `navigate()`，并把状态机拨到那一步；未命中 → 原样走 `navigate()`，且返回过程中每一页都会再问一次，中途扫到接力点就地接管。
-- `entry` 非空 → `navigate(..., already_at=entry)`。白名单在 `navigation._RESUME_ENTRY_PAGES`（`arena` = `arena_mode`「竞技场模式选择」/ `story` = `story_ready`「主线入口」/ `expedition` = `battle_menu`·`season_menu`·`expedition_home`）；传本模式不认识的页面直接 `ValueError`，不做静默降级。
+- ``entry`` 非空 → ``navigate(..., already_at=entry)``。**链条与白名单的唯一来源是 ``modes.MODE_SPECS[...].navigation_plan``**（``NavigationPlan.resume_entries``）；``navigation._RESUME_ENTRY_PAGES`` 只是由它派生的**只读视图**，别再往那里手抄页面名。传白名单之外的页面直接 ``ValueError``，不做静默降级。
+
+``navigate()`` 自 2026-09-30 起**不认识任何具名路线**：它以前是一张 ``if mode == "story" / elif mode == "arena" / ...`` 的分派链（约 250 行），每加一条路线都要回去改它。现在链条声明在注册表旁边、执行器只认数据，``tests/test_navigation_plans.py`` 用源码级断言钉住「分派链不许长回来」。
+
+**执行语义**（与原分派链逐字等价）：按 ``already_at`` 命中链条上哪一步，跳过它**以及它前面所有步**，从下一步接着走，并把调用方给的那一帧继续当作来源帧；命中末端就是「导航已完成，一次都不点」。多目标步骤（远征 ``lobby → battle_menu|season_menu``）按「由浅到深」写 ``targets``，顺序即优先级。
 
 **接力点顺序即优先级**，每条路线各有一张自带注释的常量表：
 

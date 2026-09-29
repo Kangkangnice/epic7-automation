@@ -26,7 +26,8 @@
 | 4 条自写循环 | `games/epic7/arena.py` | 1017 `ArenaRunner` |
 | 4 条自写循环 | `games/epic7/shop_refresh.py` | 330 `ShopRefreshRunner` |
 | 4 条自写循环 | `games/epic7/survivor.py` | 217 `SurvivorRunner` |
-| 共用机制 | `games/epic7/navigation.py` | 141 `NavigationTemplates` |
+| 共用机制 | `games/epic7/navigation.py` | 141 `NavigationTemplates`（导航链的**执行器**） |
+| 共用机制 | `games/epic7/navigation_plan.py` | 46 `NavigationPlan`（导航链的**声明式数据**） |
 | 共用机制 | `games/epic7/global_popups.py` | 16 `NetworkReconnectTemplates` |
 | 共用机制 | `games/epic7/finish_home.py` | 44 `_finish_home_verdict` |
 | 战斗看护 | `core/battle_supervisor.py` | 70 `BattleSupervisor` |

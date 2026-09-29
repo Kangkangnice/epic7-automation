@@ -289,8 +289,8 @@ def return_home_v2(
 - 阶段 3（`survivor` 3 处 + `global_popups` 1 处）待排期。
 - 阶段 4（`unknown_screen` 的豁免已写进表态表，理由备查）。
 - **竞技场实跑验收**尚未做（确认收尾日志不再出现「同一层连按」）。
-- ⚠️ **发现但未处理**：`modes._assert_resume_declared()` 与
-  `_assert_transition_stance_declared()` **生产代码从未调用**，只在测试里跑 ——
-  文档承诺的「import 阶段就报错」没有兑现。这超出本次范围，**已单独记下**。
-  （新写的 `public_flow_verification.assert_*` 同样需要确认接线，
-  否则会重蹈覆辙。）
+- ✅ **已还（2026-09-30）**：`modes._assert_resume_declared()` /
+  `_assert_transition_stance_declared()` / `_assert_conclusion_gate_declared()`
+  **生产代码从未调用**（只在测试里跑）的问题已修 —— 三个自查加上新增的
+  `_assert_navigation_declared()`，统一由 `modes._run_load_time_checks()` 在**模块加载**时跑一遍；
+  `tests/test_navigation_plans.py` 用 AST 钉住「它真的写在模块级」
