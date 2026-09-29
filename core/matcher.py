@@ -1,4 +1,6 @@
+import hashlib
 import os
+from collections import OrderedDict
 from dataclasses import dataclass
 from typing import Optional
 
@@ -17,6 +19,69 @@ class Match:
 # 用 (mtime_ns, size) 当版本号，文件被替换时会自动重新解码，
 # 不会读到旧内容；模板总量很小（几十张、几 MB），缓存代价可忽略。
 _TEMPLATE_CACHE: dict[str, tuple[tuple[int, int], np.ndarray]] = {}
+
+
+# ── 匹配结果缓存 ───────────────────────────────────────────────────────────────
+#
+# 「同一块搜索区 + 同一个模板」的匹配结果是**纯函数**：重复问一次不必再算一次。
+#
+# 为什么需要它（2026-09-30 实测，不是估算）：
+#   * 单次匹配 1982x1132 要 102 ms；同一个模板限制在 400x200 的区域里只要 3.2 ms；
+#   * 全量测试的墙钟时间里匹配占大头，而**同一查询的重复率高达 88%~94%** ——
+#     ``tests/test_navigation.py`` 一个文件 18,575 次调用里只有 1,141 次是新的；
+#   * 打开本缓存后该文件 122.7 s -> 67.7 s，命中率 93.9%，真正落回匹配引擎只剩 4.7 s；
+#   * 取指纹的开销只有匹配的 **8%~12%**（整屏 11 ms 对 102 ms，小区域同样比例），
+#     所以**不设面积门槛** —— 小到字形、大到整屏，缓存都是净赚。
+#
+# ⚠️ 两个刻意的设计，别改：
+#   1. **默认关闭**，由 ``tests/conftest.py`` 打开（那里也写明了理由）。实跑时画面每帧
+#      都在变，缓存几乎不会命中，只会白付指纹钱；收益全在离线测试那边。
+#      这与 ``conftest`` 里那个截图解码缓存是同一套理由。
+#   2. 只缓存 ``(分数, 位置)`` 这两个**极小**的值，**绝不**缓存 ``cv2.matchTemplate`` 的
+#      返回数组 —— 那是 float32 结果图，整屏一次 8.5 MB。实测缓存它会让进程内存从
+#      961 MB 涨到 4.1 GB、全量跑到一半开始换页，比不加缓存还慢（2026-09-30 踩过）。
+MATCH_CACHE_ENABLED = False
+MATCH_CACHE_SIZE = 20000
+_MATCH_CACHE: "OrderedDict[bytes, tuple[float, tuple[int, int]]]" = OrderedDict()
+
+
+def _match_key(search: np.ndarray, template: np.ndarray) -> bytes:
+    """``(搜索区, 模板)`` 的内容指纹。
+
+    ⚠️ 形状与 dtype 必须一起进指纹：只喂 ``tobytes()`` 的话，2x3 与 3x2 会撞成同一个键。
+    ⚠️ 不要用 ``memoryview(...).cast()`` 这类只接受连续内存的写法 —— 搜索区往往是
+    ``screen[y:y+h, x:x+w]`` 这样的**视图**（未必连续），``tobytes()`` 才是通用的。
+    """
+    digest = hashlib.blake2b(digest_size=16)
+    digest.update(
+        f"{search.shape}|{search.dtype.str}|{template.shape}|{template.dtype.str}".encode()
+    )
+    digest.update(search.tobytes())
+    digest.update(template.tobytes())
+    return digest.digest()
+
+
+def best_match(search: np.ndarray, template: np.ndarray) -> tuple[float, tuple[int, int]]:
+    """在 ``search`` 里找 ``template`` 的最佳匹配 -> ``(score, (x, y))``，结果按内容缓存。
+
+    ``search`` 必须是**已经裁好、已经按基准尺寸缩放好**的那一块；返回的坐标相对于
+    ``search`` 的左上角，偏移由调用方自己加。
+    """
+    key: bytes | None = None
+    if MATCH_CACHE_ENABLED:
+        key = _match_key(search, template)
+        cached = _MATCH_CACHE.get(key)
+        if cached is not None:
+            _MATCH_CACHE.move_to_end(key)
+            return cached
+    result = cv2.matchTemplate(search, template, cv2.TM_CCOEFF_NORMED)
+    _, score, _, location = cv2.minMaxLoc(result)
+    value = (float(score), (int(location[0]), int(location[1])))
+    if key is not None:
+        _MATCH_CACHE[key] = value
+        if len(_MATCH_CACHE) > MATCH_CACHE_SIZE:
+            _MATCH_CACHE.popitem(last=False)
+    return value
 
 
 def load_template(path: str) -> np.ndarray:
@@ -78,11 +143,10 @@ def find_best_template(
     if search.shape[0] < height or search.shape[1] < width:
         return None
 
-    result = cv2.matchTemplate(search, template, cv2.TM_CCOEFF_NORMED)
-    _, score, _, location = cv2.minMaxLoc(result)
+    score, location = best_match(search, template)
     return Match(
         center=(offset_x + location[0] + width // 2, offset_y + location[1] + height // 2),
-        score=float(score),
+        score=score,
     )
 
 

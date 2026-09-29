@@ -17,7 +17,12 @@ from typing import Any, Callable, Optional
 import cv2
 import numpy as np
 
-from auto_game_unified.core.matcher import Match, find_template, load_template
+from auto_game_unified.core.matcher import (
+    Match,
+    best_match,
+    find_template,
+    load_template,
+)
 from auto_game_unified.core.recovery import RecoveryGate
 from auto_game_unified.core.runtime import Runtime
 from auto_game_unified.games.epic7.runner_base import NOT_STABLE, ModeRunnerBase
@@ -438,8 +443,7 @@ class HeroSynthStateMachine:
         mw = max(1, round(self._dot_mask[2] * scale_x))
         mh = max(1, round(self._dot_mask[3] * scale_y))
         crop[my : my + mh, mx : mx + mw] = 0
-        result = cv2.matchTemplate(crop, template, cv2.TM_CCOEFF_NORMED)
-        _, score, _, location = cv2.minMaxLoc(result)
+        score, location = best_match(crop, template)
         if score < threshold:
             return None
         return Match(

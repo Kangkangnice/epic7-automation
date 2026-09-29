@@ -17,7 +17,12 @@
 内存：用 `lru_cache(maxsize=...)` 只留最近用过的若干张（每张约 6.7MB），
 不会把整个 fixtures 目录（216 张 / 453MB）都常驻。
 
-排查用：设 `EPIC7_TEST_FIXTURE_CACHE=0` 即可关掉，恢复成每次真读盘。
+排查用：设 ``EPIC7_TEST_FIXTURE_CACHE=0`` 即可关掉，恢复成每次真读盘。
+
+同一套理由还用在**模板匹配的结果**上（核心开关在 ``core/matcher.py`` 的
+``MATCH_CACHE_ENABLED``）：全量测试里「同一块画面 + 同一个模板」会被重复匹配上千次
+（实测重复率 88%~94%），打开后 ``test_navigation.py`` 从 122.7 s 降到 67.7 s。
+它默认关闭、由本文件打开；排查用 ``EPIC7_MATCH_CACHE=0`` 关掉，回到「每次都真算」。
 """
 
 from __future__ import annotations
@@ -27,6 +32,9 @@ from functools import lru_cache
 
 import cv2
 from PIL import Image
+
+# ⚠️ 这里要 import 项目模块：匹配结果缓存的核心开关在 core/matcher.py（见文件末尾）。
+from auto_game_unified.core import matcher
 
 # 每张整屏夹具解码后约 6.7MB，这里按张数封顶（两个通道合计约 0.5GB 上限）。
 _CACHE_ENTRIES = 40
@@ -79,3 +87,7 @@ def cached_open(path, mode="r"):
 if os.environ.get("EPIC7_TEST_FIXTURE_CACHE", "1") != "0":
     cv2.imread = cached_imread
     Image.open = cached_open
+
+# 匹配结果缓存：只影响测试进程，生产实跑不经过这里（见 core/matcher.py 的注释）。
+if os.environ.get("EPIC7_MATCH_CACHE", "1") != "0":
+    matcher.MATCH_CACHE_ENABLED = True
