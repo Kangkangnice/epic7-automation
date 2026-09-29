@@ -4,7 +4,7 @@ from pathlib import Path
 from datetime import date, datetime
 import random
 from time import sleep as default_sleep
-from typing import Any, Callable, NamedTuple, Optional, Sequence
+from typing import Any, Callable, Optional, Sequence
 
 import cv2
 import numpy as np
@@ -35,6 +35,8 @@ from auto_game_unified.games.epic7.pre_battle import (
     load_simulator_quick_battle_detector,
     observe_pre_battle,
 )
+from auto_game_unified.games.epic7.resume_probe import ResumePoint
+from auto_game_unified.games.epic7.route_action import RouteAction
 from auto_game_unified.games.epic7.transactional_runner_base import (
     TransactionalRunnerBase,
 )
@@ -249,12 +251,18 @@ class TicketExhausted(RuntimeError):
 
 
 @dataclass(frozen=True)
-class Action:
-    name: str
-    point: tuple[int, int]
+class Action(RouteAction):
+    """竞技场的一个动作。
+
+    ⚠️ 它按**位置**传了 5 个参数（第 3 个是自己的 ``source_state``），而契约里的第 3 个位置
+    是 ``source_page`` —— 2026-09-30 实测：直接让这个类继承 ``RouteAction`` 会把一个状态枚举
+    静默绑到 ``source_page`` 上，**不报错**。所以同一次改动里把 7 个构造点全改成关键字，
+    并加了一条 AST 护栏（``tests/test_route_actions.py``：任何 ``*Action`` 调用超过 2 个位置
+    参数就红）。这是本文件本次唯一的改动点，状态机逻辑一字未动。
+    """
+
     source_state: ArenaState | None = None
     target_states: tuple[ArenaState, ...] = ()
-    reason: str = ""
     irreversible: bool = False
 
 
@@ -631,20 +639,20 @@ class ArenaStateMachine:
             if self._selected_opponent not in safe:
                 self._selected_opponent = self.choose_opponent(safe)
             return Action(
-                "select-opponent",
-                self._opponent_point(screen, self._selected_opponent),
-                ArenaState.LIST,
-                (ArenaState.SELECTED,),
-                "安全对手行已确认，等待对手详情页",
+                name="select-opponent",
+                point=self._opponent_point(screen, self._selected_opponent),
+                source_state=ArenaState.LIST,
+                target_states=(ArenaState.SELECTED,),
+                reason="安全对手行已确认，等待对手详情页",
             )
         if all(value is False for value in availability):
             self._selected_opponent = None
             return Action(
-                "refresh-opponents",
-                self._refresh_point(screen),
-                ArenaState.LIST,
-                (ArenaState.LIST,),
-                "三名对手均不可挑战，等待刷新后的安全列表",
+                name="refresh-opponents",
+                point=self._refresh_point(screen),
+                source_state=ArenaState.LIST,
+                target_states=(ArenaState.LIST,),
+                reason="三名对手均不可挑战，等待刷新后的安全列表",
             )
         raise RuntimeError("竞技场对手行无法安全分类")
 
@@ -730,11 +738,11 @@ class ArenaStateMachine:
                     "100 friendship points -> 5 flags offer"
                 )
             return Action(
-                "purchase-friendship-ticket",
-                purchase.center,
-                ArenaState.BATTLE,
-                (ArenaState.TEAM,),
-                "资源=友情点 报价=100 获得旗帜=5 选择=左侧已确认 "
+                name="purchase-friendship-ticket",
+                point=purchase.center,
+                source_state=ArenaState.BATTLE,
+                target_states=(ArenaState.TEAM,),
+                reason="资源=友情点 报价=100 获得旗帜=5 选择=左侧已确认 "
                 f"报价匹配={offer.score:.3f} 购买按钮匹配={purchase.score:.3f}",
                 irreversible=True,
             )
@@ -748,11 +756,11 @@ class ArenaStateMachine:
                 return self._list_action(screen)
             if self._visible(screen, "confirm"):
                 return Action(
-                    "confirm-result",
-                    self._locate(screen, "confirm").center,
-                    ArenaState.CONFIRMING,
-                    (ArenaState.CONFIRMING, ArenaState.LIST),
-                    "结果确认按钮仍在，等待列表或段位弹窗",
+                    name="confirm-result",
+                    point=self._locate(screen, "confirm").center,
+                    source_state=ArenaState.CONFIRMING,
+                    target_states=(ArenaState.CONFIRMING, ArenaState.LIST),
+                    reason="结果确认按钮仍在，等待列表或段位弹窗",
                 )
             rank_confirm = find_rank_promotion_confirm(
                 screen,
@@ -762,11 +770,11 @@ class ArenaStateMachine:
             )
             if rank_confirm is not None:
                 return Action(
-                    "confirm-rank",
-                    rank_confirm.center,
-                    ArenaState.CONFIRMING,
-                    (ArenaState.LIST,),
-                    "段位提升弹窗证据完整，等待返回列表",
+                    name="confirm-rank",
+                    point=rank_confirm.center,
+                    source_state=ArenaState.CONFIRMING,
+                    target_states=(ArenaState.LIST,),
+                    reason="段位提升弹窗证据完整，等待返回列表",
                 )
             raise RuntimeError("结果确认后应回到对手列表")
 
@@ -781,11 +789,11 @@ class ArenaStateMachine:
                 and pre_battle.switch_point is not None
             ):
                 return Action(
-                    "battle-start",
-                    pre_battle.switch_point,
-                    ArenaState.TEAM,
-                    (ArenaState.BATTLE,),
-                    "快速战斗覆盖普通按钮，交由战斗监督切换",
+                    name="battle-start",
+                    point=pre_battle.switch_point,
+                    source_state=ArenaState.TEAM,
+                    target_states=(ArenaState.BATTLE,),
+                    reason="快速战斗覆盖普通按钮，交由战斗监督切换",
                 )
 
         if (
@@ -823,11 +831,11 @@ class ArenaStateMachine:
             else (target,)
         )
         return Action(
-            name,
-            match.center,
-            self.state,
-            target_states,
-            f"来源画面[{state_label(self.state)}]锚点已确认",
+            name=name,
+            point=match.center,
+            source_state=self.state,
+            target_states=target_states,
+            reason=f"来源画面[{state_label(self.state)}]锚点已确认",
         )
 
     def preview(self, screen: np.ndarray):
@@ -970,12 +978,7 @@ def detect_resume_state(
 ARENA_ENTRY_PAGE = "arena_mode"
 
 
-class ArenaResumePoint(NamedTuple):
-    """竞技场开局接力的落点。"""
 
-    page: str                       # 中文页面名，给日志和诊断看
-    state: Optional[ArenaState]     # 要拨过去的状态机状态；None = 不动状态机
-    entry: Optional[str] = None     # 已经在导航链的这个页面上，从这里接着导航
 
 
 def detect_resume_point(
@@ -983,7 +986,7 @@ def detect_resume_point(
     screen: np.ndarray,
     *,
     observed_page: Optional[str] = None,
-) -> Optional[ArenaResumePoint]:
+) -> Optional[ResumePoint]:
     """竞技场开局接力：认出用户停在竞技场一环里的哪一页。
 
     ``observed_page`` 传导航器的页面名（``Epic7Navigator.observe().name``）。
@@ -1010,13 +1013,13 @@ def detect_resume_point(
     「未知画面等待唤醒」直到返回大厅预算耗尽，然后退出码 1。
     """
     if observed_page == ARENA_ENTRY_PAGE:
-        return ArenaResumePoint("竞技场模式选择", None, ARENA_ENTRY_PAGE)
+        return ResumePoint("竞技场模式选择", None, ARENA_ENTRY_PAGE)
     found = detect_resume_state(machine, screen)
     if found is not None:
         state, label = found
-        return ArenaResumePoint(label, state)
+        return ResumePoint(label, state)
     if battle_scene_visible(screen):
-        return ArenaResumePoint("战斗中", ArenaState.BATTLE)
+        return ResumePoint("战斗中", ArenaState.BATTLE)
     return None
 
 

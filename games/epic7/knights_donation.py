@@ -150,7 +150,7 @@ from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 from time import sleep as default_sleep
-from typing import Callable, NamedTuple, Optional
+from typing import Callable, Optional
 
 import numpy as np
 
@@ -174,6 +174,8 @@ from auto_game_unified.games.epic7.knights_support_digits import (
     load_digit_glyphs,
     read_row_numbers,
 )
+from auto_game_unified.games.epic7.resume_probe import ResumePoint, observe_page_probe
+from auto_game_unified.games.epic7.route_action import RouteAction
 from auto_game_unified.games.epic7.runner_base import ModeRunnerBase
 from auto_game_unified.games.epic7.unknown_screen import UnrecognizedScreen
 from auto_game_unified.games.epic7.template_paths import is_template_root
@@ -369,20 +371,14 @@ def support_limit_full(
 def state_label(state: KnightsDonationState) -> str:
     return STATE_LABELS.get(state, state.value)
 
-
 @dataclass(frozen=True)
-class KnightsDonationAction:
+class KnightsDonationAction(RouteAction):
     """一个动作，**必须声明出处与出口验收**（新路线准入，见模块 docstring 对账表）。
 
     ``target_pages``（换页动作）与 ``in_page_evidence``（同页动作）**至少填一个**，
     两个都空会被 ``ModeRunnerBase._require_transition_contract`` 直接拒发。
+    字段表本身在 ``route_action.RouteAction``（全项目唯一一份，别再抄）。
     """
-
-    name: str
-    point: tuple[int, int]
-    source_page: str = ""
-    target_pages: tuple[str, ...] = ()
-    in_page_evidence: str = ""
     reason: str = ""
 
 
@@ -1069,18 +1065,11 @@ class KnightsDonationRunner(ModeRunnerBase):
 # 契约与三道卡点见 docs/TRANSITION_CONTRACTS.md「接力契约」那一节。
 
 
-class KnightsDonationResumePoint(NamedTuple):
-    """骑士团捐赠开局接力的落点（``modes.ResumePoint`` 的路线本地版）。"""
-
-    page: str                       # 中文页面名，给日志和诊断看
-    state: Optional[str] = None     # 恒为 None：本路线每帧重判页面，不需要拨状态
-    entry: Optional[str] = None     # 非空 = 已经在导航链的某一级上，从这里接着导航
-
 
 def detect_resume_point(
     machine: "KnightsDonationStateMachine",
     screen: np.ndarray,
-) -> Optional[KnightsDonationResumePoint]:
+) -> Optional[ResumePoint]:
     """骑士团捐赠开局接力：认出人停在哪一页就就地接管。
 
     **判据与运行期同源** —— 直接调状态机自己的 ``observe_page``，不另定一套阈值、
@@ -1098,14 +1087,11 @@ def detect_resume_point(
     ⚠️ 人停在**大厅**上时返回 None（``activity_entry`` 在骑士团主页上，大厅上不成立）⇒
     照旧走「回大厅 → 进骑士团」，与接力挂上之前的行为完全一致。
     """
-    page = machine.observe_page(screen)
-    if page is None:
-        return None
-    if page is KnightsDonationState.GUILD_HOME:
-        return KnightsDonationResumePoint(
-            page=state_label(page),
-            entry=KNIGHTS_GUILD_HOME_PAGE,
-        )
-    if page in _RESUMABLE_STATES:
-        return KnightsDonationResumePoint(page=state_label(page))
-    return None
+    return observe_page_probe(
+        machine,
+        screen,
+        resumable=_RESUMABLE_STATES,
+        entry_page=KnightsDonationState.GUILD_HOME,
+        entry=KNIGHTS_GUILD_HOME_PAGE,
+        label=state_label,
+    )
