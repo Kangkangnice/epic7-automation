@@ -16,21 +16,18 @@ from typing import Callable, Mapping
 
 @dataclass(frozen=True)
 class RunRequest:
-    mode: str
-    cycles: int
-    backend: str = "emulator"
-    # 「每日任务」：``None`` = 普通单路线运行；元组 = 走 ``--daily`` 编排
-    # （元素是要跑的路线名，此时 ``mode``/``cycles`` 不参与 —— 各条路线有自己的
-    # 每日次数）。空元组是非法的（界面拦住「至少勾一项」），由 ``start`` 复查。
-    daily_tasks: tuple[str, ...] | None = None
-    # 每日任务里**改过次数**的那几条（稀疏覆盖：没写的用每日默认值）。
-    # 界面每次都把选中项的次数原样传下来 —— 这样命令行里写的就是「看到的」，
-    # 出问题照着日志能原样重跑。
-    daily_cycles: Mapping[str, int] | None = None
+    """一次「每日任务」：跑哪几条路线、每条几次。
 
-    @property
-    def is_daily(self) -> bool:
-        return self.daily_tasks is not None
+    ⚠️ ``modes`` 的**次序就是执行顺序**（勾选先后由界面记着，这里不再重排）。
+    勾一条也走这一套 —— 界面上不再有「单路线运行」那条独立通道，两条路合一之后
+    「勾一条 = 跑一条」，行为与以前逐字相同。
+    """
+
+    modes: tuple[str, ...]
+    # 每条路线跑几次。**只带勾选的那几条**（界面看到什么就传什么）；没进来的
+    # 路线按该路线自己的默认值跑 —— 命令行 ``--daily`` 就是这种用法。
+    cycles: Mapping[str, int]
+    backend: str = "emulator"
 
 
 @dataclass(frozen=True)
@@ -69,7 +66,6 @@ class WorkerController:
         self._recent_output: deque[str] = deque(maxlen=50)
         self._stop_requested = False
         self._force_stopped = False
-        self._request: RunRequest | None = None
 
     @property
     def running(self) -> bool:
@@ -78,13 +74,18 @@ class WorkerController:
     def start(self, request: RunRequest) -> None:
         if self.running:
             raise RuntimeError("已有自动化任务正在运行")
-        if request.is_daily:
-            if not request.daily_tasks:
-                raise ValueError("每日任务至少要勾选一项")
-            if any(count <= 0 for count in (request.daily_cycles or {}).values()):
-                raise ValueError("运行次数必须是正整数")
-        elif request.cycles <= 0:
-            raise ValueError("运行次数必须是正整数")
+        if not request.modes:
+            raise ValueError("至少要勾选一条路线")
+        # 次数下限由路线的 ``ModeSpec.min_cycles`` 决定（正常是 1；「刷书签」是 0
+        # —— 只扫一遍、不付费刷新）。延迟 import 避免 desktop ⇄ games 模块成环。
+        from auto_game_unified.games.epic7.modes import MODE_SPECS
+
+        for mode in request.modes:
+            minimum = MODE_SPECS[mode].min_cycles
+            if request.cycles.get(mode, 1) < minimum:
+                raise ValueError(
+                    "运行次数不能为负数" if minimum == 0 else "运行次数必须是正整数"
+                )
 
         self._temporary = tempfile.TemporaryDirectory(
             prefix="epic7-auto-assistant-"
@@ -94,51 +95,30 @@ class WorkerController:
         self._recent_output.clear()
         self._stop_requested = False
         self._force_stopped = False
-        self._request = request
-        if request.is_daily:
-            # 每日任务：界面上不传 --max-cycles，每条的次数写在 --daily-tasks 里
-            # （``世界首领战:2,竞技场:3``）；没带次数的就用该路线自己的每日默认值
-            # （games/epic7/daily_tasks.DAILY_TASKS）。
-            # ``Joinable``：daily_tasks 是已校验的模式名，不会有逗号或冒号。
-            overrides = request.daily_cycles or {}
-            daily_arg = ",".join(
-                f"{mode}:{overrides[mode]}" if mode in overrides else mode
-                for mode in request.daily_tasks or ()
-            )
-            command = [
-                sys.executable,
-                "-u",
-                "-m",
-                "auto_game_unified.main",
-                "--daily",
-                "--daily-tasks",
-                daily_arg,
-                "--window-backend",
-                request.backend,
-                "--live",
-                "--confirm",
-                "RUN",
-                "--stop-file",
-                str(self.stop_file),
-            ]
-        else:
-            command = [
-                sys.executable,
-                "-u",
-                "-m",
-                "auto_game_unified.main",
-                "--mode",
-                request.mode,
-                "--window-backend",
-                request.backend,
-                "--max-cycles",
-                str(request.cycles),
-                "--live",
-                "--confirm",
-                "RUN",
-                "--stop-file",
-                str(self.stop_file),
-            ]
+        # 次数写在 ``--daily-tasks`` 里（``世界首领战:2,竞技场:3``）；界面每次都把
+        # 勾选那几条的次数原样传下来 ⇒ 命令行里写的就是界面上看到的。
+        # 界面**没有**传次的路线（命令行 ``--daily`` 的用法）就用该路线自己的默认值。
+        # ``Joinable``：``modes`` 是已校验的模式名，不会有逗号或冒号。
+        daily_arg = ",".join(
+            f"{mode}:{request.cycles[mode]}" if mode in request.cycles else mode
+            for mode in request.modes
+        )
+        command = [
+            sys.executable,
+            "-u",
+            "-m",
+            "auto_game_unified.main",
+            "--daily",
+            "--daily-tasks",
+            daily_arg,
+            "--window-backend",
+            request.backend,
+            "--live",
+            "--confirm",
+            "RUN",
+            "--stop-file",
+            str(self.stop_file),
+        ]
         environment = os.environ.copy()
         environment["PYTHONIOENCODING"] = "utf-8"
         try:
@@ -158,11 +138,7 @@ class WorkerController:
             self._cleanup_temporary()
             raise
 
-        started_label = (
-            "每日任务(" + ",".join(request.daily_tasks or ()) + ")"
-            if request.is_daily
-            else request.mode
-        )
+        started_label = "每日任务(" + ",".join(request.modes) + ")"
         self._write_evidence(
             f"事件=启动 模式={started_label} 后端={request.backend} "
             f"PID={getattr(self._process, 'pid', '-')}"
@@ -309,24 +285,26 @@ class WorkerController:
             self.log_path.replace(Path(f"{self.log_path}.1"))
 
     def _snapshot_current_frame(self, exit_code: int) -> Path | None:
-        if exit_code in {0, 2, 130} or self._request is None:
+        if exit_code in {0, 2, 130}:
             return None
         project_root = self.repo_parent / "auto_game_unified"
-        source = (
-            project_root
-            / "runtime_diagnostics"
-            / f"epic7_{self._request.mode}"
-            / "current.png"
+        # 一次可能跑了好几条路线，每条各写各的 ``epic7_<模式>/current.png``。
+        # 出问题的那条一定是刚写过的那条 ⇒ 取**最新**的一张存下来，
+        # 不去猜「是哪条路线挂的」（猜错会把别的路线的旧帧当成现场）。
+        candidates = list(
+            (project_root / "runtime_diagnostics").glob("epic7_*/current.png")
         )
-        if not source.exists():
+        if not candidates:
+            return None
+        try:
+            source = max(candidates, key=lambda path: path.stat().st_mtime_ns)
+        except OSError:
             return None
         destination_dir = project_root / "runtime_diagnostics" / "desktop_worker"
         destination_dir.mkdir(parents=True, exist_ok=True)
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-        destination = (
-            destination_dir
-            / f"{timestamp}_{self._request.mode}_exit_{exit_code}.png"
-        )
+        route = source.parent.name.removeprefix("epic7_")
+        destination = destination_dir / f"{timestamp}_{route}_exit_{exit_code}.png"
         shutil.copy2(source, destination)
         self._prune_failure_snapshots(destination_dir)
         return destination

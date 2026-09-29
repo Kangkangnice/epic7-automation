@@ -733,6 +733,82 @@ def test_runner_scans_initial_and_last_refreshed_batch_end_to_end():
     assert any("本轮汇总" in log for log in logs)
 
 
+def test_state_machine_accepts_zero_refreshes_but_not_negative():
+    """0 是合法目标（只扫不刷新）；负数才是坏值。
+
+    用户 2026-09-29 拍板：秘密商店自己会随时间自动刷新 ⇒ 默认 0 次。
+    """
+    machine = ShopRefreshStateMachine(0)
+
+    assert machine.stats.target_refreshes == 0
+    assert machine.phase is ShopPhase.SCAN_TOP
+
+    with pytest.raises(ValueError, match="负数"):
+        ShopRefreshStateMachine(-1)
+
+
+def test_zero_refresh_run_scans_the_initial_list_and_never_refreshes():
+    """0 次 = 照常进店、从上到下扫一遍、把想要的买掉，**一次都不付费刷新**。
+
+    这是默认档位的可测形式：主循环必须走到 COMPLETE 就收工，而不是转成
+    ``READY_REFRESH`` 去点那个花天空石的「立即更新」。
+    """
+    machine = ShopRefreshStateMachine(0)
+    clock = _Clock()
+    logs: list[str] = []
+    runner = ShopRefreshRunner(
+        machine,
+        _runtime([], clock=clock, clicks=[], swipes=[], logs=logs),
+        observer=_Observer({}),
+        sleep=clock.sleep,
+    )
+    observations = iter(
+        [
+            (
+                _frame(10),
+                ShopObservation(page=ShopPage.SHOP, list_fingerprint="initial-top"),
+            ),
+            (
+                _frame(20),
+                ShopObservation(
+                    page=ShopPage.SHOP,
+                    list_fingerprint="initial-bottom",
+                    refresh_point=(330, 1045),
+                    refresh_price=3,
+                ),
+            ),
+        ]
+    )
+    calls = {"stable": 0, "scroll": 0}
+
+    def stable_shop():
+        calls["stable"] += 1
+        return next(observations)
+
+    def scroll_to_bottom(_screen, _observation):
+        calls["scroll"] += 1
+        machine.complete_scroll()
+
+    def refresh_transaction(_screen, _observation):
+        raise AssertionError("0 次不该走到付费刷新 —— 这一步会花天空石")
+
+    runner._stable_shop = stable_shop
+    runner._scroll_to_bottom = scroll_to_bottom
+    runner._refresh_transaction = refresh_transaction
+
+    assert runner.run(max_cycles=0) == 0
+
+    # 顶部一次 + 底部一次；付费刷新一次都没有。
+    assert calls == {"stable": 2, "scroll": 1}
+    assert machine.phase is ShopPhase.COMPLETE
+    assert machine.stats.target_refreshes == 0
+    assert machine.stats.completed_refreshes == 0
+    assert machine.stats.skystone_spent == 0
+    assert "刷新=0/0" in logs[-1]
+    # 0 次不是「没本钱了」—— 它是一个正常完成的结论，退出码不该变 2。
+    assert runner.resource_exhausted is False
+
+
 def test_runner_stops_when_unbought_target_has_no_same_row_buy_button():
     machine = ShopRefreshStateMachine(1)
     clock = _Clock()

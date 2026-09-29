@@ -68,6 +68,12 @@ from auto_game_unified.games.epic7.labyrinth_stone import (
     LabyrinthStoneStateMachine,
     detect_resume_point as detect_labyrinth_stone_resume_point,
 )
+from auto_game_unified.games.epic7.sanctuary import (
+    SanctuaryRunner,
+    SanctuaryState,
+    SanctuaryStateMachine,
+    detect_resume_point as detect_sanctuary_resume_point,
+)
 from auto_game_unified.games.epic7.world_boss import (
     WorldBossRunner,
     WorldBossState,
@@ -110,8 +116,9 @@ RunnerOptions = Callable[[Path, bool], dict[str, Any]]
 class ModeSpec:
     """一条路线的全部「事实」。同名信息（中文名、默认次数）**只在这里定义一次**。
 
-    ⚠️ 中文名 ``label`` 与默认次数（``default_cycles`` / ``cycles_editable``）以前
-    各自抄在 CLI / 交互菜单 / 桌面助手 / 每日任务好几处，改一处漏一处不会报错
+    ⚠️ 中文名 ``label`` 与次数（``default_cycles`` / ``cycles_editable`` /
+    ``min_cycles``）以前各自抄在 CLI / 交互菜单 / 桌面助手 / 每日任务好几处，
+    改一处漏一处不会报错
     （实测出现过 ``survivor`` 在界面叫「活动」、在通知里叫「幸存者」；
     ``shop_refresh`` 在每日任务里叫「商店刷新」、别处叫「刷书签」）。
     2026-09-27 收敛到这里，其余入口一律从这里派生 —— 别再往别处抄一份。
@@ -127,6 +134,12 @@ class ModeSpec:
     # 不给用户选**（每天上限固定，或跑一遍就结束）⇒ 各入口直接采用本值、不问用户。
     default_cycles: int = 1
     cycles_editable: bool = True
+    # 允许填的最小次数。默认 1（次数必须是正整数）；只有「0 次本身就是一种有意义的
+    # 业务模式」的路线才设成 0 —— 目前**只有** ``shop_refresh``：0 次 = 照常进商店、
+    # 从上到下扫一遍、把想要的买掉，但**一次都不付费刷新**（秘密商店自己会随时间自动刷新）。
+    # 各入口的「次数必须为正」校验一律以本字段为准
+    # （``desktop/app.py`` / ``desktop/worker.py`` / ``main.py`` / ``shop_refresh.py``）。
+    min_cycles: int = 1
     needs_navigation: bool = True
     resume_probe: Optional[ResumeProbe] = None
     # 路线级的运行前闸门与额外构造参数，见上面两个类型别名的说明。
@@ -276,6 +289,14 @@ def _build_knights_donation(template_root: Path, state: str) -> KnightsDonationS
     return KnightsDonationStateMachine(
         template_root / "knights_donation",
         initial_state=KnightsDonationState(state),
+    )
+
+
+def _build_sanctuary(template_root: Path, state: str) -> SanctuaryStateMachine:
+    # 模板子目录是 templates/sanctuary；工厂必须把它当根，不能当 templates 根。
+    return SanctuaryStateMachine(
+        template_root / "sanctuary",
+        initial_state=SanctuaryState(state),
     )
 
 
@@ -457,6 +478,11 @@ MODE_SPECS = {
         states=frozenset({ShopPhase.SCAN_TOP.value}),
         build_machine=_build_shop_refresh,
         runner_type=ShopRefreshRunner,
+        # 默认**不付费刷新**（0 次）：秘密商店自己会随时间自动刷新，每天进去扫一遍、
+        # 把自动刷出来的目标商品买掉即可 —— 0 次不花天空石，所以是安全默认值。
+        # ⚠️ 这也是唯一 ``min_cycles=0`` 的路线，见 ``ModeSpec.min_cycles``。
+        default_cycles=0,
+        min_cycles=0,
         # 开局不无脑回大厅：先看一眼是不是已经站在秘密商店页上 —— 是的话就地接管
         # （回大厅会白走一趟「大厅 → 秘密商店」导航，中间还可能被别的弹窗截住）。
         # 判据是三个锚点（商店标题 + 立即更新 + 购买按钮）同时过阈，不是「像商店」。
@@ -544,10 +570,33 @@ MODE_SPECS = {
         # 时 ``detect_resume_point`` 会顺手把 ``entered`` 拨对，落点状态本身恒为 None。
         resume_probe=_resume_probe(detect_labyrinth_stone_resume_point),
     ),
+    "sanctuary": ModeSpec(
+        name="sanctuary",
+        label="圣域收菜",
+        # 导航把画面停在圣域主页（大厅左侧最上面那个入口进去），第一步就是点「精灵之森」。
+        default_state=SanctuaryState.HOME.value,
+        # 终态 ``FINISHED`` 不给当起始状态：它不是一页画面，是「本轮已收工」的记号。
+        states=frozenset(
+            state.value
+            for state in SanctuaryState
+            if state is not SanctuaryState.FINISHED
+        ),
+        build_machine=_build_sanctuary,
+        runner_type=SanctuaryRunner,
+        # 每天跑一遍就够：圣域材料按天刷新，收完就没有可领的了 ⇒ 不给用户选。
+        cycles_editable=False,
+        # 开局不无脑回大厅：停在圣域主页时就地接管（并且把落点 ``entry`` 交给导航，
+        # 省掉「回大厅 → 再进圣域」那一趟）；停在精灵之森页也接得住。
+        # 领取完成弹窗刻意不接（它的动作只有一个「点关闭」，而回大厅路上的 ESC
+        # 本来就会把它关掉）；停在大厅认不出（``forest_row`` 在大厅上不成立），
+        # 照旧走「回大厅 → 进圣域」。
+        # 落点状态恒为 None（本路线每帧重判页面，不需要拨状态）。
+        resume_probe=_resume_probe(detect_sanctuary_resume_point),
+    ),
 }
 
-# 中文名的**唯一来源**。``main`` / ``navigation`` 直接用它；``launcher`` / 桌面助手的
-# 菜单与面板也从这里取（见各自模块）。⚠️ 别在别处再抄一份名字表 —— 抄了就会漂移，
+# 中文名的**唯一来源**。``main`` / ``navigation`` 直接用它；桌面助手的
+# 菜单与面板也从这里取（见 ``desktop/catalog.py``）。⚠️ 别在别处再抄一份名字表 —— 抄了就会漂移，
 # 因为没有任何机制会告诉你「另一处的名字没跟着改」。
 MODE_LABELS = {name: spec.label for name, spec in MODE_SPECS.items()}
 

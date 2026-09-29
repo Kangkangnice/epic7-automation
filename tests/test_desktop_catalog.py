@@ -14,10 +14,11 @@ def test_catalog_lists_every_route_in_menu_order():
         "world_boss",
         "knights_donation",
         "labyrinth_stone",
+        "sanctuary",
     ]
     assert route_by_name("hero_synthesis").status == "正式功能"
     assert route_by_name("story").status == "正式功能"
-    assert sum(route.experimental for route in ROUTES) == 6
+    assert sum(route.experimental for route in ROUTES) == 7
 
 
 def test_survivor_is_experimental_and_explains_the_manual_entry_page():
@@ -35,9 +36,16 @@ def test_shop_refresh_is_experimental_and_explains_cycle_semantics():
     shop = route_by_name("shop_refresh")
 
     assert shop.experimental
-    assert shop.default_cycles == 1
+    # 用户 2026-09-29 拍板：默认 **0 次** —— 秘密商店自己会随时间自动刷新，
+    # 每天进店扫一遍、把自动刷出来的买掉就行，0 次不花天空石。
+    assert shop.default_cycles == 0
+    assert shop.min_cycles == 0
     assert "付费刷新" in shop.description
     assert "初始页面" in shop.description
+    # 「0 次」这条口子只开给刷书签，别的路线照样必须为正。
+    for route in ROUTES:
+        if route.mode != "shop_refresh":
+            assert route.min_cycles == 1, f"{route.mode} 的次数下限不该被改动"
 
 
 def test_hero_synthesis_is_fixed_to_one_cycle():

@@ -131,12 +131,11 @@ tests/test_hunt_runner.py
   同名键会被钩子覆盖 —— 别拿它改公共参数。
 - 没有专属需求的路线**不要挂钩子**（挂个空转的配置只会让读的人以为它有含义）。
 
-⚠️ **中文名只在 `ModeSpec.label` 里写一次**。CLI 输出、QQ 通知、导航日志、交互菜单、
-桌面助手全都从它派生（2026-09-27 收敛）。以前这些地方各有一份，实测漂移过
+⚠️ **中文名只在 `ModeSpec.label` 里写一次**。CLI 输出、QQ 通知、导航日志、桌面助手全都从它派生（2026-09-27 收敛）。以前这些地方各有一份，实测漂移过
 （同一路线在界面叫「活动」、在通知里叫「幸存者」）—— **别在别处再抄一份名字表**，
 `games/epic7/route_metadata.py` 会在 import 阶段比对，抄漏了直接报错。
 
-⚠️ **默认次数同理**：只在 `ModeSpec.default_cycles` 定义一次，`main.py` / `launcher.py`
+⚠️ **默认次数同理**：只在 `ModeSpec.default_cycles` 定义一次，`main.py` / `desktop/**`
 里**不许**再出现 `if args.mode == "hunt": args.max_cycles = 3` 这种写法（同样会被
 `route_metadata.py` 拦下）。
 

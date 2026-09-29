@@ -138,8 +138,15 @@ class ShopRefreshStateMachine:
         *,
         observer: ShopRefreshObserver | None = None,
     ) -> None:
-        if target_refreshes <= 0:
-            raise ValueError("付费刷新次数必须为正数")
+        # 0 是**合法**目标：照常进商店、从上到下扫一遍、把想要的买掉，但一次都不
+        # 付费刷新（秘密商店自己会随时间自动刷新，0 次不花天空石 —— 见
+        # ``ModeSpec.min_cycles`` 与 ``modes.py::_build_shop_refresh``）。
+        # ``complete_bottom_scan()`` 用 ``completed_refreshes >= target_refreshes``
+        # 收尾，目标为 0 时扫完底部直接进 COMPLETE，``_refresh_transaction`` 不会触发；
+        # 此时买到的商品全部计入 ``initial_*``（``commit_purchase`` 按
+        # ``completed_refreshes == 0`` 分流）。
+        if target_refreshes < 0:
+            raise ValueError("付费刷新次数不能为负数（0 = 只扫一遍、不刷新）")
         self.stats = ShopRunStats(target_refreshes=target_refreshes)
         self.phase = ShopPhase.SCAN_TOP
         self.pending_purchase: PendingPurchase | None = None
@@ -883,8 +890,8 @@ class ShopRefreshRunner:
             )
 
     def run(self, max_cycles: int | None = None) -> int:
-        if max_cycles is None or max_cycles <= 0:
-            raise ValueError("刷书签需要正数付费刷新次数")
+        if max_cycles is None or max_cycles < 0:
+            raise ValueError("刷书签的付费刷新次数不能为负数（0 = 只扫一遍、不刷新）")
         if self.machine.completed_cycles == 0:
             self.machine.stats.target_refreshes = max_cycles
         try:

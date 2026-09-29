@@ -1,17 +1,18 @@
-"""「每日任务」：把几条路线按固定次序串起来一次跑完。
+"""「每日任务」：把勾上的几条路线串起来一次跑完。
 
 用户诉求（2026-09-25）：每天点一下，把该做的日常任务依次跑完。
-默认串五条 —— 世界首领战 → 骑士团捐赠 → 刷书签 → 迷宫强化石 → 竞技场；界面上可以只勾其中几条。
+用户诉求（2026-09-29）改判：**次序不再写死，由界面上的勾选先后决定**；
+可勾的也不再限于下面这五条 —— 除了「活动」，其余九条都能串。
+``DAILY_TASKS`` 因此退化成**默认清单**：只有「调用方没说要跑哪几条」时
+（命令行 ``--daily`` 不带 ``--daily-tasks``）才按它的次序全跑。
 
 **为什么不塞进 ``MODE_SPECS``**：路线是「一个状态机 + 一个 Runner」的固定形状，
 而这里是**编排**（循环调用 ``main.run_mode``）。硬塞进去会污染 ``--mode`` 的
 枚举、``ROUTES``、接力 ``ResumePoint`` 这些本该只管真路线的机制。
 
-**为什么次序是写死的、界面上不给排序**：用户明确说「顺序不重要」（= 不想操心
-先后）。次序在这里定：世界首领战与骑士团捐赠都从骑士团进、路径相近放一起；
-商店刷新（秘密商店，界面上叫「刷书签」）与迷宫强化石各自独立；竞技场入口不同、最灵活，放最后。
-⚠️ 刷书签的 ``cycles`` 是「付费刷新次数」，**花天空石、点了不可撤销**，
-所以默认只 1 次且界面上可改（同竞技场），别在这里写大数。要调整就改 ``DAILY_TASKS``，不必动界面。
+⚠️ 刷书签的 ``cycles`` 是「付费刷新次数」，**花天空石、点了不可撤销**，所以
+默认 **0 次**（只进店扫一遍、把自动刷出来的买掉，一次都不刷新）且界面上可改，
+别在这里写大数。0 是各路线里唯一合法的「零次」（见 ``ModeSpec.min_cycles``）。
 
 **每段之间「确保在首页」**（用户拍板：先看再拉）：
 上一条不管正常结束还是异常结束，本条开跑前先看一眼当前帧 —— 已在大厅就跳过
@@ -31,7 +32,7 @@ from pathlib import Path
 from typing import Callable, Mapping, Optional
 
 from auto_game_unified.core.runtime import ManualStop
-from auto_game_unified.games.epic7.modes import get_mode
+from auto_game_unified.games.epic7.modes import MODE_SPECS, get_mode
 
 
 @dataclass(frozen=True)
@@ -53,19 +54,23 @@ class DailyTask:
         return get_mode(self.mode).default_cycles
 
 
-# 次序即执行次序（与 ``mode`` 的字母序无关，别用 sorted 覆盖它）。
+# **默认清单**：调用方没说跑哪几条时按这个次序全跑（命令行 ``--daily`` 的兜底）。
+# 界面不读它 —— 界面把用户勾的那几条按勾选先后传下来（见 ``normalize_selection``）。
+# 次序本身仍有讲究：世界首领战与骑士团捐赠都从骑士团进、路径相近放一起；
+# 刷书签（秘密商店）与迷宫强化石各自独立；竞技场入口不同、最灵活，放最后。
+# 圣域收菜与骑士团那两条无关，但它和刷书签一样是「进菜单点几下就出来」的短流程，
+# 且入口都在大厅左侧那排菜单上 ⇒ 放在骑士团之后、刷书签之前。
 # 次数不写在这儿 —— 它跟着 ``MODE_SPECS`` 的 default_cycles 走（界面上可以改，
 # 改的值走 ``run_daily_tasks(cycles_override=...)``）。各路线为什么是那个次数，
 # 写在各自的 ModeSpec 上。
 DAILY_TASKS: tuple[DailyTask, ...] = (
     DailyTask(mode="world_boss"),
     DailyTask(mode="knights_donation"),
+    DailyTask(mode="sanctuary"),
     DailyTask(mode="shop_refresh"),
     DailyTask(mode="labyrinth_stone"),
     DailyTask(mode="arena"),
 )
-
-DAILY_BY_MODE = {task.mode: task for task in DAILY_TASKS}
 
 
 @dataclass
@@ -110,23 +115,29 @@ class DailyReport:
 
 
 def normalize_selection(selected: object) -> tuple[str, ...]:
-    """把界面传来的勾选规整成「有次序、去重、且都是已知任务」的模式名元组。
+    """把界面传来的勾选规整成「有次序、去重、且都是已知路线」的模式名元组。
 
-    - ``None`` / 空 ⇒ 默认全选（界面初次进入时没有显式勾选，按全部走）。
-    - 次序一律按 ``DAILY_TASKS`` 排，**不信调用方给的顺序**（用户说了顺序不重要，
-      那就由这里统一，免得界面顺序变化影响执行顺序）。
-    - 认不出的模式名直接报错（fail-closed）：界面传错名字属于接线问题，
+    - ``None`` ⇒ 默认清单（``DAILY_TASKS``）。这是命令行 ``--daily`` 不带
+      ``--daily-tasks`` 时的兜底；界面永远显式传自己勾的那几条。
+    - 显式传入 ⇒ **严格按传入顺序保留**：勾选先后就是执行顺序（用户 2026-09-29
+      拍板：次序由他定，不再由本模块写死）。同一个模式名出现两次只算第一次。
+    - 空 ⇒ 报错（fail-closed）：一条都不勾不该静默变成「全跑」。
+    - 认不出的模式名直接报错（fail-closed）：界面/命令行传错名字属于接线问题，
       静默忽略会让「勾了却没跑」变成一个没人发现的坑。
     """
     if selected is None:
         return tuple(task.mode for task in DAILY_TASKS)
-    requested = {str(name) for name in selected}
+    requested: list[str] = []
+    for name in selected:
+        mode = str(name)
+        if mode not in requested:
+            requested.append(mode)
     if not requested:
-        raise ValueError("每日任务至少要勾选一项")
-    unknown = sorted(requested - set(DAILY_BY_MODE))
+        raise ValueError("至少要勾选一条路线")
+    unknown = sorted(set(requested) - set(MODE_SPECS))
     if unknown:
-        raise ValueError(f"每日任务里有未知路线：{'、'.join(unknown)}")
-    return tuple(task.mode for task in DAILY_TASKS if task.mode in requested)
+        raise ValueError(f"未知路线：{'、'.join(unknown)}")
+    return tuple(requested)
 
 
 def _observe_lobby(navigator: object, runtime: object) -> str:
@@ -178,10 +189,10 @@ def run_daily_tasks(
         Callable[[object, object, str], Callable[..., object]]
     ] = None,
 ) -> DailyReport:
-    """按 ``DAILY_TASKS`` 的次序把选中的路线逐条跑完，返回汇总。
+    """把 ``selected`` 里的路线**按它给的次序**逐条跑完，返回汇总。
 
-    ``cycles_override`` 是「这几条不要用 ``DAILY_TASKS`` 里的默认次数」——
-    例如竞技场想连跑 3 场。**没写进来的路线一律用默认次数**，所以它是一张
+    ``cycles_override`` 是「这几条不要用默认次数」—— 例如竞技场想连跑 3 场。
+    **没写进来的路线一律用 ``MODE_SPECS`` 里的默认次数**，所以它是一张
     稀疏覆盖表，不是必须齐全的对照表。
 
     参数里的可注入点都是为了可测：
@@ -219,8 +230,9 @@ def run_daily_tasks(
     overrides = dict(cycles_override or {})
 
     for mode in modes:
-        task = DAILY_BY_MODE[mode]
-        cycles = overrides.get(mode, task.cycles)
+        spec = get_mode(mode)
+        label = spec.label
+        cycles = overrides.get(mode, spec.default_cycles)
 
         # 段间检查：这一段之前先确保人在大厅（第一条不用 —— 开局本来就该在大厅，
         # 且第一条的 _enter_mode 自己会处理）。
@@ -231,26 +243,23 @@ def run_daily_tasks(
                 failure = ensure_at_lobby(
                     navigator=probe_navigator,
                     runtime=probe_runtime,
-                    mode_label=task.label,
+                    mode_label=label,
                     # 按**即将要跑的那条路线**决定怎么回家：上一段就是被这条路线
                     # 收尾留在半路的，用同一条路线的口径拉回来最合适。
-                    home_return=home_return_builder(task.mode),
+                    home_return=home_return_builder(mode),
                 )
                 if failure is not None:
-                    report.aborted_reason = (
-                        f"{task.label} 之前无法回到首页（{failure}）"
-                    )
+                    report.aborted_reason = f"{label} 之前无法回到首页（{failure}）"
                     report.outcomes.append(
                         DailyOutcome(
-                            mode=task.mode,
-                            label=task.label,
+                            mode=mode,
+                            label=label,
                             status="skipped",
                             detail="上一段之后回不到首页，为避免连锁失败未执行",
                         )
                     )
                     break
 
-        spec = get_mode(task.mode)
         try:
             result = run_mode(
                 spec=spec,
@@ -266,8 +275,8 @@ def run_daily_tasks(
             report.stopped_by_user = True
             report.outcomes.append(
                 DailyOutcome(
-                    mode=task.mode,
-                    label=task.label,
+                    mode=mode,
+                    label=label,
                     status="skipped",
                     detail="用户手动停止",
                 )
@@ -276,8 +285,8 @@ def run_daily_tasks(
         except Exception as error:  # noqa: BLE001 —— 单条失败不该带崩整轮
             report.outcomes.append(
                 DailyOutcome(
-                    mode=task.mode,
-                    label=task.label,
+                    mode=mode,
+                    label=label,
                     status="failed",
                     detail=f"{type(error).__name__}: {error}",
                 )
@@ -287,8 +296,8 @@ def run_daily_tasks(
         exhausted = bool(getattr(result, "resource_exhausted", False))
         report.outcomes.append(
             DailyOutcome(
-                mode=task.mode,
-                label=task.label,
+                mode=mode,
+                label=label,
                 status="resource" if exhausted else "completed",
                 detail=(
                     f"轮次={getattr(result, 'completed_cycles', '?')}"
@@ -302,8 +311,3 @@ def run_daily_tasks(
         )
 
     return report
-
-
-def cycles_for(mode: str) -> int:
-    """这条每日任务默认跑几次（界面初次进来时用来填默认值）。"""
-    return DAILY_BY_MODE[mode].cycles

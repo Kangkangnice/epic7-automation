@@ -50,7 +50,7 @@
 | 情况 | 该怎么做 |
 | --- | --- |
 | 只改一两个文件、没碰共享模块 | 先 `git add <改到的文件>`，再**不带参数**跑 `python tools/check.py`；或直接 `python tools/check.py --files a.py b.py`（约 1~2 分钟） |
-| 改了共享模块（`core/**`、`runner_base`、`navigation`、`modes`、`main.py`、`launcher.py`、`tests/conftest.py` 等） | 跑全量（`--full`） |
+| 改了共享模块（`core/**`、`desktop/**`、`runner_base`、`navigation`、`modes`、`main.py`、`games/epic7/daily_tasks.py`、`tests/conftest.py` 等） | 跑全量（`--full`） |
 | 提交前收口 | 跑全量（`--full`） |
 
 提交钩子已经装在 `tools/githooks/pre-commit`，它看的是**暂存区** —— `git add` 了什么就验什么。

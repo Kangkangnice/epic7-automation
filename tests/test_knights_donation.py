@@ -170,7 +170,7 @@ EXPECTATIONS: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
         (SUP, SUP_TWO, SUP_FULL, SUP_SHORT),
         (GH_DOT, GH_BARE, SUP_SCROLLED, WK_OK, WK_DONE, WK_1500, POP, POP_SEL, SCONF, REWARD),
     ),
-    # 现场帧 @1500 也是每周任务页 ⇒ points_label 必须命中（实测 0.8660）。
+    # 现场帧 @1500 也是每周任务页 ⇒ points_label 必须命中（实测 0.9874）。
     "points_label": (
         (WK_OK, WK_DONE, WK_1500),
         (GH_DOT, GH_BARE, SUP, SUP_SCROLLED, SUP_TWO, SUP_FULL, SUP_SHORT, POP, POP_SEL, SCONF, REWARD),
@@ -406,7 +406,7 @@ class KnightsDonationEvidenceTests(unittest.TestCase):
         """弹窗盖在底页上，模板匹配对「压暗」不敏感 ⇒ 弹窗判据必须排在前面。
 
         实测奖励弹窗开着时，资源支援页的 request_support_button 掉到 0.3646、
-        每周任务页的 points_label 掉到 0.4138 —— 都不会串页，但顺序上先判弹窗更稳。
+        每周任务页的 points_label 掉到 0.6852 —— 都不会串页，但顺序上先判弹窗更稳。
         """
         profile = build_knights_donation_evidence(TEMPLATES)
 

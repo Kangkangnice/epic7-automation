@@ -15,6 +15,10 @@ class ProjectLayoutTests(unittest.TestCase):
                 "network_disconnected.png",
                 "network_reconnect.png",
                 "network_reconnect_navigation.png",
+                # 2026-09-28 用户实拍：快捷菜单页「宠物小屋礼物角标」（宠物送礼时挂出，
+                # 必须点掉才更新）。它是 home_return 点「酒馆」那一页，顺带成了这条
+                # 全局弹窗的唯一正例。
+                "pet_gift_live_20260928.png",
             },
             {path.name for path in fixture_dir.glob("*.png")},
         )
@@ -158,6 +162,10 @@ class ProjectLayoutTests(unittest.TestCase):
             # （标题「领取支援物品」）。同上，盖住骑士团主页、压暗底页锚点。
             # 实跑时它把导航打成「未知画面」，连点中央 4 次唤醒失败 —— 故纳入全局弹窗守卫。
             "gift_support_popup.png",
+            # 2026-09-28 实跑骑士团捐赠时现采：每周一结算弹出的「获得每周骑士团点数奖励」
+            # 弹窗（标题 + 点击关闭），盖住骑士团主页把导航打成「未知画面」。
+            # 与签到/支援弹窗同属「骑士团主页上的全局弹窗」，接成全局弹窗守卫。
+            "knights_weekly_reward_popup.png",
             # 2026-09-22 首次实跑失败帧：配置队伍页但「自动配置」按钮已转蓝。
             # 与 team_config.png 构成一组两态证据（橙=未配置 / 蓝=已配置），
             # 是「配置队伍页要分两阶段走」的回归依据。
@@ -247,6 +255,74 @@ class ProjectLayoutTests(unittest.TestCase):
         fixture_dir = ROOT / "tests" / "fixtures" / "epic7_knights_donation"
         self.assertEqual(expected, {path.name for path in fixture_dir.glob("*.png")})
 
+    def test_epic7_sanctuary_fixture_set_exists(self):
+        """圣域收菜的 18 张夹具，每一张都有不能删的理由。
+
+        ⚠️ 这张表是**故意的紧**：``epic7_sanctuary`` 是本仓库最新的路线夹具，
+        而它的判据只有「领取奖励」一个锚点 —— 判据准不准，全靠这批帧覆盖了
+        「可领 / 不可领 / 弹窗 / 淡入」这四种画面。少一张就少一种反例。
+        """
+        expected = {
+            # 大厅两帧：接力探针必须在这两帧上都不接管（否则会跳过「进圣域」）。
+            "lobby_entry.png",
+            "lobby_entry_b.png",
+            # 点完「圣域」那一瞬间的过渡帧：``forest_row`` 只有 0.2417 ⇒ 必须认不出。
+            # 它是「淡入帧不许当成已到位」这条判据的唯一物证。
+            "lobby_after_click.png",
+            # 圣域主页（三个来源：刚进圣域 / 从精灵之森返回 / 准备回大厅）
+            "home.png",
+            "home_from_forest.png",
+            "home_before_leaving.png",
+            # 精灵之森 · 两行可领。``_00`` 是模板来源帧；``_08`` 是 12 帧连拍里
+            # **分数最低**的那张（闪烁把分数压到 0.9733/0.9744），也是
+            # 「按位置排序而不是按分数排序」的回归依据（这一帧第 1 行分数
+            # 反而**低于**第 2 行）；``_old`` 是另一天拍的另一张，用于多样性。
+            "forest_two_claimable_00.png",
+            "forest_two_claimable_05.png",
+            "forest_two_claimable_08.png",
+            "forest_two_claimable_entry.png",
+            "forest_two_claimable_old.png",
+            # 精灵之森 · 只剩第 2 行可领（``_after_penguin`` 是领掉企鹅、关掉弹窗后
+            # 那一帧：第 1 行已变倒计时）。
+            "forest_spring_only.png",
+            "forest_after_penguin.png",
+            # 精灵之森 · 三行全在倒计时（本轮收工态）。
+            "forest_all_done.png",
+            # 领取完成弹窗。``popup_penguin_after6s`` 是**弹出 6 秒后**才拍的 ——
+            # 它是「弹窗不会自己消失、必须点掉」这条结论的唯一物证（用户口述
+            # 「也不需要你点」被它证伪）；``popup_spring`` 是另一个弹窗（标题与
+            # 物品图标都不一样），用来守住「只有『点击关闭』四个字是稳定的」。
+            "popup_penguin.png",
+            "popup_penguin_after6s.png",
+            "popup_penguin_before_close.png",
+            "popup_spring.png",
+        }
+        fixture_dir = ROOT / "tests" / "fixtures" / "epic7_sanctuary"
+        self.assertEqual(expected, {path.name for path in fixture_dir.glob("*.png")})
+
+    def test_sanctuary_templates_exist(self):
+        """圣域的 4 张路线锚点 + 1 张导航入口。
+
+        ⚠️ 导航入口 ``lobby_sanctuary`` 截的是**文字标签**不是那个城墙堡垒图标；
+        4 张路线锚点里 ``forest_row`` 身兼两职（圣域主页的页面判据 + 进精灵之森的
+        点击目标），``claim_text`` 是唯一的「可领」判据。
+        ``sanctuary_title.png``（左上角「圣域」标题）**刻意不存在** —— 它被全库
+        扫描否掉了：``epic7_fodder/stage_3_7.png`` 的标题叫「圣域最深处」，
+        前两个字恰好就是「圣域」⇒ 那张 2 字模板在那里得 0.9784（越阈）。
+        """
+        sanctuary = ROOT / "games" / "epic7" / "templates" / "sanctuary"
+        self.assertEqual(
+            {
+                "forest_row.png",
+                "forest_title.png",
+                "claim_text.png",
+                "popup_close.png",
+            },
+            {path.name for path in sanctuary.glob("*.png")},
+        )
+        navigation = ROOT / "games" / "epic7" / "templates" / "navigation"
+        self.assertTrue((navigation / "lobby_sanctuary.png").is_file())
+
     def test_every_route_is_known_to_the_local_check_gate(self):
         """每条路线都要在 `tools/check.py` 的路线表里登记。
 
@@ -280,6 +356,9 @@ class ProjectLayoutTests(unittest.TestCase):
             # 「领取支援物品」弹窗的两个锚点，同样双锚点同时命中才算。
             "gift_support_title.png",
             "gift_support_close.png",
+            # 「获得每周骑士团点数奖励」弹窗（每周一结算）的两个锚点，双锚点同时命中。
+            "knights_weekly_reward_title.png",
+            "knights_weekly_reward_close.png",
         ):
             self.assertTrue((navigation / name).is_file(), name)
 

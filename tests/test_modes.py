@@ -24,6 +24,7 @@ class Epic7ModeRegistryTests(unittest.TestCase):
                 "world_boss",
                 "knights_donation",
                 "labyrinth_stone",
+                "sanctuary",
             },
             set(MODE_SPECS),
         )
@@ -37,6 +38,7 @@ class Epic7ModeRegistryTests(unittest.TestCase):
         self.assertEqual("home", get_mode("world_boss").default_state)
         self.assertEqual("guild_home", get_mode("knights_donation").default_state)
         self.assertEqual("battle_menu", get_mode("labyrinth_stone").default_state)
+        self.assertEqual("home", get_mode("sanctuary").default_state)
 
     def test_survivor_starts_inside_the_activity_without_navigation(self):
         survivor = get_mode("survivor")

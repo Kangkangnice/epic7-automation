@@ -12,30 +12,25 @@
 | 各 Runner 的 ``_MODE_LABEL`` | 运行日志里那个中文名 | 只有继承 ``ModeRunnerBase`` / ``TransactionalRunnerBase`` 的 8 条 |
 | ``main.MODE_LABELS`` | CLI 输出与 QQ 通知里的中文名 | 10 条 |
 | ``navigation.MODE_LABELS`` | 导航完成日志里的中文名 | 只有 ``needs_navigation=True`` 的 9 条 |
-| ``launcher.MENU_OPTIONS`` | 交互菜单的编号 → 中文名 | 只有能从菜单进的 9 条 |
 | ``desktop.catalog.ROUTES`` | 桌面助手的中文名 | 10 条 |
 
-由此带来一类**没有任何机制能发现**的错。2026-09-27 审查时实测到两个活例子：
-
-1. **模式中文名漂移**：``main.MODE_LABELS`` 有 ``survivor: "幸存者"``，
-   而 ``navigation.MODE_LABELS`` **整条漏了 survivor** ⇒
-   ``MODE_LABELS.get(mode, mode)`` 悄悄退化成英文名。因为 survivor
-   ``needs_navigation=False`` 走不到那条日志，所以一直没人发现。
-2. **默认轮次三处不一致**：``main.py`` / ``launcher.py`` / ``desktop/catalog.py``
-   三处注释都写着「与另外两处保持一致（都被测试钉住）」，但**实测只钉住了 catalog**
-   —— 另两处没有任何交叉校验。
+由此带来一类**没有任何机制能发现**的错。2026-09-27 审查时实测到一个活例子：
+**模式中文名漂移**：``main.MODE_LABELS`` 有 ``survivor: "幸存者"``，
+而 ``navigation.MODE_LABELS`` **整条漏了 survivor** ⇒
+``MODE_LABELS.get(mode, mode)`` 悄悄退化成英文名。因为 survivor
+``needs_navigation=False`` 走不到那条日志，所以一直没人发现。
 
 ⇒ 本模块把「同一事实的多处副本必须一致」变成 **import 阶段报错**。
 
 ## ⚠️ 批次 2 之后本模块的重心变了（2026-09-27）
 
 审查报告的 **批次 2**（A1 + B1）已经把**次数**收敛成单一来源：固定次数现在只在
-``ModeSpec.default_cycles`` 里定义，``main.py`` / ``launcher.py`` /
-``desktop/catalog.py`` 全部从它读 —— **没有副本了**。
+``ModeSpec.default_cycles`` 里定义，``main.py`` / ``desktop/catalog.py``
+全部从它读 —— **没有副本了**。
 
-所以 ``default_cycles_consistency_errors`` 不再是「三处比对」，改成**防回潮**：
-``main.py`` / ``launcher.py`` 的源码里不该再冒出写死的次数（有人从旧代码抄回来
-就会各说各话）。
+所以 ``default_cycles_consistency_errors`` 不再是「多处比对」，改成**防回潮**：
+``main.py`` 的源码里不该再冒出写死的次数（有人从旧代码抄回来就会跟
+``MODE_SPECS`` 各说各话）。
 
 **中文名**则仍有真副本 —— 上面那几张表现在都是**从 ``MODE_SPECS.label`` 派生**的，
 比对它们等于「验证派生链没被谁改成写死的」。各 Runner 的 ``_MODE_LABEL`` 是唯一
@@ -135,16 +130,12 @@ def label_consistency_errors(
 # ---- 默认轮次一致性 -------------------------------------------------------
 
 
-def default_cycles_consistency_errors(
-    *,
-    main_defaults: dict[str, int],
-    launcher_defaults: dict[str, int],
-) -> list[str]:
-    """校验「命令行 / 交互菜单里**没有**写死的固定次数」；返回错误文案（空 = 干净）。
+def default_cycles_consistency_errors(*, main_defaults: dict[str, int]) -> list[str]:
+    """校验「``main.py`` 里**没有**写死的固定次数」；返回错误文案（空 = 干净）。
 
     ⚠️ 2026-09-27 起，固定次数只由 ``modes.MODE_SPECS`` 定义一次，
-    ``main.py`` / ``launcher.py`` / ``desktop/catalog.py`` 全部从它读。
-    所以本判据**不再是「三处比对」**（没有三处了），而是**防回潮**：
+    ``main.py`` / ``desktop/catalog.py`` 全部从它读。
+    所以本判据**不再是「多处比对」**（没有副本了），而是**防回潮**：
     源码里不该再出现 ``if <mode> == "...": ... = <次数>`` 这种硬编码 ——
     一旦出现，说明有人从旧代码/旧注释里抄回来了，那就会与 ``MODE_SPECS`` 各说各话。
 
@@ -154,16 +145,12 @@ def default_cycles_consistency_errors(
     读源码而不是读运行时值，是因为要抓的正是「源码里写死了什么」。
     """
     errors: list[str] = []
-    for source_name, table in (
-        ("main.py", main_defaults),
-        ("launcher.py", launcher_defaults),
-    ):
-        for mode in sorted(table):
-            errors.append(
-                f"{source_name} 里给 {mode} 写死了 {table[mode]} 次；"
-                "固定次数现在只在 MODE_SPECS 的 default_cycles 里定义一次，"
-                "请改回从那里读（要调次数就改那个字段）。"
-            )
+    for mode in sorted(main_defaults):
+        errors.append(
+            f"main.py 里给 {mode} 写死了 {main_defaults[mode]} 次；"
+            "固定次数现在只在 MODE_SPECS 的 default_cycles 里定义一次，"
+            "请改回从那里读（要调次数就改那个字段）。"
+        )
     return errors
 
 
@@ -174,13 +161,12 @@ def assert_route_metadata_consistent() -> None:
     """加载期自查入口：两块一致性都过才放行（fail-closed）。
 
     ⚠️ **延迟 import 是刻意的**：本模块会被 ``main`` 一侧引用，而这里要读
-    ``launcher`` / ``desktop.catalog`` / ``navigation`` —— 顶层 import 会成环。
+    ``desktop.catalog`` / ``navigation`` —— 顶层 import 会成环。
     项目里 ``finish_home`` / ``public_flow_verification`` 用的是同一招。
 
     ⚠️ 触发点在 ``main._install_finish_home``（与另外几道自查同一位置）：
     这样它跑在**生产路径**上，不只是测试里跑。
     """
-    from auto_game_unified import launcher
     from auto_game_unified.desktop import catalog
     from auto_game_unified.games.epic7 import modes, navigation
     from auto_game_unified.main import MODE_LABELS as main_labels
@@ -192,8 +178,8 @@ def assert_route_metadata_consistent() -> None:
 
     # 各副本「该覆盖哪些」的划定 —— 每一条都对应一个真实现象，不是拍脑袋：
     #
-    # ⚠️ 批次 2 之后，下面这四份里除 Runner 的 ``_MODE_LABEL`` 外**都是派生的**
-    # （``main`` / ``navigation`` / ``launcher`` / ``catalog`` 统统读 ``MODE_SPECS.label``）。
+    # ⚠️ 批次 2 之后，下面这几份里除 Runner 的 ``_MODE_LABEL`` 外**都是派生的**
+    # （``main`` / ``navigation`` / ``catalog`` 统统读 ``MODE_SPECS.label``）。
     # 比对它们不再是为了「发现漂移」，而是**验证派生链没被谁改回写死的** ——
     # 例如有人把 ``catalog.RouteInfo.label`` 从 property 改回一个字面量字段，
     # 只要值改了这里就报错。``_MODE_LABEL`` 是唯一真副本（Runner 不能 import
@@ -202,8 +188,6 @@ def assert_route_metadata_consistent() -> None:
     # - navigation：只服务导航完成的日志，needs_navigation=False 的路线
     #   （survivor）连导航器都不构建 ⇒ 不要求它。（survivor 那条漂移就是
     #   因为过去没这条规矩才没人发现；见模块开头。）
-    # - launcher：只列能从交互菜单进的路线；survivor 要人工把游戏停在
-    #   小游戏里才能跑，刻意不进菜单 ⇒ 不要求它。
     # - Runner 的 _MODE_LABEL：只有继承基类的路线才有这个类属性；
     #   shop_refresh / survivor 是裸主循环 ⇒ 只要求「有 _MODE_LABEL 的
     #   必须与 spec.label 一致」，不要求都有。
@@ -213,11 +197,6 @@ def assert_route_metadata_consistent() -> None:
         for name, spec in mode_specs.items()
         if (label := getattr(spec.runner_type, "_MODE_LABEL", ""))
     }
-    launcher_labels = {
-        mode: label
-        for label, mode in launcher.MENU_OPTIONS.values()
-        if mode != launcher.DAILY_MENU_ID
-    }
     catalog_labels = {route.mode: route.label for route in catalog.ROUTES}
 
     errors = label_consistency_errors(
@@ -225,13 +204,11 @@ def assert_route_metadata_consistent() -> None:
         copies={
             "各 Runner 的 _MODE_LABEL": runner_labels,
             "navigation.MODE_LABELS": dict(navigation.MODE_LABELS),
-            "launcher.MENU_OPTIONS": launcher_labels,
             "desktop.catalog.ROUTES": catalog_labels,
         },
         required_in={
             # main 是权威账本，不要求它比 MODE_SPECS 多；但它必须全覆盖。
             "navigation.MODE_LABELS": needs_navigation,
-            "launcher.MENU_OPTIONS": needs_navigation,
             "desktop.catalog.ROUTES": frozenset(mode_specs),
         },
     )
@@ -245,7 +222,6 @@ def assert_route_metadata_consistent() -> None:
 
     errors += default_cycles_consistency_errors(
         main_defaults=_main_fixed_cycles(),
-        launcher_defaults=_launcher_fixed_cycles(),
     )
 
     special_cases = _main_route_special_cases()
@@ -279,15 +255,6 @@ def _main_fixed_cycles() -> dict[str, int]:
     return _fixed_cycles_from_source(_MAIN_PATH, _MAIN_ARG_ATTR)
 
 
-def _launcher_fixed_cycles() -> dict[str, int]:
-    """``launcher.py`` 源码里写死的固定次数 → {模式: 次数}。正常应返回空字典。
-
-    ⚠️ ``elif mode in ("a", "b"): cycles = 1`` 这种**元组形式**也要认 ——
-    旧代码正是这么写的（迷宫强化石与 knights_donation 合并在一行）。
-    """
-    return _fixed_cycles_from_source(_LAUNCHER_PATH, _LAUNCHER_VAR)
-
-
 def _main_route_special_cases() -> list[str]:
     """``main.py`` 里拿 ``spec.name`` 跟具体路线名比的分支（正常应为**空列表**）。
 
@@ -307,21 +274,19 @@ def _main_route_special_cases() -> list[str]:
 
 _PACKAGE_ROOT = Path(__file__).resolve().parents[2]
 _MAIN_PATH = _PACKAGE_ROOT / "main.py"
-_LAUNCHER_PATH = _PACKAGE_ROOT / "launcher.py"
-# main.py 里比较的是 ``args.mode``（参数对象属性）；launcher.py 里是局部变量 ``mode``。
+# main.py 里比较的是 ``args.mode``（参数对象属性）。
 _MAIN_ARG_ATTR = ("args", "mode")
-_LAUNCHER_VAR = ("mode",)
 # 路线特判认的是 ``spec.name``（``run_mode`` 拿到的那份路线注册项）。
 _ROUTE_HANDLE = ("spec", "name")
-# 次数赋值的目标名：``main.py`` 是 ``args.max_cycles``、``launcher.py`` 是 ``cycles``。
+# 次数赋值的目标名：``main.py`` 里是 ``args.max_cycles``。
 _CYCLE_TARGET_NAMES = frozenset({"max_cycles", "cycles"})
 
 
 def _fixed_cycles_from_source(path: Path, subject: tuple[str, ...]) -> dict[str, int]:
     """从一份 py 源码里刮出「写死的固定次数」→ {模式: 次数}。
 
-    要抓的就是这种（2026-09-27 批次 2 之前 ``main.py`` / ``launcher.py``
-    里真实存在过、后来改成从 ``MODE_SPECS`` 读了）：
+    要抓的就是这种（2026-09-27 批次 2 之前 ``main.py`` 里真实存在过、
+    后来改成从 ``MODE_SPECS`` 读了）：
 
     ```python
     # main.py
@@ -329,12 +294,6 @@ def _fixed_cycles_from_source(path: Path, subject: tuple[str, ...]) -> dict[str,
         args.max_cycles = 2
     if args.mode in ("knights_donation", "labyrinth_stone") and args.max_cycles is None:
         args.max_cycles = 1
-
-    # launcher.py
-    elif mode == "world_boss":
-        cycles = 2
-    elif mode in ("knights_donation", "labyrinth_stone"):
-        cycles = 1
     ```
 
     ⚠️ **只认赋给 ``max_cycles`` / ``cycles`` 的整数常量**（见
@@ -343,7 +302,7 @@ def _fixed_cycles_from_source(path: Path, subject: tuple[str, ...]) -> dict[str,
 
     ⚠️ 刮不到就返回空字典（``OSError`` / ``SyntaxError`` 也吞）：这里要的是
     「源码里写死了什么」，程序**正常状态下就该是空的**。解析失败不该升级成
-    「程序起不来」—— 真出了问题，``main`` / ``launcher`` 自己的行为会先露馅。
+    「程序起不来」—— 真出了问题，``main`` 自己的行为会先露馅。
     """
     try:
         tree = ast.parse(path.read_text(encoding="utf-8"))

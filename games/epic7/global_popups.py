@@ -50,6 +50,19 @@ class GiftSupportTemplates:
     close: np.ndarray
 
 
+@dataclass(frozen=True)
+class KnightsWeeklyRewardTemplates:
+    title: np.ndarray
+    close: np.ndarray
+
+
+@dataclass(frozen=True)
+class PetGiftTemplates:
+    """宠物小屋礼物角标（**单锚点**：整个角标就是要点的目标，没有标题/关闭点）。"""
+
+    badge: np.ndarray
+
+
 _REFERENCE_SIZE = (1982, 1132)
 _MESSAGE_REGION = (700, 450, 600, 180)
 _RETRY_REGION = (780, 630, 400, 230)
@@ -80,6 +93,32 @@ _KNIGHTS_SIGNIN_THRESHOLD = 0.80
 _GIFT_SUPPORT_TITLE_REGION = (700, 260, 600, 90)
 _GIFT_SUPPORT_CLOSE_REGION = (860, 810, 300, 80)
 _GIFT_SUPPORT_THRESHOLD = 0.80
+# 「获得每周骑士团点数奖励」弹窗（**每周一结算**时弹出，盖在骑士团主页上）：
+# 标题「获得每周骑士团点数奖励」在面板上部（与签到/支援弹窗同一 ROI），
+# 「点击关闭」在面板下部。与那两个弹窗同理：标题锚点排他、关闭点单独不排他
+# （hero/reward_popup 上「点击关闭」能拿 0.9996），必须**双锚点同时命中**。
+# 实测弹窗帧 title=1.0000 / close=1.0000；跨页标题最高只有 **0.3376**
+# （恰在签到弹窗上 0.3376、其它都 <0.27），离 0.80 余量极大，互不误触。
+# 素材来自 2026-09-28 实跑骑士团捐赠时的原始诊断帧
+#（tests/fixtures/epic7_world_boss/knights_weekly_reward_popup.png）。
+_KNIGHTS_WEEKLY_REWARD_TITLE_REGION = (700, 260, 600, 90)
+_KNIGHTS_WEEKLY_REWARD_CLOSE_REGION = (860, 810, 300, 80)
+_KNIGHTS_WEEKLY_REWARD_THRESHOLD = 0.80
+# 「宠物小屋礼物角标」：**不是盖住页面的模态弹窗**，而是挂在**快捷菜单页**上的一个小角标
+# （就是回家流程点那颗「啤酒杯 → 酒馆」的那一页）。宠物送礼时，宠物小屋图标旁边会挂出
+# 一个「紫金礼盒 + 对话气泡」的角标；**点它一下才会领取礼物、角标才消失**，
+# 不点就一直挂着，每天回家都会看见。
+#
+# ⚠️ 这条是**单锚点**（与上面几个弹窗不同）：那个角标没有「标题 + 关闭点」这对东西，
+# 整个角标本身就是可点的目标 —— 点它（或它上面任意位置）即可，所以「标题排他 + 关闭点」
+# 的结构在这里根本不成立，硬凑第二锚点只会引入无谓的脆弱。排他性改由
+# 「区域限定 + 图形本身独特」保证，并已实测：
+# 2026-09-28 用 `runtime_logs/_pet_badge_scan.py` 扫全库 213 张夹具 ——
+# **自身 1.0000，第二名只有 0.5017**（`epic7_labyrinth_stone/labyrinth_detail.png`），
+# 阈值 0.80 的余量 0.30+，比骑士团三个弹窗（第二名 0.32）还宽。
+# 若将来真出现误触，再补「宠物小屋图标」当第二锚点即可（它一直在这一页上）。
+_PET_GIFT_BADGE_REGION = (1500, 300, 300, 220)
+_PET_GIFT_THRESHOLD = 0.80
 
 
 def load_network_reconnect_templates(
@@ -137,6 +176,21 @@ def load_gift_support_templates(
     return GiftSupportTemplates(
         title=load_template(str(template_dir / "gift_support_title.png")),
         close=load_template(str(template_dir / "gift_support_close.png")),
+    )
+
+
+def load_knights_weekly_reward_templates(
+    template_dir: Path,
+) -> KnightsWeeklyRewardTemplates:
+    return KnightsWeeklyRewardTemplates(
+        title=load_template(str(template_dir / "knights_weekly_reward_title.png")),
+        close=load_template(str(template_dir / "knights_weekly_reward_close.png")),
+    )
+
+
+def load_pet_gift_templates(template_dir: Path) -> PetGiftTemplates:
+    return PetGiftTemplates(
+        badge=load_template(str(template_dir / "pet_gift_badge.png")),
     )
 
 
@@ -354,6 +408,62 @@ def find_gift_support_close(
     return Match(close.center, min(title.score, close.score))
 
 
+def find_knights_weekly_reward_close(
+    screen: np.ndarray,
+    title_template: np.ndarray,
+    close_template: np.ndarray,
+) -> Match | None:
+    """Return the close anchor only when both weekly-reward popup anchors exist.
+
+    这是「每周一骑士团点数结算」弹窗（标题「获得每周骑士团点数奖励」）。
+    它和签到/支援弹窗一样盖在骑士团主页上，会把底页锚点压暗 ⇒ 弹窗期间页面
+    识别必然失败，必须先关掉它再识别，不能指望穿透。
+
+    两个锚点都命中才算：标题锚点排他（跨页最高 0.3376），
+    但「点击关闭」这四个字单独不排他（hero/reward_popup 上 0.9996），
+    所以必须靠标题把「点击关闭」的乱命中挡掉。实测弹窗帧双锚点都是 1.0000。
+    """
+    title = find_template(
+        screen,
+        title_template,
+        _KNIGHTS_WEEKLY_REWARD_THRESHOLD,
+        region=_KNIGHTS_WEEKLY_REWARD_TITLE_REGION,
+        reference_size=_REFERENCE_SIZE,
+    )
+    if title is None:
+        return None
+    close = find_template(
+        screen,
+        close_template,
+        _KNIGHTS_WEEKLY_REWARD_THRESHOLD,
+        region=_KNIGHTS_WEEKLY_REWARD_CLOSE_REGION,
+        reference_size=_REFERENCE_SIZE,
+    )
+    if close is None:
+        return None
+    return Match(close.center, min(title.score, close.score))
+
+
+def find_pet_gift_badge(
+    screen: np.ndarray,
+    badge_template: np.ndarray,
+) -> Match | None:
+    """认「宠物小屋礼物角标」，返回点击点（角标中心）。
+
+    与上面几个弹窗不同，这是**单锚点**：那个角标没有「标题 + 关闭点」，
+    整个角标本身就是要点掉的目标（理由与实测余量见
+    ``_PET_GIFT_BADGE_REGION`` 上方的注释）。
+    点它一下 → 礼物领取、角标消失；不点则一直挂着，每天回家都会看见。
+    """
+    return find_template(
+        screen,
+        badge_template,
+        _PET_GIFT_THRESHOLD,
+        region=_PET_GIFT_BADGE_REGION,
+        reference_size=_REFERENCE_SIZE,
+    )
+
+
 class Epic7GlobalPopupGuard:
     """Consume known system popups before business state machines see them."""
 
@@ -366,6 +476,8 @@ class Epic7GlobalPopupGuard:
         friend_request_templates: FriendRequestTemplates | None = None,
         knights_signin_templates: KnightsSigninTemplates | None = None,
         gift_support_templates: GiftSupportTemplates | None = None,
+        knights_weekly_reward_templates: KnightsWeeklyRewardTemplates | None = None,
+        pet_gift_templates: PetGiftTemplates | None = None,
         sleep: Callable[[float], None] = default_sleep,
         now: Callable[[], float] = monotonic,
         poll_seconds: float = 1.0,
@@ -378,6 +490,8 @@ class Epic7GlobalPopupGuard:
         self.friend_request_templates = friend_request_templates
         self.knights_signin_templates = knights_signin_templates
         self.gift_support_templates = gift_support_templates
+        self.knights_weekly_reward_templates = knights_weekly_reward_templates
+        self.pet_gift_templates = pet_gift_templates
         self.sleep = sleep
         self.now = now
         self.poll_seconds = poll_seconds
@@ -462,6 +576,30 @@ class Epic7GlobalPopupGuard:
                     "close-gift-support",
                     "gift_support_failed",
                     "领取支援物品弹窗点击4次后仍未消失",
+                )
+        if self.knights_weekly_reward_templates is not None:
+            match = find_knights_weekly_reward_close(
+                screen,
+                self.knights_weekly_reward_templates.title,
+                self.knights_weekly_reward_templates.close,
+            )
+            if match is not None:
+                return (
+                    match,
+                    "knights_weekly_reward",
+                    "close-knights-weekly-reward",
+                    "knights_weekly_reward_failed",
+                    "骑士团周结算奖励弹窗点击4次后仍未消失",
+                )
+        if self.pet_gift_templates is not None:
+            match = find_pet_gift_badge(screen, self.pet_gift_templates.badge)
+            if match is not None:
+                return (
+                    match,
+                    "pet_gift",
+                    "claim-pet-gift",
+                    "pet_gift_failed",
+                    "宠物小屋礼物角标点击4次后仍未消失",
                 )
         return None, None, None, None, None
 
