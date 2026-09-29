@@ -16,6 +16,19 @@ from .common import AtomEvidence, EvidenceProfile, PageEvidence
 
 REFERENCE_SIZE = (1982, 1132)
 ITEM_THRESHOLD = 0.75
+
+
+def _peaks_key(search: np.ndarray, covenant: np.ndarray, mystic: np.ndarray) -> bytes:
+    """(搜索区, 两个候选模板) 的内容指纹，只给 ``_target_peaks`` 的缓存用。
+
+    ⚠️ 形状必须一起进指纹：只喂 ``tobytes()`` 的话 2x3 与 3x2 会撞成同一个键。
+    """
+    digest = sha1()
+    digest.update(f"{search.shape}|{covenant.shape}|{mystic.shape}".encode())
+    digest.update(search.tobytes())
+    digest.update(covenant.tobytes())
+    digest.update(mystic.tobytes())
+    return digest.digest()
 ITEM_SCORE_MARGIN = 0.05
 # 列表指纹用 64x64 的 DCT 低 16x16 系数，共 256 位。原先只取 32x32 的低 8x8
 # 系数（64 位），低频分量对「同一面板换了一批商品」几乎不敏感：2026-09-14 三次
@@ -208,6 +221,10 @@ class ShopRefreshObserver:
             key: load_template(str(template_root / atom.template_path))
             for key, atom in profile.atoms.items()
         }
+        # 同一帧会被反复扫描（观察器等待时按轮询重看同一张画面），而 `_target_peaks`
+        # 是本模块最重的一步。缓存只留**最近一帧**的派生结果，理由见 `_target_peaks`。
+        self._peaks_key: bytes | None = None
+        self._peaks_value: list[tuple[tuple[int, int], float, float]] = []
 
     def _locate(self, screen: np.ndarray, key: str) -> Match | None:
         atom = self.profile.atom(key)
@@ -257,6 +274,13 @@ class ShopRefreshObserver:
         search = screen[y : y + height, x : x + width]
         covenant = self.templates["covenant_candidate"]
         mystic = self.templates["mystic_candidate"]
+        # ⚠️ 缓存的是**峰值列表**（几个小元组），**不是** cv2.matchTemplate 的分数图 ——
+        # 这一块搜索区（380x992）的分数图就是约 1.5 MB，缓存它会重演 core/matcher.py 里
+        # 记着的那次事故（进程内存 961 MB -> 4.1 GB、开始换页，比不缓存还慢）。
+        # 成本对比：两次匹配约 20~40 ms，取指纹约 0.2 ms ⇒ 只要命中就是净赚。
+        cache_key = _peaks_key(search, covenant, mystic)
+        if cache_key == self._peaks_key:
+            return self._peaks_value
         covenant_scores = cv2.matchTemplate(search, covenant, cv2.TM_CCOEFF_NORMED)
         mystic_scores = cv2.matchTemplate(search, mystic, cv2.TM_CCOEFF_NORMED)
         score_height = min(covenant_scores.shape[0], mystic_scores.shape[0])
@@ -289,6 +313,8 @@ class ShopRefreshObserver:
                 max(0, top - radius_y) : min(combined.shape[0], top + radius_y),
                 max(0, left - radius_x) : min(combined.shape[1], left + radius_x),
             ] = -1.0
+        self._peaks_key = cache_key
+        self._peaks_value = peaks
         return peaks
 
     def _buy_for_row(
