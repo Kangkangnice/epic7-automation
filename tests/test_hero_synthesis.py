@@ -29,7 +29,7 @@ from auto_game_unified.games.epic7.hero_transition import (
     SafetyClass,
 )
 from auto_game_unified.games.epic7.evidence.hero_synthesis import build_hero_evidence
-from auto_game_unified.games.epic7.modes import MODE_SPECS, get_mode
+from auto_game_unified.games.epic7.modes import get_mode
 from auto_game_unified.games.epic7.navigation import (
     Epic7Navigator,
     build_navigation_templates,

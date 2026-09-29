@@ -1,0 +1,78 @@
+# 静态检查配置（ruff + mypy）。
+#
+# ⚠️ 这个文件放在**包目录** auto_game_unified/ 下，不是仓库根 —— 仓库根就是它的父目录，
+# 而项目所有 import 都写成 auto_game_unified.xxx（见 .github/workflows/tests.yml 的检出路径）。
+#
+# 2026-09-30 引入。目的不是「统一风格」（这份代码的风格本来就很齐），而是挡住两类
+# **机器一查就出、人眼会漏**的问题：
+#   1. ruff 的 F 系（未使用的 import / 变量、未定义的名字）与 B 系（可变默认参数、
+#      静默吞异常、闭包延迟绑定、可疑比较……）；
+#   2. mypy 对**已经写好类型标注**的那部分做一致性检查 —— 标注是投入，不验证等于没收。
+#
+# 上线第一次跑就抓到一个真 bug：core/window.py 的 _best_effort_activate 是
+# @staticmethod 却在函数体里用 self._SW_RESTORE ⇒ NameError 被 except Exception 吞掉，
+# 「尽力还原窗口」其实一次都没执行过（见该文件的注释）。这就是留着这套东西的理由。
+#
+# ⚠️ mypy 的范围是**故意的窄**：先把「已经干净」的一小块锁住、防止回退，再往外扩。
+# 一次性把全仓塞进去会得到几百条历史噪声，那只会逼人加一堆 ignore，不如不做。
+# 扩范围的姿势：往下面 files 里加一个模块，跑 mypy，把新暴露的问题要么修掉、要么写明原因。
+
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+# 生成物与历史快照不参与检查。
+extend-exclude = [
+    "docs",
+    "runtime_logs",
+    "runtime_diagnostics",
+    ".pytest_cache",
+]
+
+[tool.ruff.lint]
+# 只选「查得出真问题」的规则族：
+#   E4/E7/E9 = pycodestyle 的导入位置 / 语句格式 / 语法级错误
+#   F        = pyflakes（未使用、未定义、重复定义……）
+#   B        = flake8-bugbear（闭包延迟绑定、可变默认参数、静默吞异常……）
+select = ["E4", "E7", "E9", "F", "B"]
+ignore = [
+    # 项目里大量中文 docstring / 日志，行宽是排版习惯而不是缺陷信号，不引入 E501。
+    "E501",
+]
+
+# ⚠️ **UP 系（pyupgrade）刻意没开**：它在本仓只有两条命中，且都是纯风格迁移 ——
+# UP045 `Optional[X]` → `X | None`（205 处）、UP035 `typing.Callable` →
+# `collections.abc.Callable`（33 处）。这两件事该由一次**专门的格式化改版**做，
+# 混进功能改动里会让 diff 没法审。想开的时候单独提一次，别顺手。
+
+[tool.ruff.lint.per-file-ignores]
+# conftest 给 cv2.imread / PIL.Image.open 打桩，必须 import 原函数才能存下来。
+"tests/conftest.py" = ["F401"]
+# ⚠️ E402（import 不在文件顶部）在这里是**刻意的**，不是漏排：
+#   - core/window.py：必须先 SetProcessDPIAware() 再 import pyautogui，
+#     否则逻辑坐标与物理像素会混用（该文件顶部有详细注释）。
+#   - tools/_*_elevated.py：先 sys.path.insert 才能 import 到项目包。
+"core/window.py" = ["E402"]
+"tools/_diagnose_pc_activation_elevated.py" = ["E402"]
+"tools/_verify_hero_tab_elevated.py" = ["E402"]
+"tools/_verify_pc_input_elevated.py" = ["E402"]
+
+[tool.mypy]
+python_version = "3.10"
+# 依赖没带类型标注（numpy/opencv/PIL/pyautogui 等），别让「缺 stub」淹没真问题。
+ignore_missing_imports = true
+# 让 auto_game_unified 这个包名可导入（配置在包目录里，包根在上一层）。
+mypy_path = ".."
+explicit_package_bases = true
+# 先把已经干净的一小块锁住。加文件之前先跑一遍 mypy 确认它本来就是干净的。
+#
+# ⚠️ 路径是**相对仓库父目录**的（mypy 按 CWD 解析 files，不按配置文件所在目录），
+# 而本项目的所有命令都从父目录跑（README 的每一句都是这么写的）：
+#     cd D:\AI\codex\auto_game
+#     python -m mypy --config-file auto_game_unified/pyproject.toml
+files = [
+    # 平台无关的引擎层：自包含、不 import games/，是类型纪律收益最高的地方。
+    "auto_game_unified/core",
+    # 导航链的纯数据模块（它 import 为零，所以能把「数据形状」单独钉住）。
+    "auto_game_unified/games/epic7/navigation_plan.py",
+]
+show_error_codes = true

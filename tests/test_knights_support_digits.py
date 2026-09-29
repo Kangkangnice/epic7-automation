@@ -202,7 +202,9 @@ class ThresholdTests(unittest.TestCase):
                 (green_mask(holdings_patch), str(holdings)),
                 (white_mask(required_patch), str(required)),
             ):
-                for box, digit in zip(glyph_boxes(mask), digits):
+                # strict=True：框数与位数对不上时必须当场炸，不能让 zip 静默截断
+                # 导致「少验了一位」还报绿（这正是本用例要防的）。
+                for box, digit in zip(glyph_boxes(mask), digits, strict=True):
                     glyph = normalize_glyph(mask, box)
                     for candidate, template in glyphs.items():
                         score = glyph_score(glyph, template)

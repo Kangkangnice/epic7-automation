@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 from enum import Enum
 from time import monotonic, sleep as default_sleep
-from typing import Callable
+from typing import Callable, NoReturn
 
 import numpy as np
 
@@ -84,7 +84,15 @@ class BattleSupervisor:
         self.now = now
         self.sleep = sleep
 
-    def _fail(self, label: str, message: str, screen: np.ndarray) -> None:
+    def _fail(self, label: str, message: str, screen: np.ndarray) -> NoReturn:
+        """记日志 + 存诊断，然后**一定抛**。
+
+        ⚠️ 返回类型必须是 ``NoReturn``、不能写 ``None``：调用点后面紧接着就用「到这里
+        已经确认非 None」的值（例如 ``observation.auto_point``：上面刚判过
+        ``is None -> _fail(...)``，下面直接拿它去点击）。写成 ``None`` 的话类型检查器
+        不知道这里会终止，会把那次点击标成「可能传入 None」—— 而那正是会崩的写法。
+        ``mypy`` 在 2026-09-30 上线时就是这么把这条链揪出来的。
+        """
         path = (
             self.runtime.save_diagnostic(label, screen)
             if self.runtime.diagnostic_dir is not None
@@ -102,14 +110,14 @@ class BattleSupervisor:
         invalid_since = black_since = None
         previous = None
         auto_clicks = 0
-        auto_clicked_at = None
+        auto_clicked_at: float | None = None
         auto_source_gone_logged = False
         auto_recoveries = 0
         auto_interference_stopped = False
         auto_interference_logged = False
         last_allowed_action = None
         allowed_action_clicks = 0
-        allowed_action_clicked_at = None
+        allowed_action_clicked_at: float | None = None
         entry_confirmed = False
         auto_confirmed = False
         business_pending_logged = False

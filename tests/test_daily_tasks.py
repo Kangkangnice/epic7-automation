@@ -13,7 +13,6 @@ from __future__ import annotations
 import pytest
 
 from auto_game_unified.core.runtime import ManualStop
-from auto_game_unified.games.epic7 import daily_tasks
 from auto_game_unified.games.epic7.daily_tasks import (
     DAILY_TASKS,
     DailyOutcome,

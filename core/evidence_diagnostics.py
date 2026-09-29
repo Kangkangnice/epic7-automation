@@ -13,7 +13,6 @@ from auto_game_unified.games.epic7.evidence.common import (
     AtomObservation,
     EvidenceProfile,
     EvidenceState,
-    validate_profile,
 )
 
 
@@ -158,7 +157,9 @@ def save_runtime_evidence_diagnostic(
         if not resolved_legacy.is_file():
             return None
         inspection = inspect_profile(screen, profile, profile.template_root)
-        evidence = {
+        # 显式标注：三个键的值类型不同（str / dict[str, Any] / dict[str, str]），不标的话
+        # mypy 会推成 dict[str, object]，与 write_evidence_diagnostic 的参数类型对不上。
+        evidence: dict[str, Mapping[str, Any]] = {
             "profile": {
                 "config": profile.config_path,
                 "template_root": str(profile.template_root),

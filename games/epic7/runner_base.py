@@ -427,7 +427,6 @@ class ModeRunnerBase:
         last_action_name: Optional[str] = None
         last_action_clicked_at: Optional[float] = None
         last_transition_action: Any = None
-        last_progress_at: float = self.now()  # 任意新动作发出即刷新
         retry_wait_logged = False
         action_attempts = 0
         black_started: Optional[float] = None

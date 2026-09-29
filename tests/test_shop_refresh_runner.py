@@ -12,6 +12,14 @@ from auto_game_unified.games.epic7.evidence.shop_refresh import (
     ShopRowObservation,
     build_shop_refresh_observer,
 )
+from auto_game_unified.games.epic7.shop_refresh import (
+    COVENANT_PRICE,
+    MYSTIC_PRICE,
+    ShopPhase,
+    ShopRefreshRunner,
+    ShopRefreshStateMachine,
+    ShopRunStats,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -23,14 +31,6 @@ def _fixture(name: str) -> np.ndarray:
     bgr = cv2.imread(str(FIXTURES / f"{name}.png"), cv2.IMREAD_COLOR)
     assert bgr is not None
     return cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
-from auto_game_unified.games.epic7.shop_refresh import (
-    COVENANT_PRICE,
-    MYSTIC_PRICE,
-    ShopPhase,
-    ShopRefreshRunner,
-    ShopRefreshStateMachine,
-    ShopRunStats,
-)
 
 
 def _row(kind: ShopItemKind, row_key: str = "row-a") -> ShopRowObservation:

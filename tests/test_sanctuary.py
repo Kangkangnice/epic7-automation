@@ -23,9 +23,9 @@ import pytest
 
 from auto_game_unified.games.epic7 import sanctuary
 from auto_game_unified.games.epic7.evidence.sanctuary import (
-    CLAIM_ROW_CENTERS,
     claimable_rows,
 )
+from auto_game_unified.games.epic7.unknown_screen import UnrecognizedScreen
 from auto_game_unified.games.epic7.sanctuary import (
     SANCTUARY_HOME_PAGE,
     SanctuaryAction,
@@ -111,7 +111,9 @@ def test_the_transition_frame_is_not_mistaken_for_the_sanctuary_home():
     """
     machine = build_machine()
     assert machine.observe_page(frame("lobby_after_click")) is None
-    with pytest.raises(Exception):
+    # 断言具体异常类型（别用 Exception 兜）：认不出画面就该是 UnrecognizedScreen，
+    # 换成别的异常说明这条路径走歪了。
+    with pytest.raises(UnrecognizedScreen):
         machine.next_action(frame("lobby_after_click"))
 
     # 反证：站稳之后（同一页的另一帧）必须认得出。

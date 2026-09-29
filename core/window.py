@@ -197,8 +197,12 @@ class Epic7Window:
             self._best_effort_activate(window._hWnd)
         sleep(0.3)
 
-    @staticmethod
-    def _best_effort_activate(handle: int) -> None:
+    def _best_effort_activate(self, handle: int) -> None:
+        # ⚠️ 2026-09-30（ruff F821 抓到的真实缺陷）：这里原本挂着 @staticmethod，
+        # 函数体却引用 self._SW_RESTORE ⇒ 每次调用**第一行就 NameError**，而下面那个
+        # 兜底 except 把它静默吞掉，「尽力还原窗口」等于一次都没执行过。
+        # ⇒ 别把 self 去掉（那会让还原参数变成魔数），也别把 except 收窄成具体异常类型：
+        # 它兜的是 Windows API 的各种失败，收窄会让「还原失败」直接打断主流程。
         try:
             ctypes.windll.user32.ShowWindow(handle, self._SW_RESTORE)
             ctypes.windll.user32.SetForegroundWindow(handle)
@@ -281,7 +285,12 @@ class Epic7Window:
                 gdi32.DeleteDC(mem_dc)
         finally:
             user32.ReleaseDC(handle, hwnd_dc)
-        render = np.frombuffer(buffer, dtype=np.uint8).reshape(height, width, 4)
+        # memoryview 不是装饰：np.frombuffer 的 stub 不接受 ctypes 数组
+        # （mypy: No overload variant matches 'Array[c_char]'）。包一层得到的是同一个
+        # 缓冲区的视图，逐字节等价。
+        render = np.frombuffer(memoryview(buffer), dtype=np.uint8).reshape(
+            height, width, 4
+        )
         rgb = np.ascontiguousarray(render[:, :, :3][:, :, ::-1])
         if not render_is_usable(rgb):
             return None

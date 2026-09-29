@@ -72,7 +72,8 @@ def make_supervisor(observations, *, changing_frames=True, config_overrides=None
         now=clock.now,
         sleep=clock.sleep,
     )
-    observe = lambda screen, previous: next(iterator)
+    def observe(screen, previous):
+        return next(iterator)
     return supervisor, gate, observe, clicks, logs, diagnostics
 
 

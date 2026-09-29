@@ -67,6 +67,12 @@ git add <刚压过的文件>
 | 改了共享模块 | 同上 —— `--files` 会**自动升成全量**，不必手加 `--full`（约 10 分钟） |
 | **提交前收口** | **什么都不用跑，直接 `git commit`** —— 让钩子跑那一次 |
 
+**静态检查（ruff + mypy）每次都跑**，几秒钟；没装会大声跳过，装了就必须过。
+规则与范围在 `auto_game_unified/pyproject.toml`：mypy 目前**只覆盖 `core/` 与导航链
+数据模块**（先把已经干净的一小块锁住、防回退；扩范围时改那里的 `files`，改前先跑一遍）。
+2026-09-30 上线第一次跑就抓到 `core/window.py` 里一个真 bug（`@staticmethod` 里用
+`self` ⇒ NameError 被静默吞掉，「尽力还原窗口」一次都没执行过）。
+
 ### ⚠️ 同一次提交，门禁只跑一遍（2026-09-29 用户拍板）
 
 提交钩子（`tools/githooks/pre-commit`）每次 `git commit` 都会跑一遍 `check.py`，
