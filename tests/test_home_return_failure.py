@@ -485,9 +485,6 @@ class RealWiringTests(unittest.TestCase):
         """
         logs: list[str] = []
         navigator = _real_navigator(INDOOR_FRAME, logs=logs)
-        home_return = main_module.HomeReturn(
-            navigator, navigator.runtime, mode="arena"
-        )
 
         templates = home_return_module.build_home_return_templates(
             TEMPLATES, navigator.templates

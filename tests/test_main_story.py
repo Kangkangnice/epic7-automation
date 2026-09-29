@@ -75,8 +75,11 @@ class MainStoryTests(unittest.TestCase):
                 gift_support_templates = object()
                 knights_weekly_reward_templates = object()
                 pet_gift_templates = object()
-                runtime.set_capture_guard.side_effect = lambda guard: events.append(
-                    "guard"
+                # ⚠️ 本文件三处 B023 抑制标记都是误报：events 虽然在外层循环里被重新赋值，
+                # 但这些 side_effect / on_call 都是**当轮同步调用**的（mock 在被调用的那一刻
+                # 就执行它），取不到下一轮的值。ruff 只看语法，看不出调用时机。
+                runtime.set_capture_guard.side_effect = lambda guard: (
+                    events.append("guard")  # noqa: B023
                 )
 
                 with (
@@ -134,12 +137,12 @@ class MainStoryTests(unittest.TestCase):
                     # 白名单路线走 v2、压根不碰导航器那个方法，再替换它记不到事件。
                     navigator_type.return_value.return_home.side_effect = (
                         fake_return_home(
-                            on_call=lambda: events.append("navigation")
+                            on_call=lambda: events.append("navigation")  # noqa: B023
                         )
                     )
                     home_return_type.return_value.side_effect = (
                         fake_return_home(
-                            on_call=lambda: events.append("navigation")
+                            on_call=lambda: events.append("navigation")  # noqa: B023
                         )
                     )
                     main_module.run_mode(

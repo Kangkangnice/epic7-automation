@@ -433,7 +433,7 @@ def return_home_v2(
             )
             verifier.act(
                 "点酒馆",
-                lambda: runtime.click(tavern.center, "go-tavern"),
+                lambda: runtime.click(tavern.center, "go-tavern"),  # noqa: B023
                 screen,
             )
             stable.reset()
@@ -459,7 +459,7 @@ def return_home_v2(
             )
             verifier.act(
                 "打开快捷菜单",
-                lambda: runtime.click(blue_grid.center, "open-quick-menu"),
+                lambda: runtime.click(blue_grid.center, "open-quick-menu"),  # noqa: B023
                 screen,
             )
             stable.reset()
@@ -477,7 +477,7 @@ def return_home_v2(
             )
             verifier.act(
                 "放弃战斗",
-                lambda: runtime.click(give_up.center, "give-up"),
+                lambda: runtime.click(give_up.center, "give-up"),  # noqa: B023
                 screen,
             )
             stable.reset()
@@ -495,7 +495,7 @@ def return_home_v2(
             )
             verifier.act(
                 "结束（放弃战斗）",
-                lambda: runtime.click(finish.center, "confirm-give-up"),
+                lambda: runtime.click(finish.center, "confirm-give-up"),  # noqa: B023
                 screen,
             )
             stable.reset()
@@ -555,6 +555,13 @@ class _ActionVerifier:
 
         ``before_screen`` 是**动作前**那一帧（调用方刚截的）。
         生效判「页面身份变了」；降级时判「画面明显变了」。
+
+        ⚠️ ``return_home_v2`` 里有 4 处 ``verifier.act(..., lambda: ...)`` 带
+        ``# noqa: B023``：那些 lambda 定义在 ``while`` 循环里、引用当轮才赋值的局部
+        变量，而 ``perform()`` 就在本方法里**当场同步调用**（见下面那行），取不到下一轮的
+        值 —— ruff 只能看语法、判不出调用时机，是误报。**人工核过**才标的 noqa；
+        哪天 ``act`` 改成延迟/批量执行，这 4 处就会变成真 bug（届时要改成
+        ``lambda x=x:`` 把值绑进闭包）。
         """
         before = self._page_of(before_screen)
         self._runtime.log(

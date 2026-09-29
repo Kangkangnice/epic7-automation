@@ -388,7 +388,11 @@ class Epic7PcWindow:
         finally:
             self._user32.ReleaseDC(hwnd, window_dc)
 
-        bgra = np.frombuffer(buffer, dtype=np.uint8).reshape(height, width, 4)
+        # 同 core/window.py：np.frombuffer 的 stub 不接受 ctypes 数组，包一层 memoryview
+        # （同一个缓冲区的视图，逐字节等价）。
+        bgra = np.frombuffer(memoryview(buffer), dtype=np.uint8).reshape(
+            height, width, 4
+        )
         frame = np.ascontiguousarray(bgra[:, :, :3][:, :, ::-1])
         if float(frame.std()) < 1.0:
             return None

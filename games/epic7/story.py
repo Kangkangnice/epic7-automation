@@ -30,8 +30,12 @@ from auto_game_unified.games.epic7.pre_battle import (
     load_simulator_quick_battle_detector,
     observe_pre_battle,
 )
-# 友情点数弹窗识别已迁至全局弹窗守卫（global_popups），此处保留导出以兼容旧引用。
-from auto_game_unified.games.epic7.global_popups import (
+# 友情点数弹窗识别已迁至全局弹窗守卫（global_popups），此处**保留导出以兼容旧引用**
+# （tests/test_epic7_story.py 就是按 ``story_module.find_friendship_points_popup_close``
+# 取的）⇒ 它在本模块里「没人用」是**故意的**，别让 ruff 的 F401 把它删掉。
+# 2026-09-30 实测被删过一次：那条自动修复把这行注释上方的导入一起删了，
+# 于是注释悬空、测试当场红（自动修复不认识「再导出」这种用法）。
+from auto_game_unified.games.epic7.global_popups import (  # noqa: F401
     find_friendship_points_popup_close,
 )
 from auto_game_unified.games.epic7.stamina import (

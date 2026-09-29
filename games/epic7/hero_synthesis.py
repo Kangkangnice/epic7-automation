@@ -1247,7 +1247,6 @@ class HeroSynthStateMachine:
         # Runner 会用动作名做两帧确认；指纹用于让动画过渡中的不同英雄
         # 产生不同动作名，从而不会被误判为稳定。
         rating = "S" if self._is_max_rating(screen) else "X"
-        dot = "D" if self._red_dot_present(screen) else "N"
         fp = self._current_card_observation
         if fp is None:
             return None

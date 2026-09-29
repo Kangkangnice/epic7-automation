@@ -6,7 +6,6 @@ import numpy as np
 
 from auto_game_unified.core.battle_supervisor import AutoBattleState
 from auto_game_unified.games.epic7.expedition import (
-    ExpeditionAction,
     ExpeditionState,
     ExpeditionStateMachine,
     ExpeditionTemplates,

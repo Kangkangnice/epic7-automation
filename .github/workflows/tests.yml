@@ -29,6 +29,17 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r auto_game_unified/requirements-dev.txt
 
+      # 静态检查放在测试**之前**：几秒钟就能跑完，让「未使用 import / 未定义名字 /
+      # 类型与标注冲突」这类问题在最早的位置暴露，不必等十分钟的全量测试。
+      # 规则与范围（含 mypy 为什么只覆盖 core/）见 auto_game_unified/pyproject.toml。
+      - name: Lint (ruff)
+        working-directory: ${{ github.workspace }}
+        run: python -m ruff check auto_game_unified
+
+      - name: Type check (mypy)
+        working-directory: ${{ github.workspace }}
+        run: python -m mypy --config-file auto_game_unified/pyproject.toml
+
       - name: Compile
         working-directory: ${{ github.workspace }}
         run: python -m compileall -q auto_game_unified

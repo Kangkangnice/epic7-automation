@@ -1,2 +1,6 @@
 -r requirements.txt
 pytest>=8.0
+# 静态检查（规则与范围见 pyproject.toml 的 [tool.ruff] / [tool.mypy]）。
+# ⚠️ 精确钉版本：mypy 大版本之间「报哪些错」会变，钉住才能让「本地绿 = CI 绿」成立。
+ruff==0.16.9
+mypy==2.3.1

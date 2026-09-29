@@ -11,6 +11,8 @@
   `hero_transition`、`evidence/common`、`main.py`、`games/epic7/daily_tasks.py`）
   或**认不出归属**：跑全量。
 - **只改 `tools/`、`.github/`**：只做编译检查（这些没有测试覆盖）。
+- **静态检查（2026-09-30 起，每次都跑）**：ruff + mypy，规则与范围见 `auto_game_unified/pyproject.toml`。
+  没装就**大声跳过**（不阻塞提交），装了就必须过 —— CI 一定会装。
 
 用法（在仓库根 `auto_game_unified` 下执行）：
     python tools/check.py                # 按 git 暂存区（pre-commit 钩子用这个；日常首选）
@@ -207,6 +209,56 @@ def run(label: str, command: list[str]) -> int:
     return subprocess.run(command, cwd=WORKSPACE, check=False).returncode
 
 
+def _has_module(executable: list[str], module: str) -> bool:
+    probe = subprocess.run(
+        [*executable, "-c", f"import {module}"],
+        cwd=WORKSPACE,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return probe.returncode == 0
+
+
+def run_static_checks() -> int:
+    """ruff + mypy（规则与范围见 pyproject.toml）。
+
+    放在**编译之后、测试之前**：这两件工具几秒钟就能跑完，让「未使用 import /
+    未定义名字 / 类型与标注冲突」这类问题在最早的位置暴露，不必先等十分钟的全量测试。
+    2026-09-30 上线第一次跑就靠它抓到 ``core/window.py`` 里一个真 bug
+    （``@staticmethod`` 里用 ``self`` ⇒ NameError 被静默吞掉）。
+
+    ⚠️ 工具**没装就大声跳过**、不阻塞提交：钩子的职责是「装了就必须过」，
+    不是「逼所有人装 lint」。CI 一定会装（``requirements-dev.txt``）⇒ 漏网逃不掉。
+    """
+    interpreter = find_python_with_pytest() or [sys.executable]
+    planned = [
+        ("ruff", [*interpreter, "-m", "ruff", "check", PACKAGE]),
+        (
+            "mypy",
+            [
+                *interpreter,
+                "-m",
+                "mypy",
+                "--config-file",
+                f"{PACKAGE}/pyproject.toml",
+            ],
+        ),
+    ]
+    for module, command in planned:
+        if not _has_module(interpreter, module):
+            print(
+                f"[check] 未安装 {module}，跳过静态检查（CI 会跑；装了就必须过）",
+                flush=True,
+            )
+            continue
+        status = run(f"静态检查（{module}）", command)
+        if status != 0:
+            print(f"[check] {module} 不通过，先修掉再提交")
+            return status
+    return 0
+
+
 def _has_pytest(executable: list[str]) -> bool:
     probe = subprocess.run(
         [*executable, "-c", "import pytest"],
@@ -363,7 +415,7 @@ def _judge(codes: list[int], outputs: list[str]) -> int:
         print(text, end="")
 
     forgiven = False
-    for code, text in zip(codes, outputs):
+    for code, text in zip(codes, outputs, strict=True):
         if code == 0:
             continue
         if PASSED_RE.search(text) and not FAILED_RE.search(text):
@@ -517,8 +569,13 @@ def main() -> int:
         return status
 
     if args.skip_tests:
+        # 「只做编译检查」是**字面意思**：连静态检查也一起跳过（要快的时候用它）。
         print("[check] 按要求只做编译检查")
         return 0
+
+    status = run_static_checks()
+    if status != 0:
+        return status
 
     all_tests = sorted(p.name for p in (PACKAGE_DIR / "tests").glob("test_*.py"))
     all_targets = [f"{PACKAGE}/tests/{name}" for name in all_tests]

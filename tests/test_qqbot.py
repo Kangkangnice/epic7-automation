@@ -1,8 +1,6 @@
 import json
 import unittest
-from collections.abc import Callable
 from typing import Any
-from unittest.mock import patch
 
 from auto_game_unified.core import qqbot
 
