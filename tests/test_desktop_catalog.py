@@ -1,4 +1,30 @@
-from auto_game_unified.desktop.catalog import PRODUCT_NAME, ROUTES, route_by_name
+from auto_game_unified.desktop.catalog import (
+    DEV_BACKEND_ENV,
+    PRODUCT_NAME,
+    ROUTES,
+    route_by_name,
+    visible_backends,
+)
+
+
+def test_pc_backend_is_hidden_from_the_ui_by_default():
+    """PC 客户端默认不在界面上露面。
+
+    露出来的代价是：用户能一键选中一次**必然失败**的实跑 —— 截止 2026-09-30，十一条路线
+    没有一条通过 PC 验收，其中四条还会直接报「未配置滑动动作」，而失败原因看起来像程序坏了。
+    """
+    assert visible_backends({}) == ("emulator",)
+
+
+def test_the_dev_switch_reveals_the_pc_backend():
+    """采模板 / 开发验证仍然要用它 —— 所以是「收起来」而不是「删掉」。"""
+    assert visible_backends({DEV_BACKEND_ENV: "1"}) == ("emulator", "pc")
+
+
+def test_only_the_exact_switch_value_reveals_it():
+    """只有 "1" 算数：写成 "true" / "yes" 不该悄悄把未验收的后端露出来。"""
+    for value in ("", "0", "true", "yes", "2", "on"):
+        assert visible_backends({DEV_BACKEND_ENV: value}) == ("emulator",)
 
 
 def test_catalog_lists_every_route_in_menu_order():
