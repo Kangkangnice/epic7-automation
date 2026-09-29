@@ -736,7 +736,7 @@ class ModeRunnerBase:
                         self._self_heal_used = True
                         self.runtime.log(
                             f"模式={self._MODE_LABEL} 动作={action.name} "
-                            "四次点击未转场 ⇒ 交给路线自己换个办法（不回大厅重来），仅此一次"
+                            "四次点击未转场 -> 交给路线自己换个办法（不回大厅重来），仅此一次"
                         )
                         state_started = self.now()
                         absolute_started = state_started

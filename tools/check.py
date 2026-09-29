@@ -55,6 +55,14 @@ import subprocess
 import sys
 from pathlib import Path
 
+# ⚠️ 控制台编码兜底（2026-09-30 实测踩到）：本机控制台是 GBK，遇到它编不出的字符
+# （例如 "⇒" "⚠️"）print 会抛 UnicodeEncodeError —— **把整个门禁打死**，而不是少显示一个字。
+# 门禁宁可显示成 "?"，也不能因为一句日志挂掉。只在真的支持 reconfigure 时动它。
+try:
+    sys.stdout.reconfigure(errors="replace")  # type: ignore[union-attr]
+except Exception:  # pragma: no cover - 老解释器 / 被重定向的 stdout
+    pass
+
 PASSED_RE = re.compile(r"\d+ passed")
 FAILED_RE = re.compile(r"\d+ (failed|error)")
 
@@ -120,12 +128,20 @@ DOC_SUFFIXES = (".md", ".txt", ".json", ".yaml", ".yml")
 ASSET_PREFIXES = ("tests/fixtures/", "games/epic7/templates/", "docs/manual_review/")
 LAYOUT_TEST = "test_project_layout.py"
 
-# 测试并行度。**默认 1（关）= 单进程**，2026-09-23 定的：
-# 用户的机器只有 15GB 内存，且提交时常常还开着游戏/别的会话；实测多进程在内存吃紧时会退化
-# （4 片耗时之和 382 秒 → 502 秒，可用内存掉到 4GB、开始换页，比单进程还慢），
-# 所以**先不启用**，改为优先优化单进程本身。
-# 想启用就把这里改成 2 或 4：机器空闲时 4 路实测能把全量从 382 秒压到 191 秒。
-PARALLEL_WORKERS = 1
+# 测试并行度：**按当下的可用内存自适应**（2026-09-30 起）。
+#
+# 背景：这台机器只有 15 GB 内存，而一个 pytest 进程峰值约 1 GB（2026-09-30 实测 961 MB）。
+# 2026-09-23 把它定成恒定 1（关），理由是实测多进程在内存吃紧时会**退化**：
+# 4 片耗时之和 382 秒 → 502 秒，可用内存掉到 4 GB 开始换页，比单进程还慢。
+# 但「恒定 1」把空闲时的收益一起丢掉了（机器空闲时 4 路实测 382 秒 → 191 秒）。
+#
+# ⇒ 改成看**这一次**的可用内存决定并行几路：装得下就并行，装不下就单进程。
+#   常数就下面三个，改并行策略只改这里。
+PARALLEL_MAX_WORKERS = 4
+#: 一个 pytest 进程的峰值内存（实测 961 MB），留 20% 余量。
+PARALLEL_PER_WORKER_GB = 1.2
+#: 留给浏览器 / 游戏 / 编辑器 —— 把它们的页面挤出去会拖慢整机，得不偿失。
+PARALLEL_RESERVE_GB = 2.5
 
 # 全量时才说的话。目的不是拦人，而是**让「白跑」这件事在屏幕上变得刺眼**：
 # 门槛判成全量的常见成因不是「改动真的大」，而是用了 `--vs HEAD`，把上一轮未提交的
@@ -477,6 +493,62 @@ def _run_parallel(
     return _judge(codes, outputs)
 
 
+def available_memory_gb() -> float | None:
+    """当下可用内存（GB）；拿不到就返回 None（调用方按单进程处理）。"""
+    try:
+        import psutil
+    except Exception:
+        return None
+    try:
+        return float(psutil.virtual_memory().available) / (1024**3)
+    except Exception:
+        return None
+
+
+def choose_workers(target_count: int) -> int:
+    """按**这一次**的可用内存决定并行几路测试。
+
+    ⚠️ 为什么不是写死一个数：2026-09-23 实测，内存吃紧时 4 片耗时之和
+    382 秒 → 502 秒（开始换页），比单进程还慢。所以每次都重新看内存，
+    宁可退回单进程，也不要一边换页一边跑。
+
+    `EPIC7_CHECK_WORKERS` 可以强制指定路数（调试用；照样受上限与目标数约束）。
+    """
+    override = os.environ.get("EPIC7_CHECK_WORKERS")
+    if override:
+        try:
+            forced = int(override)
+        except ValueError:
+            print(f"[check] EPIC7_CHECK_WORKERS={override!r} 不是整数，忽略", flush=True)
+        else:
+            return max(1, min(forced, PARALLEL_MAX_WORKERS, target_count))
+
+    free = available_memory_gb()
+    if free is None:
+        print("[check] 读不到可用内存 -> 单进程（保守）", flush=True)
+        return 1
+
+    budget = free - PARALLEL_RESERVE_GB
+    if budget < PARALLEL_PER_WORKER_GB:
+        print(
+            f"[check] 可用内存 {free:.1f} GB，扣掉保留的 {PARALLEL_RESERVE_GB} GB 已装不下"
+            f"第二路（每路约 {PARALLEL_PER_WORKER_GB} GB）-> 单进程",
+            flush=True,
+        )
+        return 1
+
+    workers = min(
+        int(budget // PARALLEL_PER_WORKER_GB), PARALLEL_MAX_WORKERS, target_count
+    )
+    workers = max(1, workers)
+    print(
+        f"[check] 可用内存 {free:.1f} GB -> 并行 {workers} 路"
+        f"（每路约 {PARALLEL_PER_WORKER_GB} GB，保留 {PARALLEL_RESERVE_GB} GB）",
+        flush=True,
+    )
+    return workers
+
+
 def run_tests(targets: list[str], interpreter: list[str]) -> int:
     """跑 pytest，并按「结果行」而不是单看退出码判定成败。
 
@@ -494,7 +566,7 @@ def run_tests(targets: list[str], interpreter: list[str]) -> int:
     if env.get("CODEBUDDY_SAFE_DELETE_ENABLED") == "0":
         print("[check] 检测到沙箱：已对 pytest 子进程关闭删除拦截（仅限该子进程）", flush=True)
 
-    workers = min(PARALLEL_WORKERS, len(targets))
+    workers = choose_workers(len(targets))
     if workers > 1:
         return _run_parallel(targets, interpreter, basetemp, env, workers)
 

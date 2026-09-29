@@ -689,7 +689,7 @@ class KnightsDonationStateMachineTests(unittest.TestCase):
             with self.subTest(factor=factor):
                 self.assertTrue(
                     subject._request_button_still_alive(fade(screen(SUP), factor)),
-                    f"能点的按钮被整屏压暗到 {factor} 之后误判成灰的 ⇒ 会白丢当天一次请求",
+                    f"能点的按钮被整屏压暗到 {factor} 之后误判成灰的 -> 会白丢当天一次请求",
                 )
                 self.assertFalse(
                     subject._request_button_still_alive(fade(screen(SUP_TWO), factor)),

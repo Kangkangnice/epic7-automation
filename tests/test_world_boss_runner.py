@@ -361,7 +361,7 @@ class WorldBossWeeklyChestTests(unittest.TestCase):
         )
         self.assertIsNone(
             find_weekly_chest(screen, template),
-            "它在「有没有发光」这道判据上不成立 ⇒ 不该判成可领（判错就是原地反复点）",
+            "它在「有没有发光」这道判据上不成立 -> 不该判成可领（判错就是原地反复点）",
         )
 
     def test_brightness_ratio_separates_glowing_from_not_glowing(self):
@@ -832,7 +832,7 @@ class WorldBossRunnerTests(unittest.TestCase):
         )
         self.assertTrue(
             runner.resource_exhausted,
-            "撒手之后落到次数判断；这张图是 0/2 ⇒ 正常收场（退出码 2）而不是故障",
+            "撒手之后落到次数判断；这张图是 0/2 -> 正常收场（退出码 2）而不是故障",
         )
         self.assertTrue(
             any("停止=今日次数已用完" in line for line in logs),
@@ -877,7 +877,7 @@ class WorldBossRunnerTests(unittest.TestCase):
         self.assertEqual(0, completed)
         self.assertTrue(
             runner.resource_exhausted,
-            "领完宝箱、次数又是 0/2 ⇒ 这是「没本钱了」的正常结论（退出码 2），不是故障",
+            "领完宝箱、次数又是 0/2 -> 这是「没本钱了」的正常结论（退出码 2），不是故障",
         )
         self.assertTrue(
             any("停止=今日次数已用完" in line for line in logs),
