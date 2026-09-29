@@ -60,6 +60,31 @@ tests/fixtures/epic7_expedition/campfire_idle.png
 games/epic7/templates/expedition/campfire_idle.png
 ```
 
+## 入库前无损压缩（体积门槛）
+
+新增或替换 `tests/fixtures/**` 与 `games/epic7/templates/**` 的图片，`git add` 之后、提交之前先压一遍：
+
+```powershell
+python tools/compress_images.py --staged          # 只看报告，不写盘
+python tools/compress_images.py --staged --apply  # 真压
+git add <刚压过的文件>
+```
+
+- 压的是**无损**：压完把两边都解码出来逐位比对，不一致就丢弃结果、保留原文件并报错（退出码非 0）。
+- 实测收益（2026-09-30，5 张代表样本）：整屏 `1982x1132` 省 18%~19%，
+  `3200x2000` 的旧夹具省 23%~26%；模板小图多数达不到门槛，会被自动跳过。
+- ⚠️ **不要拿它去压存量再提交**：那只会把压缩后的新 blob 加进 pack，历史里的旧 blob
+  一个都不会少，`git clone` 反而变大。存量要瘦身只能走**历史重写**（`git filter-repo`），
+  那是另一件事，见下节。
+
+### 存量为什么不能用这个工具瘦身（2026-09-30 实测数字）
+
+- 压之前：`.git` 846.6 MB（loose 479.65 MiB + pack 366.64 MiB），工作区夹具 463 MB。
+- `git prune-packed` + `git gc --prune=now` 之后：`.git` **640.4 MB**（省 206 MB，全部对象进单一 pack）。
+- `git rev-list --objects --all` 统计：`tests/fixtures/*` 在**全部历史版本**里的 blob 合计 564 MB，
+  `docs/manual_review/*` 另外 79 MB。按 20% 的无损收益估，历史重写大约还能再省 120~130 MB ——
+  要拿这笔收益必须改写历史并强制推送，代价与收益都写在这里供决策，不默认执行。
+
 ## 测试顺序
 
 1. 把新完整截图加入 `tests/fixtures/`。
