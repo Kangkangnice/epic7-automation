@@ -77,7 +77,7 @@ from typing import Optional
 import cv2
 import numpy as np
 
-from auto_game_unified.core.matcher import load_template
+from auto_game_unified.core.matcher import best_match, load_template
 
 # 与 matcher 同口径的基准画布（所有区域常量都按这个口径量）。
 REFERENCE_SIZE = (1982, 1132)
@@ -235,10 +235,13 @@ def normalize_glyph(mask: np.ndarray, box: tuple[int, int, int, int]) -> np.ndar
 
 def glyph_score(glyph: np.ndarray, template: np.ndarray) -> float:
     """同尺寸两图的归一化互相关（与 ``cv2.TM_CCOEFF_NORMED`` 同义）。"""
-    result = cv2.matchTemplate(
-        glyph.astype(np.float32), template.astype(np.float32), cv2.TM_CCOEFF_NORMED
+    # 走共享的 best_match 而不是直接调 cv2：同一个字形会被反复比对（数字 0~9 × 多套
+    # 模板），离线测试里重复率很高。语义不变 —— 结果图是 1x1 时 minMaxLoc 的最大值
+    # 就是原来那个 result[0, 0]。
+    score, _location = best_match(
+        glyph.astype(np.float32), template.astype(np.float32)
     )
-    value = float(result[0, 0])
+    value = float(score)
     if not np.isfinite(value):
         return 0.0
     return value
