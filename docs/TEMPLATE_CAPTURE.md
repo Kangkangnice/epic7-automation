@@ -85,6 +85,25 @@ git add <刚压过的文件>
   `docs/manual_review/*` 另外 79 MB。按 20% 的无损收益估，历史重写大约还能再省 120~130 MB ——
   要拿这笔收益必须改写历史并强制推送，代价与收益都写在这里供决策，不默认执行。
 
+### 要走历史重写的话（**一次性、不可逆，默认不做**）
+
+上面那 120~130 MB 只有改写历史才拿得到。它要**强制推送**、会让所有人的 clone 失效，
+所以它不是「顺手做一下」的事，而是一次需要你点头的决策。真要做，按这个顺序：
+
+1. **先确认没有别人在推**：`git log --oneline origin/main..HEAD` 与各分支的未推送提交，
+   改写会把它们全部换成新哈希。
+2. **留一份完整备份**（不是 `git stash`，是另一个目录里的 `git clone --mirror`）。
+3. 装上 `git filter-repo`（`pip install git-filter-repo`），然后对**每个历史版本**的 PNG
+   做无损重压 —— 关键是 `--replace-blob` / `--blob-callback` 的写法必须调用
+   `tools/compress_images.py` 里那套「压完逐位比对像素」的实现，**不能**只调 Pillow：
+   历史 blob 一旦压坏无法回滚。
+4. 重写完在**新 clone** 上跑一次全量门槛（`python tools/check.py --full`），
+   夹具内容不变的话应当是同一批结果。
+5. 再 `git push --force-with-lease`，并通知所有 clone 重拉。
+
+⚠️ 别把它和功能改动混在同一段时间里做：重写之后所有本地分支的哈希都变了，
+正在开发的分支要么先合、要么重放。
+
 ## 测试顺序
 
 1. 把新完整截图加入 `tests/fixtures/`。
