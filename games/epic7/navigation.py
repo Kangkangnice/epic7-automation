@@ -17,10 +17,7 @@ from auto_game_unified.core.supervisor import (
     StableObservation,
     left_page,
 )
-from auto_game_unified.games.epic7.arena import (
-    ARENA_ENTRY_PAGE,
-    find_rank_promotion_confirm,
-)
+from auto_game_unified.games.epic7.arena import find_rank_promotion_confirm
 from auto_game_unified.games.epic7.evidence.arena import THRESHOLDS as ARENA_THRESHOLDS
 from auto_game_unified.games.epic7.evidence.story import THRESHOLDS as STORY_THRESHOLDS
 from auto_game_unified.games.epic7.template_paths import resolve_template_dir
@@ -35,16 +32,7 @@ from auto_game_unified.games.epic7.home_return import (
     build_home_return_templates,
     return_home_v2,
 )
-from auto_game_unified.games.epic7.expedition import (
-    EXPEDITION_BATTLE_MENU_PAGE,
-    EXPEDITION_ENTRY_PAGE,
-    EXPEDITION_RESUME_PAGES,
-    EXPEDITION_SEASON_PAGE,
-)
-from auto_game_unified.games.epic7.knights_donation import KNIGHTS_GUILD_HOME_PAGE
-from auto_game_unified.games.epic7.sanctuary import SANCTUARY_HOME_PAGE
 from auto_game_unified.games.epic7.story import (
-    STORY_ENTRY_PAGE,
     find_prepare_battle_button,
     find_story_skip_button,
     find_story_skip_confirm,
@@ -72,8 +60,8 @@ from auto_game_unified.games.epic7.evidence.sanctuary import (
     REGIONS as SANCTUARY_REGIONS,
     build_sanctuary_evidence,
 )
-from auto_game_unified.games.epic7.world_boss import WORLD_BOSS_ENTRY_PAGE
-from auto_game_unified.games.epic7.modes import MODE_LABELS
+from auto_game_unified.games.epic7.modes import MODE_LABELS, MODE_SPECS
+from auto_game_unified.games.epic7.navigation_plan import NavigationPlan
 from auto_game_unified.games.epic7.unknown_screen import (
     UnknownScreenWake,
     UnknownWakeResult,
@@ -137,27 +125,30 @@ PAGE_LABELS = {
 
 
 # 「接力」白名单：模式 -> 允许 ``navigate(already_at=...)`` 的导航链页面。
-# 只列模式自己声明过的接力页；传别的一律报错，不做静默降级（失败关闭）。
+#
+# ⚠️ 唯一来源是每条路线在 ``modes.MODE_SPECS`` 里声明的 ``NavigationPlan.resume_entries``；
+# 这里只是给调试和既有测试留一个**只读视图** —— 别再往这里手抄页面名。
+# 白名单**保持显式、不从 steps 派生**：「链条上有这个页面」不等于「允许从它接力」
+# （迷宫的落点全在业务链上，它的白名单就该是空的）。
+# 传别的一律报错，不做静默降级（失败关闭）。
 _RESUME_ENTRY_PAGES = {
-    "arena": frozenset({ARENA_ENTRY_PAGE}),
-    "story": frozenset({STORY_ENTRY_PAGE}),
-    "expedition": EXPEDITION_RESUME_PAGES,
-    "world_boss": frozenset({KNIGHTS_GUILD_HOME_PAGE, WORLD_BOSS_ENTRY_PAGE}),
-    # 骑士团捐赠的导航链只有一级，所以「在导航链上」的落点只有骑士团主页一个。
-    # 业务链里的页面（资源支援 / 每周任务）探针把 ``entry`` 留空 ⇒ 根本不会走到这里。
-    "knights_donation": frozenset({KNIGHTS_GUILD_HOME_PAGE}),
-    # 迷宫强化石的接力落点全在**业务链**上（战斗菜单 → 迷宫列表 → … → 大厅），
-    # 探针一律就地接管、不返回 ``entry`` ⇒ 这里没有需要导航对接的页面。
-    # 空集合是合法值：``already_at`` 为 None 时上面的判断根本不会走到。
-    "labyrinth_stone": frozenset(),
-    # 圣域收菜的导航链只有一级（大厅 → 圣域主页）。探针停在**圣域主页**时会给
-    # ``entry``（省掉「进圣域」那一下），停在精灵之森页时 ``entry`` 为空、
-    # 就地接管（那一页在导航链之外）。
-    # ⚠️ 这里**只放导航链上的页面**：把精灵之森页塞进来就等于宣称「导航能把你送到
-    # 那一页」，而导航压根不认识它（``observe`` 里没有它的判据）—— 那会让 ``already_at``
-    # 白名单失去意义。
-    "sanctuary": frozenset({SANCTUARY_HOME_PAGE}),
+    name: spec.navigation_plan.resume_entries
+    for name, spec in MODE_SPECS.items()
+    if spec.navigation_plan is not None
 }
+
+
+
+def _plan_for(mode: str) -> NavigationPlan:
+    """按模式名取导航链；唯一来源是 ``modes.MODE_SPECS``。
+
+    ⚠️ 报错文案 `导航不支持的模式：{mode}` 与 2026-09-30 之前那个 ``else`` 分支
+    逐字一致，别改 —— 那是「传了没有导航的路线」时外面唯一看得到的线索。
+    """
+    spec = MODE_SPECS.get(mode)
+    if spec is None or spec.navigation_plan is None:
+        raise ValueError(f"导航不支持的模式：{mode}")
+    return spec.navigation_plan
 
 
 def page_label(name: str) -> str:
@@ -866,251 +857,59 @@ class Epic7Navigator:
         *,
         lobby_screen: Optional[np.ndarray] = None,
         already_at: Optional[str] = None,
+        plan: Optional[NavigationPlan] = None,
     ) -> None:
-        """按路线受控导航。
+        """按路线受控导航：执行这条路线自己声明的 ``NavigationPlan``。
 
-        ``already_at`` 是「接力」用的入口：表示当前画面**已经**落在导航链的哪个页面上，
-        跳过它之前的所有转场，直接从那一步接着往下走。传了本模式不认识的页面会直接报错，
-        不做静默降级（失败关闭）。
+        ⚠️ 本方法**不认识任何具名路线**。2026-09-30 之前它是一张
+        ``if mode == "story" / elif mode == "arena" / ...`` 的分派链（约 250 行），
+        每加一条路线都要回来改这里；现在链条是数据，声明在
+        ``modes.MODE_SPECS[...].navigation_plan`` 里 —— 新增路线**不用再动本文件**。
+
+        ``already_at`` 是「接力」用的入口：表示当前画面**已经**落在导航链的哪个页面上。
+        执行器据此跳过「到达那一页」以及它前面的所有步，从下一步接着走（已经站在链条
+        末端就等于导航已完成）；跳过的步骤不再点任何东西，但**那一帧会继续被当作后续
+        步骤的来源帧**。传本模式白名单之外的页面直接报错，不做静默降级（失败关闭）。
         """
-        if already_at is not None and already_at not in _RESUME_ENTRY_PAGES.get(
-            mode, frozenset()
-        ):
+        resolved = plan if plan is not None else _plan_for(mode)
+        if already_at is not None and already_at not in resolved.resume_entries:
             raise ValueError(
                 f"导航不支持从页面[{already_at}]接力进入模式[{mode}]"
             )
-        if mode == "story":
-            if already_at == STORY_ENTRY_PAGE:
-                # 已经站在关卡入口上了：回大厅再进来一趟纯属多余，而且中途一旦
-                # 按到「返回」就会把当前选区丢掉。这里直接当作导航已完成。
-                self.runtime.log(
-                    "模式=导航 开局=接力 页面=主线入口 "
-                    "动作=跳过回大厅与进入主线 状态=已在关卡入口"
+        current = lobby_screen
+        start = 0
+        if already_at is not None:
+            for index, step in enumerate(resolved.steps):
+                if already_at in step.targets:
+                    start = index + 1
+                    break
+            else:  # pragma: no cover - 由 NavigationPlan.__post_init__ 的不变式兜住
+                raise RuntimeError(
+                    f"路线 {mode} 的接力白名单里有 {already_at}，但链条上没有这一步"
                 )
-            else:
-                self._transition(
-                    "lobby", "story_ready", "lobby_story", "进入主线",
-                    source_screen=lobby_screen,
-                )
-        elif mode == "arena":
-            if already_at == ARENA_ENTRY_PAGE:
-                if lobby_screen is None:
-                    raise RuntimeError("接力进入竞技场时缺少当前画面")
-                self.runtime.log(
-                    "模式=竞技场 开局=接力 页面=竞技场模式选择 "
-                    "动作=跳过回大厅与进入竞技场 状态=直接进新手竞技场"
-                )
-                arena_mode = lobby_screen
-            else:
-                arena_mode = self._transition(
-                    "lobby", "arena_mode", "lobby_arena", "进入竞技场",
-                    source_screen=lobby_screen,
-                )
-            self._transition(
-                "arena_mode", "arena_ready", "novice_arena", "进入新手竞技场",
-                source_screen=arena_mode,
-            )
-        elif mode == "expedition":
-            if already_at == EXPEDITION_ENTRY_PAGE:
-                # 已经站在远征主页上：整条导航链都没有要做的了。
-                self.runtime.log(
-                    "模式=导航 开局=接力 页面=远征主页 "
-                    "动作=跳过回大厅与进入远征队 状态=已在远征主页"
-                )
-            else:
-                if already_at in (
-                    EXPEDITION_BATTLE_MENU_PAGE,
-                    EXPEDITION_SEASON_PAGE,
-                ):
-                    # 已经在链条中间：跳过「回大厅 → 进战斗菜单」，从当前这一级往下走。
-                    # 战斗菜单和赛季菜单都靠 observe() 自己认出来（下面那行），所以两者
-                    # 用同一条路径，不用分开写。
-                    if lobby_screen is None:
-                        raise RuntimeError("接力进入远征时缺少当前画面")
-                    self.runtime.log(
-                        f"模式=导航 开局=接力 页面={page_label(already_at)} "
-                        "动作=跳过回大厅与进入战斗菜单 状态=从当前这一级继续"
-                    )
-                    battle_menu = lobby_screen
-                else:
-                    battle_menu = self._transition(
-                        "lobby",
-                        ("battle_menu", "season_menu"),
-                        "lobby_battle",
-                        "进入战斗菜单",
-                        source_screen=lobby_screen,
-                    )
-                if self.observe(battle_menu).name == "season_menu":
-                    season_menu = battle_menu
-                else:
-                    season_menu = self._transition(
-                        "battle_menu",
-                        "season_menu",
-                        "expedition_season_tab",
-                        "切换到赛季",
-                        source_screen=battle_menu,
-                    )
-                self._transition(
-                    "season_menu",
-                    "expedition_home",
-                    "expedition_entry",
-                    "进入远征队",
-                    source_screen=season_menu,
-                )
-        elif mode == "fodder":
-            side_story = self._transition(
-                "lobby",
-                "fodder_side_story",
-                "lobby_side_story",
-                "进入支线故事",
-                source_screen=lobby_screen,
-            )
-            special_book = self._transition(
-                "fodder_side_story",
-                "fodder_special_book",
-                "side_story_special_book",
-                "进入特别的时间之书",
-                source_screen=side_story,
-            )
-            episode_detail = self._transition(
-                "fodder_special_book",
-                "fodder_episode_detail",
-                "special_book_episode",
-                "进入Episode",
-                source_screen=special_book,
-            )
-            self._transition(
-                "fodder_episode_detail",
-                "fodder_stage",
-                "episode_adventure",
-                "进入冒险地图",
-                source_screen=episode_detail,
-            )
-        elif mode == "hero_synthesis":
-            self._transition(
-                "lobby", "hero_list", "lobby_hero", "进入英雄列表",
-                source_screen=lobby_screen,
-            )
-        elif mode == "shop_refresh":
-            self._transition(
-                "lobby",
-                "shop_refresh",
-                "lobby_shop_entry",
-                "进入秘密商店",
-                source_screen=lobby_screen,
-            )
-        elif mode == "world_boss":
-            if already_at == WORLD_BOSS_ENTRY_PAGE:
-                # 已经站在世界首领战主页上：整条导航链都没有要做的了。
-                self.runtime.log(
-                    "模式=导航 开局=接力 页面=世界首领战主页 "
-                    "动作=跳过回大厅与进入骑士团 状态=已在世界首领战主页"
-                )
-            else:
-                if already_at == KNIGHTS_GUILD_HOME_PAGE:
-                    # 已经在链条中间：跳过「回大厅 → 进骑士团」，从当前这一级往下走。
-                    if lobby_screen is None:
-                        raise RuntimeError("接力进入世界首领战时缺少当前画面")
-                    self.runtime.log(
-                        "模式=导航 开局=接力 页面=骑士团主页 "
-                        "动作=跳过回大厅与进入骑士团 状态=从当前这一级继续"
-                    )
-                    knights_home = lobby_screen
-                else:
-                    knights_home = self._transition(
-                        "lobby",
-                        "knights_home",
-                        "lobby_knights",
-                        "进入骑士团",
-                        source_screen=lobby_screen,
-                    )
-                self._transition(
-                    "knights_home",
-                    "worldboss_home",
-                    "worldboss_entry",
-                    "进入世界首领战",
-                    source_screen=knights_home,
-                )
-        elif mode == "knights_donation":
-            # 骑士团捐赠的导航链只有一级：大厅 → 骑士团主页。
-            # 「点骑士团活动图标」以及后面整条业务链都在 ``knights_donation.py`` 的
-            # 状态机里，导航只负责把画面送到骑士团主页。
-            if already_at == KNIGHTS_GUILD_HOME_PAGE:
-                # 人已经站在骑士团主页上了：回大厅再进来一趟纯属多余。
-                # 业务链里那两页（资源支援 / 每周任务）的 ``entry`` 是 None，
-                # 探针就地接管、不会调到这里。
-                self.runtime.log(
-                    "模式=骑士团捐赠 开局=接力 页面=骑士团主页 "
-                    "动作=跳过回大厅与进入骑士团 状态=已在骑士团主页"
-                )
-            else:
-                self._transition(
-                    "lobby",
-                    "knights_home",
-                    "lobby_knights",
-                    "进入骑士团",
-                    source_screen=lobby_screen,
-                )
-        elif mode == "labyrinth_stone":
-            # 导航链只有一级：大厅 → 战斗菜单。后面「点迷宫卡片 → 选迷宫 → 选区域 →
-            # 选择队伍 → 战斗开始」全在 ``labyrinth_stone.py`` 的状态机里。
-            # ⚠️ 只认战斗菜单（「一般」页）：迷宫卡片只在那一页上，
-            # 落到「赛季」页会当场报错而不是静默往下走 —— 那页需要另补一个
-            # 「一般」页签模板才能处理，现在没有正例，不做猜。
-            self._transition(
-                "lobby",
-                "battle_menu",
-                "lobby_battle",
-                "进入战斗菜单",
-                source_screen=lobby_screen,
-            )
-        elif mode == "sanctuary":
-            # 圣域收菜的导航链只有一级：大厅 → 圣域主页。
-            # 「点精灵之森 → 点三行材料的『领取奖励』 → 关弹窗」全在
-            # ``sanctuary.py`` 的状态机里，导航只负责把画面送到圣域主页。
-            if already_at == SANCTUARY_HOME_PAGE:
-                # 人已经站在圣域主页上了：回大厅再进来一趟纯属多余。
-                # ⚠️ 精灵之森页不在导航链上（``_RESUME_ENTRY_PAGES["sanctuary"]`` 里
-                # 只有圣域主页），探针在那一页给的 ``entry`` 是 None ⇒ 就地接管，
-                # 根本不会调到这里。
-                self.runtime.log(
-                    "模式=圣域收菜 开局=接力 页面=圣域主页 "
-                    "动作=跳过回大厅与进入圣域 状态=已在圣域主页"
-                )
-            else:
-                self._transition(
-                    "lobby",
-                    "sanctuary_home",
-                    "lobby_sanctuary",
-                    "进入圣域",
-                    source_screen=lobby_screen,
-                )
-        else:
-            raise ValueError(f"导航不支持的模式：{mode}")
-        if mode == "hero_synthesis":
             self.runtime.log(
-                "模式=英雄合成 状态=导航完成 前提=英雄信息页已就绪"
+                resolved.resume_log(
+                    page=page_label(already_at),
+                    terminal=start >= len(resolved.steps),
+                )
             )
-        elif mode == "shop_refresh":
-            self.runtime.log("模式=刷书签 状态=导航完成 前提=秘密商店顶部已就绪")
-        elif mode == "world_boss":
-            self.runtime.log(
-                "模式=世界首领战 状态=导航完成 前提=世界首领战主页已就绪"
+        for step in resolved.steps[start:]:
+            if (
+                step.skip_if_observed
+                and current is not None
+                and self.observe(current).name in step.skip_if_observed
+            ):
+                # 已经在目的地上了（例：远征停在赛季菜单）：跳过这一步，
+                # 但**不换帧** —— 下一步就用这一帧当来源。
+                continue
+            current = self._transition(
+                step.source,
+                resolved.transition_target(step),
+                step.anchor,
+                step.label,
+                source_screen=current,
             )
-        elif mode == "knights_donation":
-            self.runtime.log(
-                "模式=骑士团捐赠 状态=导航完成 前提=骑士团主页已就绪"
-            )
-        elif mode == "labyrinth_stone":
-            self.runtime.log(
-                "模式=迷宫强化石 状态=导航完成 前提=战斗菜单「一般」页已就绪"
-            )
-        elif mode == "sanctuary":
-            self.runtime.log(
-                "模式=圣域收菜 状态=导航完成 前提=圣域主页已就绪"
-            )
-        else:
-            self.runtime.log(f"模式={MODE_LABELS.get(mode, mode)} 状态=导航完成")
+        self.runtime.log(resolved.ready_log(MODE_LABELS.get(mode, mode)))
 
     def _transition(
         self,

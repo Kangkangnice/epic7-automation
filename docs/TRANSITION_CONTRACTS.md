@@ -457,7 +457,7 @@ class NewRouteRunner(ModeRunnerBase):
 |---|---|
 | `<路线>.py` | `detect_resume_point(machine, screen, ...)` + `resume_from(...)`（要拨状态时） |
 | `modes.py` | 在 `MODE_SPECS` 里挂 `resume_probe=_resume_probe(<本路线的 detect_resume_point>, ...)` —— **探针本体不用手写**，工厂会把「认落点 → 拨状态 → 回填」做掉 |
-| `navigation.py` | 落点在**导航链中间**时，加进 `_RESUME_ENTRY_PAGES` + 对应的 `already_at` 分支 |
+| `modes.py` | 落点在**导航链上**时，把那一页写进该路线 `navigation_plan.resume_entries`（**链条本身也在同一个 `NavigationPlan` 里声明**）。⚠️ 不需要动 `navigation.py` —— 那是执行器、只认数据；`navigation._RESUME_ENTRY_PAGES` 是由计划派生的只读视图 |
 | `tests/test_<路线>_resume.py` | 落点矩阵 + 探针接线 + 「停在非本路线页面上必须返回 None」 |
 | `docs/RESUME_COVERAGE.md` | 登记这条路线**每个**环节的接力状况（能/不能 + 为什么） |
 

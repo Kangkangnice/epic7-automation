@@ -6,6 +6,7 @@ from typing import Any, Callable, Optional
 import numpy as np
 
 from auto_game_unified.games.epic7.arena import (
+    ARENA_ENTRY_PAGE,
     ArenaRunner,
     ArenaState,
     ArenaStateMachine,
@@ -13,6 +14,7 @@ from auto_game_unified.games.epic7.arena import (
     detect_resume_point,
 )
 from auto_game_unified.games.epic7.story import (
+    STORY_ENTRY_PAGE,
     StoryRunner,
     StoryState,
     StoryStateMachine,
@@ -20,6 +22,10 @@ from auto_game_unified.games.epic7.story import (
     detect_resume_point as detect_story_resume_point,
 )
 from auto_game_unified.games.epic7.expedition import (
+    EXPEDITION_BATTLE_MENU_PAGE,
+    EXPEDITION_ENTRY_PAGE,
+    EXPEDITION_RESUME_PAGES,
+    EXPEDITION_SEASON_PAGE,
     ExpeditionRunner,
     ExpeditionState,
     ExpeditionStateMachine,
@@ -55,8 +61,13 @@ from auto_game_unified.games.epic7.survivor import (
     SurvivorState,
     SurvivorStateMachine,
 )
+from auto_game_unified.games.epic7.navigation_plan import (
+    NavigationPlan,
+    NavigationStep,
+)
 from auto_game_unified.games.epic7.runner_base import ModeRunnerBase
 from auto_game_unified.games.epic7.knights_donation import (
+    KNIGHTS_GUILD_HOME_PAGE,
     KnightsDonationRunner,
     KnightsDonationState,
     KnightsDonationStateMachine,
@@ -69,12 +80,14 @@ from auto_game_unified.games.epic7.labyrinth_stone import (
     detect_resume_point as detect_labyrinth_stone_resume_point,
 )
 from auto_game_unified.games.epic7.sanctuary import (
+    SANCTUARY_HOME_PAGE,
     SanctuaryRunner,
     SanctuaryState,
     SanctuaryStateMachine,
     detect_resume_point as detect_sanctuary_resume_point,
 )
 from auto_game_unified.games.epic7.world_boss import (
+    WORLD_BOSS_ENTRY_PAGE,
     WorldBossRunner,
     WorldBossState,
     WorldBossStateMachine,
@@ -142,6 +155,11 @@ class ModeSpec:
     min_cycles: int = 1
     needs_navigation: bool = True
     resume_probe: Optional[ResumeProbe] = None
+    # 这条路线「从大厅走到自己入口」的那段路（声明式数据，见 ``navigation_plan`` 模块）。
+    # ⚠️ ``needs_navigation=False`` 的路线**必须**留空；有导航却漏声明会在加载期报错
+    # （``_assert_navigation_declared``）。``navigation.Epic7Navigator.navigate()``
+    # 只认这一份数据，**不再认识任何具名路线**。
+    navigation_plan: Optional[NavigationPlan] = None
     # 路线级的运行前闸门与额外构造参数，见上面两个类型别名的说明。
     # ⚠️ 这两个钩子就是「新路线需要专属校验 / 专属参数」时的唯一入口 ——
     # 不要再回去 ``main.py`` 里加 ``if spec.name == ...``。
@@ -424,6 +442,19 @@ MODE_SPECS = {
         resume_probe=_resume_probe(detect_resume_point, use_navigator=True),
         # 实跑要落两个盘（买票记账 + 每局结算画面），路径只有主线装配层知道仓库根。
         runner_options=_arena_runner_options,
+        navigation_plan=NavigationPlan(
+            mode="arena",
+            steps=(
+                NavigationStep("lobby", ("arena_mode",), "lobby_arena", "进入竞技场"),
+                NavigationStep(
+                    "arena_mode", ("arena_ready",), "novice_arena", "进入新手竞技场"
+                ),
+            ),
+            resume_entries=frozenset({ARENA_ENTRY_PAGE}),
+            resume_log_mode="竞技场",
+            resume_action="跳过回大厅与进入竞技场",
+            resume_state_done="直接进新手竞技场",
+        ),
     ),
     "story": ModeSpec(
         name="story",
@@ -439,6 +470,15 @@ MODE_SPECS = {
         # 战斗控件分支只在 WAIT_SKIP_CONFIRM/WAIT_BATTLE/ACTIVE 下跑），
         # 拨错会让 Runner 原地干等到超时，而不是自愈。
         resume_probe=_resume_probe(detect_story_resume_point, use_navigator=True),
+        navigation_plan=NavigationPlan(
+            mode="story",
+            steps=(
+                NavigationStep("lobby", ("story_ready",), "lobby_story", "进入主线"),
+            ),
+            resume_entries=frozenset({STORY_ENTRY_PAGE}),
+            resume_action="跳过回大厅与进入主线",
+            resume_state_done="已在关卡入口",
+        ),
     ),
     "expedition": ModeSpec(
         name="expedition",
@@ -452,6 +492,34 @@ MODE_SPECS = {
         # ⚠️ 落点必须拨状态：``next_action`` 是纯状态驱动的，拨错**不会自愈**
         # （会走到 ``_required`` 失败或点错按钮）。
         resume_probe=_resume_probe(detect_expedition_resume_point, use_navigator=True),
+        navigation_plan=NavigationPlan(
+            mode="expedition",
+            steps=(
+                NavigationStep(
+                    "lobby",
+                    (EXPEDITION_BATTLE_MENU_PAGE, EXPEDITION_SEASON_PAGE),
+                    "lobby_battle",
+                    "进入战斗菜单",
+                ),
+                NavigationStep(
+                    EXPEDITION_BATTLE_MENU_PAGE,
+                    (EXPEDITION_SEASON_PAGE,),
+                    "expedition_season_tab",
+                    "切换到赛季",
+                    skip_if_observed=(EXPEDITION_SEASON_PAGE,),
+                ),
+                NavigationStep(
+                    EXPEDITION_SEASON_PAGE,
+                    (EXPEDITION_ENTRY_PAGE,),
+                    "expedition_entry",
+                    "进入远征队",
+                ),
+            ),
+            resume_entries=EXPEDITION_RESUME_PAGES,
+            resume_action="跳过回大厅与进入远征队",
+            resume_action_middle="跳过回大厅与进入战斗菜单",
+            resume_state_done="已在远征主页",
+        ),
     ),
     "fodder": ModeSpec(
         name="fodder",
@@ -460,6 +528,32 @@ MODE_SPECS = {
         states=frozenset(state.value for state in FodderState),
         build_machine=_build_fodder,
         runner_type=FodderRunner,
+        navigation_plan=NavigationPlan(
+            mode="fodder",
+            steps=(
+                NavigationStep(
+                    "lobby", ("fodder_side_story",), "lobby_side_story", "进入支线故事"
+                ),
+                NavigationStep(
+                    "fodder_side_story",
+                    ("fodder_special_book",),
+                    "side_story_special_book",
+                    "进入特别的时间之书",
+                ),
+                NavigationStep(
+                    "fodder_special_book",
+                    ("fodder_episode_detail",),
+                    "special_book_episode",
+                    "进入Episode",
+                ),
+                NavigationStep(
+                    "fodder_episode_detail",
+                    ("fodder_stage",),
+                    "episode_adventure",
+                    "进入冒险地图",
+                ),
+            ),
+        ),
     ),
     "hero_synthesis": ModeSpec(
         name="hero_synthesis",
@@ -470,6 +564,13 @@ MODE_SPECS = {
         runner_type=HeroSynthRunner,
         # 英雄合成跑完一遍列表就结束，没有「跑几遍」这件事 ⇒ 不给用户选。
         cycles_editable=False,
+        navigation_plan=NavigationPlan(
+            mode="hero_synthesis",
+            steps=(
+                NavigationStep("lobby", ("hero_list",), "lobby_hero", "进入英雄列表"),
+            ),
+            ready_note="英雄信息页已就绪",
+        ),
     ),
     "shop_refresh": ModeSpec(
         name="shop_refresh",
@@ -496,6 +597,15 @@ MODE_SPECS = {
         # 这条路线会真花钱 ⇒ 目标商品与购买价格没在当前客户端实证过就不许实跑
         # （干跑不受影响）。闸门本体见 ``_preflight_shop_refresh``。
         preflight=_preflight_shop_refresh,
+        navigation_plan=NavigationPlan(
+            mode="shop_refresh",
+            steps=(
+                NavigationStep(
+                    "lobby", ("shop_refresh",), "lobby_shop_entry", "进入秘密商店"
+                ),
+            ),
+            ready_note="秘密商店顶部已就绪",
+        ),
     ),
     "survivor": ModeSpec(
         name="survivor",
@@ -527,6 +637,24 @@ MODE_SPECS = {
         # 而是为了让 ``WorldBossRunner`` 拿到 ``resumed_from``：停在局内时要靠它跳过
         # 状态机、把这一局直接交给战斗监督，不能按 Back 回大厅。
         resume_probe=_resume_probe(detect_world_boss_resume_point),
+        navigation_plan=NavigationPlan(
+            mode="world_boss",
+            steps=(
+                NavigationStep(
+                    "lobby", (KNIGHTS_GUILD_HOME_PAGE,), "lobby_knights", "进入骑士团"
+                ),
+                NavigationStep(
+                    KNIGHTS_GUILD_HOME_PAGE,
+                    (WORLD_BOSS_ENTRY_PAGE,),
+                    "worldboss_entry",
+                    "进入世界首领战",
+                ),
+            ),
+            resume_entries=frozenset({KNIGHTS_GUILD_HOME_PAGE, WORLD_BOSS_ENTRY_PAGE}),
+            resume_action="跳过回大厅与进入骑士团",
+            resume_state_done="已在世界首领战主页",
+            ready_note="世界首领战主页已就绪",
+        ),
     ),
     "knights_donation": ModeSpec(
         name="knights_donation",
@@ -549,6 +677,19 @@ MODE_SPECS = {
         # 落点状态恒为 None（本路线每帧重判页面，不需要拨状态）；停在大厅认不出
         # （``activity_entry`` 在骑士团主页上，大厅上不成立），照旧走「回大厅 → 进骑士团」。
         resume_probe=_resume_probe(detect_knights_donation_resume_point),
+        navigation_plan=NavigationPlan(
+            mode="knights_donation",
+            steps=(
+                NavigationStep(
+                    "lobby", (KNIGHTS_GUILD_HOME_PAGE,), "lobby_knights", "进入骑士团"
+                ),
+            ),
+            resume_entries=frozenset({KNIGHTS_GUILD_HOME_PAGE}),
+            resume_log_mode="骑士团捐赠",
+            resume_action="跳过回大厅与进入骑士团",
+            resume_state_done="已在骑士团主页",
+            ready_note="骑士团主页已就绪",
+        ),
     ),
     "labyrinth_stone": ModeSpec(
         name="labyrinth_stone",
@@ -569,6 +710,15 @@ MODE_SPECS = {
         # 判据与运行期同源（状态机自己的 ``observe_page``）；停在「已经进过迷宫」的那几页
         # 时 ``detect_resume_point`` 会顺手把 ``entered`` 拨对，落点状态本身恒为 None。
         resume_probe=_resume_probe(detect_labyrinth_stone_resume_point),
+        navigation_plan=NavigationPlan(
+            mode="labyrinth_stone",
+            steps=(
+                NavigationStep(
+                    "lobby", ("battle_menu",), "lobby_battle", "进入战斗菜单"
+                ),
+            ),
+            ready_note="战斗菜单「一般」页已就绪",
+        ),
     ),
     "sanctuary": ModeSpec(
         name="sanctuary",
@@ -592,6 +742,19 @@ MODE_SPECS = {
         # 照旧走「回大厅 → 进圣域」。
         # 落点状态恒为 None（本路线每帧重判页面，不需要拨状态）。
         resume_probe=_resume_probe(detect_sanctuary_resume_point),
+        navigation_plan=NavigationPlan(
+            mode="sanctuary",
+            steps=(
+                NavigationStep(
+                    "lobby", (SANCTUARY_HOME_PAGE,), "lobby_sanctuary", "进入圣域"
+                ),
+            ),
+            resume_entries=frozenset({SANCTUARY_HOME_PAGE}),
+            resume_log_mode="圣域收菜",
+            resume_action="跳过回大厅与进入圣域",
+            resume_state_done="已在圣域主页",
+            ready_note="圣域主页已就绪",
+        ),
     ),
 }
 
@@ -755,3 +918,57 @@ def _assert_transition_stance_declared() -> None:
                 "TRANSITION_EXEMPT 里写清「用自己的什么机制验收」；"
                 "规矩见 docs/TRANSITION_CONTRACTS.md。"
             )
+
+def _assert_navigation_declared() -> None:
+    """加载期自查：每条「有导航」的路线都必须声明导航链。
+
+    两种合法表态，二选一：
+
+    - 声明 ``navigation_plan``（有链）；
+    - ``needs_navigation=False``（起点是人工推进到活动内部，压根不走导航）。
+
+    ⚠️ 2026-09-30 之前这段路是一张 ``if mode == "story" / elif ...`` 的分派链、
+    写在 ``navigation.py`` 里 —— 漏写一条路线**不会报错**，只会走到那个 ``else``
+    抛「导航不支持的模式」，而且要等到实跑开局才现形。现在它是数据，漏了在
+    **模块加载**就报错。
+    """
+    for name, spec in MODE_SPECS.items():
+        plan = spec.navigation_plan
+        if not spec.needs_navigation:
+            if plan is not None:
+                raise RuntimeError(
+                    f"路线 {name} 声明了 navigation_plan，却 needs_navigation=False；"
+                    "不需要导航的路线不该挂计划（它连回大厅那条路都没有）。"
+                )
+            continue
+        if plan is None:
+            raise RuntimeError(
+                f"路线 {name} 需要导航，却没有 navigation_plan。"
+                "在 modes.MODE_SPECS 的注册项里补一份 NavigationPlan（字段语义见 "
+                "navigation_plan 模块 docstring），或把 needs_navigation 显式设成 False "
+                "并写明理由。"
+            )
+        if plan.mode != name:
+            raise RuntimeError(
+                f"路线 {name} 的 navigation_plan.mode 是 {plan.mode!r}，对不上；"
+                "抄注册行最容易漏改的就是它。"
+            )
+
+
+def _run_load_time_checks() -> None:
+    """把所有「路线准入表态」的自查接在**模块加载**上。
+
+    ⚠️ 2026-09-30 之前 ``_assert_resume_declared`` / ``_assert_transition_stance_declared``
+    / ``_assert_conclusion_gate_declared`` **只有测试在调**，生产代码一处都没有 ——
+    文档承诺的「漏了在 import 阶段就报错」是一句空话（项目自己早在
+    ``docs/maintenance/action_verification_plan.md`` 里记成「发现但未处理」）。
+    三者在全量测试里都是绿的，挂到加载上没有额外风险，顺手把这笔欠债还掉。
+    """
+    _assert_navigation_declared()
+    _assert_resume_declared()
+    _assert_transition_stance_declared()
+    _assert_conclusion_gate_declared()
+
+
+_run_load_time_checks()
+

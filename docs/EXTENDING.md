@@ -104,6 +104,18 @@ tests/test_hunt_runner.py
     #   落点包含**导航链中间站**（判据要看导航器认出的页名）时：加 use_navigator=True；
     #   命中后还要做本路线专属动作时：加 on_hit=（如刷书签的 mark_resumed_at_shop）。
     resume_probe=_resume_probe(detect_hunt_resume_point),
+    # 导航链：大厅 → 本路线入口的每一步。**必填**（有导航却漏声明，加载期直接报错）。
+    # 声明之后 navigation.py 就再也不用改了 —— 它是执行器，只认这份数据。
+    navigation_plan=NavigationPlan(
+        mode="hunt",
+        steps=(
+            NavigationStep("lobby", ("hunt_home",), "lobby_hunt", "进入狩猎"),
+        ),
+        # 允许 navigate(already_at=...) 的页面；必须是上面某个 targets 里的页面。
+        resume_entries=frozenset({"hunt_home"}),
+        resume_action="跳过回大厅与进入狩猎",
+        resume_state_done="已在狩猎主页",
+    ),
 ),
 ```
 
@@ -130,6 +142,21 @@ tests/test_hunt_runner.py
 - `runner_options` 的返回值会**合并进** `run_mode` 自己那套参数（`recovery_gate` 等），
   同名键会被钩子覆盖 —— 别拿它改公共参数。
 - 没有专属需求的路线**不要挂钩子**（挂个空转的配置只会让读的人以为它有含义）。
+
+⚠️ **「导航链」也是注册模式的必填项**：有导航的路线必须挂 ``navigation_plan``
+（数据结构见 ``games/epic7/navigation_plan.py``），否则加载期直接报错
+（``_assert_navigation_declared``）。三个硬约束：
+
+- **单目标也要写成元组** ``("hunt_home",)``：执行器按长度决定传给 ``_transition`` 的是
+  ``str`` 还是 ``tuple``，而那里有 ``target == "hero_list"`` 这类身份比较，形状不能变。
+- ``resume_entries`` 里的页面**必须真的出现在某个 ``targets`` 里**（声明「能从那一页接力」
+  就等于声明「导航到得了那一页」），``NavigationPlan.__post_init__`` 在构造时就拦。
+- **顺序即优先级**：多目标步骤（远征 ``lobby → battle_menu|season_menu``）按「由浅到深」写。
+
+⚠️ 2026-09-30 之前这张链是 ``navigation.Epic7Navigator.navigate()`` 里一张
+``if mode == "story" / elif mode == "arena" / ...`` 的分派链（约 250 行）—— 新增路线必须回去改
+共享方法，漏一条还要等实跑开局才现形。现在 ``tests/test_navigation_plans.py`` 用源码级断言
+钉住「分派链不许长回来」，**新增路线不需要动 ``navigation.py``**。
 
 ⚠️ **中文名只在 `ModeSpec.label` 里写一次**。CLI 输出、QQ 通知、导航日志、桌面助手全都从它派生（2026-09-27 收敛）。以前这些地方各有一份，实测漂移过
 （同一路线在界面叫「活动」、在通知里叫「幸存者」）—— **别在别处再抄一份名字表**，
