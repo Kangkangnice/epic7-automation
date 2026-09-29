@@ -1352,7 +1352,7 @@ class WorldBossRunner(ModeRunnerBase):
             self.machine._chest_given_up = True
             self.runtime.log(
                 f"模式=世界首领战 宝箱=连点 {self._chest_clicks} 次仍在发光 "
-                "⇒ 放弃领取，转去判次数（不再回大厅重来）"
+                "-> 放弃领取，转去判次数（不再回大厅重来）"
             )
 
     def _action_retry_seconds(self, action_name: str) -> float:

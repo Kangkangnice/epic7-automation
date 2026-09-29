@@ -775,7 +775,7 @@ class LabyrinthStoneStateMachine:
             point=point,
             source_page=page,
             target_pages=(state_label(LabyrinthStoneState.MAP),),
-            reason=f"十字路口房间左上角开地图（{how} ⇒ 点 {point}）",
+            reason=f"十字路口房间左上角开地图（{how} -> 点 {point}）",
         )
 
     def _at_map(self, screen: np.ndarray):
@@ -797,7 +797,7 @@ class LabyrinthStoneStateMachine:
                     target_pages=(state_label(LabyrinthStoneState.TELEPORT_CONFIRM),),
                     reason=(
                         f"按布局算出来的出口 pin：蓝松鼠 pin@{pin.center} "
-                        f"{MERCHANT_PIN_TO_TARGET} ⇒ 点 {target}"
+                        f"{MERCHANT_PIN_TO_TARGET} -> 点 {target}"
                     ),
                 )
         if self.map_drags < MAX_MAP_DRAGS:

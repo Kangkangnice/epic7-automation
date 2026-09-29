@@ -658,7 +658,7 @@ class KnightsDonationStateMachine:
                 source_page=state_label(KnightsDonationState.RESOURCE_SUPPORT),
                 target_pages=(state_label(KnightsDonationState.WEEKLY_TASKS),),
                 reason=(
-                    f"支援这一节收工：{evidence} ⇒ 不再点任何支援按钮，直接去做每周任务"
+                    f"支援这一节收工：{evidence} -> 不再点任何支援按钮，直接去做每周任务"
                 ),
             )
         # 0) 先结算上一轮：**回到列表页就说明没等到「获得奖励」** ⇒ 那一下没生效，
@@ -1037,7 +1037,7 @@ class KnightsDonationRunner(ModeRunnerBase):
             self.machine.support_closed = True
             self.runtime.log(
                 f"模式={self._MODE_LABEL} 支援=连点 4 次没能推进"
-                " ⇒ 结束支援这一节，接下来直接去做每周任务（不再点任何支援按钮）"
+                " -> 结束支援这一节，接下来直接去做每周任务（不再点任何支援按钮）"
             )
             return False
         diagnostic = self.runtime.save_diagnostic(f"knights_{action.name}_stuck", screen)

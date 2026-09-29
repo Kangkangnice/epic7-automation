@@ -1,4 +1,5 @@
 import argparse
+import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -779,4 +780,14 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
+    # ⚠️ 控制台编码兜底（2026-09-30 实测踩到）：本机控制台是 GBK，日志里只要混进一个它编不出的
+    # 字符（例如 "⇒"），print 就抛 UnicodeEncodeError —— 那不是「少显示一个字」，而是**直接把
+    # 实跑打死**（异常从 runtime.log 里穿出来，整条路线报失败）。
+    # 这里让 stdout/stderr 遇到编不出的字符用 "?" 顶替。
+    # ⚠️ 只放在 __main__ 里：别的模块 import main 时（测试就是）不该动进程的 stdout。
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(errors="replace")
+        except Exception:
+            pass
     raise SystemExit(main())
