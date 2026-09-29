@@ -3,7 +3,7 @@
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import NamedTuple, Optional
+from typing import Optional
 
 import cv2
 import numpy as np
@@ -28,6 +28,8 @@ from auto_game_unified.games.epic7.pre_battle import (
     load_simulator_quick_battle_detector,
     observe_pre_battle,
 )
+from auto_game_unified.games.epic7.resume_probe import ResumePoint
+from auto_game_unified.games.epic7.route_action import RouteAction
 from auto_game_unified.games.epic7.transactional_runner_base import (
     TransactionalRunnerBase,
 )
@@ -90,12 +92,13 @@ class PostersExhausted(StaminaExhausted):
 
 
 @dataclass(frozen=True)
-class ExpeditionAction:
-    name: str
-    point: tuple[int, int]
-    source_page: str = ""
-    target_pages: tuple[str, ...] = ()
-    reason: str = ""
+class ExpeditionAction(RouteAction):
+    """远征的一个动作。
+
+    公共字段见 ``route_action.RouteAction``；``source_state`` / ``target_states`` 是
+    事务型主循环（``TransactionalRunnerBase._execute_transition``）认的那一份契约。
+    """
+
     source_state: ExpeditionState | None = None
     target_states: tuple[ExpeditionState, ...] = ()
 
@@ -746,12 +749,7 @@ EXPEDITION_RESUME_PAGES = frozenset(
 )
 
 
-class ExpeditionResumePoint(NamedTuple):
-    """远征开局接力的落点。"""
 
-    page: str                            # 中文页面名，给日志和诊断看
-    state: Optional[ExpeditionState]     # 要拨过去的状态机状态；None = 不动状态机
-    entry: Optional[str] = None          # 已经在导航链的这个页面上，从这里接着导航
 
 
 # 「接力」探测顺序 —— **顺序即优先级**，不能改。远征的 `is_in_state` 判据互相包含得
@@ -793,7 +791,7 @@ def detect_resume_point(
     screen: np.ndarray,
     *,
     observed_page: Optional[str] = None,
-) -> Optional[ExpeditionResumePoint]:
+) -> Optional[ResumePoint]:
     """远征开局接力：认出用户停在远征一环里的哪一页。
 
     识别不到返回 None，调用方回退到「回大厅 → 从战斗菜单重新导航」（失败关闭，
@@ -807,7 +805,7 @@ def detect_resume_point(
         EXPEDITION_BATTLE_MENU_PAGE,
         EXPEDITION_SEASON_PAGE,
     ):
-        return ExpeditionResumePoint(
+        return ResumePoint(
             "战斗菜单" if observed_page == EXPEDITION_BATTLE_MENU_PAGE else "赛季菜单",
             None,
             observed_page,
@@ -815,14 +813,14 @@ def detect_resume_point(
     if battle_scene_visible(screen):
         # 已经在打的那一局最先接手。`ExpeditionRunner` 本来就有
         # 「无动作 + 状态是 BATTLE → 交战斗监督」那一支，所以只要把状态拨对就能接上。
-        return ExpeditionResumePoint("战斗中", ExpeditionState.BATTLE)
+        return ResumePoint("战斗中", ExpeditionState.BATTLE)
     for state in _EXPEDITION_RESUME_ORDER:
         if not machine.is_in_state(screen, state):
             continue
         entry = (
             EXPEDITION_ENTRY_PAGE if state is ExpeditionState.HOME else None
         )
-        return ExpeditionResumePoint(state_label(state), state, entry)
+        return ResumePoint(state_label(state), state, entry)
     return None
 
 

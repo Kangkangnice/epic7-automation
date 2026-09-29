@@ -97,7 +97,7 @@ from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 from time import sleep as default_sleep
-from typing import Callable, NamedTuple, Optional
+from typing import Callable, Optional
 
 import numpy as np
 
@@ -126,6 +126,8 @@ from auto_game_unified.games.epic7.evidence.labyrinth_stone import (
     button_live_v,
     map_button_blue_blob,
 )
+from auto_game_unified.games.epic7.resume_probe import ResumePoint
+from auto_game_unified.games.epic7.route_action import RouteAction
 from auto_game_unified.games.epic7.runner_base import ModeRunnerBase
 from auto_game_unified.games.epic7.unknown_screen import UnrecognizedScreen
 from auto_game_unified.games.epic7.template_paths import is_template_root
@@ -284,16 +286,9 @@ def _inside_map_canvas(point: tuple[int, int]) -> bool:
     left, top, width, height = MAP_CANVAS
     return left <= x <= left + width and top <= y <= top + height
 
-
 @dataclass(frozen=True)
-class LabyrinthStoneAction:
+class LabyrinthStoneAction(RouteAction):
     """一个动作，**必须声明出处与出口验收**（新路线准入，见模块 docstring 对账表）。"""
-
-    name: str
-    point: tuple[int, int]
-    source_page: str = ""
-    target_pages: tuple[str, ...] = ()
-    in_page_evidence: str = ""
     reason: str = ""
 
 
@@ -1274,18 +1269,13 @@ class LabyrinthStoneRunner(ModeRunnerBase):
 # 契约与卡点见 docs/TRANSITION_CONTRACTS.md「接力契约」那一节。
 
 
-class LabyrinthStoneResumePoint(NamedTuple):
-    """迷宫强化石开局接力的落点（``modes.ResumePoint`` 的路线本地版）。"""
 
-    page: str  # 中文页面名，给日志和诊断看
-    state: Optional[str] = None  # 恒为 None：本路线每帧重判页面，不需要拨状态
-    entry: Optional[str] = None  # 恒为 None：接力的落点都在业务链上，不再需要导航
 
 
 def detect_resume_point(
     machine: "LabyrinthStoneStateMachine",
     screen: np.ndarray,
-) -> Optional[LabyrinthStoneResumePoint]:
+) -> Optional[ResumePoint]:
     """迷宫强化石开局接力：认出人停在哪一页就就地接管。
 
     **判据与运行期同源** —— 直接调状态机自己的 ``observe_page``，不另定阈值、不加新锚点。
@@ -1305,4 +1295,4 @@ def detect_resume_point(
         return None
     if page in _AFTER_ENTRY_STATES:
         machine.mark_entered()
-    return LabyrinthStoneResumePoint(page=state_label(page))
+    return ResumePoint(page=state_label(page))

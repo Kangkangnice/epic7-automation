@@ -64,7 +64,7 @@ from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 from time import sleep as default_sleep
-from typing import Callable, NamedTuple, Optional
+from typing import Callable, Optional
 
 import numpy as np
 
@@ -78,6 +78,8 @@ from auto_game_unified.games.epic7.evidence.sanctuary import (
     claim_row_label,
     claimable_rows,
 )
+from auto_game_unified.games.epic7.resume_probe import ResumePoint, observe_page_probe
+from auto_game_unified.games.epic7.route_action import RouteAction
 from auto_game_unified.games.epic7.runner_base import ModeRunnerBase
 from auto_game_unified.games.epic7.template_paths import is_template_root
 from auto_game_unified.games.epic7.unknown_screen import UnrecognizedScreen
@@ -127,20 +129,13 @@ _RESUMABLE_STATES = (
     SanctuaryState.FOREST,
 )
 
-
 @dataclass(frozen=True)
-class SanctuaryAction:
+class SanctuaryAction(RouteAction):
     """一个动作，**必须声明出处与出口验收**（新路线准入，见模块 docstring 对账表）。
 
-    ``target_pages``（换页动作）与 ``in_page_evidence``（同页动作）**至少填一个**，
-    两个都空会被 ``ModeRunnerBase._require_transition_contract`` 直接拒发。
+    ``claim-row`` 用 ``target_pages`` 而不是 ``in_page_evidence`` 的理由见模块 docstring；
+    字段表在 ``route_action.RouteAction``。
     """
-
-    name: str
-    point: tuple[int, int]
-    source_page: str = ""
-    target_pages: tuple[str, ...] = ()
-    in_page_evidence: str = ""
     reason: str = ""
 
 
@@ -458,18 +453,11 @@ class SanctuaryRunner(ModeRunnerBase):
 # 契约与三道卡点见 docs/TRANSITION_CONTRACTS.md「接力契约」那一节。
 
 
-class SanctuaryResumePoint(NamedTuple):
-    """圣域收菜开局接力的落点（``modes.ResumePoint`` 的路线本地版）。"""
-
-    page: str                       # 中文页面名，给日志和诊断看
-    state: Optional[str] = None     # 恒为 None：本路线每帧重判页面，不需要拨状态
-    entry: Optional[str] = None     # 非空 = 已经在导航链的某一级上，从这里接着导航
-
 
 def detect_resume_point(
     machine: "SanctuaryStateMachine",
     screen: np.ndarray,
-) -> Optional[SanctuaryResumePoint]:
+) -> Optional[ResumePoint]:
     """圣域收菜开局接力：认出人停在哪一页就就地接管。
 
     **判据与运行期同源** —— 直接调状态机自己的 ``observe_page``，不另定一套阈值、
@@ -486,14 +474,11 @@ def detect_resume_point(
     ⚠️ 人停在**大厅**上时返回 None（``forest_row`` 在大厅上不成立，实测 0.2411）
     ⇒ 照旧走「回大厅 → 进圣域」，与接力挂上之前的行为完全一致。
     """
-    page = machine.observe_page(screen)
-    if page is None:
-        return None
-    if page is SanctuaryState.HOME:
-        return SanctuaryResumePoint(
-            page=state_label(page),
-            entry=SANCTUARY_HOME_PAGE,
-        )
-    if page in _RESUMABLE_STATES:
-        return SanctuaryResumePoint(page=state_label(page))
-    return None
+    return observe_page_probe(
+        machine,
+        screen,
+        resumable=_RESUMABLE_STATES,
+        entry_page=SanctuaryState.HOME,
+        entry=SANCTUARY_HOME_PAGE,
+        label=state_label,
+    )

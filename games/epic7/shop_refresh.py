@@ -3,7 +3,7 @@
 from dataclasses import dataclass
 from enum import Enum
 from time import sleep as default_sleep
-from typing import Callable, NamedTuple, Optional
+from typing import Callable, Optional
 
 import cv2
 import numpy as np
@@ -11,6 +11,7 @@ import numpy as np
 from auto_game_unified.core.runtime import ManualStop, Runtime
 from auto_game_unified.core.supervisor import StableObservation
 
+from auto_game_unified.games.epic7.resume_probe import ResumePoint
 from auto_game_unified.games.epic7.evidence.shop_refresh import (
     LIST_FINGERPRINT_CHANGE_BITS,
     ShopItemKind,
@@ -290,12 +291,7 @@ class ShopRefreshStateMachine:
         self.resumed_at_shop = True
 
 
-class ShopResumePoint(NamedTuple):
-    """刷书签开局接力的落点。"""
 
-    page: str                    # 中文页面名，给日志和诊断看
-    state: Optional[str] = None  # 恒为 None：phase 是内部阶段，起始恒为 SCAN_TOP
-    entry: Optional[str] = None  # 恒为 None：秘密商店页就是业务入口，不需要导航
 
 
 def detect_resume_point(
@@ -303,7 +299,7 @@ def detect_resume_point(
     screen: np.ndarray,
     *,
     observed_page: Optional[str] = None,
-) -> Optional[ShopResumePoint]:
+) -> Optional[ResumePoint]:
     """刷书签开局接力：认出「人已经把游戏停在秘密商店页」就就地接管。
 
     这条路线的 10 个 phase（SCAN_TOP / WAIT_SCROLL_RESULT / … / STOPPED）**不是
@@ -331,7 +327,7 @@ def detect_resume_point(
         return None
     if observer.observe(screen).page is not ShopPage.SHOP:
         return None
-    return ShopResumePoint("秘密商店")
+    return ResumePoint("秘密商店")
 
 
 class ShopRefreshRunner:

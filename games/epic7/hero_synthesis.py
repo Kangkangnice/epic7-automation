@@ -25,6 +25,7 @@ from auto_game_unified.core.matcher import (
 )
 from auto_game_unified.core.recovery import RecoveryGate
 from auto_game_unified.core.runtime import Runtime
+from auto_game_unified.games.epic7.route_action import RouteAction
 from auto_game_unified.games.epic7.runner_base import NOT_STABLE, ModeRunnerBase
 from auto_game_unified.games.epic7.hero_transition import (
     CardSwitchMotionObserver,
@@ -93,12 +94,15 @@ def state_label(state: HeroSynthState) -> str:
 
 
 @dataclass(frozen=True)
-class HeroAction:
-    name: str
-    point: tuple[int, int]
-    source_page: str = ""
-    target_pages: tuple[str, ...] = ()
-    reason: str = ""
+class HeroAction(RouteAction):
+    """英雄合成的一个动作。
+
+    ⚠️ 同页动作的出口验收写在 ``source_observation`` 里，而契约认的字段名是
+    ``in_page_evidence`` —— 两个名字指同一件事。这正是本路线至今进 ``TRANSITION_EXEMPT``
+    的原因之一（见 ``modes.TRANSITION_EXEMPT``）。本次**不**改这个语义，只把公共字段收进
+    ``RouteAction``：字段名对齐是另一件事，得连判据一起改。
+    """
+
     source_observation: str = ""
     transition_kind: str = ""
 
@@ -406,13 +410,13 @@ class HeroSynthStateMachine:
         transition_kind: str = "",
     ) -> HeroAction:
         return HeroAction(
-            name,
-            point,
-            source_page,
-            target_pages,
-            reason,
-            source_observation,
-            transition_kind,
+            name=name,
+            point=point,
+            source_page=source_page,
+            target_pages=target_pages,
+            reason=reason,
+            source_observation=source_observation,
+            transition_kind=transition_kind,
         )
 
     def _mask_dot(self, template: np.ndarray) -> np.ndarray:

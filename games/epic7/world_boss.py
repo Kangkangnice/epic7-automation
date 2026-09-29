@@ -173,7 +173,7 @@ from dataclasses import asdict, dataclass
 from enum import Enum
 from pathlib import Path
 from time import sleep as default_sleep
-from typing import Callable, NamedTuple, Optional
+from typing import Callable, Optional
 
 import cv2
 import numpy as np
@@ -210,6 +210,8 @@ from auto_game_unified.games.epic7.evidence.world_boss import (
     build_world_boss_evidence,
 )
 from auto_game_unified.games.epic7.knights_donation import KNIGHTS_GUILD_HOME_PAGE
+from auto_game_unified.games.epic7.resume_probe import ResumePoint
+from auto_game_unified.games.epic7.route_action import RouteAction
 from auto_game_unified.games.epic7.runner_base import ModeRunnerBase
 from auto_game_unified.games.epic7.stamina import (
     STAMINA_REGIONS,
@@ -580,9 +582,8 @@ def world_boss_battle_visible(
         return True
     return find_world_boss_skip(screen, template) is not None
 
-
 @dataclass(frozen=True)
-class WorldBossAction:
+class WorldBossAction(RouteAction):
     """世界首领战的一个动作，**必须声明出处与去处**。
 
     ``source_page`` / ``target_pages`` 是主循环的转场契约（见
@@ -593,24 +594,9 @@ class WorldBossAction:
     ⚠️ 2026-09-22 之前这个类只有 ``name`` + ``point``，于是主循环**点完不回头验收**，
     表现就是「进入配置队伍页的同一秒直接点战斗开始」——中间该不该先点自动配置、
     点了到底生效没有，程序毫无概念，一路蒙到战斗画面认不出才被兜住。
+    ``in_page_evidence`` 那条更细的教训（它 2026-09-24 才补上）记在
+    ``route_action`` 的模块 docstring 里 —— 那里是字段的唯一出处，以后只改那一处。
     """
-
-    name: str
-    point: tuple[int, int]
-    source_page: str = ""
-    target_pages: tuple[str, ...] = ()
-    reason: str = ""
-    # 不换页动作的出口验收依据（换页动作用 ``target_pages``，两者填一个）。
-    #
-    # ⚠️ 这个字段是 2026-09-24 补的，补之前它**不存在**：本路线的 5 个同页动作
-    # （自动配置 / 领每周宝箱 / 全部开启 / 体力弹窗两步）**事实上**都有验收判据
-    # （下一帧重判画面看槽位填没填、宝箱还亮不亮、弹窗还在不在），但那些判据写在
-    # ``next_action`` 的代码里，**没有以字段形式登记**。于是
-    # ``runner_base._require_transition_contract`` 一开（它的规则是
-    # 「``target_pages`` **或** ``in_page_evidence``」）就全被拦 —— 规则里的备选项
-    # 根本不存在，只填了 ``source_page`` 的动作一个都跑不掉。
-    # 教训：看到「A 或 B」形式的契约校验，先确认 A、B 两个字段**都真实存在**，
-    # 别用「看起来都填了」代替跑一遍。
     in_page_evidence: str = ""
 
 
@@ -1179,12 +1165,7 @@ WORLD_BOSS_ENTRY_PAGE = "worldboss_home"
 """世界首领战主页在导航链上的页面名（``navigation._RESUME_ENTRY_PAGES`` 登记的就是它）。"""
 
 
-class WorldBossResumePoint(NamedTuple):
-    """世界首领战开局接力的落点。"""
 
-    page: str                        # 中文页面名，给日志和诊断看
-    state: Optional[WorldBossState]  # 要拨过去的状态机状态；None = 不动状态机
-    entry: Optional[str] = None      # 已经在导航链的这个页面上，从这里接着导航
 
 
 # 可停靠的**业务页** -> 它在导航链上的落点。
@@ -1209,7 +1190,7 @@ _RESUMABLE_ENTRIES: dict[WorldBossState, Optional[str]] = {
 def detect_resume_point(
     machine: WorldBossStateMachine,
     screen: np.ndarray,
-) -> Optional[WorldBossResumePoint]:
+) -> Optional[ResumePoint]:
     """世界首领战开局接力：认出用户停在哪一页，认不出返回 None。
 
     判据就是 ``machine.observe_page`` —— **与运行期同源**，不另定阈值、不加新锚点，
@@ -1238,11 +1219,11 @@ def detect_resume_point(
     """
     page = machine.observe_page(screen)
     if page is WorldBossState.BATTLE:
-        return WorldBossResumePoint("战斗中", WorldBossState.BATTLE)
+        return ResumePoint("战斗中", WorldBossState.BATTLE)
     if page in _RESUMABLE_ENTRIES:
-        return WorldBossResumePoint(state_label(page), page, _RESUMABLE_ENTRIES[page])
+        return ResumePoint(state_label(page), page, _RESUMABLE_ENTRIES[page])
     if machine.at_knights_home(screen):
-        return WorldBossResumePoint("骑士团主页", None, KNIGHTS_GUILD_HOME_PAGE)
+        return ResumePoint("骑士团主页", None, KNIGHTS_GUILD_HOME_PAGE)
     return None
 
 

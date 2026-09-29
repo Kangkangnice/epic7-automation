@@ -37,6 +37,7 @@ from auto_game_unified.games.epic7.stamina import (
     load_stamina_templates,
     next_stamina_decision,
 )
+from auto_game_unified.games.epic7.route_action import RouteAction
 from auto_game_unified.games.epic7.runner_base import ModeRunnerBase
 from auto_game_unified.games.epic7.unknown_screen import UnrecognizedScreen
 
@@ -64,10 +65,14 @@ STATE_LABELS = {
 def state_label(state: FodderState) -> str:
     return STATE_LABELS.get(state, state.value)
 
-
 @dataclass(frozen=True)
-class FodderAction:
-    name: str
+class FodderAction(RouteAction):
+    """狗粮的动作。
+
+    ⚠️ 它原先**只有** `name` / `point` 两个字段；现在从 `RouteAction` 继承了整份转场契约，
+    但字段值仍是空的 —— 行为不变，它进 `TRANSITION_EXEMPT` 的理由（「动作完全没有判据」，
+    登记在册的欠债）也仍然成立。
+    """
     point: tuple[int, int]
 
 

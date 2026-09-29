@@ -2,7 +2,7 @@ from dataclasses import asdict, dataclass
 from enum import Enum
 from pathlib import Path
 from time import sleep as default_sleep
-from typing import Callable, NamedTuple, Optional
+from typing import Callable, Optional
 
 import cv2
 import numpy as np
@@ -42,6 +42,8 @@ from auto_game_unified.games.epic7.stamina import (
     load_stamina_templates,
     next_stamina_decision,
 )
+from auto_game_unified.games.epic7.resume_probe import ResumePoint
+from auto_game_unified.games.epic7.route_action import RouteAction
 from auto_game_unified.games.epic7.runner_base import ModeRunnerBase
 from auto_game_unified.games.epic7.unknown_screen import UnrecognizedScreen
 from auto_game_unified.games.epic7.evidence.common import EvidenceProfile
@@ -280,12 +282,14 @@ def state_label(state: StoryState) -> str:
 
 
 @dataclass(frozen=True)
-class StoryAction:
-    name: str
-    point: tuple[int, int]
-    source_page: str = ""
-    target_pages: tuple[str, ...] = ()
-    reason: str = ""
+class StoryAction(RouteAction):
+    """主线的一个动作。
+
+    ``source_page`` / ``target_pages`` 是**无默认值的必填参数**（在 ``_action()`` 里统一构造），
+    所以这条路线不需要打开 ``_REQUIRE_TRANSITION_CONTRACT`` —— 漏填直接 ``TypeError``，
+    比开关更硬（见 ``modes.TRANSITION_EXEMPT``）。
+    """
+
     source_state: StoryState | None = None
     target_states: tuple[StoryState, ...] = ()
 
@@ -424,13 +428,13 @@ class StoryStateMachine:
     ) -> StoryAction:
         self._confirm_page(source_page)
         return StoryAction(
-            name,
-            point,
-            source_page,
-            target_pages,
-            reason,
-            self.state,
-            target_states,
+            name=name,
+            point=point,
+            source_page=source_page,
+            target_pages=target_pages,
+            reason=reason,
+            source_state=self.state,
+            target_states=target_states,
         )
 
     def commit(self, action: StoryAction, target: StoryState) -> None:
@@ -944,12 +948,7 @@ class StoryStateMachine:
 STORY_ENTRY_PAGE = "story_ready"
 
 
-class StoryResumePoint(NamedTuple):
-    """主线开局接力的落点。"""
 
-    page: str                       # 中文页面名，给日志和诊断看
-    state: Optional[StoryState]     # 要拨过去的状态机状态；None = 不动状态机
-    entry: Optional[str] = None     # 已经在导航链的这个页面上，从这里接着导航
 
 
 # 「接力」探测顺序 —— **顺序即优先级**，不能改。每项是（锚点名, 落点状态, 中文页面名）。
@@ -992,7 +991,7 @@ def detect_resume_point(
     screen: np.ndarray,
     *,
     observed_page: Optional[str] = None,
-) -> Optional[StoryResumePoint]:
+) -> Optional[ResumePoint]:
     """主线开局接力：认出用户停在主线一环里的哪一页。
 
     识别不到返回 None，调用方回退到「回大厅 → 从主线入口重新导航」（失败关闭，
@@ -1009,15 +1008,15 @@ def detect_resume_point(
     所以接力必须先把状态拨对，不能指望第一帧自己纠正。
     """
     if battle_scene_visible(screen):
-        return StoryResumePoint("战斗中", StoryState.WAIT_BATTLE)
+        return ResumePoint("战斗中", StoryState.WAIT_BATTLE)
     if observed_page is not None and observed_page == STORY_ENTRY_PAGE:
         # 导航器认出来就直接落 STAGE + 导航接力点，不再重复跑锚点。
-        return StoryResumePoint("关卡入口", StoryState.STAGE, STORY_ENTRY_PAGE)
+        return ResumePoint("关卡入口", StoryState.STAGE, STORY_ENTRY_PAGE)
     for name, state, label in _STORY_RESUME_ORDER:
         if machine._locate(screen, name) is None:
             continue
         entry = STORY_ENTRY_PAGE if name in ("prepare_battle", "watch_story") else None
-        return StoryResumePoint(label, state, entry)
+        return ResumePoint(label, state, entry)
     return None
 
 
