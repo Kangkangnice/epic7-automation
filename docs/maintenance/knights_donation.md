@@ -303,8 +303,9 @@ A 帧**原样**存成了夹具 `tests/fixtures/epic7_knights_donation/support_pa
 2. `tools/check.py::ROUTE_KEYWORDS` 按**文件名 stem** 认路线 ⇒ 新增
    `games/epic7/*.py` 必须登记，否则定向判定会安静地退回全量跑
    （`knights_support_digits` 已登记）。
-3. 加**新路线**（不是新文件）还要动 `games/epic7/modes.py`、`desktop/catalog.py`、
-   `launcher.py` 三处 —— 见 `AGENTS`/项目记忆里的「新增路线登记四处」。
+3. 加**新路线**（不是新文件）还要动 `games/epic7/modes.py::MODE_SPECS`、
+   `desktop/catalog.py::ROUTES`、`games/epic7/daily_tasks.py::DAILY_TASKS`（默认清单）
+   三处 —— 见 `AGENTS`/项目记忆里的「新增路线登记四处」。
 
 ## 守这些判据的测试
 

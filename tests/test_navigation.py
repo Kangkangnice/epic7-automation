@@ -1150,6 +1150,20 @@ class WorldBossNavigationTests(unittest.TestCase):
         self.assertEqual("gift_support_popup", popup.name)
         self.assertNotEqual("unknown", popup.name)
 
+    def test_knights_weekly_reward_popup_is_reported_instead_of_unknown(self):
+        """每周一骑士团点数结算弹窗（标题「获得每周骑士团点数奖励」）。
+
+        与签到/支援弹窗同理：盖在骑士团主页上、压暗底页锚点，弹窗期间认不出底页。
+        observe 必须先报出「这是周结算奖励弹窗」，交给全局弹窗守卫点掉；
+        否则会掉到「未知画面」→ 连点中央 4 次都唤醒失败（2026-09-28 实跑就是这样卡住的）。
+        """
+        navigator = self.navigator([])
+
+        popup = navigator.observe(world_boss_fixture("knights_weekly_reward_popup"))
+
+        self.assertEqual("knights_weekly_reward_popup", popup.name)
+        self.assertNotEqual("unknown", popup.name)
+
     def test_knights_home_is_recognized_again_once_the_signin_popup_is_closed(self):
         """弹窗点掉之后必须能正常认出骑士团主页（别把「压暗」当永久状态）。"""
         navigator = self.navigator([])

@@ -11,10 +11,11 @@
 
 | 节点 | 文件 | HEAD 行 |
 | --- | --- | --- |
-| 交互入口 | `launcher.py` | 12 `MENU_OPTIONS` |
 | 交互入口 | `desktop/app.py` | 162 `DesktopApp` |
 | main.py 装配与调度 | `main.py` | 290 `run_mode` |
 | 每日任务编排 | `games/epic7/daily_tasks.py` | 147 `run_daily_tasks`、125 `ensure_at_lobby` |
+
+（原先的 `launcher.py` 命令行编号菜单已删除，桌面助手是唯一交互入口。）
 
 ## 第七史诗专用 games/epic7/
 

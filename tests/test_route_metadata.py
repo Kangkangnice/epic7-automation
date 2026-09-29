@@ -5,12 +5,12 @@
 `games/epic7/route_metadata.py` 把「同一事实抄在多处、只改了一部分」变成
 import 阶段报错。它盯两块：
 
-1. **模式中文名** —— ``main`` / ``navigation`` / ``launcher`` / ``desktop`` 那几张表
+1. **模式中文名** —— ``main`` / ``navigation`` / ``desktop`` 那几张表
    在 2026-09-27 批次 2 之后都**派生自** ``modes.MODE_SPECS.label``；比对它们等于
    验证「派生链没被谁改回写死的」。各 Runner 的 ``_MODE_LABEL`` 是唯一无法派生的
    真副本（Runner 不能 import ``modes``，会成环）。
 2. **固定次数** —— 批次 2 之后只在 ``ModeSpec.default_cycles`` 定义一次，
-   所以判据从「三处比对」变成**防回潮**：``main.py`` / ``launcher.py`` 源码里
+   所以判据从「多处比对」变成**防回潮**：``main.py`` 源码里
    再有写死的次数就报错。
 
 这两类错在 2026-09-27 审查时都**实测到活的**：``survivor`` 一个名字在界面叫
@@ -58,9 +58,8 @@ class LabelConsistencyTests(unittest.TestCase):
     def test_a_copy_not_required_to_cover_is_left_alone(self):
         """副本没被告知要覆盖 ⇒ 有几个算几个，**不报缺**。
 
-        这是给 ``navigation``（不覆盖 needs_navigation=False 的路线）与
-        ``launcher``（不列 survivor）留的口子 —— 它们是「刻意不登记」，
-        不是漏改。若这条判据不成立，那些刻意缺项会被误报成漏改。
+        这是给 ``navigation``（不覆盖 needs_navigation=False 的路线）留的口子 ——
+        它是「刻意不登记」，不是漏改。若这条判据不成立，那些刻意缺项会被误报成漏改。
         """
         self.assertEqual(
             [],
@@ -94,42 +93,33 @@ class LabelConsistencyTests(unittest.TestCase):
 
 
 class DefaultCyclesTests(unittest.TestCase):
-    """固定次数判据（批次 2 之后）：main / launcher 里**不许**再写死次数。
+    """固定次数判据（批次 2 之后）：``main.py`` 里**不许**再写死次数。
 
-    批次 2 把次数收敛进 ``ModeSpec.default_cycles``，三处副本没了 ⇒ 判据从
-    「三处比对」变成「防回潮」：源码里再冒出写死的次数就报错。
+    批次 2 把次数收敛进 ``ModeSpec.default_cycles``，副本没了 ⇒ 判据从
+    「多处比对」变成「防回潮」：源码里再冒出写死的次数就报错。
     """
 
     def test_the_repository_hardcodes_no_cycles(self):
-        """基线：``main.py`` / ``launcher.py`` 里已经没有写死的次数。
+        """基线：``main.py`` 里已经没有写死的次数。
 
         这条同时是扫描器的**反向确认** —— 它得先能刮到东西，才谈得上「刮不到」。
         （刮到东西的能力由 ``SourceScanTests`` 用假源码验证。）
         """
         self.assertEqual({}, rm._main_fixed_cycles())
-        self.assertEqual({}, rm._launcher_fixed_cycles())
         self.assertEqual(
             [],
             rm.default_cycles_consistency_errors(
                 main_defaults=rm._main_fixed_cycles(),
-                launcher_defaults=rm._launcher_fixed_cycles(),
             ),
         )
 
     def test_a_hardcoded_main_cycle_is_rejected(self):
         errors = rm.default_cycles_consistency_errors(
-            main_defaults={"world_boss": 2}, launcher_defaults={}
+            main_defaults={"world_boss": 2}
         )
         self.assertEqual(1, len(errors))
         self.assertIn("main.py", errors[0])
         self.assertIn("world_boss", errors[0])
-
-    def test_a_hardcoded_launcher_cycle_is_rejected(self):
-        errors = rm.default_cycles_consistency_errors(
-            main_defaults={}, launcher_defaults={"hero_synthesis": 1}
-        )
-        self.assertEqual(1, len(errors))
-        self.assertIn("launcher.py", errors[0])
 
 
 class SourceScanTests(unittest.TestCase):
@@ -144,8 +134,8 @@ class SourceScanTests(unittest.TestCase):
         finally:
             shutil.rmtree(directory, ignore_errors=True)
 
-    def test_the_scanner_finds_hardcoded_cycles_in_all_three_shapes(self):
-        """项目历史上真实出现过的三种写法都要刮到。
+    def test_the_scanner_finds_hardcoded_cycles_in_both_shapes(self):
+        """项目历史上真实出现过的两种写法都要刮到（``==`` 与 ``in`` 元组）。
 
         这条是「判据恒过」的反向确认：若扫描器退回空字典，
         ``DefaultCyclesTests`` 那条基线会**恒过**（空表当然干净），
@@ -161,15 +151,6 @@ class SourceScanTests(unittest.TestCase):
         self.assertEqual(
             {"world_boss": 2, "knights_donation": 1, "labyrinth_stone": 1},
             self._scan(source),
-        )
-        # launcher 用的是局部变量 ``mode`` / ``cycles``，另一条主体路径。
-        launcher_source = (
-            "def run(mode):\n"
-            '    if mode == "hero_synthesis":\n'
-            "        cycles = 1\n"
-        )
-        self.assertEqual(
-            {"hero_synthesis": 1}, self._scan(launcher_source, rm._LAUNCHER_VAR)
         )
 
     def test_the_scanner_ignores_unrelated_integer_assignments(self):

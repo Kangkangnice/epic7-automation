@@ -1,3 +1,4 @@
+import os
 import threading
 
 import pytest
@@ -74,7 +75,11 @@ class StuckProcess:
         self.returncode = -9
 
 
-def test_worker_builds_existing_live_cli_and_streams_logs(tmp_path):
+def test_worker_builds_the_live_cli_and_streams_logs(tmp_path):
+    """勾一条也走同一套命令：``--daily --daily-tasks story:3``。
+
+    界面上不再有「单路线运行」那条独立通道 —— 两条路合一之后，「勾一条 = 跑一条」。
+    """
     calls = []
     worker = WorkerController(
         repo_parent=tmp_path,
@@ -82,13 +87,12 @@ def test_worker_builds_existing_live_cli_and_streams_logs(tmp_path):
         or FakeProcess(),
     )
 
-    worker.start(RunRequest("story", 3))
+    worker.start(RunRequest(("story",), {"story": 3}))
     worker.join_reader()
 
     command, options = calls[0]
     assert command[1:4] == ["-u", "-m", "auto_game_unified.main"]
-    assert command[command.index("--mode") + 1] == "story"
-    assert command[command.index("--max-cycles") + 1] == "3"
+    assert command[command.index("--daily-tasks") + 1] == "story:3"
     assert options["cwd"] == str(tmp_path)
     events = worker.drain_events()
     assert [event.message for event in events if event.kind == "log"] == [
@@ -106,7 +110,7 @@ def test_worker_forwards_selected_window_backend(tmp_path):
         or FakeProcess(),
     )
 
-    worker.start(RunRequest("story", 1, "pc"))
+    worker.start(RunRequest(("story",), {"story": 1}, "pc"))
     worker.join_reader()
 
     command = calls[0][0]
@@ -119,7 +123,7 @@ def test_worker_stop_creates_signal_file_before_process_exits(tmp_path):
         repo_parent=tmp_path,
         popen=lambda *args, **kwargs: BlockingProcess(release),
     )
-    worker.start(RunRequest("hero_synthesis", 1))
+    worker.start(RunRequest(("hero_synthesis",), {"hero_synthesis": 1}))
 
     worker.request_stop()
 
@@ -153,7 +157,7 @@ def test_force_stop_kills_a_worker_that_never_reads_the_stop_signal(tmp_path):
         popen=lambda *args, **kwargs: process,
         log_path=log_path,
     )
-    worker.start(RunRequest("world_boss", 2))
+    worker.start(RunRequest(("world_boss",), {"world_boss": 2}))
 
     worker.request_stop()
 
@@ -183,11 +187,11 @@ def test_worker_persists_process_exit_evidence(tmp_path):
         log_path=log_path,
     )
 
-    worker.start(RunRequest("arena", 5, "pc"))
+    worker.start(RunRequest(("arena",), {"arena": 5}, "pc"))
     worker.join_reader()
 
     evidence = log_path.read_text(encoding="utf-8")
-    assert "事件=启动 模式=arena 后端=pc PID=2468" in evidence
+    assert "事件=启动 模式=每日任务(arena) 后端=pc PID=2468" in evidence
     # 「强行结束」必须**显式记否** —— 只有「是」而没有「否」的话，排查时读不出
     # 这一条到底带没带这个字段。
     assert (
@@ -213,7 +217,7 @@ def test_worker_reports_and_persists_abnormal_exit_code(tmp_path):
         log_path=log_path,
     )
 
-    worker.start(RunRequest("arena", 1, "pc"))
+    worker.start(RunRequest(("arena",), {"arena": 1}, "pc"))
     worker.join_reader()
 
     assert worker.drain_events()[-1] == WorkerEvent(
@@ -270,8 +274,8 @@ def test_worker_rotates_evidence_log_and_discards_oldest_backup(tmp_path):
     assert "第一条" not in combined
 
 
-def test_worker_builds_daily_command_without_max_cycles(tmp_path):
-    """每日任务走 ``--daily``，次数由各条路线自己的默认值定 ⇒ 不传 ``--max-cycles``。"""
+def test_worker_keeps_the_given_route_order(tmp_path):
+    """``--daily-tasks`` 里的次序就是执行顺序（用户 2026-09-29 拍板）。"""
     calls = []
     worker = WorkerController(
         repo_parent=tmp_path,
@@ -279,14 +283,12 @@ def test_worker_builds_daily_command_without_max_cycles(tmp_path):
         or FakeProcess(),
     )
 
-    worker.start(
-        RunRequest("arena", 1, daily_tasks=("world_boss", "knights_donation"))
-    )
+    worker.start(RunRequest(("arena", "world_boss"), {}))
     worker.join_reader()
 
     command = calls[0][0]
     assert "--daily" in command
-    assert command[command.index("--daily-tasks") + 1] == "world_boss,knights_donation"
+    assert command[command.index("--daily-tasks") + 1] == "arena,world_boss"
     assert "--mode" not in command
     assert "--max-cycles" not in command
     assert command[command.index("--window-backend") + 1] == "emulator"
@@ -294,12 +296,8 @@ def test_worker_builds_daily_command_without_max_cycles(tmp_path):
     assert command[command.index("--confirm") + 1] == "RUN"
 
 
-def test_worker_writes_edited_daily_cycles_into_the_task_argument(tmp_path):
-    """界面上改过的次数要跟着 ``--daily-tasks`` 走；没改的仍写成朴素的名字。
-
-    两种写法并存是刻意的：命令行里写出来的就是「用户看到的那一套」，
-    出问题照着日志能原样重跑；没改的那些保持短写，人看着不累。
-    """
+def test_worker_writes_cycles_into_the_task_argument(tmp_path):
+    """次数跟着 ``--daily-tasks`` 走 —— 界面看到什么就写什么，出问题能原样重跑。"""
     calls = []
     worker = WorkerController(
         repo_parent=tmp_path,
@@ -308,44 +306,49 @@ def test_worker_writes_edited_daily_cycles_into_the_task_argument(tmp_path):
 
     worker.start(
         RunRequest(
-            "arena",
-            1,
-            daily_tasks=(
-                "world_boss",
-                "knights_donation",
-                "shop_refresh",
-                "labyrinth_stone",
-                "arena",
-            ),
-            daily_cycles={"arena": 3},
+            ("world_boss", "knights_donation", "arena"),
+            {"world_boss": 2, "knights_donation": 1, "arena": 3},
         )
     )
     worker.join_reader()
 
     command = calls[0]
     assert command[command.index("--daily-tasks") + 1] == (
-        "world_boss,knights_donation,shop_refresh,labyrinth_stone,arena:3"
+        "world_boss:2,knights_donation:1,arena:3"
     )
     assert "--max-cycles" not in command
 
 
-def test_worker_rejects_daily_without_any_task(tmp_path):
+def test_worker_leaves_routes_without_a_given_cycle_bare(tmp_path):
+    """没给次数的路线写成朴素的名字（命令行 ``--daily`` 的用法），由执行器取默认值。"""
+    calls = []
+    worker = WorkerController(
+        repo_parent=tmp_path,
+        popen=lambda command, **kwargs: calls.append(command) or FakeProcess(),
+    )
+
+    worker.start(RunRequest(("world_boss", "arena"), {"arena": 3}))
+    worker.join_reader()
+
+    command = calls[0]
+    assert command[command.index("--daily-tasks") + 1] == "world_boss,arena:3"
+
+
+def test_worker_rejects_a_run_without_any_route(tmp_path):
     worker = WorkerController(repo_parent=tmp_path)
 
     with pytest.raises(ValueError, match="至少"):
-        worker.start(RunRequest("arena", 1, daily_tasks=()))
+        worker.start(RunRequest((), {}))
 
 
-def test_worker_rejects_non_positive_daily_cycles(tmp_path):
+def test_worker_rejects_non_positive_cycles(tmp_path):
     worker = WorkerController(repo_parent=tmp_path)
 
     with pytest.raises(ValueError, match="正整数"):
-        worker.start(
-            RunRequest("arena", 1, daily_tasks=("arena",), daily_cycles={"arena": 0})
-        )
+        worker.start(RunRequest(("arena",), {"arena": 0}))
 
 
-def test_worker_evidence_labels_daily_runs(tmp_path):
+def test_worker_evidence_labels_the_run(tmp_path):
     log_path = tmp_path / "desktop_worker.log"
     worker = WorkerController(
         repo_parent=tmp_path,
@@ -353,7 +356,7 @@ def test_worker_evidence_labels_daily_runs(tmp_path):
         log_path=log_path,
     )
 
-    worker.start(RunRequest("arena", 1, daily_tasks=("arena", "world_boss"), backend="pc"))
+    worker.start(RunRequest(("arena", "world_boss"), {}, "pc"))
     worker.join_reader()
 
     evidence = log_path.read_text(encoding="utf-8")
@@ -374,7 +377,6 @@ def test_worker_keeps_only_latest_failure_snapshots(tmp_path):
         repo_parent=tmp_path,
         snapshot_limit=2,
     )
-    worker._request = RunRequest("arena", 1, "pc")
 
     for exit_code in (21, 22, 23):
         worker._snapshot_current_frame(exit_code)
@@ -390,3 +392,26 @@ def test_worker_keeps_only_latest_failure_snapshots(tmp_path):
     assert len(snapshots) == 2
     assert snapshots[0].name.endswith("_arena_exit_22.png")
     assert snapshots[1].name.endswith("_arena_exit_23.png")
+
+
+def test_failure_snapshot_comes_from_the_route_that_wrote_last(tmp_path):
+    """多路线连跑时，出问题的那条一定是刚写过 ``current.png`` 的那条 ⇒ 取最新。
+
+    以前是拿「本次运行的主路线」去硬拼目录，勾了多条时会把**别的路线的旧帧**
+    当成现场存下来 —— 那比没有现场更坏（会把人引到错的方向）。
+    """
+    diagnostics = tmp_path / "auto_game_unified" / "runtime_diagnostics"
+    arena = diagnostics / "epic7_arena" / "current.png"
+    story = diagnostics / "epic7_story" / "current.png"
+    arena.parent.mkdir(parents=True)
+    story.parent.mkdir(parents=True)
+    arena.write_bytes(b"old arena frame")
+    story.write_bytes(b"new story frame")
+    os.utime(arena, (1_600_000_000, 1_600_000_000))
+    worker = WorkerController(repo_parent=tmp_path)
+
+    snapshot = worker._snapshot_current_frame(23)
+
+    assert snapshot is not None
+    assert snapshot.read_bytes() == b"new story frame"
+    assert snapshot.name.endswith("_story_exit_23.png")

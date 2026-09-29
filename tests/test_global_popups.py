@@ -11,13 +11,17 @@ from auto_game_unified.games.epic7.global_popups import (
     find_gift_support_close,
     find_intimacy_level_up_dismiss,
     find_knights_signin_close,
+    find_knights_weekly_reward_close,
     find_network_retry,
+    find_pet_gift_badge,
     load_friend_request_templates,
     load_friendship_points_templates,
     load_gift_support_templates,
     load_intimacy_level_up_templates,
     load_knights_signin_templates,
+    load_knights_weekly_reward_templates,
     load_network_reconnect_templates,
+    load_pet_gift_templates,
 )
 from auto_game_unified.core.runtime import ManualStop, Runtime
 
@@ -442,6 +446,114 @@ def test_global_guard_dismisses_gift_support_popup():
     assert any("动作=close-gift-support" in line for line in logs)
 
 
+def test_knights_weekly_reward_popup_is_recognized_from_both_anchors():
+    popup = _world_boss_screen("knights_weekly_reward_popup.png")
+    templates = load_knights_weekly_reward_templates(NAVIGATION_TEMPLATES)
+
+    match = find_knights_weekly_reward_close(popup, templates.title, templates.close)
+
+    assert match is not None
+    # 「点击关闭」实测中心 (959, 843)。
+    assert 900 <= match.center[0] <= 1020
+    assert 820 <= match.center[1] <= 875
+
+
+def test_knights_weekly_reward_popup_requires_title_and_close_anchor():
+    popup = _world_boss_screen("knights_weekly_reward_popup.png")
+    templates = load_knights_weekly_reward_templates(NAVIGATION_TEMPLATES)
+    without_title = popup.copy()
+    without_title[260:350, 700:1300] = 0
+    without_close = popup.copy()
+    without_close[810:890, 860:1160] = 0
+
+    assert find_knights_weekly_reward_close(
+        without_title, templates.title, templates.close
+    ) is None
+    assert find_knights_weekly_reward_close(
+        without_close, templates.title, templates.close
+    ) is None
+
+
+def test_knights_weekly_reward_popup_rejects_the_page_underneath_it():
+    """点掉弹窗后的骑士团主页不能还被当成弹窗（否则会无限点下去）。"""
+    templates = load_knights_weekly_reward_templates(NAVIGATION_TEMPLATES)
+
+    for name in ("knights_home.png", "knights_home_after_popup.png", "worldboss_home.png"):
+        assert find_knights_weekly_reward_close(
+            _world_boss_screen(name), templates.title, templates.close
+        ) is None, name
+
+
+def test_knights_weekly_reward_popup_rejects_other_knights_popups():
+    """两个弹窗标题共用同一块 ROI，必须靠标题文字互相区分开。"""
+    templates = load_knights_weekly_reward_templates(NAVIGATION_TEMPLATES)
+
+    assert find_knights_weekly_reward_close(
+        _world_boss_screen("knights_signin_popup.png"),
+        templates.title,
+        templates.close,
+    ) is None
+    assert find_knights_weekly_reward_close(
+        _world_boss_screen("gift_support_popup.png"),
+        templates.title,
+        templates.close,
+    ) is None
+
+
+def test_knights_weekly_reward_popup_rejects_unrelated_global_popups():
+    """别的全局弹窗不能被误判成周结算奖励弹窗，否则会在错的位置点「点击关闭」。"""
+    templates = load_knights_weekly_reward_templates(NAVIGATION_TEMPLATES)
+    others = [
+        STORY_FIXTURES / "friendship_points_popup.png",
+        STORY_FIXTURES / "friend_request.png",
+        STORY_FIXTURES / "stamina_popup_live_20260809.png",
+        FIXTURES / "network_disconnected.png",
+        FIXTURES / "intimacy_level_up_live_20260815.png",
+    ]
+
+    for path in others:
+        if not path.is_file():
+            continue
+        screen = np.asarray(Image.open(path).convert("RGB"))[:1132, :1982]
+        assert find_knights_weekly_reward_close(
+            screen, templates.title, templates.close
+        ) is None, path.name
+
+
+def test_global_guard_dismisses_knights_weekly_reward_popup():
+    """守卫必须能消费掉周结算奖励弹窗，然后露出骑士团主页。"""
+    popup = _world_boss_screen("knights_weekly_reward_popup.png")
+    knights_home = _world_boss_screen("knights_home_after_popup.png")
+    screens = iter([popup, popup, knights_home])
+    clicks: list[tuple[int, int]] = []
+    logs: list[str] = []
+    clock = FakeClock()
+    runtime = Runtime(
+        lambda: next(screens),
+        clicks.append,
+        monotonic=clock.now,
+        emit=logs.append,
+    )
+    runtime.set_capture_guard(
+        Epic7GlobalPopupGuard(
+            load_network_reconnect_templates(TEMPLATES),
+            knights_weekly_reward_templates=load_knights_weekly_reward_templates(
+                NAVIGATION_TEMPLATES
+            ),
+            sleep=clock.sleep,
+            now=clock.now,
+        )
+    )
+
+    received = runtime.capture()
+
+    assert np.array_equal(received, knights_home)
+    assert len(clicks) == 1
+    assert 900 <= clicks[0][0] <= 1020
+    assert 820 <= clicks[0][1] <= 875
+    assert any("动作=close-knights-weekly-reward" in line for line in logs)
+
+
 def test_global_guard_requires_two_frames_then_returns_recovered_screen():
     popup = load_screen("network_reconnect_navigation.png")
     normal = np.asarray(
@@ -470,6 +582,92 @@ def test_global_guard_requires_two_frames_then_returns_recovered_screen():
     assert np.array_equal(received, normal)
     assert len(clicks) == 1
     assert runtime.now() == started
+
+
+# ---- 宠物小屋礼物角标（快捷菜单页，宠物送礼时挂出） --------------------------
+#
+# ⚠️ 它是本文件里**唯一一条单锚点**判据：那个角标没有「标题 + 关闭点」，
+# 整个角标就是要点的目标（理由见 global_popups.py 的 _PET_GIFT_BADGE_REGION 注释）。
+# 排他性由「区域限定 + 图形独特」保证，实测余量见那里的注释。
+
+PET_BADGE_BOX = (1630, 338, 96, 94)  # x, y, w, h —— 与模板裁剪一致
+
+
+def test_pet_gift_badge_is_recognized_on_the_quick_menu():
+    screen = load_screen("pet_gift_live_20260928.png")
+    templates = load_pet_gift_templates(TEMPLATES)
+
+    match = find_pet_gift_badge(screen, templates.badge)
+
+    assert match is not None
+    # 实测角标中心约 (1678, 385)。
+    assert 1600 <= match.center[0] <= 1760
+    assert 330 <= match.center[1] <= 435
+    assert match.score >= 0.95
+
+
+def test_pet_gift_badge_requires_the_badge_itself():
+    """把角标抹掉后就不能再命中（否则会把没有礼物的菜单页也点一下）。"""
+    screen = load_screen("pet_gift_live_20260928.png")
+    templates = load_pet_gift_templates(TEMPLATES)
+    x, y, w, h = PET_BADGE_BOX
+    erased = screen.copy()
+    erased[y : y + h, x : x + w] = 0
+
+    assert find_pet_gift_badge(screen, templates.badge) is not None
+    assert find_pet_gift_badge(erased, templates.badge) is None
+
+
+def test_pet_gift_badge_rejects_unrelated_frames():
+    """别的页面不能被误判成宠物礼物角标，否则会在菜单页以外乱点。"""
+    templates = load_pet_gift_templates(TEMPLATES)
+    others = [
+        STORY_FIXTURES / "friendship_points_popup.png",
+        STORY_FIXTURES / "stamina_popup_live_20260809.png",
+        FIXTURES / "network_disconnected.png",
+        FIXTURES / "intimacy_level_up_live_20260815.png",
+        WORLD_BOSS_FIXTURES / "knights_home.png",
+    ]
+
+    for path in others:
+        if not path.is_file():
+            continue
+        screen = np.asarray(Image.open(path).convert("RGB"))[:1132, :1982]
+        assert find_pet_gift_badge(screen, templates.badge) is None, path.name
+
+
+def test_global_guard_dismisses_pet_gift_badge():
+    """守卫必须能消费掉礼物角标，然后交回「角标已消失」的那一帧。"""
+    with_badge = load_screen("pet_gift_live_20260928.png")
+    without = with_badge.copy()
+    x, y, w, h = PET_BADGE_BOX
+    without[y : y + h, x : x + w] = 0
+    screens = iter([with_badge, with_badge, without])
+    clicks: list[tuple[int, int]] = []
+    logs: list[str] = []
+    clock = FakeClock()
+    runtime = Runtime(
+        lambda: next(screens),
+        clicks.append,
+        monotonic=clock.now,
+        emit=logs.append,
+    )
+    runtime.set_capture_guard(
+        Epic7GlobalPopupGuard(
+            load_network_reconnect_templates(TEMPLATES),
+            pet_gift_templates=load_pet_gift_templates(TEMPLATES),
+            sleep=clock.sleep,
+            now=clock.now,
+        )
+    )
+
+    received = runtime.capture()
+
+    assert np.array_equal(received, without)
+    assert len(clicks) == 1
+    assert 1600 <= clicks[0][0] <= 1760
+    assert 330 <= clicks[0][1] <= 435
+    assert any("动作=claim-pet-gift" in line for line in logs)
 
 
 def test_global_guard_dismisses_intimacy_popup_before_returning_result_frame():

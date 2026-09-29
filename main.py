@@ -41,7 +41,9 @@ from auto_game_unified.games.epic7.global_popups import (
     load_gift_support_templates,
     load_intimacy_level_up_templates,
     load_knights_signin_templates,
+    load_knights_weekly_reward_templates,
     load_network_reconnect_templates,
+    load_pet_gift_templates,
 )
 
 
@@ -345,7 +347,7 @@ def _install_finish_home(
     assert_public_flow_verification_declared()
     # 「同一事实抄在多处、只改了一部分」的自查：模式中文名与固定次数。
     #
-    # ⚠️ 它**要读磁盘源码**（AST 扫 main.py / launcher.py 里的固定次数），
+    # ⚠️ 它**要读磁盘源码**（AST 扫 main.py 里的固定次数），
     # 但比 public_flow_verification 的反向护栏便宜得多（只 parse 两个小文件），
     # 所以放在生产路径上跑 —— 这样「新路线漏改中文名」在实跑启动时就报错，
     # 而不是等用户从另一个入口启动才发现。
@@ -428,6 +430,12 @@ def run_mode(
                 gift_support_templates=load_gift_support_templates(
                     template_root / "navigation"
                 ),
+                # 「获得每周骑士团点数奖励」弹窗（每周一结算），同放 navigation 下。
+                knights_weekly_reward_templates=load_knights_weekly_reward_templates(
+                    template_root / "navigation"
+                ),
+                # 宠物小屋礼物角标（快捷菜单页，宠物送礼时挂出的小角标），放 global 下。
+                pet_gift_templates=load_pet_gift_templates(template_root / "global"),
             )
         )
         if spec.needs_navigation:
@@ -496,15 +504,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--daily",
         action="store_true",
-        help="跑「每日任务」：把几条路线按固定次序串起来一次跑完（与 --mode 互斥）",
+        help="跑「每日任务」：把给定的几条路线依次串起来一次跑完（与 --mode 互斥）",
     )
     parser.add_argument(
         "--daily-tasks",
         default="",
         help=(
-            "每日任务要跑哪些路线（逗号分隔）；留空=全部。"
-            "每条可以带次数，例如 arena:3；不带就用该路线的每日默认次数。"
-            f"可选：{','.join(task.mode for task in DAILY_TASKS)}"
+            "每日任务要跑哪些路线（逗号分隔，**次序即执行顺序**）；"
+            "留空=默认清单（" + "、".join(task.mode for task in DAILY_TASKS) + "）。"
+            "每条可以带次数，例如 arena:3；不带就用该路线的默认次数。"
+            f"可选：{','.join(sorted(MODE_SPECS))}"
         ),
     )
     parser.add_argument("--live", action="store_true", help="allow mouse clicks")
@@ -537,7 +546,9 @@ def _daily_pieces(raw: str) -> list[tuple[str, str]]:
 
 
 def _parse_daily_selection(raw: str) -> list[str]:
-    """把 ``--daily-tasks`` 的逗号分隔串解析成模式名列表；留空 = 全部。
+    """把 ``--daily-tasks`` 的逗号分隔串解析成模式名列表；留空 = 默认清单。
+
+    次序**照原样保留**（勾选先后就是执行顺序，见 ``normalize_selection``）。
 
     每一项可以带次数（``arena:3``）—— **次数在这里被丢掉**，它归
     ``_parse_daily_cycles`` 管。
@@ -550,9 +561,13 @@ def _parse_daily_selection(raw: str) -> list[str]:
 def _parse_daily_cycles(raw: str) -> dict[str, int]:
     """取出 ``--daily-tasks`` 里**显式写了次数**的那几条（``arena:3``）。
 
-    没写次数的路线不出现在返回值里 ⇒ 执行器照用 ``DAILY_TASKS`` 的默认次数。
-    次数写坏了（不是正整数）在命令行入口就报错：静默退回默认值会让
-    「我明明写了 3」变成一个没人发现的坑。
+    没写次数的路线不出现在返回值里 ⇒ 执行器照用该路线在 ``MODE_SPECS`` 里的默认次数。
+    次数写坏了在命令行入口就报错：静默退回默认值会让「我明明写了 3」变成一个
+    没人发现的坑。
+
+    下限以路线的 ``ModeSpec.min_cycles`` 为准（正常 1；「刷书签」是 0 —— 只扫一遍、
+    不付费刷新）。界面所有启动都走 ``--daily --daily-tasks``（见 ``desktop/worker.py``），
+    所以这条解析**必须**放行 ``shop_refresh:0``，否则界面上那个默认的 0 一按开始就报错。
     """
     overrides: dict[str, int] = {}
     for name, count in _daily_pieces(raw):
@@ -562,8 +577,15 @@ def _parse_daily_cycles(raw: str) -> dict[str, int]:
             value = int(count)
         except ValueError as error:
             raise SystemExit(f"每日任务的次数不是整数：{name}:{count}") from error
-        if value <= 0:
-            raise SystemExit(f"每日任务的次数必须是正整数：{name}:{count}")
+        # 认不出的名字取不到规格 ⇒ 退回 1（也就是「必须为正」的老口径），
+        # 让 ``normalize_selection`` 照旧报「未知路线」。
+        minimum = getattr(MODE_SPECS.get(name), "min_cycles", 1)
+        if value < minimum:
+            raise SystemExit(
+                f"每日任务的次数不能为负数：{name}:{count}"
+                if minimum == 0
+                else f"每日任务的次数必须是正整数：{name}:{count}"
+            )
         overrides[name] = value
     return overrides
 
@@ -662,7 +684,7 @@ def _apply_fixed_cycles(args: argparse.Namespace) -> None:
     命令行**不必**再传 ``--max-cycles``。
 
     ⚠️ 次数只在 ``modes.MODE_SPECS`` 里定义一次。以前这里是三条写死的 ``if``
-    （各带一个魔数），与 ``launcher.py`` / ``desktop/catalog.py`` 三处手工对齐；
+    （各带一个魔数），与交互菜单 / ``desktop/catalog.py`` 三处手工对齐；
     注释虽写着「都被测试钉住」，实际只钉住了 catalog 一处，另两处改漏了没人知道。
 
     ⚠️ 用 ``.get()`` 而不是 ``get_mode()``：``--mode`` 写了不存在的名字时，要让它
@@ -687,8 +709,17 @@ def main(argv: list[str] | None = None) -> int:
     _apply_fixed_cycles(args)
     if args.live and args.confirm != "RUN":
         raise SystemExit("实跑模式需要附加参数：--live --confirm RUN")
-    if args.live and (args.max_cycles is None or args.max_cycles <= 0):
-        raise SystemExit("实跑模式要求 --max-cycles 为正数")
+    # 次数下限以路线的 ``min_cycles`` 为准（正常 1；「刷书签」是 0 —— 只扫不刷新）。
+    # 用 ``MODE_SPECS.get`` 而不是 ``get_mode``：``--mode`` 写了不存在的名字时，
+    # 要让它照旧在后面 ``get_mode()`` 那里报错（同 ``_apply_fixed_cycles`` 的说明）。
+    if args.live:
+        minimum = getattr(MODE_SPECS.get(args.mode), "min_cycles", 1)
+        if args.max_cycles is None or args.max_cycles < minimum:
+            raise SystemExit(
+                "实跑模式要求 --max-cycles 为正数"
+                if minimum > 0
+                else "实跑模式的 --max-cycles 不能为负数"
+            )
     if args.live and args.start_state is not None:
         raise SystemExit("--start-state 仅在空跑诊断模式可用")
     spec = get_mode(args.mode)

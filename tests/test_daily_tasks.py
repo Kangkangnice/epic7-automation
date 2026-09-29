@@ -15,11 +15,9 @@ import pytest
 from auto_game_unified.core.runtime import ManualStop
 from auto_game_unified.games.epic7 import daily_tasks
 from auto_game_unified.games.epic7.daily_tasks import (
-    DAILY_BY_MODE,
     DAILY_TASKS,
     DailyOutcome,
     DailyReport,
-    cycles_for,
     ensure_at_lobby,
     normalize_selection,
     run_daily_tasks,
@@ -32,10 +30,15 @@ from auto_game_unified.games.epic7.daily_tasks import (
 
 
 def test_daily_list_keeps_the_agreed_order():
-    """次序是用户拍板的（世界首领战 → 骑士团捐赠 → 刷书签 → 迷宫强化石 → 竞技场），别被 sorted 覆盖。"""
+    """``DAILY_TASKS`` 是**默认清单**（命令行不带 ``--daily-tasks`` 时按它跑）。
+
+    界面不读它 —— 界面把用户勾的那几条按勾选先后传下来。次序本身仍有讲究：
+    世界首领战与骑士团捐赠都从骑士团进，放一起省一趟导航。
+    """
     assert [task.mode for task in DAILY_TASKS] == [
         "world_boss",
         "knights_donation",
+        "sanctuary",
         "shop_refresh",
         "labyrinth_stone",
         "arena",
@@ -45,6 +48,7 @@ def test_daily_list_keeps_the_agreed_order():
     assert [task.label for task in DAILY_TASKS] == [
         "世界首领战",
         "骑士团捐赠",
+        "圣域收菜",
         "刷书签",
         "迷宫强化石",
         "竞技场",
@@ -72,18 +76,48 @@ def test_every_daily_mode_exists_in_mode_specs():
     """
     from auto_game_unified.games.epic7.modes import MODE_SPECS
 
-    missing = sorted(set(DAILY_BY_MODE) - set(MODE_SPECS))
+    missing = sorted({task.mode for task in DAILY_TASKS} - set(MODE_SPECS))
     assert missing == [], f"每日任务引用了不存在的路线：{missing}"
 
 
-def test_daily_cycles_are_positive_and_match_known_daily_limits():
-    assert all(task.cycles > 0 for task in DAILY_TASKS)
+def test_daily_cycles_meet_each_route_floor_and_match_known_daily_limits():
+    from auto_game_unified.games.epic7.modes import MODE_SPECS
+
+    # 次数下限由路线自己定（``ModeSpec.min_cycles``）：常规路线是 1，
+    # 「刷书签」是 0 —— 用户 2026-09-29 拍板：0 次 = 照常进店扫一遍、把自动
+    # 刷新出来的买掉，但**一次都不付费刷新**（秘密商店自己会随时间刷新）。
+    assert all(
+        task.cycles >= MODE_SPECS[task.mode].min_cycles for task in DAILY_TASKS
+    )
     # 世界首领战每天固定 2 次；骑士团捐赠请求支援一天一次；
-    # 刷书签默认 1 次付费刷新（花天空石、不可逆，界面可改）；迷宫强化石跑一遍。
-    assert cycles_for("world_boss") == 2
-    assert cycles_for("knights_donation") == 1
-    assert cycles_for("shop_refresh") == 1
-    assert cycles_for("labyrinth_stone") == 1
+    # 刷书签默认 0 次付费刷新（花天空石那一步不做；界面可改）；
+    # 迷宫强化石 / 圣域收菜都是跑一遍。
+    limits = {task.mode: task.cycles for task in DAILY_TASKS}
+    assert limits["world_boss"] == 2
+    assert limits["knights_donation"] == 1
+    assert limits["shop_refresh"] == 0
+    assert limits["labyrinth_stone"] == 1
+    assert limits["sanctuary"] == 1
+    # 「0 次」这条口子只开给刷书签：别的路线一旦变成 0 就是接错线了。
+    assert [
+        task.mode for task in DAILY_TASKS if task.cycles == 0
+    ] == ["shop_refresh"]
+
+
+def test_only_shop_refresh_allows_zero_cycles():
+    """``min_cycles=0`` 是**唯一**例外 —— 多开一条就是「次数可以是 0」的语义泄漏。"""
+    from auto_game_unified.games.epic7.modes import MODE_SPECS
+
+    zero_routes = [
+        name for name, spec in MODE_SPECS.items() if spec.min_cycles == 0
+    ]
+    assert zero_routes == ["shop_refresh"]
+    assert MODE_SPECS["shop_refresh"].min_cycles == 0
+    assert MODE_SPECS["shop_refresh"].default_cycles == 0
+    # 其余路线的下限仍是 1（不许被顺手改成 0）。
+    for name, spec in MODE_SPECS.items():
+        if name != "shop_refresh":
+            assert spec.min_cycles == 1, f"{name} 的次数下限不该被改动"
 
 
 # --------------------------------------------------------------------------
@@ -91,27 +125,41 @@ def test_daily_cycles_are_positive_and_match_known_daily_limits():
 # --------------------------------------------------------------------------
 
 
-def test_no_selection_means_run_everything():
+def test_no_selection_means_the_default_list():
+    """``None``（命令行没写 ``--daily-tasks``）⇒ 按默认清单全跑。"""
     assert normalize_selection(None) == (
         "world_boss",
         "knights_donation",
+        "sanctuary",
         "shop_refresh",
         "labyrinth_stone",
         "arena",
     )
 
 
-def test_shuffled_selection_is_reordered_to_the_list_order():
-    assert normalize_selection(["arena", "world_boss"]) == ("world_boss", "arena")
+def test_selection_keeps_the_given_order():
+    """用户 2026-09-29 拍板：**勾选先后就是执行顺序**，不许再按清单重排。"""
+    assert normalize_selection(["arena", "world_boss"]) == ("arena", "world_boss")
     assert normalize_selection(
         ["arena", "labyrinth_stone", "world_boss", "shop_refresh", "knights_donation"]
     ) == (
-        "world_boss",
-        "knights_donation",
-        "shop_refresh",
-        "labyrinth_stone",
         "arena",
+        "labyrinth_stone",
+        "world_boss",
+        "shop_refresh",
+        "knights_donation",
     )
+
+
+def test_any_known_route_can_be_selected():
+    """能勾的不再限于默认清单那五条 —— 除了「活动」，其余九条都能串。"""
+    assert normalize_selection(["story", "arena"]) == ("story", "arena")
+    assert normalize_selection(["survivor"]) == ("survivor",)
+
+
+def test_duplicate_selection_keeps_the_first_position():
+    """同一个模式名写两遍只算第一次出现的位置（后面那次不再重排）。"""
+    assert normalize_selection(["arena", "story", "arena"]) == ("arena", "story")
 
 
 def test_single_selection_is_kept():
@@ -221,13 +269,21 @@ def test_runs_each_selected_mode_once_in_order():
         run_mode=run_mode,
     )
 
-    assert calls == ["world_boss", "knights_donation", "shop_refresh", "labyrinth_stone", "arena"]
-    assert [o.status for o in report.outcomes] == ["completed"] * 5
+    assert calls == [
+        "world_boss",
+        "knights_donation",
+        "sanctuary",
+        "shop_refresh",
+        "labyrinth_stone",
+        "arena",
+    ]
+    assert [o.status for o in report.outcomes] == ["completed"] * 6
     assert report.any_failed is False
     assert report.aborted_reason is None
 
 
-def test_subset_only_runs_ticked_modes():
+def test_subset_runs_in_the_given_order():
+    """勾选的子集按**给定次序**跑，不再是默认清单的次序。"""
     calls = []
 
     def run_mode(**kwargs):
@@ -240,8 +296,8 @@ def test_subset_only_runs_ticked_modes():
         run_mode=run_mode,
     )
 
-    assert calls == ["knights_donation", "arena"]
-    assert [o.label for o in report.outcomes] == ["骑士团捐赠", "竞技场"]
+    assert calls == ["arena", "knights_donation"]
+    assert [o.label for o in report.outcomes] == ["竞技场", "骑士团捐赠"]
 
 
 def test_cycles_are_passed_from_the_daily_list():
@@ -256,7 +312,8 @@ def test_cycles_are_passed_from_the_daily_list():
     assert seen == [
         ("world_boss", 2),
         ("knights_donation", 1),
-        ("shop_refresh", 1),
+        ("sanctuary", 1),
+        ("shop_refresh", 0),
         ("labyrinth_stone", 1),
         ("arena", 1),
     ]
@@ -283,7 +340,8 @@ def test_cycles_override_replaces_only_the_named_modes():
     assert seen == [
         ("world_boss", 2),
         ("knights_donation", 1),
-        ("shop_refresh", 1),
+        ("sanctuary", 1),
+        ("shop_refresh", 0),
         ("labyrinth_stone", 1),
         ("arena", 5),
     ]
@@ -321,8 +379,22 @@ def test_a_failing_task_is_skipped_and_the_rest_still_run():
 
     report = run_daily_tasks(selected=None, dry_run=True, run_mode=run_mode)
 
-    assert calls == ["world_boss", "knights_donation", "shop_refresh", "labyrinth_stone", "arena"]
-    assert [o.status for o in report.outcomes] == ["completed", "failed", "completed", "completed", "completed"]
+    assert calls == [
+        "world_boss",
+        "knights_donation",
+        "sanctuary",
+        "shop_refresh",
+        "labyrinth_stone",
+        "arena",
+    ]
+    assert [o.status for o in report.outcomes] == [
+        "completed",
+        "failed",
+        "completed",
+        "completed",
+        "completed",
+        "completed",
+    ]
     assert report.any_failed is True
     assert "模板缺失" in report.outcomes[1].detail
 
@@ -480,7 +552,7 @@ def test_ensure_at_lobby_logs_which_branch_it_took():
 # --------------------------------------------------------------------------
 
 
-def test_main_daily_selection_parser_defaults_to_all():
+def test_main_daily_selection_parser_defaults_to_the_default_list():
     from auto_game_unified.main import _parse_daily_selection
 
     assert _parse_daily_selection("") == [task.mode for task in DAILY_TASKS]
@@ -516,8 +588,35 @@ def test_main_daily_cycles_parser_fails_closed_on_bad_numbers():
 
     with pytest.raises(SystemExit, match="整数"):
         _parse_daily_cycles("arena:三")
+    # 下限按路线走：一般路线 0 就是坏值……
     with pytest.raises(SystemExit, match="正整数"):
         _parse_daily_cycles("arena:0")
+    with pytest.raises(SystemExit, match="正整数"):
+        _parse_daily_cycles("knights_donation:0")
+    # ……负数更不行。
+    with pytest.raises(SystemExit, match="正整数"):
+        _parse_daily_cycles("arena:-1")
+
+
+def test_main_daily_cycles_parser_allows_zero_for_shop_refresh():
+    """界面所有启动都走 ``--daily --daily-tasks``（见 ``desktop/worker.py``）。
+
+    刷书签的默认次数就是 0，界面会把 ``shop_refresh:0`` 原样传下来 ⇒ 这条解析
+    必须放行，否则默认那一档一按「开始任务」就报「必须是正整数」。
+    """
+    from auto_game_unified.main import _parse_daily_cycles
+
+    assert _parse_daily_cycles("shop_refresh:0") == {"shop_refresh": 0}
+    assert _parse_daily_cycles("world_boss:2,shop_refresh:0") == {
+        "world_boss": 2,
+        "shop_refresh": 0,
+    }
+    # 只开给刷书签：别的路线跟着写 0 仍然报错（同一串里也不行）。
+    with pytest.raises(SystemExit, match="正整数"):
+        _parse_daily_cycles("shop_refresh:0,arena:0")
+    # 刷书签自己也不能为负。
+    with pytest.raises(SystemExit, match="不能为负数"):
+        _parse_daily_cycles("shop_refresh:-1")
 
 
 def test_main_run_daily_passes_the_edited_cycles(monkeypatch):

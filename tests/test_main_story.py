@@ -73,6 +73,8 @@ class MainStoryTests(unittest.TestCase):
                 friend_request_templates = object()
                 knights_signin_templates = object()
                 gift_support_templates = object()
+                knights_weekly_reward_templates = object()
+                pet_gift_templates = object()
                 runtime.set_capture_guard.side_effect = lambda guard: events.append(
                     "guard"
                 )
@@ -107,8 +109,18 @@ class MainStoryTests(unittest.TestCase):
                     ),
                     patch.object(
                         main_module,
+                        "load_knights_weekly_reward_templates",
+                        return_value=knights_weekly_reward_templates,
+                    ),
+                    patch.object(
+                        main_module,
                         "load_gift_support_templates",
                         return_value=gift_support_templates,
+                    ),
+                    patch.object(
+                        main_module,
+                        "load_pet_gift_templates",
+                        return_value=pet_gift_templates,
                     ),
                     patch.object(main_module, "Epic7Navigator") as navigator_type,
                     patch.object(main_module, "HomeReturn") as home_return_type,
@@ -147,6 +159,8 @@ class MainStoryTests(unittest.TestCase):
                     friend_request_templates=friend_request_templates,
                     knights_signin_templates=knights_signin_templates,
                     gift_support_templates=gift_support_templates,
+                    knights_weekly_reward_templates=knights_weekly_reward_templates,
+                    pet_gift_templates=pet_gift_templates,
                 )
                 self.assertEqual(["guard", "navigation"], events)
 

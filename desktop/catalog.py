@@ -36,8 +36,23 @@ class RouteInfo:
         return MODE_SPECS[self.mode].cycles_editable
 
     @property
+    def min_cycles(self) -> int:
+        """次数框允许的最小值（正常是 1；「刷书签」是 0 —— 只扫一遍、不付费刷新）。"""
+        return MODE_SPECS[self.mode].min_cycles
+
+    @property
     def experimental(self) -> bool:
         return self.status == "实验功能"
+
+    @property
+    def standalone_only(self) -> bool:
+        """只能单独跑：起点是用户人工摆好的页面，跑起来也不做任何「回家」动作。
+
+        派生自 ``needs_navigation=False`` —— 目前只有「活动」是这样。界面据此
+        把这条路线的勾选与其它路线**互斥**：它的前置条件是「人先把游戏停在选卡页」，
+        串在别的路线后面时那个前置条件早就被上一段破坏掉了。
+        """
+        return not MODE_SPECS[self.mode].needs_navigation
 
 
 ROUTES = (
@@ -53,7 +68,9 @@ ROUTES = (
     RouteInfo(
         "shop_refresh",
         "实验功能",
-        "输入付费刷新次数；初始页面也检查；只购买誓约和神秘书签",
+        "默认 0 次 = 只进店从上到下扫一遍、把想要的买掉，一次都不付费刷新"
+        "（秘密商店自己会随时间自动刷新）；填「付费刷新次数」才额外刷；"
+        "初始页面也检查；只购买誓约和神秘书签",
     ),
     RouteInfo(
         "survivor",
@@ -83,6 +100,14 @@ ROUTES = (
         "往西走到流浪商人 → 商店里只买「强化石」这一类（买过的行自动跳过）→"
         "退出商店 → 放弃战斗 → 回大厅",
     ),
+    RouteInfo(
+        "sanctuary",
+        "实验功能",
+        "圣域每日收菜，跑一遍就结束：从大厅左侧最上面那个「圣域」入口进去 →"
+        "精灵之森，把三行材料（企鹅巢穴 / 精灵之泉 / 魔罗戈拉种植地）里显示"
+        "「领取奖励」的行从上到下依次点掉、关掉「领取完成」弹窗 → 回大厅；"
+        "没有可领的就直接结束",
+    ),
 )
 
 
@@ -93,34 +118,16 @@ def route_by_name(mode: str) -> RouteInfo:
         raise ValueError(f"未知路线：{mode}") from error
 
 
-# ── 「每日任务」：多选，不是单路线 ──────────────────────────────────────────
-# 刻意**不放进 ROUTES**：ROUTES 是「选一条路线」的单选面板数据源（形状是
-# 「一条路线 = 一个状态机 + 一个 Runner」），而每日任务是**编排**（把几条串起来）。
-# 塞进去会让 ROUTES 的语义变浑、连测试钉住的顺序也失去意义。所以单独一组。
-DAILY_GROUP_ID = "__daily__"
+# ── 「每日任务」：勾选多条、依次跑 ─────────────────────────────────────────
+# 界面上的名字。它同时是那块面板的标题与唯一那个启动按钮的文案来源。
 DAILY_LABEL = "每日任务"
 
-
-def daily_items() -> tuple[tuple[str, str], ...]:
-    """每日任务的勾选项 ``(mode, label)``，次序与执行次序一致。
-
-    直接从 ``games/epic7/daily_tasks.DAILY_TASKS`` 派生 —— 只有一处定义，
-    界面不会跟执行器各说各话（名字本身又派生自 ``modes.MODE_SPECS``）。
-    """
-    from auto_game_unified.games.epic7.daily_tasks import DAILY_TASKS
-
-    return tuple((task.mode, task.label) for task in DAILY_TASKS)
-
-
-# 下面这段说明里列举的路线次序**也从上面派生**：它曾经手抄成
-# 「世界首领战 → 骑士团捐赠 → 商店刷新 → 迷宫强化石 → 竞技场」，
-# 名字跟别处不一样（「商店刷新」vs「刷书签」），加路线也会漏改。
-_DAILY_ORDER = " → ".join(label for _, label in daily_items())
-# 这段字是**左边那栏目测高度的大头**（每行约 23px）⇒ 宁短勿全：
-# 只留「跑哪些、跑几次、错了怎么办」，内部怎么回首页不写在这儿。
+# 下面这段是**左边那栏量高度的大头**（每行约 23px）⇒ 宁短勿全：
+# 只说「怎么选、次数怎么算、错了怎么办」，内部怎么回首页不写在这儿。
 DAILY_DESCRIPTION = (
-    f"按固定次序把勾上的依次跑完（{_DAILY_ORDER}）；"
+    "勾选要跑的路线，勾选先后就是执行顺序（名字前面的序号会跟着变）；"
     "每条后面填跑几次，灰掉的有每日上限、不能改；"
     "刷书签花天空石、不可逆，次数请按需填；"
+    "上一条跑完会自动回首页，再进下一条；"
     "某条失败会跳过它继续跑，最后给一份汇总"
 )

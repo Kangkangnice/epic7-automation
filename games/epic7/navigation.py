@@ -28,6 +28,7 @@ from auto_game_unified.games.epic7.global_popups import (
     find_friendship_points_popup_close,
     find_gift_support_close,
     find_knights_signin_close,
+    find_knights_weekly_reward_close,
 )
 from auto_game_unified.games.epic7.home_return import (
     HomeReturnTemplates,
@@ -41,6 +42,7 @@ from auto_game_unified.games.epic7.expedition import (
     EXPEDITION_SEASON_PAGE,
 )
 from auto_game_unified.games.epic7.knights_donation import KNIGHTS_GUILD_HOME_PAGE
+from auto_game_unified.games.epic7.sanctuary import SANCTUARY_HOME_PAGE
 from auto_game_unified.games.epic7.story import (
     STORY_ENTRY_PAGE,
     find_prepare_battle_button,
@@ -65,6 +67,10 @@ from auto_game_unified.games.epic7.evidence.shop_refresh import (
 from auto_game_unified.games.epic7.evidence.world_boss import (
     REGIONS as WORLD_BOSS_REGIONS,
     build_world_boss_evidence,
+)
+from auto_game_unified.games.epic7.evidence.sanctuary import (
+    REGIONS as SANCTUARY_REGIONS,
+    build_sanctuary_evidence,
 )
 from auto_game_unified.games.epic7.world_boss import WORLD_BOSS_ENTRY_PAGE
 from auto_game_unified.games.epic7.modes import MODE_LABELS
@@ -114,8 +120,10 @@ PAGE_LABELS = {
     "shop_refresh": "秘密商店",
     "knights_home": "骑士团主页",
     "worldboss_home": "世界首领战主页",
+    "sanctuary_home": "圣域主页",
     "knights_signin_popup": "骑士团签到弹窗",
     "gift_support_popup": "领取支援物品弹窗",
+    "knights_weekly_reward_popup": "骑士团周结算奖励弹窗",
     "unknown": "未知画面",
 }
 
@@ -142,6 +150,13 @@ _RESUME_ENTRY_PAGES = {
     # 探针一律就地接管、不返回 ``entry`` ⇒ 这里没有需要导航对接的页面。
     # 空集合是合法值：``already_at`` 为 None 时上面的判断根本不会走到。
     "labyrinth_stone": frozenset(),
+    # 圣域收菜的导航链只有一级（大厅 → 圣域主页）。探针停在**圣域主页**时会给
+    # ``entry``（省掉「进圣域」那一下），停在精灵之森页时 ``entry`` 为空、
+    # 就地接管（那一页在导航链之外）。
+    # ⚠️ 这里**只放导航链上的页面**：把精灵之森页塞进来就等于宣称「导航能把你送到
+    # 那一页」，而导航压根不认识它（``observe`` 里没有它的判据）—— 那会让 ``already_at``
+    # 白名单失去意义。
+    "sanctuary": frozenset({SANCTUARY_HOME_PAGE}),
 }
 
 
@@ -161,7 +176,6 @@ class NavigationTemplates:
     arena_rank_confirm: np.ndarray
     friendship_points_title: np.ndarray
     friendship_points_close: np.ndarray
-    lobby_profile: np.ndarray
     lobby_story: np.ndarray
     lobby_arena: np.ndarray
     lobby_battle: np.ndarray
@@ -199,10 +213,24 @@ class NavigationTemplates:
     lobby_knights: np.ndarray
     worldboss_entry: np.ndarray
     lobby_worldboss_select_team: np.ndarray
+    # 大厅左侧竖排菜单最上面那个「圣域」入口（在「光辉里程碑」上方）。
+    # ⚠️ 截的是**文字标签**而不是那个城墙堡垒图标 —— 图标上没有文字，做模板只会
+    # 截到一片渐变色块；文字是唯一「只此一处」的稳定特征。代价见
+    # ``docs/maintenance/sanctuary.md``「已知缺口」：没有「带红点角标」的第二张候选图。
+    lobby_sanctuary: np.ndarray
+    # 圣域主页右侧第一行「精灵之森」的文字。**只为 ``observe()`` 判页而存在** ——
+    # 导航把画面送到圣域主页后，``_transition`` 要靠 ``observe()`` 认出
+    # ``sanctuary_home`` 才算转场成功（没有它这条转场永远验收不通过、只会超时）。
+    # ⚠️ 复用 ``evidence/sanctuary.py`` 的锚点图，**不另存一份** —— 与
+    # ``lobby_worldboss_select_team`` 复用 ``world_boss`` 的图同一个道理：
+    # 同一个控件维护两份模板迟早漂移。
+    sanctuary_forest_row: np.ndarray
     knights_signin_title: np.ndarray
     knights_signin_close: np.ndarray
     gift_support_title: np.ndarray
     gift_support_close: np.ndarray
+    knights_weekly_reward_title: np.ndarray
+    knights_weekly_reward_close: np.ndarray
     shop_refresh_observer: ShopRefreshObserver
 
 
@@ -213,6 +241,8 @@ def build_navigation_templates(template_root: Path) -> NavigationTemplates:
     shop_entry = shop_evidence.atom("lobby_shop_entry")
     world_boss_evidence = build_world_boss_evidence(template_root / "world_boss")
     world_boss_select_team = world_boss_evidence.atom("select_team_button")
+    sanctuary_evidence = build_sanctuary_evidence(template_root / "sanctuary")
+    sanctuary_forest_row = sanctuary_evidence.atom("forest_row")
     return NavigationTemplates(
         arena_rank_promotion_arrow=load_template(
             str(global_templates / "arena_rank_promotion_arrow.png")
@@ -224,7 +254,6 @@ def build_navigation_templates(template_root: Path) -> NavigationTemplates:
         friendship_points_close=load_template(
             str(global_templates / "friendship_points_close.png")
         ),
-        lobby_profile=load_template(str(navigation / "lobby_profile.png")),
         lobby_story=load_template(str(navigation / "lobby_story.png")),
         lobby_arena=load_template(str(navigation / "lobby_arena.png")),
         lobby_battle=load_template(str(navigation / "lobby_battle.png")),
@@ -287,6 +316,10 @@ def build_navigation_templates(template_root: Path) -> NavigationTemplates:
         lobby_worldboss_select_team=load_template(
             str(template_root / "world_boss" / world_boss_select_team.template_path)
         ),
+        lobby_sanctuary=load_template(str(navigation / "lobby_sanctuary.png")),
+        sanctuary_forest_row=load_template(
+            str(template_root / "sanctuary" / sanctuary_forest_row.template_path)
+        ),
         knights_signin_title=load_template(
             str(navigation / "knights_signin_title.png")
         ),
@@ -298,6 +331,12 @@ def build_navigation_templates(template_root: Path) -> NavigationTemplates:
         ),
         gift_support_close=load_template(
             str(navigation / "gift_support_close.png")
+        ),
+        knights_weekly_reward_title=load_template(
+            str(navigation / "knights_weekly_reward_title.png")
+        ),
+        knights_weekly_reward_close=load_template(
+            str(navigation / "knights_weekly_reward_close.png")
         ),
         shop_refresh_observer=build_shop_refresh_observer(template_root),
     )
@@ -325,7 +364,6 @@ class Epic7Navigator:
     _HERO_DETAIL_TAB_RETRY_SECONDS = 2.0
 
     _REGIONS = {
-        "lobby_profile": (0, 35, 500, 200),
         "lobby_story": (1450, 220, 480, 200),
         "lobby_arena": (1600, 520, 330, 220),
         "lobby_battle": (1650, 430, 332, 220),
@@ -375,6 +413,13 @@ class Epic7Navigator:
         # 世界首领战主页右下角「选择队伍」按钮。⚠️ 这里复用 evidence/world_boss.py
         # 的锚点图（不是 navigation 目录下的第二份），避免同一个控件维护两份模板。
         "lobby_worldboss_select_team": WORLD_BOSS_REGIONS["select_team_button"],
+        # 大厅左侧竖排菜单最上面那个「圣域」文字标签。区域只罩住那一行 ——
+        # 实测真机点 (84, 318) 能进圣域主页，命中框中心落在 (84, 314) 附近。
+        # ⚠️ 它同时也是**进入圣域**这个动作的点击目标（``_transition`` 用命中框中心点）。
+        "lobby_sanctuary": (20, 270, 140, 130),
+        # 圣域主页右侧第一行「精灵之森」：**只给 ``observe()`` 判页用**，不是点击目标
+        # （点它是 ``sanctuary.py`` 状态机的事）。复用 evidence 那边的区域定义。
+        "sanctuary_forest_row": SANCTUARY_REGIONS["forest_row"],
     }
     _CLICK_OFFSETS = {"lobby_story": (65, 11)}
 
@@ -475,6 +520,18 @@ class Epic7Navigator:
         if gift_close is not None:
             return PageObservation("gift_support_popup", gift_close.score)
 
+        # 「获得每周骑士团点数奖励」弹窗（每周一骑士团点数结算时弹出）。
+        # 与签到/支援弹窗同理，盖在骑士团主页上、压暗底页锚点，必须先报出来让守卫点掉。
+        weekly_reward_close = find_knights_weekly_reward_close(
+            screen,
+            self.templates.knights_weekly_reward_title,
+            self.templates.knights_weekly_reward_close,
+        )
+        if weekly_reward_close is not None:
+            return PageObservation(
+                "knights_weekly_reward_popup", weekly_reward_close.score
+            )
+
         rank_confirm = find_rank_promotion_confirm(
             screen,
             self.templates.arena_rank_promotion_arrow,
@@ -538,6 +595,19 @@ class Epic7Navigator:
         select_team = self._locate(screen, "lobby_worldboss_select_team")
         if select_team:
             return PageObservation("worldboss_home", select_team.score)
+
+        # 圣域主页（``navigate("sanctuary")`` 的落点）。判据是右侧第一行「精灵之森」的
+        # 文字 —— 139 张全库夹具扫下来它只在这一页的这个位置命中（全库最高 0.3569），
+        # 大厅上更是只有 0.2411，所以放哪儿都不会跟大厅串。
+        #
+        # ⚠️ 这一条是**必须的**，不是锦上添花：``_transition`` 靠
+        # 「``observe()`` 报出目标页名」才算转场成功（见那里的
+        # ``observation.name in targets``）。少了它，「大厅 → 进入圣域」那条转场
+        # 会一路等到 92 秒超时、重试 4 次然后报错 —— 表现是「这条路线的导航永远进不去」。
+        # 判据本体与实测见 ``evidence/sanctuary.py``。
+        sanctuary_home = self._locate(screen, "sanctuary_forest_row", 0.80)
+        if sanctuary_home:
+            return PageObservation("sanctuary_home", sanctuary_home.score)
 
         lobby_story = self._locate(screen, "lobby_story", 0.80)
         lobby_arena = self._locate(screen, "lobby_arena")
@@ -994,6 +1064,27 @@ class Epic7Navigator:
                 "进入战斗菜单",
                 source_screen=lobby_screen,
             )
+        elif mode == "sanctuary":
+            # 圣域收菜的导航链只有一级：大厅 → 圣域主页。
+            # 「点精灵之森 → 点三行材料的『领取奖励』 → 关弹窗」全在
+            # ``sanctuary.py`` 的状态机里，导航只负责把画面送到圣域主页。
+            if already_at == SANCTUARY_HOME_PAGE:
+                # 人已经站在圣域主页上了：回大厅再进来一趟纯属多余。
+                # ⚠️ 精灵之森页不在导航链上（``_RESUME_ENTRY_PAGES["sanctuary"]`` 里
+                # 只有圣域主页），探针在那一页给的 ``entry`` 是 None ⇒ 就地接管，
+                # 根本不会调到这里。
+                self.runtime.log(
+                    "模式=圣域收菜 开局=接力 页面=圣域主页 "
+                    "动作=跳过回大厅与进入圣域 状态=已在圣域主页"
+                )
+            else:
+                self._transition(
+                    "lobby",
+                    "sanctuary_home",
+                    "lobby_sanctuary",
+                    "进入圣域",
+                    source_screen=lobby_screen,
+                )
         else:
             raise ValueError(f"导航不支持的模式：{mode}")
         if mode == "hero_synthesis":
@@ -1013,6 +1104,10 @@ class Epic7Navigator:
         elif mode == "labyrinth_stone":
             self.runtime.log(
                 "模式=迷宫强化石 状态=导航完成 前提=战斗菜单「一般」页已就绪"
+            )
+        elif mode == "sanctuary":
+            self.runtime.log(
+                "模式=圣域收菜 状态=导航完成 前提=圣域主页已就绪"
             )
         else:
             self.runtime.log(f"模式={MODE_LABELS.get(mode, mode)} 状态=导航完成")

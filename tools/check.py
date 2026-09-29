@@ -8,7 +8,8 @@
   `test_project_layout.py`（它断言各路线夹具的精确文件集）。
 - **改了共享模块**（`core/**`、`desktop/**`、`runner_base`、`navigation`、`modes`、
   `battle_controls`、`pre_battle`、`unknown_screen`、`global_popups`、`stamina`、
-  `hero_transition`、`evidence/common`、`main.py`、`launcher.py`）或**认不出归属**：跑全量。
+  `hero_transition`、`evidence/common`、`main.py`、`games/epic7/daily_tasks.py`）
+  或**认不出归属**：跑全量。
 - **只改 `tools/`、`.github/`**：只做编译检查（这些没有测试覆盖）。
 
 用法（在仓库根 `auto_game_unified` 下执行）：
@@ -55,7 +56,6 @@ PACKAGE = PACKAGE_DIR.name
 # 改动这些就等于动了所有路线 -> 必须跑全量
 SHARED_PATHS = {
     "main.py",
-    "launcher.py",
     # ⚠️ conftest 影响的是**整个套件**（它在 collection 阶段就被导入，改错了所有用例一起变），
     # 但它的路径以 `tests/` 开头，会先被下面的 NO_TEST_PREFIXES 判成「没有测试覆盖」而跳过测试。
     # 所以必须显式登记在这里，让改了它就退回全量。
@@ -74,6 +74,9 @@ SHARED_PATHS = {
     "games/epic7/stamina.py",
     "games/epic7/hero_transition.py",
     "games/epic7/evidence/common.py",
+    # ⚠️ 串跑编排层（桌面助手的多路线入口也走它）。它不是路线文件，`route_of()` 认不出，
+    # 不登记的话「全量」是靠兜底撞出来的、理由看不出来（同 transactional_runner_base 那条）。
+    "games/epic7/daily_tasks.py",
 }
 SHARED_PREFIXES = ("core/", "desktop/")
 
@@ -101,6 +104,7 @@ ROUTE_KEYWORDS = {
     # 名字里也没有路线关键词 ⇒ 不登记的话改它会让定向判定退回全量。
     "knights_support_digits": "knights_donation",
     "labyrinth_stone": "labyrinth_stone",
+    "sanctuary": "sanctuary",
 }
 
 DOC_SUFFIXES = (".md", ".txt", ".json", ".yaml", ".yml")
