@@ -288,6 +288,12 @@ class ProjectLayoutTests(unittest.TestCase):
             "forest_after_penguin.png",
             # 精灵之森 · 三行全在倒计时（本轮收工态）。
             "forest_all_done.png",
+            # 精灵之森 · 三行全在倒计时**且「照料」按钮亮着**（按钮可点的那一态）。
+            # ⚠️ 它与 ``forest_all_done`` 的差别**只有那一颗按钮**（三行状态一模一样），
+            # 所以这两张天然成对：一张「按钮亮 = 可点」、一张「按钮灰 = 冷却中」。
+            # 它还顺带覆盖了**白天背景**这一形态 —— 其余森林帧都是夜景，
+            # 而圣域是昼夜场景（这正是不许用「绝对亮度」判亮/灰的原因）。
+            "forest_care_ready.png",
             # 领取完成弹窗。``popup_penguin_after6s`` 是**弹出 6 秒后**才拍的 ——
             # 它是「弹窗不会自己消失、必须点掉」这条结论的唯一物证（用户口述
             # 「也不需要你点」被它证伪）；``popup_spring`` 是另一个弹窗（标题与
@@ -301,11 +307,12 @@ class ProjectLayoutTests(unittest.TestCase):
         self.assertEqual(expected, {path.name for path in fixture_dir.glob("*.png")})
 
     def test_sanctuary_templates_exist(self):
-        """圣域的 4 张路线锚点 + 1 张导航入口。
+        """圣域的 5 张路线锚点 + 1 张导航入口。
 
         ⚠️ 导航入口 ``lobby_sanctuary`` 截的是**文字标签**不是那个城墙堡垒图标；
-        4 张路线锚点里 ``forest_row`` 身兼两职（圣域主页的页面判据 + 进精灵之森的
-        点击目标），``claim_text`` 是唯一的「可领」判据。
+        5 张路线锚点里 ``forest_row`` 身兼两职（圣域主页的页面判据 + 进精灵之森的
+        点击目标），``claim_text`` 是唯一的「可领」判据，``care_text`` 只回答
+        「照料按钮在不在」（能不能点由**文字白不白**另判，见 ``probe_care``）。
         ``sanctuary_title.png``（左上角「圣域」标题）**刻意不存在** —— 它被全库
         扫描否掉了：``epic7_fodder/stage_3_7.png`` 的标题叫「圣域最深处」，
         前两个字恰好就是「圣域」⇒ 那张 2 字模板在那里得 0.9784（越阈）。
@@ -317,6 +324,7 @@ class ProjectLayoutTests(unittest.TestCase):
                 "forest_title.png",
                 "claim_text.png",
                 "popup_close.png",
+                "care_text.png",
             },
             {path.name for path in sanctuary.glob("*.png")},
         )

@@ -72,6 +72,11 @@ PAGE_CASES = [
     ("forest_after_penguin", SanctuaryState.FOREST),
     # 精灵之森：三行全在倒计时（本轮收工态）
     ("forest_all_done", SanctuaryState.FOREST),
+    # 精灵之森：三行全在倒计时、**照料按钮亮着**（可照料态）。
+    # ⚠️ 它的 ``forest_title`` 只有 **0.9520**（其余森林帧都是 1.0000）—— 因为这帧是
+    # **白天**拍的（亮蓝天背景），其余都是夜景。这正好证明「标题模板本身带着会变的
+    # 背景」，也说明 0.80 这个阈值必须留够余量。
+    ("forest_care_ready", SanctuaryState.FOREST),
     # 领取完成弹窗（三种：企鹅、等了 6 秒仍未消失、精灵之泉）
     ("popup_penguin", SanctuaryState.CLAIM_POPUP),
     ("popup_penguin_after6s", SanctuaryState.CLAIM_POPUP),
@@ -132,6 +137,9 @@ ACTION_CASES = [
     # 企鹅领掉之后，剩下的那一行是第 2 行（y=619）。
     ("forest_spring_only", "claim-row", (1558, 619), ("领取完成弹窗",)),
     ("forest_after_penguin", "claim-row", (1558, 619), ("领取完成弹窗",)),
+    # 三行全在倒计时、但「照料」按钮亮着 ⇒ 点它（**不换页**，所以出口是
+    # ``in_page_evidence`` 而不是 ``target_pages``）。
+    ("forest_care_ready", "care", (1686, 892), ()),
     # 弹窗：点掉它，**不能等它自己消失**（用户口述与实测不符，见模块 docstring）。
     ("popup_penguin", "dismiss-claim", (964, 842), ("精灵之森",)),
     ("popup_penguin_after6s", "dismiss-claim", (964, 842), ("精灵之森",)),
@@ -271,7 +279,84 @@ def test_the_popup_does_not_disappear_on_its_own():
     assert machine.next_action(frame("popup_penguin_after6s")).name == "dismiss-claim"
 
 
-# ---- ⑤ 真 Runner：整条链走一遍 -------------------------------------------------
+# ---- ⑤ 「照料」按钮：能不能点由**文字白不白**决定，不由模板分决定 -----------------
+#
+# 三行全在倒计时时才有意义：``forest_care_ready``（亮）与 ``forest_all_done``（灰）
+# 这两张夹具**三行状态一模一样**，差别只有那颗按钮 —— 天然成对。
+
+
+def test_the_lit_care_button_is_clicked():
+    machine = build_machine()
+
+    action = machine.next_action(frame("forest_care_ready"))
+
+    assert action is not None
+    assert action.name == "care"
+    # 不换页 ⇒ 只能声明页内验收依据（模板命中框中心，不是整颗药丸的中心 1727）。
+    assert action.target_pages == ()
+    assert action.in_page_evidence
+    assert action.point == (1686, 892)
+
+
+def test_the_dim_care_button_is_not_clicked_even_though_the_template_still_hits():
+    """冷却中的按钮**模板照样命中**，只能靠「文字不是白的」挡下来。
+
+    实测：灰态 ``care_text`` 也有 **0.9516**（远高于阈值 0.80）—— 因为模板匹配
+    ``TM_CCOEFF_NORMED`` 是**对比度归一化**的，亮/灰的差别在「形状」上完全一样，
+    分不出来。所以「按钮在不在」与「能不能点」必须是**两道独立判据**。
+    """
+    machine = build_machine()
+    screen = frame("forest_all_done")
+
+    probe = machine._care(screen)
+
+    assert probe.present is True, "模板确实命中了（0.9516）—— 存在性拦不住它"
+    assert probe.white_ratio == 0.0, "灰态「照料」文字是灰的（峰值 147 < 235）"
+    assert probe.ready is False
+
+    # 于是这一帧不会被点，而是直接收工，并且理由里写清楚「照料在冷却中」。
+    assert machine.next_action(screen) is None
+    assert machine.state is SanctuaryState.FINISHED
+    assert "冷却中" in machine.finish_reason
+
+
+def test_the_lit_care_button_label_is_pure_white():
+    """亮态「照料」是**纯白**（饱和 255），框内有 15.92% 的像素亮过 235。"""
+    machine = build_machine()
+
+    probe = machine._care(frame("forest_care_ready"))
+
+    assert probe.present is True
+    assert probe.white_ratio > 0.10, "亮态近白占比实测 0.1592"
+
+
+def test_absolute_brightness_would_have_been_the_wrong_judgement():
+    """钉住**被实测否掉的方案**：不许用「按钮区域平均灰度 ≥ 某值」判亮/灰。
+
+    亮 113.8 / 灰 56.6 看着能分，但圣域是 **3D 昼夜场景**、药丸**半透明**：
+    拿一个**状态完全相同**的参照物（第 3 行「魔罗戈拉种植地」的整条药丸 ——
+    这两帧里它都在倒计时）量一下，它自己就随背景差了 **42 点**。也就是说那 57 点的
+    差里，大部分是**背景变了**，不是按钮变了 ⇒ 白天冷却中的按钮会被误判成可点，
+    而那是**会真点下去**的。
+
+    谁把判据改回绝对亮度，这条会红。
+    """
+    x0, y0, x1, y1 = 1370, 700, 1890, 819  # 第 3 行药丸（两帧同状态）
+
+    def row3_gray(name: str) -> float:
+        screen = frame(name)
+        crop = screen[y0:y1, x0:x1]
+        return float(cv2.cvtColor(crop, cv2.COLOR_RGB2GRAY).mean())
+
+    swing = row3_gray("forest_care_ready") - row3_gray("forest_all_done")
+
+    assert swing > 35, (
+        f"同状态参照物只随背景摆了 {swing:.1f} 点 —— 若真这么小，绝对亮度方案其实"
+        "可用；一旦它变大，绝对亮度就会被背景带偏，这条判据必须继续用「文字白不白」"
+    )
+
+
+# ---- ⑥ 真 Runner：整条链走一遍 -------------------------------------------------
 
 
 class FakeRuntime:
@@ -406,11 +491,31 @@ def test_runner_fails_loudly_when_the_claim_click_never_lands():
     assert machine.completed_cycles == 0, "没点动就不算完成一遍"
 
 
-def test_claiming_uses_the_short_retry_not_the_45s_transition_window():
-    """回归守卫：点「领取奖励」/ 关弹窗若没生效，必须 8 秒就重点。
+def test_runner_clicks_care_and_then_closes_the_pass():
+    """照料走完整条链：亮着 ⇒ 点它；点完按钮转灰 ⇒ 立刻收工。
 
-    默认 45 秒窗口是给「换页」定的，而这两个动作点完**立刻**能看出生效没有。
-    谁把它们移出 ``_SHORT_RETRY_ACTIONS``，这条会变红把它拦住。
+    ⚠️ 与 ``claim-row`` 不同，``care`` **不换页** ⇒ 主循环不为它对账转场，
+    全靠「下一帧重新判页面」（转灰了就不再点）。这条用例让**真主循环**把这段走一遍，
+    守住「care 真的接进了主循环」，而不只是 ``next_action`` 能算出来 ——
+    骑士团捐赠的两次事故都发生在状态机与主循环**之间**。
+    """
+    machine = build_machine()
+    runtime = FakeRuntime(_script("home", "forest_care_ready", "forest_all_done"))
+    runner = SanctuaryRunner(machine, runtime, sleep=lambda _: None, poll_seconds=0.0)
+
+    completed = runner.run(max_cycles=1)
+
+    assert completed == 1
+    assert [name for _, name in runtime.clicks] == ["open-forest", "care"]
+    assert machine.state is SanctuaryState.FINISHED
+
+
+def test_claiming_uses_the_short_retry_not_the_45s_transition_window():
+    """回归守卫：点「领取奖励」/ 关弹窗 / 点「照料」若没生效，必须 8 秒就重点。
+
+    默认 45 秒窗口是给「换页」定的，而这三个动作点完**立刻**能看出生效没有
+    （弹窗弹出来 / 弹窗关掉 / 照料按钮转灰）。谁把它们移出 ``_SHORT_RETRY_ACTIONS``，
+    这条会变红把它拦住。
     """
     runner = SanctuaryRunner(
         build_machine(),
@@ -421,11 +526,12 @@ def test_claiming_uses_the_short_retry_not_the_45s_transition_window():
 
     assert runner._action_retry_seconds("claim-row") == 8.0
     assert runner._action_retry_seconds("dismiss-claim") == 8.0
+    assert runner._action_retry_seconds("care") == 8.0
     # 顺带确认：真正的换页动作仍是 45 秒（不被短重试带偏）。
     assert runner._action_retry_seconds("open-forest") == 45
 
 
-# ---- ⑥ 开局接力 ---------------------------------------------------------------
+# ---- ⑦ 开局接力 ---------------------------------------------------------------
 
 
 def test_resume_takes_over_on_the_sanctuary_home_and_asks_the_navigator_to_skip():
@@ -484,7 +590,7 @@ def test_every_resumable_page_is_declared_on_the_navigation_chain():
     assert len(_RESUME_ENTRY_PAGES["sanctuary"]) == 1
 
 
-# ---- ⑦ 导航把画面送到圣域主页 --------------------------------------------------
+# ---- ⑧ 导航把画面送到圣域主页 --------------------------------------------------
 
 
 def test_the_navigator_recognises_the_sanctuary_home():

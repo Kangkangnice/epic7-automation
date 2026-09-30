@@ -99,10 +99,62 @@
 
 ⚠️ 顺带一个有用的副作用：弹窗开着时 ``claim_text`` 只有 **0.5498**（底页被压暗）
 ⇒ 即使顺序写错了、把弹窗判成精灵之森页，也不会误点「领取奖励」。
+
+## 「照料」按钮（2026-09-30 新增，用户口述）
+
+用户原话：
+
+> 「第三行下面右下方有一个照料，照顾的意思，第三行的菜可以通过这个方法点击之后，
+> 它可以加快它的生长，所以碰到这个量的话，跟其他一样，也点掉。他点的话，应该没有弹窗。」
+
+实测位置：亮绿药丸 **x1604 y871 w247 h43**（中心 1727, 892），在第三行
+「魔罗戈拉种植地」药丸下方偏右；**旁边（同一行左边）有一个计时器**：
+
+| 帧 | 三行状态 | 计时器 | 照料按钮 |
+|---|---|---|---|
+| ``now0930``（2026-09-30 上午） | 三行全在倒计时 | ``00:00:00`` | **亮**（绿药丸 + 左上红点） |
+| ``claim__00``（2026-09-29 晚） | 第 1/2 行可领 | ``00:22:10`` | 灰（暗药丸、无红点） |
+
+⇒ 那是**冷却计时**：到 00:00:00 就是可照料。``(1/3)`` 数字**两态都是 1/3**
+（实测），所以它**不是**可用信号 —— 也正因如此，模板按纪律把数字与红点**都切掉**。
+
+### ⚠️ 「亮 / 灰」不能靠**绝对亮度**判（实测否掉）
+
+第一版想用「按钮区域平均灰度 ≥ 阈值」：亮 **113.8** / 灰 **56.6**，看着能分。
+但**这个差被背景污染**：圣域是 **3D 昼夜场景**，按钮药丸是**半透明**的
+（放大对照可见灰态药丸能透出背后场景）。实测同一帧里拿一个**状态完全相同**的参照物
+（第 3 行药丸，两帧都在倒计时）：它自己就差了 **+42.3** —— 也就是说那 57 点的差里，
+**背景能解释 42 点**，只剩 15 点是按钮自己的状态。⇒ 白天冷却中的按钮可能量到 ~100，
+**会被误判成「可点」**，而这是会真点下去的。**绝对阈值作废。**
+
+### ✅ 改用「文字是不是白的」：模板匹配天生看不到，绝对亮度看得到
+
+``TM_CCOEFF_NORMED`` 是**对比度归一化**的 ⇒ 对「形状一样、明度不同」的差别
+**天然失明**（实测两态都 0.95~1.00，分不出来）。但文字**自身的颜色**是状态给的：
+
+| 状态 | 「照料」文字峰值灰度 | 框内 >235 的像素占比 | 均值 |
+|---|---|---|---|
+| 亮（可照料） | **255**（纯白，饱和） | **15.92%** | 113.8 |
+| 灰（冷却中） | **147**（灰） | **0.00%** | 56.6 |
+
+⇒ 判据 = **框内近白像素占比**（``CARE_TEXT_WHITE_LEVEL`` / ``CARE_TEXT_WHITE_MIN_RATIO``）。
+它与背景昼夜无关（说的是文字自己白不白），全库 293 张夹具扫下来**只有森林页亮态那一帧**
+给出非零占比（其余 292 张全 0.00%）。
+
+### ⚠️ 还没验证的两件事（写在这里，别装作不存在）
+
+1. **「点一下没有弹窗」是用户的判断，我没有实点过**（用户 2026-09-30 明确
+   「先别点，我自己来」）。所以动作的出口验收只能写「按钮由亮转灰」，而不是
+   「弹窗出现/不出现」。**若实际会弹窗**，主循环会在 8 秒后用同一个坐标再点一次、
+   最多 4 次，然后**响亮地失败**（留诊断 + 退出码 1）—— 不会悄悄跳过。
+2. **亮态样本只有 1 帧**（``now0930``）。上表的 15.92% 是单点，没有方差数据；
+   灰态有 10+ 帧（全 0.00%）。补法写在 ``docs/maintenance/sanctuary.md``。
 """
 
+from dataclasses import dataclass
 from pathlib import Path
 
+import cv2
 import numpy as np
 
 from auto_game_unified.core.matcher import Match, find_all_templates, find_template
@@ -125,6 +177,10 @@ REGIONS = {
     "claim_text": (1470, 418, 430, 400),
     # 领取完成弹窗底部「点击关闭」。
     "popup_close": (840, 800, 300, 70),
+    # 第三行「魔罗戈拉种植地」右下方的「照料」按钮：**区域罩住整颗药丸 + 余量**。
+    # ⚠️ 它只当「这颗按钮在不在」的锚点；**「能不能点」另有一道判据**（近白占比），
+    # 因为冷却中它仍然是同一颗按钮、只有变暗 —— 见 ``CARE_TEXT_WHITE_MIN_RATIO``。
+    "care_text": (1540, 840, 400, 110),
 }
 
 THRESHOLDS = {key: DEFAULT_THRESHOLD for key in REGIONS}
@@ -166,6 +222,21 @@ CLAIM_ROW_TOLERANCE = 80
 CLAIM_MIN_GAP = 60
 
 CLAIM_ROW_NAMES = ("第1行·企鹅巢穴", "第2行·精灵之泉", "第3行·魔罗戈拉种植地")
+
+# ---- 「照料」按钮的可用判据 --------------------------------------------------------
+#
+# ⚠️ 为什么不用「按钮区域平均灰度 ≥ 某值」：实测亮 113.8 / 灰 56.6 看着能分，但圣域是
+# 3D 昼夜场景、药丸半透明，同状态参照物（第 3 行药丸）自己就随背景差了 42.3 ⇒
+# 那 57 点里背景能解释 42 点。**绝对亮度会把「白天 + 冷却中」误判成可点**，
+# 而那是会真点下去的。完整推导见模块 docstring「照料按钮」一节。
+#
+# 改用「文字自己白不白」：亮态文字纯白（峰值 255，饱和），灰态是灰的（峰值 147）。
+# 与 ``care_text`` 模板**同一块框**（x1622..1750 / y871..914，= x,y,w,h）；
+# 模板切片见 ``runtime_logs/_sanctuary_cut_templates.py``。
+CARE_BOX = (1622, 871, 128, 43)
+CARE_TEXT_WHITE_LEVEL = 235
+# 实测：亮 15.92% / 灰 0.00%（全库 293 张夹具里只有森林页亮态那一帧非零）。
+CARE_TEXT_WHITE_MIN_RATIO = 0.02
 
 
 def build_sanctuary_evidence(template_dir: Path) -> EvidenceProfile:
@@ -257,3 +328,98 @@ def locate(
         region=REGIONS[key],
         reference_size=reference_size,
     )
+
+
+# ---- 「照料」按钮：在不在 + 能不能点 ------------------------------------------------
+
+
+@dataclass(frozen=True)
+class CareProbe:
+    """某一帧上「照料」按钮的实测结果。
+
+    ``match`` 是按钮的存在性（模板命中框，命中了就直接拿它的中心当点击点）；
+    ``white_ratio`` 是「文字是不是白的」——**能不能点由它决定，不由模板分决定**
+    （模板分是对比度归一化的，两态都 0.95~1.00，分不出来）。
+    """
+
+    match: Match | None
+    white_ratio: float
+    white_min: float = CARE_TEXT_WHITE_MIN_RATIO
+
+    @property
+    def present(self) -> bool:
+        """按钮在不在（不看亮灰）。"""
+        return self.match is not None
+
+    @property
+    def ready(self) -> bool:
+        """能不能点：按钮在 **且** 文字是白的（不在冷却中）。"""
+        return self.match is not None and self.white_ratio >= self.white_min
+
+
+def _scale_region(
+    region: tuple[int, int, int, int],
+    screen: np.ndarray,
+    reference_size: tuple[int, int] | None,
+) -> tuple[int, int, int, int]:
+    """把基准画布坐标的区域换算到实际画面上。
+
+    ⚠️ 口径必须与 ``core.matcher`` 逐字一致（含宽高比校验），否则「模板在 A 处命中、
+    亮度却在 B 处量」——那种错不会报错，只会让判据悄悄失准。
+    """
+    if reference_size is None:
+        return region
+    scale_x = screen.shape[1] / reference_size[0]
+    scale_y = screen.shape[0] / reference_size[1]
+    if abs(scale_x - scale_y) > 0.02:
+        raise RuntimeError("画面宽高比与模板基准不一致")
+    return (
+        round(region[0] * scale_x),
+        round(region[1] * scale_y),
+        round(region[2] * scale_x),
+        round(region[3] * scale_y),
+    )
+
+
+def care_text_white_ratio(
+    screen: np.ndarray,
+    *,
+    box: tuple[int, int, int, int] = CARE_BOX,
+    level: int = CARE_TEXT_WHITE_LEVEL,
+    reference_size: tuple[int, int] | None = REFERENCE_SIZE,
+) -> float:
+    """「照料」按钮框内**近白像素的占比**（0.0~1.0）。亮态 ≈0.16、冷却中 0.0。"""
+    x, y, width, height = _scale_region(box, screen, reference_size)
+    crop = screen[y : y + height, x : x + width]
+    if crop.size == 0:
+        return 0.0
+    # ⚠️ 用 ``cv2.cvtColor`` 而不是手写加权：docstring 里那几个数（如峰值 255 / 147、
+    # 占比 15.92%）就是用它量的，换算法等于换口径。
+    gray = crop if crop.ndim == 2 else cv2.cvtColor(crop, cv2.COLOR_RGB2GRAY)
+    return float((gray > level).mean())
+
+
+def probe_care(
+    screen: np.ndarray,
+    template: np.ndarray,
+    *,
+    region: tuple[int, int, int, int] | None = None,
+    reference_size: tuple[int, int] = REFERENCE_SIZE,
+    threshold: float = DEFAULT_THRESHOLD,
+    white_min: float = CARE_TEXT_WHITE_MIN_RATIO,
+    box: tuple[int, int, int, int] = CARE_BOX,
+) -> CareProbe:
+    """一帧上量全「照料」按钮：有没有 + 能不能点。"""
+    match = find_template(
+        screen,
+        template,
+        threshold,
+        region=REGIONS["care_text"] if region is None else region,
+        reference_size=reference_size,
+    )
+    ratio = care_text_white_ratio(
+        screen,
+        box=box,
+        reference_size=reference_size,
+    )
+    return CareProbe(match=match, white_ratio=ratio, white_min=white_min)

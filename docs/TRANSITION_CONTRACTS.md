@@ -305,7 +305,7 @@
 | `survivor` | 活动 | `_observe_stable(page, timeout)` | 有 | **无** | 点完不回头看，没生效只能靠下一阶段超时兜 |
 | `fodder` | 狗粮 | 无（动作仅带名称与坐标） | **无** | **无** | 主循环取不到判据即当作“此动作不需验收”，照跑不报错 |
 | `knights_donation` | 骑士团捐赠 | `source_page` + `target_pages` / `in_page_evidence`（**第一条打开机器强制的路线**） | 有 | 有 | 无（`activity_panel` 兜底分支暂无实拍证据） |
-| `sanctuary` | 圣域收菜 | `source_page` + `target_pages`（**第四条打开机器强制**，2026-09-29） | 有 | 有 | 无（`claim-row` 用「领取完成弹窗出现」当出口证据，点不动会留诊断 + 报错） |
+| `sanctuary` | 圣域收菜 | `source_page` + `target_pages` / `in_page_evidence`（**第四条打开机器强制**，2026-09-29） | 有 | 有 | 无（`claim-row` 用「领取完成弹窗出现」当出口证据；`care` 不换页、走 `in_page_evidence`「按钮由亮转灰」。两条点不动都会留诊断 + 报错） |
 | `labyrinth_stone` | 迷宫强化石 | `source_page` + `target_pages` / `in_page_evidence`（**第三条打开机器强制**，2026-09-25） | 有 | 有 | 有：「切到区域 1」这条判据**只有正例**（实测选中时落差 69），没拍到「选中的是别的区」那一帧；「商店一行都买不到」也只有模拟帧 |
 
 现有路线**暂不改动**（用户 2026-09-23 拍板：先登记、以后慢慢补）—— 唯一例外是
