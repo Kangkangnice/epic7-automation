@@ -11,11 +11,18 @@
   ├ 可领的行：蓝底白边在闪、左上角红点、中间「领取奖励」
   │     → 点一下 ⇒ 弹出「…成长完成!」弹窗 ⇒ 点弹窗底部「点击关闭」
   │     → 回到本页，该行变成倒计时
-  └ 三行都没有「领取奖励」了 ⇒ 本轮收工 ⇒ 回家
+  ├ 第三行右下方还有一颗「照料(1/3)」按钮（2026-09-30 用户追加的功能）
+  │     → 它是**加速第三行材料生长**的，旁边那个计时器走到 00:00:00 就变亮
+  │     → 亮着就点掉；**点了应该没有弹窗**（用户判断，我没实点过 —— 见下）
+  └ 三行都没有「领取奖励」、且照料按钮不亮 ⇒ 本轮收工 ⇒ 回家
 ```
 
 用户原话：「每天这个圣域里面会定时刷新一些材料，然后我们需要定时去把它给点掉……
 你去收菜就很简单把它点掉。」「目前的话只有部分刷新的，我们先把部分的这些流程给走通。」
+
+追加照料时的原话（2026-09-30）：「第三行下面右下方有一个照料，照顾的意思，第三行的菜
+可以通过这个方法点击之后，它可以加快它的生长，所以碰到这个量的话，跟其他一样，也点掉。
+他点的话，应该没有弹窗。你可以看一下」
 
 ## 判据与阈值
 
@@ -39,6 +46,7 @@
 | ``open-forest`` | 圣域主页 | ``target_pages`` = 精灵之森 |
 | ``claim-row`` | 精灵之森 | ``target_pages`` = 领取完成弹窗 |
 | ``dismiss-claim`` | 领取完成弹窗 | ``target_pages`` = 精灵之森 |
+| ``care`` | 精灵之森 | ``in_page_evidence`` = 按钮由亮（白字）转灰（冷却中） |
 
 ⚠️ **``claim-row`` 用 ``target_pages`` 而不是 ``in_page_evidence``**，是刻意的：
 弹窗**确实会弹**（两次实点都弹了，且不会自动消失）⇒ 「弹窗出现」是一个可靠的
@@ -49,6 +57,26 @@
 「没看见某个东西」永远不能当放弃的理由，但「点了 4 次都没生效」是**看得见的事实**，
 就该报错。
 
+⚠️ **``care`` 只能走 ``in_page_evidence``**（点击**不换页**），而它声明的那条验收
+（「按钮由亮转灰」）是**机器没有单独去验的** —— 主循环对同页动作不做转场对账，
+真正的把关是「下一帧重新判页面」：下一帧 ``_at_forest`` 会重新量一次，按钮已经不亮了
+就不会再点。反过来说，**若它其实会弹窗**（用户说不会，但那是他的判断，我没实点过），
+下一帧 ``observe_page`` 会认出弹窗页、转去 ``dismiss-claim``，也就顺带把它关掉 ——
+**不会卡住**；而如果点了 4 次画面毫无变化（按钮一直是亮的），主循环照样
+**响亮地失败**。三种情形都不会「悄悄跳过」。
+
+## 照料按钮：为什么判据是「文字是不是白的」而不是按钮亮度
+
+**一句话**：按钮亮/灰的差别，在「形状」上完全一样（模板分两态都 0.95~1.00，
+因为模板匹配是**对比度归一化**的），差别全在**明度**上；而按钮又是**半透明的**，
+圣域还是 **3D 昼夜场景** ⇒ 拿「按钮区域平均灰度」当判据会被背景带偏
+（同状态参照物自己就随昼夜差了 42 点，绝对阈值会把白天的冷却中误判成可点）。
+
+⇒ 改用**文字自身的颜色**：亮态「照料」是纯白（峰值 255），冷却中是灰的（峰值 147）。
+判据 = 框内近白像素占比（实测 **亮 15.92% / 灰 0.00%**）。
+完整的推导、实测数字与仍未验证的两点，写在 ``evidence/sanctuary.py`` 的
+「照料按钮」一节 —— 那里是**唯一权威**，别在这里再抄一份。
+
 ## ⚠️ 这一轮**不做**的东西（写在这里，别装作不存在）
 
 - **只做「精灵之森」这一行**。圣域主页另外两行（欧勒毕斯之心 / 炼金术师之塔）
@@ -56,8 +84,11 @@
   要么把本路线扩成「三行依次进」。
 - **不读金额 / 数量**。领到几个材料不解析（与骑士团捐赠的取舍一致：用户当场拍板
   「先不读金额」），只在日志里写「点掉了哪一行」。
-- **不点「照料(1/3)」**（魔罗戈拉种植地那一行的按钮）。它可能是要花资源的操作，
-  没有正例说明它安全；本轮连它在哪里都不依靠。
+- **不读那个 ``(1/3)`` 数字、也不依赖左上角红点**。数字两态都是 1/3（实测，不是可用
+  信号）；红点是通知角标、可能先消失（与「领取奖励」那一课的取舍一致）。
+  两者都按模板纪律**切掉**了。
+- **不判断照料还能点几次**。只按「现在亮着 = 现在能点」行事；点完若还亮着就再点，
+  由主循环的 4 次上限兜底。
 """
 
 from dataclasses import dataclass
@@ -74,9 +105,11 @@ from auto_game_unified.core.runtime import Runtime
 from auto_game_unified.games.epic7.evidence.common import EvidenceState
 from auto_game_unified.games.epic7.evidence.sanctuary import (
     REFERENCE_SIZE,
+    CareProbe,
     build_sanctuary_evidence,
     claim_row_label,
     claimable_rows,
+    probe_care,
 )
 from auto_game_unified.games.epic7.resume_probe import ResumePoint, observe_page_probe
 from auto_game_unified.games.epic7.route_action import RouteAction
@@ -149,6 +182,9 @@ class SanctuaryTemplates:
     claim_text: np.ndarray
     # 领取完成弹窗底部「点击关闭」。
     popup_close: np.ndarray
+    # 第三行右下「照料」按钮上的**手图标 + 照料**（不含红点、不含 ``(1/3)`` 数字）。
+    # ⚠️ 它只回答「这颗按钮在不在」；「能不能点」由亮不亮决定 —— 见 ``probe_care``。
+    care_text: np.ndarray
     evidence: object = None
 
 
@@ -161,6 +197,7 @@ def build_sanctuary_templates(template_dir: Path) -> SanctuaryTemplates:
         forest_title=load("forest_title"),
         claim_text=load("claim_text"),
         popup_close=load("popup_close"),
+        care_text=load("care_text"),
         evidence=build_sanctuary_evidence(template_dir),
     )
 
@@ -196,6 +233,8 @@ class SanctuaryStateMachine:
         self.finish_reason = ""
         # 本帧看到的可领行数（只为了日志里说清楚「还剩几行」）。
         self.claimable_count = 0
+        # 本帧「照料」按钮的实测（None = 这一帧没量过 / 不在精灵之森页）。
+        self.care_probe: Optional[CareProbe] = None
         self._confirmed_page = ""
 
     # ---- 视觉判据 ----
@@ -236,6 +275,13 @@ class SanctuaryStateMachine:
         return claimable_rows(
             screen,
             self.templates.claim_text,
+            reference_size=self._REFERENCE_SIZE,
+        )
+
+    def _care(self, screen: np.ndarray) -> CareProbe:
+        return probe_care(
+            screen,
+            self.templates.care_text,
             reference_size=self._REFERENCE_SIZE,
         )
 
@@ -285,23 +331,50 @@ class SanctuaryStateMachine:
     def _at_forest(self, screen: np.ndarray):
         rows = self._claimable(screen)
         self.claimable_count = len(rows)
-        if not rows:
-            self._finish("精灵之森里已经没有「领取奖励」了（三行都在倒计时）")
-            return None
-        # ⚠️ 从上到下取第一行（``claimable_rows`` 已按 y 排序）：凭分数挑会在
-        # 两行之间来回跳 —— 实测两行的分数只差 0.001~0.01 且帧间会互相反超。
-        target = rows[0]
-        others = "、".join(claim_row_label(m.center[1]) for m in rows[1:]) or "无"
-        return self._action(
-            "claim-row",
-            point=target.center,
-            source_page=state_label(SanctuaryState.FOREST),
-            target_pages=(state_label(SanctuaryState.CLAIM_POPUP),),
-            reason=(
-                f"可领 {len(rows)} 行，先点最上面那行（{claim_row_label(target.center[1])}"
-                f"@{target.center} 得分 {target.score:.4f}）；其余待领={others}"
-            ),
+        care = self._care(screen)
+        self.care_probe = care
+        if rows:
+            # ⚠️ 从上到下取第一行（``claimable_rows`` 已按 y 排序）：凭分数挑会在
+            # 两行之间来回跳 —— 实测两行的分数只差 0.001~0.01 且帧间会互相反超。
+            target = rows[0]
+            others = "、".join(claim_row_label(m.center[1]) for m in rows[1:]) or "无"
+            return self._action(
+                "claim-row",
+                point=target.center,
+                source_page=state_label(SanctuaryState.FOREST),
+                target_pages=(state_label(SanctuaryState.CLAIM_POPUP),),
+                reason=(
+                    f"可领 {len(rows)} 行，先点最上面那行（{claim_row_label(target.center[1])}"
+                    f"@{target.center} 得分 {target.score:.4f}）；其余待领={others}"
+                ),
+            )
+        # **领取优先、照料在后**：领取是这条路线的正业（「收菜」），照料只是顺手加速。
+        # 两者的前提本来也几乎不重叠 —— 第三行能领时它已经长好了，没什么可照料的。
+        if care.ready:
+            # ⚠️ 点击点在**模板命中框的中心**（实测 1686, 892），不是按钮命中框中心
+            # （1727, 892）—— 后者是整颗药丸（含数字），我们只截了左半段。
+            return self._action(
+                "care",
+                point=care.match.center,
+                source_page=state_label(SanctuaryState.FOREST),
+                in_page_evidence="照料按钮由亮（白字）转灰（冷却中），本页不变",
+                reason=(
+                    f"照料按钮亮着（近白占比 {care.white_ratio:.2%} ≥ "
+                    f"{care.white_min:.2%}）@{care.match.center}，点它加速第三行生长"
+                ),
+            )
+        self._finish(self._forest_done_reason(care))
+        return None
+
+    @staticmethod
+    def _forest_done_reason(care: CareProbe) -> str:
+        """收工理由要把「照料为什么没点」说清楚，否则日志区分不出两种收工。"""
+        tail = (
+            f"照料按钮在冷却中（近白占比 {care.white_ratio:.2%} < {care.white_min:.2%}）"
+            if care.present
+            else "画面里也没找到照料按钮"
         )
+        return f"精灵之森里已经没有「领取奖励」了（三行都在倒计时），{tail}"
 
     def _at_claim_popup(self, screen: np.ndarray):
         close = self._required(screen, "popup_close")
@@ -353,6 +426,7 @@ class SanctuaryStateMachine:
             self.completed_cycles,
             self.finish_reason,
             self.claimable_count,
+            self.care_probe,
             self._confirmed_page,
         )
         try:
@@ -364,6 +438,7 @@ class SanctuaryStateMachine:
                 self.completed_cycles,
                 self.finish_reason,
                 self.claimable_count,
+                self.care_probe,
                 self._confirmed_page,
             ) = snapshot
 
@@ -405,10 +480,14 @@ class SanctuaryRunner(ModeRunnerBase):
     # 这条路线不打架，没有「已承诺战斗」环节。
     _BATTLE_ENTRY_ACTION = None
     _SETTLED_BATTLE_STATE = None
-    # 动作重试窗口：默认 45 秒是给「换页」定的，而这两个动作点完**立刻**能看出
-    # 生效没有（弹窗弹出来 / 弹窗关掉）。用 45 秒纯属白等 —— 正是 world_boss 记过的
-    # 「领奖干等 40 多秒」那一类。8 秒 = 实机一次点击到弹窗出现（约 1 秒）的 8 倍余量。
-    _SHORT_RETRY_ACTIONS = frozenset({"claim-row", "dismiss-claim"})
+    # 动作重试窗口：默认 45 秒是给「换页」定的，而这三个动作点完**立刻**能看出
+    # 生效没有（弹窗弹出来 / 弹窗关掉 / 照料按钮转灰）。用 45 秒纯属白等 —— 正是 world_boss
+    # 记过的「领奖干等 40 多秒」那一类。8 秒 = 实机一次点击到弹窗出现（约 1 秒）的 8 倍余量。
+    #
+    # ⚠️ ``care`` 也放进来：它**不换页**，所以「生效没有」只能靠按钮转灰来判断；
+    # 8 秒足够看出转灰。若按钮一直是亮的（没生效 / 还能再照料），主循环会按 8 秒
+    # 一次、最多 4 次地重试，然后响亮地失败 —— 上限由主循环给，这里不额外加闩。
+    _SHORT_RETRY_ACTIONS = frozenset({"claim-row", "dismiss-claim", "care"})
     _SHORT_RETRY_SECONDS = 8.0
 
     def __init__(
@@ -446,6 +525,10 @@ class SanctuaryRunner(ModeRunnerBase):
     def _decision_hint(self, action_name: str, state: SanctuaryState) -> str:
         if action_name == "claim-row":
             return f"本帧还有 {getattr(self.machine, 'claimable_count', 0)} 行可领"
+        if action_name == "care":
+            care = getattr(self.machine, "care_probe", None)
+            if care is not None:
+                return f"照料按钮亮着（近白占比 {care.white_ratio:.2%}）"
         return ""
 
 
