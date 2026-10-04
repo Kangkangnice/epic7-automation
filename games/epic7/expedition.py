@@ -184,8 +184,11 @@ class ExpeditionStateMachine:
     # 整个失灵，空等超时 6 次（2026-09-19~10-03）才被发现。
     #
     # ⚠️ 本集合必须与 `evidence/expedition.py` 的 `_OPTIONAL_TEMPLATES` **逐字一致**
-    # （`test_expedition_evidence` 里钉住）。目前只剩 `defeated_confirm`：它还没有
-    # 真机图，拿到图后从两处一起删掉，别只改一边。
+    # （`test_expedition_evidence` 里钉住）。目前只剩 `defeated_confirm`：
+    # 它的模板**从来就没做过**，但真机日志里那个动作**一次都没执行过**
+    # （见 `evidence/expedition.py` 同处的说明）—— 它只是三个 `is_in_state()` 里
+    # `or` 的一端，缺了不会让那些判断变假，与 `empty_posters` 的「判据整个失效」不同。
+    # 拿到战败帧后按同样四步补，别只改一边。
     _OPTIONAL_TEMPLATES = frozenset({"defeated_confirm"})
 
     def __init__(

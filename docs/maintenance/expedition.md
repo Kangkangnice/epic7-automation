@@ -50,13 +50,25 @@
 
 「有传单」只有 0.2379 是重点：证明模板在区分**两种状态**，不是单纯认列表页。
 
-### ⚠️ 同类隐患仍在：`defeated_confirm`
+### `defeated_confirm`：性质不同，**不是同一个隐患**
 
-战败确认按钮**还没有真机图**，仍是可选模板 + `is not None` 静默降级。它比
-`empty_posters` 牵连更广 —— 同时参与 `OUTCOME` / `RECRUIT_CONFIRM` /
-`RECRUIT_RETURN` **三个页面**的身份判定，认不到这三个状态就永远判不进去。
+⚠️ 先纠正一处容易误判的说法：`defeated_confirm`（战败确认按钮）**模板从来就没做过**，
+但它**并没有**和 `empty_posters` 一样的后果。查证（2026-10-04）：
 
-拿到图后按本节的四步补：裁模板 → 两处 `_OPTIONAL_TEMPLATES` 一起删
+| 查什么 | 结果 |
+|---|---|
+| 真机日志里 `confirm-defeated` 执行次数 | **0 次**（8/30 ~ 10/04，3868 行） |
+| 对照：`当前页面=公开招募结果` / `招募确认` | 36 次 / 21 次 |
+| 它在哪被用 | 只有 `_defeated_action()`（**战败**才走；打赢走 `victory_close` / `public_recruit`） |
+| 另外三处引用（`is_in_state()` 的三个状态） | **都只是 `or` 的一端**，缺了不会让判断变假 |
+
+⇒ **没有「判据整个失效」的后果**：那三个 `is_in_state()` 里另外几端
+（`victory_title` / `public_title`+`public_confirm` / `campfire_idle`）照常兜住。
+真正没覆盖的只有一种情景 —— **战败结算页出现时**没有判据认得它，会被判成
+`UnrecognizedScreen`（**fail-closed 停住并存诊断**，不是静默走错）。
+
+所以它是「还没走过这条路」，不是「已经出事」。拿到战败帧（自己打一场败仗，或借
+别人的截图）后按本节四步补：裁模板 → 两处 `_OPTIONAL_TEMPLATES` 一起删
 （`evidence/expedition.py` 与 `ExpeditionStateMachine._OPTIONAL_TEMPLATES`，
 `test_whitelist_matches_the_evidence_profile` 钉住两者一致）→ 加夹具与测试 →
 反向验证。
