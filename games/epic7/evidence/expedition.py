@@ -55,7 +55,17 @@ _TEMPLATE_NAMES = (
     "back",
 )
 
-_OPTIONAL_TEMPLATES = {"empty_posters", "defeated_confirm"}
+# ⚠️ `empty_posters` 曾是可选模板，而模板文件**根本不存在** —— 后果不是「少认一
+# 种画面」，是**这条路线上的收工判据整个失效**：传单用完时 `_posters_action()`
+# 认不出「没有可用的通缉传单」，于是继续去找那个永远不出现的出发按钮，一路等到
+# 超时。2026-09-19 ~ 2026-10-03 实测发生 **6 次**同样超时，每次都存了诊断图
+# （`..._no_transition_open-my-posters.png`），画面明写「未持有通缉传单 / 持有 0/10」
+# —— 判据就在眼前却认不出来。现已补模板并改为必需（缺文件 `FileNotFoundError`）。
+#
+# ⚠️ 仍留在可选的是 `defeated_confirm`（战败确认按钮）：**目前还没有真机图**，
+# 同一处隐患仍在（它同时参与 OUTCOME / RECRUIT_CONFIRM / RECRUIT_RETURN 三个
+# 页面的身份判定）。拿到图后按 `empty_posters` 同样处理，**别忘**。
+_OPTIONAL_TEMPLATES = {"defeated_confirm"}
 
 
 def build_expedition_evidence(template_dir: Path) -> EvidenceProfile:
