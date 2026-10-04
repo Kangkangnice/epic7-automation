@@ -20,7 +20,6 @@ REGIONS = {
     "result_confirm": (1450, 850, 532, 282),
     "victory_title": (750, 250, 500, 250),
     "victory_close": (700, 650, 600, 300),
-    "defeated_confirm": (650, 700, 700, 432),
     "public_recruit": (800, 900, 500, 232),
     "public_title": (700, 250, 600, 300),
     "public_confirm": (650, 650, 700, 482),
@@ -45,7 +44,6 @@ _TEMPLATE_NAMES = (
     "result_confirm",
     "victory_title",
     "victory_close",
-    "defeated_confirm",
     "public_recruit",
     "public_title",
     "public_confirm",
@@ -62,21 +60,15 @@ _TEMPLATE_NAMES = (
 # （`..._no_transition_open-my-posters.png`），画面明写「未持有通缉传单 / 持有 0/10」
 # —— 判据就在眼前却认不出来。现已补模板并改为必需（缺文件 `FileNotFoundError`）。
 #
-# ⚠️ 仍留在可选的是 `defeated_confirm`（战败确认按钮）：模板**从来就没做过**，
-# 而且真机日志里 `confirm-defeated` 这个动作**一次都没执行过**（8/30~10/04，3868 行）。
-# 所以它和 `empty_posters` **性质不同** —— 不是「已经出事」，是「还没走过这条路」：
+# ✅ **2026-10-04 本名单清空**：原先唯一的在册项 `defeated_confirm`（战败确认）已整个
+# 删除 —— **远征没有「输」这回事**（用户 2026-10-04 说明）：打完伤害就直接进结算，
+# 只有一种结局、一条路径，不存在需要单独认的「战败页」。那个模板本来就没做过，
+# 对应动作在真机日志里也一次都没执行过（8/30~10/04，3868 行）。
 #
-#   * 它只出现在 `_defeated_action()` 里，而那是**战败**才走的分支（打赢走
-#     `victory_close` / `public_recruit`）。用户至今没打过败仗（或战败不在远征流程内）。
-#   * 它在 OUTCOME / RECRUIT_CONFIRM / RECRUIT_RETURN 三个 `is_in_state()` 里
-#     都**只是 `or` 的其中一端** ⇒ 模板缺失时那三个判断**不会因此变假**
-#     （另外几端 `victory_title` / `public_title`+`public_confirm` / `campfire_idle`
-#     照常兜住）。所以**没有** `empty_posters` 那种「判据整个失效」的后果。
-#
-# ⇒ 真正没被覆盖的只有一种情景：**战败结算页出现时**，没有判据认得它，会被判成
-# `UnrecognizedScreen`（fail-closed，停住并存诊断），而不是静默走错。等拿到战败帧
-# （自己打一场败仗，或借别人的截图）再按 `empty_posters` 同样处理。
-_OPTIONAL_TEMPLATES = {"defeated_confirm"}
+# ⇒ 从今往后远征**一张模板都不许缺席**：少一张图就是配置错误，加载期
+# `FileNotFoundError` 直接拦。新增锚点必须同时补模板文件，别指望「先可选、以后再补」
+# —— `empty_posters` 就是那样丢掉的。
+_OPTIONAL_TEMPLATES: frozenset[str] = frozenset()
 
 
 def build_expedition_evidence(template_dir: Path) -> EvidenceProfile:

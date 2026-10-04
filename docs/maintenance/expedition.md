@@ -50,26 +50,37 @@
 
 「有传单」只有 0.2379 是重点：证明模板在区分**两种状态**，不是单纯认列表页。
 
-### `defeated_confirm`：性质不同，**不是同一个隐患**
+### `defeated_confirm` 已整个删除：**远征没有「输」这回事**（2026-10-04）
 
-⚠️ 先纠正一处容易误判的说法：`defeated_confirm`（战败确认按钮）**模板从来就没做过**，
-但它**并没有**和 `empty_posters` 一样的后果。查证（2026-10-04）：
+⚠️ 这条判据曾经存在，是我的**误判**，现已删除。经过（记下来防复发）：
 
-| 查什么 | 结果 |
+1. 它登记成「可选模板」，但模板**从来就没做过**，对应动作在真机日志里
+   **执行 0 次**（8/30~10/04，3868 行；同期「公开招募结果」走了 36 次）。
+2. 我先把它归类为「同一处隐患」，用户当场质疑：「**之前完全没用过呀，也没问题呀**」
+   —— 用户是对的。
+3. 用户进一步说明机制：**远征打完伤害就直接进结算，没有「输」这回事**，所有情况
+   都是同一类，不存在需要单独识别的「战败页」。
+
+⇒ 所以它不是「缺一张图」，是**这条路线上根本没有这个页面**。留着它的代价：
+多一个永远为 `None` 的判据、多一处「可选」口子、多一份要维护的假分支。
+
+**删除范围**（一次清干净）：
+
+| 位置 | 处理 |
 |---|---|
-| 真机日志里 `confirm-defeated` 执行次数 | **0 次**（8/30 ~ 10/04，3868 行） |
-| 对照：`当前页面=公开招募结果` / `招募确认` | 36 次 / 21 次 |
-| 它在哪被用 | 只有 `_defeated_action()`（**战败**才走；打赢走 `victory_close` / `public_recruit`） |
-| 另外三处引用（`is_in_state()` 的三个状态） | **都只是 `or` 的一端**，缺了不会让判断变假 |
+| `evidence/expedition.py` 的 `REGIONS` / `_TEMPLATE_NAMES` | 删条目 |
+| `expedition.py` 的 `ExpeditionTemplates.defeated_confirm` 字段 + 加载 | 删（`load_optional()` 也随之删除，不再需要） |
+| `expedition.py::_defeated_action()` | 整个方法删 |
+| `expedition.py::next_action()` 开头那 5 行特殊分支 | 删 |
+| 三处 `is_in_state()`（OUTCOME / RECRUIT_CONFIRM / RECRUIT_RETURN） | 删 `or` 的那一端 |
+| 两处 `_OPTIONAL_TEMPLATES` | **清空**（不是删机制） |
 
-⇒ **没有「判据整个失效」的后果**：那三个 `is_in_state()` 里另外几端
-（`victory_title` / `public_title`+`public_confirm` / `campfire_idle`）照常兜住。
-真正没覆盖的只有一种情景 —— **战败结算页出现时**没有判据认得它，会被判成
-`UnrecognizedScreen`（**fail-closed 停住并存诊断**，不是静默走错）。
+⚠️ **白名单机制保留、内容清空** —— 它是防静默降级的护栏，不能因为没人用就拆掉。
+清空之后语义反而更强：**远征一张模板都不许缺席**。测试
+`test_every_template_is_now_required` 逐个把模板置 `None`，断言 `_locate` 必须报错
+点名（`empty_posters` / `victory_title` / `campfire_idle` 三个锚点轮着来）。
 
-所以它是「还没走过这条路」，不是「已经出事」。拿到战败帧（自己打一场败仗，或借
-别人的截图）后按本节四步补：裁模板 → 两处 `_OPTIONAL_TEMPLATES` 一起删
-（`evidence/expedition.py` 与 `ExpeditionStateMachine._OPTIONAL_TEMPLATES`，
-`test_whitelist_matches_the_evidence_profile` 钉住两者一致）→ 加夹具与测试 →
-反向验证。
+⚠️ **别再把「可选」当成「先这样，以后再补」的口子** —— `empty_posters` 就是这么丢的
+（漏判半个月、空等 6 次）。新增锚点必须**同时**补模板文件。
+
 

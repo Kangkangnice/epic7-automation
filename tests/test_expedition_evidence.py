@@ -32,5 +32,9 @@ def test_expedition_profile_reports_required_template_missing_from_empty_directo
     # 失效（空等超时 6 次），必须在「模板不存在」错误里点名。这条断言是那次改动的
     # 反向钉子 —— 谁把它改回可选，这里立刻变红。
     assert any("empty_posters.png" in error and "模板不存在" in error for error in errors)
-    # 目前仍允许缺席的只剩战败确认（还没有真机图）。
-    assert not any("defeated_confirm.png" in error for error in errors)
+    # ⚠️ 2026-10-04 起本路线**没有任何可选模板**（战败确认已整个删除 —— 远征没有
+    # 「输」这回事）。所以上面的「必需」不再是特例：随便挑几个锚点，全都必须点名。
+    for name in ("victory_title", "campfire_idle", "public_recruit"):
+        assert any(
+            f"{name}.png" in error and "模板不存在" in error for error in errors
+        ), name
