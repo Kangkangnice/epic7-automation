@@ -28,4 +28,9 @@ def test_expedition_profile_reports_required_template_missing_from_empty_directo
     assert "home" in profile.atoms
     errors = validate_profile(profile, tmp_path)
     assert any("home.png" in error and "模板不存在" in error for error in errors)
-    assert not any("empty_posters.png" in error for error in errors)
+    # ⚠️ `empty_posters` 于 2026-10-04 从可选改为**必需**：它缺席时收工判据整个
+    # 失效（空等超时 6 次），必须在「模板不存在」错误里点名。这条断言是那次改动的
+    # 反向钉子 —— 谁把它改回可选，这里立刻变红。
+    assert any("empty_posters.png" in error and "模板不存在" in error for error in errors)
+    # 目前仍允许缺席的只剩战败确认（还没有真机图）。
+    assert not any("defeated_confirm.png" in error for error in errors)

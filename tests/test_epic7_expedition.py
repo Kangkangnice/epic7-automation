@@ -1,3 +1,4 @@
+import dataclasses
 import unittest
 from pathlib import Path
 
@@ -5,6 +6,7 @@ import cv2
 import numpy as np
 
 from auto_game_unified.core.battle_supervisor import AutoBattleState
+from auto_game_unified.core.matcher import find_best_template
 from auto_game_unified.games.epic7.expedition import (
     ExpeditionState,
     ExpeditionStateMachine,
@@ -400,8 +402,73 @@ class ExpeditionStateMachineTests(unittest.TestCase):
             ROOT / "games" / "epic7" / "templates" / "expedition"
         )
 
-        self.assertIsNone(templates.empty_posters)
+        # ⚠️ 2026-10-04 前这里断言 `empty_posters is None` —— 那是把**缺陷**当预期
+        # 写进了测试：模板文件不存在，收工判据静默失效，实机空等超时 6 次
+        # （2026-09-19~10-03）。现已补模板并改为必需，这里断言它**存在**。
+        # 仍为 None 的只剩战败确认（还没有真机图，拿到后一并补上）。
+        self.assertIsNotNone(templates.empty_posters)
         self.assertIsNone(templates.defeated_confirm)
+
+    def test_empty_posters_matches_the_live_empty_list_and_nothing_else(self):
+        """「未持有通缉传单」判据：现场帧命中，其余全部夹具零误报。
+
+        正样本 `empty_posters_live.png` 取自 2026-10-03 那次超时诊断图
+        （`20261003_193135_215503_no_transition_open-my-posters`）—— 那次正是这个
+        判据失灵导致的空等。模板从它裁出，但**分离度由负样本那一半证明**：
+        有传单的 `posters.png` 必须不命中，否则模板根本没在区分两种状态。
+        """
+        templates = build_expedition_templates(
+            ROOT / "games" / "epic7" / "templates" / "expedition"
+        )
+        machine = ExpeditionStateMachine(templates)
+        region = machine._REGIONS["empty_posters"]
+
+        fixture_dir = ROOT / "tests" / "fixtures" / "epic7_expedition"
+        positive = fixture_dir / "empty_posters_live.png"
+        screen = cv2.cvtColor(cv2.imread(str(positive)), cv2.COLOR_BGR2RGB)
+        match = find_best_template(
+            screen, templates.empty_posters, region=region, reference_size=(1982, 1132)
+        )
+        self.assertIsNotNone(match)
+        self.assertGreater(match.score, 0.88)
+
+        for path in sorted(fixture_dir.glob("*.png")):
+            if path == positive:
+                continue
+            with self.subTest(fixture=path.name):
+                other = cv2.cvtColor(cv2.imread(str(path)), cv2.COLOR_BGR2RGB)
+                best = find_best_template(
+                    other, templates.empty_posters, region=region, reference_size=(1982, 1132)
+                )
+                self.assertLess(best.score, 0.88)
+
+    def test_empty_poster_list_stops_as_resource_exhaustion_on_the_live_frame(self):
+        """端到端：现场帧上的 `next_action` 必须抛出 `PostersExhausted`。
+
+        ⚠️ 断言到「依据」而不只是「抛没抛」：判据失灵时这里**不会报错**，
+        只会返回 None 继续空等 —— 那正是实机发生的形态。所以额外断言机器
+        确实认到了这个锚点。
+        """
+        templates = build_expedition_templates(
+            ROOT / "games" / "epic7" / "templates" / "expedition"
+        )
+        machine = ExpeditionStateMachine(templates, initial_state=ExpeditionState.POSTERS)
+        screen = cv2.cvtColor(
+            cv2.imread(
+                str(
+                    ROOT
+                    / "tests"
+                    / "fixtures"
+                    / "epic7_expedition"
+                    / "empty_posters_live.png"
+                )
+            ),
+            cv2.COLOR_BGR2RGB,
+        )
+
+        self.assertIsNotNone(machine._locate(screen, "empty_posters"))
+        with self.assertRaises(PostersExhausted):
+            machine.next_action(screen)
 
     def test_home_recognition_ignores_changed_wanted_poster_badge(self):
         templates = build_expedition_templates(
@@ -515,6 +582,56 @@ class ExpeditionStateMachineTests(unittest.TestCase):
 
         self.assertEqual("close-expedition-victory", action.name)
         self.assertEqual(ExpeditionState.OUTCOME, machine.state)
+
+
+class OptionalTemplateGuardTests(unittest.TestCase):
+    """把「静默降级」钉死在代码门槛上（2026-10-04）。
+
+    `empty_posters` 的教训：模板文件不存在 ⇒ `_locate()` 静默返回 None ⇒
+    「模板没了」伪装成「画面上没这个控件」⇒ 收工判据失灵、空等超时 6 次。
+    """
+
+    def test_locator_refuses_a_missing_template_that_is_not_whitelisted(self):
+        """未登记为可选的模板若为 None，`_locate` 必须**报错点名**，不许静默。
+
+        反向喂违规：把 `empty_posters` 粗暴置 None（模拟模板被删）⇒ 必须红。
+        """
+        templates = build_expedition_templates(
+            ROOT / "games" / "epic7" / "templates" / "expedition"
+        )
+        broken = dataclasses.replace(templates, empty_posters=None)
+        machine = ExpeditionStateMachine(broken)
+
+        with self.assertRaisesRegex(RuntimeError, "empty_posters"):
+            machine._locate(np.zeros(SIZE, dtype=np.uint8), "empty_posters")
+
+    def test_whitelisted_optional_template_still_returns_none(self):
+        """白名单里的（战败确认）仍走旧的 None 语义 —— 别把闸门关死。"""
+        templates = build_expedition_templates(
+            ROOT / "games" / "epic7" / "templates" / "expedition"
+        )
+        self.assertIsNone(templates.defeated_confirm)
+        machine = ExpeditionStateMachine(templates)
+
+        self.assertIsNone(
+            machine._locate(np.zeros(SIZE, dtype=np.uint8), "defeated_confirm")
+        )
+
+    def test_whitelist_matches_the_evidence_profile(self):
+        """`_OPTIONAL_TEMPLATES` 必须与证据画像的 `required` 逐字一致。
+
+        两处各写一份是刻意的（一个管加载、一个管校验），但没有钉子就会漂移。
+        """
+        profile = build_expedition_evidence(
+            ROOT / "games" / "epic7" / "templates" / "expedition"
+        )
+        from_evidence = {
+            name for name, atom in profile.atoms.items() if not atom.required
+        }
+
+        self.assertEqual(
+            from_evidence, set(ExpeditionStateMachine._OPTIONAL_TEMPLATES)
+        )
 
 
 if __name__ == "__main__":

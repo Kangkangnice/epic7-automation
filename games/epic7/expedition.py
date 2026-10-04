@@ -107,7 +107,9 @@ class ExpeditionAction(RouteAction):
 class ExpeditionTemplates:
     home: np.ndarray
     poster_embark: np.ndarray
-    empty_posters: Optional[np.ndarray]
+    # ⚠️ 不是 Optional：这是「传单用完该收工」的判据，缺了整条路线会在空列表上
+    # 空等到超时（2026-09-19~10-03 实测 6 次）。缺文件必须在加载期就炸。
+    empty_posters: np.ndarray
     difficulty_title: np.ndarray
     difficulty_3_selected: np.ndarray
     difficulty_confirm: np.ndarray
@@ -141,7 +143,7 @@ def build_expedition_templates(template_dir: Path) -> ExpeditionTemplates:
     return ExpeditionTemplates(
         home=load("home"),
         poster_embark=load("poster_embark"),
-        empty_posters=load_optional("empty_posters"),
+        empty_posters=load("empty_posters"),
         difficulty_title=load("difficulty_title"),
         difficulty_3_selected=load("difficulty_3_selected"),
         difficulty_confirm=load("difficulty_confirm"),
@@ -173,6 +175,18 @@ class ExpeditionStateMachine:
     # 其余锚点沿用 0.88（出发按钮在实时帧稳定命中 1.0，无需放宽）。
     _THRESHOLDS = EXPEDITION_THRESHOLDS
     _REGIONS = EXPEDITION_REGIONS
+
+    # 允许为 ``None`` 的模板 —— **只放这一条白名单里的**，其余一律视为配置错误。
+    #
+    # 背景：`_locate()` 原本对**任何** ``None`` 模板都静默返回 ``None``，于是
+    # 「模板文件缺失」和「画面上没有这个控件」在代码里长得一模一样 —— 判据悄悄
+    # 失效，没人看得出来。远征就栽在这上面：`empty_posters` 文件不存在，收工判据
+    # 整个失灵，空等超时 6 次（2026-09-19~10-03）才被发现。
+    #
+    # ⚠️ 本集合必须与 `evidence/expedition.py` 的 `_OPTIONAL_TEMPLATES` **逐字一致**
+    # （`test_expedition_evidence` 里钉住）。目前只剩 `defeated_confirm`：它还没有
+    # 真机图，拿到图后从两处一起删掉，别只改一边。
+    _OPTIONAL_TEMPLATES = frozenset({"defeated_confirm"})
 
     def __init__(
         self,
@@ -218,6 +232,14 @@ class ExpeditionStateMachine:
     def _locate(self, screen: np.ndarray, name: str) -> Optional[Match]:
         template = getattr(self.templates, name)
         if template is None:
+            # 只有白名单里的模板才允许缺席；其余是**配置错误**，必须出声。
+            # 静默返回 None 会把「模板没了」伪装成「画面上没这个控件」。
+            if name not in self._OPTIONAL_TEMPLATES:
+                raise RuntimeError(
+                    f"模板 {name} 缺失且未登记为可选：判据会静默失效。"
+                    f"要么补上模板文件，要么把它加进 "
+                    f"{type(self).__name__}._OPTIONAL_TEMPLATES 并说明理由"
+                )
             return None
         if name == "auto_off":
             x, y, width, height = self._scaled_region(screen, name)
