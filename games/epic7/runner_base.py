@@ -194,15 +194,20 @@ class ModeRunnerBase:
         return ""
 
     @staticmethod
-    def _source_observation_matches(
+    def _in_page_evidence_matches(
         previous_action: Any, current_action: Any
     ) -> bool:
-        previous = getattr(previous_action, "source_observation", "")
+        """同页动作重新决策时，页面内证据是否仍是同一份。
+
+        读的是契约字段 ``in_page_evidence``（原英雄合成自造的 ``source_observation``，
+        2026-10-04 对齐）。没有该字段的动作恒真 —— 那些动作本来就不靠页内证据验收。
+        """
+        previous = getattr(previous_action, "in_page_evidence", "")
         if not previous:
             return True
         return bool(
             current_action is not None
-            and getattr(current_action, "source_observation", "") == previous
+            and getattr(current_action, "in_page_evidence", "") == previous
         )
 
     def _is_instant_action(self, action_name: Optional[str]) -> bool:
@@ -622,7 +627,7 @@ class ModeRunnerBase:
                     last_transition_action
                     if source_page
                     and confirmed_page == source_page
-                    and self._source_observation_matches(
+                    and self._in_page_evidence_matches(
                         last_transition_action, action
                     )
                     else None

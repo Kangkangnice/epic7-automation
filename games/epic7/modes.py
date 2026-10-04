@@ -385,7 +385,7 @@ RESUME_EXEMPT = {
 # 判定规则见 ``_assert_transition_stance_declared``：**打开开关、或进本名单，二选一**。
 # 漏了在 **import 阶段**就报错，不会等到实跑才发现某个动作点了不回头。
 #
-# ⚠️ 名单里标着「**已知欠债**」的三条是真缺判据，不是「用了别的机制」——
+# ⚠️ 名单里标着「**已知欠债**」的两条是真缺判据，不是「用了别的机制」——
 # 把缺口写在明处，比假装它不存在强。它们各自的补法写在理由里。
 TRANSITION_EXEMPT = {
     "arena": (
@@ -413,12 +413,6 @@ TRANSITION_EXEMPT = {
     "fodder": (
         "⚠️ **已知欠债**：走基类主循环，但 `FodderAction` 只有 `name` / `point` 两个字段，"
         "**完全没有判据** —— 漏写不会有任何报错。补法见 docs/TRANSITION_CONTRACTS.md。"
-    ),
-    "hero_synthesis": (
-        "⚠️ **已知欠债**：走基类主循环，绝大多数动作有判据，但开关**打不开** —— "
-        "PC 客户端分支有 3 处 `source_page=\"\"`、另有 1 处 `target_pages=()`，"
-        "一开这些动作当场被拦。它的页内证据字段名是 `source_observation`，"
-        "机器认的是 `in_page_evidence`，两者要先对齐。"
     ),
     "story": (
         "走基类主循环、未开开关，但**不需要**：`StoryAction` 全项目只有 1 个构造点"
@@ -714,7 +708,22 @@ MODE_SPECS = {
             mode="labyrinth_stone",
             steps=(
                 NavigationStep(
-                    "lobby", ("battle_menu",), "lobby_battle", "进入战斗菜单"
+                    # 两个落点都接：游戏**记住**上次停在哪个标签页，跑过远征之后
+                    # 从大厅点进来就是赛季页。2026-10-04 每日任务这第一跳只认
+                    # battle_menu，落到 season_menu 后没有下一步可走，干等 92 秒
+                    # 报「导航开始前应处于[大厅]」。远征那条链早就这么写了。
+                    "lobby",
+                    ("battle_menu", "season_menu"),
+                    "lobby_battle",
+                    "进入战斗菜单",
+                ),
+                # 迷宫入口只在「一般」页；从赛季页切回就这一步。
+                NavigationStep(
+                    "season_menu",
+                    ("battle_menu",),
+                    "battle_general_tab",
+                    "切回一般页",
+                    skip_if_observed=("battle_menu",),
                 ),
             ),
             ready_note="战斗菜单「一般」页已就绪",

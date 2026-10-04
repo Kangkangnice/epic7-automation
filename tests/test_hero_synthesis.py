@@ -1,5 +1,6 @@
 """英雄合成模式：页面判定、动作决策、安全护栏与完整流程测试。"""
 
+import ast
 import inspect
 import unittest
 from dataclasses import replace
@@ -9,7 +10,7 @@ from unittest.mock import patch
 
 import cv2
 import numpy as np
-from auto_game_unified.core.matcher import Match
+from auto_game_unified.core.matcher import Match, find_template, load_template
 from auto_game_unified.core.runtime import Runtime
 from auto_game_unified.core.supervisor import StableObservation
 from auto_game_unified.games.epic7.hero_synthesis import (
@@ -215,7 +216,7 @@ class CardSwitchRunnerTests(unittest.TestCase):
                 (1800, 591),
                 source_page="英雄列表",
                 target_pages=("英雄列表",),
-                source_observation=identity,
+                in_page_evidence=identity,
                 transition_kind="card_change",
             )
             runner.machine._last_screen = base
@@ -255,7 +256,7 @@ class CardSwitchRunnerTests(unittest.TestCase):
                 (1800, 591),
                 source_page="英雄列表",
                 target_pages=("英雄列表",),
-                source_observation=runner.machine._hero_identity_fingerprint(base),
+                in_page_evidence=runner.machine._hero_identity_fingerprint(base),
                 transition_kind="card_change",
             )
             runner.machine._last_screen = base
@@ -275,18 +276,18 @@ class CardSwitchRunnerTests(unittest.TestCase):
         previous = HeroAction(
             "next_card_old",
             (0, 0),
-            source_observation="old",
+            in_page_evidence="old",
             transition_kind="card_change",
         )
         changed = HeroAction(
             "next_card_new",
             (0, 0),
-            source_observation="new",
+            in_page_evidence="new",
         )
         same = HeroAction(
             "next_card_same",
             (0, 0),
-            source_observation="old",
+            in_page_evidence="old",
         )
 
         changed_detail = runner._transition_success_detail(previous, changed)
@@ -319,7 +320,7 @@ class CardSwitchRunnerTests(unittest.TestCase):
             (1800, 591),
             source_page="英雄列表",
             target_pages=("英雄列表",),
-            source_observation="same-copy",
+            in_page_evidence="same-copy",
             transition_kind="card_change",
         )
         runner.machine._last_screen = base
@@ -345,7 +346,7 @@ class CardSwitchRunnerTests(unittest.TestCase):
             source_page="英雄列表",
             target_pages=("英雄列表",),
             reason="当前英雄为SSS，跳过",
-            source_observation="hero-abc",
+            in_page_evidence="hero-abc",
             transition_kind="card_change",
         )
         runner.machine._last_screen = base
@@ -370,14 +371,14 @@ class CardSwitchRunnerTests(unittest.TestCase):
             (0, 0),
             source_page="英雄列表",
             target_pages=("英雄列表",),
-            source_observation="old",
+            in_page_evidence="old",
             transition_kind="card_change",
         )
         current = HeroAction(
             "next_card_new",
             (0, 0),
             source_page="英雄列表",
-            source_observation="new",
+            in_page_evidence="new",
         )
         runner.machine._last_screen = base
 
@@ -400,7 +401,7 @@ class CardSwitchRunnerTests(unittest.TestCase):
             (1800, 591),
             source_page="英雄列表",
             target_pages=("英雄列表",),
-            source_observation="original",
+            in_page_evidence="original",
             transition_kind="card_change",
         )
         runner.machine._last_screen = base
@@ -430,14 +431,14 @@ class CardSwitchRunnerTests(unittest.TestCase):
             (1800, 591),
             source_page="英雄列表",
             reason="当前英雄非SSS但刻印按钮无红点，跳过，详情指纹=old",
-            source_observation="hero-a",
+            in_page_evidence="hero-a",
         )
         new = HeroAction(
             "next_card_new",
             (1800, 591),
             source_page="英雄列表",
             reason="当前英雄非SSS但刻印按钮无红点，跳过，详情指纹=new",
-            source_observation="hero-a",
+            in_page_evidence="hero-a",
         )
         stable = StableObservation(required=2)
         outcome = (HeroSynthState.HERO_LIST, 0)
@@ -466,14 +467,14 @@ class CardSwitchRunnerTests(unittest.TestCase):
             (1800, 591),
             source_page="英雄列表",
             reason="当前英雄为SSS，跳过，详情指纹=a",
-            source_observation="hero-a",
+            in_page_evidence="hero-a",
         )
         hero_b = HeroAction(
             "next_card_b",
             (1800, 591),
             source_page="英雄列表",
             reason="当前英雄为SSS，跳过，详情指纹=b",
-            source_observation="hero-b",
+            in_page_evidence="hero-b",
         )
         stable = StableObservation(required=2)
         outcome = (HeroSynthState.HERO_LIST, 0)
@@ -629,18 +630,18 @@ class FrameScopedEvidenceTests(unittest.TestCase):
         previous = HeroAction(
             "add_material_0_2",
             (0, 0),
-            source_observation="slots=0;rows=450,600",
+            in_page_evidence="slots=0;rows=450,600",
             transition_kind="material_change",
         )
         unchanged = HeroAction(
             "add_material_0_2",
             (0, 0),
-            source_observation="slots=0;rows=450,600",
+            in_page_evidence="slots=0;rows=450,600",
         )
         changed = HeroAction(
             "add_material_1_1",
             (0, 0),
-            source_observation="slots=1;rows=600",
+            in_page_evidence="slots=1;rows=600",
         )
 
         self.assertFalse(
@@ -649,6 +650,67 @@ class FrameScopedEvidenceTests(unittest.TestCase):
         self.assertTrue(
             runner._material_transition_completed(previous, changed)
         )
+
+    def test_material_transition_survives_a_silent_next_frame(self):
+        """判据沉默（这一帧生不出动作）时，转场仍要能判出成功。
+
+        复刻 2026-10-04 07:22 的卡死形态：点完材料后，下一页 SSS 徽记落进死区
+        ⇒ `next_action` 返回 None ⇒ 原来从动作对象取观察值取不到 ⇒ 转场**永远**
+        判不出成功，一路重试到超时。修法 = 机器每帧现算的
+        `_current_material_observation` 兜底。
+        """
+        m = machine()
+        runner = HeroSynthRunner(
+            m,
+            Runtime(lambda: None, lambda *_: None),
+            sleep=lambda _: None,
+        )
+        previous = HeroAction(
+            "add_material_0_2",
+            (0, 0),
+            in_page_evidence="slots=0;rows=450,600",
+            transition_kind="material_change",
+        )
+
+        # ① 现算值也没算出来（还没进过刻印页）⇒ 判不出成功，不许瞎认。
+        m._current_material_observation = None
+        self.assertFalse(runner._material_transition_completed(previous, None))
+
+        # ② 槽位从 0 变 1 ⇒ 必须判成功，**哪怕 current_action 是 None**。
+        m._current_material_observation = "slots=1;rows=600"
+        self.assertTrue(runner._material_transition_completed(previous, None))
+
+        # ③ 槽位没变、旧材料行还在 ⇒ 判不出（防止「有值就算成功」的过度放宽）。
+        m._current_material_observation = "slots=0;rows=450,600"
+        self.assertFalse(runner._material_transition_completed(previous, None))
+
+        # ④ 旧材料行消失也算成功（与原口径一致）。
+        m._current_material_observation = "slots=0;rows=600"
+        self.assertTrue(runner._material_transition_completed(previous, None))
+
+    def test_material_transition_does_not_downgrade_when_action_is_present(self):
+        """动作对象在时**仍以它为准** —— 新兜底不许改变正常路径的口径。"""
+        m = machine()
+        runner = HeroSynthRunner(
+            m,
+            Runtime(lambda: None, lambda *_: None),
+            sleep=lambda _: None,
+        )
+        previous = HeroAction(
+            "add_material_0_2",
+            (0, 0),
+            in_page_evidence="slots=0;rows=450,600",
+            transition_kind="material_change",
+        )
+        unchanged = HeroAction(
+            "add_material_0_2",
+            (0, 0),
+            in_page_evidence="slots=0;rows=450,600",
+        )
+
+        # 现算值说「变了」，但动作对象说「没变」⇒ 必须以动作对象为准，判不出。
+        m._current_material_observation = "slots=1;rows=600"
+        self.assertFalse(runner._material_transition_completed(previous, unchanged))
 
 
 class TransmitTransactionTests(unittest.TestCase):
@@ -687,7 +749,7 @@ class TransmitTransactionTests(unittest.TestCase):
             (1720, 502),
             source_page="传送选择",
             target_pages=("传送选择",),
-            source_observation="grid=0",
+            in_page_evidence="grid=0",
             transition_kind="transmit_selection",
         )
         abort = HeroAction(
@@ -951,10 +1013,32 @@ class TemplateTests(unittest.TestCase):
     def test_sss_templates_use_tight_user_crops_and_strict_rating_threshold(self):
         templates = build_hero_templates(TEMPLATES)
         self.assertEqual((90, 124), templates.rating_sss.shape[:2])
-        self.assertEqual((38, 64), templates.sss_material.shape[:2])
+        # 「SSS 材料」徽记两张候选：前排展开的大卡按 100% 画、后排被压暗的小卡约 90%。
+        self.assertEqual((38, 64), templates.sss_material[0].shape[:2])
+        self.assertEqual((34, 58), templates.sss_material[1].shape[:2])
         machine_value = HeroSynthStateMachine(templates)
         self.assertGreaterEqual(machine_value._RATING_SSS_MIN, 0.90)
         self.assertEqual(0.80, machine_value._SSS_MATERIAL_MIN)
+
+    def test_sss_material_candidates_match_the_evidence_profile(self):
+        """候选模板必须与证据画像**逐条对得上**（数量 + 文件名 + 像素）。
+
+        防的是「画像说有两张、加载器只读一张」这种口径漂移 —— 本路线踩过同类坑
+        （`_OPTIONAL_TEMPLATES` 与加载器并行维护）。路径只留证据画像一个来源。
+        """
+        templates = build_hero_templates(TEMPLATES)
+        atom = build_hero_evidence(TEMPLATES).atom("sss_material")
+        declared = (atom.template_path, *atom.alt_template_paths)
+
+        self.assertEqual(len(declared), len(templates.sss_material))
+        for relative, loaded in zip(
+            declared, templates.sss_material, strict=True
+        ):
+            self.assertTrue((TEMPLATES / relative).is_file(), relative)
+            self.assertTrue(
+                np.array_equal(loaded, load_template(str(TEMPLATES / relative))),
+                relative,
+            )
 
     def test_transmit_reward_templates_are_tight_and_do_not_cross_match(self):
         templates = build_hero_templates(TEMPLATES)
@@ -1427,13 +1511,15 @@ class HeroListTransitionTests(unittest.TestCase):
         m = machine(verify_filter=True)
         m.next_action(fixture("list_reddot"))
         screen = fixture("imprint_up_cards").copy()
-        match = m._locate(
+        match = find_template(
             screen,
-            "sss_material",
+            m.templates.sss_material[0],
             -1.0,
-            region_override=m._MATERIAL_SSS_REGION,
+            region=m._MATERIAL_SSS_REGION,
+            reference_size=m._REFERENCE_SIZE,
         )
-        height, width = m.templates.sss_material.shape[:2]
+        self.assertIsNotNone(match)
+        height, width = m.templates.sss_material[0].shape[:2]
         left = match.center[0] - width // 2
         top = match.center[1] - height // 2
         border = 4
@@ -1496,7 +1582,7 @@ class HeroListTransitionTests(unittest.TestCase):
 
         action = settled_next(m, screen)
 
-        self.assertEqual(m._hero_identity_fingerprint(screen), action.source_observation)
+        self.assertEqual(m._hero_identity_fingerprint(screen), action.in_page_evidence)
         self.assertEqual("card_change", action.transition_kind)
 
     def test_open_imprint_retry_identity_ignores_list_animation(self):
@@ -1511,7 +1597,7 @@ class HeroListTransitionTests(unittest.TestCase):
         self.assertEqual("open_imprint", first.name)
         self.assertEqual("open_imprint", second.name)
         self.assertNotEqual(m._detail_fingerprint(original), m._detail_fingerprint(animated))
-        self.assertEqual(first.source_observation, second.source_observation)
+        self.assertEqual(first.in_page_evidence, second.in_page_evidence)
 
     def test_confirmed_motion_is_consumed_after_switch(self):
         runner = HeroSynthRunner(
@@ -1520,12 +1606,12 @@ class HeroListTransitionTests(unittest.TestCase):
         previous = HeroAction(
             "next_card_old",
             (0, 0),
-            source_observation="name=A|selected_row=1",
+            in_page_evidence="name=A|selected_row=1",
         )
         current = HeroAction(
             "next_card_new",
             (0, 0),
-            source_observation="name=A|selected_row=1",
+            in_page_evidence="name=A|selected_row=1",
         )
         runner._card_switch_motion_confirmed = True
 
@@ -1539,12 +1625,12 @@ class HeroListTransitionTests(unittest.TestCase):
         previous = HeroAction(
             "next_card_old",
             (0, 0),
-            source_observation="name=A|selected_row=1",
+            in_page_evidence="name=A|selected_row=1",
         )
         current = HeroAction(
             "next_card_old",
             (0, 0),
-            source_observation="name=A|selected_row=1",
+            in_page_evidence="name=A|selected_row=1",
         )
 
         self.assertFalse(runner._card_transition_completed(previous, current))
@@ -1800,19 +1886,206 @@ class ImprintDecisionTests(unittest.TestCase):
         self.assertEqual("abort_imprint_to_transmit", action.name)
         self.assertFalse(action.name.startswith("add_material_"))
 
-    def test_missing_sss_template_fails_closed_without_clicking_material(self):
-        """失去 SSS 检测能力时必须判未知，不能把低哨兵值当成非 SSS。"""
-        templates = replace(build_hero_templates(TEMPLATES), sss_material=None)
-        m = HeroSynthStateMachine(templates)
+    def test_behind_card_sss_material_is_recognized_by_its_own_candidate(self):
+        """「后排小卡」上的 SSS 徽记只有前排的 ~90%，必须照样认出来。
+
+        现场（夹具 ``imprint_sss_material_behind_card_20261004``，2026-10-04 07:22
+        转场超时那一刻）：前排展开的大卡是普通材料，**SSS 徽记盖在它后面那张被压暗
+        的小卡上**，整体比前排小约 10%。
+
+        只按前排剪的那张模板在这一帧只量到 **0.5957** —— 高于「明确排除」线 0.55、
+        低于 SSS 门槛 0.80，正好落进 0.55~0.80 的不确定带。后果不是「点错」而是
+        「沉默」：`next_action()` 直接返回 None，不打分、不报警；转场验收要靠
+        「下一个动作」的观察值来比对，拿不到 ⇒ 90 秒转场超时 ⇒ 回大厅又认不出页面
+        ⇒ 整条流程停在刻印页直到人手动停。同形态在 2026-09-03 14:05 就有，跨了一个月。
+
+        ⚠️ 断言必须写到**依据**（分数 / 分类），只断言「动作对不对」抓不住判据失效：
+        这条路径在降级时**照样能返回 None 而不报错**。
+
+        ⚠️ 模板与夹具刻意**跨帧**：候选模板从 ``..._behind_card_20261003`` 上剪，
+        这条断言用 ``..._20261004`` 验收（两帧是不同次抓屏，逐像素并不相同）。
+        """
+        screen = fixture("imprint_sss_material_behind_card_20261004")
+        m = machine()
         m._active_card_observation = "test-card"
         m.state = HeroSynthState.IMPRINT_ADD
+
+        score = m._material_page_sss_score(screen)
+
+        self.assertGreaterEqual(
+            score, m._SSS_MATERIAL_MIN, f"整页 SSS 分数 {score:.4f} 未过阈"
+        )
+        self.assertIs(m._classify_material_page(screen), SafetyClass.SSS)
+        action = m.next_action(screen)
+        self.assertIsNotNone(action, "判出 SSS 之后仍然不出手")
+        self.assertEqual("abort_imprint_to_transmit", action.name)
+        self.assertFalse(action.name.startswith("add_material_"))
+        self.assertEqual("刻印SSS材料", m._confirmed_page)
+
+    def test_ordinary_material_pages_stay_out_of_sss_after_adding_candidate(self):
+        """加了「后排小卡」候选之后，普通材料页一张都不许被误判成 SSS。
+
+        只证明「认得准」不够：候选模板比原来那张小 10%，越小越容易误伤。
+        这里锁住的是**负样本的判定结果**（不是分数高低）。
+        """
+        m = machine()
+
+        for name in (
+            "imprint_up_cards_no_sss",
+            "imprint_up_one_card_no_sss",
+            "imprint_added",
+            "imprint_after_synth",
+        ):
+            with self.subTest(fixture=name):
+                screen = fixture(name)
+                self.assertIs(
+                    m._classify_material_page(screen),
+                    SafetyClass.NON_SSS,
+                    f"{name} 被误判为 SSS 或落入不确定带",
+                )
+
+    def test_small_card_sss_material_is_recognized_by_multiscale(self):
+        """徽记被画到**比模板小 20%** 时也必须认出来（2026-10-04 08:36 现场）。
+
+        现场：进「刻印加材料」页后右侧三张材料卡，SSS 徽记在**最下面那张被压暗的
+        小卡**上 —— 整张卡连徽记只有模板的约 **80%**（核心宽 45，模板 56）。
+        只按原尺寸匹配量到 **0.5928**，落进 0.55~0.80 死区 ⇒ ``next_action()``
+        返回 None、日志一行不出、刻印页干等 90 秒超时（``timeout_imprint_add``）。
+
+        为什么不能靠「再补一张模板」解决：同一枚徽记已实测到核心宽 **56 / 50 / 45**
+        三档，画多大取决于它排在材料列表第几位，而列表里有几张材料是动态的
+        ⇒ 档位补不完。这里锁的是**多尺度扫描**这条路。
+
+        ⚠️ 断言写到**依据**：除了断言判成 SSS，还断言「只按 1.00 倍确实量不到」——
+        否则把多尺度退化回单尺度时，这条测试会照样绿（正是上次没抓到的原因）。
+        """
+        screen = fixture("imprint_sss_material_small_card_20261004")
+        m = machine()
+        m._active_card_observation = "test-card"
+        m.state = HeroSynthState.IMPRINT_ADD
+
+        inset = m._SSS_TEMPLATE_INSET
+        region = m._region("sss_material")
+        single_scale = max(
+            match.score
+            for candidate in m.templates.sss_material
+            if (
+                match := find_template(
+                    screen,
+                    candidate[inset:-inset, inset:-inset],
+                    -1.0,
+                    region=region,
+                    reference_size=m._REFERENCE_SIZE,
+                )
+            )
+            is not None
+        )
+        score = m._material_page_sss_score(screen)
+
+        self.assertLess(
+            single_scale,
+            m._SSS_MATERIAL_MIN,
+            f"1.00 倍档竟然量到 {single_scale:.4f}，这条夹具已经不是小卡现场了",
+        )
+        self.assertGreaterEqual(
+            score, m._SSS_MATERIAL_MIN, f"多尺度 SSS 分数 {score:.4f} 仍未过阈"
+        )
+        self.assertIs(m._classify_material_page(screen), SafetyClass.SSS)
+        action = m.next_action(screen)
+        self.assertIsNotNone(action, "判出 SSS 之后仍然不出手")
+        self.assertEqual("abort_imprint_to_transmit", action.name)
+        self.assertFalse(action.name.startswith("add_material_"))
+
+    def test_every_known_badge_size_is_recognized(self):
+        """已实测到的每一档徽记尺寸都要认出来：核心宽 56 / 50 / 45。
+
+        这不是「三种长相」而是**同一枚徽记被画成多大**。档位随它在材料列表里排
+        第几位变化，所以「有几种」由页面当时有几张材料决定 —— 这条测试是拿全部
+        已知档位一起兜底，新增一档就补一条 ``subTest``。
+        """
+        m = machine()
+        cases = (
+            ("imprint_sss_material", "核心宽 56：展开的大卡，模板原尺寸"),
+            ("imprint_sss_material_behind_card_20261003", "核心宽 50：后排被压暗的小卡"),
+            ("imprint_sss_material_behind_card_20261004", "核心宽 50：同上，另一次抓屏"),
+            ("imprint_sss_material_small_card_20261004", "核心宽 45：列表第三张，最小"),
+        )
+
+        for name, why in cases:
+            with self.subTest(fixture=name, why=why):
+                screen = fixture(name)
+                score = m._material_page_sss_score(screen)
+                self.assertGreaterEqual(
+                    score, m._SSS_MATERIAL_MIN, f"{name}（{why}）只量到 {score:.4f}"
+                )
+                self.assertIs(
+                    m._classify_material_page(screen), SafetyClass.SSS, name
+                )
+
+    def test_multiscale_does_not_push_negative_pages_into_sss(self):
+        """多尺度放大了判据的宽容度，但一张负样本都不许被推进 SSS。
+
+        尺度越小越容易在随机纹理上蹭出高分，所以要同时锁住两处：
+        ① 材料页负样本；② **传送页** —— 传送页调用的是同一个打分函数（只是区域
+        不同），历史上是最容易被误伤的地方（``transmit_selected`` 换个区域就能
+        蹭到 0.96）。
+
+        ⚠️ 传送页必须走**生产口径**（``_transmit_target_card`` 定出的真实卡片 y），
+        不能自己穷举 y 去量 —— 穷举会把区域挪到能蹭到别处内容的位置，量出假误判。
+        """
+        m = machine()
+
+        for name in (
+            "imprint_up_cards_no_sss",
+            "imprint_up_one_card_no_sss",
+            "imprint_added",
+            "imprint_after_synth",
+            "imprint_sss_warning_popup",
+            "imprint_result_popup",
+        ):
+            with self.subTest(fixture=name):
+                self.assertIs(
+                    m._classify_material_page(fixture(name)),
+                    SafetyClass.NON_SSS,
+                    f"{name} 被多尺度推进了 SSS 或不确定带",
+                )
+
+        for name in ("transmit_select", "transmit_selected"):
+            with self.subTest(fixture=name):
+                screen = fixture(name)
+                card = m._transmit_target_card(screen)
+                self.assertIsNotNone(card, f"{name} 定位不到高亮卡")
+                self.assertIs(
+                    m._classify_transmit_target(screen, card),
+                    SafetyClass.NON_SSS,
+                    f"{name} 被多尺度推进了 SSS",
+                )
+
+    def test_missing_sss_template_is_refused_at_construction(self):
+        """失去 SSS 检测能力的状态**根本构造不出来**，不是「降级成未知继续跑」。
+
+        2026-10-03 起 `sss_material` 是必需模板：缺了在构造期就 `ValueError`。
+        它以前是可选的，缺了就静静判 `UNKNOWN` —— 判据没了却不报错，
+        正是「判据静默降级」这一类（同一天装备子页就是这么丢了半年）。
+        """
+        templates = replace(build_hero_templates(TEMPLATES), sss_material=None)
+
+        with self.assertRaises(ValueError) as caught:
+            HeroSynthStateMachine(templates)
+
+        self.assertIn("sss_material", str(caught.exception))
+
+    def test_unmeasurable_sss_score_is_unknown_not_non_sss(self):
+        """量不到 SSS 分数（哨兵值 -1.0）时必须判未知，不能当成「非 SSS」放行。
+
+        这是上面那条的**运行时**孪生兄弟：模板都在，但这一帧一个候选位置都没匹配上。
+        「模板缺失」已经在构造期被拦了，这里守的是「量到了、但没量着」。
+        """
+        m = machine()
         screen = fixture("imprint_sss_material")
 
-        for _ in range(4):
-            self.assertIsNone(m.next_action(screen))
-
-        self.assertIs(m.state, HeroSynthState.IMPRINT_ADD)
-        self.assertIs(m._classify_material_page(screen), SafetyClass.UNKNOWN)
+        with patch.object(m, "_material_page_sss_score", return_value=-1.0):
+            self.assertIs(m._classify_material_page(screen), SafetyClass.UNKNOWN)
 
     def test_sss_material_warning_is_closed_before_resuming_imprint(self):
         m = machine()
@@ -2159,7 +2432,7 @@ class TransmitDecisionTests(unittest.TestCase):
             action = m.next_action(fixture("transmit_selected"))
 
         self.assertEqual("start_transmit", action.name)
-        self.assertEqual("grid=1", action.source_observation)
+        self.assertEqual("grid=1", action.in_page_evidence)
 
     def test_transmit_strip_locator_finds_card(self):
         m = machine()
@@ -2229,6 +2502,119 @@ class TransmitDecisionTests(unittest.TestCase):
         self.assertNotEqual("close_reward", action.name)
 
 
+def _is_empty_literal(node: ast.AST) -> bool:
+    """静态判断一个表达式是不是「空」（``""`` / ``()`` / ``[]``）。
+
+    只认字面量：透传点（``_simulator_transition_action``）把契约当**必填关键字**
+    收下来再转手，用的是变量，静态看不出空不空 —— 但那里没有默认值，传不进来
+    就 ``TypeError``，所以不需要静态兜。
+    """
+    if isinstance(node, ast.Constant):
+        return not node.value
+    if isinstance(node, (ast.Tuple, ast.List, ast.Set)):
+        return not node.elts
+    return False
+
+
+def hero_action_contract_violations(source: str) -> list[tuple[int, str]]:
+    """列出源码里缺转场契约的 ``HeroAction(...)`` 构造点（行号 + 缺什么）。
+
+    契约口径同 ``runner_base._require_transition_contract``：``source_page`` 非空，
+    且 ``target_pages`` / ``in_page_evidence`` 至少一个非空。
+    """
+    violations: list[tuple[int, str]] = []
+    for node in ast.walk(ast.parse(source)):
+        if not isinstance(node, ast.Call):
+            continue
+        if not (isinstance(node.func, ast.Name) and node.func.id == "HeroAction"):
+            continue
+        keywords = {keyword.arg: keyword.value for keyword in node.keywords}
+        problems = []
+        source_page = keywords.get("source_page")
+        if source_page is None or _is_empty_literal(source_page):
+            problems.append("source_page")
+        targets = keywords.get("target_pages")
+        evidence = keywords.get("in_page_evidence")
+        if not (
+            (targets is not None and not _is_empty_literal(targets))
+            or (evidence is not None and not _is_empty_literal(evidence))
+        ):
+            problems.append("target_pages/in_page_evidence")
+        if problems:
+            violations.append((node.lineno, "、".join(problems)))
+    return violations
+
+
+class TransitionContractSwitchTests(unittest.TestCase):
+    """转场契约开关已打开（2026-10-04），且同页动作**真的有**验收依据。"""
+
+    def test_switch_is_on_and_the_route_left_the_exempt_list(self):
+        from auto_game_unified.games.epic7.modes import TRANSITION_EXEMPT
+
+        self.assertIs(True, HeroSynthRunner._REQUIRE_TRANSITION_CONTRACT)
+        self.assertNotIn(
+            "hero_synthesis",
+            TRANSITION_EXEMPT,
+            "开关开了就不该再挂在豁免名单里（二选一，不能两边都占）",
+        )
+
+    def test_switch_rejects_actions_without_a_contract(self):
+        """反向喂违规动作：缺哪样点名哪样，不许静默放行。"""
+        runner = HeroSynthRunner(
+            machine(),
+            Runtime(lambda: None, lambda *_: None),
+            sleep=lambda _: None,
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "source_page"):
+            runner._require_transition_contract(
+                HeroAction("x", (0, 0), source_page="", target_pages=("英雄列表",))
+            )
+        with self.assertRaisesRegex(RuntimeError, "in_page_evidence"):
+            runner._require_transition_contract(
+                HeroAction("y", (0, 0), source_page="刻印加材料", target_pages=())
+            )
+        # 同页动作**带证据**才算合法 —— 这正是本次对齐要解决的问题：
+        # 以前它们靠 target_pages 里塞当前页过检查，契约形同虚设。
+        runner._require_transition_contract(
+            HeroAction(
+                "z",
+                (0, 0),
+                source_page="刻印加材料",
+                target_pages=(),
+                in_page_evidence="slots=1;rows=600",
+            )
+        )
+
+    def test_material_actions_now_carry_in_page_evidence_on_real_fixtures(self):
+        """真夹具上：``material_change`` 动作必须带 ``in_page_evidence``。
+
+        这是「契约真管到那 12 个同页动作」的现场证据 —— 只断言开关值是抓不住的，
+        得看到证据串真的填进去了。
+        """
+        found = 0
+        fixture_dir = Path(__file__).resolve().parent / "fixtures" / "epic7_hero"
+        for path in sorted(fixture_dir.glob("*.png")):
+            screen = cv2.cvtColor(cv2.imread(str(path)), cv2.COLOR_BGR2RGB)
+            for state in HeroSynthState:
+                probe = machine()
+                probe.state = state
+                try:
+                    action = probe.next_action(screen)
+                except RuntimeError:
+                    continue
+                if action is None or action.transition_kind != "material_change":
+                    continue
+                found += 1
+                with self.subTest(fixture=path.name, state=state.value):
+                    self.assertTrue(
+                        action.in_page_evidence,
+                        f"{action.name} 是同页动作却没有 in_page_evidence",
+                    )
+
+        self.assertGreater(found, 0, "没有扫到任何 material_change 动作，素材或状态改过了")
+
+
 class GuardTests(unittest.TestCase):
     def test_hero_identity_ignores_animation_to_the_right_of_name(self):
         original = fixture("list_no_reddot")
@@ -2290,6 +2676,116 @@ class GuardTests(unittest.TestCase):
         action2 = m2.next_action(scaled)
         self.assertEqual("open_filter", action2.name)
         self.assertEqual((770, 96), action2.point)
+
+    def test_every_hero_action_construction_declares_its_transition_contract(self):
+        """每个 ``HeroAction`` 构造点都必须带转场契约（来源页 + 到哪去）。
+
+        为什么用静态检查而不是跑一遍夹具：跑夹具只覆盖**采样得到**的分支 ——
+        2026-10-03 审计发现的那 3 个缺契约动作（两处 ``open_filter``、刻印页那个
+        裸 ``return back``）跑遍 25 张夹具 × 全部状态都进不去，它们要特定的内部
+        上下文才触发。真出问题的恰恰是这些跑不到的角落。
+        """
+        source = (ROOT / "games" / "epic7" / "hero_synthesis.py").read_text(
+            encoding="utf-8"
+        )
+
+        # 先确认确实扫到了构造点，免得正则/AST 失配后「零违规」变成假绿。
+        self.assertGreaterEqual(source.count("HeroAction("), 6)
+        self.assertEqual([], hero_action_contract_violations(source))
+
+    def test_the_contract_checker_flags_a_blind_action(self):
+        """反向：违规定义喂给检查器必须被点名，否则上面那条测试是假绿。"""
+        source = (
+            "def f():\n"
+            "    return HeroAction('x', (1, 2), source_page='', target_pages=())\n"
+        )
+
+        violations = hero_action_contract_violations(source)
+
+        self.assertEqual(
+            [(2, "source_page、target_pages/in_page_evidence")], violations
+        )
+
+    def test_every_judgement_anchor_refuses_a_missing_template(self):
+        """每个判据锚点缺模板都必须在**构造期**报错，且错误消息点名是哪个。
+
+        反向输入：把每个锚点轮流置 ``None`` —— 就是旧代码里 ``if path.exists() else
+        None`` 在模板被删时给出的结果。名册取 ``evidence.atoms``（区域表/阈值表
+        的权威来源）。
+
+        为什么值得守：这 9 张里最危险的三组是覆盖层判据
+        （``sss_material_warning_*`` / ``imprint_result_*`` / ``transmit_reward_*``），
+        缺了会让「覆盖层必须先关掉」**静默失效**、点到覆盖层底下 —— 而合成
+        消耗材料，不可逆。跑夹具几乎看不出来，所以必须在这里拦。
+        """
+        templates = build_hero_templates(TEMPLATES)
+
+        for anchor in templates.evidence.atoms:
+            with self.assertRaises(ValueError, msg=anchor) as caught:
+                HeroSynthStateMachine(replace(templates, **{anchor: None}))
+            self.assertIn(anchor, str(caught.exception))
+
+    def test_sss_material_candidate_group_refuses_an_empty_tuple(self):
+        """候选模板**整组为空**也算「判据不存在」，同样要在构造期报错。
+
+        一个锚点现在可能登记多张候选模板（元组）。只写 ``value is None`` 拦不住
+        空元组 —— 那会让判据以「一张候选都没有」的形态静默消失，正是这一类缺陷。
+        """
+        templates = build_hero_templates(TEMPLATES)
+
+        with self.assertRaises(ValueError) as caught:
+            HeroSynthStateMachine(replace(templates, sss_material=()))
+
+        self.assertIn("sss_material", str(caught.exception))
+
+    def test_an_emptied_scale_set_stops_recognizing_the_small_badge(self):
+        """把尺度档位收成只剩 1.00 ⇒ 最小那一档**立刻认不出来**。
+
+        这不是重复 `test_small_card_...`：那条证明「现在能认」，这条证明
+        「能认**是因为**多尺度」—— 把尺度集合退化掉，它必须变红。
+        """
+        screen = fixture("imprint_sss_material_small_card_20261004")
+        m = machine()
+        m._SSS_TEMPLATE_SCALES = (1.00,)
+
+        score = m._material_page_sss_score(screen)
+
+        self.assertLess(
+            score,
+            m._SSS_MATERIAL_MIN,
+            f"尺度集合只剩 1.00 还量到 {score:.4f}，这条夹具已不能再证明多尺度有用",
+        )
+
+    def test_sss_template_scales_cover_the_base_size_and_stay_in_range(self):
+        """尺度档位：非空、含 1.00、落在 (0, 1]、从大到小。
+
+        空档位 == 多尺度整个消失，判据退回「只按原尺寸量」（08:36 的故障形态）；
+        丢掉 1.00 == 模板原尺寸那一档没人覆盖。两条都只能靠人记得，所以要钉住。
+        """
+        scales = HeroSynthStateMachine._SSS_TEMPLATE_SCALES
+
+        self.assertTrue(scales, "SSS 尺度档位为空，多尺度扫描等于没有")
+        self.assertIn(1.00, scales, "尺度档位里没有 1.00，模板原尺寸那一档没人覆盖")
+        self.assertTrue(
+            all(0.0 < scale <= 1.0 for scale in scales),
+            f"尺度档位必须落在 (0, 1]，实际 {scales}",
+        )
+        self.assertEqual(
+            tuple(sorted(scales, reverse=True)), scales, "尺度档位应当从大到小"
+        )
+
+    def test_back_arrow_lookup_returns_a_point_and_not_an_action(self):
+        """返回箭头只给坐标：契约必须由调用方声明，不能自带一个裸动作。
+
+        历史上它返回一个裸 ``HeroAction``，于是有个调用点顺手 ``return back`` ——
+        那个「返回」点完不回头看，没生效也没人知道。
+        """
+        m = machine(verify_filter=True)
+
+        point = m._back_point(fixture("imprint_after_synth"))
+
+        self.assertIsInstance(point, tuple)
+        self.assertEqual(2, len(point))
 
 
 class ModeRegistrationTests(unittest.TestCase):
@@ -2389,6 +2885,126 @@ class RunnerFlowTests(unittest.TestCase):
         self.assertIn("SSS最高分=", joined)
         self.assertIn("未知Up材料=0", joined)
 
+    def test_imprint_add_wait_emits_a_ten_second_heartbeat(self):
+        """「刻印加材料」页判不出结果时，日志必须**当场出声**，不能空等 90 秒。
+
+        2026-10-04 08:36 现场：08:34:30 进页 → 08:36:02 超时，中间**一行日志都没有** ——
+        判据落进死区后 `next_action()` 直接返回 None（不出手、不打分、不报警），
+        人只能事后翻现场帧才知道卡在哪一档。这条心跳把「卡住」变成立刻可见。
+
+        复现方式：把尺度档位收成 `(1.00,)`，那张 45 档现场帧就落回 0.55~0.80 死区 ——
+        和 08:36 卡死时**同一个形态**（`SSS页评级=unknown`、`SSS最高分≈0.59`、无动作）。
+
+        ⚠️ 断言写到**依据**（评级 / 分数确实进了日志），不是「有没有日志」——
+        心跳打出来但内容是空的，等于没打。
+        """
+        clock = FakeClock()
+        logs = []
+        m = machine()
+        m.state = HeroSynthState.IMPRINT_ADD
+        m._SSS_TEMPLATE_SCALES = (1.00,)
+        screen = fixture("imprint_sss_material_small_card_20261004")
+        runner = HeroSynthRunner(
+            m,
+            Runtime(
+                lambda: screen,
+                lambda _: None,
+                emit=logs.append,
+                monotonic=clock,
+            ),
+            sleep=clock.sleep,
+        )
+        stable = StableObservation(required=2)
+
+        # 首帧只记基线（返回 NOT_STABLE），第二帧才是「稳定但没动作」。
+        runner._stable_next_action(screen, stable)
+        self.assertIsNone(
+            runner._stable_next_action(screen, stable),
+            "这张画面本该判不出结果（死区），素材已经不是卡死形态了",
+        )
+
+        heartbeat = [log for log in logs if "刻印页等待" in log]
+        self.assertTrue(heartbeat, "\n".join(logs))
+        self.assertIn("SSS页评级=unknown", heartbeat[0])
+        self.assertIn("SSS最高分=0.59", heartbeat[0])
+        self.assertIn("槽位结构=1", heartbeat[0])
+
+        settled = len(heartbeat)
+        runner._stable_next_action(screen, stable)
+        self.assertEqual(
+            settled,
+            len([log for log in logs if "刻印页等待" in log]),
+            "10 秒内重复打了心跳",
+        )
+
+        clock.sleep(10)
+        runner._stable_next_action(screen, stable)
+        self.assertEqual(
+            settled + 1,
+            len([log for log in logs if "刻印页等待" in log]),
+            "过了 10 秒却不再打心跳",
+        )
+
+    def test_silent_wait_saves_a_frame_once_and_survives_a_disk_failure(self):
+        """等判据出货时留一张现场帧；只留首帧；存不下来也不许炸。
+
+        判据沉默的形态是「什么都不做」⇒ 不会走到超时分支 ⇒ 一张图都不会留。
+        2026-10-04 那次能挖出 0.593 纯属侥幸（它恰好超时了）；沉默若发生在转场
+        验收里（走「重试 4 次」的正常路径），就彻底盲了。
+        """
+        from pathlib import Path as _Path
+        import tempfile
+
+        clock = FakeClock()
+        logs = []
+        m = machine()
+        m.state = HeroSynthState.IMPRINT_ADD
+        m._SSS_TEMPLATE_SCALES = (1.00,)
+        screen = fixture("imprint_sss_material_small_card_20261004")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            runtime = Runtime(
+                lambda: screen,
+                lambda _: None,
+                emit=logs.append,
+                monotonic=clock,
+                diagnostic_dir=_Path(tmp),
+            )
+            runner = HeroSynthRunner(m, runtime, sleep=clock.sleep)
+            stable = StableObservation(required=2)
+
+            runner._stable_next_action(screen, stable)
+            runner._stable_next_action(screen, stable)
+            # 再等两轮（跨过 10 秒节流），帧仍然只该有一张。
+            clock.sleep(10)
+            runner._stable_next_action(screen, stable)
+            clock.sleep(10)
+            runner._stable_next_action(screen, stable)
+
+            saved = sorted(_Path(tmp).glob("*judgement_silent*.png"))
+            self.assertEqual(
+                1, len(saved), f"应当只留首帧，实际 {[p.name for p in saved]}"
+            )
+
+        # ② 诊断目录没配 ⇒ 静默跳过，不许打断主循环。
+        no_dir_logs = []
+        m2 = machine()
+        m2.state = HeroSynthState.IMPRINT_ADD
+        m2._SSS_TEMPLATE_SCALES = (1.00,)
+        runner2 = HeroSynthRunner(
+            m2,
+            Runtime(
+                lambda: screen,
+                lambda _: None,
+                emit=no_dir_logs.append,
+                monotonic=clock,
+            ),
+            sleep=clock.sleep,
+        )
+        stable2 = StableObservation(required=2)
+        runner2._stable_next_action(screen, stable2)
+        self.assertIsNone(runner2._stable_next_action(screen, stable2))
+
     def test_transition_timeout_reports_expected_page_and_detector_evidence(self):
         clock = FakeClock()
         source = fixture("list_reddot")
@@ -2456,7 +3072,7 @@ class RunnerFlowTests(unittest.TestCase):
                 (1800, 591),
                 source_page="英雄列表",
                 target_pages=("英雄列表",),
-                source_observation=f"hero-{index}",
+                in_page_evidence=f"hero-{index}",
                 transition_kind="card_change",
             )
             for index in range(16)
@@ -2665,7 +3281,7 @@ class RunnerFlowTests(unittest.TestCase):
         self.assertTrue(any("动作=open_imprint" in line for line in clicked))
         self.assertFalse(any("动作=next_card" in line for line in clicked))
 
-    def test_transition_retry_requires_same_source_observation(self):
+    def test_transition_retry_requires_same_in_page_evidence(self):
         runner = HeroSynthRunner(
             machine(verify_filter=True),
             Runtime(lambda: None, lambda *_: None),
@@ -2674,16 +3290,16 @@ class RunnerFlowTests(unittest.TestCase):
             "open_imprint",
             (0, 0),
             source_page="英雄列表",
-            source_observation="hero-a",
+            in_page_evidence="hero-a",
         )
         current = HeroAction(
             "open_imprint",
             (0, 0),
             source_page="英雄列表",
-            source_observation="hero-b",
+            in_page_evidence="hero-b",
         )
 
-        self.assertFalse(runner._source_observation_matches(previous, current))
+        self.assertFalse(runner._in_page_evidence_matches(previous, current))
 
     def test_next_card_retry_window_is_short(self):
         runner = HeroSynthRunner(

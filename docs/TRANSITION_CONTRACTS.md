@@ -298,7 +298,7 @@
 |---|---|---|---|---|---|
 | `arena` | 竞技场 | `Action.source_state` / `target_states`；缺任一直接报错 | 有 | 有 | 无（本项目最严） |
 | `expedition` | 远征 | `ExpeditionAction.source_page` / `target_pages` ＋ 基类 `_execute_transition`（缺任一直接 raise） | 有 | 有 | 无 |
-| `hero_synthesis` | 英雄合成 | `target_pages` | 有 | 有 | 无 |
+| `hero_synthesis` | 英雄合成 | `source_page` + `target_pages` / `in_page_evidence`（**第五条打开机器强制**，2026-10-04） | 有 | 有 | 无（2026-10-03 补齐两处 `open_filter` 与刻印页那个裸 `return back`；2026-10-04 字段名从自造的 `source_observation` 对齐到 `in_page_evidence` 后才打开开关 —— 不对齐时那 12 个同页动作「形式合规、实质没用」。`tests/test_hero_synthesis.py::GuardTests` 的 AST 静态守 + `TransitionContractSwitchTests` 钉住） |
 | `story` | 主线 | `target_pages` | 有 | 有 | 无 |
 | `world_boss` | 世界首领战 | `source_page` + `target_pages` / `in_page_evidence`（**第二条打开机器强制**，2026-09-24） | 有 | 有 | 无（此前同页动作的页内证据只写在代码里、没登记成字段） |
 | `shop_refresh` | 刷书签 | 自有 `_wait_stable`：点完等到目标页稳定才放行 | 有 | 有 | 无 |
@@ -356,8 +356,29 @@ class NewRouteRunner(ModeRunnerBase):
 **表态 2：进豁免名单**（`games/epic7/modes.py::TRANSITION_EXEMPT`）
 
 写明「用自己的什么机制验收」，例如竞技场用 `source_state` / `target_states` 且缺合同直接 `raise`、
-刷书签用自己的 `_wait_stable`。⚠️ 名单里标着**已知欠债**的条目（`survivor` / `fodder` /
-`hero_synthesis`）是真缺判据，不是「用了别的机制」—— 写在那里是为了让缺口在明处。
+刷书签用自己的 `_wait_stable`。⚠️ 名单里标着**已知欠债**的条目（`survivor` / `fodder`）
+是真缺判据，不是「用了别的机制」—— 写在那里是为了让缺口在明处。
+
+`hero_synthesis` 曾经也在这份欠债名单里，**2026-10-03 移出**：那 3 个缺契约的动作补齐后，
+它的每个动作都带 `source_page` ＋ `target_pages`。它一度留在豁免名单里，理由是
+「判据齐全、开关尚未打开」＋「页内证据字段名 `source_observation` 与机器认的
+`in_page_evidence` 还没对齐」——**性质不同**，不是欠债。
+
+✅ **2026-10-04 已从豁免名单整条删除**（第五个打开机器强制的路线，继
+`knights_donation` / `world_boss` / `sanctuary` / `labyrinth_stone` 之后）：
+先做**字段名对齐**（`HeroAction.source_observation` 删除，改用基类 `RouteAction.in_page_evidence`，
+全文件 34 处 + 测试 33 处 + `runner_base` 2 处），再打开 `_REQUIRE_TRANSITION_CONTRACT = True`。
+
+⚠️ **为什么要先对齐字段名 —— 不对齐时开关「开着也管不到」那 12 个同页动作**：
+开关读的是基类的 `in_page_evidence`，而英雄合成当时用的是自造名 `source_observation`。
+名字不齐时，12 个 `material_change` 同页动作只能靠 `target_pages=("刻印加材料", "刻印SSS材料")`
+里**塞当前页**过检查 —— 形式合规，实质没用（本页永远在集合里，分不出「点了没生效」
+和「点了生效了」）。对齐后这 12 个动作**真的带上了** `in_page_evidence='slots=N;rows=…'`
+（槽位数 + 材料行位置，纯色块统计、不依赖任何判据模板）。
+
+这条给出一个通用检查动作：**打开某条路线的开关之前，先跑一遍那个检查函数，别只看字段填没填**
+——尤其要确认「路线自造的证据字段名」和「开关读的字段名」是不是同一个。`world_boss`
+打开时踩的是另一种同构坑（`WorldBossAction` 连 `in_page_evidence` 字段都不存在）。
 
 **两道关同时存在**：
 
