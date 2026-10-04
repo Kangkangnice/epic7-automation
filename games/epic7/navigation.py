@@ -103,6 +103,7 @@ PAGE_LABELS = {
     "fodder_side_story": "支线故事",
     "hero_list": "英雄列表",
     "hero_equipment": "英雄装备子页",
+    "quick_menu": "快捷菜单",
     "story_ready": "主线入口",
     "arena_ready": "竞技场入口",
     "shop_refresh": "秘密商店",
@@ -171,7 +172,39 @@ class NavigationTemplates:
     lobby_arena: np.ndarray
     lobby_battle: np.ndarray
     lobby_hero: np.ndarray
-    hero_equipment_tab_active: Optional[np.ndarray]
+    # ---- 快捷菜单（2026-10-04 新增）----
+    #
+    # 背景：大厅右下角那条**横排快捷栏**（英雄 / 骑士团 / …）是**账号自己排的**，
+    # 不同账号位置不一样（用户原话：「这个是快捷栏，相当于」）。靠它进「英雄列表」
+    # 与「骑士团」在别的账号上会点错地方。
+    #
+    # 改走**右上角蓝色四格 → 快捷菜单 → 菜单里的入口**。用户确认菜单是**固定布局**
+    # （真机三张不同底页/不同时间的菜单帧实测：两个图标命中在**逐像素相同的中心**）。
+    #
+    # ``lobby_quick_menu_button`` —— 大厅右上那颗蓝四格（开菜单的按钮）。
+    # ⚠️ 它**不能**直接照抄迷宫那张 ``quick_menu_button``：那是另一个长相，
+    # 在大厅上只有 0.4834。而且大厅这颗左上角会挂**橙色未读角标**（角标里还可能带
+    # 数字，如「2」）⇒ 角标是**可变内容**，绝不能裁进模板。裁法：**从角标下方起裁**
+    # （只取四格的下 3/4），实测干净帧 1.0000 / 带角标帧 0.9983 ⇒ 角标免疫，一张模板够。
+    lobby_quick_menu_button: np.ndarray
+    # 快捷菜单第 1 行最右那颗「英雄」（进英雄列表）。
+    #
+    # 这两颗**同时**也是「菜单已展开」的身份判据（``observe()`` 里两个都要命中）。
+    # ⚠️ 刻意**不用**那块大网格 ``quick_menu_grid_top``（迷宫那张）：它罩住整片菜单底图，
+    # 对底页不同 / 节日装饰浮层敏感 —— 实测三张菜单帧给出 1.0000 / 0.9978 / **0.7987**，
+    # 最后那张（`pet_gift`，菜单区上盖着一份节日礼物装饰）掉到 0.82 门槛之下。
+    # 两颗图标在同样三帧上分别有 0.997+ / 0.997，且**菜单专属**（全库次高仅 0.41/0.44）。
+    quick_menu_hero: np.ndarray
+    # 快捷菜单第 3 行中间那颗「骑士团」（进骑士团主页）。
+    # ⚠️ 它左上角也有个**蓝点**（未读角标）。模板从盾牌本体起裁，**零蓝点像素**。
+    quick_menu_knights: np.ndarray
+    # 装备子页（英雄界面左侧那个剑盾图标）的选中态。
+    # ⚠️ **必需模板，不是可选的**：它是 ``observe()`` 区分「英雄列表」与
+    # 「英雄装备子页」的**唯一依据**。历史上这里写成 ``Optional`` 并配
+    # ``if exists() else None``，模板被误删后判据**静默消失**、页面退化到靠
+    # 「管理装备」按钮撞轮廓去猜，2026-10-03 真机改版就直接认不出（unknown）。
+    # 判据型锚点必须 fail closed：模板没了要在加载期报错，而不是悄悄降级。
+    hero_equipment_tab_active: np.ndarray
     imprint_button_normal: np.ndarray
     exit_title: np.ndarray
     exit_cancel: np.ndarray
@@ -189,6 +222,13 @@ class NavigationTemplates:
     expedition_battle_title: np.ndarray
     expedition_season_tab: np.ndarray
     expedition_season_active: np.ndarray
+    # 「战斗」页左起第一格「一般」标签条（240x90，与「赛季」同尺寸、紧挨在其左侧）。
+    # 存在理由：游戏**记住**上次停在哪个标签页 —— 跑过远征（它要点「赛季」）之后，
+    # 下一次从大厅点进「战斗」会直接落在赛季页；而**迷宫入口只在「一般」页**。
+    # 2026-10-04 每日任务就卡在这里：迷宫的导航链只认 battle_menu，落到 season_menu
+    # 后干等 92 秒然后报「导航开始前应处于[大厅]」。这枚锚点是 season_menu →
+    # battle_menu 的唯一通道（远征那条链是反向的：battle_menu → season_menu）。
+    battle_general_tab: np.ndarray
     expedition_entry: np.ndarray
     expedition_home: np.ndarray
     lobby_story_click_offset: tuple[int, int]
@@ -249,10 +289,17 @@ def build_navigation_templates(template_root: Path) -> NavigationTemplates:
         lobby_arena=load_template(str(navigation / "lobby_arena.png")),
         lobby_battle=load_template(str(navigation / "lobby_battle.png")),
         lobby_hero=load_template(str(navigation / "lobby_hero.png")),
-        hero_equipment_tab_active=(
-            load_template(str(navigation / "hero_equipment_tab_active.png"))
-            if (navigation / "hero_equipment_tab_active.png").exists()
-            else None
+        # 快捷菜单三张：大厅蓝四格 + 两个菜单入口（入口同时兼作「菜单已展开」判据），
+        # 见 ``NavigationTemplates`` 上那段的说明。
+        lobby_quick_menu_button=load_template(
+            str(navigation / "lobby_quick_menu_button.png")
+        ),
+        quick_menu_hero=load_template(str(navigation / "quick_menu_hero.png")),
+        quick_menu_knights=load_template(str(navigation / "quick_menu_knights.png")),
+        # 直接 load_template：模板缺失就抛 FileNotFoundError（fail closed）。
+        # 这里**不许**再写 ``if path.exists() else None`` —— 那会让判据静默降级。
+        hero_equipment_tab_active=load_template(
+            str(navigation / "hero_equipment_tab_active.png")
         ),
         imprint_button_normal=load_template(
             str(template_root / "hero" / "imprint_button_normal.png")
@@ -283,6 +330,11 @@ def build_navigation_templates(template_root: Path) -> NavigationTemplates:
         expedition_season_active=load_template(
             str(navigation / "expedition_season_active.png")
         ),
+        # 源帧：今天 08:17 卡在赛季栏的真机帧（见 ``battle_general_tab`` 注释里的
+        # 事故经过）。模板取的是「一般」处于**未选中**时的样子 —— 也正是需要点它
+        # 时它的样子。选中态同格实测只有 0.3532（``battle_menu`` 夹具），
+        # 236 张夹具全扫：过阈的只有两张赛季栏页（1.0000 / 0.8668），分离余量充足。
+        battle_general_tab=load_template(str(navigation / "battle_general_tab.png")),
         expedition_entry=load_template(str(navigation / "expedition_entry.png")),
         expedition_home=load_template(str(navigation / "expedition_home.png")),
         lobby_story_click_offset=(65, 11),
@@ -359,7 +411,9 @@ class Epic7Navigator:
         "lobby_arena": (1600, 520, 330, 220),
         "lobby_battle": (1650, 430, 332, 220),
         "lobby_hero": (1400, 980, 180, 130),
-        "hero_equipment_tab_active": (0, 200, 130, 140),
+        # 装备图标选中态（蓝色高亮+剑盾）。区域按真机实测高亮块 y 263~358 定，
+        # 旧值 (0, 200, 130, 140) 下界只到 340，模板放不进正确位置。
+        "hero_equipment_tab_active": (0, 235, 155, 150),
         "imprint_button_normal": (1000, 900, 250, 200),
         "exit_title": (650, 400, 700, 280),
         "exit_cancel": (550, 620, 500, 260),
@@ -376,6 +430,9 @@ class Epic7Navigator:
         "expedition_battle_title": (0, 35, 350, 180),
         "expedition_season_tab": (250, 140, 500, 200),
         "expedition_season_active": (250, 140, 500, 200),
+        # 「一般」标签条那一格：x 105..345、y 175..265（左右各留 5px 余量）。
+        # 区域比「赛季」那两个窄，是因为它本身就是要把**左边这一格**抠出来。
+        "battle_general_tab": (100, 165, 250, 105),
         # 赛季页那排卡片会随赛季换序：上赛季是「战术档案/远征队/考验殿堂」，
         # 远征队居中；2026-09-17 新赛季多了一张「星座考验」，远征队被挤到最右。
         # 原先区域 (850,240,500,260) 只罩住中间那张卡，远征队右移后只拿 0.4395
@@ -398,6 +455,17 @@ class Epic7Navigator:
         # 见 runtime_logs/_wb_probe_nav.py）。也就是说它只能拿来「定位点击点」，
         # 不能拿来判「现在是哪一页」—— 判页要看世界首领战图标。
         "lobby_knights": (1150, 960, 420, 150),
+        # ---- 快捷菜单（2026-10-04）----
+        # 大厅右上那颗蓝四格（开菜单）。区域只罩住**那颗图标**——它是个
+        # **全局常驻控件**（几乎每页右上角都有，全库 218 张里 133 张命中），
+        # 所以它**不能判页**，只作**点击目标**（每页都在同一位置，点它都能开菜单）。
+        # 实测大厅类帧 0.9668~1.0000、非大厅/菜单已开 0.22~0.28 ⇒ 0.82 门槛余量充足。
+        "lobby_quick_menu_button": (1795, 55, 190, 110),
+        # 菜单第 1 行最右「英雄」。区域只罩那一格（含少量余量），避免蹭到相邻的「图鉴」。
+        # 实测：菜单帧 0.9983~0.9987、全库次高 0.4097 ⇒ 余量 0.59。
+        "quick_menu_hero": (1745, 200, 150, 130),
+        # 菜单第 3 行中间「骑士团」。实测菜单帧 0.9970~0.9973、全库次高 0.4401 ⇒ 余量 0.56。
+        "quick_menu_knights": (1555, 550, 150, 120),
         # 骑士团主页的「世界首领战」入口图标（骷髅盾牌）。排他性实测：本页 0.9890，
         # 跨页最高 0.4210（远征海报）。
         "worldboss_entry": (380, 620, 180, 140),
@@ -414,6 +482,30 @@ class Epic7Navigator:
     }
     _CLICK_OFFSETS = {"lobby_story": (65, 11)}
 
+    @classmethod
+    def _assert_anchor_templates(cls, templates: NavigationTemplates) -> None:
+        """登记在 ``_REGIONS`` 里的判据锚点必须都有模板，缺了当场报错。
+
+        ``_REGIONS`` 的每个键都是 ``observe()`` / ``_transition`` 用来**认页**的
+        锚点。锚点模板一旦缺失，判据不会报错、只会**静默消失**：页面认不出来，
+        日志上退化成「未知画面」，看不出任何异常，直到游戏改版才暴露
+        （2026-10-03 装备子页 ``hero_equipment_tab_active`` 就是这么丢的）。
+
+        所以这里 fail closed：宁可开跑前起不来，也不要带着一个悄悄失效的判据
+        跑到真机上。同一个取向见 ``docs/TRANSITION_CONTRACTS.md`` 原则 4 ——
+        那条只管**危险动作**的关键模板，这里更严：**所有**判据锚点都不许缺。
+        """
+        missing = []
+        for anchor in cls._REGIONS:
+            value = getattr(templates, anchor, None)
+            # None = 没加载；空元组 = 候选图一张都没有。两者都是「判据不存在」。
+            if value is None or (isinstance(value, tuple) and not value):
+                missing.append(anchor)
+        if missing:
+            raise ValueError(
+                "导航判据锚点缺少模板（该判据会静默失效）：" + "、".join(sorted(missing))
+            )
+
     def __init__(
         self,
         templates: NavigationTemplates,
@@ -425,6 +517,9 @@ class Epic7Navigator:
         template_root: Path | None = None,
     ) -> None:
         self.templates = templates
+        # 开跑前先确认判据锚点都在。放在构造期而不是 ``observe()`` 里，
+        # 是因为「判据缺失」是配置故障，应该在启动时立刻暴露。
+        self._assert_anchor_templates(templates)
         self.runtime = runtime
         # 平台差异只在最上游注入一次（``main`` 传进来的模板根已经会按平台挑图）。
         # 不传就用模块级默认根 —— 测试替身与离线脚本走这条路。
@@ -559,6 +654,30 @@ class Epic7Navigator:
         if story_skip is not None:
             return PageObservation("story_playing", story_skip.score)
 
+        # 快捷菜单（右上角蓝四格打开的那层浮层，2026-10-04 新增）。
+        #
+        # ⚠️ **必须排在下面所有「底页判据」之前**。菜单是**盖在底页上的浮层**：
+        # 打开时底下那一页（大厅 / 骑士团…）的锚点**还看得见**（只是被压暗），
+        # 而模板匹配对压暗不敏感 —— 排在后面就会被判成「已在大厅」提前收工
+        # （迷宫那边写着同一条教训：「``quick_menu`` 排在 ``lobby`` 前面」）。
+        #
+        # 排在弹窗**之后**：弹窗是模态的，盖在菜单上时得先让守卫点掉它。
+        #
+        # 判据 = **菜单里两个入口图标同时命中**（「与大厅同一套双锚点做法」）。
+        #
+        # ⚠️ 这里**刻意不用**那块大网格 ``quick_menu_grid_top``：它罩住整片菜单底图，
+        # 对**底页不同 / 节日装饰浮层**敏感。实测三张菜单帧上它给出
+        # ``1.0000 / 0.9978 / **0.7987**``（第三张是 `pet_gift` 帧，画面上有一份
+        # 节日礼物装饰盖在菜单区）—— **0.7987 掉在 0.82 门槛之下**，那一帧就认不出菜单了。
+        # 而两个图标本身在三张帧上分别是 ``0.9983+ / 0.9970+``，**最低 0.997**，干净得多。
+        # 它们本身也是**菜单专属**（全库 218 张里各只过阈 3 张菜单帧，次高 0.41/0.44）。
+        menu_hero = self._locate(screen, "quick_menu_hero")
+        menu_knights = self._locate(screen, "quick_menu_knights")
+        if menu_hero and menu_knights:
+            return PageObservation(
+                "quick_menu", min(menu_hero.score, menu_knights.score)
+            )
+
         shop_observation = self.templates.shop_refresh_observer.observe(screen)
         if shop_observation.page is ShopPage.SHOP:
             scores = shop_observation.scores or {}
@@ -652,11 +771,9 @@ class Epic7Navigator:
         if fodder_side_story:
             return PageObservation("fodder_side_story", fodder_side_story.score)
 
-        hero_equipment = (
-            self._locate(screen, "hero_equipment_tab_active", 0.85)
-            if self.templates.hero_equipment_tab_active is not None
-            else None
-        )
+        # 装备子页判据。模板缺失的情况已在构造期由 ``_assert_anchor_templates``
+        # 拦下，此处不必再判 None（再判一次就是又一次静默降级）。
+        hero_equipment = self._locate(screen, "hero_equipment_tab_active", 0.85)
         if hero_equipment:
             return PageObservation("hero_equipment", hero_equipment.score)
 
@@ -1085,6 +1202,11 @@ class Epic7Navigator:
                             f"已等={self._CLICK_VERIFY_SECONDS:.0f}秒 "
                             f"状态=提前重试 尝试={attempt}/4"
                         )
+                        if attempt == 2:
+                            # 连点两次都纹丝不动（不是单次偶发）⇒ 先确认模拟器输入
+                            # 通道还在不在，免得一路盲试到上限、最后只留下一句
+                            # 分不清病因的「导航转场失败」（2026-10-03 实测）。
+                            self.runtime.ensure_input_channel()
                         last_source = screen
                         break
                 if is_stable and observation.name in targets:

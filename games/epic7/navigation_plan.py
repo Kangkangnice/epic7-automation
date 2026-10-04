@@ -35,6 +35,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+# 快捷菜单的**页面身份名**（右上蓝四格打开的那层浮层）。
+#
+# 放这里是因为它是**跨 ``modes`` 与 ``navigation`` 的共享名字**，而本模块是唯一
+# 两边都能 import 的纯数据模块（``navigation`` import ``modes``，``modes`` 不能反向
+# import ``navigation``）。字面量必须与 ``navigation.PAGE_LABELS`` 里的键一致
+# —— ``tests/test_navigation.py`` 有护栏钉住。
+QUICK_MENU_PAGE = "quick_menu"
+
 
 @dataclass(frozen=True)
 class NavigationStep:

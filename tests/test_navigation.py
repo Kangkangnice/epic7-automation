@@ -1,10 +1,11 @@
+from dataclasses import replace
 from pathlib import Path
 import unittest
 
 import cv2
 import numpy as np
 
-from auto_game_unified.core.matcher import find_best_template
+from auto_game_unified.core.matcher import find_best_template, find_template
 from auto_game_unified.core.runtime import Runtime
 from auto_game_unified.games.epic7 import story as story_module
 from auto_game_unified.games.epic7.navigation import (
@@ -12,6 +13,7 @@ from auto_game_unified.games.epic7.navigation import (
     Epic7Navigator,
     build_navigation_templates,
 )
+from auto_game_unified.games.epic7.navigation_plan import QUICK_MENU_PAGE
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -43,6 +45,11 @@ def fodder_fixture(name: str):
 
 def hero_fixture(name: str):
     path = ROOT / "tests" / "fixtures" / "epic7_hero" / f"{name}.png"
+    return cv2.cvtColor(cv2.imread(str(path)), cv2.COLOR_BGR2RGB)
+
+
+def labyrinth_fixture(name: str):
+    path = ROOT / "tests" / "fixtures" / "epic7_labyrinth_stone" / f"{name}.png"
     return cv2.cvtColor(cv2.imread(str(path)), cv2.COLOR_BGR2RGB)
 
 
@@ -435,17 +442,280 @@ class NavigationTests(unittest.TestCase):
 
         self.assertEqual("hero_equipment", observation.name)
 
+    def test_equipment_subpage_is_recognized_by_its_own_template(self):
+        """装备子页必须靠「装备图标选中态」模板认出，不能只靠刻印按钮的近似结构。
+
+        为什么单独守这一条：上面那条用例只断言「认得对」，不管「靠什么认出来」。
+        2026-08-29 的「移除旧 PC 模板镜像」把这个模板删掉后，模拟器侧没有副本，
+        判据被 ``if exists() else None`` 静默跳过、转为靠「管理装备」按钮撞上刻印
+        按钮的结构（0.50 阈值）才勉强认得出 —— 结果上面那条用例照样是绿的。
+        2026-10-03 真机换了底部按钮样式，装备子页直接掉成 unknown，
+        导航就停在英雄列表门口。所以这里连「依据」一起断言。
+        """
+        self.assertTrue(
+            (TEMPLATES / "navigation" / "hero_equipment_tab_active.png").exists(),
+            "模拟器侧缺少装备子页模板；模板不存在时该判据会被静默跳过",
+        )
+        navigator = self.navigator([])
+
+        observation = navigator.observe(
+            hero_fixture("live_equipment_subpage_20260825")
+        )
+
+        self.assertEqual("hero_equipment", observation.name)
+        # 只有走对该模板才会这么高；退化路径（灰按钮结构 0.50）大约 0.6。
+        self.assertGreaterEqual(observation.confidence, 0.95)
+
+    def test_live_equipment_subpage_20261003_fixture_is_recognized(self):
+        """2026-10-03 真机现场：装备子页被认成 ``unknown``，导航停在英雄列表门口。
+
+        这是那次故障的**现场夹具**（用户截图）。两点说明：
+
+        - 客户区 1920×1080 贴在 1982×1132 画布的 (0, 52)，右侧多出的一列是占位黑边；
+          判据区域在 x 0~155，不受影响。
+        - 原图上**用户标的红圈**已用 inpaint 抹掉（红圈压住模板约 12% 像素，留着会把
+          分数从 0.976 拉到 0.767、低于 0.85 门槛）。抹除后实测 0.9759，与同场景干净
+          夹具的 1.0000 只差填充插值的误差。
+
+        修复前（模板缺失）这里返回 ``unknown``：这正是「判据静默降级」的现场。
+        """
+        navigator = self.navigator([])
+
+        observation = navigator.observe(
+            hero_fixture("live_equipment_subpage_20261003")
+        )
+
+        self.assertEqual("hero_equipment", observation.name)
+        self.assertGreaterEqual(observation.confidence, 0.85)
+
+    def test_anchor_template_missing_fails_at_construction(self):
+        """判据锚点缺模板必须在**构造期**报错，不许静默降级成「判据不存在」。
+
+        反向输入喂的是旧代码在模板被删时给出的那个结果（``None``），以及候选图
+        一张都不剩的空元组。
+
+        为什么单独守这一条：2026-08-29 那次模板误删之所以一直没暴露，就是因为
+        缺模板时判据**悄悄不生效** —— 页面靠退化的结构匹配照样认得出，
+        所有既有用例都是绿的。所以这里必须证明「缺模板 = 起不来」。
+        """
+        templates = build_navigation_templates(TEMPLATES)
+        # 正向：真实模板根构建出来的锚点都在，构造成功。
+        self.navigator([])
+
+        with self.assertRaises(ValueError) as caught:
+            Epic7Navigator(
+                replace(templates, hero_equipment_tab_active=None),
+                Runtime(lambda: None, lambda *_: None),
+            )
+        self.assertIn("hero_equipment_tab_active", str(caught.exception))
+
+        # 空候选序列同样是「判据不存在」，不能只挡 None。
+        with self.assertRaises(ValueError) as caught:
+            Epic7Navigator(
+                replace(templates, lobby_shop_entry=()),
+                Runtime(lambda: None, lambda *_: None),
+            )
+        self.assertIn("lobby_shop_entry", str(caught.exception))
+
+    # ---- 快捷菜单改道（2026-10-04）------------------------------------------------
+
+    def test_quick_menu_page_is_recognized_and_never_reads_as_lobby(self):
+        """快捷菜单开着时，必须报 ``quick_menu``。
+
+        菜单是**盖在底页上的浮层**。在这张夹具上（``quick_menu_over_lobby``，底页是大厅）
+        实测大厅锚点被压到 ``lobby_story 0.0343 / lobby_arena 0.3025 / lobby_battle 0.4160``
+        —— 这一帧本身也过不了「双锚点」的大厅判据（会掉到 ``unknown``）。
+        但**顺序仍必须是 ``quick_menu`` 在前**：迷宫那边记着「菜单展开时大厅右侧那套
+        Episode 菜单照样可见」的形态，压暗程度随底页而变，排在后面就有被判成「已在大厅」
+        提前收工的风险（那会让导航链直接跳过菜单这一步）。
+
+        这一条同时钉住「页面名 == ``QUICK_MENU_PAGE`` 常量」——
+        常量与 ``PAGE_LABELS`` 分了家就会在这里红。
+        """
+        navigator = self.navigator([])
+
+        for name in ("quick_menu_over_lobby",):
+            with self.subTest(fixture=name):
+                observation = navigator.observe(fixture(name))
+                self.assertEqual(QUICK_MENU_PAGE, observation.name)
+                self.assertNotEqual("lobby", observation.name)
+
+    def test_quick_menu_survives_a_holiday_overlay_on_the_menu_area(self):
+        """菜单判据必须**扛得住「底页不同 + 节日装饰浮层」**。
+
+        这是判据选型的**唯一依据**：大网格 ``quick_menu_grid_top`` 罩住整片菜单底图，
+        在 ``epic7_global/pet_gift_live_20260928`` 这张帧上只有 **0.7987**
+        （菜单区上盖着一份节日礼物装饰）—— 掉在 0.82 门槛之下，**那一帧就认不出菜单**。
+        改成「两个入口图标同时命中」后，同样三张帧最低 **0.997**。
+
+        这一条同时是**反向验证的靶子**：把判据换回网格的做法，它立刻红在 0.7987。
+        """
+        navigator = self.navigator([])
+
+        for path in (
+            ROOT / "tests" / "fixtures" / "epic7_labyrinth_stone" / "quick_menu.png",
+            FIXTURES / "quick_menu_over_lobby.png",
+            ROOT / "tests" / "fixtures" / "epic7_global" / "pet_gift_live_20260928.png",
+        ):
+            with self.subTest(frame=path.name):
+                screen = cv2.cvtColor(cv2.imread(str(path)), cv2.COLOR_BGR2RGB)
+                observation = navigator.observe(screen)
+                self.assertEqual(QUICK_MENU_PAGE, observation.name)
+                self.assertGreaterEqual(observation.confidence, 0.9)
+
+    def test_lobby_quick_menu_button_matches_clean_and_badged_frames(self):
+        """开菜单那颗蓝四格会挂**橙色未读角标**（角标里还可能带数字）。
+
+        角标是**可变内容**，绝不能裁进模板 ⇒ 模板刻意只取「四格的下 3/4」
+        （从角标下方起裁）。这一条证明该裁法**对有无角标都成立**：
+        干净帧与带角标帧都要过阈，且落点一致（±2px）。
+        """
+        navigator = self.navigator([])
+        templates = navigator.templates
+
+        clean = world_boss_fixture("lobby_with_knights")   # 无角标
+        dotted = fixture("lobby")                          # 有橙色角标
+        centers = []
+        for name, screen in (("clean", clean), ("dotted", dotted)):
+            with self.subTest(frame=name):
+                match = find_template(
+                    screen,
+                    templates.lobby_quick_menu_button,
+                    0.82,
+                    region=Epic7Navigator._REGIONS["lobby_quick_menu_button"],
+                    reference_size=(1982, 1132),
+                )
+                self.assertIsNotNone(match, f"{name} 帧上蓝四格没过阈")
+                centers.append(match.center)
+                self.assertGreaterEqual(match.score, 0.82)
+
+        self.assertLessEqual(abs(centers[0][0] - centers[1][0]), 2)
+        self.assertLessEqual(abs(centers[0][1] - centers[1][1]), 2)
+
+    def test_quick_menu_entry_templates_do_not_collide_with_the_bottom_bar(self):
+        """菜单里的「英雄」/「骑士团」与大厅底部那条横排的图**不是同一张**。
+
+        这是本次改道的**前提**：如果两者能互相匹配，就没必要新裁模板了。
+        实测旧模板在菜单帧上只有 0.63 / 0.67（不过阈）。这一条把它钉死 ——
+        哪天游戏把两处画成一样了，这里会红，提示「可以合并模板」；
+        反过来若有人误把菜单锚点接到大厅底部模板上，也会红。
+        """
+        navigator = self.navigator([])
+        templates = navigator.templates
+        menu = fixture("quick_menu_over_lobby")
+
+        for label, old_template, region in (
+            ("英雄", templates.lobby_hero, (1400, 980, 180, 130)),
+            ("骑士团", templates.lobby_knights, (1150, 960, 420, 150)),
+        ):
+            with self.subTest(entry=label):
+                match = find_template(
+                    menu,
+                    old_template,
+                    0.0,
+                    region=region,
+                    reference_size=(1982, 1132),
+                )
+                self.assertIsNotNone(match)
+                self.assertLess(match.score, 0.82)
+
+    def test_quick_menu_page_name_matches_the_page_labels_table(self):
+        """``QUICK_MENU_PAGE`` 与 ``navigation.PAGE_LABELS`` 的键必须一致。
+
+        两者分家会出现「认得出页面、日志却印英文名」这种**不报错的退化**
+        （``page_label`` 有默认值兜底），所以用测试挡。
+        """
+        from auto_game_unified.games.epic7.navigation import PAGE_LABELS
+        from auto_game_unified.games.epic7.navigation_plan import QUICK_MENU_PAGE
+
+        self.assertIn(QUICK_MENU_PAGE, PAGE_LABELS)
+
+    def test_quick_menu_identity_requires_both_entry_icons(self):
+        """``observe()`` 判快捷菜单时**必须同时**要两个入口图标，缺一不可。
+
+        为什么这条要用 AST 静态守、而不是跑夹具：**三张菜单帧上两个图标都在**，
+        所以「只用一个图标」在夹具上与「两个都要」**完全等价** —— 夹具分辨不出来
+        （实测：把判据改成只用 ``quick_menu_hero``，``-k quick_menu`` 照样全绿）。
+        但生产里两个图标**会各自单独消失**（某一个入口因账号进度/活动被隐藏），
+        那时「只用一个」就会把一个**不是菜单**的画面认成菜单，导航链据此跳过
+        「打开菜单」那一步，直接去点菜单里的图标 —— 点在底页上，跑飞。
+
+        反向验证：把源码里的 ``if menu_hero and menu_knights:`` 改成
+        ``if menu_hero:``，这一条立刻红并点名缺了哪个。
+        """
+        import ast
+        from pathlib import Path
+
+        source = (
+            Path(__file__).resolve().parents[1] / "games" / "epic7" / "navigation.py"
+        ).read_text(encoding="utf-8")
+        tree = ast.parse(source)
+
+        # 先找 ``if <变量名> and <变量名>:`` 形状的判据，变量名以 menu_ 开头。
+        candidate: ast.BoolOp | None = None
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.If):
+                continue
+            test = node.test
+            if not isinstance(test, ast.BoolOp) or not isinstance(test.op, ast.And):
+                continue
+            names = [v.id for v in test.values if isinstance(v, ast.Name)]
+            if names and all(name.startswith("menu_") for name in names):
+                candidate = test
+                break
+        self.assertIsNotNone(candidate, "observe() 里没找到快捷菜单的双图标判据")
+        assert candidate is not None
+
+        # 判据里要求的变量，必须在同函数内被赋成 ``self._locate(screen, "<锚点>")``。
+        wanted = {v.id for v in candidate.values if isinstance(v, ast.Name)}
+        located: dict[str, str] = {}
+        for node in ast.walk(tree):
+            if not (
+                isinstance(node, ast.Assign)
+                and len(node.targets) == 1
+                and isinstance(node.targets[0], ast.Name)
+                and isinstance(node.value, ast.Call)
+            ):
+                continue
+            call = node.value
+            if getattr(call.func, "attr", None) != "_locate":
+                continue
+            anchor = next(
+                (
+                    arg.value
+                    for arg in call.args
+                    if isinstance(arg, ast.Constant) and isinstance(arg.value, str)
+                ),
+                None,
+            )
+            if anchor:
+                located[node.targets[0].id] = anchor
+
+        self.assertEqual(
+            {"quick_menu_hero", "quick_menu_knights"},
+            {located.get(name) for name in wanted},
+            "快捷菜单判据必须同时要求 quick_menu_hero 与 quick_menu_knights",
+        )
+
     def test_hero_navigation_retries_when_equipment_tab_does_not_exit(self):
         clicks: list[tuple[int, int]] = []
         logs: list[str] = []
         clock = [0.0]
+        menu = fixture("quick_menu_over_lobby")
         equipment = hero_fixture("live_equipment_subpage_20260825")
         information = hero_fixture("list_unfiltered")
 
         def capture():
-            # 进入英雄列表的大厅点击排在第一位。第一次切换标签后仍返回
-            # 装备页，模拟点击被吞；第二次点击后才返回英雄信息页。
-            return equipment if len(clicks) < 3 else information
+            # 2026-10-04 起英雄合成走「大厅点右上蓝四格 → 快捷菜单 → 点菜单里的英雄」，
+            # 所以导航期间会有两下点击：第 1 下开菜单、第 2 下进英雄列表。
+            # `clicks` 到 1 时菜单已展开 ⇒ 先给菜单帧，让第 2 步点得下去。
+            if len(clicks) < 1:
+                return fixture("lobby_animated_updated")
+            if len(clicks) < 2:
+                return menu
+            # 之后进入英雄列表：第一次切换标签后仍返回装备页，模拟点击被吞；
+            # 第二次点击后才返回英雄信息页。
+            return equipment if len(clicks) < 4 else information
 
         def sleep(seconds: float):
             clock[0] += seconds
@@ -468,7 +738,9 @@ class NavigationTests(unittest.TestCase):
             "hero_synthesis", lobby_screen=fixture("lobby_animated_updated")
         )
 
-        self.assertEqual([(65, 200), (65, 200)], clicks[1:])
+        # 第 0 下是「打开快捷菜单」，第 1 下才是「进入英雄列表」；
+        # 之后两下是英雄信息/装备标签来回切。
+        self.assertEqual([(65, 200), (65, 200)], clicks[2:])
         expected = [
             "进入标志=英雄装备已确认",
             "动作=切换英雄信息 尝试=1/4",
@@ -491,13 +763,22 @@ class NavigationTests(unittest.TestCase):
         clicks: list[tuple[int, int]] = []
         logs: list[str] = []
         clock = [0.0]
+        menu = fixture("quick_menu_over_lobby")
         equipment = hero_fixture("live_equipment_subpage_20260825")
+
+        def capture():
+            # 与上一条同理：第 1 下开菜单 ⇒ 给菜单帧；之后恒为装备子页。
+            if len(clicks) < 1:
+                return fixture("lobby_animated_updated")
+            if len(clicks) < 2:
+                return menu
+            return equipment
 
         def sleep(seconds: float):
             clock[0] += seconds
 
         runtime = Runtime(
-            lambda: equipment,
+            capture,
             clicks.append,
             emit=logs.append,
             monotonic=lambda: clock[0],
@@ -515,7 +796,8 @@ class NavigationTests(unittest.TestCase):
                 "hero_synthesis", lobby_screen=fixture("lobby_animated_updated")
             )
 
-        self.assertEqual([(65, 200)] * 4, clicks[1:])
+        # 第 0 下开菜单、第 1 下进英雄列表，之后 4 下是英雄信息/装备标签来回切。
+        self.assertEqual([(65, 200)] * 4, clicks[2:])
         self.assertTrue(any("尝试=4/4" in log for log in logs))
         self.assertFalse(any("状态=导航完成" in log for log in logs))
 
@@ -848,6 +1130,56 @@ class NavigationTests(unittest.TestCase):
         self.assertGreaterEqual(gap, Epic7Navigator._CLICK_VERIFY_SECONDS)
         self.assertLess(gap, 12.0)
 
+    def test_repeated_ineffective_clicks_probe_the_input_channel_once(self):
+        """连点两次都纹丝不动 ⇒ 补一次模拟器输入通道自检，且**只补一次**。
+
+        2026-10-03 实测：远征与英雄合成各连点 4 次无效，诊断图却是完好的大厅画面，
+        光看日志**分不清「通道断了」还是「游戏没响应」**。通道自检此前只在开跑前跑
+        一次（``main._build_runtime``），跑到一半坏掉就再没人查 —— 这条用例盯的就是
+        「连续无效时补一次自检」，位置在第 2 次重试，不是每次重试都补。
+        """
+        clicks: list[tuple[int, int]] = []
+        probes: list[int] = []
+        logs: list[str] = []
+        clock = [0.0]
+
+        def sleep(seconds: float):
+            clock[0] += seconds
+
+        lobby = fixture("lobby")
+        runtime = Runtime(
+            lambda: lobby,  # 画面永远不动：怎么点都停在原页
+            clicks.append,
+            back=lambda: None,
+            emit=logs.append,
+            monotonic=lambda: clock[0],
+            input_channel_probe=lambda: probes.append(1),
+        )
+        navigator = Epic7Navigator(
+            build_navigation_templates(TEMPLATES),
+            runtime,
+            sleep=sleep,
+            poll_seconds=0.5,
+            transition_frames=48,
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "导航转场"):
+            navigator.navigate("arena", lobby_screen=lobby)
+
+        self.assertTrue(any("点击验收=无效" in log for log in logs))
+        self.assertEqual(1, len(probes), f"通道自检应只补一次，实际 {len(probes)} 次")
+
+    def test_absent_input_channel_probe_is_silently_skipped(self):
+        """没装配探针时（干跑 / 测试替身）自检静默跳过，不抛错、不改变行为。"""
+        screen = fixture("lobby")
+        runtime = Runtime(
+            lambda: screen,
+            lambda point: None,
+            dry_run=True,
+        )
+
+        runtime.ensure_input_channel()  # 不抛异常即通过
+
     def test_story_navigation_confirms_destination_before_returning(self):
         clicks: list[tuple[int, int]] = []
         navigator = self.navigator(
@@ -947,6 +1279,77 @@ class NavigationTests(unittest.TestCase):
 
         self.assertIsNone(error)
         self.assertEqual([(1827, 531), (1080, 357)], clicks)
+
+    def test_labyrinth_navigation_switches_back_from_the_remembered_season_tab(self):
+        """游戏记住上次停在哪一栏：跑过远征之后，迷宫进战斗页会直接落在赛季页。
+
+        2026-10-04 每日任务**卡死在这里** —— 迷宫的链当时只认 battle_menu，落到
+        season_menu 之后没有下一步可走，干等约 92 秒报「导航开始前应处于[大厅]」，
+        当天强化石一根都没买。夹具 ``season_menu_general_tab_20261004`` 就是那次
+        失败的实机卡帧（runtime_diagnostics/epic7_labyrinth_stone/20261004_081751）。
+        """
+        clicks: list[tuple[int, int]] = []
+        stuck_frame = fixture("season_menu_general_tab_20261004")
+        navigator = self.navigator(
+            [
+                fixture("lobby"),
+                fixture("lobby"),
+                stuck_frame,
+                stuck_frame,
+                labyrinth_fixture("battle_menu"),
+                labyrinth_fixture("battle_menu"),
+            ],
+            clicks=clicks,
+        )
+
+        navigator.navigate("labyrinth_stone")
+
+        # 第二下点的是「一般」标签条的中心 —— 它必须有，否则赛季页出不去。
+        self.assertEqual([(1827, 531), (225, 220)], clicks)
+
+    def test_labyrinth_navigation_leaves_the_general_tab_alone_when_already_on_it(self):
+        """已经站在「一般」页就别再点那一栏（点了没坏处，但会拖慢、也徒增点击）。"""
+        clicks: list[tuple[int, int]] = []
+        navigator = self.navigator(
+            [
+                fixture("lobby"),
+                fixture("lobby"),
+                labyrinth_fixture("battle_menu"),
+                labyrinth_fixture("battle_menu"),
+            ],
+            clicks=clicks,
+        )
+
+        navigator.navigate("labyrinth_stone")
+
+        self.assertEqual([(1827, 531)], clicks)
+
+    def test_general_tab_anchor_only_fires_on_the_season_page(self):
+        """「一般」标签条只在**赛季页**（需要点它的场合）命中；在一般页必须不过阈。
+
+        分数是硬依据：赛季页 1.0000（另一张赛季夹具 0.8668），一般页实测 0.3532
+        —— 与 0.82 的门槛之间隔着 0.45，余量足够，不必担心跨 Tab 误点。
+        """
+        navigator = self.navigator([])
+        template = navigator.templates.battle_general_tab
+        region = navigator._REGIONS["battle_general_tab"]
+
+        on_season = find_best_template(
+            fixture("season_menu_general_tab_20261004"),
+            template,
+            region=region,
+            reference_size=REFERENCE_SIZE,
+        )
+        on_general = find_best_template(
+            labyrinth_fixture("battle_menu"),
+            template,
+            region=region,
+            reference_size=REFERENCE_SIZE,
+        )
+
+        self.assertAlmostEqual(1.0, on_season.score, places=4)
+        self.assertEqual((225, 220), on_season.center)
+        self.assertLess(on_general.score, 0.82)
 
     def test_classifies_season_menu_after_the_expedition_card_moved_to_the_right(self):
         """赛季轮换把「远征队」从中间挤到最右，赛季页仍须被识别。
@@ -1173,9 +1576,14 @@ class WorldBossNavigationTests(unittest.TestCase):
         self.assertEqual("knights_home", after.name)
 
     def test_navigation_walks_lobby_then_knights_then_world_boss(self):
+        """2026-10-04 起：大厅不再点右下角那条横排（那是账号自定义的快捷栏），
+        改成「点右上蓝四格开菜单 → 点菜单里的骑士团 → 点世界首领战入口」三下。
+        """
         clicks: list[tuple[int, int]] = []
         navigator = self.navigator(
             [
+                fixture("quick_menu_over_lobby"),
+                fixture("quick_menu_over_lobby"),
                 world_boss_fixture("knights_home"),
                 world_boss_fixture("knights_home"),
                 world_boss_fixture("worldboss_home"),
@@ -1186,10 +1594,12 @@ class WorldBossNavigationTests(unittest.TestCase):
 
         navigator.navigate("world_boss", lobby_screen=world_boss_fixture("lobby_with_knights"))
 
-        self.assertEqual(2, len(clicks))
-        # 骑士团图标命中中心 + 世界首领战图标命中中心（都在画布坐标系里）。
-        self.assertEqual((1215, 1027), clicks[0])
-        self.assertEqual((449, 693), clicks[1])
+        self.assertEqual(3, len(clicks))
+        # ① 大厅右上蓝四格（避开橙角标那张模板）命中中心；
+        # ② 快捷菜单里「骑士团」命中中心；③ 骑士团主页「世界首领战」入口命中中心。
+        self.assertEqual((1862, 106), clicks[0])
+        self.assertEqual((1617, 611), clicks[1])
+        self.assertEqual((449, 693), clicks[2])
 
     def test_resume_from_knights_home_skips_only_the_first_hop(self):
         clicks: list[tuple[int, int]] = []
