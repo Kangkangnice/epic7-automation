@@ -174,7 +174,21 @@ RESULT_CONFIRM  结算页「确认」
 
 ### 导航（`navigation.py` 需新增）✅ 已实现
 
-`navigate()` 增加 `world_boss` 分支：
+> ⚠️ **2026-10-04 已改道**：原方案点**大厅底部横排**的骑士团盾牌（`lobby_knights`）。
+> 那条横排是**账号自己排的快捷栏**，不同账号位置不同，不可靠 ⇒ 用户要求改走
+> **右上蓝四格 → 快捷菜单 → 菜单里的骑士团**（菜单布局固定）。现在的导航链：
+>
+> ```python
+> NavigationStep("lobby", (QUICK_MENU_PAGE,), "lobby_quick_menu_button", "打开快捷菜单")
+> NavigationStep(QUICK_MENU_PAGE, (KNIGHTS_GUILD_HOME_PAGE,), "quick_menu_knights", "进入骑士团")
+> NavigationStep(KNIGHTS_GUILD_HOME_PAGE, (WORLD_BOSS_ENTRY_PAGE,), "worldboss_entry", "进入世界首领战")
+> ```
+>
+> 实际点击点：(1862,106) → (1617,611) → (449,693)。`lobby_knights` 锚点**仍然保留**
+> （别的地方在用），只是不再被本路线当入口。`knights_donation` 同步改道。
+> `resume_entries` 不变（`{knights_home, worldboss_home}`）。
+
+原（历史）方案如下，仅作记录：`navigate()` 增加 `world_boss` 分支：
 ```python
 elif mode == "world_boss":
     knights = self._transition("lobby", "knights_home", "lobby_knights", "进入骑士团")
@@ -186,6 +200,7 @@ elif mode == "world_boss":
   **只用来定位点击点，不用来判页**。它其实是**大厅常驻控件**：185 张夹具里每张
   大厅页都在同一位置以 0.86~0.96 命中，压暗到 55% 亮度仍 0.9643。
   也就是说「有骑士团图标」= 「在大厅」，不含任何「在骑士团页」的信息。
+  ⚠️ 2026-10-04 起本路线**不再点它**（见上方改道说明）。
 - `worldboss_entry`（骑士团主页的「世界首领战」骷髅盾牌，区域 `(380,620,180,140)`，
   模板 62×66）—— **这才是真正的排他锚点**：本页 0.9890，跨页最高 0.4210。
 - `lobby_worldboss_select_team` —— 复用 `evidence/world_boss.py` 的
@@ -280,8 +295,8 @@ story / expedition 的接力同样如此）+ **2 张别的路线的骑士团主�
 **放在哪里**：`Epic7GlobalPopupGuard`（`games/epic7/global_popups.py`），
 与友情点数、亲密度提升同类。理由：
 - 它属于「每天第一次进某个页面出现的系统弹窗」，与既有四类弹窗同一性质；
-- 放进守卫自动获得 **4 次点击预算 + 每 3 秒重试 + 15 秒熔断 + 诊断留证**，
-  不用在导航链和状态机里各写一遍；
+- 放进守卫自动获得其统一待遇：**共享点击预算（`global_popups._MAX_POPUP_CLICKS`）
+  + 每 3 秒重试 + 15 秒熔断 + 诊断留证**，不用在导航链和状态机里各写一遍；
 - 所有路线共用，别的路线误入骑士团也能被兜住。
 
 **判据（⚠️ 双锚点必需，别只看关闭点）**：
@@ -321,7 +336,7 @@ story / expedition 的接力同样如此）+ **2 张别的路线的骑士团主�
 都唤醒失败，导航直接失败。⇒ 必须先认出并关掉它。
 
 **放在哪里**：同样进 `Epic7GlobalPopupGuard`，复用既有的
-**4 次点击预算 + 每 3 秒重试 + 15 秒熔断 + 诊断留证**。
+**共享点击预算（`global_popups._MAX_POPUP_CLICKS`）+ 每 3 秒重试 + 15 秒熔断 + 诊断留证**。
 `observe()` 里排在 `worldboss_entry` 判定之前，命中返回 `gift_support_popup`。
 `PAGE_LABELS` 加「领取支援物品弹窗」。
 

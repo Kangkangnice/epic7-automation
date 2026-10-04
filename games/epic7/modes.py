@@ -62,6 +62,7 @@ from auto_game_unified.games.epic7.survivor import (
     SurvivorStateMachine,
 )
 from auto_game_unified.games.epic7.navigation_plan import (
+    QUICK_MENU_PAGE,
     NavigationPlan,
     NavigationStep,
 )
@@ -561,7 +562,15 @@ MODE_SPECS = {
         navigation_plan=NavigationPlan(
             mode="hero_synthesis",
             steps=(
-                NavigationStep("lobby", ("hero_list",), "lobby_hero", "进入英雄列表"),
+                # 2026-10-04：不再点大厅右下角那条**横排快捷栏**（「英雄」在那儿）——
+                # 那条是**账号自己排的**，不同账号位置不同（用户明确要求改）。
+                # 改走**右上蓝四格 → 快捷菜单 → 菜单里的「英雄」**（菜单固定布局）。
+                NavigationStep(
+                    "lobby", (QUICK_MENU_PAGE,), "lobby_quick_menu_button", "打开快捷菜单"
+                ),
+                NavigationStep(
+                    QUICK_MENU_PAGE, ("hero_list",), "quick_menu_hero", "进入英雄列表"
+                ),
             ),
             ready_note="英雄信息页已就绪",
         ),
@@ -634,8 +643,17 @@ MODE_SPECS = {
         navigation_plan=NavigationPlan(
             mode="world_boss",
             steps=(
+                # 2026-10-04：不再点大厅右下角那条**横排快捷栏**（「骑士团」在那儿）
+                # —— 那条是账号自己排的。改走**右上蓝四格 → 快捷菜单 → 菜单里的
+                # 「骑士团」**（菜单固定布局，与底部那颗到的是同一个骑士团主页）。
                 NavigationStep(
-                    "lobby", (KNIGHTS_GUILD_HOME_PAGE,), "lobby_knights", "进入骑士团"
+                    "lobby", (QUICK_MENU_PAGE,), "lobby_quick_menu_button", "打开快捷菜单"
+                ),
+                NavigationStep(
+                    QUICK_MENU_PAGE,
+                    (KNIGHTS_GUILD_HOME_PAGE,),
+                    "quick_menu_knights",
+                    "进入骑士团",
                 ),
                 NavigationStep(
                     KNIGHTS_GUILD_HOME_PAGE,
@@ -674,8 +692,16 @@ MODE_SPECS = {
         navigation_plan=NavigationPlan(
             mode="knights_donation",
             steps=(
+                # 2026-10-04：与 world_boss 同步改走「右上蓝四格 → 快捷菜单 →
+                # 菜单里的骑士团」（底部那条横排是账号自定义的，不可靠）。
                 NavigationStep(
-                    "lobby", (KNIGHTS_GUILD_HOME_PAGE,), "lobby_knights", "进入骑士团"
+                    "lobby", (QUICK_MENU_PAGE,), "lobby_quick_menu_button", "打开快捷菜单"
+                ),
+                NavigationStep(
+                    QUICK_MENU_PAGE,
+                    (KNIGHTS_GUILD_HOME_PAGE,),
+                    "quick_menu_knights",
+                    "进入骑士团",
                 ),
             ),
             resume_entries=frozenset({KNIGHTS_GUILD_HOME_PAGE}),
