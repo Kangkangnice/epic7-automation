@@ -120,7 +120,6 @@ class ExpeditionTemplates:
     result_confirm: np.ndarray
     victory_title: np.ndarray
     victory_close: np.ndarray
-    defeated_confirm: Optional[np.ndarray]
     public_recruit: np.ndarray
     public_title: np.ndarray
     public_confirm: np.ndarray
@@ -136,10 +135,6 @@ def build_expedition_templates(template_dir: Path) -> ExpeditionTemplates:
     def load(name: str) -> np.ndarray:
         return load_template(str(template_dir / f"{name}.png"))
 
-    def load_optional(name: str) -> Optional[np.ndarray]:
-        path = template_dir / f"{name}.png"
-        return load_template(str(path)) if path.exists() else None
-
     return ExpeditionTemplates(
         home=load("home"),
         poster_embark=load("poster_embark"),
@@ -154,7 +149,6 @@ def build_expedition_templates(template_dir: Path) -> ExpeditionTemplates:
         result_confirm=load("result_confirm"),
         victory_title=load("victory_title"),
         victory_close=load("victory_close"),
-        defeated_confirm=load_optional("defeated_confirm"),
         public_recruit=load("public_recruit"),
         public_title=load("public_title"),
         public_confirm=load("public_confirm"),
@@ -183,13 +177,17 @@ class ExpeditionStateMachine:
     # 失效，没人看得出来。远征就栽在这上面：`empty_posters` 文件不存在，收工判据
     # 整个失灵，空等超时 6 次（2026-09-19~10-03）才被发现。
     #
+    # ✅ **2026-10-04 清空**：原先唯一在册的 `defeated_confirm`（战败确认）已整个删除 ——
+    # **远征没有「输」这回事**（用户 2026-10-04 说明）：打完伤害就直接进结算，只有
+    # 一种结局、一条路径，不存在需要单独认的「战败页」。那个模板本来就从来没做过，
+    # 真机日志里对应动作也一次都没执行过（8/30~10/04，3868 行）。
+    #
+    # ⇒ 从此远征**没有任何**可缺席的模板：少一张图就是配置错误，`FileNotFoundError`
+    # 在加载期直接拦（`load()` 而非 `load_optional()`）。新增锚点必须同时补模板。
+    #
     # ⚠️ 本集合必须与 `evidence/expedition.py` 的 `_OPTIONAL_TEMPLATES` **逐字一致**
-    # （`test_expedition_evidence` 里钉住）。目前只剩 `defeated_confirm`：
-    # 它的模板**从来就没做过**，但真机日志里那个动作**一次都没执行过**
-    # （见 `evidence/expedition.py` 同处的说明）—— 它只是三个 `is_in_state()` 里
-    # `or` 的一端，缺了不会让那些判断变假，与 `empty_posters` 的「判据整个失效」不同。
-    # 拿到战败帧后按同样四步补，别只改一边。
-    _OPTIONAL_TEMPLATES = frozenset({"defeated_confirm"})
+    # （`test_whitelist_matches_the_evidence_profile` 钉住）。
+    _OPTIONAL_TEMPLATES: frozenset[str] = frozenset()
 
     def __init__(
         self,
@@ -319,17 +317,6 @@ class ExpeditionStateMachine:
             and self._locate(screen, "back") is not None
         )
 
-    def _defeated_action(self, screen: np.ndarray) -> Optional[ExpeditionAction]:
-        match = self._locate(screen, "defeated_confirm")
-        if match is None:
-            return None
-        return self._action(
-            "confirm-defeated", match.center,
-            source_page="公开招募结果",
-            target_states=(ExpeditionState.RETURNING,),
-            reason="识别到战败确认，点击返回",
-        )
-
     def is_in_state(self, screen: np.ndarray, state: ExpeditionState) -> bool:
         if state == ExpeditionState.HOME:
             return self._locate(screen, "home") is not None
@@ -366,7 +353,6 @@ class ExpeditionStateMachine:
             return any(
                 self._locate(screen, name) is not None
                 for name in (
-                    "defeated_confirm",
                     "victory_title",
                     "public_recruit",
                     "campfire_idle",
@@ -374,16 +360,12 @@ class ExpeditionStateMachine:
             )
         if state == ExpeditionState.RECRUIT_CONFIRM:
             return (
-                self._locate(screen, "defeated_confirm") is not None
-                or (
-                    self._locate(screen, "public_title") is not None
-                    and self._locate(screen, "public_confirm") is not None
-                )
+                self._locate(screen, "public_title") is not None
+                and self._locate(screen, "public_confirm") is not None
             )
         if state == ExpeditionState.RECRUIT_RETURN:
             return (
-                self._locate(screen, "defeated_confirm") is not None
-                or self._locate(screen, "campfire_idle") is not None
+                self._locate(screen, "campfire_idle") is not None
                 or (
                     self._locate(screen, "public_recruited") is not None
                     and self._locate(screen, "back") is not None
@@ -555,15 +537,6 @@ class ExpeditionStateMachine:
         raise RuntimeError("传单卡片区域内未找到远征队出发按钮")
 
     def next_action(self, screen: np.ndarray) -> Optional[ExpeditionAction]:
-        if self.state in {
-            ExpeditionState.OUTCOME,
-            ExpeditionState.RECRUIT_CONFIRM,
-            ExpeditionState.RECRUIT_RETURN,
-        }:
-            defeated = self._defeated_action(screen)
-            if defeated is not None:
-                return defeated
-
         if self.state == ExpeditionState.HOME:
             match = self._locate(screen, "home")
             if match is None and self._on_posters_list(screen):
@@ -881,8 +854,8 @@ class ExpeditionRunner(TransactionalRunnerBase):
     def _battle_config(self) -> BattleConfig:
         """战斗看护的两条时限按远征的实际节奏放宽到 20 分钟。
 
-        远征一局比竞技场长得多（难度三还要算上战败重来），用 ``BattleConfig``
-        的默认值会在打到一半时被判「无业务进展」而收手。
+        远征一局比竞技场长得多（要打满难度三的整场伤害才进结算），用
+        ``BattleConfig`` 的默认值会在打到一半时被判「无业务进展」而收手。
         """
         return BattleConfig(
             mode="expedition",

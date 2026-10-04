@@ -51,7 +51,6 @@ TEMPLATES = ExpeditionTemplates(
     result_confirm=pattern(10),
     victory_title=pattern(20),
     victory_close=pattern(21),
-    defeated_confirm=pattern(11),
     public_recruit=pattern(12),
     public_title=pattern(13),
     public_confirm=pattern(14),
@@ -337,16 +336,6 @@ class ExpeditionStateMachineTests(unittest.TestCase):
                     machine.is_quick_battle_team_page(recorded_screen(name))
                 )
 
-    def test_defeated_popup_skips_public_recruitment(self):
-        machine = self.machine(ExpeditionState.OUTCOME)
-
-        action = machine.next_action(
-            screen_with((TEMPLATES.defeated_confirm, (930, 850)))
-        )
-
-        self.assertEqual("confirm-defeated", action.name)
-        self.assertEqual(ExpeditionState.OUTCOME, machine.state)
-
     def test_campfire_idle_is_woken_without_advancing_outcome_state(self):
         machine = self.machine(ExpeditionState.OUTCOME)
 
@@ -377,16 +366,6 @@ class ExpeditionStateMachineTests(unittest.TestCase):
             ExpeditionState.RECRUIT_RETURN,
         ))
 
-    def test_defeated_popup_can_interrupt_public_confirmation(self):
-        machine = self.machine(ExpeditionState.RECRUIT_CONFIRM)
-
-        action = machine.next_action(
-            screen_with((TEMPLATES.defeated_confirm, (930, 850)))
-        )
-
-        self.assertEqual("confirm-defeated", action.name)
-        self.assertEqual(ExpeditionState.RECRUIT_CONFIRM, machine.state)
-
     def test_preview_does_not_mutate_state_or_count(self):
         machine = self.machine()
 
@@ -405,9 +384,12 @@ class ExpeditionStateMachineTests(unittest.TestCase):
         # ⚠️ 2026-10-04 前这里断言 `empty_posters is None` —— 那是把**缺陷**当预期
         # 写进了测试：模板文件不存在，收工判据静默失效，实机空等超时 6 次
         # （2026-09-19~10-03）。现已补模板并改为必需，这里断言它**存在**。
-        # 仍为 None 的只剩战败确认（还没有真机图，拿到后一并补上）。
+        #
+        # ⚠️ 同日稍后：唯一还在「可选」名单里的战败确认也整个删掉了 —— 远征没有
+        # 「输」这回事（打完伤害直接进结算，只有一种结局），不存在需要单独认的页面。
+        # 现在本路线**一张模板都不许缺席**，`_OPTIONAL_TEMPLATES` 已清空。
         self.assertIsNotNone(templates.empty_posters)
-        self.assertIsNone(templates.defeated_confirm)
+        self.assertEqual(frozenset(), ExpeditionStateMachine._OPTIONAL_TEMPLATES)
 
     def test_empty_posters_matches_the_live_empty_list_and_nothing_else(self):
         """「未持有通缉传单」判据：现场帧命中，其余全部夹具零误报。
@@ -605,17 +587,24 @@ class OptionalTemplateGuardTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "empty_posters"):
             machine._locate(np.zeros(SIZE, dtype=np.uint8), "empty_posters")
 
-    def test_whitelisted_optional_template_still_returns_none(self):
-        """白名单里的（战败确认）仍走旧的 None 语义 —— 别把闸门关死。"""
+    def test_every_template_is_now_required(self):
+        """白名单已清空 ⇒ **任何**模板缺席都必须报错点名，没有例外。
+
+        背景：原先唯一在册的战败确认已删除（远征没有「输」这回事）。这条测试钉住
+        「不能悄悄再往白名单里塞东西」—— 谁想加，必须先想清楚为什么这里允许少一张图。
+        """
         templates = build_expedition_templates(
             ROOT / "games" / "epic7" / "templates" / "expedition"
         )
-        self.assertIsNone(templates.defeated_confirm)
-        machine = ExpeditionStateMachine(templates)
+        self.assertEqual(frozenset(), ExpeditionStateMachine._OPTIONAL_TEMPLATES)
 
-        self.assertIsNone(
-            machine._locate(np.zeros(SIZE, dtype=np.uint8), "defeated_confirm")
-        )
+        # 逐个把模板置 None，`_locate` 都必须报错（拿两个不同锚点演示）。
+        for name in ("empty_posters", "victory_title", "campfire_idle"):
+            with self.subTest(anchor=name):
+                broken = dataclasses.replace(templates, **{name: None})
+                machine = ExpeditionStateMachine(broken)
+                with self.assertRaisesRegex(RuntimeError, name):
+                    machine._locate(np.zeros(SIZE, dtype=np.uint8), name)
 
     def test_whitelist_matches_the_evidence_profile(self):
         """`_OPTIONAL_TEMPLATES` 必须与证据画像的 `required` 逐字一致。
