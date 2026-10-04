@@ -119,15 +119,17 @@ def test_arena_keeps_the_field_names_the_transactional_runner_reads():
     assert {"source_state", "target_states", "irreversible"} <= names
 
 
-def test_hero_synthesis_still_declares_the_known_drift_explicitly():
-    """英雄合成的同页证据仍叫 ``source_observation`` —— 这是**登记在册**的例外。
+def test_hero_synthesis_no_longer_drifts_from_the_contract_field_names():
+    """英雄合成的同页证据**已对齐** —— 不再有 ``source_observation`` 这个自造字段。
 
-    本用例不是「容忍它」，而是把它钉在明处：哪天字段名对齐了（或又冒出第三种叫法），
-    这里必须跟着改，不能悄悄漂。理由见 ``modes.TRANSITION_EXEMPT`` 里 hero_synthesis 那条。
+    2026-10-04 之前这里断言的是「仍叫 ``source_observation``（登记在册的例外）」，
+    用意是「哪天字段名对齐了就跟着改，不能悄悄漂」—— 现在正是那个时刻：对齐后
+    `_REQUIRE_TRANSITION_CONTRACT` 才真能管到那 12 个同页动作（原来它们靠
+    ``target_pages`` 里塞当前页过检查，契约是「形式合规、实质没用」）。
     """
     names = {field.name for field in fields(hero_synthesis.HeroAction)}
-    assert "source_observation" in names
-    assert names - set(DEFAULTED_FIELDS) - {"name", "point"} == {
-        "source_observation",
-        "transition_kind",
-    }
+    assert "source_observation" not in names, (
+        "英雄合成又冒出 source_observation 了 —— 同页证据要用基类字段 in_page_evidence"
+    )
+    # 自造字段只剩 transition_kind（这个是本路线特有的，不是契约字段）。
+    assert names - set(DEFAULTED_FIELDS) - {"name", "point"} == {"transition_kind"}

@@ -102,13 +102,13 @@ def state_label(state: HeroSynthState) -> str:
 class HeroAction(RouteAction):
     """英雄合成的一个动作。
 
-    ⚠️ 同页动作的出口验收写在 ``source_observation`` 里，而契约认的字段名是
-    ``in_page_evidence`` —— 两个名字指同一件事。这正是本路线至今进 ``TRANSITION_EXEMPT``
-    的原因之一（见 ``modes.TRANSITION_EXEMPT``）。本次**不**改这个语义，只把公共字段收进
-    ``RouteAction``：字段名对齐是另一件事，得连判据一起改。
+    ✅ **字段名已对齐**（2026-10-04）：同页动作的出口验收原来写在自造的
+    ``source_observation`` 里，而契约认的字段名是基类的 ``in_page_evidence`` ——
+    两个名字指同一件事。名字不齐的代价是这条路线一直进 ``TRANSITION_EXEMPT``：
+    开关打开也管不到它（``_REQUIRE_TRANSITION_CONTRACT`` 读的就是
+    ``in_page_evidence``）。现在直接复用基类字段，自造字段整个删掉。
     """
 
-    source_observation: str = ""
     transition_kind: str = ""
 
 
@@ -123,33 +123,54 @@ class HeroTemplates:
     auto_select_label: np.ndarray
     story_back: np.ndarray
     rating_sss: np.ndarray
-    filter_attribute_label: Optional[np.ndarray] = None
-    filter_star3_unselected: Optional[np.ndarray] = None
-    sss_material: Optional[np.ndarray] = None
-    sss_material_warning_title: Optional[np.ndarray] = None
-    sss_material_warning_close: Optional[np.ndarray] = None
-    imprint_result_title: Optional[np.ndarray] = None
-    imprint_result_close: Optional[np.ndarray] = None
-    transmit_reward_title: Optional[np.ndarray] = None
-    transmit_reward_close: Optional[np.ndarray] = None
+    # ⚠️ 下面 9 张**曾经是 `Optional[...] = None`**，缺文件就静默跳过。后果分三档：
+    #   - `sss_material`：缺失 → 判 UNKNOWN → 不点任何材料卡（fail-closed，还有救）
+    #   - `filter_attribute_label` / `filter_star3_unselected`：筛选面板认不出 →
+    #     反复点漏斗直到超时（不点错，但卡死）
+    #   - `sss_material_warning_title`/`_close`、`imprint_result_title`/`_close`、
+    #     `transmit_reward_title`/`_close`：**这三组是 fail-open** —— 覆盖层判据
+    #     缺失时 `_xxx_present()` 返回 False，于是「覆盖层必须先关掉」这条保护
+    #     **静默消失**，可能点到覆盖层底下的材料卡 / 返回箭头（合成消耗材料，不可逆）。
+    # 判据型模板缺一张就是配置故障，必须在**开跑前**报错，不许降级 ——
+    # 所以这里全是必需字段，配套门槛见 `HeroSynthStateMachine._assert_anchor_templates`。
+    filter_attribute_label: np.ndarray
+    filter_star3_unselected: np.ndarray
+    # ⚠️ **元组**：同一个「SSS 材料」徽记有**两种长相**（判据语义 = 任一候选过阈即命中，
+    # 取过阈候选里的最高分，与 `NavigationTemplates.lobby_shop_entry` 同一套做法）：
+    #   - 前排展开的大卡上按 100% 画
+    #   - 排在后面、被压暗的小卡上整张缩到约 90%
+    # 只留前排那张时，后排形态只量到 0.5957，掉进 0.55~0.80 的不确定带 ⇒ 判据**静默失效**、
+    # 流程停在刻印页（2026-10-04 07:22 现场，同形态最早见 2026-09-03 14:05）。
+    # 候选几张同样必需，缺一张在构造期报错（见 `_assert_anchor_templates`）。
+    sss_material: tuple[np.ndarray, ...]
+    sss_material_warning_title: np.ndarray
+    sss_material_warning_close: np.ndarray
+    imprint_result_title: np.ndarray
+    imprint_result_close: np.ndarray
+    transmit_reward_title: np.ndarray
+    transmit_reward_close: np.ndarray
+    # 证据画像（提供区域表与阈值表）。**必需** —— 它若是 None，
+    # `HeroSynthStateMachine._REGIONS` 压根不会被赋值，判据要等到第一次
+    # `_locate()` 才以 AttributeError 炸出来：晚、且现场难查。
+    evidence: EvidenceProfile
     threshold: float = 0.80
     assume_non_max_rating: bool = False
-    evidence: EvidenceProfile | None = None
 
 
 def build_hero_templates(template_root: Path) -> HeroTemplates:
+    """加载英雄合成全部模板。**模板缺一张就直接抛错**，不做任何降级。
+
+    这里**不许**再写 ``load_template(...) if path.exists() else None`` —— 那会让判据
+    静默消失（详见 ``HeroTemplates`` 里那段说明）。``load_template`` 文件不在时本来就
+    会 ``FileNotFoundError``，这正好是我们要的 fail closed：开跑前起不来，
+    而不是带着一个悄悄失效的判据跑到真机上。
+    """
     hero = template_root / "hero"
     navigation = template_root / "navigation"
-    result_title = hero / "imprint_result_title.png"
-    result_close = hero / "imprint_result_close.png"
-    sss_material = hero / "sss_material.png"
-    sss_material_warning_title = hero / "sss_material_warning_title.png"
-    sss_material_warning_close = hero / "sss_material_warning_close.png"
-    filter_attribute = hero / "filter_attribute_label.png"
-    filter_star3_unselected = hero / "filter_star3_unselected.png"
-    transmit_reward_title = hero / "transmit_reward_title.png"
-    transmit_reward_close = hero / "transmit_reward_close.png"
     evidence = build_hero_evidence(template_root)
+    # 「SSS 材料」徽记的候选模板从证据画像里取，不再手写路径 —— 路径只留一个来源，
+    # 免得「画像说有两张、加载器只读一张」这种口径漂移（本路线踩过同类坑）。
+    sss_material = evidence.atom("sss_material")
     return HeroTemplates(
         filter_button=load_template(str(hero / "filter_button.png")),
         filter_level_label=load_template(str(hero / "filter_level_label.png")),
@@ -159,40 +180,40 @@ def build_hero_templates(template_root: Path) -> HeroTemplates:
         auto_select_label=load_template(str(hero / "auto_select_label.png")),
         story_back=load_template(str(navigation / "story_back.png")),
         rating_sss=load_template(str(hero / "rating_sss.png")),
-        filter_attribute_label=(
-            load_template(str(filter_attribute)) if filter_attribute.exists() else None
+        filter_attribute_label=load_template(
+            str(hero / "filter_attribute_label.png")
         ),
-        filter_star3_unselected=(
-            load_template(str(filter_star3_unselected))
-            if filter_star3_unselected.exists()
-            else None
+        filter_star3_unselected=load_template(
+            str(hero / "filter_star3_unselected.png")
         ),
-        sss_material=(load_template(str(sss_material)) if sss_material.exists() else None),
-        sss_material_warning_title=(
-            load_template(str(sss_material_warning_title))
-            if sss_material_warning_title.exists()
-            else None
+        sss_material=tuple(
+            load_template(str(template_root / path))
+            for path in (
+                sss_material.template_path,
+                *sss_material.alt_template_paths,
+            )
         ),
-        sss_material_warning_close=(
-            load_template(str(sss_material_warning_close))
-            if sss_material_warning_close.exists()
-            else None
+        sss_material_warning_title=load_template(
+            str(hero / "sss_material_warning_title.png")
         ),
-        imprint_result_title=(load_template(str(result_title)) if result_title.exists() else None),
-        imprint_result_close=(load_template(str(result_close)) if result_close.exists() else None),
-        transmit_reward_title=(
-            load_template(str(transmit_reward_title))
-            if transmit_reward_title.exists()
-            else None
+        sss_material_warning_close=load_template(
+            str(hero / "sss_material_warning_close.png")
         ),
-        transmit_reward_close=(
-            load_template(str(transmit_reward_close))
-            if transmit_reward_close.exists()
-            else None
+        imprint_result_title=load_template(
+            str(hero / "imprint_result_title.png")
         ),
-        assume_non_max_rating=False,
-        threshold=evidence.atom("filter_button").threshold,
+        imprint_result_close=load_template(
+            str(hero / "imprint_result_close.png")
+        ),
+        transmit_reward_title=load_template(
+            str(hero / "transmit_reward_title.png")
+        ),
+        transmit_reward_close=load_template(
+            str(hero / "transmit_reward_close.png")
+        ),
         evidence=evidence,
+        threshold=evidence.atom("filter_button").threshold,
+        assume_non_max_rating=False,
     )
 
 
@@ -273,6 +294,14 @@ class HeroSynthStateMachine(HeroVisionMixin):
     _REWARD_STRIP_RANGE = (300, 1500)
     _SSS_MATERIAL_CLEAR_MAX = 0.55
     _SSS_TEMPLATE_INSET = 4
+    # 「SSS 材料」徽记在页面上会被画成**多档尺寸**：同一枚徽记，排在材料列表
+    # 越靠后的卡上就越小。已实测到的核心宽有 56 / 50 / 45 三档（相对模板
+    # 1.00 / 0.90 / 0.80 倍），而卡片排第几位由页面当时有几张材料决定 ⇒ 档位
+    # 不是固定的两三种，补模板补不完（2026-10-04 08:36 现场：只按 1.00 倍
+    # 匹配量到 0.5928，落进 0.55~0.80 死区 ⇒ 判据沉默、一帧动作都不出）。
+    # 因此在基准尺寸之外再做一组相对缩放，逐档取最高分。
+    # 范围只向下扩：所有已实测帧的最佳档都 ≤ 1.00（不需要更大的画法）。
+    _SSS_TEMPLATE_SCALES: tuple[float, ...] = (1.00, 0.95, 0.90, 0.85, 0.80, 0.75)
     _NON_SSS_BUTTON_SATURATION_MIN = 90.0
     _FILTER_ATTRIBUTE_SMALL_MIN = FILTER_ATTRIBUTE_SMALL_THRESHOLD
     _UP_BADGE_MIN_PIXELS = 300
@@ -281,6 +310,30 @@ class HeroSynthStateMachine(HeroVisionMixin):
     _TRANSMIT_HIGHLIGHT_ZONE = (1600, 200, 380, 800)
     _READINESS_OBSERVATIONS = 2
 
+    @staticmethod
+    def _assert_anchor_templates(templates: HeroTemplates) -> None:
+        """登记在证据画像里的判据锚点必须都有模板，缺了当场报错。
+
+        与 ``Epic7Navigator._assert_anchor_templates`` 同一套规矩（2026-10-03）。
+        判据型模板缺一张，判据**不会报错、只会静默消失**：轻则页面认不出、反复
+        点同一个按钮直到超时；重则「覆盖层必须先关掉」这类保护悄悄失效，
+        点到覆盖层底下的材料卡 —— 而合成会消耗材料，不可逆。
+
+        名册取 ``evidence.atoms`` 而不是自己再列一份：``_REGIONS`` / ``_THRESHOLDS``
+        本来就是从它派生的，它才是「本路线有哪些判据锚点」的权威来源。
+        """
+        missing = []
+        for anchor in templates.evidence.atoms:
+            value = getattr(templates, anchor, None)
+            # None = 没加载；空元组 = 候选图一张都没有。两者都是「判据不存在」。
+            if value is None or (isinstance(value, tuple) and not value):
+                missing.append(anchor)
+        if missing:
+            raise ValueError(
+                "英雄合成判据锚点缺少模板（该判据会静默失效）："
+                + "、".join(sorted(missing))
+            )
+
     def __init__(
         self,
         templates: HeroTemplates,
@@ -288,13 +341,14 @@ class HeroSynthStateMachine(HeroVisionMixin):
     ) -> None:
         self.templates = templates
         self.state = initial_state
-        if templates.evidence is not None:
-            self._REGIONS = {
-                key: atom.region for key, atom in templates.evidence.atoms.items()
-            }
-            self._THRESHOLDS = {
-                key: atom.threshold for key, atom in templates.evidence.atoms.items()
-            }
+        # 开跑前先确认判据锚点都在，再拿它建区域表/阈值表。
+        self._assert_anchor_templates(templates)
+        self._REGIONS = {
+            key: atom.region for key, atom in templates.evidence.atoms.items()
+        }
+        self._THRESHOLDS = {
+            key: atom.threshold for key, atom in templates.evidence.atoms.items()
+        }
         self.completed_cycles = 0
         self.filter_verified = False
         self.prev_card_grey = False
@@ -330,6 +384,9 @@ class HeroSynthStateMachine(HeroVisionMixin):
         self._list_end_fingerprint: Optional[str] = None
         self._current_card_observation: Optional[str] = None
         self._previous_card_context: Optional[tuple[str, SafetyClass]] = None
+        # 「刻印加材料」页**每帧现算**的观察值（``slots=N;rows=…``），与动作对象
+        # 解耦 —— 见 `_material_transition_completed`。
+        self._current_material_observation: Optional[str] = None
 
     @property
     def pending_transmit_target(self) -> bool:
@@ -357,7 +414,11 @@ class HeroSynthStateMachine(HeroVisionMixin):
         source_page: str,
         target_pages: tuple[str, ...],
         reason: str,
-        source_observation: str = "",
+        # 同页动作的出口验收依据 —— **用基类字段名**（原 `source_observation`）。
+        # 改名是为了让 `_REQUIRE_TRANSITION_CONTRACT` 真能读到它：那个开关查的
+        # 就是 `in_page_evidence`，名字不齐时这 12 个同页动作只是「形式合规」
+        # （靠 target_pages 里塞当前页过检查），实质没有验收依据。
+        in_page_evidence: str = "",
         transition_kind: str = "",
     ) -> HeroAction:
         return HeroAction(
@@ -366,7 +427,7 @@ class HeroSynthStateMachine(HeroVisionMixin):
             source_page=source_page,
             target_pages=target_pages,
             reason=reason,
-            source_observation=source_observation,
+            in_page_evidence=in_page_evidence,
             transition_kind=transition_kind,
         )
 
@@ -447,14 +508,22 @@ class HeroSynthStateMachine(HeroVisionMixin):
             return True, None
         return False, None
 
-    def _back_action(self, screen: np.ndarray) -> Optional[HeroAction]:
+    def _back_point(self, screen: np.ndarray) -> Optional[tuple[int, int]]:
+        """页内返回箭头的点击点。**只给坐标，不给动作。**
+
+        为什么只给坐标：``HeroAction`` 的 ``source_page`` / ``target_pages`` 是转场
+        契约（见 ``docs/TRANSITION_CONTRACTS.md``），而「返回」在不同位置的含义不同
+        （传送选择→列表、合成后刻印页→列表、刻印页→列表），只有调用方知道，所以契约
+        必须由调用方声明。历史上这里直接返回一个**裸 ``HeroAction``**，于是有调用点
+        顺手 ``return back`` —— 那个「返回」点完不回头看，成没成功根本没人验收。
+        改成只返回坐标后，「裸动作」在本路线里就构造不出来了。
+        """
         back = self._locate(screen, "story_back")
         if back is None:
             return None
         # match.center 已是屏幕坐标，仅做箭头热区向左偏移
         offset = self._BACK_OFFSET
-        point = (back.center[0] + offset[0], back.center[1] + offset[1])
-        return HeroAction("back_to_list", point)
+        return (back.center[0] + offset[0], back.center[1] + offset[1])
 
     # ---- 遍历决策 ----
 
@@ -505,7 +574,7 @@ class HeroSynthStateMachine(HeroVisionMixin):
             source_page="英雄列表",
             target_pages=("传送选择",),
             reason="上一张=SSS，名称指纹同名=是，当前无红点副本；打开传送并复用目标SSS保护",
-            source_observation=current_identity,
+            in_page_evidence=current_identity,
         )
 
     def arm_adjacent_sss_context(self, action: HeroAction) -> None:
@@ -513,10 +582,10 @@ class HeroSynthStateMachine(HeroVisionMixin):
         if (
             action.transition_kind != "card_change"
             or "当前英雄为SSS" not in action.reason
-            or not action.source_observation
+            or not action.in_page_evidence
         ):
             return
-        self._previous_card_context = (action.source_observation, SafetyClass.SSS)
+        self._previous_card_context = (action.in_page_evidence, SafetyClass.SSS)
 
     def _advance_or_finish(self, screen: np.ndarray) -> Optional[HeroAction]:
         self._current_card_observation = self._detail_fingerprint(screen)
@@ -568,7 +637,7 @@ class HeroSynthStateMachine(HeroVisionMixin):
             source_page="英雄列表",
             target_pages=("英雄列表",),
             reason=f"{skip_reason}，详情指纹={fp}，等待下一英雄或列表末尾",
-            source_observation=(
+            in_page_evidence=(
                 self._hero_identity_fingerprint(screen)
             ),
             transition_kind="card_change",
@@ -669,11 +738,11 @@ class HeroSynthStateMachine(HeroVisionMixin):
             self.state = HeroSynthState.TRANSMIT_RETURNING
             if self._locate(screen, "auto_select_label"):
                 self._confirm_page("传送选择")
-                back = self._back_action(screen)
+                back = self._back_point(screen)
                 if back is not None:
                     return self._simulator_transition_action(
                         "back_to_list",
-                        back.point,
+                        back,
                         source_page="传送选择",
                         target_pages=("英雄列表",),
                         reason="传送已完成，选择页只允许返回英雄列表",
@@ -714,18 +783,18 @@ class HeroSynthStateMachine(HeroVisionMixin):
                     source_page="传送选择",
                     target_pages=("传送确认",),
                     reason="目标已进入传送格且绿色传送按钮存在",
-                    source_observation="grid=1",
+                    in_page_evidence="grid=1",
                 )
             target_class = self._classify_transmit_target(screen, card)
             if target_class is SafetyClass.SSS:
-                back = self._back_action(screen)
+                back = self._back_point(screen)
                 if back is None:
                     raise UnrecognizedScreen("传送高亮卡为 SSS 且缺少返回箭头")
                 self.transmit_phase = TransmitPhase.RETURNING
                 self.state = HeroSynthState.TRANSMIT_RETURNING
                 return self._simulator_transition_action(
                     "abort_transmit_sss_target",
-                    back.point,
+                    back,
                     source_page="传送选择",
                     target_pages=("英雄列表",),
                     reason="传送高亮目标为SSS，禁止传送并返回列表",
@@ -740,14 +809,14 @@ class HeroSynthStateMachine(HeroVisionMixin):
                     source_page="传送选择",
                     target_pages=("传送选择",),
                     reason="高亮目标已确认但传送格尚未填入",
-                    source_observation="grid=0",
+                    in_page_evidence="grid=0",
                     transition_kind="transmit_selection",
                 )
             return None
 
         if (
             self.state is HeroSynthState.IMPRINT_CONFIRM
-            and self._back_action(screen) is not None
+            and self._back_point(screen) is not None
         ):
             raise UnrecognizedScreen("合成结果覆盖层未完整识别，禁止点击底层返回")
 
@@ -759,12 +828,12 @@ class HeroSynthStateMachine(HeroVisionMixin):
         if self.state is HeroSynthState.IMPRINT_REWARD:
             if complete_imprint_page:
                 self._confirm_page("合成后刻印页")
-                back = self._back_action(screen)
+                back = self._back_point(screen)
                 if back is None:
                     return None
                 return self._simulator_transition_action(
                     "back_to_list",
-                    back.point,
+                    back,
                     source_page="合成后刻印页",
                     target_pages=("英雄列表",),
                     reason="结果覆盖层消失且刻印页返回箭头存在",
@@ -780,6 +849,17 @@ class HeroSynthStateMachine(HeroVisionMixin):
         if complete_imprint_page:
             if self.state is HeroSynthState.HERO_LIST:
                 self.state = HeroSynthState.IMPRINT_ADD
+            # 每帧现算一次观察值，**不管后面走哪个分支**（含各条 `return None`）。
+            #
+            # 为什么要在这么早的位置算：转场验收（`_material_transition_completed`）
+            # 过去是从**动作对象**里取这个值，于是「判据沉默 ⇒ 生不出动作 ⇒ 值取不到
+            # ⇒ 永远判不出转场成功」—— 2026-10-04 07:22 那次卡死的另一半原因。
+            # 槽位数与材料行位置**不依赖任何判据模板**（纯色块统计），所以哪怕
+            # `_classify_material_page` 落死区、这里照样算得出真值。
+            self._current_material_observation = self._material_observation(
+                self._imprint_filled_slot_count(screen),
+                self._ordinary_up_rows(screen),
+            )
             sss_material_present = self._sss_material_present(screen)
             if sss_material_present:
                 self._confirm_page("刻印SSS材料")
@@ -808,13 +888,13 @@ class HeroSynthStateMachine(HeroVisionMixin):
             self.transmit_phase = TransmitPhase.PENDING
             self.transmit_target_observation = target_observation
             self.transmit_continuity_intact = True
-            back = self._back_action(screen)
+            back = self._back_point(screen)
             if back is None:
                 raise UnrecognizedScreen("发现 SSS 材料但刻印页面缺少返回箭头")
             self.state = HeroSynthState.IMPRINT_ABORTING
             return self._simulator_transition_action(
                 "abort_imprint_to_transmit",
-                back.point,
+                back,
                 source_page="刻印SSS材料",
                 target_pages=("英雄列表",),
                 reason="发现SSS材料，保存当前英雄身份并中止刻印",
@@ -824,12 +904,12 @@ class HeroSynthStateMachine(HeroVisionMixin):
             and complete_imprint_page
             and sss_material_present
         ):
-            back = self._back_action(screen)
+            back = self._back_point(screen)
             if back is None:
                 raise UnrecognizedScreen("发现 SSS 材料但刻印页面缺少返回箭头")
             return self._simulator_transition_action(
                 "abort_imprint_to_transmit",
-                back.point,
+                back,
                 source_page="刻印SSS材料",
                 target_pages=("英雄列表",),
                 reason="SSS材料页仍存在，继续请求返回英雄列表",
@@ -862,7 +942,7 @@ class HeroSynthStateMachine(HeroVisionMixin):
                     reason=(
                         f"发现普通Up材料，已填槽位={filled_slots}，目标={tag}"
                     ),
-                    source_observation=material_observation,
+                    in_page_evidence=material_observation,
                     transition_kind="material_change",
                 )
             if self.state is HeroSynthState.IMPRINT_ADD:
@@ -887,7 +967,7 @@ class HeroSynthStateMachine(HeroVisionMixin):
                             "SSS评级已明确排除且检测到普通材料卡，"
                             "Up标记未识别，使用材料卡轮廓定位"
                         ),
-                        source_observation=self._material_observation(
+                        in_page_evidence=self._material_observation(
                             filled_slots, []
                         ),
                         transition_kind="material_change",
@@ -913,15 +993,24 @@ class HeroSynthStateMachine(HeroVisionMixin):
                         "Up材料已清空，"
                         f"已填槽位={filled_slots}，费用非零，连续确认=2"
                     ),
-                    source_observation=self._material_observation(
+                    in_page_evidence=self._material_observation(
                         filled_slots, []
                     ),
                 )
-            back = self._back_action(screen)
+            back = self._back_point(screen)
             if back is None:
                 raise UnrecognizedScreen("刻印画面缺少返回箭头")
-            self.state = HeroSynthState.HERO_LIST
-            return back
+            # ⚠️ 这里**不**把 state 改成 HERO_LIST：点击还没发生、更没被验收。
+            # 回到列表由第 8 段（识别到英雄列表）或者 IMPRINT_ABORTING 分支认账；
+            # 提前宣布已回列表会在点击失灵时把下一帧的刻印页当成英雄列表，
+            # 进而走到「材料已满 → 点合成」——那一步会消耗材料，不可逆。
+            return self._simulator_transition_action(
+                "back_to_list",
+                back,
+                source_page="刻印加材料",
+                target_pages=("英雄列表",),
+                reason="刻印页已无可加材料，请求返回英雄列表",
+            )
 
         # 7. 筛选面板（级别标签为锚点）
         # 一次性入场：close_filter 后置 _filter_session_done=True，
@@ -983,7 +1072,7 @@ class HeroSynthStateMachine(HeroVisionMixin):
                     f"保存身份={saved_observation}，当前身份={card_observation}，"
                     f"身份关系={identity_relation}"
                 ),
-                source_observation=card_observation,
+                in_page_evidence=card_observation,
             )
         if self._hero_list_ready(screen):
             self._active_card_observation = self._hero_identity_fingerprint(screen)
@@ -1006,7 +1095,13 @@ class HeroSynthStateMachine(HeroVisionMixin):
                     self._scaled_point(
                         screen, self._FUNNEL_POINT
                     ),
-                    source_observation=self._hero_identity_fingerprint(screen),
+                    source_page="英雄列表",
+                    target_pages=(
+                        "筛选面板（三星未选中）",
+                        "筛选面板（三星已选中）",
+                    ),
+                    reason="评级按钮结构匹配达标，且本轮尚未确认筛选，打开筛选面板",
+                    in_page_evidence=self._hero_identity_fingerprint(screen),
                 )
             if hero_class is SafetyClass.SSS:
                 self.prev_card_grey = True
@@ -1023,7 +1118,7 @@ class HeroSynthStateMachine(HeroVisionMixin):
                     source_page="英雄列表",
                     target_pages=("刻印加材料", "刻印SSS材料"),
                     reason="当前英雄非SSS且刻印按钮红点存在",
-                    source_observation=self._hero_identity_fingerprint(screen),
+                    in_page_evidence=self._hero_identity_fingerprint(screen),
                 )
             transmit = self._adjacent_sss_duplicate_transmit_action(screen)
             if transmit is not None:
@@ -1045,7 +1140,13 @@ class HeroSynthStateMachine(HeroVisionMixin):
                 self._scaled_point(
                     screen, self._FUNNEL_POINT
                 ),
-                source_observation=self._detail_fingerprint(screen),
+                source_page="英雄列表",
+                target_pages=(
+                    "筛选面板（三星未选中）",
+                    "筛选面板（三星已选中）",
+                ),
+                reason="本轮尚未确认筛选，打开筛选面板",
+                in_page_evidence=self._detail_fingerprint(screen),
             )
         if hero_class is SafetyClass.SSS:
             self.prev_card_grey = True
@@ -1065,7 +1166,7 @@ class HeroSynthStateMachine(HeroVisionMixin):
             source_page="英雄列表",
             target_pages=("刻印加材料", "刻印SSS材料"),
             reason="当前英雄非SSS且刻印按钮红点存在",
-            source_observation=self._hero_identity_fingerprint(screen),
+            in_page_evidence=self._hero_identity_fingerprint(screen),
         )
 
     def preview(self, screen: np.ndarray):
@@ -1120,8 +1221,21 @@ class HeroSynthStateMachine(HeroVisionMixin):
 
 
 class HeroSynthRunner(ModeRunnerBase):
-    """两帧确认的英雄合成 Runner（主循环协议见 ModeRunnerBase）。"""
+    """两帧确认的英雄合成 Runner（主循环协议见 ModeRunnerBase）。
 
+    ✅ **2026-10-04 打开转场契约开关**（继 `knights_donation` / `world_boss` /
+    `sanctuary` / `labyrinth_stone` 之后的第五条）。开它需要的前置是**字段名对齐**：
+    同页证据原先叫自造的 ``source_observation``，而开关读的是基类的
+    ``in_page_evidence`` —— 名字不齐时开关开着也**管不到那 12 个同页动作**
+    （它们靠 ``target_pages`` 里塞当前页过检查，契约「形式合规、实质没用」）。
+    对齐后每个动作都必须带 ``source_page`` ＋ （``target_pages`` 或
+    ``in_page_evidence``），少了在**发出前**直接报错。
+
+    开关只管「缺声明会抛错」；判据**准不准**靠 `tests/test_hero_synthesis.py`
+    的 AST 静态守 + 各页夹具跑一遍。
+    """
+
+    _REQUIRE_TRANSITION_CONTRACT = True
     _MODE_LABEL = "英雄合成"
     _NEXT_CARD_RETRY_SECONDS = 1
     _MATERIAL_RETRY_SECONDS = 5
@@ -1165,6 +1279,7 @@ class HeroSynthRunner(ModeRunnerBase):
         self._card_switch_motion_confirmed = False
         self._card_switch_motion_observer: CardSwitchMotionObserver | None = None
         self._last_imprint_abort_wait_log_at: float | None = None
+        self._last_imprint_add_wait_log_at: float | None = None
         self._hero_subpage_wait_started_at: float | None = None
         self._last_hero_subpage_wait_log_at: float | None = None
         # 本次安全策略只作用于模拟器。
@@ -1214,6 +1329,9 @@ class HeroSynthRunner(ModeRunnerBase):
             None,
         ):
             now = self.now()
+            if self._last_imprint_abort_wait_log_at is None:
+                # 同「刻印页等待」：等待期间不出手 ⇒ 不存帧就查不到现场。
+                self._save_wait_frame("imprint_abort_wait_silent", screen)
             if (
                 self._last_imprint_abort_wait_log_at is None
                 or now - self._last_imprint_abort_wait_log_at >= 10
@@ -1222,6 +1340,29 @@ class HeroSynthRunner(ModeRunnerBase):
                 self._last_imprint_abort_wait_log_at = now
         else:
             self._last_imprint_abort_wait_log_at = None
+        # 「刻印加材料」页判不出结果时同样不出手 —— 这里给它一条 10 秒心跳，
+        # 否则从进页到 90 秒超时之间日志是完全空白的（2026-10-04 现场）。
+        if self.machine.state is HeroSynthState.IMPRINT_ADD and result in (
+            NOT_STABLE,
+            None,
+        ):
+            now = self.now()
+            if self._last_imprint_add_wait_log_at is None:
+                # **首次**进入「等判据出货」时留一张现场帧。
+                #
+                # 为什么必须存：判据沉默的形态是「什么都不做」，不会走到任何超时
+                # 分支 ⇒ 一张图都不会留。2026-10-04 那次能挖出 0.593 纯属侥幸
+                # （它最后超时了）；若沉默发生在转场验收里（走「重试 4 次」的正常
+                # 路径），我们就彻底盲了。
+                # 只存首帧：`save_diagnostic` 自带裁剪，不会淹掉磁盘。
+                self._save_wait_frame("imprint_add_judgement_silent", screen)
+            if self._last_imprint_add_wait_log_at is None or now - self._last_imprint_add_wait_log_at >= 10:
+                self._log_imprint_add_evidence(
+                    screen, prefix="刻印页等待（判据没出货）"
+                )
+                self._last_imprint_add_wait_log_at = now
+        else:
+            self._last_imprint_add_wait_log_at = None
         return result
 
     def _log_hero_subpage_wait(self, screen: np.ndarray) -> None:
@@ -1269,6 +1410,56 @@ class HeroSynthRunner(ModeRunnerBase):
             f"连续性={int(self.machine.transmit_continuity_intact)}"
         )
 
+    def _save_wait_frame(self, label: str, screen: np.ndarray) -> None:
+        """「等判据出货」时留一张现场帧；**存不下来也不许影响流程**。
+
+        判据沉默的形态是「什么都不做」⇒ 不会走到任何超时分支 ⇒ 一张图都不会留，
+        事后只能靠猜（2026-10-04 那次能挖出 0.593 纯属侥幸，它恰好超时了）。
+        但诊断是**锦上添花**：没配目录、写盘失败都不该打断主循环，所以整段兜住。
+        （先例：`_log_card_switch_diagnostics` 里「未配置诊断目录」的早退。）
+        """
+        if self.runtime.diagnostic_dir is None:
+            return
+        try:
+            self.runtime.save_diagnostic(label, screen)
+        except Exception as error:  # noqa: BLE001 - 诊断失败绝不打断主循环
+            self.runtime.log(
+                f"模式={self._MODE_LABEL} 等待现场帧保存失败（已忽略）"
+                f" 标签={label} 原因={error}"
+            )
+
+    def _log_imprint_add_evidence(
+        self, screen: np.ndarray, *, prefix: str
+    ) -> None:
+        """把「刻印加材料」页当前的**判据依据**打出来。
+
+        同一份依据供两条路用，避免两处各写一遍：
+
+        - **超时**（`_log_settled_timeout`）—— 事后定责；
+        - **每 10 秒的等待心跳**（`_stable_next_action`）—— 让「一直不出动作」当场可见。
+
+        ⚠️ 为什么必须有等待心跳：这一页判不出结果时 `next_action()` 返回 None，
+        **不出手、不打分、不报警**，日志会整整空 90 秒才吐一行超时（2026-10-04
+        08:34:30 进页 → 08:36:02 超时，中间一行都没有），人只能事后翻现场帧才知道
+        卡在哪。有这行心跳，`SSS页评级=unknown` 这种「判据落进死区」10 秒内就能看出来。
+        """
+        green = self.machine._green_button_present(screen)
+        slots = self.machine._imprint_slots_present(screen)
+        up = self.machine._find_up_card(screen)
+        visible_card = self.machine._find_visible_material_card(screen)
+        self.runtime.log(
+            f"模式={self._MODE_LABEL} {prefix} "
+            f"完整页面={int(green and slots)} "
+            f"绿色按钮={int(green)} 槽位结构={int(slots)} "
+            f"已填槽位={self.machine._imprint_filled_slot_count(screen)} "
+            f"费用非零={int(self.machine._imprint_cost_nonzero(screen))} "
+            f"Up材料={up[2] if up is not None else '未识别'} "
+            f"材料卡={visible_card[2] if visible_card is not None else '未识别'} "
+            f"SSS页评级={self.machine._classify_material_page(screen).value} "
+            f"SSS最高分={self.machine._material_page_sss_score(screen):.3f} "
+            f"未知Up材料={int(self.machine._unknown_up_material_present(screen))}"
+        )
+
     def _log_settled_timeout(self, state: HeroSynthState, diagnostic) -> None:
         screen = self.machine._last_screen
         if (
@@ -1280,22 +1471,8 @@ class HeroSynthRunner(ModeRunnerBase):
                 prefix=f"中止返回超时 诊断={diagnostic}",
             )
         elif state is HeroSynthState.IMPRINT_ADD and screen is not None:
-            green = self.machine._green_button_present(screen)
-            slots = self.machine._imprint_slots_present(screen)
-            up = self.machine._find_up_card(screen)
-            visible_card = self.machine._find_visible_material_card(screen)
-            material_class = self.machine._classify_material_page(screen)
-            self.runtime.log(
-                f"模式={self._MODE_LABEL} 刻印页超时 诊断={diagnostic} "
-                f"完整页面={int(green and slots)} "
-                f"绿色按钮={int(green)} 槽位结构={int(slots)} "
-                f"已填槽位={self.machine._imprint_filled_slot_count(screen)} "
-                f"费用非零={int(self.machine._imprint_cost_nonzero(screen))} "
-                f"Up材料={up[2] if up is not None else '未识别'} "
-                f"材料卡={visible_card[2] if visible_card is not None else '未识别'} "
-                f"SSS页评级={material_class.value} "
-                f"SSS最高分={self.machine._material_page_sss_score(screen):.3f} "
-                f"未知Up材料={int(self.machine._unknown_up_material_present(screen))}"
+            self._log_imprint_add_evidence(
+                screen, prefix=f"刻印页超时 诊断={diagnostic}"
             )
 
     def _log_transition_timeout(
@@ -1338,16 +1515,16 @@ class HeroSynthRunner(ModeRunnerBase):
             )
             return (
                 f"next_card:{decision}:"
-                f"{preview_action.source_observation}"
+                f"{preview_action.in_page_evidence}"
             )
         if (
             preview_action is not None
             and preview_action.source_page == "英雄列表"
-            and preview_action.source_observation
+            and preview_action.in_page_evidence
         ):
             return (
                 f"{preview_action.name}:"
-                f"{preview_action.source_observation}"
+                f"{preview_action.in_page_evidence}"
             )
         return super()._stable_action_signature(preview_action, outcome)
 
@@ -1358,7 +1535,7 @@ class HeroSynthRunner(ModeRunnerBase):
         ):
             return
         self.runtime.log(
-            f"模式=英雄合成 切换开始 旧身份={action.source_observation or '无法读取'} "
+            f"模式=英雄合成 切换开始 旧身份={action.in_page_evidence or '无法读取'} "
             f"点击={action.point}"
         )
         observer = CardSwitchMotionObserver(self.machine._last_screen)
@@ -1408,19 +1585,19 @@ class HeroSynthRunner(ModeRunnerBase):
             if not final_observation
             else (
                 "未变化"
-                if final_observation == action.source_observation
+                if final_observation == action.in_page_evidence
                 else "已变化"
             )
         )
         self.runtime.log(
             f"模式=英雄合成 切换观察 静态身份={identity_status} "
-            f"旧身份={action.source_observation or '无法读取'} "
+            f"旧身份={action.in_page_evidence or '无法读取'} "
             f"当前身份={final_observation or '无法读取'}"
         )
         if (
             not self._card_switch_motion_confirmed
             or not final_observation
-            or final_observation == action.source_observation
+            or final_observation == action.in_page_evidence
         ):
             self._save_card_switch_evidence(action, observer, identity_status)
 
@@ -1462,11 +1639,15 @@ class HeroSynthRunner(ModeRunnerBase):
                 self.runtime.save_diagnostic(label, screen)
 
     @staticmethod
-    def _parse_material_observation(
-        action: HeroAction | None,
+    def _parse_observation_text(
+        observation: str | None,
     ) -> tuple[int, tuple[int, ...]] | None:
-        observation = getattr(action, "source_observation", "")
-        if not observation.startswith("slots=") or ";rows=" not in observation:
+        """解析 ``slots=N;rows=a,b`` 形式的材料观察串。
+
+        抽成独立方法是为了让**两个来源**（动作对象 / 机器每帧现算的
+        `_current_material_observation`）走同一套解析 —— 口径不一致会比没修更难查。
+        """
+        if not observation or not observation.startswith("slots=") or ";rows=" not in observation:
             return None
         slots_text, rows_text = observation.split(";rows=", 1)
         try:
@@ -1478,11 +1659,36 @@ class HeroSynthRunner(ModeRunnerBase):
             return None
         return slots, rows
 
+    @staticmethod
+    def _parse_material_observation(
+        action: HeroAction | None,
+    ) -> tuple[int, tuple[int, ...]] | None:
+        return HeroSynthRunner._parse_observation_text(
+            getattr(action, "in_page_evidence", "")
+        )
+
     def _material_transition_completed(
         self, previous_action: HeroAction, current_action: HeroAction | None
     ) -> bool:
+        """「材料进槽了没有」：比点击前后的槽位数与材料行位置。
+
+        ⚠️ 当前观察值**不能只从动作对象取**（2026-10-04）。原实现只读
+        ``current_action.in_page_evidence``，而这一帧若判据沉默（SSS 徽记落死区
+        ⇒ ``next_action`` 返回 ``None``）就取不到值，转场**永远判不出成功** ——
+        表现为点完材料后一路重试到超时。这正是 07:22 那次卡死的另一半原因。
+
+        现在优先取动作对象（**保持原语义不变**，正常路径一字不差），取不到时回落到
+        `_current_material_observation`（机器每帧现算、与判据解耦，见 `next_action`
+        第 6 段）。两种来源解析出的字段完全同构，判定口径不变。
+        """
         previous = self._parse_material_observation(previous_action)
         current = self._parse_material_observation(current_action)
+        if current is None:
+            # 动作对象里取不到（判据沉默 ⇒ 这一帧没生成动作）⇒ 回落到机器
+            # 每帧现算的那份。两份串格式同构，走同一个解析方法。
+            current = self._parse_observation_text(
+                self.machine._current_material_observation
+            )
         if previous is None or current is None:
             return False
         previous_slots, previous_rows = previous
@@ -1496,17 +1702,17 @@ class HeroSynthRunner(ModeRunnerBase):
         previous_action: HeroAction, current_action: HeroAction | None
     ) -> bool:
         return bool(
-            previous_action.source_observation == "grid=0"
+            previous_action.in_page_evidence == "grid=0"
             and current_action is not None
-            and current_action.source_observation == "grid=1"
+            and current_action.in_page_evidence == "grid=1"
         )
 
     def _card_transition_completed(self, previous_action, current_action) -> bool:
         if self._card_switch_motion_confirmed:
             self._card_switch_motion_confirmed = False
             return True
-        previous_observation = getattr(previous_action, "source_observation", "")
-        current_observation = getattr(current_action, "source_observation", "")
+        previous_observation = getattr(previous_action, "in_page_evidence", "")
+        current_observation = getattr(current_action, "in_page_evidence", "")
         return bool(
             previous_observation
             and current_observation
@@ -1546,19 +1752,19 @@ class HeroSynthRunner(ModeRunnerBase):
     def _transition_success_detail(self, previous_action, current_action) -> str:
         if getattr(previous_action, "transition_kind", "") == "card_change":
             observation = (
-                getattr(current_action, "source_observation", "")
+                getattr(current_action, "in_page_evidence", "")
                 if current_action is not None
                 else getattr(self.machine, "_current_card_observation", None)
             )
             evidence = (
                 "静态身份变化并连续稳定"
                 if observation
-                and observation != previous_action.source_observation
+                and observation != previous_action.in_page_evidence
                 else "静态身份相同，仅由动态证据确认"
             )
             return (
                 f"业务切换成功 证据={evidence}；"
-                f"旧身份={previous_action.source_observation} "
+                f"旧身份={previous_action.in_page_evidence} "
                 f"新身份={observation}"
             )
         return super()._transition_success_detail(previous_action, current_action)
