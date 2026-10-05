@@ -20,6 +20,30 @@
 
 `score` 即使低于 `threshold` 也会保留数值；先比较区域、模板和分差，再决定修改。对手选中页以及普通/快速战斗页使用生产状态机与检查器共享的 evaluator，修改页面组合时两边会同步生效，必须同时跑 fixture 和 Runner 回归。
 
+## 入口锚点：`novice_arena` 有两种长相（2026-10-05）
+
+「竞技场模式选择」页底部那个入口按钮，**名字随账号状态变**：
+
+| 账号状态 | 按钮文字 | 候选模板 |
+| --- | --- | --- |
+| 新手期 | 「新手竞技场」 | `navigation/novice_arena.png` |
+| 脱离新手期 | 「竞技场」 | `navigation/arena_entry.png` |
+
+- **故障形态**：脱离新手期后，旧模板在那一帧只有 **0.7301**（阈值 **0.82**、位置 `(710,995)` 完全一致）
+  —— **差一点就过**。而 `navigation.py::Epic7Navigator.observe()` 判 `arena_mode` 要求
+  「左上角标题 `arena_mode_title` **且** 底部入口都命中」⇒ **整页认不出来**，导航与接力一起失效。
+- **改法**：`NavigationTemplates.novice_arena` 是**候选 tuple**（`tuple[np.ndarray, ...]`），
+  语义与 `lobby_shop_entry` 一致：**任一候选过阈即命中、取过阈里最高分**。
+  ⚠️ 锚点名沿用历史 `novice_arena`（改名波及面大于收益），它现在指的是**这个入口按钮**，不再特指新手期。
+- **加第三种长相时**：只需往 tuple 里再加一张按目标平台真机裁的模板 + 一条互补性测试
+  （参照 `tests/test_navigation.py::test_arena_entry_candidates_cover_novice_and_regular`）
+  —— **不要**动 `_locate()` / `_assert_anchor_templates()`，它们早已支持多候选并拦「整组为空」。
+- ⚠️ **量分数务必走生产口径 RGB**（`Epic7Navigator` 内部口径）；用 `cv2.imread` 的 BGR 直接喂屏会凭空掉分。
+
+⚠️ `arena_entry.png` 是**整钮**（城堡图标 +「全新赛季已开启」+「竞技场」）。其中「全新赛季已开启」
+是**赛季开始时才出现**的提示行，属「会变内容」；实测该行消失后仍得 **0.9745**（远高于 0.82），
+另两处交叉场景也都 < 0.82 ⇒ 保留。**若将来它改词/改版导致掉破阈值**，就改成裁掉该行（只留图标+文字）。
+
 ## 每局战绩（胜 / 负 / 未知）
 
 用户看到的「战绩：胜 2 / 负 1」来自 `games/epic7/arena.py`：

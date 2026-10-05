@@ -442,13 +442,16 @@ MODE_SPECS = {
             steps=(
                 NavigationStep("lobby", ("arena_mode",), "lobby_arena", "进入竞技场"),
                 NavigationStep(
-                    "arena_mode", ("arena_ready",), "novice_arena", "进入新手竞技场"
+                    # 锚点名沿用历史 `novice_arena`（改名的波及面比收益大），
+                    # 它指的是这一页底部那个入口按钮 —— 2026-10-05 起该锚点同时
+                    # 认「新手竞技场」和「竞技场」两种长相，见 `NavigationTemplates`。
+                    "arena_mode", ("arena_ready",), "novice_arena", "进入竞技场"
                 ),
             ),
             resume_entries=frozenset({ARENA_ENTRY_PAGE}),
             resume_log_mode="竞技场",
             resume_action="跳过回大厅与进入竞技场",
-            resume_state_done="直接进新手竞技场",
+            resume_state_done="直接进竞技场",
         ),
     ),
     "story": ModeSpec(

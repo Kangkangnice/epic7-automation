@@ -161,6 +161,48 @@ class NavigationTests(unittest.TestCase):
         self.assertLess(best(badged_frame, base), threshold)
         self.assertGreaterEqual(best(badged_frame, badged), threshold)
 
+    def test_arena_entry_candidates_cover_novice_and_regular(self):
+        """两颗候选必须**互补**：新手期靠旧模板过阈、脱离新手期后靠新模板过阈，
+        且各自在对方的画面上都不过阈 —— 少任何一半，这条判据就有一半场景是摆设。
+
+        2026-10-05 用户实机反馈：账号脱离新手期后，底部那个入口的名字从
+        「新手竞技场」变成「竞技场」，旧模板在那一帧只有 0.7301（门槛 0.82）。
+        而 `observe()` 判 `arena_mode` 要求「左上角标题 **且** 这个入口按钮」都命中
+        ⇒ 整个「竞技场模式选择」页认不出来（导航与接力一起失效）。
+        """
+        novice, regular = build_navigation_templates(TEMPLATES).novice_arena
+        region = (400, 780, 650, 352)
+        threshold = 0.82
+
+        def best(image, template) -> float:
+            return find_best_template(
+                image, template, region=region, reference_size=REFERENCE_SIZE
+            ).score
+
+        old_frame = fixture("arena_mode")
+        new_frame = fixture("arena_mode_regular_20261005")
+
+        self.assertGreaterEqual(best(old_frame, novice), threshold)
+        self.assertLess(best(old_frame, regular), threshold)
+        self.assertLess(best(new_frame, novice), threshold)
+        self.assertGreaterEqual(best(new_frame, regular), threshold)
+
+    def test_arena_mode_page_is_recognised_in_both_entry_looks(self):
+        """端到端：两种入口长相都要能把这一页认成 `arena_mode`。
+
+        只断言锚点分数不够 —— `observe()` 还要左上角标题一起成立才算数，
+        任何一半缺席都会让整页认不出来（这正是 2026-10-05 那次故障的形态）。
+        """
+        navigator = Epic7Navigator(
+            build_navigation_templates(TEMPLATES),
+            Runtime(lambda: None, lambda point: None),
+            sleep=lambda _: None,
+        )
+
+        for name in ("arena_mode", "arena_mode_regular_20261005"):
+            with self.subTest(fixture=name):
+                self.assertEqual("arena_mode", navigator.observe(fixture(name)).name)
+
     def test_shop_navigation_recovers_from_transitional_lobby_frame(self):
         """回归守卫：home_return v2 是「第一帧认出大厅就返回」，偶尔会把一个还在动画的
         过渡大厅帧交进来；这种帧上 ``lobby_shop_entry``（大厅左侧入口）可能没过阈，
