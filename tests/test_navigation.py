@@ -161,37 +161,60 @@ class NavigationTests(unittest.TestCase):
         self.assertLess(best(badged_frame, base), threshold)
         self.assertGreaterEqual(best(badged_frame, badged), threshold)
 
-    def test_arena_entry_candidates_cover_novice_and_regular(self):
-        """两颗候选必须**互补**：新手期靠旧模板过阈、脱离新手期后靠新模板过阈，
-        且各自在对方的画面上都不过阈 —— 少任何一半，这条判据就有一半场景是摆设。
+    def test_arena_entry_candidate_ignores_the_changing_upper_half(self):
+        """回归守卫（2026-10-05 每日任务实跑 ✗）：这颗入口按钮的**上半截会变** ——
+        赛季刚开始时是「城堡图标 ＋ 全新赛季已开启」，之后换成「段位徽章 ＋ 段位字」
+        （段位字还随段位变）。曾经把**整钮**裁进模板，于是那半截一变就对不上
+        （真机只到 **0.7786** < 0.82）⇒ 整页认不出、导航与接力一起失效。
 
-        2026-10-05 用户实机反馈：账号脱离新手期后，底部那个入口的名字从
-        「新手竞技场」变成「竞技场」，旧模板在那一帧只有 0.7301（门槛 0.82）。
-        而 `observe()` 判 `arena_mode` 要求「左上角标题 **且** 这个入口按钮」都命中
-        ⇒ 整个「竞技场模式选择」页认不出来（导航与接力一起失效）。
+        因此模板只裁**底部那行固定标题的字形**。这条测试钉住两件事：
+        ① 它在「赛季刚开始」与「显示段位」两种长相上**都过阈**；
+        ② 两者分数**基本一致**（差别极小）—— 一旦有人把会变的上半截再裁回去，
+           这两张帧的分数就会明显拉开，②会立刻红。
         """
-        novice, regular = build_navigation_templates(TEMPLATES).novice_arena
+        _novice, regular = build_navigation_templates(TEMPLATES).novice_arena
         region = (400, 780, 650, 352)
         threshold = 0.82
 
-        def best(image, template) -> float:
+        def best(image) -> float:
             return find_best_template(
-                image, template, region=region, reference_size=REFERENCE_SIZE
+                image, regular, region=region, reference_size=REFERENCE_SIZE
             ).score
 
-        old_frame = fixture("arena_mode")
-        new_frame = fixture("arena_mode_regular_20261005")
+        # 上半截：城堡图标 +「全新赛季已开启」（用户 2026-10-05 00:42 截图）
+        season_start = best(fixture("arena_mode_regular_20261005"))
+        # 上半截：段位徽章 +「挑战者V」（同日 15:02 真机帧，就是那次失败的现场）
+        rank_shown = best(fixture("arena_mode_regular_rank_20261005"))
 
-        self.assertGreaterEqual(best(old_frame, novice), threshold)
-        self.assertLess(best(old_frame, regular), threshold)
-        self.assertLess(best(new_frame, novice), threshold)
-        self.assertGreaterEqual(best(new_frame, regular), threshold)
+        self.assertGreaterEqual(season_start, threshold)
+        self.assertGreaterEqual(rank_shown, threshold)
+        self.assertLess(
+            abs(season_start - rank_shown),
+            0.05,
+            "模板不该依赖按钮上半截——两种长相上的分数必须基本一致",
+        )
 
-    def test_arena_mode_page_is_recognised_in_both_entry_looks(self):
-        """端到端：两种入口长相都要能把这一页认成 `arena_mode`。
+    def test_arena_novice_entry_candidate_still_matches_the_novice_look(self):
+        """新手期那张候选模板不能因为改版而失效（账号一旦回到新手期还得认）。
+
+        注：新的纯字形候选在新手帧上也会命中（`竞技场` 是 `新手竞技场` 的后缀），
+        这**无害** —— 同一颗按钮、同一个点击目标；这里只钉住旧候选本身还成立。
+        """
+        novice, _regular = build_navigation_templates(TEMPLATES).novice_arena
+        score = find_best_template(
+            fixture("arena_mode"),
+            novice,
+            region=(400, 780, 650, 352),
+            reference_size=REFERENCE_SIZE,
+        ).score
+        self.assertGreaterEqual(score, 0.82)
+
+    def test_arena_mode_page_is_recognised_in_every_known_entry_look(self):
+        """端到端：**每一种已知的入口长相**都要能把这一页认成 `arena_mode`。
 
         只断言锚点分数不够 —— `observe()` 还要左上角标题一起成立才算数，
-        任何一半缺席都会让整页认不出来（这正是 2026-10-05 那次故障的形态）。
+        任何一半缺席都会让整页认不出来（这正是 2026-10-05 那次失败的形态）。
+        夹具刻意覆盖「那内容会怎么变」：新手期 / 赛季刚开始 / 显示段位，三种都上。
         """
         navigator = Epic7Navigator(
             build_navigation_templates(TEMPLATES),
@@ -199,7 +222,11 @@ class NavigationTests(unittest.TestCase):
             sleep=lambda _: None,
         )
 
-        for name in ("arena_mode", "arena_mode_regular_20261005"):
+        for name in (
+            "arena_mode",  # 新手期：「新手竞技场」
+            "arena_mode_regular_20261005",  # 脱离新手期·赛季刚开始
+            "arena_mode_regular_rank_20261005",  # 脱离新手期·显示段位
+        ):
             with self.subTest(fixture=name):
                 self.assertEqual("arena_mode", navigator.observe(fixture(name)).name)
 
