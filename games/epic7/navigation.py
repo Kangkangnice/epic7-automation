@@ -211,7 +211,13 @@ class NavigationTemplates:
     exit_title_updated: np.ndarray
     exit_cancel_updated: np.ndarray
     arena_mode_title: np.ndarray
-    novice_arena: np.ndarray
+    # 竞技场模式选择页底部四个入口里的**第二个**（「新手竞技场」/「竞技场」那个）。
+    # ⚠️ 它**有两种长相**：入口名随账号状态变 —— 新手期叫「新手竞技场」，脱离新手期后
+    # 叫「竞技场」（2026-10-05 用户实机确认）。旧模板在那一帧只有 **0.7301**、低于
+    # 0.82 门槛，而 `observe()` 判 `arena_mode` 要的是「标题 **且** 这个按钮」都命中
+    # ⇒ 整个「竞技场模式选择」页认不出来（导航、接力一起受影响）。
+    # 语义与 ``lobby_shop_entry`` 一致：**任一候选过阈即命中**，取过阈里分数最高的。
+    novice_arena: tuple[np.ndarray, ...]
     story_back: np.ndarray
     story_watch: np.ndarray
     story_skip: np.ndarray
@@ -309,7 +315,12 @@ def build_navigation_templates(template_root: Path) -> NavigationTemplates:
         exit_title_updated=load_template(str(navigation / "exit_title_updated.png")),
         exit_cancel_updated=load_template(str(navigation / "exit_cancel_updated.png")),
         arena_mode_title=load_template(str(navigation / "arena_mode_title.png")),
-        novice_arena=load_template(str(navigation / "novice_arena.png")),
+        # 两张候选：`novice_arena` = 新手期长相，`arena_entry` = 脱离新手期后的长相。
+        # 顺序不影响结果（`_locate` 取过阈候选里的最高分，不看先后）。
+        novice_arena=(
+            load_template(str(navigation / "novice_arena.png")),
+            load_template(str(navigation / "arena_entry.png")),
+        ),
         story_back=load_template(str(navigation / "story_back.png")),
         story_watch=load_template(str(template_root / "story" / "watch_story.png")),
         story_skip=load_template(str(template_root / "story" / "skip.png")),
