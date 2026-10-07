@@ -63,6 +63,12 @@ class DailyTask:
 # 次数不写在这儿 —— 它跟着 ``MODE_SPECS`` 的 default_cycles 走（界面上可以改，
 # 改的值走 ``run_daily_tasks(cycles_override=...)``）。各路线为什么是那个次数，
 # 写在各自的 ModeSpec 上。
+#
+# ⚠️ **「社区签到」刻意不在这张默认清单里**（它已经在 ``MODE_SPECS`` 与 ``ROUTES``
+# 里登记了，界面能勾、命令行能点名，只是不该被默认带上）。理由：它的竖屏段还缺真机
+# 数据，实跑被 ``modes._preflight_community`` 拦住 —— 放进来会让**每一次**裸跑
+# ``--daily`` 都多出一个必然失败的 ✗，人会很快学会无视那个 ✗。
+# 等数据采齐、``community.LIVE_RUN_READY`` 打开之后，再按它该在的位置加进来。
 DAILY_TASKS: tuple[DailyTask, ...] = (
     DailyTask(mode="world_boss"),
     DailyTask(mode="knights_donation"),

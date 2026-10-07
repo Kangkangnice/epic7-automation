@@ -171,6 +171,28 @@ class ModeRunnerBase:
         """子模式可在覆写里给当前动作附加决策原因摘要。"""
         return ""
 
+    def _capture_frame(self) -> Any:
+        """取一帧。默认就是 ``runtime.capture()``。
+
+        留成可覆写的方法，是因为**取图失败在这一层没有任何兜底**：主循环取图那一行
+        在 ``try`` 之外（异常会直接冒出去 ⇒ 整条路线立刻失败收尾）。
+        横屏路线取图几乎不会失败，所以它们不需要管；而会**改变屏幕方向**的路线
+        （社区签到：横屏进、点进社区转竖屏）在换向那一两秒里必然取不到图 ——
+        按转场契约那是「来源已离开、目标未稳定 ⇒ 只等待」，不該当失败。
+        """
+        return self.runtime.capture()
+
+    def _perform_action(self, action: Any) -> None:
+        """把状态机给的动作**真正发出去**。
+
+        默认就是一次点击。留成可覆写的方法，是因为**主循环没有滑动通道**：
+        需要滑动的路线（商店刷新 / 生存者 / 迷宫 / 骑士团捐赠）都是自己直接调
+        ``runtime.swipe`` 绕开动作循环；而动作由状态机产出、绕不开的路线
+        （社区那几条每日任务脚本）就得在这里换发，否则「滑动」会被当成
+        「在起点点一下」—— 2026-10-07 社区点赞任务三遍全废就是这么来的。
+        """
+        self.runtime.click(action.point, action.name)
+
     def _transition_completed(
         self, previous_action: Any, current_action: Any, confirmed_page: str
     ) -> bool:
@@ -413,7 +435,7 @@ class ModeRunnerBase:
                 f"模式={self._MODE_LABEL} 页面={self._state_label(self.machine.state)} "
                 f"动作={action.name} 状态=诊断"
             )
-            self.runtime.click(action.point, action.name)
+            self._perform_action(action)
         return self.machine.completed_cycles
 
     def _reset_action_tracking(self) -> tuple[Optional[str], Optional[float], bool, int]:
@@ -442,7 +464,7 @@ class ModeRunnerBase:
         while max_cycles is None or self.machine.completed_cycles < max_cycles:
             state_before = self.machine.state
             cycles_before = self.machine.completed_cycles
-            screen = self.runtime.capture()
+            screen = self._capture_frame()
             if self.runtime.diagnostic_dir is not None:
                 self.runtime.save_current_frame(screen)
 
@@ -809,7 +831,7 @@ class ModeRunnerBase:
                     self.runtime.log(
                         f"模式={self._MODE_LABEL} 决策={decision_hint}"
                     )
-                self.runtime.click(action.point, action.name)
+                self._perform_action(action)
                 self._after_action_click(action)
                 last_transition_action = action if target_pages else None
                 last_action_clicked_at = self.now()

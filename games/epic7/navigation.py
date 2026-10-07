@@ -110,6 +110,12 @@ PAGE_LABELS = {
     "knights_home": "骑士团主页",
     "worldboss_home": "世界首领战主页",
     "sanctuary_home": "圣域主页",
+    # ---- 社区签到路线（2026-10-06）----
+    # ⚠️ 三条都只是**横屏段**的画面。真正进社区后是竖屏，横屏通道认不出来，
+    # 由 ``core/portrait.py`` 那条独立链路负责，画面名不在这张表里。
+    "activity_menu": "活动页（未选推广）",
+    "activity_web_promo": "活动页（推广态/可前往）",
+    "web_activity_list": "网页活动列表",
     "knights_signin_popup": "骑士团签到弹窗",
     "gift_support_popup": "领取支援物品弹窗",
     "knights_weekly_reward_popup": "骑士团周结算奖励弹窗",
@@ -268,6 +274,35 @@ class NavigationTemplates:
     gift_support_close: np.ndarray
     knights_weekly_reward_title: np.ndarray
     knights_weekly_reward_close: np.ndarray
+    # ---- 社区签到路线（2026-10-06）----
+    # 大厅左侧竖排最后一个「活动」入口（记事本+星+时钟图标 与「活动」二字）。
+    # ⚠️ 与 ``lobby_knights`` 同理：实测 220 张同尺寸夹具里过阈 12 张、**全是大厅类帧**
+    # ⇒ 它是**大厅常驻控件**，只作**点击目标**，**不能判页**（判页看下面三张）。
+    lobby_activity: np.ndarray
+    # 游戏内「活动」页左列表里的「更多精彩活动」那一行（**未选中态**）。
+    # 既是这一步的点击目标，也是 ``activity_menu`` 的页判据。
+    # ⚠️ 选中的那个会出现「前往活动页」，是**另一个态**（``activity_web_promo``）；
+    # 本模板在那个态上只有 0.25~0.34 —— 两态靠下面那张白字模板区分。
+    activity_more: np.ndarray
+    # 「更多精彩活动」**选中态**那一行里的**白字**（橙底白字）。
+    #
+    # ⚠️⚠️ **为什么不用「前往活动页」按钮（``web_activity_gate``）当选中态判据**：
+    # 那颗按钮上有一团**会滑动的光球**。2026-10-06 光球罩住「活动」二字 ⇒
+    # 1.0000；2026-10-07 光球滑到右边罩住「动页」⇒ **同一位置 (1690,968) 掉到
+    # 0.7282** ⇒ 过不了 0.82 ⇒ 整页判 ``unknown``，导航第二步超时失败关闭。
+    # 这就是 ``docs/TRANSITION_CONTRACTS.md`` 明令禁止的「模板里放会动的元素」。
+    #
+    # 本模板只取**白字那一块**（52x154，2026-10-07 真机帧裁的），不含光球、
+    # 不含橙底渐变的边界、不含橙点。全库 369 张横屏帧实测：
+    # 选中态 0.8924~1.0000（跨两天两帧都过阈，含转场动画中那帧 0.8924），
+    # **未选中态只有 0.2482 / 0.3435，全库次高 0.3732** ⇒ 空档 0.37→0.89 极宽。
+    activity_more_selected: np.ndarray
+    # 「前往活动页」按钮 —— **只当点击目标**（第 3 步要按它），**不当判据**
+    # （光球会滑动，见上）。⚠️ 正是这一点让它在 10-07 掉到 0.7282。
+    # 只裁了光晕盖不到的右段（65x34），整钮是半透明的、背后横幅会呼吸发光。
+    web_activity_gate: np.ndarray
+    # 横屏「网页活动列表」页右侧的「游戏社区」按钮 —— **竖屏社区就从这里进**。
+    web_community: np.ndarray
     shop_refresh_observer: ShopRefreshObserver
 
 
@@ -392,6 +427,15 @@ def build_navigation_templates(template_root: Path) -> NavigationTemplates:
         knights_weekly_reward_close=load_template(
             str(navigation / "knights_weekly_reward_close.png")
         ),
+        # 社区签到路线（2026-10-06）。全部直接 ``load_template``：缺文件就抛
+        # ``FileNotFoundError``（fail closed），不写 ``exists() else None``。
+        lobby_activity=load_template(str(navigation / "lobby_activity.png")),
+        activity_more=load_template(str(navigation / "activity_more.png")),
+        activity_more_selected=load_template(
+            str(navigation / "activity_more_selected.png")
+        ),
+        web_activity_gate=load_template(str(navigation / "web_activity_gate.png")),
+        web_community=load_template(str(navigation / "web_community.png")),
         shop_refresh_observer=build_shop_refresh_observer(template_root),
     )
 
@@ -490,6 +534,42 @@ class Epic7Navigator:
         # 圣域主页右侧第一行「精灵之森」：**只给 ``observe()`` 判页用**，不是点击目标
         # （点它是 ``sanctuary.py`` 状态机的事）。复用 evidence 那边的区域定义。
         "sanctuary_forest_row": SANCTUARY_REGIONS["forest_row"],
+        # ---- 社区签到路线（2026-10-06）----
+        # 大厅左侧竖排最后一个「活动」入口。区域留得比控件大一圈（图标 y 754~812、
+        # 「活动」二字 y 826~838 ⇒ 控件占 ~75..845），给大厅动画/节日装饰留余量。
+        # ⚠️ 它**同时**是「进入活动」这个动作的点击目标（``_transition`` 用命中框中心）。
+        "lobby_activity": (10, 700, 220, 200),
+        # 「活动」页左列表那一列 —— ⚠️ **这里曾把整条路线卡死在第一步**（2026-10-07）。
+        #
+        # 原来只框 y 400~580（按 2026-10-06 那一帧量的：整行 y 431~535）。10-07 真机
+        # 一跑就翻车：活动页左列**顶部多了两行**（「助继承者重启冒险」×2，一个回归活动），
+        # 把「更多精彩活动」从 y=460 挤到 **y=686**（+226px）⇒ 模板还在（0.9145）、
+        # 但框空了 ⇒ 整页判 ``unknown`` ⇒ 导航第一步就超时失败关闭。
+        #
+        # ⇒ **区域罩住整列**（y 300~1150），不再随上方活动行数变化而失效。
+        # 安全性实测（``runtime_logs/_whole_scan.py activity_more 0 300 420 850``，
+        # 全库 360 张唯一帧）：区域内过阈的**只有 3 张** —— 10-06 那张夹具 1.0000
+        # 加今天两张真机帧 0.9145；**次高只有 0.4830**，空档极大，放大区域没有代价。
+        # 点击点仍取**命中框中心**（`_locate`），所以位置随行浮动不影响点击。
+        "activity_more": (0, 300, 420, 850),
+        # 「更多精彩活动」**选中态**那一行的白字。区域同样罩住整列。
+        #
+        # ⚠️ 上界为什么是 **1150** 而不是跟 ``activity_more`` 一样 850：选中态那一行
+        # 的**位置本身会随上方活动行数漂**（实测 10-06 落 y=443、10-07 落 y=726，
+        # 相差 283px），而未选中态那版区域（y≤1150）在两次实测里都罩住了。
+        # 这里取 y 300~1150 与 ``activity_more`` 对齐，两态用同一块搜索带。
+        # 安全性实测（369 张横屏帧全扫）：过阈 6 张全是选中态帧，次高 0.3732。
+        "activity_more_selected": (0, 300, 420, 850),
+        # 「前往活动页」按钮右下角那一段（只裁了光晕盖不到的部分）。
+        # 按钮整块约 x 1580~1770 / y 960~1020，这里把区域放宽到 420x140。
+        # ⚠️ **它只当点击目标、不当判据** —— 光球会滑动，同一位置跨帧 1.0000→0.7282，
+        # 当判据会把整页判成 ``unknown``（2026-10-07 实跑就是这样失败的）。
+        # 判「选中没选中」请用 ``activity_more_selected``。
+        "web_activity_gate": (1500, 920, 420, 140),
+        # 「网页活动列表」页右侧那一列按钮。「游戏社区」文字实测 x 1620~1732 /
+        # y 245~267，区域罩住整列宽度以容纳左右留白。
+        # ⚠️ 同上，**未复验**。
+        "web_community": (1540, 180, 400, 160),
     }
     _CLICK_OFFSETS = {"lobby_story": (65, 11)}
 
@@ -746,6 +826,36 @@ class Epic7Navigator:
         expedition_home = self._locate(screen, "expedition_home")
         if expedition_home:
             return PageObservation("expedition_home", expedition_home.score)
+
+        # ---- 社区签到路线的活动页三态（2026-10-06 立，2026-10-07 改判据）----
+        #
+        # ⚠️ 这三条**都排在 ``lobby`` 判定之后**：``lobby_activity`` 在大厅帧上恒为
+        # 1.0000，若放在前面会把大厅判成活动页。
+        #
+        # ⚠️⚠️ **顺序在 2026-10-07 换了，原因是判据本身换了**：
+        # 选中态原来靠 ``web_activity_gate``（「前往活动页」按钮）认，而那颗按钮上
+        # 有一颗**会滑动的光球** —— 10-06 得 1.0000，10-07 同一位置掉到 **0.7282**
+        # ⇒ 过不了阈 ⇒ 选中态在代码里等于「不存在」，导航第二步必然失败关闭。
+        # 现在选中态改用 ``activity_more_selected``（那一行的**白字**，不含光球），
+        # 实测跨两天 0.8924~1.0000、未选中态只有 0.25~0.34。
+        # ⇒ ``web_activity_gate`` **降级为纯点击目标**，不再参与判页。
+        #
+        # 判据本体与全库扫描见 ``docs/maintenance/community_checkin.md``。
+        web_community = self._locate(screen, "web_community")
+        if web_community:
+            return PageObservation("web_activity_list", web_community.score)
+
+        # ⚠️ 选中态必须**排在未选中态前面**：同一帧上两个锚点实测互斥
+        # （未选中帧上选中模板 0.25~0.34、选中帧上未选中模板 0.52），
+        # 但真出现边缘帧时「先认出谁」不该靠运气 —— 语义上两态互斥，
+        # 顺序只影响可读性；这里按「从外到内」：先网页列表、再选中态、最后未选中态。
+        activity_more_selected = self._locate(screen, "activity_more_selected")
+        if activity_more_selected:
+            return PageObservation("activity_web_promo", activity_more_selected.score)
+
+        activity_more = self._locate(screen, "activity_more")
+        if activity_more:
+            return PageObservation("activity_menu", activity_more.score)
 
         expedition_title = self._locate(screen, "expedition_battle_title")
         season_active = self._locate(screen, "expedition_season_active")
@@ -1036,6 +1146,7 @@ class Epic7Navigator:
                 step.anchor,
                 step.label,
                 source_screen=current,
+                fixed_point=step.fixed_point,
             )
         self.runtime.log(resolved.ready_log(MODE_LABELS.get(mode, mode)))
 
@@ -1047,6 +1158,7 @@ class Epic7Navigator:
         action: str,
         *,
         source_screen: Optional[np.ndarray] = None,
+        fixed_point: Optional[tuple[int, int]] = None,
     ) -> np.ndarray:
         self.unknown_screen_wake.reset()
         source_screen = source_screen if source_screen is not None else self._wait_for_page(source)
@@ -1054,32 +1166,42 @@ class Epic7Navigator:
         target_label = "/".join(targets)
         for attempt in range(1, 5):
             threshold = 0.80 if anchor == "lobby_story" else 0.82
-            match = self._locate(source_screen, anchor, threshold)
-            if match is None:
-                # ⚠️ 传入的 ``source_screen`` 可能是刚回家时的**过渡帧**（大厅还在
-                # 动画 / 未稳定）—— 老 ``return_home`` 会等「连续两帧稳定认出大厅」
-                # 才返回，v2 是「第一帧认出大厅就返回」，于是偶尔会把一个还没稳下来的
-                # 大厅帧交进来。个别锚点（尤其大厅左侧那排入口，常是最后渲染的控件）
-                # 在这种帧上会暂时没过阈，直接判「缺少锚点」会把整条路线打挂，
-                # 而且这个 raise 发生在 ``_enter_mode`` 里、跑在 ``run_mode`` 的
-                # try 之外，连日志和诊断都不会留下，只剩每日任务里一个无声的 ``✗``。
-                # 这里先重新等一帧**稳定的**来源页再认一次（正常帧不会进这个分支）。
-                self.runtime.log(
-                    f"模式=导航 页面={page_label(source)} 目标={target_label} "
-                    f"动作={action} 重试=重新等待稳定来源页（过渡帧锚点未过阈）"
-                )
-                source_screen = self._wait_for_page(source)
+            if fixed_point is not None:
+                # ⚠️ **固定坐标点击**：按钮上有会动的元素时，模板定位跨天必然掉出阈
+                # （社区路线的「前往活动页」按钮：上面有一颗来回滑动的光球，
+                # 跨天从 1.0000 掉到 0.7282 ⇒ 抛「缺少导航锚点」，连点都没点）。
+                # 为什么敢用固定坐标：**页面身份这道「眼睛」没有少** —— 本步的
+                # ``source`` 与 ``targets`` 验收照旧，点空了目标页不出现 ⇒
+                # 按额度重试 ⇒ 失败留诊断，而不是无声跳过。
+                offset = self._click_offset(anchor)
+                click_point = (fixed_point[0] + offset[0], fixed_point[1] + offset[1])
+            else:
                 match = self._locate(source_screen, anchor, threshold)
                 if match is None:
-                    raise RuntimeError(
-                        f"页面[{page_label(source)}]缺少导航锚点 {anchor}"
+                    # ⚠️ 传入的 ``source_screen`` 可能是刚回家时的**过渡帧**（大厅还在
+                    # 动画 / 未稳定）—— 老 ``return_home`` 会等「连续两帧稳定认出大厅」
+                    # 才返回，v2 是「第一帧认出大厅就返回」，于是偶尔会把一个还没稳下来的
+                    # 大厅帧交进来。个别锚点（尤其大厅左侧那排入口，常是最后渲染的控件）
+                    # 在这种帧上会暂时没过阈，直接判「缺少锚点」会把整条路线打挂，
+                    # 而且这个 raise 发生在 ``_enter_mode`` 里、跑在 ``run_mode`` 的
+                    # try 之外，连日志和诊断都不会留下，只剩每日任务里一个无声的 ``✗``。
+                    # 这里先重新等一帧**稳定的**来源页再认一次（正常帧不会进这个分支）。
+                    self.runtime.log(
+                        f"模式=导航 页面={page_label(source)} 目标={target_label} "
+                        f"动作={action} 重试=重新等待稳定来源页（过渡帧锚点未过阈）"
                     )
+                    source_screen = self._wait_for_page(source)
+                    match = self._locate(source_screen, anchor, threshold)
+                    if match is None:
+                        raise RuntimeError(
+                            f"页面[{page_label(source)}]缺少导航锚点 {anchor}"
+                        )
+                offset = self._click_offset(anchor)
+                click_point = (match.center[0] + offset[0], match.center[1] + offset[1])
             self.runtime.log(
                 f"模式=导航 页面={page_label(source)} 目标={target_label} "
                 f"动作={action} 尝试={attempt}/4"
             )
-            offset = self._click_offset(anchor)
-            click_point = (match.center[0] + offset[0], match.center[1] + offset[1])
             self.runtime.click(click_point, action)
             # 「点一次、验收一次」：记住点击时刻，循环里回头比一次页面身份。
             verify_started = self.now()
@@ -1090,6 +1212,8 @@ class Epic7Navigator:
             hero_detail_wait_logged = False
             hero_equipment_seen = False
             hero_container_logged = False
+            # 「来源已离开、目标未到，只等」这一档只记一次日志（否则每轮都刷）。
+            transition_wait_logged = False
             last_source: Optional[np.ndarray] = None
             for _ in range(self.transition_frames):
                 screen, observation = self._capture()
@@ -1110,6 +1234,44 @@ class Epic7Navigator:
                         context=f"导航:{page_label(source)}→{target_label}",
                     )
                     if wake_result is UnknownWakeResult.WAITING:
+                        self.sleep(self.poll_seconds)
+                        continue
+                    # ⚠️ **表 D 第二档：「来源已离开、目标未稳 ⇒ 只等」**。
+                    #
+                    # 2026-10-07 实测踩到的坑：点「打开网页活动列表」之后那个 H5 要
+                    # **29 秒**才加载完（实跑日志 10:50:49 点击 → 10:51:18 才认出来），
+                    # 期间是**白屏且画面静止**。而 ``UnknownScreenWake`` 只在
+                    # 「画面还在变」时给 ``WAITING``，静止的未知页直接给
+                    # ``EXHAUSTED``（= 交还上层按失败收尾）⇒
+                    # **一次完全正常的加载被判成「点坏了」**，白等 29 秒还失败。
+                    #
+                    # 所以这里补一条判据：**点完这一下之后、画面已经认不出来源页了**
+                    # （``left_page(source, "unknown")`` 为真）⇒ 来源已离开，
+                    # 现在正处在「转场 / 加载中」，**只等**，不许当成失败。
+                    #
+                    # ⚠️ 为什么不直接看画面变化：转场期间**也可能真的静止**
+                    # （转场动画走完、H5 还没画完第一帧就是这个样子）。
+                    # 「来源还在」才是「没点中」与「正在加载」的唯一可靠区别。
+                    #
+                    # ⚠️ 为什么**放在 handle() 之后**而不是之前：``handle()`` 负责
+                    # 记账与留诊断帧（那张帧是事后查「当时到底长什么样」的唯一物证）。
+                    # 在它之前 ``continue`` 会把诊断帧一起跳过 —— 那正是 2026-09-26
+                    # 「不点任何地方」那条护栏要保的东西，不能为了社区这一条路线弄丢。
+                    if (
+                        wake_result is UnknownWakeResult.EXHAUSTED
+                        and verify_started is not None
+                        and left_page(source, observation.name)
+                    ):
+                        if not transition_wait_logged:
+                            self.runtime.log(
+                                f"模式=导航 页面={page_label(source)} "
+                                f"目标={target_label} 动作={action} "
+                                "当前=认不出的画面 "
+                                "状态=来源已离开、目标未到（转场/加载中）"
+                                "动作=只等，不判失败 "
+                                f"已等={self.now() - verify_started:.0f}秒"
+                            )
+                            transition_wait_logged = True
                         self.sleep(self.poll_seconds)
                         continue
                 elif is_stable:

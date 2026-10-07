@@ -56,6 +56,7 @@ __all__ = [
     "PublicFlowVerification",
     "assert_public_flow_verification_declared",
     "assert_module_inventory_matches",
+    "route_module_names",
 ]
 
 
@@ -186,6 +187,28 @@ def assert_public_flow_verification_declared() -> None:
             )
 
 
+def route_module_names() -> frozenset[str]:
+    """各路线 Runner 所在的**模块文件名**（这些模块由路线级那几张表管，不是公共流程）。
+
+    ⚠️ 从 ``modes.MODE_SPECS`` **派生**，不再手工维护那份清单。
+    手工那份在 2026-10-06 加社区签到时就被漏掉了 —— 后果不是「测试漏跑」，而是**反向**的：
+    新路线的模块只要碰一下 ``runtime.click`` 就会撞上本模块的反向护栏，被误报成
+    「带动作但没登记进 ACTION_BEARING_MODULES」，让人以为公共流程清单少了东西。
+    派生之后这类误报不会再出现（``test_public_flow_verification`` 也读同一个函数，
+    两处不会各写一份）。
+
+    惰性 import：本模块是纯数据模块，顶层 import ``modes`` 会把整条路线链拉进来。
+    """
+    from auto_game_unified.games.epic7.modes import MODE_SPECS
+
+    names = set()
+    for spec in MODE_SPECS.values():
+        module = getattr(spec.runner_type, "__module__", "")
+        if module:
+            names.add(f"{module.rsplit('.', 1)[-1]}.py")
+    return frozenset(names)
+
+
 def assert_module_inventory_matches(package_dir: Path) -> None:
     """反向护栏：源码里实际带动作的公共流程模块，必须都在 ``ACTION_BEARING_MODULES`` 里。
 
@@ -204,11 +227,7 @@ def assert_module_inventory_matches(package_dir: Path) -> None:
     AST 只认**真正的调用节点**，注释与文档字符串天然被排除。
     """
 
-    routes = {
-        "arena.py", "story.py", "expedition.py", "fodder.py",
-        "hero_synthesis.py", "shop_refresh.py", "survivor.py",
-        "world_boss.py", "knights_donation.py", "labyrinth_stone.py",
-    }
+    routes = route_module_names()
     # ⚠️ 两个 Runner 基类都在 skip 里：它们是**路线 Runner 的骨架**，不是公共流程。
     # 它们的动作验收口径由 ``modes.TRANSITION_EXEMPT`` / ``CONCLUSION_GATE_DECLARATION``
     # 与 ``finish_home`` 三张路线级表管（2026-09-26 新增 ``transactional_runner_base.py``

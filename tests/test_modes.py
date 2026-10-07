@@ -25,6 +25,7 @@ class Epic7ModeRegistryTests(unittest.TestCase):
                 "knights_donation",
                 "labyrinth_stone",
                 "sanctuary",
+                "community",
             },
             set(MODE_SPECS),
         )
@@ -39,6 +40,11 @@ class Epic7ModeRegistryTests(unittest.TestCase):
         self.assertEqual("guild_home", get_mode("knights_donation").default_state)
         self.assertEqual("battle_menu", get_mode("labyrinth_stone").default_state)
         self.assertEqual("home", get_mode("sanctuary").default_state)
+        # 社区签到的起点是**横屏**的网页活动列表（点「游戏社区」之后才转竖屏），
+        # 终态 `done` 不是一页画面，不该能当起始状态。
+        self.assertEqual("web_entry", get_mode("community").default_state)
+        with self.assertRaisesRegex(ValueError, "不适用于模式 community"):
+            get_mode("community").resolve_state("done")
 
     def test_survivor_starts_inside_the_activity_without_navigation(self):
         survivor = get_mode("survivor")
@@ -163,11 +169,24 @@ class RouteHookRegistryTests(unittest.TestCase):
         )
 
     def test_routes_without_special_needs_declare_no_hooks(self):
-        """没需求的路线不该挂钩子 —— 挂了就是「空转的配置」，读的人会以为它有意义。"""
+        """没需求的路线不该挂钩子 —— 挂了就是「空转的配置」，读的人会以为它有意义。
+
+        ⚠️ 例外**必须写明理由**，不能只是把名字塞进白名单：
+        挂一个空转的闸门比不挂更糟（用户以为被拦住了，其实什么都没拦）。
+        """
+        hooks = {
+            # 「会真花钱」：目标商品与购买价格没在当前客户端实证过就不许实跑。
+            "shop_refresh": "preflight",
+            # 社区签到同理，而且更硬：竖屏段那三条每日任务的坐标根本还没采到，
+            # 放进实跑就是一次**必然失败**。
+            "community": "preflight",
+            # 竞技场实跑要落两个盘（买票记账 + 每局结算画面），路径只有 main 知道。
+            "arena": "runner_options",
+        }
         for name, spec in MODE_SPECS.items():
-            if name not in {"shop_refresh"}:
+            if hooks.get(name) != "preflight":
                 self.assertIsNone(spec.preflight, f"{name} 不该有 preflight")
-            if name not in {"arena"}:
+            if hooks.get(name) != "runner_options":
                 self.assertIsNone(spec.runner_options, f"{name} 不该有 runner_options")
 
 

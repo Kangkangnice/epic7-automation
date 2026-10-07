@@ -37,6 +37,14 @@ from auto_game_unified.games.epic7.fodder import (
     FodderStateMachine,
     build_fodder_templates,
 )
+# 以「模块对象」形式再导一次：``_preflight_community`` 要在调用时读
+# ``LIVE_RUN_READY``（理由见该函数，与刷书签那条同源）。
+from auto_game_unified.games.epic7 import community as _community
+from auto_game_unified.games.epic7.community import (
+    CommunityRunner,
+    CommunityState,
+    build_community_machine,
+)
 from auto_game_unified.games.epic7.hero_synthesis import (
     HeroSynthRunner,
     HeroSynthState,
@@ -336,6 +344,30 @@ def _preflight_shop_refresh(mode: str, dry_run: bool) -> Optional[str]:
     return "刷书签目标商品和购买价格尚未通过当前客户端实证，当前只允许空跑采样"
 
 
+def _preflight_community(mode: str, dry_run: bool) -> Optional[str]:
+    """社区签到的实跑闸门：竖屏段要用的真机数据没采齐就不许实跑。
+
+    这道闸门是 2026-10-06 立的，当时的理由是「三条每日任务的执行段**根本写不出来**」
+    —— 信息流里「点开第几条帖子 / 点赞按钮在哪 / 滚多远」一个坐标都没量过，
+    「签到未完成」那一态也没有样本；如实跑只会得到一次**必然失败**的运行，
+    而失败原因看起来像程序坏了（与 PC 后端被收起来同一个理由）。
+
+    **2026-10-07 真机采齐**（签到两态、签到入口与弹窗、三条任务的执行脚本、
+    「去完成」落点、帖子详情与分享面板），``LIVE_RUN_READY`` 翻成 ``True``，
+    闸门放行 —— 闸门本身留着，客户端改版或者哪天要重新验证时把它翻回 ``False`` 即可。
+
+    ⚠️ 标志位必须**在调用时**从 ``community`` 的模块属性上读，不能
+    ``from ... import LIVE_RUN_READY`` 在 import 期绑一份到本模块 —— 绑了之后测试改成
+    ``patch.object(community, "LIVE_RUN_READY", True)`` 就拦不住它，闸门会悄悄退化成空转。
+    """
+    if dry_run or _community.LIVE_RUN_READY:
+        return None
+    return (
+        "社区签到还没通过当前客户端的实测：竖屏段还缺 "
+        f"{_community.MISSING_LIVE_DATA}；当前只允许空跑采样"
+    )
+
+
 def _arena_runner_options(root: Path, dry_run: bool) -> dict[str, Any]:
     """竞技场实跑才需要的两个落盘位置（干跑一个盘都不写）。"""
     if dry_run:
@@ -371,6 +403,16 @@ RESUME_EXEMPT = {
         "「传送选择 / 传送确认 / 传送奖励」三页上同时可见（实测都是 1.000）。"
         "运行期靠状态上下文分得开，**接力只有一帧、没有这个上下文** —— 把它误认成"
         "「传送选择」会重复点一次不可逆的传送确认。PC 端的英雄列表连锚点都没有。"
+    ),
+    "community": (
+        "接力的**判据**其实够用（活动页三态与网页活动列表都有专有锚点），缺的是"
+        "**更前一步**：这条路线有一半时间在竖屏，而人停在社区里时，开局那一步"
+        "`home_return()` 是拿**横屏**通道去取图的（`Epic7Window.capture`），"
+        "竖屏下它会直接抛「LDPlayer render size changed」—— 起步就失败，"
+        "连探针都轮不到跑。"
+        "⇒ 要争取力，得先把「起步时若模拟器是竖屏，就先退出社区」这一步放到 "
+        "`_enter_mode` **之前**；那是 `main.py` 的活，属于另一件事。"
+        "在那之前挂探针等于给用户一个「看起来能接力、实际一起步就炸」的假承诺。"
     ),
 }
 
@@ -793,6 +835,89 @@ MODE_SPECS = {
             resume_state_done="已在圣域主页",
             ready_note="圣域主页已就绪",
         ),
+    ),
+    "community": ModeSpec(
+        name="community",
+        label="社区签到",
+        # 导航把画面停在**横屏的**网页活动列表；第一步就是点「游戏社区」——
+        # 点完模拟器整块转成竖屏，之后由 `core/portrait.py` 那条 adb 链路接管。
+        # 所以「起始状态」有一半是横屏的（WEB_ENTRY 就是那一半）。
+        default_state=CommunityState.WEB_ENTRY.value,
+        # 终态 `DONE` 不给当起始状态：它不是一页画面，是「本轮已收工」的记号。
+        states=frozenset(
+            state.value
+            for state in CommunityState
+            if state is not CommunityState.DONE
+        ),
+        build_machine=build_community_machine,
+        runner_type=CommunityRunner,
+        # 每天跑一遍就够：三条任务与兑换清单都是按天刷新的 ⇒ 不给用户选次数。
+        cycles_editable=False,
+        # ⚠️ 竖屏段要用的真机数据还没采齐 ⇒ **拦住实跑**（干跑照常）。
+        # 理由与「PC 后端被收起来」同源：缺数据时状态机一定会抛「缺数据」，
+        # 让用户一键选中一次**必然失败**的运行，失败原因还像程序坏了。
+        preflight=_preflight_community,
+            navigation_plan=NavigationPlan(
+                mode="community",
+                steps=(
+                    # ⚠️⚠️ 第一步的目标是**两个态**，不是只有未选中态（2026-10-07 修）。
+                    #
+                    # 游戏**记得**上次在活动页上选没选「更多精彩活动」⇒ 点进来的
+                    # 画面**可能就是选中态**（那一行已经变橙）。旧写法只写
+                    # ``("activity_menu",)`` ⇒ 进页面若已是选中态，``_wait_for_page``
+                    # 会一直等一个**永远不会出现**的 `activity_menu` 直到超时
+                    # （用户原话：「如果我一点到活动就在那个更多精彩里面，它就识别不到了」）。
+                    #
+                    # 为什么这一步**不写** ``skip_if_observed``：那玩意只在**手上已有
+                    # 一帧**时检查（见 ``navigate`` 的循环），而这一步点之前手上是
+                    # **大厅**帧 —— 「进活动页之后会看到什么」正是这一步的**出口**。
+                    # 所以正确做法是**把两个态都声明成出口**，让 `_transition` 自己
+                    # 认出哪一个就是走通；后面两步再各带自己的 ``skip_if_observed``。
+                    NavigationStep(
+                        "lobby",
+                        ("activity_menu", "activity_web_promo"),
+                        "lobby_activity",
+                        "进入活动",
+                    ),
+                    # 后面两步都带 `skip_if_observed`：进页面时可能已经是选中态
+                    # （`activity_web_promo`）甚至已经在网页活动列表上，
+                    # 那时这一步的锚点不在画面上了。
+                    NavigationStep(
+                        "activity_menu",
+                        ("activity_web_promo",),
+                        "activity_more",
+                        "选中「更多精彩活动」",
+                        skip_if_observed=("activity_web_promo", "web_activity_list"),
+                    ),
+                    NavigationStep(
+                        "activity_web_promo",
+                        ("web_activity_list",),
+                        "web_activity_gate",
+                        "打开网页活动列表",
+                        skip_if_observed=("web_activity_list",),
+                        # ⚠️⚠️ **固定坐标点击**，不再用模板定位这颗按钮。
+                        #
+                        # 为什么：按钮上有一颗**来回滑动的光球**。2026-10-06 光球
+                        # 罩住「活动」二字时模板 1.0000，2026-10-07 滑到右边罩住
+                        # 「动页」⇒ 同一位置掉到 0.7282，过不了 0.82 ⇒ 抛
+                        # 「缺少导航锚点」⇒ **连点都没点**，整条路线进不去
+                        # （13:37 / 14:55 两次实跑就是这么失败的）。
+                        # 「模板里不放会动的元素」只保住了**判页**（选中态已改用
+                        # ``activity_more_selected`` 白字，跨两天 0.89~1.00），
+                        # 但**点击目标**同样不能押在会动的按钮上。
+                        #
+                        # 为什么敢用固定坐标 (1722, 985)：按钮位置固定（两次实跑
+                        # 模板命中的中心都是它）；而**页面身份这道眼睛没有少** ——
+                        # 本步的 source 仍由 ``activity_more_selected`` 验收，
+                        # 点空了 ``web_activity_list`` 不出现 ⇒ 按额度重试 ⇒
+                        # 失败留诊断，而不是无声跳过。
+                        fixed_point=(1722, 985),
+                    ),
+                ),
+                ready_note=(
+                    "网页活动列表已就绪（点「游戏社区」进竖屏，之后横屏通道认不出这页）"
+                ),
+            ),
     ),
 }
 

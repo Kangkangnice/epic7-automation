@@ -41,10 +41,31 @@ def test_catalog_lists_every_route_in_menu_order():
         "knights_donation",
         "labyrinth_stone",
         "sanctuary",
+        "community",
     ]
     assert route_by_name("hero_synthesis").status == "正式功能"
     assert route_by_name("story").status == "正式功能"
-    assert sum(route.experimental for route in ROUTES) == 7
+    assert sum(route.experimental for route in ROUTES) == 8
+
+
+def test_community_is_experimental_and_warns_about_daily_limits():
+    """社区签到：界面上必须写清两件事。
+
+    ① 这条路线有一半在**竖屏**（用户得知道点下去画面会转过去）；
+    ② 它点的东西**多数一天只能点一次**（签到 / 三条任务 / 三样兑换各有每日上限），
+       所以**不能拿它当冒烟测试反复跑** —— 重复跑不报错、但什么也领不到，
+       用户会以为程序坏了。界面上得先把这个预期讲明白。
+
+    （2026-10-07 之前这条断言写的是「必须说明现在只能空跑」，
+    那天真机数据采齐、实跑闸门放开，断言随之改成上面的两句。）
+    """
+    community = route_by_name("community")
+
+    assert community.label == "社区签到"
+    assert community.experimental
+    assert community.cycles_editable is False
+    assert "竖屏" in community.description
+    assert "每日上限" in community.description
 
 
 def test_survivor_is_experimental_and_explains_the_manual_entry_page():

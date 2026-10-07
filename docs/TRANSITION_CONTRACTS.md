@@ -289,7 +289,7 @@
 2026-09-23 逐条查实。**登记不等于合格**：这张表是现状快照，不是“已验收”清单。
 
 ⚠️ **判断某条路线有没有判据，不能靠搜索某个字段名。** 各路线的判据载体是历史上分别长出来的，
-字段名叫法不统一，而且 11 条路线分属**三个族**：走 `ModeRunnerBase` 的 7 条、走
+字段名叫法不统一，而且 12 条路线分属**三个族**：走 `ModeRunnerBase` 的 8 条、走
 `transactional_runner_base.py`（事务型）的 2 条（`arena` / `expedition`，2026-09-26 起）、
 以及**仍自带独立主循环的裸定义** 2 条（`shop_refresh` / `survivor`）。
 下面“判据载体”一栏才是依据。
@@ -306,6 +306,7 @@
 | `fodder` | 狗粮 | 无（动作仅带名称与坐标） | **无** | **无** | 主循环取不到判据即当作“此动作不需验收”，照跑不报错 |
 | `knights_donation` | 骑士团捐赠 | `source_page` + `target_pages` / `in_page_evidence`（**第一条打开机器强制的路线**） | 有 | 有 | 无（`activity_panel` 兜底分支暂无实拍证据） |
 | `sanctuary` | 圣域收菜 | `source_page` + `target_pages` / `in_page_evidence`（**第四条打开机器强制**，2026-09-29） | 有 | 有 | 无（`claim-row` 用「领取完成弹窗出现」当出口证据；`care` 不换页、走 `in_page_evidence`「按钮由亮转灰」。两条点不动都会留诊断 + 报错） |
+| `community` | 社区签到 | `source_page` + `target_pages` / `in_page_evidence`（**第六条打开机器强制**，2026-10-07） | 有 | 有 | 无（唯一一条**跨屏**路线：横屏导航段与竖屏社区段各有一套判据，竖屏那半用 1080×1920 的 `adb screencap` 当判页画布。签到/看帖/点赞/分享这些「点了不换页」的动作全部走 `in_page_evidence`——签到等弹窗、点赞读按钮变绿、分享等面板弹出。**2026-10-07 补了三处**：「更多精彩活动」选中态换判据（原判据含会滑动的光球，跨帧 1.0000→0.7282）、转场中认不出改判「只等」、收尾等方向转回横屏再交棒 —— 明细见 `docs/maintenance/community_checkin.md` 表 A/B/D。**同日第二次补三处**：① 导航第一步出口改成**两态**（进页面若已是选中态也要认得出 —— `skip_if_observed` 只看「手上已有的一帧」，补不了这个）；② 转屏中间那一瞬「方向对、画幅没跟上」改**继续等**而不是报错（转屏是**两步**：先转窗口、再由安卓 rotation 生效）；③ 取图失败的退路**先问窗口方向**——**已是竖屏就不退回横屏**，退回会拿竖屏画面撞横屏模板并触发失败收尾**把刚打开的社区关掉**（用户点 2）。并新建 `tests/test_portrait.py`（该模块此前零覆盖） |
 | `labyrinth_stone` | 迷宫强化石 | `source_page` + `target_pages` / `in_page_evidence`（**第三条打开机器强制**，2026-09-25） | 有 | 有 | 有：「切到区域 1」这条判据**只有正例**（实测选中时落差 69），没拍到「选中的是别的区」那一帧；「商店一行都买不到」也只有模拟帧 |
 
 现有路线**暂不改动**（用户 2026-09-23 拍板：先登记、以后慢慢补）—— 唯一例外是
@@ -320,6 +321,13 @@
 「`target_pages` **或** `in_page_evidence`」⇒ 规则里那个备选项根本不存在，5 个同页动作
 （`auto-configure` / `claim-weekly-chest` / `open-all-chests` / `stamina_material` /
 `stamina_confirm`）一开全被拦。**判据是跑一遍那个检查函数，不是看字段填没填。**
+
+打开开关的先后顺序（表里那几行「第 N 条」）：
+① `knights_donation`（2026-09-24 新路线自带）→ ② `world_boss`（2026-09-24 补齐）→
+③ `labyrinth_stone`（2026-09-25）→ ④ `sanctuary`（2026-09-29）→ ⑤ `hero_synthesis`
+（2026-10-04，⚠️ 打开前先把自造的 `source_observation` 对齐回基类字段名，否则那 12 个同页动作
+**形式合规、实质没用**）→ ⑥ `community`（2026-10-07，新路线自带，一条跨横竖两屏的路线）。
+`hero_synthesis` 与 `community` 都**刻意不做**「先跑、有条件再补」的省事法：字段一次填齐再打开开关。
 
 `knights_donation` 那 12 个动作的逐条对账表写在 `games/epic7/knights_donation.py` 的模块 docstring 里，
 **不在这里重复**（同一份表抄两处迟早漂移，而转场对账只做字符串相等）。

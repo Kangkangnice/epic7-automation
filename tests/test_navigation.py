@@ -890,6 +890,325 @@ class NavigationTests(unittest.TestCase):
             "expedition_home", navigator.observe(fixture("expedition_home")).name
         )
 
+    # ---- 社区签到路线：横屏段四个锚点（2026-10-06）----
+    #
+    # ⚠️ 这组用例的重点**不是**「四个页面认对了」，而是**判据的依据成立**：
+    # ① 每个锚点在**自己那帧**上过阈，② 在**另外三帧**上都不许过阈（互斥）。
+    # 只断言页面名抓不住「锚点退化成大厅常驻控件」这类降级 —— 那时四个页面
+    # 会被同一个锚点全判成一种，页面名仍然「有个结果」，日志上看不出异常。
+
+    def test_classifies_community_activity_pages(self):
+        navigator = self.navigator([])
+
+        cases = [
+            ("lobby_activity_entry_live_20261006", "lobby"),
+            ("activity_menu_live_20261006", "activity_menu"),
+            # 2026-10-07 真机：同一个活动页，但左列表**顶部多了两行**（「助继承者
+            # 重启冒险」×2，一个回归活动），把「更多精彩活动」从 y=460 挤到 y=686。
+            # 那天社区路线就死在这一步（模板还在 0.9145，框空了 ⇒ 整页 unknown）。
+            ("activity_menu_shifted_live_20261007", "activity_menu"),
+            ("activity_web_promo_live_20261006", "activity_web_promo"),
+            # 2026-10-07 真机：列表更长 ⇒ 「更多精彩活动」选中态那一行落在 y=726
+            # （10-06 那张是 y=443，**相差 283px**）。这张是「新判据跨天复验」的
+            # 唯一证据 —— 没有它，改完判据只在自己裁模板的那天成立。
+            ("activity_web_promo_shifted_live_20261007", "activity_web_promo"),
+            # 2026-10-07 10:50:52：**转场动画中**那一帧（「前往活动页」的光球滑到
+            # 别的位置、整颗按钮掉到 0.7282）。这一帧当年正是把整页判成 unknown 的
+            # 元凶。留着它当夹具，是为了让「光球滑动」这件事**有图可查**，
+            # 而不是只活在注释里。
+            ("activity_web_promo_glow_moved_live_20261007", "activity_web_promo"),
+            ("web_activity_list_live_20261006", "web_activity_list"),
+        ]
+        for name, expected in cases:
+            with self.subTest(fixture=name):
+                observation = navigator.observe(fixture(name))
+                self.assertEqual(expected, observation.name)
+                self.assertGreater(observation.confidence, 0.82)
+
+    def test_community_activity_anchors_are_mutually_exclusive(self):
+        """四个锚点必须「各认各的」：在大厅帧上只有 ``lobby_activity`` 过阈。
+
+        ``lobby_activity`` 是**大厅常驻控件**（左侧竖排最后一个入口），实测在
+        220 张同尺寸夹具里有 12 张过阈、**全是大厅类帧**。所以它只能当点击目标，
+        判页必须靠另外三个 —— 这条用例就是钉住这个分工：
+        另外三帧（活动页 / 推广态 / 网页活动列表）上它**不许**过阈。
+
+        ⚠️ 2026-10-07 换掉了选中态的判据：``web_activity_gate`` 降级成**纯点击
+        目标**（它上面有会滑动的光球，同一位置跨帧 1.0000→0.7282），
+        选中态改由 ``activity_more_selected``（那一行的白字）认。
+
+        ⚠️ ``web_activity_gate`` **故意不在这张互斥表里**：它本就该在选中态帧上
+        命中（导航第 3 步要按那颗按钮），只是**不许参与判页**。判页不许碰它这件事
+        由下面那条用例钉。
+        """
+        navigator = self.navigator([])
+        anchors = (
+            "lobby_activity",
+            "activity_more",
+            "activity_more_selected",
+            "web_community",
+        )
+        expected_owner = {
+            "lobby_activity_entry_live_20261006": "lobby_activity",
+            "activity_menu_live_20261006": "activity_more",
+            "activity_menu_shifted_live_20261007": "activity_more",
+            "activity_web_promo_live_20261006": "activity_more_selected",
+            "activity_web_promo_shifted_live_20261007": "activity_more_selected",
+            "web_activity_list_live_20261006": "web_community",
+        }
+
+        for name, owner in expected_owner.items():
+            screen = fixture(name)
+            for anchor in anchors:
+                match = navigator._locate(screen, anchor)
+                if anchor == owner:
+                    self.assertIsNotNone(
+                        match, f"{name} 上本该命中 {anchor} 却没过阈"
+                    )
+                else:
+                    self.assertIsNone(
+                        match,
+                        f"{name} 上 {anchor} 不该命中（页面会互相串味）",
+                    )
+
+    def test_selected_state_judgement_survives_the_sliding_glow_orb(self):
+        """选中态判据**不许**再依赖那颗会滑动的光球。
+
+        ⚠️ 这条是 2026-10-07 那次实跑失败的**直接原因**（用户原话：「点完之后，
+        它是这橙色的选中状态，你就识别不出来了」）：选中态原来靠
+        ``web_activity_gate``（「前往活动页」按钮）认，那颗按钮上有一颗会滑动的
+        光球 —— 10-06 光球罩住「活动」得 1.0000，10-07 滑到右边罩住「动页」，
+        **同一位置 (1690,968) 掉到 0.7282**，过不了阈 ⇒ 整页判 ``unknown``。
+
+        所以这里钉两件事：
+        ① 光球那块**不再参与判页**（``observe`` 里压根不查它）；
+        ② 新判据 ``activity_more_selected`` 在**两天两帧**上都过阈。
+        """
+        navigator = self.navigator([])
+
+        # ⓪ 结构性守卫：**判页函数里不许出现这颗按钮的锚点名**。
+        # ⚠️ 为什么要用 AST 而不是「跑一遍看结果」：跑一遍只能证明「今天这几帧
+        # 判对了」，而**证明不了「它没参与判页」** —— 某天它在别的帧上恰好与
+        # 正确判据同分，测试照样绿，人却已经把它当判据用着了。
+        # 这正是记忆里那条教训：「护栏测试要防跑不到的分支，结构性规矩改用 AST 静守」。
+        import ast
+        import inspect
+
+        import auto_game_unified.games.epic7.navigation as nav_module
+
+        tree = ast.parse(inspect.getsource(nav_module))
+        forbidden = "web_activity_gate"
+        for node in ast.walk(tree):
+            # 只看「函数体」（判页发生在函数里），跳过类属性与注释
+            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            if node.name != "observe":
+                continue
+            literals = [
+                child.value
+                for child in ast.walk(node)
+                if isinstance(child, ast.Constant) and isinstance(child.value, str)
+            ]
+            self.assertNotIn(
+                forbidden,
+                literals,
+                f"observe() 里又出现了 {forbidden} —— 它只能当点击目标，"
+                "光球会滑动、当判据必炸（2026-10-07 实跑事故）",
+            )
+
+        # ① 光球不再决定页面身份
+        for name, expected in (
+            ("activity_web_promo_live_20261006", "activity_web_promo"),
+            ("activity_web_promo_shifted_live_20261007", "activity_web_promo"),
+            ("activity_menu_live_20261006", "activity_menu"),
+            ("activity_menu_shifted_live_20261007", "activity_menu"),
+        ):
+            with self.subTest(fixture=name):
+                self.assertEqual(expected, navigator.observe(fixture(name)).name)
+
+        # ② 光球那块本身在**同一位置**跨帧分数不一致（这就是它不能当判据的证据）。
+        #    三张帧都是「更多精彩活动已选中」的同一页，只有光球位置不同：
+        #      10-06 稳定态          → 1.0000
+        #      10-07 稳定态          → 0.9716
+        #      10-07 光球滑到别处   → **0.7282**（过不了 0.82 ⇒ 当判据必炸）
+        #    留着这条断言是为了哪天有人想把它捡回判页时，测试立刻响。
+        scores = {}
+        for name in (
+            "activity_web_promo_live_20261006",
+            "activity_web_promo_shifted_live_20261007",
+            "activity_web_promo_glow_moved_live_20261007",
+        ):
+            match = navigator._locate(fixture(name), "web_activity_gate")
+            # 光球滑开那帧会返回 None（过不了阈）—— 那正是它不能当判据的原因，
+            # 记成 0.0 好让下面的极差断言有个数。
+            scores[name] = 0.0 if match is None else match.score
+        self.assertGreater(
+            max(scores.values()) - min(scores.values()),
+            0.20,
+            f"「前往活动页」按钮的分数在几帧间几乎没差 {scores} —— "
+            "若真如此，说明光球那天恰好没滑动，这条用例的依据需要重新采集",
+        )
+        # 最关键的一条：光球滑开那一帧**真的过不了阈**。
+        self.assertIsNone(
+            navigator._locate(
+                fixture("activity_web_promo_glow_moved_live_20261007"),
+                "web_activity_gate",
+            ),
+            "光球滑开那帧上 web_activity_gate 竟然过了阈 —— "
+            "说明这颗光球已经不再滑动，web_activity_gate 可以捡回判页（"
+            "那时请把本测试与 observe() 里的注释一起更新）",
+        )
+
+        # 新判据在**三张**选中态帧上都过阈（含转场动画中那帧），未选中帧绝不过阈。
+        for name in (
+            "activity_web_promo_live_20261006",
+            "activity_web_promo_shifted_live_20261007",
+            "activity_web_promo_glow_moved_live_20261007",
+        ):
+            match = navigator._locate(fixture(name), "activity_more_selected")
+            self.assertIsNotNone(match, f"{name} 上选中态判据没过阈")
+            self.assertGreater(match.score, 0.82)
+        for name in (
+            "activity_menu_live_20261006",
+            "activity_menu_shifted_live_20261007",
+        ):
+            self.assertIsNone(
+                navigator._locate(fixture(name), "activity_more_selected"),
+                f"{name} 是未选中态，不该命中选中态判据",
+            )
+
+    def test_navigation_plan_targets_the_selected_state_by_its_own_anchor(self):
+        """导航第 2 步的目标页判据必须是白字那张，不能是光球那颗。
+
+        ⚠️ 断言的是 ``NavigationPlan`` 里的**声明**（数据），不是运行结果 ——
+        计划表写错锚点名的后果是「跳过一个本该做的动作」或「等一个不会出现的
+        页面」，两者都在真机上才炸，而真机一天只能点一次（记忆里那条：
+        「一天只能点一次、别当冒烟测试反复跑」）。
+        """
+        from auto_game_unified.games.epic7.modes import MODE_SPECS
+
+        steps = MODE_SPECS["community"].navigation_plan.steps
+        select_step = next(step for step in steps if step.anchor == "activity_more")
+        self.assertEqual(
+            ("activity_web_promo",),
+            tuple(select_step.targets),
+            "第 2 步的目标页写错了：选中态只有一个判据，认错了就整条路线卡死",
+        )
+
+    def test_the_gate_step_declares_a_fixed_point_instead_of_hunting_the_glow(self):
+        """导航第 3 步必须用**固定坐标**点「前往活动页」，不许再靠模板定位。
+
+        那颗按钮上有一团**会滑动的光球**：10-06 罩住「活动」二字 ⇒ 1.0000；
+        10-07 滑到右边 ⇒ 同一位置掉到 0.7282 ⇒ 过不了 0.82 ⇒ 抛「缺少导航锚点」
+        ⇒ **连点都没点**，整条社区路线进不去（13:37 / 14:55 两次实跑）。
+        钉的是 ``NavigationPlan`` 里的**声明**（数据）：声明一没，就地失守。
+        """
+        from auto_game_unified.games.epic7.modes import MODE_SPECS
+
+        steps = MODE_SPECS["community"].navigation_plan.steps
+        gate = next(step for step in steps if step.anchor == "web_activity_gate")
+        self.assertIsNotNone(
+            gate.fixed_point,
+            "光球会滑，模板定位跨天必挂；这一步必须声明固定坐标",
+        )
+
+    def test_a_fixed_point_step_clicks_it_without_the_template(self):
+        """给了固定坐标 ⇒ 光球滑到哪都点得下去，且点的就是声明的那个点。
+
+        断言两件事，**都是「依据」而不是「结果」**：
+        ① 光球滑走那一帧上**不给**固定坐标会抛「缺少导航锚点」（复现真机事故）；
+        ② 给了固定坐标就点得下去，且落点 == 声明值（``_click_offset`` 对非
+           ``lobby_story`` 的锚点返回 (0,0)，所以落点就是声明的那一对数）。
+        """
+        from auto_game_unified.games.epic7.modes import MODE_SPECS
+
+        gate = next(
+            step
+            for step in MODE_SPECS["community"].navigation_plan.steps
+            if step.anchor == "web_activity_gate"
+        )
+        slid = fixture("activity_web_promo_glow_moved_live_20261007")
+
+        with self.subTest(case="没有固定坐标 ⇒ 在这次真机事故帧上模板定位必挂"):
+            navigator = self.navigator([slid])
+            with self.assertRaisesRegex(RuntimeError, "web_activity_gate"):
+                navigator._transition(
+                    "activity_web_promo",
+                    ("web_activity_list",),
+                    "web_activity_gate",
+                    "打开网页活动列表",
+                    source_screen=slid,
+                )
+
+        with self.subTest(case="给了固定坐标 ⇒ 点得下去，落点就是声明值"):
+            clicks: list[tuple[int, int]] = []
+            navigator = self.navigator(
+                [fixture("web_activity_list_live_20261006")] * 4, clicks=clicks
+            )
+            navigator._transition(
+                "activity_web_promo",
+                ("web_activity_list",),
+                "web_activity_gate",
+                "打开网页活动列表",
+                source_screen=slid,
+                fixed_point=gate.fixed_point,
+            )
+            self.assertEqual([gate.fixed_point], clicks)
+
+    def test_activity_menu_row_is_tracked_wherever_the_menu_grows(self):
+        """「更多精彩活动」那一行**会随上方活动行数上下漂**，区域必须罩住整列。
+
+        ⚠️ 这条用例记的是 2026-10-07 社区路线**第一步就失败**的那次真机事故：
+        活动页左列表顶部临时多出两行（「助继承者重启冒险」×2，一个回归活动），
+        那一行从 y=460 挪到 y=686（+226px）。区域当时只框 y 400~580 ⇒
+        模板明明还在（0.9145）却框不到 ⇒ 整页判 ``unknown`` ⇒ 导航超时失败关闭。
+
+        所以这里断言两件事，**都是「依据」而不是「结果」**：
+        ① 两个不同日期、不同行数的帧**都**判成 ``activity_menu``；
+        ② 命中框中心**跟着那一行走**（两天差 200 多像素）——
+           ②才是「点击点没被区域改动带偏」的证据。
+        """
+        navigator = self.navigator([])
+        region = navigator._REGIONS["activity_more"]
+
+        old = navigator._locate(fixture("activity_menu_live_20261006"), "activity_more")
+        new = navigator._locate(
+            fixture("activity_menu_shifted_live_20261007"), "activity_more"
+        )
+        self.assertIsNotNone(old)
+        self.assertIsNotNone(new)
+        # 区域必须同时罩住两个落点（上沿 ≤ 460、下沿 ≥ 686+48）。
+        _, ry, _, rh = region
+        self.assertLessEqual(ry, 460, "区域上沿太高，罩不住 10-06 那一行的位置")
+        self.assertGreaterEqual(ry + rh, 686 + 48, "区域下沿太低，罩不住 10-07 那一行")
+        # 点击点跟着行走（不是被区域固定住）。
+        self.assertNotEqual(old.center[1], new.center[1])
+        self.assertGreater(new.center[1] - old.center[1], 150)
+
+    def test_missing_community_anchor_fails_closed(self):
+        """判据锚点缺模板必须在**构造期**炸，不许悄悄降级成「画面认不出」。
+
+        锚点模板缺失时 ``_locate()`` 与「画面本来就没这控件」无法区分，判据会
+        静默消失（2026-10-03 装备子页就这么丢过一次）。这条用例把五个新锚点
+        逐个抹掉，断言构造期报错文案里**点名**了缺的那个。
+        """
+        from dataclasses import replace
+
+        for anchor in (
+            "lobby_activity",
+            "activity_more",
+            "activity_more_selected",
+            "web_activity_gate",
+            "web_community",
+        ):
+            with self.subTest(anchor=anchor):
+                broken = replace(
+                    build_navigation_templates(TEMPLATES), **{anchor: None}
+                )
+                runtime = Runtime(lambda: fixture("lobby"), lambda _: None)
+                with self.assertRaisesRegex(ValueError, anchor):
+                    Epic7Navigator(broken, runtime, sleep=lambda _: None)
+
     def test_classifies_a_story_only_stage_as_story_ready(self):
         navigator = self.navigator([])
         screen = cv2.cvtColor(
@@ -1308,6 +1627,79 @@ class NavigationTests(unittest.TestCase):
         navigator.navigate("arena")
 
         self.assertEqual([(1795, 635), (710, 995)], clicks)
+
+    def test_community_navigation_works_when_the_row_starts_unselected(self):
+        """常规情形：进活动页时「更多精彩活动」**未选中** ⇒ 三步都点。"""
+        clicks: list[tuple[int, int]] = []
+        navigator = self.navigator(
+            [
+                fixture("lobby"), fixture("lobby"),
+                fixture("activity_menu_shifted_live_20261007"),
+                fixture("activity_menu_shifted_live_20261007"),
+                fixture("activity_web_promo_shifted_live_20261007"),
+                fixture("activity_web_promo_shifted_live_20261007"),
+                fixture("web_activity_list_live_20261006"),
+                fixture("web_activity_list_live_20261006"),
+            ],
+            clicks=clicks,
+        )
+
+        navigator.navigate("community", lobby_screen=fixture("lobby"))
+
+        self.assertEqual(3, len(clicks), f"三步都该点，实际点了 {clicks}")
+
+    def test_community_navigation_works_when_the_row_is_already_selected(self):
+        """⚠️ 进活动页时那一行**已经是选中态** ⇒ 一样要走通。
+
+        ⚠️⚠️ 这是 2026-10-07 用户实跑发现的（12:44 那次测试）：
+        「如果我一点到活动就在那个更多精彩里面，它就识别不到了，
+        就是他一定得说我一开始不在这一个更多精彩活动」。
+
+        真因：游戏**记得**上次在活动页上选没选「更多精彩活动」⇒ 点进来的画面
+        可能直接是选中态（那一行已经变橙）。而导航链第一步原来只声明
+        ``("activity_menu",)``（**只有未选中态**）⇒ ``_wait_for_page`` 会一直等
+        一个**永远不会出现**的页面直到超时。
+
+        ⇒ 现在第一步的出口是**两个态**。这条用例喂「进页面就是选中态」的帧序，
+        断言**只点两下**（跳过「选中」那一步）。
+        """
+        clicks: list[tuple[int, int]] = []
+        navigator = self.navigator(
+            [
+                fixture("lobby"), fixture("lobby"),
+                # 进来就已经是选中态 —— 「更多精彩活动」那一行是橙的。
+                fixture("activity_web_promo_shifted_live_20261007"),
+                fixture("activity_web_promo_shifted_live_20261007"),
+                fixture("web_activity_list_live_20261006"),
+                fixture("web_activity_list_live_20261006"),
+            ],
+            clicks=clicks,
+        )
+
+        navigator.navigate("community", lobby_screen=fixture("lobby"))
+
+        self.assertEqual(
+            2,
+            len(clicks),
+            f"已是选中态时只该点「进入活动」+「打开网页活动列表」两下，实际 {clicks}",
+        )
+
+    def test_community_first_step_accepts_both_states_as_its_exit(self):
+        """钉住**声明**本身：第一步的出口必须是两个态。
+
+        ⚠️ 为什么要钉数据而不是只靠上面那两条端到端用例：端到端用例走的是
+        「帧序刚好对」的路径；有人把 ``targets`` 改回单态、同时把某张夹具
+        换成能蒙对的样子，用例仍可能绿。这里直接断言链条声明。
+        """
+        from auto_game_unified.games.epic7.modes import MODE_SPECS
+
+        steps = MODE_SPECS["community"].navigation_plan.steps
+        self.assertEqual(
+            ("activity_menu", "activity_web_promo"),
+            tuple(steps[0].targets),
+            "导航第一步的出口必须同时包含选中/未选中两态 —— "
+            "游戏记得上次选没选，进页面可能就是选中态（2026-10-07 实跑事故）",
+        )
 
     def test_expedition_navigation_uses_verified_three_step_route(self):
         clicks: list[tuple[int, int]] = []
