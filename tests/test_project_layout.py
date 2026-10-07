@@ -13,6 +13,9 @@ class ProjectLayoutTests(unittest.TestCase):
                 "friendship_points_pc_20260830.png",
                 "intimacy_level_up_live_20260815.png",
                 "network_disconnected.png",
+                # 2026-10-04 真机：竞技场掉线那一帧是「文案乙 + 按钮甲」的交叉
+                # 搭配 —— 老的两两配对判定两组各缺一半，整层弹窗被漏掉。
+                "network_disconnected_live_20261004.png",
                 "network_reconnect.png",
                 "network_reconnect_navigation.png",
                 # 2026-09-28 用户实拍：快捷菜单页「宠物小屋礼物角标」（宠物送礼时挂出，
@@ -330,6 +333,99 @@ class ProjectLayoutTests(unittest.TestCase):
         )
         navigation = ROOT / "games" / "epic7" / "templates" / "navigation"
         self.assertTrue((navigation / "lobby_sanctuary.png").is_file())
+
+    def test_epic7_community_fixture_set_exists(self):
+        """社区签到的 16 张竖屏夹具，每一张都有不能删的理由。
+
+        ⚠️ 这批帧是**唯一**能证明「竖屏判据真的分得开」的物证：社区是网页（H5），
+        我们的判据全是「区域限定模板匹配」，跨帧能不能认全靠这批帧覆盖够不够杂。
+
+        ⚠️ 两个**名字会骗人**的地方，删之前先看清楚：
+
+        - ``exchange_center_live_20261006`` 其实是**空列表态**
+          （判出来是 ``exchange_empty``），而 ``exchange_after_redeem`` 才是**正常的**
+          兑换中心。这两张必须成对留：只留一张，就再也证明不了「空列表不会被当成
+          正常兑换中心去点商品卡」。
+        - ``tasks_one_browse_done`` 实测读出来是**第 2 行（点赞）已完成**、第 1/3 行
+          未完成（见 ``test_community_pages.py::test_reads_task_rows_on_every_known_layout``）。
+          名字与画面**不一致**，别照名字推内容。
+
+        ``tasks_fresh`` 是 1103x1899 的**窗口客户区**截图（另一条采集通道、带雷电自己的
+        边框），坐标系与 ``adb screencap`` 的 1080x1920 不是同一个口径 ⇒ 它只给读数
+        测试用，不进判页夹具表（``test_community_pages`` 里有一条口径守卫钉着这件事）。
+
+        2026-10-07 补的四张，每一张都对应一个**没它就没法验**的判据：
+
+        - ``feed_before_signin`` / ``feed_after_signin`` —— 同一页的**未签到 / 已签到**
+          两态。``feed_signin_state`` 是「看颜色（饱和度 49.1 vs 0.0）」的判据，
+          少一张就只剩单边样本，谁改了阈值都不会红。
+        - ``signin_success`` —— 「签到成功！」弹窗。它既是 ``signin_done`` 锚点的唯一
+          来源帧，也是「压暗背板会被读成已签到」那条亮度闸门的**唯一物证**
+          （没有它，``feed_signin_state`` 那道闸门就是空口白话）。
+        - ``exchange_before_redeem`` —— 兑换中心**一件都还没兑**的那一态
+          （920 分 / 0-2、0-1、0-1、0-1）。原来只有「兑过一次」的帧，
+          ``plan_redeem`` 挑卡 1 的第一遍路径没有正样本。
+        """
+        expected = {
+            "feed_list_live_20261006.png",
+            "post_detail_live_20261006.png",
+            "share_sheet_live_20261006.png",
+            "tasks_one_browse_done_live_20261006.png",
+            "tasks_all_done_live_20261006.png",
+            "tasks_fresh_live_20261006.png",
+            "exchange_center_live_20261006.png",
+            "exchange_after_redeem_live_20261006.png",
+            "item_detail_live_20261006.png",
+            "order_confirm_live_20261006.png",
+            "redeem_success_live_20261006.png",
+            "network_error_live_20261006.png",
+            "feed_before_signin_live_20261007.png",
+            "feed_after_signin_live_20261007.png",
+            "signin_success_live_20261007.png",
+            "exchange_before_redeem_live_20261007.png",
+        }
+        fixture_dir = ROOT / "tests" / "fixtures" / "epic7_community"
+        self.assertEqual(expected, {path.name for path in fixture_dir.glob("*.png")})
+
+    def test_community_templates_exist(self):
+        """社区路线的三批模板：判页 13 张 + 字模 10 张 + 导航入口 4 张。
+
+        - ``pages/`` 里 11 个页面判据 + 2 个任务按钮长相（``task_todo`` / ``task_done``）；
+          判据型模板**一律不许缺**（``build_page_templates`` 是 fail-closed 的）。
+        - ``digits/`` 十张字模，缺一张都会让积分/限购读数安静地失效。
+        - ``strings/`` 是**备用路径**（整串模板，不在生产上）—— 修的时候别把它当判据。
+        """
+        templates = ROOT / "games" / "epic7" / "templates" / "community"
+        self.assertEqual(
+            {
+                "feed_home.png",
+                "exchange_center.png",
+                "exchange_empty.png",
+                "tasks_page.png",
+                "item_detail.png",
+                "order_confirm.png",
+                "redeem_done.png",
+                "share_sheet.png",
+                "post_detail.png",
+                "network_error.png",
+                "signin_done.png",
+                "task_todo.png",
+                "task_done.png",
+            },
+            {path.name for path in (templates / "pages").glob("*.png")},
+        )
+        self.assertEqual(
+            {f"{digit}.png" for digit in range(10)},
+            {path.name for path in (templates / "digits").glob("*.png")},
+        )
+        navigation = ROOT / "games" / "epic7" / "templates" / "navigation"
+        for name in (
+            "lobby_activity.png",
+            "activity_more.png",
+            "web_activity_gate.png",
+            "web_community.png",
+        ):
+            self.assertTrue((navigation / name).is_file(), name)
 
     def test_every_route_is_known_to_the_local_check_gate(self):
         """每条路线都要在 `tools/check.py` 的路线表里登记。
