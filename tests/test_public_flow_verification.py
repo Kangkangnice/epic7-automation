@@ -160,11 +160,10 @@ class InventoryMatchesSourceTests(unittest.TestCase):
 
     def test_every_action_bearing_module_is_declared(self):
         """源码里所有真正调用 ``X.click/back/swipe`` 的公共流程模块都要在清单里。"""
-        routes = {
-            "arena.py", "story.py", "expedition.py", "fodder.py",
-            "hero_synthesis.py", "shop_refresh.py", "survivor.py",
-            "world_boss.py", "knights_donation.py", "labyrinth_stone.py",
-        }
+        # ⚠️ **读生产代码里那个派生函数**，不再在本用例里抄一份路线清单：
+        # 抄一份的后果是「路线清单改了、这里没跟上」，而那时本用例会**误报**
+        # 新路线模块「带动作但没登记」（2026-10-06 社区签到就撞过一次）。
+        routes = pfv.route_module_names()
         # 与 ``pfv.assert_module_inventory_matches`` 的 skip 保持一致：两个 Runner
         # 基类都是「路线 Runner 的骨架」，由路线级的三张表管，不算公共流程。
         skip = {

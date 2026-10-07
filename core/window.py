@@ -556,6 +556,19 @@ class Epic7Window:
                 return console_path, fields[0].strip(), int(fields[3].strip())
         raise RuntimeError(f"无法将雷电模拟器进程 {process_id.value} 对应到实例")
 
+    def instance_channel(self) -> tuple[Path, str, int]:
+        """公开的只读入口：``(雷电控制台路径, 实例序号, 渲染窗口句柄)``。
+
+        ⚠️ 只给**竖屏通道**（``core/portrait.py``）用。竖屏段（游戏内 H5「游戏社区」）
+        同样要定位「是哪个雷电实例、哪个窗口」，但那套发现逻辑（``_window`` /
+        ``_instance_channel``）本来就是为横屏写的、只读可用，不该再抄第二份 ——
+        抄一份就会出现「两个地方各自判断哪个是目标窗口」的漂移。
+
+        走的是与横屏**完全相同**的 ``_instance_channel``：本方法只是把它从私有变成
+        可读，横屏的取图/点击/返回一行都没动。
+        """
+        return self._instance_channel()
+
     def back(self) -> None:
         try:
             self._send_android_back()

@@ -1,0 +1,56 @@
+竖屏帧池：105 张 → 唯一页面 42 类
+代表帧已缓存 42 张（999 MB）
+  ✗ feed_home        65x100→65x100 已收紧  过阈 10 类（来源帧 1.0）可疑 4   [底栏首页激活页签（青绿）]
+      可疑 #41 verify_01_portrait               1.0000
+      可疑 #28 p4_03_scrolled                   1.0000
+      可疑 #07 c_07_back_detail                 1.0000
+      可疑 #03 backkey_0                        1.0000
+      预期 #24 p2_01_feed                       1.0000
+      预期 #22 map_10_back_feed                 1.0000
+      预期 #12 dig_base                         1.0000
+      预期 #08 c_08_exchange                    1.0000
+      预期 #02 anim_b                           1.0000
+  ✓ exchange_center  260x68→174x50 已收紧  过阈  2 类（来源帧 1.0）可疑 0   [标题「兑换中心」]
+      预期 #19 map_02_exchange                  1.0000
+      预期 #06 c_06_after_ok                    1.0000
+  ✓ tasks_page       190x68→175x50 已收紧  过阈  3 类（来源帧 1.0）可疑 0   [标题「我的任务」]
+      预期 #27 p3_03_tasks                      1.0000
+      预期 #20 map_03_tasks                     1.0000
+      预期 #18 f_03_tasks_final                 1.0000
+  ✗ item_detail      800x110→800x102 已收紧  过阈 10 类（来源帧 1.0）可疑 6   [底部「立即兑换」（叠层，仅供参考）]
+      可疑 #17 e_after_confirm                  0.9272
+      可疑 #16 e5_item4_result                  0.9272
+      可疑 #05 c_05_now                         0.9272
+      可疑 #42 zz2_state                        0.9271
+      可疑 #15 e4_order                         0.9271
+      可疑 #04 c_00_confirm                     0.9271
+      预期 #14 e3_card4                         1.0000
+      预期 #11 d_item2_02_order_confirm         1.0000
+      预期 #10 d_item2_01_card2_detail          1.0000
+      预期 #09 c_09_exchange_after              1.0000
+  ✓ order_confirm    540x240→540x86 已收紧  过阈  3 类（来源帧 1.0）可疑 0   [订单确认提示文字]
+      预期 #42 zz2_state                        1.0000
+      预期 #15 e4_order                         1.0000
+      预期 #04 c_00_confirm                     1.0000
+  ✓ redeem_done      550x256→550x256 已收紧  过阈  3 类（来源帧 1.0）可疑 0   [「兑换成功」弹窗]
+      预期 #17 e_after_confirm                  1.0000
+      预期 #16 e5_item4_result                  1.0000
+      预期 #05 c_05_now                         1.0000
+  ✓ exchange_empty   320x70→303x46 已收紧  过阈  1 类（来源帧 1.0）可疑 0   [「暂时还没有商品哦」]
+      预期 #19 map_02_exchange                  1.0000
+  ✓ share_sheet      420x220→128x169 已收紧  过阈  1 类（来源帧 1.0）可疑 0   [分享面板]
+      预期 #26 p2_04_share                      1.0000
+  ✓ post_detail      440x90→319x51 已收紧  过阈  1 类（来源帧 1.0）可疑 0   [帖子底部操作栏]
+      预期 #25 p2_02_post                       1.0000
+  ✓ network_error    520x260→464x121 已收紧  过阈  1 类（来源帧 1.0）可疑 0   [「网络连接异常」]
+      预期 #13 dig_home                         1.0000
+  ✓ task_todo        121x55→121x55 已收紧  过阈  2 类（来源帧 1.0）可疑 0   [任务「去完成」]
+      预期 #27 p3_03_tasks                      1.0000
+      预期 #20 map_03_tasks                     1.0000
+  ✓ task_done        88x27→88x27 已收紧  过阈  3 类（来源帧 1.0）可疑 0   [任务「已完成」]
+      预期 #27 p3_03_tasks                      1.0000
+      预期 #20 map_03_tasks                     1.0000
+      预期 #18 f_03_tasks_final                 1.0000
+
+可疑合计 10 类
+复核图 D:\AI\codex\auto_game\auto_game_unified\docs\manual_review\community\community_anchors_sheet.png
