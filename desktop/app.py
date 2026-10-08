@@ -17,7 +17,10 @@ from auto_game_unified.desktop.catalog import (
     PRODUCT_NAME,
     PRODUCT_VERSION,
     ROUTES,
+    RouteInfo,
+    grouped_routes,
     route_by_name,
+    selectable_modes,
     visible_backends,
 )
 from auto_game_unified.desktop.diagnostics import export_diagnostics
@@ -59,16 +62,68 @@ STOP_GRACE_SECONDS = 30.0
 STOP_POLL_SECONDS = 0.5
 
 
+# 窗口尺寸的上下限（**逻辑像素**，``theme.scale`` 会再乘一次）。
+#
+# ⚠️ 2026-10-09 用户反馈：「不能自由地调节分辨率，拖动现在太大了，日志都看不清」。
+# 两个毛病都在下面 ``initial_window_size`` 里 —— 见那段注释。
+#
+# 最小可用尺寸：够放得下任务卡头 + 至少 3 行日志。**它只用来挡「拖到不可用」**，
+# 不是「推荐尺寸」。窗口的初始尺寸是另一回事（``initial_window_size``）。
+MIN_WINDOW_WIDTH = 900
+MIN_WINDOW_HEIGHT = 600
+# 初始尺寸的上限：**不跟着屏幕撑满**。屏幕再大也别一上来就糊住整个桌面。
+# 依据：用户要的是「日志看得清」而不是「窗口尽量大」——宽度超过约 1280 之后，
+# 任务卡与日志区都不再受益（日志行本身是短文本），反而挤掉旁边能开的别的窗口。
+INITIAL_MAX_WIDTH = 1280
+# 初始尺寸占屏幕的上限比例：**宽高分开**。
+#
+# ⚠️ 为什么不做成同一个比例（2026-10-09 调）：用户的诉求是「日志看得清」，
+# 而日志**只吃高度**、不吃宽度。宽度压低能让旁边开别的窗口（用户在看日志时
+# 多半要对照游戏/编辑器），高度压低却直接把日志挤到最小值 160px。
+# ⇒ 宽度压到 85%（且不超过 ``INITIAL_MAX_WIDTH``），高度给到 92% 让日志有地方长。
+INITIAL_SCREEN_RATIO_WIDTH = 0.85
+INITIAL_SCREEN_RATIO_HEIGHT = 0.92
+
+
 def fit_window_size(
     *,
     requested: tuple[int, int],
     screen: tuple[int, int],
+    minimum: tuple[int, int] = (MIN_WINDOW_WIDTH, MIN_WINDOW_HEIGHT),
+    max_width: int = INITIAL_MAX_WIDTH,
 ) -> tuple[int, int]:
-    max_width = max(800, screen[0] - 80)
-    max_height = max(600, screen[1] - 80)
-    width = min(max(1080, requested[0] + 40), max_width)
-    height = min(max(760, requested[1] + 40), max_height)
-    return width, height
+    """窗口的**初始**尺寸：够放内容，但**不**撑满屏幕，也**不**小于最小可用尺寸。
+
+    ⚠️ **所有参数与返回值都是「设备像素」**（``winfo_*`` 的原生口径）。
+    ``MIN_WINDOW_*`` / ``INITIAL_MAX_WIDTH`` 是**逻辑像素**常量，调用方负责先用
+    ``theme.px`` 换算好再传进来（见 ``_fit_initial_window``）。
+
+    ``requested`` 是界面自然需要的尺寸（``winfo_reqwidth/reqheight``），
+    ``screen`` 是屏幕尺寸。
+
+    ⚠️ 2026-10-09 用户反馈「不能自由地调节这个分辨率，拖动现在太大了，我的那个
+    日志都看不清了」，**这条函数与 ``minsize`` 一起**是病根：
+
+    * 旧版把窗口顶到 ``屏幕-80``（1600x1000 的屏上就是 1520x920）—— 几乎铺满整屏；
+    * 旧版随后又用**同一个尺寸**当 ``minsize`` ⇒ 窗口**只能放大、一点拖不小**。
+
+    现在：初始尺寸 = 内容需要 + 一点余量，再被「屏幕比例」和 ``max_width``
+    双双压住（**宽度比高度压得更狠**，因为日志只吃高度）；**下限**用 ``minimum``
+    （只在 ``_fit_initial_window`` 里设 ``minsize``），两者彻底分开。
+    """
+    floor_width, floor_height = minimum
+    # ① 内容优先：请求尺寸 + 一点余量。
+    width = requested[0] + 40
+    height = requested[1] + 40
+    # ② 别超过屏幕的可视范围（留 40px 给标题栏/任务栏，与旧版口径一致）。
+    width = min(width, max(floor_width, screen[0] - 40))
+    height = min(height, max(floor_height, screen[1] - 40))
+    # ③ 别一上来就铺满 —— 这是「太大了」那一条的正解。
+    # ⚠️ 高度比例比宽度宽松（见上面两个常量的注释）：日志只吃高度。
+    width = min(width, int(screen[0] * INITIAL_SCREEN_RATIO_WIDTH), max_width)
+    height = min(height, int(screen[1] * INITIAL_SCREEN_RATIO_HEIGHT))
+    # ④ 再兜一次下限（屏幕极小时 ①~③ 可能把它压到不可用）。
+    return max(width, floor_width), max(height, floor_height)
 
 
 class DesktopController:
@@ -134,6 +189,40 @@ class DesktopController:
                 if not route_by_name(name).standalone_only
             ]
         self.selection.append(mode)
+
+    def select_all(self, *, include_events: bool = True) -> None:
+        """三个批量按钮的**唯一实现**：把 ``selection`` 换成一整批。
+
+        批量动作用 ``toggle`` 逐条点会有两个毛病：① 每点一条都要跑一遍
+        ``standalone_only`` 的互斥逻辑，勾到「活动」时前面已勾好的会被清空，
+        最终结果取决于**遍历顺序**（纯属巧合）；② 顺序由遍历决定，而「勾选先后
+        就是执行顺序」是用户拍板的语义 —— 批量勾完的顺序应当就是**面板上看到的
+        顺序**，不能听遍历的。
+
+        所以这里**整体替换**：直接给出一份有序清单 —— `catalog.selectable_modes`
+        **按面板顺序**排好（分组顺序 + 组内书写顺序），正好就是用户看到的那份，
+        不逐条走 `toggle`。
+
+        ⚠️ 互斥仍然成立：「全选（不含活动）」本来就把活动排除在外；而
+        「全选」把活动一起勾上时，`standalone_only` 的路线与其它路线谁都不能共存 ——
+        由于活动组**只有一条**，此时结果就是「只勾活动这一条」。这不是特例，是
+        `toggle` 里那条互斥规则在批量语境下的自然结论。
+        """
+        if self.worker.running:
+            raise RuntimeError("运行期间不能修改任务")
+        wanted = selectable_modes(include_events=include_events)
+        if any(route_by_name(mode).standalone_only for mode in wanted):
+            # 批里有只能单独跑的（活动）：它与非活动路线互斥 ⇒ 只留它自己。
+            wanted = tuple(
+                mode for mode in wanted if route_by_name(mode).standalone_only
+            )
+        self.selection = list(wanted)
+
+    def clear_selection(self) -> None:
+        """「取消全选」：一条都不勾，回到「每次自己挑」的初始状态。"""
+        if self.worker.running:
+            raise RuntimeError("运行期间不能修改任务")
+        self.selection.clear()
 
     def set_cycles(self, mode: str, cycles: int) -> None:
         """改某条路线的次数（界面上那个输入框）。
@@ -212,7 +301,19 @@ class DesktopApp:
     """
 
     # 勾选位次的序号。用户 2026-09-29 拍板：勾选先后决定执行顺序，界面上要看得见。
+    #
+    # ⚠️ 2026-10-08：这里**只有 1~10**。加了「全选（不含活动）」之后一次能勾 12 条，
+    # 第 11 位起就没有圈码可用了（`_CIRCLED[10]` 直接 IndexError，整个界面崩）。
+    # 圈码不够就退回 `11.` `12.` 这种阿拉伯数字 —— 序号的**语义**是「你排第几」，
+    # 不是「必须画个圈」，所以用 `_position_prefix()` 统一出口，不要在这里加字符。
     _CIRCLED = "①②③④⑤⑥⑦⑧⑨⑩"
+
+    @classmethod
+    def _position_prefix(cls, index: int) -> str:
+        """第 ``index``（0 起）位的序号前缀：头 10 位用圈码，之后用 `11.` 这类。"""
+        if index < len(cls._CIRCLED):
+            return cls._CIRCLED[index]
+        return f"{index + 1}."
 
     def __init__(
         self,
@@ -248,6 +349,9 @@ class DesktopApp:
         self.cycle_vars: dict[str, tk.StringVar] = {}
         self._backend_buttons: list[ttk.Radiobutton] = []
         self._checking = False
+        # 「每日任务」那张卡。存着是为了 `_task_panel_descendants()`（测试导航用），
+        # 生产逻辑不用它 —— 别拿它当「面板根」去算任何布局。
+        self._task_panel: ttk.Frame | None = None
 
         # 令牌 + ttk 样式一次性装好，之后的排布只引用语义名。
         self.theme = theme.build(self.root)
@@ -268,13 +372,33 @@ class DesktopApp:
         self.root.after(100, self._poll_worker)
 
     def _fit_initial_window(self) -> None:
+        """摆好窗口的初始尺寸，并把**最小尺寸与它分开**。
+
+        ⚠️ 2026-10-09 之前这里写的是 ``self.root.minsize(width, height)`` ——
+        拿**初始尺寸**当最小尺寸，等于把窗口**锁死**：用户拖不小（用户原话
+        「不能自由地调节这个分辨率，拖动现在太大了，我的那个日志都看不清了」）。
+
+        现在两件事分开：
+        * 初始尺寸交给 ``fit_window_size``（够用即可，不铺满屏幕）；
+        * 最小尺寸固定为 ``MIN_WINDOW_*``（只防「拖到没法用」，挡不住用户缩小）。
+
+        ⚠️ ``winfo_*`` 给的是**设备像素**，而 ``MIN_WINDOW_*`` 是**逻辑像素**
+        —— 这里统一成设备像素再交给 ``fit_window_size``，``minsize`` 也走
+        ``theme.px``。高 DPI 屏上不换算会让下限偏小一半。
+        """
         self.root.update_idletasks()
+        floor = (
+            self.theme.px(MIN_WINDOW_WIDTH),
+            self.theme.px(MIN_WINDOW_HEIGHT),
+        )
         width, height = fit_window_size(
             requested=(self.root.winfo_reqwidth(), self.root.winfo_reqheight()),
             screen=(self.root.winfo_screenwidth(), self.root.winfo_screenheight()),
+            minimum=floor,
+            max_width=self.theme.px(INITIAL_MAX_WIDTH),
         )
         self.root.geometry(f"{width}x{height}")
-        self.root.minsize(width, height)
+        self.root.minsize(*floor)
 
     def _build_layout(self) -> None:
         """上下三段的骨架。间距全部走令牌，**没有裸数字**。"""
@@ -289,7 +413,8 @@ class DesktopApp:
 
         gap = px(theme.SPACE_LG)
         self._build_status_bar(outer).grid(row=0, column=0, sticky="ew")
-        self._build_task_panel(outer).grid(row=1, column=0, sticky="ew", pady=(gap, 0))
+        self._task_panel = self._build_task_panel(outer)
+        self._task_panel.grid(row=1, column=0, sticky="ew", pady=(gap, 0))
         self._build_action_bar(outer).grid(row=2, column=0, sticky="ew", pady=(gap, 0))
         self._build_log_panel(outer).grid(row=3, column=0, sticky="nsew", pady=(gap, 0))
 
@@ -380,10 +505,14 @@ class DesktopApp:
         勾选是**多选且有序**的：勾上的先后就是执行顺序，名字前面的序号（①②③…）
         实时反映它现在排第几。取消勾选后面的序号自动顺移；取消再重新勾 = 排到最后。
 
-        排布要点（2026-09-29 改版）：
-        - 列数由 `theme.route_columns()` 算出来，加路线不用改这里；
-        - 一条路线一格，**格内紧贴、格间留白**：`weight=1` 让每格平均吃伸缩 ⇒
-          格子摊满整张卡（不再「内容缩在左边、右边空一片」），而富余宽度落在
+        排布要点（2026-10-08 分组改版）：
+        - 路线按 `catalog.GROUPS` 分成 **日常 / 赛季 / 活动** 三段，每段一个
+          小标题；分组的**内容与次序**都从 catalog 读，这里不写中文字面量、
+          也不自己遍历 `ROUTES`（插一条新路线只改 catalog）；
+        - 卡头右侧那三个小按钮是**批量勾选**（全选 / 全选（不含活动）/ 取消全选），
+          逻辑在 `DesktopController.select_all` / `clear_selection`；
+        - 每段内部：列数由 `theme.route_columns()` 算出来，一条路线一格，
+          **格内紧贴、格间留白**（`weight=1` 让每格平均吃伸缩）⇒ 富余宽度落在
           「组」的外面 ⇒ 次数框离它自己的名字最近，不会读成下一条路线的；
         - 说明文字挪到标题右边同行，用宽度换高度（旧版把它压在卡片底部一条窄栏里，
           折成很多行、右边全空）。
@@ -400,7 +529,7 @@ class DesktopApp:
             row=0, column=0, sticky="w"
         )
         # 说明文字放标题**右边同行**：旧版把它压在卡片底部一条窄栏里，行数很多、
-        # 右边一大片空白。同行之后它摊满标题右侧那段宽度，两行内说完。
+        # 右边一大片空白。同行之后它摊满标题右侧那段空白，两行内说完。
         hint = ttk.Label(
             head,
             text=DAILY_DESCRIPTION,
@@ -410,16 +539,90 @@ class DesktopApp:
         )
         hint.grid(row=0, column=1, sticky="ew", padx=(px(theme.SPACE_XL), 0))
         hint.bind("<Configure>", self._wrap_at_own_width)
+        # 三个批量按钮紧贴卡头右端。放在**卡头**而不是各组标题旁，是因为
+        # 「全选（不含活动）」天然是跨组的动作 —— 挂在任何一组下面都名不副实。
+        self._build_bulk_buttons(head).grid(row=0, column=2, sticky="e")
 
-        for index, route in enumerate(ROUTES):
-            row, column = divmod(index, self._route_columns_count)
+        # 分组渲染：`grouped_routes()` 已按展示顺序排好、且滤掉空组。
+        row = 1
+        for group, routes in grouped_routes():
+            ttk.Label(panel, text=group, style="Group.TLabel").grid(
+                row=row,
+                column=0,
+                columnspan=columns,
+                sticky="w",
+                # 组标题上方留得比组内行距大 ⇒ 一眼看出「标题属于下面那一堆」，
+                # 而不是浮在上一组的尾巴上。
+                pady=(px(theme.SPACE_LG), px(theme.SPACE_XS)),
+            )
+            row += 1
+            self._build_group_grid(panel, routes, first_row=row)
+            row += -(-len(routes) // columns)
+
+        # 每格平均吃伸缩：窗口拉宽时组间距一起变大，而不是全挤在末尾。
+        for column in range(columns):
+            panel.grid_columnconfigure(column, weight=1)
+
+        self.route_description_var = tk.StringVar()
+        description = ttk.Label(
+            panel,
+            textvariable=self.route_description_var,
+            style="Body.TLabel",
+            justify="left",
+            wraplength=px(theme.WRAP_MIN_WIDTH),
+        )
+        description.grid(
+            row=row,
+            column=0,
+            columnspan=columns,
+            sticky="ew",
+            pady=(px(theme.SPACE_MD), 0),
+        )
+        description.bind("<Configure>", self._wrap_at_own_width)
+        return panel
+
+    def _build_bulk_buttons(self, parent: ttk.Frame) -> ttk.Frame:
+        """卡头右端那三个批量勾选按钮。
+
+        ⚠️ 三颗按钮的**文案与动作成对**写死在这里，但「勾哪些」一律问
+        `catalog.selectable_modes` —— 界面层不写路线名单。
+        「不含活动」的语义由 `include_events=False` 表达，不是这里再减一遍。
+        """
+        px = self.theme.px
+        bar = ttk.Frame(parent, style="Card.TFrame")
+        for text, command in (
+            ("全选", lambda: self._bulk_select(include_events=True)),
+            ("全选（不含活动）", lambda: self._bulk_select(include_events=False)),
+            ("取消全选", self._bulk_clear),
+        ):
+            ttk.Button(bar, text=text, style="Tool.TButton", command=command).pack(
+                side=tk.LEFT, padx=(px(theme.SPACE_SM), 0)
+            )
+        return bar
+
+    def _build_group_grid(
+        self,
+        panel: ttk.Frame,
+        routes: tuple[RouteInfo, ...],
+        *,
+        first_row: int,
+    ) -> None:
+        """把某一组的路线铺进 `panel` 的网格里（从 `first_row` 往下）。
+
+        路线是**扁平**地排在同一个 grid 上的（不是每组套一个子 Frame）——
+        这样各组的格子共用同一套列宽，三个分组左边缘对齐，纵向看是一张表；
+        套子 Frame 的话每组各算各的列宽，组和组之间会错开。
+        """
+        px = self.theme.px
+        for offset, route in enumerate(routes):
+            row, column = divmod(offset, self._route_columns_count)
             # 每条路线是一个**紧贴的组**（勾选框 + 次数框 + 「次」），组内用 pack
             # 贴着排；富余宽度留在组**外面**（格子的右边距 + 整列拉伸）。
             # 这样「格内间距 < 组间距」，一眼能看出次数属于哪条路线 ——
             # 反过来（富余塞进组内）会让次数框离下一条路线更近，读错。
             cell = ttk.Frame(panel, style="Card.TFrame")
             cell.grid(
-                row=row + 1,
+                row=row + first_row,
                 column=column,
                 sticky="ew",
                 padx=(0, px(theme.SPACE_XL)),
@@ -452,28 +655,6 @@ class DesktopApp:
             spinbox.pack(side=tk.LEFT, padx=(px(theme.SPACE_SM), px(theme.SPACE_XS)))
             self._cycle_inputs[route.mode] = spinbox
             ttk.Label(cell, text="次", style="Body.TLabel").pack(side=tk.LEFT)
-        # 每格平均吃伸缩：窗口拉宽时组间距一起变大，而不是全挤在末尾。
-        for column in range(self._route_columns_count):
-            panel.grid_columnconfigure(column, weight=1)
-
-        rows = -(-len(ROUTES) // self._route_columns_count)
-        self.route_description_var = tk.StringVar()
-        description = ttk.Label(
-            panel,
-            textvariable=self.route_description_var,
-            style="Body.TLabel",
-            justify="left",
-            wraplength=px(theme.WRAP_MIN_WIDTH),
-        )
-        description.grid(
-            row=rows + 1,
-            column=0,
-            columnspan=columns,
-            sticky="ew",
-            pady=(px(theme.SPACE_MD), 0),
-        )
-        description.bind("<Configure>", self._wrap_at_own_width)
-        return panel
 
     def _wrap_at_own_width(self, event: tk.Event) -> None:
         """说明文字按**自己那一格的宽度**换行。
@@ -485,6 +666,24 @@ class DesktopApp:
         if int(event.widget.cget("wraplength")) != event.width:
             event.widget.configure(wraplength=event.width)
 
+    def _task_panel_descendants(self) -> tuple[tk.Misc, ...]:
+        """「每日任务」那张卡里的全部子控件（**不含**面板自己），深度不限。
+
+        给测试用：分组标题 / 批量按钮散在网格的各个行列上，没有稳定的控件名，
+        测试要能找到它们。⚠️ 这不是「界面逻辑」——生产代码不调它，
+        也不靠它做任何判断（那种「遍历自己的控件来决定行为」的写法会让
+        改布局就改行为）。
+        """
+        if self._task_panel is None:  # pragma: no cover - 构造期不会这样
+            return ()
+        found: list[tk.Misc] = []
+        pending = list(self._task_panel.winfo_children())
+        while pending:
+            widget = pending.pop()
+            found.append(widget)
+            pending.extend(widget.winfo_children())
+        return tuple(found)
+
     def _route_text(self, mode: str) -> str:
         """勾选框上的文字：``序号 名字 [正式/实验]``。
 
@@ -493,7 +692,7 @@ class DesktopApp:
         route = route_by_name(mode)
         marker = "正式" if not route.experimental else "实验"
         if mode in self.controller.selection:
-            prefix = self._CIRCLED[self.controller.selection.index(mode)]
+            prefix = self._position_prefix(self.controller.selection.index(mode))
         else:
             prefix = "　"
         text = f"{prefix} {route.label}  [{marker}]"
@@ -575,6 +774,35 @@ class DesktopApp:
             f"准备就绪。{STARTUP_HINTS[self.controller.selected_backend]}"
         )
         return panel
+
+    def _bulk_select(self, *, include_events: bool) -> None:
+        """「全选」/「全选（不含活动）」。勾选顺序 = 面板顺序（见 `select_all`）。"""
+        try:
+            self.controller.select_all(include_events=include_events)
+        except Exception as error:
+            messagebox.showerror("无法修改任务", str(error), parent=self.root)
+            return
+        self._after_bulk_change()
+
+    def _bulk_clear(self) -> None:
+        """「取消全选」：一条都不勾（= 出厂状态，每次自己挑）。"""
+        try:
+            self.controller.clear_selection()
+        except Exception as error:
+            messagebox.showerror("无法修改任务", str(error), parent=self.root)
+            return
+        self._after_bulk_change()
+
+    def _after_bulk_change(self) -> None:
+        """批量改完勾选后的统一收尾 —— 和单条 `_on_toggle` 走同一套刷新。
+
+        ⚠️ 三处刷新一个都不能少：勾选状态与序号（`_refresh_task_rows`）、
+        底部说明（`_refresh_route_details`，它读的是「最后勾的那条」）、
+        以及「开始任务」按钮的可用性（`_refresh_controls`）。
+        """
+        self._refresh_task_rows()
+        self._refresh_route_details()
+        self._refresh_controls()
 
     def _on_toggle(self, mode: str) -> None:
         """勾选框被点。勾上的先后由 ``controller.toggle`` 记着，这里只负责刷新界面。"""
