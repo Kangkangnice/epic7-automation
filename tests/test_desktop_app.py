@@ -3,12 +3,13 @@ import sys
 
 import pytest
 import tkinter as tk
+from tkinter import ttk
 from unittest.mock import patch
 
 from auto_game_unified.desktop import app as app_module
 from auto_game_unified.desktop import theme
 from auto_game_unified.desktop.app import DesktopApp, DesktopController, fit_window_size
-from auto_game_unified.desktop.catalog import ROUTES
+from auto_game_unified.desktop.catalog import ROUTES, grouped_routes
 from auto_game_unified.desktop.preflight import PreflightReport, PreflightStatus
 
 
@@ -363,18 +364,71 @@ def test_controller_refuses_start_with_empty_selection():
         controller.start()
 
 
-def test_window_size_expands_for_high_dpi_requested_content():
-    assert fit_window_size(
+def test_window_size_keeps_content_but_does_not_fill_the_screen():
+    """⚠️ 2026-10-09 用户反馈：窗口「太大了」、日志看不清。
+
+    旧版把宽度顶到 ``屏幕-80``、再用同一尺寸做 ``minsize`` ⇒ 铺满屏幕且拖不小。
+    现在**初始尺寸不该超过屏幕的 85%**，也不该超过 ``INITIAL_MAX_WIDTH``。
+    """
+    width, height = fit_window_size(
         requested=(1613, 1208),
         screen=(3200, 2000),
-    ) == (1653, 1248)
+    )
+
+    assert width <= 3200 * 0.85
+    assert width <= 1280
+    assert height <= 2000 * 0.85
 
 
 def test_window_size_stays_inside_a_small_screen():
-    assert fit_window_size(
+    width, height = fit_window_size(
         requested=(1500, 1100),
         screen=(1366, 768),
-    ) == (1286, 688)
+    )
+
+    assert width <= 1366
+    assert height <= 768
+    # 屏幕小到放不下内容时，也得退到「最小可用尺寸」而不是崩掉或给负数。
+    assert width >= 900
+    assert height >= 600
+
+
+def test_window_size_never_goes_below_the_minimum_on_a_tiny_screen():
+    width, height = fit_window_size(
+        requested=(600, 400),
+        screen=(800, 480),
+    )
+
+    assert (width, height) == (900, 600)
+
+
+def test_initial_window_is_smaller_than_the_screen_and_shrinkable(tmp_path, tk_window):
+    """初始尺寸要留出屏幕空间，**且**最小尺寸必须**小于**初始尺寸（能缩小）。
+
+    这条守的是用户那句「不能自由地调节这个分辨率，拖动现在太大了」：
+    只要 ``minsize`` 还等于初始尺寸，窗口就一点拖不动。
+    """
+    app = DesktopApp(
+        tk_window,
+        controller=DesktopController(worker=FakeWorker()),
+        project_root=tmp_path,
+    )
+    tk_window.update_idletasks()
+
+    initial_width, initial_height = (
+        int(value) for value in tk_window.winfo_geometry().split("+")[0].split("x")
+    )
+    min_width, min_height = (int(value) for value in tk_window.wm_minsize())
+
+    assert min_width < initial_width, "最小宽度必须小于初始宽度，否则窗口拖不小"
+    assert min_height < initial_height, "最小高度必须小于初始高度，否则窗口拖不小"
+
+    # 最小尺寸 = ``MIN_WINDOW_*`` 逻辑像素经 ``theme.px`` 换算 ——
+    # ⚠️ 断言走**换算关系**而不是写死数字（测试机缩放因子不固定）。
+    assert (min_width, min_height) == (
+        app.theme.px(900),
+        app.theme.px(600),
+    )
 
 
 def test_desktop_app_initial_window_contains_its_requested_content(tmp_path, tk_window):
@@ -540,8 +594,20 @@ def test_task_panel_renders_a_checkbox_and_a_cycle_input_per_route(
     )
     tk_window.update_idletasks()
 
-    assert list(app._route_buttons) == [route.mode for route in ROUTES]
-    assert list(app.cycle_vars) == [route.mode for route in ROUTES]
+    # ⚠️ 这里断言的是**集合相同 + 顺序 = 分组顺序**，不是 `ROUTES` 的书写顺序：
+    # 2026-10-08 分组改版后，面板按「日常 / 赛季 / 活动」三段渲染，所以控件
+    # 是按**分组顺序**建出来的（赛季那两条被挪到日常之后）。断言 `ROUTES` 顺序
+    # 会把「分组生效了」这件正事判成失败。
+    assert set(app._route_buttons) == {route.mode for route in ROUTES}
+    assert list(app._route_buttons) == [
+        route.mode for _group, routes in grouped_routes() for route in routes
+    ]
+    assert list(app.cycle_vars) == list(app._route_buttons)
+    # 每一组内部的顺序必须保持 `ROUTES` 的书写顺序（组内不许被打乱）。
+    for _group, routes in grouped_routes():
+        expected = [route.mode for route in routes]
+        actual = [mode for mode in app._route_buttons if mode in set(expected)]
+        assert actual == expected
     assert all(var.get() is False for var in app.route_vars.values())
     assert app.cycle_vars["world_boss"].get() == "2"
     assert app.cycle_vars["arena"].get() == "1"
@@ -561,6 +627,9 @@ def test_task_panel_columns_are_derived_from_the_screen_budget(tmp_path, tk_wind
     用户 2026-09-25 与 2026-09-29 两次要求「别太长」，又明说「以后还有很多路线」
     ⇒ 行数封顶 `ROUTE_ROWS_TARGET`，多出来的用**加列**解决。这条测试钉住这两件事：
     退回两列（10 条要排 5 行）会失败，把列数写死成别的值也会失败。
+
+    ⚠️ 2026-10-08 分组改版后**每一组还额外占一行标题**，所以格子不再从第 1 行
+    连续排到底 —— 这里的行号必须连同「标题占位」一起算，否则会误判成「行数超标」。
     """
     app = DesktopApp(
         tk_window,
@@ -575,21 +644,37 @@ def test_task_panel_columns_are_derived_from_the_screen_budget(tmp_path, tk_wind
     )
     assert app._route_columns_count == columns
 
-    cells = [
-        (
+    cells = {
+        mode: (
             int(button.master.grid_info()["row"]),
             int(button.master.grid_info()["column"]),
         )
-        for button in app._route_buttons.values()
-    ]
+        for mode, button in app._route_buttons.items()
+    }
     # 一条路线一「格」（勾选框 / 次数框 / 「次」在格**内部**贴着排），
     # 所以这里问的是格子本身落在第几行第几列。
-    assert {column for _, column in cells} == set(range(columns))
-    rows = -(-len(ROUTES) // columns)
-    assert max(row for row, _ in cells) == rows
-    # 屏幕装得下满配列数时，行数必须封在上限内 —— 这就是「别太长」的量化。
+    assert {column for _, column in cells.values()} == set(range(columns))
+
+    # 逐组核对：标题占 1 行，然后该组的格子按 `columns` 折行接着往下排。
+    # 用 `grouped_routes()` 走真实分组（面板渲染的就是它），但**行号从 1 起算**
+    # 是这里独立写死的 —— 不是问实现「你觉得该从第几行开始」。
+    for route in ROUTES:
+        assert route.mode in cells, f"{route.mode} 这一行没画出来"
+    # 最后一行 = 最后一个分组的最后一行格子。独立算一遍：
+    last_group_routes = grouped_routes()[-1][1]
+    grids_above = sum(
+        -(-len(routes) // columns) for _g, routes in grouped_routes()[:-1]
+    )
+    # 起始行 1 + 前面各组(标题1行 + 格子若干行) + 本组标题1行 + 本组格子若干行
+    last_row = 1 + (len(grouped_routes()) - 1 + grids_above) + -(
+        -len(last_group_routes) // columns
+    )
+    actual_rows = {row for row, _ in cells.values()}
+    assert max(actual_rows) == last_row
+    # 屏幕装得下满配列数时，**每组**的行数必须封在上限内 —— 这就是「别太长」的量化。
     if int(screen_logical_width // theme.CELL_MIN_WIDTH) >= theme.ROUTE_COLUMNS_MAX:
-        assert rows <= theme.ROUTE_ROWS_TARGET
+        for _group, routes in grouped_routes():
+            assert -(-len(routes) // columns) <= theme.ROUTE_ROWS_TARGET
 
 
 def test_ticking_a_route_shows_its_position_in_the_label(tmp_path, tk_window):
@@ -927,3 +1012,171 @@ def test_the_window_is_usable_again_after_a_forced_kill(tmp_path, tk_window):
 
     assert str(app.stop_button.cget("state")) == "disabled"
     assert str(app.start_button.cget("state")) == "normal"
+
+
+# --------------------------------------------------------------------------
+# 三分组渲染 + 批量勾选按钮（用户 2026-10-08 拍板）
+# --------------------------------------------------------------------------
+
+
+def test_task_panel_renders_a_titled_section_per_group(tmp_path, tk_window):
+    """面板按「日常 / 赛季 / 活动」分三段，每段有自己的标题。
+
+    ⚠️ 标题文案与顺序**写死**在断言里 —— 不许调 `catalog.GROUPS` 来比对，
+    那等于问实现「你自己觉得该显示啥」。
+    ⚠️ 顺序按 **grid 行号**排，不按遍历顺序：`_task_panel_descendants()` 是深度
+    不限的遍历，兄弟控件的先后取决于遍历策略（栈是后进先出），拿它当「视觉顺序」
+    是错的。屏幕上从上到下 = grid 行号从小到大。
+    """
+    app = DesktopApp(
+        tk_window,
+        controller=DesktopController(worker=FakeWorker()),
+        project_root=tmp_path,
+    )
+    tk_window.update_idletasks()
+
+    titles = [
+        widget
+        for widget in app._task_panel_descendants()
+        if isinstance(widget, ttk.Label) and widget.cget("text") in ("日常", "赛季", "活动")
+    ]
+    titles.sort(key=lambda label: int(label.grid_info()["row"]))
+
+    assert [label.cget("text") for label in titles] == ["日常", "赛季", "活动"]
+
+    rows = [int(label.grid_info()["row"]) for label in titles]
+    assert rows == sorted(rows) and len(set(rows)) == 3, f"标题行号不正常：{rows}"
+
+    # 每个分组标题必须排在**它那一组的第一条路线**之前（否则标题挂在人家下面）。
+    for label, (group, routes) in zip(titles, grouped_routes(), strict=True):
+        title_row = int(label.grid_info()["row"])
+        for route in routes:
+            cell_row = int(app._route_buttons[route.mode].master.grid_info()["row"])
+            assert title_row < cell_row, (
+                f"「{group}」的标题（第 {title_row} 行）没排在 "
+                f"{route.label}（第 {cell_row} 行）前面"
+            )
+
+
+def test_bulk_buttons_exist_with_the_three_labels(tmp_path, tk_window):
+    app = DesktopApp(
+        tk_window,
+        controller=DesktopController(worker=FakeWorker()),
+        project_root=tmp_path,
+    )
+    tk_window.update_idletasks()
+
+    texts = {
+        widget.cget("text")
+        for widget in app._task_panel_descendants()
+        if isinstance(widget, ttk.Button)
+    }
+    assert {"全选", "全选（不含活动）", "取消全选"} <= texts
+
+
+def test_select_all_ticks_every_route_in_panel_order(tmp_path, tk_window):
+    """「全选」勾上全部路线，且**顺序 = 面板顺序**（= 显示顺序）。
+
+    顺序是这里的关键：用户拍板「勾选先后就是执行顺序」，批量勾完的顺序必须是
+    他看到的那份清单，不能是 `ROUTES` 的书写顺序（分组后两者不同）。
+    """
+    controller = DesktopController(worker=FakeWorker())
+    app = DesktopApp(tk_window, controller=controller, project_root=tmp_path)
+    tk_window.update_idletasks()
+
+    app._bulk_select(include_events=True)
+    tk_window.update_idletasks()
+
+    expected = [
+        route.mode for _group, routes in grouped_routes() for route in routes
+    ]
+    # ⚠️ 例外：「活动」只能单独跑（standalone_only），与别的路线互斥 ——
+    # 所以「全选」把活动一起勾上时，结果就是**只勾活动这一条**。
+    assert controller.selection == ["survivor"]
+    assert expected.count("survivor") == 1
+    # 界面上要跟着走：活动亮着、其余全灭。
+    assert app.route_vars["survivor"].get() is True
+    assert app.route_vars["arena"].get() is False
+    assert app.route_vars["tower"].get() is False
+
+
+def test_select_all_without_events_ticks_the_daily_and_season_routes(
+    tmp_path, tk_window
+):
+    """「全选（不含活动）」—— 这是最常用的那颗，必须避开 survivor。"""
+    controller = DesktopController(worker=FakeWorker())
+    app = DesktopApp(tk_window, controller=controller, project_root=tmp_path)
+    tk_window.update_idletasks()
+
+    app._bulk_select(include_events=False)
+    tk_window.update_idletasks()
+
+    assert "survivor" not in controller.selection
+    # 顺序与面板一致，并且**每个分组都有人**（三组不许有一组被漏掉）。
+    assert controller.selection == [
+        route.mode
+        for _group, routes in grouped_routes()
+        for route in routes
+        if route.mode != "survivor"
+    ]
+    assert app.route_vars["survivor"].get() is False
+    assert app.route_vars["tower"].get() is True
+    assert app.route_vars["arena"].get() is True
+
+
+def test_bulk_clear_untickes_everything(tmp_path, tk_window):
+    controller = DesktopController(worker=FakeWorker())
+    app = DesktopApp(tk_window, controller=controller, project_root=tmp_path)
+    tk_window.update_idletasks()
+
+    app._bulk_select(include_events=False)
+    tk_window.update_idletasks()
+    assert controller.selection  # 先确保确实勾上了一批
+
+    app._bulk_clear()
+    tk_window.update_idletasks()
+
+    assert controller.selection == []
+    assert all(var.get() is False for var in app.route_vars.values())
+    # 底部说明也要跟着清空 —— 它读的是「最后勾的那条」。
+    assert app.route_description_var.get() == ""
+
+
+def test_bulk_selection_numbers_reflect_panel_order(tmp_path, tk_window):
+    """批量勾完之后每行的序号（①②③…）必须按面板顺序发下去。
+
+    ⚠️ 这里**独立**算前缀（头 10 位圈码、之后阿拉伯数字），不调
+    `app._position_prefix` —— 拿被测函数去算「该显示什么」等于没断言。
+    12 条路线会跨过第 10 位这个坎，正好覆盖曾经的 IndexError。
+    """
+    controller = DesktopController(worker=FakeWorker())
+    app = DesktopApp(tk_window, controller=controller, project_root=tmp_path)
+    tk_window.update_idletasks()
+
+    app._bulk_select(include_events=False)
+    tk_window.update_idletasks()
+
+    circled = "①②③④⑤⑥⑦⑧⑨⑩"
+    assert len(controller.selection) > len(circled), "要跨过圈码用尽的那一位才有意义"
+    for index, mode in enumerate(controller.selection):
+        expected = circled[index] if index < len(circled) else f"{index + 1}."
+        assert app._route_buttons[mode].cget("text").startswith(expected), (
+            f"{mode} 排第 {index + 1} 位，序号应为 {expected!r}"
+        )
+
+
+def test_bulk_selection_is_refused_while_running(tmp_path, tk_window):
+    """运行期间不许改勾选 —— 三个批量入口都要守住（和单条 `toggle` 一样）。"""
+    worker = FakeWorker()
+    controller = DesktopController(worker=worker)
+    controller.apply_preflight(passed_preflight())
+    worker.running = True
+    app = DesktopApp(tk_window, controller=controller, project_root=tmp_path)
+    tk_window.update_idletasks()
+
+    with patch.object(app_module.messagebox, "showerror") as showerror:
+        app._bulk_select(include_events=False)
+        app._bulk_clear()
+
+    assert showerror.call_count == 2
+    assert controller.selection == []
