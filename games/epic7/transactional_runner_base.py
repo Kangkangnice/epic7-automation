@@ -125,6 +125,8 @@ class TransactionalRunnerBase:
         )
         self.resource_exhausted = False
         self.finish_home = None
+        # 「这个动作因为重按不安全而被拦下」只记一次日志用（见 ``_retry_is_safe``）。
+        self._retry_blocked_action: Optional[str] = None
         self.battle_supervisor = battle_supervisor or BattleSupervisor(
             runtime,
             self.recovery_gate,
@@ -200,6 +202,32 @@ class TransactionalRunnerBase:
 
     def _after_result_state(self, *, cycle: int) -> None:
         """战斗监督正常打到结算页、状态已拨到 ``_RESULT_STATE`` 之后（竞技场记战绩用）。"""
+
+    def _retry_is_safe(self, action: Any) -> bool:
+        """这一下「源页仍在」时，允许不允许**原地重按同一个坐标**？默认允许。
+
+        ⚠️ 默认 ``True`` 是为了不改动既有路线（远征 / 竞技场）的逐帧行为。
+
+        什么时候必须覆写成 ``False``（2026-10-09 月塔实跑事故）：
+
+        重试的语义是「这一下没生效 ⇒ 再按一次**同一个**按钮」。这个语义成立的前提是
+        **那个坐标上放的还是原来那颗按钮**。若路线里存在「同一个槽位、转场后换按钮」
+        的布局，前提就没了 —— 转场播到一半时重按，落点是**下一屏的按钮**：
+
+            ``select-team``  →  (1698, 1044) 「选择队伍」（楼层列表）
+            ``battle-start`` →  (1726, 1040) 「战斗开始」（准备战斗）
+            两点相距 28px，共用右下角同一个绿色按钮槽。
+
+        ⇒ 重试那一下**直接把战斗开起来**，而状态机还在等「准备战斗」页
+        ⇒ 白等到状态超时，日志报 ``no_transition-<动作>``。
+
+        ⚠️ **不要靠加大 ``_SETTLE_SECONDS`` 来躲这个问题**：那是拿一个固定值去赌
+        转场时长（实测同一台机器上 2~21 秒都有），赌输了照样重试，而且拖慢真·点击
+        失效的发现速度。转场慢**不是**重试的理由 —— 按转场契约，来源已离开就该
+        「只等待，禁止重复旧动作」；真正「点不中」由状态超时兜底。
+        """
+        del action
+        return True
 
     # ---- 公共工具 ----
 
@@ -399,16 +427,31 @@ class TransactionalRunnerBase:
                 # ⚠️ ``source_left`` 也在这里判 —— **不要**写成
                 # 「``if source_left: continue``」：那会连下面「画面有没有在动」
                 # 的计时一起跳过，正好是竞技场那条会生效的判据。
-                if not source_left and attempts < 4:
-                    attempts += 1
-                    self.runtime.log(
-                        f"模式={self._MODE_LABEL} 转场重试 动作={action.name} "
-                        f"来源={source_page}仍在 尝试={attempts}/4 坐标={action.point}"
-                    )
-                    self.runtime.click(action.point, action.name)
-                    source_stable.reset()
-                    self.sleep(settle)
-                    continue
+                #
+                # ``_retry_is_safe`` 是「同槽换按钮」路线的刹车：那种布局下重按会
+                # 落到**下一屏的按钮**上（月塔 select-team ⇒ 重按直接开打）。
+                # 默认 True，只有明确声明不安全的动作才不走重试。
+                if not source_left:
+                    if not self._retry_is_safe(action):
+                        # 「不动手」也要留证据，否则复盘只看到「一直没重试」。
+                        # 每个动作只记一次，别每帧刷屏。
+                        if self._retry_blocked_action != action.name:
+                            self._retry_blocked_action = action.name
+                            self.runtime.log(
+                                f"模式={self._MODE_LABEL} 不重试 动作={action.name} "
+                                f"来源={source_page}仍在 "
+                                f"原因=这个槽位换按钮了，重按会落到下一屏"
+                            )
+                    elif attempts < 4:
+                        attempts += 1
+                        self.runtime.log(
+                            f"模式={self._MODE_LABEL} 转场重试 动作={action.name} "
+                            f"来源={source_page}仍在 尝试={attempts}/4 坐标={action.point}"
+                        )
+                        self.runtime.click(action.point, action.name)
+                        source_stable.reset()
+                        self.sleep(settle)
+                        continue
             elif not source_visible and not source_left:
                 source_left = True
                 self.runtime.log(
