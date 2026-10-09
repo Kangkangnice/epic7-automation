@@ -682,5 +682,146 @@ class FloorStopTests(unittest.TestCase):
         )
 
 
+class RetrySuppressionTests(unittest.TestCase):
+    """``select-team`` **绝不许原地重按** —— 那个槽位转场后是「战斗开始」。
+
+    2026-10-09 两次实跑：点完 ``select-team`` 后基类按「源页连续 2 帧仍在 =
+    这一下没生效」重试，重按的 (1698,1044) 与「战斗开始」(1726,1040) 只差 28px
+    ⇒ **重试把战斗开起来了**，状态机还在等「准备战斗」页 ⇒ 白等到超时，
+    诊断帧全是战斗进行中的画面。
+
+    ⚠️ 这一组是**行为测试**：真的跑 ``_execute_transition`` 的循环、数真点了几次。
+    只断言「``_SETTLE_SECONDS`` 够大」是**空护栏** —— 我第一版就是这么写的，
+    把 settle 从 1.0 加到 3.0 之后实跑照样重试（该转场实测 >5 秒、源页 21 秒才离开）。
+    """
+
+    class _FakeRuntime:
+        """一直报「源页仍在」的假运行时：专门逼出重试分支。"""
+
+        diagnostic_dir = None
+        dry_run = False
+
+        def __init__(self, screen: np.ndarray) -> None:
+            self._screen = screen
+            self.clicks: list[tuple[tuple[int, int], str]] = []
+            self.messages: list[str] = []
+            self.clock = 0.0
+
+        def now(self) -> float:
+            # 每次问时间就前进 1 秒：保证循环真的往下走，不会挂死。
+            self.clock += 1.0
+            return self.clock
+
+        def capture(self) -> np.ndarray:
+            return self._screen
+
+        def click(self, point, name) -> None:
+            self.clicks.append((point, name))
+
+        def log(self, message: str) -> None:
+            self.messages.append(message)
+
+        def save_current_frame(self, screen) -> None:
+            del screen
+
+        def save_diagnostic(self, label, screen):
+            del screen
+            return Path(label)
+
+    def _runner_with_screen(self, screen: np.ndarray):
+        machine = real_machine(TowerState.FLOOR_LIST)
+        runtime = self._FakeRuntime(screen)
+        runner = TowerRunner(
+            machine,  # type: ignore[arg-type]
+            runtime,  # type: ignore[arg-type]
+            sleep=lambda _seconds: None,
+            poll_seconds=0.0,
+        )
+        return runner, runtime
+
+    def _select_team_and_retries(self, screen: np.ndarray) -> tuple[int, list[str]]:
+        """跑一次 ``select-team`` 转场，返回 (点了几次, 日志)。"""
+        runner, runtime = self._runner_with_screen(screen)
+        action = None
+        for candidate in (
+            runner.machine.next_action(screen),
+        ):
+            action = candidate
+        self.assertIsNotNone(action, "楼层列表帧上应当能给出下一步动作")
+        assert action is not None
+        self.assertEqual("select-team", action.name)
+
+        try:
+            runner._execute_transition(action)
+        except RuntimeError:
+            # 超时收尾会抛错，那是**预期**的 —— 本例关心的是「点了几次」。
+            pass
+        clicks = [name for _point, name in runtime.clicks if name == "select-team"]
+        return len(clicks), runtime.messages
+
+    def test_select_team_is_never_clicked_twice_even_when_the_source_stays(self):
+        """源页一直在 ⇒ 也**只点一次**（重按会落到「战斗开始」上）。"""
+        screen = recorded_screen("floor_list")
+        count, messages = self._select_team_and_retries(screen)
+
+        self.assertEqual(
+            1,
+            count,
+            f"select-team 被点了 {count} 次；重按会落在下一屏的「战斗开始」上，"
+            f"日志：{messages}",
+        )
+
+    def test_the_suppression_is_reported_in_the_log(self):
+        """「不动手」也要留证据，否则复盘只看到「一直没重试」。"""
+        screen = recorded_screen("floor_list")
+        _count, messages = self._select_team_and_retries(screen)
+
+        self.assertTrue(
+            any("不重试" in message and "select-team" in message for message in messages),
+            f"日志里应当有一行说明为什么不重试；实际：{messages}",
+        )
+
+    def test_other_actions_still_retry_normally(self):
+        """⚠️ 与上一条成对：别人**不许**被顺带改掉 —— 重试机制本身要还活着。"""
+        machine = real_machine(TowerState.HOME)
+        screen = recorded_screen("home")
+        runtime = self._FakeRuntime(screen)
+        runner = TowerRunner(
+            machine,  # type: ignore[arg-type]
+            runtime,  # type: ignore[arg-type]
+            sleep=lambda _seconds: None,
+            poll_seconds=0.0,
+        )
+        action = runner.machine.next_action(screen)
+        self.assertIsNotNone(action)
+        assert action is not None
+        self.assertEqual("enter-tower", action.name)
+        self.assertTrue(
+            runner._retry_is_safe(action),
+            "enter-tower 不在同一个槽位上换按钮，重按无害，必须保持可重试",
+        )
+
+        try:
+            runner._execute_transition(action)
+        except RuntimeError:
+            pass
+        clicks = [name for _point, name in runtime.clicks if name == "enter-tower"]
+        self.assertGreater(
+            len(clicks), 1, "源页一直在时，可重试的动作仍应重试（上限 4 次）"
+        )
+
+    def test_the_declared_unsafe_set_matches_the_two_click_points(self):
+        """两条「重按 = 误开打」的前提：点相距很近 **且** 声明集合只含它。"""
+        machine = TowerStateMachine
+        select_team = machine._POINT_SELECT_TEAM
+        battle_start = machine._POINT_BATTLE_START
+
+        # 前提一：两点近到会互相覆盖（阈值独立写死，不从实现常量反推）。
+        self.assertLessEqual(abs(select_team[0] - battle_start[0]), 40)
+        self.assertLessEqual(abs(select_team[1] - battle_start[1]), 40)
+        # 前提二：声明名单**独立写死** —— 不许遍历被测集合本身。
+        self.assertEqual({"select-team"}, set(TowerRunner._RETRY_UNSAFE_ACTIONS))
+
+
 if __name__ == "__main__":
     unittest.main()

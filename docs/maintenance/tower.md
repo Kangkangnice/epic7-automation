@@ -27,11 +27,11 @@
 ⚠️ **一层耗 15 体力**；不允许补充体力；打满 25 层是停止条件
 （`FloorsConquered`，`stop_label = "月塔层数已打满"`）。
 
-## ⚠️ 事故一：转场中途重试 ⇒ 误开战斗（2026-10-09）
+## ⚠️ 事故一：转场中途重试 ⇒ 误开战斗（2026-10-09，**修了两轮**）
 
 ### 现象
 
-真机每日任务跑到 `select-team` 卡住，56 秒后放弃：
+真机每日任务跑到 `select-team` 卡住，60 秒后放弃：
 
 ```
 00:18:57 点 select-team (1698,1044) 尝试=1/4
@@ -42,54 +42,117 @@
 
 诊断帧是**战斗进行中**的画面（技能特效、血条、buff 图标）—— 战斗早就打起来了。
 
-### 根因
+### 第一轮修法（**错的，记下来防复发**）：加大 `_SETTLE_SECONDS`
 
-| 环节 | 数值 | 说明 |
+当时的推理：默认 `settle` = `poll_seconds` = **1.0 秒**，而转场要 2~3 秒 ⇒
+第一帧截图时源页「当然还在」⇒ 触发重试。于是覆写 `_SETTLE_SECONDS = 3.0`。
+
+**结果：08:16 与 08:21 两次实跑照样重试**，日志几乎一模一样：
+
+```
+08:21:12 点 select-team 尝试=1/4
+08:21:16 转场重试 尝试=2/4      ← settle 3.0 生效了（间隔 4 秒），但还是重试
+08:21:21 转场重试 尝试=3/4
+08:21:26 转场重试 尝试=4/4
+08:21:33 来源=楼层列表已离开     ← 点完 **21 秒**源页才离开
+08:22:12 诊断 ...（又是战斗画面）
+```
+
+为什么输：**拿一个固定值去赌转场时长**。参考的是**导航段**的 2~3 秒，
+而这个**路线内**转场实测要 **>5 秒**。转场时长还随机器负载波动 ⇒ 赌不赢；
+加大还会拖慢「真·点击失效」的发现速度。
+
+对照同一次会话里**安全的** `enter-tower`（月塔主页→楼层列表）：
+
+| 转场 | 耗时 | 结果 |
 | --- | --- | --- |
-| `settle`（点完先等的时长） | **1.0 秒**（默认 `poll_seconds`） | 月塔没覆写 `_SETTLE_SECONDS` |
-| 实测转场时长 | **2.0 ~ 3.1 秒**（同一次日志） | 比 settle 长 |
-| 重试判据 | 源页连续 2 帧仍在 | 1.0 + 1.0 = **2.0 秒就触发** |
-| `select-team` 与 `battle-start` 的点击点 | **相距 28 px** | (1698,1044) vs (1726,1040) |
+| `enter-tower` | **5 秒** | ✅ 一次过，零重试 |
+| `select-team` | **>21 秒** | ❌ 4 次重试后仍未到 |
 
-结论：**1 秒后截图时转场还没播完，源页「当然还在」⇒ 判「这一下没生效」⇒
-重试点击**。而那两个点击点**落在同一颗绿色按钮槽位上**（把两点画在
-`team.png` 上，都落在「战斗开始」里）⇒ 转场一完成，重试那一下**正好按下
-「战斗开始」** ⇒ 直接开打 ⇒ 状态机还在等「准备战斗」页 ⇒ 白等到超时。
+⇒ 说明**第一下本来就是生效的**，是重试自己把战斗点起来的，属**自伤循环**。
 
-### 修法
+### 真正的根因
+
+基类的重试语义是「这一下没生效 ⇒ 再按一次**同一个坐标**」。这个语义成立的前提是
+**那个坐标上放的还是原来那颗按钮**。月塔右下角那个绿色按钮槽**转场后会换按钮**：
+
+| 动作 | 坐标 | 按钮 | 页面 |
+| --- | --- | --- | --- |
+| `select-team` | (1698, 1044) | 「选择队伍」 | 楼层列表 |
+| `battle-start` | (1726, 1040) | 「战斗开始」 | 准备战斗 |
+
+**两点相距只有 28 px**（`test_the_second_click_of_select_team_would_land_on_battle_start` 钉住）。
+转场一完成，重试那一下**正好按下「战斗开始」**⇒ 直接开打。
+
+### 第二轮修法（**正确**）：关掉这个动作的重试
+
+基类新增钩子 `TransactionalRunnerBase._retry_is_safe(action)`，**默认 `True`**
+（远征 / 竞技场逐帧行为不变）；月塔覆写：
 
 ```python
 # tower.py / TowerRunner
-_SETTLE_SECONDS = 3.0   # ≥ 实测转场上界（3.1 秒 → 取 3.0 + 帧间轮询覆盖）
+_RETRY_UNSAFE_ACTIONS = frozenset({"select-team"})
+
+def _retry_is_safe(self, action: TowerAction) -> bool:
+    return action.name not in self._RETRY_UNSAFE_ACTIONS
 ```
 
-竞技场早就遇到过同类问题，它覆写的是 `1.5`；月塔转场更慢（多一段过场动画），
-所以取更大值。改完之后第一帧截图就落在转场窗口之外，**重试分支根本不会触发**。
+转场慢**不是**重试的理由 —— 按转场契约「来源已离开 ⇒ 只等待，禁止重复旧动作」；
+真正「点不中」由 **60 秒状态超时**兜底。`_SETTLE_SECONDS = 3.0` 保留，但它
+**不再承担安全职责**，只是让第一帧尽量落在转场窗口外、少空转几帧。
 
-### ⚠️ 走过的弯路：加了一条**假防线**（记下来防复发）
+⚠️ 目前只有 `select-team` 一条：`enter-tower` / `battle-start` / `next-floor`
+的落点与别的按钮离得远（不在同一槽位），重按无害，保持默认。
 
-第一版修法在 `action_source_visible` 里加了一条「准备战斗页特征已出现就判源页不在」。
+### 护栏（`tests/test_epic7_tower.py::RetrySuppressionTests`，4 条）
+
+**行为测试**：真的跑 `_execute_transition` 的循环、数真点了几次。
+
+| 用例 | 判据 |
+| --- | --- |
+| `test_select_team_is_never_clicked_twice_even_when_the_source_stays` | 喂「源页一直可见」的假运行时 ⇒ `select-team` 只能点 **1 次** |
+| `test_the_suppression_is_reported_in_the_log` | 「不动手」也要留证据（日志含「不重试」） |
+| `test_other_actions_still_retry_normally` | ⚠️ 成对：`enter-tower` 仍应重试（机制还活着） |
+| `test_the_declared_unsafe_set_matches_the_two_click_points` | 两点距离 ≤40px **且** 名单独立写死 = `{"select-team"}` |
+
+⚠️ **只断言「`_SETTLE_SECONDS` 够大」是空护栏** —— 第一版就是这么写的，
+把 settle 从 1.0 加到 3.0 之后实跑照样重试。**必须数点击次数。**
+
+### 反向验证（`auto_game_unified/.workbuddy/_rv_retry.py`）
+
+| 注入 | 结果 |
+| --- | --- |
+| ① 清空 `_RETRY_UNSAFE_ACTIONS` | **3 failed**, 1 passed |
+| ② 摘掉 `TowerRunner` 的覆写 | **2 failed**, 2 passed |
+| ③ 名单改成 `enter-tower` | **4 failed** |
+
+⚠️ **反向验证脚本自己踩了一个坑**：`TARGET_TESTS` 少了尾逗号 ⇒ 从元组变成
+**字符串** ⇒ `*TARGET_TESTS` 展开成一个个**字符** ⇒ pytest 收到 `a`，
+报 `file or directory not found` 并以非零退出 —— **看着像「变红」，其实一条用例都没跑**。
+⇒ 脚本里加了「必须真的跑起来」的判据（输出含 `passed`/`failed` 且不含 `not found`）。
+老教训再现：**「变红」不等于「有效」，要先证明用例跑起来了。**
+
+### ⚠️ 走过的另一段弯路：加了一条**假防线**（记下来防复发）
+
+第一版修法还顺手在 `action_source_visible` 里加了「准备战斗页特征已出现就判源页不在」。
 它**看起来对**，但反向验证发现**拆掉它测试照样全绿** —— 是空护栏。
 
 原因：`floor_select_team` 在准备战斗页上只有 **0.5576**（阈 0.88），
-`is_in_state(FLOOR_LIST)` **本来就返回 False**。也就是说那条判据**没有增量**，
-只是把一段永远不生效的代码写进了生产路径 —— 正违反「判据不许静默失效」。
+`is_in_state(FLOOR_LIST)` **本来就返回 False**。那条判据**没有增量**，
+只是把一段永远不生效的代码写进生产路径 —— 正违反「判据不许静默失效」。
 
-⇒ **已删除**。真正解决问题的是 `_SETTLE_SECONDS`（等够时间），不是加判据。
-保留的是一条**前提护栏**：`floor_select_team` 在准备战斗页上必须不过阈
-（`test_select_team_source_page_cannot_survive_the_team_page`）—— 它是「源页仍在」
-能在转场后自动变假的基础，这条前提一旦不成立，`_SETTLE_SECONDS` 调多大都没用。
+⇒ **已删除**。保留的是一条**前提护栏**：`floor_select_team` 在准备战斗页上必须不过阈
+（`test_select_team_source_page_cannot_survive_the_team_page`，实测 0.5576 / 0.5648）。
 
-### 护栏（`tests/test_epic7_tower.py`）
+### 另外两条护栏
 
 | 用例 | 判据 |
 | --- | --- |
 | `test_settle_window_outlasts_the_recorded_tower_transitions` | `_SETTLE_SECONDS` 非 `None` 且 ≥ 3.0（阈值独立写死） |
-| `test_select_team_source_page_cannot_survive_the_team_page` | 楼层列表帧成立、准备战斗帧不成立 + 锚点分数 < 0.88 |
-| `test_the_second_click_of_select_team_would_land_on_battle_start` | 两个点击点各轴距离 ≤ 40px（守「重试=误开打」这个前提） |
-| `test_other_states_still_report_their_source_page_normally` | 别的动作的源页判据没被顺带改掉 |
+| `test_select_team_source_page_cannot_survive_the_team_page` | 楼层列表帧成立 / 准备战斗帧不成立 + 锚点分数 < 0.88 |
 
-反向验证（把 `_SETTLE_SECONDS` 改回 `None`）后第一条立刻变红，确认不是空护栏。
+⚠️ 点击常量在 **`TowerStateMachine`** 上（`_POINT_*`），不在 `TowerRunner` ——
+写护栏时踩了一次 `AttributeError`。
 
 ## ⚠️ 事故二：赛季页判据塞了远征卡片 ⇒ 整页认不出（2026-10-08）
 
