@@ -36,6 +36,25 @@ def fixture(name: str) -> np.ndarray:
     return cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
 
 
+def scrolled_feed(frame: np.ndarray, shift: int, header: int = 420) -> np.ndarray:
+    """把一帧信息流**当成往下滚了一屏**：顶栏不动、正文整体上移 ``shift`` 像素。
+
+    ⚠️ 为什么要造帧、不再拍一张真机夹具：竖屏口径下「**整屏都没有可点的 👍**」
+    的画面只有 ``feed_before_signin`` 一张（``feed_after_signin`` / ``feed_list``
+    与它的正文带位置**完全相同**，量出来都是 ``[610, 622, 826, ...]``）。而
+    2026-10-09 起「滑了几屏」按**画面真的动了**记账，必须有第二张位置不同的
+    同款画面才测得出来。
+
+    只挪 ``header`` 以下的正文，底部那 ``shift`` 行保持原样 —— 实测补纯色会把
+    ``feed_home`` 的判据锚点一起抹掉（页面直接认不出，0.0000）。
+    ``shift=200`` / ``480`` 实测：页面仍是 ``feed_home`` **满分 1.0000**、
+    可点 👍 仍是 ``None``、正文带整体位移 ≥ 192px（过 ``SWIPE_MOVE_MIN_PX``）。
+    """
+    moved = frame.copy()
+    moved[header:-shift] = frame[header + shift :]
+    return moved
+
+
 class CommunityRedeemPlanTests(unittest.TestCase):
     """兑换清单的决策 —— 这块是真机数据最全、最该先钉死的。"""
 
@@ -223,15 +242,12 @@ class CommunityStateMachineTests(unittest.TestCase):
             limits={1: (1, 2), 2: (1, 1), 3: (0, 1), 4: (1, 1)},
         )
         with unittest.mock.patch.object(cm, "read_exchange", return_value=poor):
-            # ① 兑换中心：不抛，退回信息流（并记下停止原因）
+            # ① 兑换中心：不抛，点右上角 ✕ 退出社区（并记下停止原因）
             action = machine.next_action(fixture("exchange_after_redeem_live_20261006"))
             self.assertEqual(action.name, "leave_exchange")
+            self.assertEqual(action.point, (989, 123))
             self.assertIn("不够", machine.stop_reason)
-            # ② 信息流：关掉社区（照样不抛）
-            closing = machine.next_action(fixture("feed_list_live_20261006"))
-            self.assertEqual(closing.name, "close_community")
-            self.assertEqual(closing.point, cm.FEED_CLOSE)
-            # ③ 画面转回横屏那一帧：这时才抛，且必须是「资源耗尽」家族
+            # ② 画面转回横屏那一帧：这时才抛，且必须是「资源耗尽」家族
             landscape = np.zeros((1132, 1982, 3), np.uint8)
             with self.assertRaises(cm.RedeemBudgetExhausted) as ctx:
                 machine.next_action(landscape)
@@ -240,6 +256,105 @@ class CommunityStateMachineTests(unittest.TestCase):
         # 退出码 2 靠的是**继承关系**：挂在 RuntimeError 下会被当成「画面认不出」，
         # 白等一轮超时再报退出码 1（故障）。
         self.assertIsInstance(ctx.exception, cm.ResourceExhausted)
+
+    def test_the_finished_exchange_closes_the_community_in_one_click(self):
+        """兑换跑满 ⇒ 点兑换中心**右上角的 ✕**，社区**一步关掉**、直接回横屏。
+
+        ⚠️ 2026-10-09 真机实跑抓到的 P0（19:58），这份代码**连着猜错两次**：
+        ① 旧写法点左上角 `<` + ``target_pages=("feed_home",)`` —— `<` 是
+           **H5 历史返回**，兑换中心是从「我的任务」点「去兑换」进来的 ⇒ `<` 回到的是
+           **「我的任务」**；而「我的任务」的 `<` 又指回兑换中心 ⇒ 两页**互为历史上一页**，
+           靠返回键**永远回不到信息流**（两次各干等 150 秒超时）。
+        ② 改成点 ✕ 之后又**猜错了它的语义**：以为「它只关掉兑换中心这一层、回信息流」，
+           于是把状态置成 ``FEED`` 去等一页**竖屏信息流** —— 而它压根不会出现。
+           真机探针（``.workbuddy/_probe_exchange_close_layer.py``）逐步判页走了一遍：
+           点完 ✕ **3 秒内窗口就变回 1920x1080**、画面就是**横屏网页活动列表** ⇒
+           这颗 ✕ 关的是**整个社区**，一步到位，中间**没有信息流这一站**。
+           （第二条独立证据：H5 死掉那屏点它自己那颗 ⊗ (1000,78)，窗口同样在 4 秒内
+           从 ``1023x1820`` 变回 ``1920x1080``。）
+
+        ⇒ 收工的动作必须与 ``close_community`` **同形**：``CLOSING`` +
+        目标 ``web_activity_list``，收工发生在**横屏那一帧**（``_finish_closing``），
+        而不是点完立刻抛结论（那时人还在竖屏里，收尾取图会撞「render size changed」）。
+
+        ⚠️ 断言里的坐标**独立写死**，不从 ``cm.EXCHANGE_CLOSE`` 反推：
+        常量被改坏时断言得跟着红才算护栏。
+        """
+        machine = self.machine(state=cm.CommunityState.EXCHANGE)
+        # 三条任务的结论是前面几页读出来的；这里只关心**兑换之后**的收尾，
+        # 所以直接摆好事实（``_finishing()`` 要它才肯收工）。
+        machine.progress.tasks = {"browse": "done", "like": "done", "share": "done"}
+        full = cm.ExchangeReadout(
+            balance=880,
+            balance_score=1.0,
+            limits={1: (2, 2), 2: (1, 1), 3: (0, 1), 4: (1, 1)},
+        )
+        with unittest.mock.patch.object(cm, "read_exchange", return_value=full):
+            leaving = machine.next_action(fixture("exchange_after_redeem_live_20261006"))
+        self.assertEqual(leaving.name, "leave_exchange")
+        self.assertEqual(
+            leaving.point,
+            (989, 123),
+            "退出社区点的是兑换中心右上角的 ✕，不是左上角 <（历史返回）",
+        )
+        self.assertEqual(
+            tuple(leaving.target_pages),
+            ("web_activity_list",),
+            "这颗 ✕ 关的是整个社区 -> 落点是横屏的网页活动列表",
+        )
+        self.assertIs(
+            machine.state,
+            cm.CommunityState.CLOSING,
+            "必须与 close_community 同形走 CLOSING：否则横屏帧会被当成「等待画面转过去」，"
+            "干等到状态超时（19:58 实跑就是这么卡满 150 秒的）",
+        )
+        # 横屏那一帧才收工（点完立刻收工会让人还在竖屏时取图）。
+        landscape = np.zeros((1132, 1982, 3), np.uint8)
+        self.assertIsNone(machine.next_action(landscape))
+        self.assertIs(machine.state, cm.CommunityState.DONE)
+        self.assertEqual(machine.completed_cycles, 1)
+
+    def test_the_tasks_page_back_arrow_lands_on_the_exchange_center(self):
+        """「我的任务」的 `<` 落到**兑换中心**（上一层），不是信息流。
+
+        钉这条是为了说明上面那个 ✕ 为什么省不掉：「我的任务」和「兑换中心」
+        互为历史上一页，从这一页靠返回键回不到信息流。
+        """
+        machine = self.machine(state=cm.CommunityState.TASKS)
+        machine.progress.tasks = {"browse": "done", "like": "done", "share": "done"}
+        machine.progress.redeemed = {1: 2, 2: 1, 4: 1}
+        back = machine.next_action(fixture("tasks_all_done_live_20261006"))
+        self.assertEqual(back.name, "leave_tasks")
+        self.assertEqual(back.point, (35, 130), "「我的任务」左上角的返回键")
+        self.assertEqual(
+            tuple(back.target_pages),
+            ("exchange_center",),
+            "这一页的 < 回到的是兑换中心；写成 feed_home 会让转场永远等不到（150 秒超时）",
+        )
+
+    def test_points_running_out_does_not_bounce_back_to_the_exchange(self):
+        """已经判定「积分不够、不再兑换」之后，「我的任务」**不许再往兑换中心跑**。
+
+        「我的任务」收尾前会判一次「兑换满了没有」—— 积分不够时当然没满 ⇒
+        少了 ``stop_reason`` 这个条件就是**原地打转**：兑换中心与「我的任务」
+        互为历史上一页（两页的 `<` 各指对方），来回一次两次都叫得响，
+        项目红线（绝不死循环）。
+
+        ⚠️ 2026-10-09 改：旧版是**真跑一遍**「兑换中心 → 我的任务」再来断言，
+        而那条路现在**不存在了** —— 兑换中心判定积分不够之后是**一步退出社区**
+        （``CLOSING`` + 点 ✕），不会再退回「我的任务」。所以这里直接摆好前提
+        （``stop_reason`` 已置）来钉这道闸门本身。
+        """
+        machine = self.machine(state=cm.CommunityState.TASKS)
+        machine.stop_reason = "余额 5 不够换「行动力*30」（要 20 积分）"
+        machine.progress.tasks = {"browse": "done", "like": "done", "share": "done"}
+        back = machine.next_action(fixture("tasks_all_done_live_20261006"))
+        self.assertEqual(
+            back.name,
+            "leave_tasks",
+            "积分够不够已经拍过板了，却还往兑换中心跑 —— 那是死循环",
+        )
+        self.assertEqual(back.point, (35, 130))
 
     # ---- 任务枢纽 ----
 
@@ -259,30 +374,182 @@ class CommunityStateMachineTests(unittest.TestCase):
         self.assertEqual(machine.active_task, "browse")
         self.assertEqual(machine.task_step, 0)
 
-    def test_task_script_walks_the_pages_then_returns_to_reconcile(self):
-        """脚本按**页**推进：信息流点开帖子 → 帖子详情返回 → 经兑换中心回我的任务。
+    def _walk_this_round(self, machine: cm.CommunityStateMachine) -> list[str]:
+        """把 ``machine`` 上正在跑的那条任务的**一整轮**推完，返回每一步的动作名。
 
-        ⚠️ 最后一步必须是「回我的任务对账」而不是「再排一遍」：任务成败只有页面上那个
-        ``x/3`` 说得准，脚本跑完不等于计数涨了。
+        每一帧喂哪一页，直接问脚本自己（``step.page``）—— 这正是脚本存在的意义；
+        测试再抄一份「第几步该在哪页」就会和脚本一起漂。
+        """
+        frames = {
+            "feed_home": fixture("feed_before_signin_live_20261007"),
+            "post_detail": fixture("post_detail_live_20261006"),
+        }
+        names: list[str] = []
+        for step in cm.TASK_SCRIPT[machine.active_task]:
+            action = machine.next_action(frames[step.page])
+            self.assertIsNotNone(action, f"脚本要求停在 {step.page}，状态机却没出手")
+            names.append(action.name)
+        return names
+
+    def test_the_browse_round_walks_three_posts_before_reconciling(self):
+        """**一轮 = 连做 3 篇**，做完才回「我的任务」对账一次（用户 2026-10-07 拍板）。
+
+        ⚠️ 为什么粒度必须是「一轮」而不是「一次」：每次点「去完成」都重新落在信息流
+        **顶部** ⇒ 做一次就回来一趟的话，第二遍「下滑一次」又滑到**同一篇**，
+        第三遍也是 —— 三遍白做，计数永远不涨。
+
+        ⚠️ 为什么最后一步必须是「回我的任务对账」而不是「再排一遍」：任务成败只有
+        页面上那个按钮说得准，脚本跑完不等于计数涨了。
         """
         machine = self.machine(state=cm.CommunityState.FEED)
-        machine.next_action(fixture("tasks_one_browse_done_live_20261006"))
-        opened = machine.next_action(fixture("feed_before_signin_live_20261007"))
-        self.assertEqual(opened.name, "task_browse_1")
-        self.assertEqual(opened.point, cm.FEED_FIRST_POST)
-        back = machine.next_action(fixture("post_detail_live_20261006"))
-        self.assertEqual(back.name, "task_browse_2")
-        self.assertEqual(back.point, cm.POST_BACK)
+        self.assertEqual(
+            machine.next_action(fixture("tasks_one_browse_done_live_20261006")).name,
+            "start_task",
+        )
+        self.assertEqual(
+            len(cm.TASK_SCRIPT["browse"]), 11, "一轮浏览 = 3 篇 × 3 步 + 2 次换帖"
+        )
+        names = self._walk_this_round(machine)
+        self.assertEqual(names, [f"task_browse_{index}" for index in range(1, 12)])
+        # 一轮做完但**还没对账** ⇒ active_task 必须还在，否则对账就认不出是哪一条
+        self.assertEqual(machine.active_task, "browse")
         home = machine.next_action(fixture("feed_before_signin_live_20261007"))
         self.assertEqual(home.name, "back_to_tasks_via_exchange")
         self.assertTrue(machine.via_exchange)
-        # 脚本跑完但**还没对账** ⇒ active_task 必须还在，否则对账就认不出是哪一条
-        self.assertEqual(machine.active_task, "browse")
         detour = machine.next_action(fixture("exchange_before_redeem_live_20261007"))
         self.assertEqual(detour.name, "goto_tasks_card")
         self.assertEqual(detour.point, cm.EXCHANGE_GAIN_POINTS_CARD)
         machine.next_action(fixture("tasks_one_browse_done_live_20261006"))
         self.assertEqual(machine.active_task, "browse")
+
+    def test_the_browse_round_swipes_between_posts_and_dwells_inside_the_post(self):
+        """一轮里那两下各有不可省的语义：**帖内下滑 + 停留**、**两篇之间换帖下滑**。
+
+        - 帖内那一下必须是滑动**并且停留 5~10 秒**（用户口径原话：「稍微往下滑一下，
+          停留个 5~10 秒，然后退出来，这个就算浏览一次了」）—— 不滑不停，游戏多半
+          不记这次浏览，而画面看起来一切正常。
+        - 两篇之间必须夹一次下滑：返回信息流时滚动位置不会自己往前走，不滑到底
+          点下去还是同一篇。
+
+        ⚠️ 「点开帖子」这一下的落点**不是** ``FEED_FIRST_POST``（脚本里那个盲坐标）——
+        它是**运行时现找**出来的（``TaskStep.point is None`` + ``kind="tap_post"``）。
+        钉死坐标在 2026-10-08 两次实跑都点在帖子的图片上（图被放大 ⇒ 整条路线卡死），
+        所以这里断言的是「现找结果」本身，并且**多断言一层它落在哪条带上**。
+        """
+        machine = self.machine(state=cm.CommunityState.FEED)
+        machine.next_action(fixture("tasks_one_browse_done_live_20261006"))
+        feed = fixture("feed_before_signin_live_20261007")
+        post = fixture("post_detail_live_20261006")
+        opened = machine.next_action(feed)
+        expected = cp.locate_feed_post_tap(feed, cm.FEED_FIRST_POST)
+        self.assertIsNotNone(expected, "这一帧上找得到正文带，动作才该发出来")
+        self.assertEqual(opened.point, expected)
+        self.assertEqual(opened.point[0], cm.FEED_FIRST_POST[0], "x 沿用 hint 的")
+        self.assertTrue(
+            cp.feed_tap_band_is_text(
+                feed, opened.point[1] - cp.FEED_TAP_SLAB // 2, cp.FEED_TAP_SLAB
+            ),
+            "点的必须是「白底 + 有字 + 不是图片」的正文带",
+        )
+        # 出口集合只写「点了之后会到哪」；另两个是**全局异常态**（签到弹窗、
+        # 网络异常页），它们出现时状态机会抢先处理，所以必须放行。
+        self.assertEqual(
+            opened.target_pages, ("post_detail", "signin_done", "network_error")
+        )
+        self.assertNotIn("feed_home", opened.target_pages, "不许把来源页写进出口集合")
+        scrolled = machine.next_action(post)
+        self.assertEqual(
+            (scrolled.point, scrolled.swipe_end), (cm.POST_SCROLL_START, cm.POST_SCROLL_END)
+        )
+        self.assertGreaterEqual(scrolled.dwell_seconds, 5.0)
+        self.assertLessEqual(scrolled.dwell_seconds, 10.0)
+        for _ in range(2):  # 「退回信息流」那一步（第 3 步）
+            back = machine.next_action(post)
+        self.assertEqual(back.point, cm.POST_BACK)
+        between = machine.next_action(feed)
+        self.assertEqual(
+            (between.point, between.swipe_end),
+            (cm.FEED_TASK_SCROLL_START, cm.FEED_TASK_SCROLL_END),
+        )
+
+    def test_every_scroll_gesture_starts_in_the_left_gutter(self):
+        """所有**滑动**的起点列都要落在页面左边缘的白边上，不许落在插图那一列。
+
+        ⚠️ 为什么值得一条护栏（用户 2026-10-08 提的角度，量过之后成立）：
+
+        ``_perform_action`` 只在 ``swipe_end`` 非空时才发 ``swipe`` —— **那面旗子一丢，
+        主循环就在起点点一下**（2026-10-07 点赞任务三遍全废正是这个形状）。
+        起点在页面正中 = 点在帖子插图上 = 打开图片查看器 = 整条路线卡死；
+        起点在白边上 ⇒ 退化了也只是在白边点一下。
+
+        断言分两层：① 三个滑动起点的 x 都 ≤ ``SCROLL_GUTTER_X``；② 拿**真机帧**量那一列，
+        它不许有彩色内容（x=540 那一列实测 0.057~0.191，x=60 是 0.000~0.003）。
+        """
+        gestures = {
+            "FEED_TASK_SCROLL_START": cm.FEED_TASK_SCROLL_START,
+            "FEED_ICON_SCROLL_START": cm.FEED_ICON_SCROLL_START,
+            "POST_SCROLL_START": cm.POST_SCROLL_START,
+        }
+        for name, start in gestures.items():
+            with self.subTest(gesture=name):
+                self.assertLessEqual(
+                    start[0],
+                    cm.SCROLL_GUTTER_X,
+                    f"{name} 的 x 跑到页面中间了 —— 这一滑一旦退化成点击就落在插图上",
+                )
+        for frame in (
+            "feed_cards_all_todo_live_20261007",
+            "feed_list_live_20261006",
+            "post_detail_live_20261006",
+        ):
+            screen = fixture(frame)
+            column = screen[240:1760, cm.SCROLL_GUTTER_X].astype(np.int16)
+            colorful = float(
+                ((column.max(axis=1) - column.min(axis=1)) > cp.FEED_TAP_SATURATION).mean()
+            )
+            with self.subTest(frame=frame):
+                self.assertLess(
+                    colorful,
+                    0.05,
+                    f"{frame} 上滑动起点那一列（x={cm.SCROLL_GUTTER_X}）穿过彩色内容"
+                    f"（占比 {colorful:.3f}）",
+                )
+        # 反向：页面正中那一列**确实**穿过内容 —— 否则上面那两条可能只是「量了个空白」
+        middle = fixture("feed_cards_all_todo_live_20261007")[240:1760, 540].astype(np.int16)
+        middle_colorful = float(
+            ((middle.max(axis=1) - middle.min(axis=1)) > cp.FEED_TAP_SATURATION).mean()
+        )
+        self.assertGreater(
+            middle_colorful,
+            0.05,
+            "页面正中那一列居然是干净的 —— 这张帧已经不适合当这条用例的靶子了",
+        )
+
+    def test_the_browse_tap_never_falls_back_to_the_blind_point(self):
+        """现找不出来时**必须收手**，绝不退回盲坐标。
+
+        构造方式：把「查看器那一帧」硬说成 ``feed_home``（画面与判页不一致的极端情形）。
+        那一屏上**一条正文带都没有** ⇒ ``locate_feed_post_tap`` 返回 ``None`` ⇒
+        状态机只许**去做别的事**（往回滚一屏 / 回对账），**绝不许**发出 ``task_browse_*``
+        去打那个盲坐标 —— 那一下正是 2026-10-08 两次实跑卡死的源头。
+
+        ⚠️ 反过来说，这条也钉住了「``None`` 不是一个可以随便兜底的返回值」：
+        ``locate_feed_post_tap(...) or FEED_FIRST_POST`` 这种「顺手写一下」的兜底
+        会立刻在这里红。
+        """
+        machine = cm.CommunityStateMachine(self.templates, self.glyphs)
+        machine.state = cm.CommunityState.FEED
+        machine.active_task = "browse"
+        machine.task_step = 0
+        action = machine._drive_task(
+            fixture("image_viewer_live_20261008"),
+            cp.PageJudgement("feed_home", 1.0, ()),
+        )
+        self.assertNotEqual(
+            action.name,
+            "task_browse_1",
+            "找不到正文带还去点盲坐标 —— 又会点开图片查看器，整条路线卡死",
+        )
 
     def test_the_return_step_does_not_accept_its_own_page_as_an_exit(self):
         """出口验收集合里**不许含来源页** —— 含了就等于「点空了也算完成」（2026-10-07 修）。
@@ -295,12 +562,12 @@ class CommunityStateMachineTests(unittest.TestCase):
         """
         machine = self.machine(state=cm.CommunityState.POST_DETAIL)
         machine.active_task = "browse"
-        machine.task_step = 1  # 「看完退回信息流」那一步（POST_BACK）
+        machine.task_step = 2  # 「看完退回信息流」：一轮 11 步里的第 3 步（POST_BACK）
         action = machine._drive_task(
             fixture("post_detail_live_20261006"),
             cp.PageJudgement("post_detail", 1.0, ()),
         )
-        self.assertEqual(action.name, "task_browse_2")
+        self.assertEqual(action.name, "task_browse_3")
         self.assertNotIn(
             "post_detail",
             tuple(action.target_pages),
@@ -309,7 +576,12 @@ class CommunityStateMachineTests(unittest.TestCase):
         self.assertIn("feed_home", tuple(action.target_pages))
 
     def test_task_retries_are_bounded_then_declared_impossible(self):
-        """这一行没变成「已完成」就重来；连试 ``TASK_ATTEMPT_LIMIT`` 遍 ⇒ 记一笔「今天做不成」并往下走。
+        """这一行跑完一轮还没变成「已完成」就再来一轮；连试 ``TASK_ATTEMPT_LIMIT`` **轮**
+        ⇒ 记一笔「今天做不成」并往下走。
+
+        ⚠️ 账本的粒度是**轮**，不是「一次动作」。旧粒度是一轮 = 1 次，所以上限必须
+        大于要求的次数；现在是**一轮 = N 次**（浏览/点赞 3、分享 1），正常第 1 轮
+        那行就翻成「已完成」，所以 3 轮是**纯容错**。
 
         ⚠️ 必须**有上限**：判据失灵时「试到成功为止」会无声转到状态超时，
         日志里只剩一句「页面识别超时」，看不出是哪条任务在磨。
@@ -317,21 +589,19 @@ class CommunityStateMachineTests(unittest.TestCase):
         machine = self.machine(state=cm.CommunityState.FEED)
         tasks = fixture("tasks_one_browse_done_live_20261006")
         feed = fixture("feed_before_signin_live_20261007")
-        post = fixture("post_detail_live_20261006")
         exchange = fixture("exchange_before_redeem_live_20261007")
 
         def run_one_round() -> str:
-            """跑完一轮：脚本两步 → 经兑换中心回我的任务 → 返回对账那一帧的动作名。"""
-            machine.next_action(feed)      # 脚本第 1 步（点开帖子）
-            machine.next_action(post)      # 脚本第 2 步（返回）
-            machine.next_action(feed)      # 脚本跑完 ⇒ 回兑换中心
+            """跑完整轮 → 经兑换中心回我的任务 → 返回对账那一帧的动作名。"""
+            self._walk_this_round(machine)
+            machine.next_action(feed)      # 一轮做完 ⇒ 回兑换中心
             machine.next_action(exchange)  # 路过兑换中心 ⇒ 点「获取积分卡」
             return machine.next_action(tasks).name
 
         machine.next_action(tasks)  # 排上「浏览帖子」
         for _ in range(cm.TASK_ATTEMPT_LIMIT - 1):
             self.assertEqual(run_one_round(), "start_task")   # 这一行还没变成「已完成」⇒ 原地再来
-            self.assertIn("再来一遍", machine.last_reason)
+            self.assertIn("再来一轮", machine.last_reason)
         # 最后一轮：到上限 ⇒ 记一笔「今天做不成」，挑下一条待办（这一帧里是「分享帖子」）
         self.assertEqual(run_one_round(), "start_task")
         self.assertIn("browse", machine.stuck_tasks)
@@ -340,6 +610,35 @@ class CommunityStateMachineTests(unittest.TestCase):
         self.assertEqual(
             machine.task_attempts["browse"], cm.TASK_ATTEMPT_LIMIT
         )
+
+    def test_a_round_that_stops_halfway_books_an_attempt(self):
+        """一轮**没跑完**就回到「我的任务」⇒ 也必须记一笔（否则是死循环）。
+
+        实跑形态：某一下没生效 ⇒ ``_drive_task`` 判「该在 A 页却停在 B 页」、
+        把路线带回「我的任务」；回来看计数没涨 ⇒ 再排一轮 ⇒ 又作废……
+        这一串动作名相邻两两都不同（``start_task`` / ``task_browse_1`` /
+        ``back_to_tasks_via_exchange`` / ``goto_tasks_card``）⇒
+        主循环那本「同一动作 4 次」的账**记不到它**，而每次点击都会刷新
+        ``absolute_started``、绝对超时也兜不住。项目红线：绝不死循环。
+        """
+        machine = self.machine(state=cm.CommunityState.FEED)
+        tasks = fixture("tasks_one_browse_done_live_20261006")
+        feed = fixture("feed_before_signin_live_20261007")
+        post = fixture("post_detail_live_20261006")
+        exchange = fixture("exchange_before_redeem_live_20261007")
+
+        machine.next_action(tasks)          # 排上浏览
+        machine.next_action(feed)           # 第 1 步：点开帖子
+        machine.next_action(post)           # 第 2 步：帖内下滑+停留
+        # 第 3 步该在帖子详情点「退回」，却把路线带回我的任务 ⇒ 这一轮只走了 2/11
+        machine._return_to_tasks(
+            post, cp.PageJudgement("post_detail", 1.0, ()), "人为构造：中途作废"
+        )
+        machine.next_action(exchange)       # 路过兑换中心
+        machine.next_action(tasks)          # 回来对账
+        self.assertEqual(machine.task_attempts.get("browse"), 1, "没跑完的一轮必须记账")
+        self.assertIn("没跑完", machine.last_reason)
+        self.assertIn("再来一轮", machine.last_reason)
 
     def test_stuck_task_still_lets_the_route_finish(self):
         """有一条今天做不成 ⇒ 路线照样要能收工（否则会永远在信息流/任务页之间打转）。"""
@@ -359,87 +658,355 @@ class CommunityStateMachineTests(unittest.TestCase):
         self.assertEqual(action.name, "back_to_tasks_from_post")
         self.assertEqual(action.point, cm.POST_BACK)
 
-    def test_like_button_is_a_toggle_and_is_read_before_clicking(self):
-        """卡片那颗 👍 是**开关**：已绿再点会取消点赞 ⇒ 开点前必须先读颜色。
-
-        2026-10-07 真机实测：`act01` 就是把一张已绿的卡片点灰了，计数白掉一次。
-        """
-        before = fixture("feed_before_signin_live_20261007")
-        self.assertIsInstance(cm.card_like_is_on(before), bool)
-        # 裁掉画面 ⇒ 读不出，必须给 None 而不是 False（False 会被当成「灰色的，可以点」）
-        self.assertIsNone(cm.card_like_is_on(before[:100, :100]))
-
-    # ---- 点赞脚本的点前预检（2026-10-07 加）----
+    # ---- 点赞：「先找再点」，位置不写死（2026-10-07 用户拍板的 C 方案）----
     #
-    # ⚠️ 上面那条只验了 ``card_like_is_on`` **这个纯函数**，没验「脚本真的会调它」——
-    #    事实上它当时**一个调用点都没有**，纯函数测得再绿也保护不了任何东西。
-    #    下面这三条把「脚本真的先读颜色」钉住。
+    # ⚠️ 这一段的前身是「先读一个**写死的框**的颜色，绿了就再滑一次」，而真机复量
+    #    发现**那个框根本不是 👍**（是 tab 栏「骑士团」三个字，纯白）⇒ 读色恒为
+    #    「没点过」，闸门形同不存在；而它守的那个点击点 (911,735) 的 y 也随卡片
+    #    高度漂（同帧实测两张卡差 558px）。现在改成：**在卡片带里找那颗空心 👍**，
+    #    找不到就下滑。下面这几条钉住新的依据。
 
-    @staticmethod
-    def _painted_liked_card() -> np.ndarray:
-        """一张「那颗 👍 已经绿了」的信息流帧（把按钮那块涂成点赞态的绿色）。"""
-        frame = fixture("feed_before_signin_live_20261007").copy()
-        x, y, w, h = cm.FEED_CARD_LIKE_BOX
-        frame[y : y + h, x : x + w] = (40, 190, 90)
-        return frame
+    def test_card_like_reading_box_is_centred_on_the_point_it_was_given(self):
+        """读色框必须跟着**实际点下去的那个点**走，不能再是一个写死的框。
 
-    def _like_machine_at_the_button(self) -> cm.CommunityStateMachine:
-        """把状态机直接摆到「正在跑点赞、脚本第 1 步（该点 👍 了）」。
+        ⚠️ 这是那道验收能不能成立的**唯一**依据：老写法读 (880,700,70,70)，
+        而那一块是 tab 栏 ⇒「点完了变绿没有」永远读成「没变」，每遍白等 8 帧作废。
+        """
+        self.assertEqual(cm.pages.card_like_reading_box((904, 1333)), (881, 1312, 47, 43))
+        self.assertEqual(cm.pages.card_like_reading_box((500, 700)), (477, 679, 47, 43))
+
+    def test_the_locator_finds_the_unliked_thumb_and_not_the_liked_one(self):
+        """``feed_cards_mixed`` 一屏里**同时**有已点赞（y≈780）和没点过（y≈1333）两颗。
+
+        定位器必须挑中**没点过**那颗 —— 挑错了就是把别人的赞取消掉。
+        断言落在「依据」上：返回的点必须离没点过那颗很近、离已点赞那颗很远。
+        """
+        frame = fixture("feed_cards_mixed_live_20261007")
+        found = cp.locate_card_like(frame, self.templates)
+        self.assertIsNotNone(found)
+        unliked, liked = (904, 1333), (904, 780)
+        self.assertLessEqual(abs(found[0] - unliked[0]) + abs(found[1] - unliked[1]), 4)
+        self.assertGreater(
+            abs(found[1] - liked[1]), 300, "挑中了已点赞那颗 —— 点下去会把赞取消"
+        )
+
+    def test_the_locator_does_not_match_an_already_liked_thumb(self):
+        """分离度本身：已点赞那颗（实心青绿）在模板下**必须不过阈**。
+
+        ⚠️ 这是「模板命中 = 还没点过」这条推理的**唯一**物证。少了它，
+        有人把模板换成一张「两种长相都能匹配」的图，谁都不会红。
+        """
+        frame = fixture("feed_cards_mixed_live_20261007")
+        template = self.templates["card_like_off"]
+        strip_x, strip_y, _, _ = cp.CARD_LIKE_STRIP
+        # 已点赞那颗的中心是 (904, 780)；把它那一小块单独喂给共享打分函数
+        left = 904 - template.shape[1] // 2
+        top = 780 - template.shape[0] // 2
+        patch = frame[top : top + template.shape[0], left : left + template.shape[1]]
+        score, _ = cp.best_match(patch.astype(np.float32), template.astype(np.float32))
+        self.assertLess(
+            float(score), cp.THRESHOLD,
+            f"已点赞那颗在模板下拿到了 {score:.4f}（过阈了）—— 点下去会把赞取消",
+        )
+        self.assertGreaterEqual(strip_x, 0)  # 顺带确认搜索带常量还是正的
+        self.assertGreaterEqual(strip_y, 0)
+
+    def test_the_locator_returns_nothing_when_no_thumb_is_on_screen(self):
+        """一屏里没有空心 👍 ⇒ 返回 ``None``，**不是**某个默认坐标。
+
+        ``None`` 是「没找到」；调用方拿到它的正确反应是下滑再找，
+        绝不能退回钉死的坐标（那颗 👍 是开关）。
+        """
+        for name in ("feed_before_signin_live_20261007", "tasks_all_done_live_20261006"):
+            self.assertIsNone(
+                cp.locate_card_like(fixture(name), self.templates), name
+            )
+
+    def _like_machine_at_the_step(self) -> cm.CommunityStateMachine:
+        """把状态机摆到「正在跑点赞、该出手点第一颗了」。
 
         ⚠️ 为什么不走 ``next_action(tasks_page)`` 去排上它：竖屏口径下**没有一张
         「点赞未完成」的任务页夹具**（``tasks_fresh`` 是另一种口径，见
         ``test_community_pages`` 里的口径守卫），而 ``tasks_one_browse_done``
         那一帧的点赞行读出来**已经是「已完成」**。所以这里直接摆状态 ——
-        被测的是 ``_drive_task`` 的点前预检，不是「挑哪条任务」那一步。
+        被测的是 ``_drive_task`` 的「先找再点」，不是「挑哪条任务」那一步。
         """
         machine = self.machine(state=cm.CommunityState.FEED)
         machine.active_task = "like"
-        machine.task_step = 1  # 第 0 步是「往下滑一次」，第 1 步才是那颗 👍
+        machine.task_step = 0
         return machine
 
-    def test_like_script_swipes_again_when_the_button_is_already_green(self):
-        """已经是绿的 ⇒ **不许点**，改滑一次换一张卡片。
+    def test_like_step_clicks_the_point_it_just_located(self):
+        """点赞那一步**现找**位置再点，并且把找出来的点当成动作的点击点。
 
-        断言的是「依据」：动作名是再滑一次、``task_step`` **没有**推进
-        （推进了就等于把这遍脚本当成点过了）。
+        ⚠️ 脚本里那一步的 ``point`` 是 ``None``（= 位置运行时现找）——
+        断言动作点 == 定位器给的坐标，才算钉住「真的用了找出来的那个点」。
         """
-        machine = self._like_machine_at_the_button()
+        machine = self._like_machine_at_the_step()
+        expected = cp.locate_card_like(
+            fixture("feed_cards_mixed_live_20261007"), self.templates
+        )
+        action = machine.next_action(fixture("feed_cards_mixed_live_20261007"))
+        self.assertEqual(action.name, "task_like_1")
+        self.assertEqual(action.point, expected)
+        self.assertEqual(machine.task_step, 1)
+        # 出手之后要等业务结果：那颗 👍 有没有变绿（下一条用例钉住它读的是哪个框）
+        self.assertEqual(machine.pending_verify, cm._VERIFY_LIKE_ON)
+        self.assertEqual(machine.like_point, expected)
 
-        action = machine.next_action(self._painted_liked_card())
+    def test_the_like_verify_runs_even_when_the_click_was_the_last_step(self):
+        """「点 👍」是点赞单元的**唯一**一步 ⇒ 一轮里总有一次它正好是脚本最后一步。
 
+        ⚠️ 那一刻两道判断会撞在一起：「还有一步要等结果」与「脚本跑完了、回去对账」。
+        顺序反了（先判 ``task_step >= len(script)``）的后果是
+        ``pending_verify`` **永远够不到**：点完立刻回「我的任务」，那颗 👍 到底
+        绿没绿**一次都没读过** —— 等于这道验收从来没存在过（2026-10-07 实测正是这样）。
+
+        这里把状态机摆到**最后一步**再点，然后喂同一帧：
+        必须在**等**（返回 ``None``、不动 ``task_step``），而不是掉头回去对账。
+        """
+        machine = self._like_machine_at_the_step()
+        machine.task_step = len(cm.TASK_SCRIPT["like"]) - 1  # 最后一步
+        mixed = fixture("feed_cards_mixed_live_20261007")
+        self.assertEqual(machine.next_action(mixed).name, "task_like_3")
+        self.assertEqual(machine.pending_verify, cm._VERIFY_LIKE_ON)
+        # 下一帧：那颗 👍 还没变绿 ⇒ 只等，**不**再出手（它是开关），也**不**提前收工
+        self.assertIsNone(machine.next_action(mixed))
+        self.assertEqual(machine.task_step, len(cm.TASK_SCRIPT["like"]))
+        self.assertIn("等看到", machine.last_reason)
+
+    def test_a_like_round_keeps_going_after_the_verify_passes(self):
+        """验收通过 = **这一步**做成了 ⇒ 接着推本轮的下一步，**不许掉头回对账**。
+
+        ⚠️ 2026-10-07 真机实跑抓到的 P0（20:36 那次）：``_await_step_result``
+        原来在验收通过时**自己** ``return self._return_to_tasks(...)``，于是
+        「一轮 ``TASK_ROUND_TIMES["like"]`` 次」**永远只做第 1 次** —— 真机日志里
+        只有 ``task_like_1``，没有 ``_2`` / ``_3``；回到「我的任务」又因
+        ``task_step < len(script)`` 被判「这一轮没跑完就回来了」，于是重排一轮、
+        再点 1 个 …… 直到 ``TASK_ATTEMPT_LIMIT`` 轮全烧在这上面。
+
+        这里构造「验收通过」：把 ``like_point`` 指到 ``feed_cards_mixed`` 里
+        **已经点过**的那颗（y≈780，实心青绿）⇒ 颜色判据读出来就是「变绿了」。
+        通过之后状态机必须**接着出手第 2 步**，而不是返回回对账的动作。
+        """
+        machine = self._like_machine_at_the_step()
+        mixed = fixture("feed_cards_mixed_live_20261007")
+        first = machine.next_action(mixed)
+        self.assertEqual(first.name, "task_like_1")
+        self.assertEqual(machine.task_step, 1)
+        # 构造「点下去之后那颗真的变绿了」
+        machine.like_point = (904, 780)
+        action = machine.next_action(mixed)
+        self.assertIsNotNone(action, "验收通过后本轮还剩 2 步，状态机必须继续出手")
+        self.assertEqual(
+            action.name,
+            "task_like_2",
+            "验收通过后掉头回「我的任务」了 —— 「一轮 N 次」会永远只做第 1 次",
+        )
+        self.assertEqual(machine.task_step, 2)
+
+    # ── 回「我的任务」那条路：别假设「兑换」图标还在视野里（2026-10-07 立）──
+
+    def test_the_exchange_icon_is_visible_only_before_the_feed_is_scrolled(self):
+        """「兑换」图标：没滚过看得见、滚过看不见 —— 这是那道闸门的**唯一物证**。
+
+        ⚠️ 少了它，有人把模板换成一张「有没有四宫格都能匹配」的图，谁都不会红，
+        而回程又会照旧去点帖子图片（那一按**不可逆**：打开图片查看器就卡死）。
+
+        ⚠️ 2026-10-09 补 ``feed_grid_at_top``：四宫格有**两个**落点 —— 未滚动的
+        y=532 与**滚回真正顶部**的 y=275。老搜索带只罩 380~680 ⇒ 在 y=275 那屏上
+        恒判「看不见」（用户报的「兑换按钮滑下去了找不着」，滚 3 次全白滚）。
+        """
+        for name in (
+            "feed_before_signin_live_20261007",
+            "feed_after_signin_live_20261007",
+            "feed_list_live_20261006",
+            # 滚回真正顶部的那一屏（图标 y=275）：必须在正向样本里
+            "feed_grid_at_top_live_20261009",
+        ):
+            self.assertTrue(
+                cp.feed_exchange_icon_visible(fixture(name), self.templates),
+                f"{name}：四宫格明明在视野里，却看不见「兑换」图标",
+            )
+        for name in (
+            "feed_cards_mixed_live_20261007",
+            "feed_cards_all_todo_live_20261007",
+        ):
+            self.assertFalse(
+                cp.feed_exchange_icon_visible(fixture(name), self.templates),
+                f"{name}：四宫格已经滚出视野，却还说看得见「兑换」图标",
+            )
+
+    def test_the_exchange_icon_search_strip_reaches_both_grid_positions(self):
+        """搜索带必须**同时**罩住四宫格的两个落点（未滚动 y=532 / 滚到顶 y=275）。
+
+        ⚠️ 这条钉的是 2026-10-09 那个 bug 的**根**：老带子 ``(360, 380, 160, 300)``
+        只认「未滚动」那个高度，于是「滚回顶部」这一屏上图标明明在、分数却是 0.0
+        ⇒ ``feed_exchange_icon_visible()`` 恒假 ⇒ 往回滚 3 次全白滚报错收手。
+
+        ⚠️ 断言里的两个 y **独立写死**（不从 ``FEED_ICON_STRIP`` 反推），否则
+        带子一改断言跟着改、注入违规纹丝不动 —— 那正是「护栏拿被测常量当输入」。
+        """
+        _x, top, _w, height = cp.FEED_ICON_STRIP
+        bottom = top + height
+        for icon_y, why in ((532, "未滚动的信息流"), (275, "滚回真正顶部")):
+            with self.subTest(icon_y=icon_y):
+                self.assertLessEqual(
+                    top,
+                    icon_y,
+                    f"搜索带上沿 {top} 比「{why}」的图标中心 y={icon_y} 还低 "
+                    "—— 那一屏会被恒判「看不见兑换图标」",
+                )
+                self.assertGreaterEqual(
+                    bottom,
+                    icon_y,
+                    f"搜索带下沿 {bottom} 够不到「{why}」的图标中心 y={icon_y}",
+                )
+
+    def test_the_exchange_icon_strip_stays_clear_of_a_scrolled_away_grid(self):
+        """搜索带放得再宽也不许把「四宫格真滚走了」误判成看得见。
+
+        与上一条是一对：上一条防「够不着」，这一条防「放太宽变成永远为真」。
+        ⚠️ 期望值独立写死 —— 真滚走那一帧实测 0.7080、阈值 0.82。
+        """
+        self.assertGreater(cp.THRESHOLD, 0.7080, "阈值高不过「真滚走」那一帧的分数")
+        # 带上沿不许一路放到标题栏里（那样任何一页都会蹭到）
+        _x, top, _w, _h = cp.FEED_ICON_STRIP
+        self.assertGreaterEqual(
+            top, 200, f"搜索带上沿 {top} 已经伸进顶部标题栏，容易蹭到别的页"
+        )
+
+    def test_returning_to_tasks_rolls_back_when_the_exchange_icon_is_off_screen(self):
+        """信息流滚过之后 ⇒ **先往回滚一屏**，不许照旧点那个钉死的坐标。
+
+        ⚠️ 2026-10-07 20:39 实跑：``FEED_ICON_EXCHANGE`` 写死成 (438,538)，
+        滚过之后那个位置底下已经是**帖子里的图片** ⇒ 点下去打开了图片查看器
+        （现场帧 ``20261007_203930_662457_timeout_feed.png`` 就是那张
+        「平衡性调整公告」大图），画面认不出、整条路线卡到超时失败。
+        """
+        machine = self.machine(state=cm.CommunityState.FEED)
+        scrolled = fixture("feed_cards_mixed_live_20261007")
+        page = cp.PageJudgement("feed_home", 1.0, ())
+        action = machine._return_to_tasks(scrolled, page, "任务做完了")
+        self.assertEqual(action.name, "feed_scroll_back_for_exchange")
+        # 坐标**独立写死**（不用 cm.FEED_ICON_SCROLL_START / _END）：
+        # 拿被测常量当自己的输入，常量一改断言跟着改，注入违规纹丝不动。
+        # 写死之后，改行程会立刻顶红这条，逼人来看一眼「新行程真的是想要的吗」。
+        self.assertEqual(action.point, (60, 360))
+        self.assertEqual(action.swipe_end, (60, 1750))
+        self.assertIn("看不见", action.reason)
+
+    def test_returning_to_tasks_clicks_once_the_exchange_icon_is_back(self):
+        """四宫格在视野里 ⇒ 直接点那个实测有效的坐标（判据只管在不在，点不变）。"""
+        machine = self.machine(state=cm.CommunityState.FEED)
+        top = fixture("feed_before_signin_live_20261007")
+        page = cp.PageJudgement("feed_home", 1.0, ())
+        action = machine._return_to_tasks(top, page, "任务做完了")
+        self.assertEqual(action.name, "back_to_tasks_via_exchange")
+        self.assertEqual(action.point, cm.FEED_ICON_EXCHANGE)
+        self.assertEqual(machine.feed_icon_reswipes, 0, "看见并点下去之后计数要归零")
+
+    def test_returning_to_tasks_gives_up_instead_of_rolling_forever(self):
+        """真滚满上限还看不见 ⇒ **报错收手**。绝不蒙着点 —— 那一按不可逆。
+
+        ⚠️ 2026-10-09 起「滚了几屏」按**执行了**记：每一滑之后页面要真的动过
+        （正文带位置表变了）才准记下一笔。所以这里每滑一屏换一帧（真机夹具
+        ``feed_cards_mixed`` 与 ``feed_cards_all_todo``，两张都是滚过的信息流、
+        都看不见「兑换」图标、正文带位置不同）。
+        """
+        machine = self.machine(state=cm.CommunityState.FEED)
+        scrolled_a = fixture("feed_cards_mixed_live_20261007")
+        scrolled_b = fixture("feed_cards_all_todo_live_20261007")
+        page = cp.PageJudgement("feed_home", 1.0, ())
+        # 每一滑都得让画面真的动过（正文带位置表变了）才准记下一笔 ⇒ 帧要挨着换，
+        # 而且**收尾那一下也不能撞回用过的位置**（撞回去 = 画面没动 = 那是「还没落定」，
+        # 本来就不该判放弃）。上限 3→4 之后交替两张会错位，所以补第三张。
+        frames = [scrolled_a, scrolled_b, scrolled_feed(scrolled_b, 240)]
+        # 上限**独立写死 4**（不引 ``cm.FEED_ICON_RESWIPE_LIMIT``）：它是被测常量，
+        # 直接引用的话「上限被改大」这条照样绿 —— 等于没护栏。
+        for index in range(4):
+            self.assertEqual(
+                machine._return_to_tasks(
+                    frames[index % len(frames)], page, "任务做完了"
+                ).name,
+                "feed_scroll_back_for_exchange",
+            )
+        self.assertEqual(machine.feed_icon_reswipes, 4)
+        with self.assertRaises(cm.CommunityDataMissing) as ctx:
+            machine._return_to_tasks(scrolled_feed(scrolled_a, 360), page, "任务做完了")
+        self.assertIn("看不见", str(ctx.exception))
+
+    def test_a_still_frame_does_not_burn_the_scroll_back_ledger(self):
+        """**2026-10-09 13:04 实跑的回归护栏**：画面不动就不许烧「已滚屏数」的账。
+
+        主循环对同名动作有重试节流：节流窗口里状态机每一帧都会重新想滑。
+        旧写法按帧记账，3 屏预算几秒烧穿、实际只滑了 1 屏，然后报
+        「往回滚了 3 屏」（假话）。新语义：同一帧反复喂 ⇒ 只记第 1 屏的账，
+        后续只重发、不记账、**不报错**（等节流放开、页面真动了才记下一笔）。
+        """
+        machine = self.machine(state=cm.CommunityState.FEED)
+        scrolled = fixture("feed_cards_mixed_live_20261007")
+        page = cp.PageJudgement("feed_home", 1.0, ())
+        for _ in range(cm.FEED_ICON_RESWIPE_LIMIT + 2):
+            action = machine._return_to_tasks(scrolled, page, "任务做完了")
+            self.assertEqual(action.name, "feed_scroll_back_for_exchange")
+        self.assertEqual(
+            machine.feed_icon_reswipes,
+            1,
+            "画面没动过，账本必须还停在第一滑 —— 按帧烧账就是 2026-10-09 的假报错",
+        )
+
+    def test_a_step_with_no_point_and_no_locator_result_refuses_to_click(self):
+        """位置没找着、脚本又没写死 ⇒ **当场抛**，绝不静默点 (0,0)。
+
+        静默退回原点那种失败最难查：屏幕上真的会在左上角点一下，而日志一片祥和。
+        """
+        machine = self._like_machine_at_the_step()
+        with self.assertRaises(RuntimeError) as ctx:
+            machine._step_action(
+                "task_like_1", cm.TASK_SCRIPT["like"][0], machine.last_page or type(
+                    "P", (), {"name": "feed_home"}
+                )(),
+                reason="人为构造：没把找出来的点传进来",
+            )
+        self.assertIn("没有点击点", str(ctx.exception))
+
+    def test_like_step_scrolls_when_this_screen_has_nothing_to_like(self):
+        """这一屏**找不到**没点过的 👍 ⇒ 下滑一屏再找（用户拍板的 C 方案原话）。
+
+        断言的是依据：动作名是再滑一次、``task_step`` **没有**推进
+        （推进了就等于把这步当成点过了），滑动走的是起点→终点。
+        """
+        machine = self._like_machine_at_the_step()
+        action = machine.next_action(fixture("feed_before_signin_live_20261007"))
         self.assertEqual(action.name, "task_like_reswipe")
-        # ⚠️ 这一步是**滑动**，不是「在终点点一下」：point 是起点、swipe_end 是终点。
-        # 旧断言是 ``point == FEED_TASK_SCROLL_END``——它保护的是「滑动被当点击发出」
-        # 这个错误行为（点在信息流中部会点开一张帖子，于是下一步对不上页、本遍作废）。
         self.assertEqual(action.point, cm.FEED_TASK_SCROLL_START)
         self.assertEqual(action.swipe_end, cm.FEED_TASK_SCROLL_END)
-        self.assertEqual(machine.task_step, 1, "还没点下去，不该算完成这一步")
+        self.assertEqual(machine.task_step, 0, "还没点下去，不该算完成这一步")
         self.assertEqual(machine.like_reswipes, 1)
+        self.assertIn("没有还没点过的", action.reason)
 
-    def test_like_script_never_taps_when_the_colour_is_unreadable(self):
-        """读不出颜色 ⇒ **不许盲点**（认不出就说认不出，别拿「也许没点过」当答案）。"""
-        machine = self._like_machine_at_the_button()
+    def test_like_step_gives_up_instead_of_swiping_forever(self):
+        """连着真滑够 ``LIKE_RESWIPE_LIMIT`` 屏还是没找到 ⇒ 收手、本遍作废。
 
-        with unittest.mock.patch.object(cm, "card_like_is_on", return_value=None):
-            action = machine.next_action(fixture("feed_before_signin_live_20261007"))
+        ⚠️ 必须有上限：否则「一屏全是已点过的卡片」会把主循环卡在信息流里空转。
+        ⚠️ 2026-10-09 起按**执行了**记（画面动了才准记下一笔），所以每一滑
+        换一帧：基帧 ``feed_before_signin`` 上找不到可点的 👍，另外两张是它
+        「往下滚了一屏 / 两屏」的样子（``scrolled_feed``，见那里的说明）。
 
-        self.assertNotEqual(action.name, "task_like_2")
-        self.assertEqual(action.name, "back_to_tasks_via_exchange")
-        self.assertIn("不敢盲点", action.reason)
-        self.assertEqual(machine.task_step, 1)
-
-    def test_like_script_gives_up_instead_of_swiping_forever(self):
-        """一路都是已点过的卡片 ⇒ 滑够 ``LIKE_RESWIPE_LIMIT`` 次就收手（本遍作废）。
-
-        ⚠️ 必须有上限：否则「全是已点过的卡片」会把主循环卡在信息流里空转到超时。
+        ⚠️ 别用 ``np.roll`` 造「滚过了」：整幅绕回去会把顶栏也挪走，页面判据
+        直接认不出（实测 0.0000 ⇒ 抛「社区画面认不出」），测的根本不是这条路径。
         """
-        machine = self._like_machine_at_the_button()
-
-        names = [
-            machine.next_action(self._painted_liked_card()).name
-            for _ in range(cm.LIKE_RESWIPE_LIMIT + 1)
-        ]
-
+        machine = self._like_machine_at_the_step()
+        top = fixture("feed_before_signin_live_20261007")
+        far_down = scrolled_feed(top, 480)
+        near_down = scrolled_feed(top, 200)
+        # 顺序：顶 → 滚下去 480 → 滚下去 200 → 回顶。每一滑画面都得动过才准记
+        # 下一笔；收尾那帧是「顶部」的样子（兑换图标在视野里）⇒ 交回兑路径。
+        frames = [top, far_down, near_down, top]
+        names = []
+        for index in range(cm.LIKE_RESWIPE_LIMIT + 1):
+            names.append(machine.next_action(frames[index]).name)
         self.assertEqual(
             names[: cm.LIKE_RESWIPE_LIMIT],
             ["task_like_reswipe"] * cm.LIKE_RESWIPE_LIMIT,
@@ -447,49 +1014,134 @@ class CommunityStateMachineTests(unittest.TestCase):
         self.assertEqual(names[cm.LIKE_RESWIPE_LIMIT], "back_to_tasks_via_exchange")
         self.assertEqual(machine.like_reswipes, cm.LIKE_RESWIPE_LIMIT)
 
-    def test_task_retry_budget_leaves_room_for_a_missed_tap(self):
-        """上限必须**大于**「任务要求的次数」，否则点空一次就等于判死。
+    def test_scrolling_stops_when_the_page_says_it_is_already_at_the_top(self):
+        """**2026-10-10 用户拍板的「滚到顶为止」**：画面说「我到底了」就别再滚。
 
-        浏览 / 点赞一天各要 3 次，而对账只在「这一行还没变成『已完成』」时才记一遍
-        ⇒ 上限等于 3 时**恰好要求每遍都成功**：中间点空一次（点歪、或者那颗 👍
-        本来就是绿的、点赞被取消），第 3 次对账就撞上限 ⇒ 记「今天做不成」，
-        **哪怕计数已经 2/3、再来一次就成了**（2026-10-07 修）。
+        到顶的 H5 再往下拖就是不动（正文带位置表一个像素都不变）。这条钉的是
+        「画面连续不动 ⇒ 当场收手」，而不是「硬把次数预算烧完才收手」——
+        后者正是 10-10 实跑里那 4 次白滑的来历。
 
-        这里用「第 4 遍才成」来钉住「有容错」这件事：
-        前 3 遍都读到「未完成」，第 4 遍读到「已完成」⇒ 必须判成、**不许**判死。
+        ⚠️ 与 ``test_a_swipe_that_never_executes_is_reported_honestly`` 成对：
+        那条是「从头到尾没动过」（手势故障，要报「没看到页面滚动」），
+        这条是「先动过、后来不动了」（正常到底）。
+        """
+        machine = self.machine(state=cm.CommunityState.FEED)
+        scrolled_a = fixture("feed_cards_mixed_live_20261007")
+        scrolled_b = fixture("feed_cards_all_todo_live_20261007")
+        page = cp.PageJudgement("feed_home", 1.0, ())
+        machine._return_to_tasks(scrolled_a, page, "任务做完了")  # 立基线，记第 1 笔
+        machine._return_to_tasks(scrolled_b, page, "任务做完了")  # 画面动了，记第 2 笔
+        self.assertEqual(2, machine.feed_icon_reswipes)
+        machine._return_to_tasks(scrolled_b, page, "任务做完了")  # 没动：只是「还没落定」
+        with self.assertRaises(cm.CommunityDataMissing) as ctx:
+            machine._return_to_tasks(scrolled_b, page, "任务做完了")  # 又没动 ⇒ 到底了
+        self.assertIn("滚到顶", str(ctx.exception))
+        self.assertEqual(
+            2,
+            machine.feed_icon_reswipes,
+            "到顶就该停：不许把次数预算烧完才收手，白滚那几下每一下都要 3 秒",
+        )
+
+    def test_a_swipe_that_never_executes_is_reported_honestly(self):
+        """上一滑一直没生效（画面一直不动）⇒ 到帧数上限要**如实**报错。
+
+        报的必须是「手势没被执行」，**不是**「滚了几屏没找到」—— 那是两回事：
+        前者是通道/节流的故障，后者才是页面变了。旧写法把两者混在一句
+        「往回滚了 3 屏」里（2026-10-09 13:04 实跑：实际只滑了 1 屏）。
+        """
+        machine = self.machine(state=cm.CommunityState.FEED)
+        scrolled = fixture("feed_cards_mixed_live_20261007")
+        page = cp.PageJudgement("feed_home", 1.0, ())
+        with self.assertRaises(RuntimeError) as ctx:
+            for _ in range(cm.SWIPE_UNEXECUTED_FRAME_LIMIT + 2):
+                machine._return_to_tasks(scrolled, page, "任务做完了")
+        self.assertIn("没看到页面滚动", str(ctx.exception))
+        self.assertEqual(
+            machine.feed_icon_reswipes,
+            1,
+            "从头到尾画面没动过，账本必须停在第一滑",
+        )
+
+    def test_the_like_verify_reads_the_box_it_actually_clicked(self):
+        """出手之后的验收必须读**刚点的那一颗**：把它涂绿 ⇒ 认「成了」。
+
+        ⚠️ 反过来也成立，而且这才是关键：**不涂**的时候必须认「还没绿」。
+        老写法读的是一个写死的框（实际是 tab 栏）⇒ 两边都会读成「没绿」，
+        于是每一遍都白等 8 帧再作废 —— 而日志只会说「等了 8 帧没看到变绿」，
+        看不出是读错了地方。
+        """
+        machine = self._like_machine_at_the_step()
+        mixed = fixture("feed_cards_mixed_live_20261007")
+        action = machine.next_action(mixed)
+        # ⚠️ 涂色框要**独立算**（拿点 + 常量），不能调 ``card_like_reading_box`` ——
+        # 用被测函数自己算「该涂哪儿」，等于自证：函数挪到哪儿，涂色跟着挪到哪儿，
+        # 恒成立（第一版就是这么写的，注入「退回写死框」时纹丝不动）。
+        half_w = cm.pages.CARD_LIKE_READ_SIZE[0] // 2
+        half_h = cm.pages.CARD_LIKE_READ_SIZE[1] // 2
+        x, y = action.point[0] - half_w, action.point[1] - half_h
+        w, h = cm.pages.CARD_LIKE_READ_SIZE
+        self.assertGreater(y, 200, "读色框得落在卡片区里，不能是顶部那排 tab")
+        # ① 原样那一帧：那颗还是空心的 ⇒ 验收必须**不**通过
+        self.assertFalse(machine._evidence_seen(mixed, cm._VERIFY_LIKE_ON))
+        # ② 把**这一次点的那个框**涂成点赞态的实心青绿 ⇒ 验收必须通过
+        painted = mixed.copy()
+        painted[y : y + h, x : x + w] = (40, 190, 90)
+        self.assertTrue(machine._evidence_seen(painted, cm._VERIFY_LIKE_ON))
+
+    def test_the_like_verify_refuses_to_claim_success_when_nothing_was_clicked(self):
+        """没点过任何一颗却要验「变绿了」⇒ 抛，不许猜。
+
+        猜「绿了」会把没做的事记成做成了；猜「没绿」会让本遍静默作废。
+        两种都在日志里看不出来 ⇒ 当成接线自检响出来。
+        """
+        machine = self.machine(state=cm.CommunityState.FEED)
+        machine.active_task = "like"
+        self.assertIsNone(machine.like_point)
+        with self.assertRaises(RuntimeError) as ctx:
+            machine._evidence_seen(
+                fixture("feed_cards_mixed_live_20261007"), cm._VERIFY_LIKE_ON
+            )
+        self.assertIn("接线断了", str(ctx.exception))
+
+    def test_the_last_allowed_round_still_gets_checked_before_being_declared_impossible(self):
+        """第 ``TASK_ATTEMPT_LIMIT`` 轮**同时**是最后一轮 ⇒ 顺序必须是
+        「先看这一行成没成，再考虑判死」。
+
+        ⚠️ 反过来的后果：明明这一轮把 3 次都做完了、那一行也翻成了「已完成」，
+        却被「已经跑满 3 轮」先判死 ⇒ 记成「今天做不成」，白做一整轮。
+
+        用「第 3 轮才成」钉住它：前 2 轮读到「未完成」、第 3 轮读到「已完成」
+        ⇒ 必须判成，且**不许**进 ``stuck_tasks``。
         """
         machine = self.machine(state=cm.CommunityState.FEED)
         not_done = fixture("tasks_one_browse_done_live_20261006")
         all_done = fixture("tasks_all_done_live_20261006")
         feed = fixture("feed_before_signin_live_20261007")
-        post = fixture("post_detail_live_20261006")
         exchange = fixture("exchange_before_redeem_live_20261007")
 
         def run_one_round(tasks_frame) -> str:
-            machine.next_action(feed)
-            machine.next_action(post)
+            self._walk_this_round(machine)
             machine.next_action(feed)
             machine.next_action(exchange)
             return machine.next_action(tasks_frame).name
 
         machine.next_action(not_done)  # 排上「浏览帖子」
-        for _ in range(3):
+        for _ in range(cm.TASK_ATTEMPT_LIMIT - 1):
             self.assertEqual(run_one_round(not_done), "start_task")
-            self.assertNotIn("browse", machine.stuck_tasks, "第 4 遍之前不许判死")
-        # 第 4 遍：这一行终于变成「已完成」⇒ 成了。
+            self.assertNotIn("browse", machine.stuck_tasks, "最后一轮之前不许判死")
+        # 最后一轮：这一行终于变成「已完成」⇒ 成了（不许被「跑满轮数」抢先判死）。
         self.assertNotEqual(run_one_round(all_done), "start_task")
         self.assertNotIn("browse", machine.stuck_tasks)
         self.assertIn("做成了", machine.last_reason)
 
     def test_retry_log_does_not_claim_the_counter_did_not_move(self):
-        """日志别写「计数没动」—— 对账读的是**按钮**，3 次制的计数每遍都在动。
+        """日志别写「计数没动」—— 对账读的是**按钮**，3 次制的计数每轮都在动。
 
         照这句话排错会被带偏（2026-10-07 修正措辞）。
         """
         machine = self.machine(state=cm.CommunityState.FEED)
         machine.next_action(fixture("tasks_one_browse_done_live_20261006"))
-        machine.next_action(fixture("feed_before_signin_live_20261007"))
-        machine.next_action(fixture("post_detail_live_20261006"))
+        self._walk_this_round(machine)
         machine.next_action(fixture("feed_before_signin_live_20261007"))
         machine.next_action(fixture("exchange_before_redeem_live_20261007"))
         machine.next_action(fixture("tasks_one_browse_done_live_20261006"))
@@ -551,32 +1203,67 @@ class CommunityStateMachineTests(unittest.TestCase):
 
     # ---- 网络异常 ----
 
-    def test_network_error_leaves_the_community_to_reenter(self):
-        """H5 死了（不会自愈）⇒ 关掉社区、重进一次。
+    def test_network_error_refreshes_in_place_instead_of_leaving(self):
+        """H5 死了（整页「网络连接异常，下拉刷新」）⇒ **照它要求的做：下拉刷新**。
 
-        状态必须回到 ``WEB_ENTRY``（而不是停在 BLOCKED）：那一帧之后模拟器转回横屏，
-        状态机要能**自动重进**；停在 BLOCKED 会一直等到超时。
+        ⚠️ 2026-10-07 用户拍板改掉旧的「退出去重进」，原话：
+        「你就是应该按照他的要求下拉刷新」。
+
+        断言的是**四件事**，缺一都说明改回去了：
+
+        - 动作名换成了 ``refresh_community_page``；
+        - 它是**滑动**（``swipe_end`` 非空）—— 少了这个字段，主循环会在**起点点一下**，
+          整条第①步就退化成「点一下空白」，后面全对不上；
+        - 点**不是**那个钉死的退出点 ``FEED_CLOSE``：这一页的 X 实测在 (1000, 78)，
+          而 ``FEED_CLOSE``=(937,92) 在这里落在空白上（旧写法就是这么空转的）；
+        - 状态是 ``REFRESHING``，**不是** ``WEB_ENTRY`` —— 后者会让通道去等「转回横屏」，
+          而页压根没关，等来的只有超时。
         """
         machine = self.machine(state=cm.CommunityState.FEED)
         action = machine.next_action(fixture("network_error_live_20261006"))
-        self.assertEqual(action.name, "logout_community")
-        self.assertEqual(action.point, cm.FEED_CLOSE)
-        self.assertEqual(machine.state, cm.CommunityState.WEB_ENTRY)
+        self.assertEqual(action.name, "refresh_community_page")
+        self.assertEqual(action.point, cm.NETWORK_PULL_START)
+        self.assertEqual(action.swipe_end, cm.NETWORK_PULL_END)
+        self.assertNotEqual(action.point, cm.FEED_CLOSE)
+        self.assertNotIn("web_activity_list", action.target_pages)
+        self.assertEqual(machine.state, cm.CommunityState.REFRESHING)
 
-    def test_network_error_does_not_ping_pong_forever(self):
-        """退出去重进之后还是网络异常 ⇒ 那是在乒乓，转两次就停。
+    def test_the_refresh_gesture_drags_downwards(self):
+        """下拉刷新 = **手指往下移**（起点的 y 小于终点的 y）。
 
-        ⚠️ 主循环那本「同一动作 4 次」的账**记不到它**：来回是
-        `logout_community` / `enter_community` 两个动作名，每次都是新动作。
-        所以必须自己记一笔账，否则会一直转下去（真断网时就是这样）。
+        方向写反就成了「上滑」，那在 webview 里是滚动、不是刷新 —— 页面不会有任何反应，
+        而日志上看起来和成功一模一样（动作发出去了、没报错）。所以方向单独钉一条。
+        """
+        self.assertLess(cm.NETWORK_PULL_START[1], cm.NETWORK_PULL_END[1])
+        self.assertGreater(cm.NETWORK_PULL_MS, 300)
+
+    def test_network_error_does_not_count_every_frame(self):
+        """同一页连着几帧都报异常 ⇒ 只记**一次**账。
+
+        ⚠️ 这是旧写法实跑抓到的形状：计数器**按帧**涨（实跑 21 秒涨了 3），
+        于是「页面刚死两秒」就被判成「拉了 3 次都不行」直接停手。
         """
         machine = self.machine(state=cm.CommunityState.FEED)
         frame = fixture("network_error_live_20261006")
-        for _ in range(cm.NETWORK_RETRY_LIMIT):
-            self.assertEqual(machine.next_action(frame).name, "logout_community")
+        for _ in range(5):
+            self.assertEqual(machine.next_action(frame).name, "refresh_community_page")
+        self.assertEqual(machine._network_refreshes, 1)
+
+    def test_network_error_gives_up_after_the_refresh_budget(self):
+        """拉活次数用完 ⇒ 响亮停手，不无限刷。
+
+        每一轮先模拟「拉活之后页面活过来了」（状态被别的页改掉）再让它死 ——
+        这才是计数器要管的那件事（跨页面的反复横跳）。
+        """
+        machine = self.machine(state=cm.CommunityState.FEED)
+        frame = fixture("network_error_live_20261006")
+        for _ in range(cm.NETWORK_REFRESH_LIMIT):
+            machine.state = cm.CommunityState.FEED
+            self.assertEqual(machine.next_action(frame).name, "refresh_community_page")
+        machine.state = cm.CommunityState.FEED
         with self.assertRaises(RuntimeError) as ctx:
             machine.next_action(frame)
-        self.assertIn("网络异常", str(ctx.exception))
+        self.assertIn("网络连接异常", str(ctx.exception))
         self.assertEqual(machine.state, cm.CommunityState.BLOCKED)
 
     # ---- 认不出就不动 ----
@@ -635,6 +1322,126 @@ class CommunityStateMachineTests(unittest.TestCase):
                 action = machine.next_action(fixture(frame_name))
                 x, y = action.point
                 self.assertTrue(0 <= x < width and 0 <= y < height, f"{action.name} {action.point} 越界")
+                # ⚠️ 滑动的**终点**同样要落在画布内：``PortraitChannel.swipe`` 把它
+                # 直接拼进 adb 命令，越界那一下由安卓侧静默失败 —— 画面看着没动，
+                # 日志上却是一条「执行滑动」，最难查的那种。
+                if action.swipe_end:
+                    ex, ey = action.swipe_end
+                    self.assertTrue(
+                        0 <= ex < width and 0 <= ey < height,
+                        f"{action.name} 滑动终点 {action.swipe_end} 越界",
+                    )
+
+    def test_ack_redeem_done_accepts_landing_back_on_the_exchange_center(self):
+        """「兑换成功」点确认之后，**落点是兑换中心**（一次退两级），不是商品详情。
+
+        ⚠️ 2026-10-07 真机：目标只写 ``item_detail`` ⇒ 转场永远不成立 ⇒ 主循环把状态机
+        随后给出的 ``open_item``（下一件要兑的）**丢掉** ⇒ 整条兑换流程卡 66 秒后失败。
+        两轮实跑都在同一处，日志原文：
+
+            ack_redeem_done 原页面=redeem_done 期望页面=item_detail
+            当前已确认页面=exchange_center 内部状态=兑换中心
+
+        现场帧 ``20261007_212358_801234_timeout_transition_ack_redeem_done.png``
+        就是兑换中心本体（四张卡都在、行动力已是「每日限购 2/2」）。
+        """
+        machine = self.machine(state=cm.CommunityState.ORDER_CONFIRM)
+        action = machine.next_action(fixture("redeem_success_live_20261006"))
+        self.assertEqual(action.name, "ack_redeem_done")
+        self.assertIn("exchange_center", action.target_pages)
+        self.assertIn("item_detail", action.target_pages)
+
+
+class PreviewKeepsSwipeLedgerTests(unittest.TestCase):
+    """``preview``（试算）不许把「滑动手势的账本」留在外面。
+
+    2026-10-10 真机事故（用户报「社区签到报错」）：主循环**每帧先试算、
+    再真跑**，两次喂的是**同一帧**画面（``transactional_runner_base.run``：
+    ``preview`` 拿签名做两帧稳定确认，确认过了才 ``next_action`` 真出手）。
+    而 ``_register_swipe_emission`` 的账本（``_pending_swipe_*``）没进快照
+    ⇒ 真跑那一次比到的是「刚刚试算时写下的基线」和**同一帧** ⇒ 恒判等
+    ⇒ 恒判「页面没动」⇒ ``like_reswipes`` / ``feed_icon_reswipes`` 永远停在 0
+    ⇒ 两条「滑了 N 屏就收手」的闸门**同时失效**，只能等主循环自己的 4 次
+    重试烧完，报一个词不达意的 ``retry_exhausted``。
+
+    症状极具误导性：日志里全是「上一滑还没执行」「仍在等第 0 屏生效」，
+    而同一段日志里点赞点坐标一直在变（（904,1111）→（904,723）→（904,1103））、
+    四宫格也真的被滚回来过 —— 页面明明在动，尺子说它没动。
+
+    这三步（拍快照 → 调 ``_register_swipe_emission`` → 还原）就是 ``preview``
+    内部所做的事。**这里直调而不从 ``preview`` 进**：要走到那条分支得先把
+    ``_drive_task`` 铺到「一轮动作做完、回去核对计数」，铺出来的场景本身
+    比被测行为还长，一旦哪天铺的路径断了，护栏会**静静地空转**（对着一个
+    走不到 ``_register_swipe_emission`` 的机器断言「账本没变」，永远绿）。
+    """
+
+    #: 手势名**独立写死**：不从 ``community`` 里取常量，免得实现一改断言跟着改。
+    SWIPE = "feed_scroll_back_for_exchange"
+    #: 两个「滚动位置」的正文带位置表，也独立写死。差 780 > 阈值 120。
+    TOP_FRAME_TOPS = [120, 240, 360]
+    SCROLLED_FRAME_TOPS = [900, 1020, 1140]
+
+    @classmethod
+    def setUpClass(cls):
+        cls.templates, cls.glyphs = cm.build_screen_reader(TEMPLATES)
+
+    def machine(self) -> cm.CommunityStateMachine:
+        return cm.CommunityStateMachine(self.templates, self.glyphs)
+
+    def preview_this_frame(self, machine: cm.CommunityStateMachine, tops) -> None:
+        """把 ``preview`` 的内部三步照原样走一遍（拍快照 → 试算 → 还原）。"""
+        snapshot = machine._snapshot()
+        try:
+            machine._register_swipe_emission(self.SWIPE, tops)
+        finally:
+            machine._restore(snapshot)
+
+    def real_run_this_frame(self, machine: cm.CommunityStateMachine, tops) -> bool:
+        """主循环真正出手的那一次（用的是同一帧、同一份位置表）。"""
+        return machine._register_swipe_emission(self.SWIPE, tops)
+
+    def test_the_first_swipe_still_counts_after_the_preview(self):
+        """试算过之后，真跑那一次**必须**记上账（这就是本次事故的核心）。"""
+        machine = self.machine()
+        self.preview_this_frame(machine, self.TOP_FRAME_TOPS)
+        self.assertTrue(
+            self.real_run_this_frame(machine, self.TOP_FRAME_TOPS),
+            "试算把基线留下了：真跑只能拿它跟自己比，恒判「页面没动」",
+        )
+
+    def test_a_frame_that_really_moved_still_counts_after_the_preview(self):
+        """页面真的滚过了 ⇒ 第二滑也要记上账（别只修好第一滑）。"""
+        machine = self.machine()
+        self.preview_this_frame(machine, self.TOP_FRAME_TOPS)
+        self.assertTrue(self.real_run_this_frame(machine, self.TOP_FRAME_TOPS))
+        self.preview_this_frame(machine, self.SCROLLED_FRAME_TOPS)
+        self.assertTrue(
+            self.real_run_this_frame(machine, self.SCROLLED_FRAME_TOPS),
+            "画面动了却没记账：上面那条会变成「永远为真」",
+        )
+
+    def test_a_frame_that_did_not_move_is_still_not_counted(self):
+        """画面没动的下一帧仍然不许记账 —— 与上面那条成对，防它变成永远为真。"""
+        machine = self.machine()
+        self.preview_this_frame(machine, self.TOP_FRAME_TOPS)
+        self.assertTrue(self.real_run_this_frame(machine, self.TOP_FRAME_TOPS))
+        self.preview_this_frame(machine, self.TOP_FRAME_TOPS)
+        self.assertFalse(
+            self.real_run_this_frame(machine, self.TOP_FRAME_TOPS),
+            "画面一动没动却记了账",
+        )
+
+    def test_the_preview_does_not_burn_the_unexecuted_streak(self):
+        """试算不许消耗「连发 N 帧都没看到页面滚」的那个计数。
+
+        那个计数到 30 会如实报错。若试算每次都 +1，上限会**提前一半烧穿**：
+        正常的一帧（试算 + 真跑）被算成两帧。
+        """
+        machine = self.machine()
+        self.real_run_this_frame(machine, self.TOP_FRAME_TOPS)
+        for _ in range(5):
+            self.preview_this_frame(machine, self.TOP_FRAME_TOPS)
+        self.assertEqual(0, machine._pending_swipe_streak)
 
 
 class CommunityEntryAndCloseTests(unittest.TestCase):
@@ -781,13 +1588,32 @@ class _FakePortrait:
         # ``"stay"`` = 一直不变（模拟「等不到」）；``None`` = 不记这个。
         self.turns_while_waiting: Optional[bool] = None
         self.wait_error: Optional[Exception] = None
+        # 连着几次「等满超时」（抛 ``OrientationError``、方向也不动），之后才正常。
+        # ⚠️ 需要它是因为「收尾挨个试三颗 ⊗」那条新逻辑：要测的出「第一颗点了没用
+        # ⇒ 换第二颗」**必须**让第一次 ``wait_for_landscape`` 真的抛超时
+        # —— 真机上「点了没用的那颗」正是这个形态（等满 5 秒抛 ``OrientationError``）。
+        self.wait_failures_left: Optional[int] = None
 
     def is_portrait(self) -> bool:
         self.probes += 1
         return self.portrait
 
+    def set_event_sink(self, sink) -> None:
+        """``ChannelSwitch`` 装配时会调它（把竖屏通道的等转屏日志接到运行日志上）。
+
+        ⚠️ 2026-10-09 补：以前只有不用 ``runner.run()`` 的测试，替身缺这个方法也照样全绿
+        —— 一旦有测试真的跑主循环（装配那一步），缺它就会当场 ``AttributeError``。
+        """
+        self.sink = sink
+
     def _wait(self, target_portrait: bool, label: str) -> None:
         self.calls.append(f"wait_{label}")
+        if self.wait_failures_left:
+            self.wait_failures_left -= 1
+            raise OrientationError(
+                f"等待模拟器切成{'竖屏' if target_portrait else '横屏'}超时"
+                "（已等 5.0 秒）；当前客户区=1920x1080"
+            )
         if self.turns_while_waiting:
             self.portrait = target_portrait
         if self.wait_error is not None:
@@ -1146,6 +1972,202 @@ class CommunityRunnerTests(unittest.TestCase):
         machine = cm.CommunityStateMachine(self.templates, self.glyphs)
         return cm.CommunityRunner(machine, runtime, portrait=portrait, sleep=lambda _: None)
 
+    def test_the_web_dying_ends_the_pending_transition(self):
+        """网页死掉时，把「等着的那个转场」判成**已结束**，否则补救动作会被主循环丢掉。
+
+        ⚠️ 这是 2026-10-07 实跑抓到的形状，也是**旧下加拉活（退出去重进）压根没点出去**
+        的原因：主循环对「已发出、还没验收的换页动作」有一条规矩 —— ``confirmed_page``
+        既不是来源页也不是目标页时，**把状态机这一帧给出的动作丢掉**
+        （``runner_base`` 里 `elif last_transition_action is not None` 那一段）。
+
+        实跑日志 20:31:35 点「兑换」→ 20:32:00 连记 3 次「网络异常」，
+        中间**一条 ``执行点击 动作=logout_community`` 都没有** —— 全被丢掉了。
+
+        断言：pending 的动作在哪一种 ``confirmed_page`` 下会被判「结束」。
+        """
+        runner = self.make_runner(dry_run=True)
+        pending = cm.CommunityAction(
+            "goto_tasks_via_exchange",
+            (438, 538),
+            source_page="feed_home",
+            target_pages=("exchange_center", "exchange_empty"),
+        )
+        refresh = cm.CommunityAction(
+            "refresh_community_page",
+            cm.NETWORK_PULL_START,
+            swipe_end=cm.NETWORK_PULL_END,
+            source_page="network_error",
+            in_page_evidence="「网络连接异常，下拉刷新」这一页消失",
+        )
+        # 网页死了 ⇒ 结束（这才是本条要保的）
+        self.assertTrue(runner._transition_completed(pending, refresh, "network_error"))
+        # 目标真的到了 ⇒ 照旧结束
+        self.assertTrue(runner._transition_completed(pending, refresh, "exchange_center"))
+        # 中途认出的别的页 ⇒ **不许**当成结束（老规矩，别为了社区这条路线放宽）
+        self.assertFalse(runner._transition_completed(pending, refresh, "tasks_page"))
+        self.assertFalse(runner._transition_completed(pending, refresh, "unknown"))
+
+    def test_the_transition_abort_logs_why_it_was_abandoned(self):
+        """那行 `完成=... 目标页面=network_error` 会被误读成「本步做成了」，必须补一句说明。"""
+        runner = self.make_runner(dry_run=True)
+        refresh = cm.CommunityAction(
+            "refresh_community_page",
+            cm.NETWORK_PULL_START,
+            swipe_end=cm.NETWORK_PULL_END,
+            source_page="network_error",
+            in_page_evidence="「网络连接异常，下拉刷新」这一页消失",
+        )
+        detail = runner._transition_success_detail(None, refresh)
+        self.assertIn("网络连接异常", detail)
+
+    def test_the_image_viewer_ends_the_pending_transition_too(self):
+        """图片查看器盖上来时，同样要把「等着的那个转场」判成已结束。
+
+        ⚠️ 这是 2026-10-08 两次实跑（18:58 / 19:10）的死锁：任务「浏览帖子」那一指
+        点在帖子的图片上 ⇒ 图被放大成全屏查看器 ⇒ 状态机认出来了、也给出了
+        ``dismiss_image_viewer``（按返回键），但主循环一看 ``confirmed_page`` 既不是
+        来源页（``feed_home``）也不在目标集合里 ⇒ **把这一下丢掉** ⇒ 干等 150 秒，
+        收尾时人还卡在查看器里，连社区都关不掉。
+
+        旧写法只认 ``network_error``，查看器就漏在网里了 —— 所以这条用例存在的意义是
+        「名单里每一个都得有」而不是「再补一个特例」。
+        """
+        runner = self.make_runner(dry_run=True)
+        pending = cm.CommunityAction(
+            "task_browse_1",
+            cm.FEED_FIRST_POST,
+            source_page="feed_home",
+            target_pages=("post_detail", "signin_done", "network_error"),
+        )
+        dismiss = cm.CommunityAction(
+            "dismiss_image_viewer",
+            (540, 960),
+            press_back=True,
+            source_page="image_viewer",
+            in_page_evidence="图片查看器消失（退回社区页面）",
+        )
+        # ⚠️ 这里**逐个写死**，不从 ``_GLOBAL_OVERLAY_PAGES`` 里遍历 ——
+        # 遍历那个集合的话，名单被缩小（例如退回只认 network_error）时循环也跟着缩小，
+        # 用例照样全绿：**拿被测常量当自己的输入**是护栏最容易犯的错。
+        for page in ("image_viewer", "network_error", "signin_done"):
+            with self.subTest(overlay=page):
+                self.assertTrue(
+                    runner._transition_completed(pending, dismiss, page),
+                    f"{page} 盖上来时转场没被终止（收场动作会被主循环丢掉、干等到超时）",
+                )
+        # 别的页照旧不许放宽（老规矩：转场中途认出的杂页不当真）
+        self.assertFalse(runner._transition_completed(pending, dismiss, "tasks_page"))
+        self.assertFalse(runner._transition_completed(pending, dismiss, "unknown"))
+        self.assertIn(
+            "查看器", runner._transition_success_detail(None, dismiss)
+        )
+
+    def test_the_machine_and_judge_page_agree_on_every_frame(self):
+        """状态机的 ``observe`` 与 ``pages.judge_page`` **必须给出同一个结论**。
+
+        ⚠️ 这条是 2026-10-08 那次「测试全绿、真机照旧卡死」的防线。
+        ``observe`` 原先自己抄了一份判页逻辑（``observe_pages`` → ``top_page`` →
+        栈根兜底），于是往 ``judge_page`` 里新加的「图片查看器」判据**生产路径走不到**：
+        ``test_community_pages.py`` 调 ``judge_page`` 全绿，实跑照旧认不出查看器、
+        照旧干等 150 秒。**两份实现的代价就是「测试守住了 A，生产跑的是 B」。**
+
+        逐帧核过就不存在这个缝：任何一边改了拼装顺序，这里立刻红。
+        """
+        machine = cm.CommunityStateMachine(self.templates, self.glyphs)
+        checked = 0
+        # 扫**盘上全部** 1080x1920 夹具（比 PAGE_FRAMES 那张表更宽，
+        # 免得「表里漏了一页」把这条防线也带出个洞）。
+        for path in sorted(FIXTURES.parent.rglob("*.png")):
+            image = cv2.imread(str(path))
+            if image is None:
+                continue
+            if image.shape[:2] != (cp.PORTRAIT_CANVAS[1], cp.PORTRAIT_CANVAS[0]):
+                continue
+            screen = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+            expected = cp.judge_page(screen, self.templates)
+            actual = machine.observe(screen)
+            with self.subTest(frame=path.stem):
+                self.assertEqual(actual.name, expected.name)
+                self.assertEqual(actual.fallback, expected.fallback)
+                self.assertAlmostEqual(actual.confidence, expected.confidence, places=6)
+            checked += 1
+        self.assertGreaterEqual(checked, 18)
+        # 查看器那一帧必须真在扫过的集合里，否则这条用例可能只是「什么都没扫到」
+        self.assertIn("image_viewer_live_20261008", {
+            path.stem for path in FIXTURES.parent.rglob("*.png")
+        })
+
+    def test_the_machine_sees_the_image_viewer(self):
+        """真机那一刻（查看器）走的是 ``next_action``，所以**必须从这里也认得出**。
+
+        只测 ``judge_page`` 是不够的 —— 生产路径是 ``next_action`` → ``observe``。
+        """
+        machine = cm.CommunityStateMachine(self.templates, self.glyphs)
+        machine.state = cm.CommunityState.FEED
+        action = machine.next_action(fixture("image_viewer_live_20261008"))
+        self.assertIsNotNone(action, "认不出查看器（又回到 2026-10-08 那个死锁）")
+        assert action is not None
+        self.assertEqual(action.name, "dismiss_image_viewer")
+        self.assertTrue(action.press_back, "查看器那一屏没有可点控件，只能按返回键")
+        self.assertEqual(action.source_page, "image_viewer")
+        # 出口只写页内证据、**不写 target_pages** —— 关掉之后落回哪一页并不固定
+        self.assertFalse(getattr(action, "target_pages", ()))
+
+    def test_the_image_viewer_is_dismissed_with_the_back_key(self):
+        """``press_back`` 必须真的走返回键通道，而且**不许再补一次点击**。
+
+        ⚠️ 少了那个 ``return``，后面会退化成「点在图片正中」—— 等于刚按完返回又去点
+        那一屏，正好把要关的东西再打开。这里用假 runtime 记下发过什么。
+        """
+        runner = self.make_runner(dry_run=False)
+        clicks: list[tuple[int, int]] = []
+        backs: list[int] = []
+        runner.runtime._click = lambda point: clicks.append(point)  # type: ignore[assignment]
+        runner.runtime._back = lambda: backs.append(1)  # type: ignore[assignment]
+        runner.machine.state = cm.CommunityState.FEED
+        action = runner.machine.next_action(fixture("image_viewer_live_20261008"))
+        self.assertIsNotNone(action)
+        assert action is not None
+        runner._perform_action(action)
+        self.assertEqual(backs, [1], "返回键没发出去")
+        self.assertEqual(clicks, [], f"返回键之后又点了 {clicks} —— 会把查看器再打开")
+        self.assertEqual(runner.machine.state, cm.CommunityState.IMAGE_VIEWER)
+
+    def test_every_overlay_page_has_a_way_out(self):
+        """``_GLOBAL_OVERLAY_PAGES`` 名单里每一页都必须**真推得动**。
+
+        ⚠️ 放行一个推不动的页，只是把死锁从主循环搬到状态机里 —— 更难看懂。
+        所以这条拿**真机夹具**喂进 ``next_action``，要求每一页都能当场给出一发动作：
+        ``image_viewer`` → 按返回键、``network_error`` → 下拉刷新、``signin_done`` → 点关闭。
+        只断言「名单里有没有它」是不够的 —— 那只看打字，不看行为。
+        """
+        fixtures = {
+            "image_viewer": "image_viewer_live_20261008",
+            "network_error": "network_error_live_20261006",
+            "signin_done": "signin_success_live_20261007",
+        }
+        # 名单与夹具表必须一一对上：名单里加人就得同时给证据，不许悄悄放行
+        self.assertEqual(set(fixtures), set(cm.CommunityRunner._GLOBAL_OVERLAY_PAGES))
+        for page, frame in fixtures.items():
+            with self.subTest(overlay=page):
+                machine = cm.CommunityStateMachine(self.templates, self.glyphs)
+                machine.state = cm.CommunityState.FEED
+                action = machine.next_action(fixture(frame))
+                self.assertIsNotNone(
+                    action, f"{page} 这一页状态机给不出任何动作 —— 放行它等于把死锁搬个家"
+                )
+                assert action is not None
+                self.assertEqual(
+                    action.source_page,
+                    page,
+                    f"收场动作不是在 {page} 这一页上发的，说明判页和收场对不上",
+                )
+                self.assertTrue(
+                    action.name in cm.CommunityRunner._QUICK_ACTIONS,
+                    f"{action.name} 不在快重试名单里：收场动作点完立刻能看出效果，"
+                    "按默认 45 秒等纯属白等",
+                )
+
     def test_it_declares_the_transition_contract(self):
         self.assertIs(cm.CommunityRunner._REQUIRE_TRANSITION_CONTRACT, True)
 
@@ -1183,13 +2205,47 @@ class CommunityRunnerTests(unittest.TestCase):
             cm.ModeRunnerBase._ACTION_RETRY_SECONDS,
         )
 
+    def test_swipe_actions_get_a_window_short_enough_to_keep_going(self):
+        """两个滑动动作的重试间隔必须**远短于**默认那 45 秒。
+
+        ⚠️ 2026-10-09 实跑：``feed_scroll_back_for_exchange`` / ``task_like_reswipe``
+        是「发一次手势 → 看画面动没动 → 再发」的循环。走默认 45 秒窗口的话，
+        滑完一屏后要干等 45 秒才准再滑 ⇒ 三屏的预算全耗在等待里，日志里只有
+        1 次「执行滑动」，结尾却报「往回滚了 3 屏」。
+
+        阈值独立写死（10 秒 / 0.5 秒），**不拿 ``_SWIPE_RETRY_SECONDS`` 自己当尺子**。
+        """
+        runner = self.make_runner()
+        for name in ("feed_scroll_back_for_exchange", "task_like_reswipe"):
+            seconds = runner._action_retry_seconds(name)
+            self.assertLess(
+                seconds, 10, f"{name} 的重试间隔 {seconds} 秒太长，滚不完三屏"
+            )
+            self.assertGreater(
+                seconds, 0.5, f"{name} 的重试间隔 {seconds} 秒太短，手势还没发完就重发"
+            )
+
     def test_clicking_the_entry_and_exit_arms_the_switch(self):
+        """进/出社区那几下点击要顺手把**通道方向预期**拨过去。
+
+        ⚠️ ``leave_exchange`` 必须在内（2026-10-09 补）：兑换中心那颗 ✕ 真机实测
+        **关的是整个社区**（点完 3 秒内窗口回 1920x1080）。漏了它，通道记录会一直
+        停在竖屏 —— 19:58 那次实跑就是这么白等 20 秒「等待切换为竖屏」的：
+        窗口明明已经横屏，代码却拿竖屏链路去取图。
+        """
         runner = self.make_runner(dry_run=True)
         runner._switch = cm.ChannelSwitch(_FakePortrait())
         runner._after_action_click(cm.CommunityAction("enter_community", (1, 1)))
         self.assertEqual(runner._switch.state, cm.ChannelSwitch.PENDING_PORTRAIT)
         runner._after_action_click(cm.CommunityAction("close_community", (1, 1)))
         self.assertEqual(runner._switch.state, cm.ChannelSwitch.PENDING_LANDSCAPE)
+        runner._switch.expect("portrait")
+        runner._after_action_click(cm.CommunityAction("leave_exchange", (1, 1)))
+        self.assertEqual(
+            runner._switch.state,
+            cm.ChannelSwitch.PENDING_LANDSCAPE,
+            "从兑换中心退出社区那一下同样会转回横屏，方向预期必须跟着拨",
+        )
 
     def test_dry_run_does_not_attach_the_adb_channel(self):
         runner = self.make_runner(dry_run=True)
@@ -1244,12 +2300,84 @@ class CommunityRunnerTests(unittest.TestCase):
         )
 
     def test_closing_out_does_nothing_when_the_screen_is_already_landscape(self):
-        """已经是横屏 ⇒ 什么都不用做（正常路径：状态机在横屏那帧才收工）。"""
+        """已经是横屏 ⇒ 不点、不等（正常路径：状态机在横屏那帧才收工）。"""
         portrait = _FakePortrait(portrait=False)
         runner = self.make_runner(portrait=portrait)
         runner._switch = cm.ChannelSwitch(portrait)
         runner._leave_portrait_if_needed()
         self.assertEqual(portrait.calls, [])
+
+    def test_closing_out_hands_the_landscape_record_to_the_next_step(self):
+        """异常收尾把方向等回来了 ⇒ **通道记录也必须跟着回到横屏**。
+
+        ⚠️ 2026-10-09 实跑日志：13:07:52「收尾=人还在社区竖屏页面里」，
+        13:07:54「已退出社区且方向已转回横屏」—— 方向明明已经对了，
+        13:08:18 却又冒出「竖屏通道 方向=等待切换为竖屏 … 超时」，白等 20 秒
+        才由竖屏通道退回横屏。原因正是**方向回来了、记录没回来**：异常收尾时
+        没人点过「退出社区」，没人把记录拨成 ``PENDING_LANDSCAPE``，
+        它还停在 ``PENDING_PORTRAIT`` ⇒ 下一步回首页取图先等一次不可能的转屏。
+        """
+        portrait = _FakePortrait(portrait=True)
+        portrait.turns_while_waiting = True
+        runner = self.make_runner(portrait=portrait)
+        switch = cm.ChannelSwitch(portrait)
+        switch.expect("portrait")
+        runner._switch = switch
+        runner._leave_portrait_if_needed()
+        self.assertEqual(
+            switch.state,
+            cm.ChannelSwitch.LANDSCAPE,
+            "方向已转回横屏，通道记录却还停在竖屏，下一步取图会白等竖屏超时",
+        )
+
+    def test_closing_out_also_winds_the_record_back_when_already_landscape(self):
+        """人已经不在竖屏里（进社区那一下没点成）⇒ 记录同样要拨回横屏。"""
+        portrait = _FakePortrait(portrait=False)
+        runner = self.make_runner(portrait=portrait)
+        switch = cm.ChannelSwitch(portrait)
+        switch.expect("portrait")
+        runner._switch = switch
+        runner._leave_portrait_if_needed()
+        self.assertEqual(switch.state, cm.ChannelSwitch.LANDSCAPE)
+
+    def test_closing_out_tries_the_other_close_buttons_when_the_first_one_misses(self):
+        """收尾点第一颗 ⊗ 关不掉这一屏时，要**换下一颗试**，不能就此认输。
+
+        ⚠️ 2026-10-09 真机量出来社区里有**三颗**同义的 ⊗，位置各不相同
+        （信息流 (937,92) / 兑换中心 (989,123) / H5 死掉那屏 (1000,78)；
+        外径 44/48/33 互不相等 ⇒ 是三颗不同的钮，不是同一颗挪了位置）。
+        异常收尾时状态机可能停在**任意一页**，只点信息流那颗在别的页上等于点空 ⇒
+        收尾关不掉 ⇒ 模拟器留在竖屏 ⇒ 紧接着回家报
+        「画面宽高比与模板基准不一致」（10-07 / 10-08 连撞多次的就是这条链）。
+
+        断言的是**换了一颗**（点了两次、两次的坐标不同），不是绕过第几颗的写法。
+        """
+        portrait = _FakePortrait(portrait=True)
+        portrait.turns_while_waiting = True
+        portrait.wait_failures_left = 1  # 第一颗点了没用（等满超时）
+        runner = self.make_runner(portrait=portrait)
+        runner._switch = cm.ChannelSwitch(portrait)
+        runner._leave_portrait_if_needed()
+        clicks = [c for c in portrait.calls if c.startswith("click")]
+        self.assertEqual(
+            len(clicks), 2, f"第一颗 ⊗ 没关掉就应当换下一颗：{portrait.calls}"
+        )
+        self.assertNotEqual(
+            clicks[0], clicks[1], "换的必须是**另一颗** ⊗，不是把同一颗再点一遍"
+        )
+        self.assertFalse(portrait.portrait, "第二颗之后方向应当已经转回横屏")
+
+    def test_closing_out_does_not_pretend_landscape_when_it_is_still_portrait(self):
+        """等不到转回横屏 ⇒ 记录**不许**动，免得把「人还在竖屏」说成已经出来。"""
+        portrait = _FakePortrait(portrait=True)
+        portrait.turns_while_waiting = False
+        runner = self.make_runner(portrait=portrait)
+        switch = cm.ChannelSwitch(portrait)
+        switch.expect("portrait")
+        runner._switch = switch
+        runner._leave_portrait_if_needed()
+        self.assertEqual(switch.state, cm.ChannelSwitch.PENDING_PORTRAIT)
+        self.assertTrue(portrait.portrait, "等不到的情况下不该把方向改掉")
 
     def test_it_refuses_a_non_emulator_landscape_channel(self):
         """PC 后端没有 adb。不拦的后果是**静默点错客户端**（去找雷电窗口）。"""
@@ -1422,6 +2550,102 @@ class CommunityRunnerTests(unittest.TestCase):
         self.assertIn("super().run(", source)
         modifiers = inspect.getsource(cm.CommunityRunner._stable_next_action)
         self.assertIn("super()._stable_next_action", modifiers)
+
+
+class _ExhaustedAfterFirstLook:
+    """社区状态机替身：**第一次观察之后**就报「兑换积分不够」。
+
+    形状照着 ``ModeRunnerBase`` 的鸭子类型造（主循环只要 ``state`` /
+    ``completed_cycles`` / ``preview`` / ``next_action``）。
+
+    ⚠️ 为什么从**第二次**开始抛：``preview`` 抛出的终止性结论要过**结论门槛**
+    （``runner_base._stable_next_action``：连续两帧一致才采信），第一次只会被记成
+    「结论待确认」并返回 ``NOT_STABLE``。只抛一次的话主循环永远走不到收尾那一段，
+    这条测试就变成了「跑不到的分支」—— 看着绿，其实什么都没验。
+    """
+
+    def __init__(self) -> None:
+        self.state = cm.CommunityState.FEED
+        self.completed_cycles = 0
+        self._confirmed_page = ""
+        self.preview_calls = 0
+
+    def preview(self, screen):
+        self.preview_calls += 1
+        if self.preview_calls > 1:
+            raise cm.RedeemBudgetExhausted("测试：兑换积分不够了")
+        return None, (self.state, self.completed_cycles)
+
+    def next_action(self, screen):
+        return None
+
+
+class CommunityEndpointMustBeHomeTests(unittest.TestCase):
+    """终点契约：社区这条路跑完**必须停在大厅**（用户 2026-10-09 明确补充）。
+
+    原话：「这条路线它的终点有点特殊，它一定要回到首页，因为不然的话，它很多按键
+    都没有掉了」—— 社区走完停的是**横屏的网页活动列表**（H5），大厅那套按钮一个都
+    不在；收尾那一棒没接上，整条路线照样报「成功」，人却留在网页上，下一个任务接不上。
+
+    ⚠️ 与 ``CommunityRunnerTests.test_the_run_loop_is_delegated_to_the_base_class``
+    的分工：那条是**静态**读源码（覆写了 run 有没有委托回基类）；这里补的是**动态**
+    那一半 —— 真跑一轮主循环，看退出口上「回家」那一棒有没有**真的被调到**。
+    两者都不能省：静态能拦住「没委托」，拦不住「委托了但回家钩子没装 / 被跳过」。
+
+    守两件，判据**独立写死、不读被测常量**：
+
+    ① 这条路线不该躺在「不回首页」的豁免名单里；
+    ② 真跑一轮到「积分不够」（正常业务退出，退出码 2）：末棒**确实是回家**。
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.templates, cls.glyphs = cm.build_screen_reader(TEMPLATES)
+
+    def test_the_route_is_not_exempt_from_going_home(self):
+        """豁免名单里一旦出现社区，这条终点契约就没了 —— 断言是它的门栓。"""
+        from auto_game_unified.games.epic7.finish_home import FINISH_HOME_EXEMPT
+
+        self.assertNotIn(
+            "community",
+            FINISH_HOME_EXEMPT,
+            "社区路线被划进了「不回首页」的豁免名单：它的终点契约就是大厅，不能豁免",
+        )
+
+    def test_a_finished_run_walks_all_the_way_home(self):
+        """跑完一轮（按「积分不够」收）⇒ 收尾必须**走到回家这一棒**。
+
+        ⚠️ 只断言「退出了社区」是不够的：退出社区只到网页活动列表，**那不是终点**。
+        所以这里记的是 ``_finish_home``（通用回家流程）有没有被调到。
+        """
+        home_calls: list[str] = []
+
+        def hook() -> Optional[str]:
+            home_calls.append("finish_home")
+            return None
+
+        runtime = Runtime(
+            capture=lambda: np.zeros((1132, 1982, 3), np.uint8),
+            click=lambda point: None,
+            emit=lambda text: None,
+        )
+        runner = cm.CommunityRunner(
+            _ExhaustedAfterFirstLook(),
+            runtime,
+            portrait=_FakePortrait(portrait=False),
+            sleep=lambda _: None,
+        )
+        runner._finish_home = hook
+
+        completed = runner.run(max_cycles=3)
+
+        self.assertEqual(0, completed)
+        self.assertEqual(
+            ["finish_home"],
+            home_calls,
+            "社区收尾没有走到「回家」这一棒 —— 只退了社区就收手，"
+            "人会留在网页活动列表上（大厅那套按钮一个都不在）",
+        )
 
 
 if __name__ == "__main__":

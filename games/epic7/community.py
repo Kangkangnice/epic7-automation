@@ -56,34 +56,40 @@
    └──── 经兑换中心 →「获取积分卡」 ┘（底栏那个「我的」不是我的任务）        └─ 转回横屏才收工
 ```
 
-三条每日任务各自是一个**闭环**：点「去完成」→ 信息流 → 按脚本做动作 →
-经兑换中心回「我的任务」→ **对账**（那一行的按钮有没有变成「已完成」；⚠️ 读的是
-按钮长相，不是 ``x/3`` 那个数字）。
-涨了算数、没涨再来一遍、连试 ``TASK_ATTEMPT_LIMIT`` 遍都不涨就记一笔「今天做不成」
-并跳过它继续跑别的 —— **绝不死循环，也绝不无声跳过**（名字会写进收尾日志）。
+三条每日任务各自是一**轮**：点「去完成」→ 信息流 → **一轮之内连做 N 次**
+（浏览 3 篇 / 点赞 3 个 / 分享 1 次，见 ``TASK_ROUND_TIMES``）→ 经兑换中心回
+「我的任务」→ **对账**（那一行的按钮有没有变成「已完成」；⚠️ 读的是按钮长相，
+不是 ``x/3`` 那个数字）。涨了算数、没涨再来一轮、连 ``TASK_ATTEMPT_LIMIT`` **轮**
+都不涨就记一笔「今天做不成」并跳过它继续跑别的 —— **绝不死循环，也绝不无声跳过**
+（名字会写进收尾日志）。
+
+⚠️ 粒度必须是「一轮」：每次点「去完成」都重新落在信息流**顶部**（四次实测同一帧），
+做一次就回来一趟的话，第二遍又滑回**同一篇** —— 三遍白做、计数永远不涨。
 
 ## ⚠️ 还没被第二天复验过的地方（写在这里，别装作不存在）
 
-- **三条任务的执行坐标只有单日样本**：``FEED_FIRST_POST``（信息流顶部第一张帖子卡）与
-  ``FEED_CARD_LIKE``（卡片右下角 👍）都只在 2026-10-07 那一天的题字与滚动位置上量过。
-  卡片高度由正文长短决定 ⇒ **换一天可能对不上**。兜底是「以页面计数为准 + 有上限的重试」，
+- **``FEED_FIRST_POST`` 只有单日样本**（信息流顶部第一张帖子卡）：卡片高度由正文长短
+  决定 ⇒ **换一天可能对不上**。兜底是「以页面计数为准 + 有上限的重试」，
   所以对不上只会让那条任务被记成「今天做不成」，**不会点坏东西**。
-- ✅ **卡片 👍 是开关**（``card_like_is_on``）：已绿的再点会**取消**点赞。
-  2026-10-07 已把这道预检接进脚本（``TASK_SCRIPT`` 里那一步的动作类型写成
-  ``tap_like`` 就是为了让它被认出来）：**已经是绿的就先滑一次换一张卡片**，
-  读不出颜色就**不点**，滑满 ``LIKE_RESWIPE_LIMIT`` 次就收手。
+- ✅ **卡片 👍 是开关**，而且**它根本不在一个固定坐标上**（2026-10-07 晚复量）：
+  老代码钉的 ``(911, 735)`` 配的读色框，放大看是 tab 栏「骑士团」三个字
+  ⇒ 那道「点之前先读颜色」的预检**恒返回「没点过」**，等于不存在；
+  而同帧两张卡的 👍 实测能差 558px。现在改成 ``pages.locate_card_like()``
+  **现找那颗空心 👍**（模板 ``card_like_off``，已点赞的实心青绿在它下面只到 0.43），
+  找不到就下滑一屏再找（``LIKE_RESWIPE_LIMIT`` 封顶）。
+  ⇒ **命中即「还没点过」**，不需要第二道读色闸门。
 - **签到的弹窗延迟没有复查**：2026-10-07 实测点后 3 秒 / 9 秒看都没变化、
   74 秒后再看已经在了。到底是服务端慢、还是第一次那下其实没生效，
   **没有定论**。所以 ``_TIMEOUT_SECONDS[FEED]`` 给到 150 秒罩住它。
 - **订单确认页按钮「禁用」与「不在」分不开**：两者在颜色定位里都是「找不到」，
   目前一律按「等结果」处理。
-- ⚠️ **重试上限必须大于「任务要求的次数」**：浏览 / 点赞一天各要 3 次，而对账只在
-  「这一行还没变成『已完成』」时才记一遍 ⇒ 上限等于 3 就**恰好要求每遍都成功**，
-  点空一次就判死（哪怕计数已经 2/3）。现在 ``TASK_ATTEMPT_LIMIT = 6``（要求 3 + 容错 3），
-  ``tests/test_community.py`` 里有两条用例钉住这件事。
+- ⚠️ **重试账本的粒度是「轮」**（``TASK_ATTEMPT_LIMIT = 3``）：一轮 = N 次，
+  正常**第 1 轮**那一行就翻成「已完成」，所以 3 轮是**纯容错**。
+  ⚠️ 「一轮没跑完就回来了」**也要记账** —— 不记就是死循环（那一串动作名相邻两两
+  都不同，主循环那本「同一动作 4 次」的账记不到它）。
 - ⚠️ **对账读的是按钮长相，不是 ``x/3`` 那个数字**（``observe_task_rows`` 判的是
-  ``task_todo`` / ``task_done``）。日志里**别写「计数没动」** —— 3 次制的计数每遍都在动，
-  只是按钮要到第 3 遍才翻成「已完成」。
+  ``task_todo`` / ``task_done``）。日志里**别写「计数没动」** —— 3 次制的计数每轮都在动，
+  只是按钮要到第 3 次才翻成「已完成」。
 """
 
 from __future__ import annotations
@@ -113,6 +119,8 @@ from auto_game_unified.games.epic7.runner_base import NOT_STABLE, ModeRunnerBase
 # ── 竖屏坐标（全部实测，见模块头表） ──────────────────────────────────────────
 
 FEED_SEARCH = (181, 92)
+#: 信息流右上角的 X = **关掉整个社区**。⚠️ 它只是社区里**三颗**同义 ⊗ 中的一颗
+#: （另两颗在兑换中心与 H5 死掉那屏，位置各不相同）—— 那张表在 ``EXCHANGE_CLOSE`` 上方。
 FEED_CLOSE = (937, 92)
 FEED_ICON_Y = 538
 FEED_ICON_SIGNIN = (240, FEED_ICON_Y)
@@ -155,37 +163,168 @@ SIGNIN_POPUP_CLOSE = (539, 1212)
 # ── 三条每日任务的执行段（2026-10-07 真机采到） ───────────────────────────────
 
 # 点完「去完成」之后落在**信息流首页顶部**（10-07 四次实测都是同一帧 b33079c5）。
-# 顶部布局固定 ⇒ 第一张帖子卡的位置也是固定的，点它即开帖。
+#
+# ⚠️⚠️ **它不再是点击点 —— 只是「从哪儿开始找」的参照点**（`x` 用它的、`y` 当起点）。
+#
+# 2026-10-08 连续两次真机实跑里，`(400, 1450)` 都点在了**帖子里的图片**上 ⇒
+# 图片被放大成整屏「图片查看器」⇒ 画面认不出 ⇒ 整条路线卡死
+# （诊断帧 `runtime_diagnostics/epic7_community/current.png` 就是那张「欧勒毕斯·冒险手册」大图）。
+#
+# 根因不是「这次点歪了」：**盲坐标在滚动过的信息流里本来就不成立** ——
+# 卡片高度由正文长短决定，滚动之后同一个 y 落在哪张卡的哪一块纯属抽签，
+# 而这一屏里**唯一不能点的东西**恰好就是图片（点它 = 打开查看器）。
+#
+# ⇒ 落点改由 `pages.locate_feed_post_tap()` **现找**（找一条「白底 + 有字 + **不是图片**」
+# 的正文带），这里的 y 只是那次现找的起点 ⇒ 原来点得对的时候行为不变。
+# 同一个坑 2026-10-07 20:39 已经咬过一次（那次点是回程的「兑换」图标），
+# 见 `FEED_ICON_ANCHORS` 上方那段。
 FEED_FIRST_POST = (400, 1450)
-# 卡片右下角那颗 👍。⚠️ **它是开关**：已经点过（绿底白手）时再点会**取消点赞**，
+# 卡片右下角那颗 👍。⚠️ **它是开关**：已经点过（实心青绿）时再点会**取消点赞**，
 # 计数不涨反掉。10-07 实测 `act01` 就是把一张已绿的卡片点灰了 ⇒ 白花一次额度。
-# 所以开点之前先看这块的颜色，**只点灰的**。
-FEED_CARD_LIKE = (911, 735)
-FEED_CARD_LIKE_BOX = (880, 700, 70, 70)
-# 「去完成」→ 信息流之后走这一次滑动，把卡片 👍 带进上面那个位置（10-07 实测）。
-FEED_TASK_SCROLL_START = (540, 1500)
-FEED_TASK_SCROLL_END = (540, 700)
+#
+# ⚠️⚠️ **这里曾经钉过一个坐标 ``FEED_CARD_LIKE = (911, 735)``（已删）。**
+# 2026-10-07 真机复量发现它是错的，两处都错：
+#
+# 1. **那一块根本不是 👍**。老代码配的读色框是 ``(880, 700, 70, 70)``，
+#    放大一看是 tab 栏「骑士团」三个字（纯白，rgb 243.9/244.2/245.4）。
+#    于是「点之前先看颜色，只点灰的」这道闸门**从来没读到过 👍** ——
+#    ``card_like_is_on()`` 恒返回 ``False``（=「没点过」），等于没有闸门。
+# 2. **y 会随卡片高度漂**。卡片高由正文长短决定，同一帧里两张卡的 👍
+#    实测分别在 y 756 与 y 1314（差 558px）。钉死一个 y 只在那一次测量的
+#    那一屏上成立，换一屏就点空 —— 而点空的下一次落点可能就在 tab 栏上。
+#
+# ⇒ 现在改成**运行时现找**（用户 2026-10-07 拍板的 C 方案：「不假设位置，直接在
+# 信息流里**找**那颗还未点赞的 👍，找不到就继续下滑」）。找的动作在
+# ``pages.locate_card_like()``，模板 ``card_like_off``（**空心描边**那颗；
+# 已点过的是实心青绿，与它不同形，实测在本模板下只到 0.43）。
+# 「去完成」→ 信息流之后走这一次滑动，把卡片 👍 带进视野（10-07 实测）。
+# ── 滑动手势的起点列：一律贴左边缘的白边（2026-10-08，用户提的角度）──────────
+#
+# ⚠️ **滑动起点的 x 一律用这个值，不许再用 540（页面正中）。**
+#
+# 用户 2026-10-08 的原话：「如果保险点可以从左边的边缘那些地方往下拉，它就不会碰到中间的
+# 图片了」。量了一遍，他说得对 —— 6 张真机页面帧（信息流 5 张 + 帖子详情）逐列统计
+# **该列的彩色像素占比**（y 240~1760）：
+#
+# | 列 | x=20 | x=40 | **x=60** | x=80 | x=100 | x=540 |
+# | --- | --- | --- | --- | --- | --- | --- |
+# | 最低~最高 | 0.000 | 0.000~0.012 | **0.000~0.003** | 0.000~0.003 | 0.000~0.018 | **0.057~0.191** |
+#
+# 信息流的卡片是通栏白底、插图**居中** ⇒ 中间那一列**确实穿过插图**，左边缘是干净的。
+#
+# ## 为什么这值得改（不只是「保险点」）
+#
+# 风险不是「滑一下会点开图」—— 实测 `input swipe` 从插图中间滑过很多次（帖子详情里的
+# 浏览下滑）都没打开过查看器。风险在于**这条手势一旦退化成点击**：
+# `CommunityRunner._perform_action` 只在 ``swipe_end`` 非空时才发 ``swipe``，
+# 那面旗子一丢，主循环就**在起点点一下**（2026-10-07 点赞任务三遍全废正是这个形状）。
+# 起点在 x=540 的插图上 ⇒ 打开图片查看器 ⇒ 整条路线卡死；起点在白边上 ⇒ 什么也不会发生。
+#
+# ⚠️ 只改**滑动**（起点会被降级成点击的那一类）。不动 ``NETWORK_PULL_START``：
+# 那一页（H5 报「网络连接异常」）整屏没有插图，而且下拉刷新本来就该从页面中部拉。
+SCROLL_GUTTER_X = 60
+
+# 「去完成」→ 信息流之后走这一次滑动，把卡片 👍 带进视野（10-07 实测）。
+FEED_TASK_SCROLL_START = (SCROLL_GUTTER_X, 1500)
+FEED_TASK_SCROLL_END = (SCROLL_GUTTER_X, 700)
 FEED_TASK_SCROLL_MS = 400
 
-# 同一条任务最多试几遍。三遍还没让计数涨就是「这条今天做不成」，
-# 记一笔、跳到下一条 —— **绝不死循环**（账本要记的是「做了几次」，
-# 而不是「试到成功为止」，后者会在判据失灵时无声转到底）。
+# 「往回滚」——方向和上面那对**正好相反**。
 #
+# ``FEED_TASK_SCROLL_*`` 是「往**下**看」：手指上移、内容上移，去找下面的卡片。
+# 这一对要的是「往**回**看」：手指下移、内容下移，把滚上去的信息流顶部
+# （四宫格那行）重新拉回视野。回「我的任务」要点的「兑换」图标就在那里。
+#
+# ⚠️ **2026-10-10 加大行程**（800px → 1390px）：原来只有 700→1500，而这两下
+# **主循环对同名动作只给 4 次**（``runner_base`` 的 `action_attempts > 4` ⇒ 一次
+# 「换个办法」⇒ 再不行就报错）。实跑里「找 👍」那一步往下滑了 **6 次**（08:06:07~
+# 08:06:42，每次 800px），往回滚要是也按 800px 一屏一屏地退，4 次根本退不回顶部。
+# 内容区的实际可用范围是 y 250~1750（``community_pages.FEED_TAP_STRIP`` 那条注释：
+# 再往上会碰到搜索栏与 tab 行、再往下是底部四格导航栏），所以取 360~1750 接近满行程。
+# ⚠️ 起点仍在 ``SCROLL_GUTTER_X`` 那道**左边缘白边**上 —— 万一手势被降级成点击，
+# 那一下落在白边上什么也不会发生（这条纪律见 ``SCROLL_GUTTER_X`` 上方那段）。
+FEED_ICON_SCROLL_START = (SCROLL_GUTTER_X, 360)
+FEED_ICON_SCROLL_END = (SCROLL_GUTTER_X, 1750)
+
+# 「往回滚」最多滚几次。滚到顶之后四宫格必然露出来，再滚也不动 ⇒ 到上限还没
+# 看见就说明不是「滚过头」而是**页面真的变了**（活动换皮/入口搬家），
+# 那时必须**报错收手**，绝不蒙着点那个坐标（点下去会打开帖子图片 ⇒ 卡死）。
+#
+# ⚠️ **2026-10-10：3 → 4**。原来的 3 是在「一次滚 800px」的前提下定的；那时
+# 3 屏 = 2400px，而实跑里往下滚过 6 屏（≈4800px）⇒ 还没退到顶就先自己报错了。
+# 现在一次 1390px、上限 4 ⇒ 最多退 5560px，坐得下。**刻意与主循环的 4 次对齐**：
+# 路线的闸门必须**早于或等于**主循环的账本，否则会出现「路线还在滚、主循环已经
+# 判它四次未转场」的错位（10-10 实跑就是后者先炸的）。
+FEED_ICON_RESWIPE_LIMIT = 4
+
+# 「滚不动了」= **连续**这么多次滑动之后，画面结构（正文带位置表）仍然一点没变。
+#
+# ⚠️ 这是 2026-10-10 用户拍板的「**滚到顶为止**」那条：不再靠「猜一个够大的次数」
+# 来决定什么时候收手，而是**读画面自己说「我到底了」** —— 已经到顶的 H5 再往下拖
+# 就是不动，位置表一个像素都不变（``_register_swipe_emission`` 的判据）。
+# 取 2 而不是 1：单次「没动」可能只是刚滑完还没落定，连着两次才作数。
+FEED_ICON_STUCK_FRAMES = 2
+
+# ⚠️ 2026-10-09 立：上面这两个「滑满 N 屏就放弃」的上限，数的必须是**真的发生了
+# 的滑动**，不是「想滑动的帧数」。主循环对**同名动作**有重试节流
+# （``CommunityRunner._action_retry_seconds``：同名动作 45 秒内只执行一次，
+# 2026-10-09 起这两个手势单独给 3 秒），节流窗口里状态机**每一帧**都会重新
+# 「想滑」—— 按帧记账的话，上限几秒就烧穿，实际却一屏都没滑。
+# 2026-10-09 13:04 实跑就是这样：日志里只有 1 次「执行滑动」，
+# 却报了「往回滚了 3 屋」（原文：往回滚了 3 屏）。
+#
+# 所以记账看**结构证据**：正文带位置表（``pages.feed_band_tops``）变没变。
+# 滚 800px 会整体换一批正文带；头像/动图那种局部动画不会。
+SWIPE_MOVE_MIN_PX = 120
+
+# 上一滑一直没生效（节流没放开 / 页面锁滚动）时，最多重发多少帧就如实报错。
+# 生产上竖屏一帧约 2 秒，30 帧 ≈ 60 秒 > 重试窗口（3 秒）的十倍余量；
+# 真在滚动却账不动的情况由「位置表变了」覆盖，这条只兜「完全没执行」。
+SWIPE_UNEXECUTED_FRAME_LIMIT = 30
+
+# 「浏览帖子」浏览**一篇**的完整动作是：点开 → **在帖子详情里往下滑一下** →
+# **停一会儿** → 返回。用户 2026-10-07 的口径原话：「点到这个帖子里面，稍微往下滑一下，
+# 停留个 5~10 秒，然后退出来，这个就算浏览一次了」。
+#
+# ⚠️ 这两下（滑 + 停）**不是**可有可无的装饰：不滑不停，游戏多半不记这次浏览，
+# 于是那一行永远停在 0/3，跑满上限判「今天做不成」—— 而画面看起来一切正常。
+POST_SCROLL_START = (SCROLL_GUTTER_X, 1500)
+POST_SCROLL_END = (SCROLL_GUTTER_X, 900)
+# 停在区间中位，5~10 秒都合规；取中位是为了两边都留余量（也不是掐着下限走）。
+POST_DWELL_SECONDS = 6.0
+
+# 每条任务**一轮**要做几次 —— 一轮之内**连续做完**，做完才回「我的任务」对账**一次**。
+#
+# ⚠️ 2026-10-07 用户拍板改掉旧粒度。旧粒度是「做一次 → 绕回我的任务对账 → 再做一次」，
+# 而**每次点「去完成」都重新落在信息流顶部**（10-07 四次实测同一帧）⇒ 第二遍
+# 「下滑一次」又滑到**同一张卡 / 同一篇帖**：浏览等于白做，点赞则是对一颗**已经绿了**
+# 的 👍 再点一下、把赞**取消**掉。旧代码里那个「已绿就再滑一次」的补偿只是在打地鼠。
+#
+# 次数依据：任务页那五张进度字形模板的命名（``strings/tasks/`` 的
+# ``0_1 / 0_3 / 1_1 / 1_3 / 3_3``）⇒ 浏览与点赞是 ``x/3``，分享是 ``x/1``。
+TASK_ROUND_TIMES: dict[str, int] = {"browse": 3, "like": 3, "share": 1}
+
+# 一条任务最多跑几**轮** —— **绝不死循环**（账本要记的是「跑了几轮」，而不是
+# 「试到成功为止」，后者会在判据失灵时无声转到底）。
+#
+# ⚠️ 语义与旧版完全不同：旧版一轮 = 1 次，所以上限必须**大于**要求的次数
+# （6 = 3 次 + 3 次容错），否则点空一次就等于判死。现在一轮 = N 次，
+# **正常情况第 1 轮那一行就翻成「已完成」**（3 次都在这一轮里做完了），
+# 所以 3 是**纯容错**：留两整轮给「某一下没生效」。
+TASK_ATTEMPT_LIMIT = 3
+
 # ⚠️ ``TASK_SCRIPT`` / ``TASK_LABELS`` 排在**所有坐标都定义之后**（文件下面那一块）：
 # 脚本里要按名字引用 `POST_BACK` / `POST_SHARE` / `SHARE_COPY_LINK`，
 # 放在坐标区中间会 `NameError`（2026-10-07 踩过）。
-# 一条任务最多试几遍。
+# 「这一屏**找不到**还没点过的 👍 ⇒ 再往下滑一次换一屏」的次数上限。
 #
-# ⚠️ **这个数必须大于「任务要求的次数」，否则点空一次就等于判死**（2026-10-07 修）。
-# 浏览 / 点赞都是 ``x/3``（一天要 3 次），而对账只在「那一行**还没变成**『已完成』」
-# 时才记一遍 —— 于是上限等于 3 的时候，**恰好要求每一遍都成功**：
-# 中间只要有一步点空（点歪、或者那颗 👍 本来就是绿的、点赞被取消），
-# 第 3 次对账就撞上 ``attempts >= 3`` ⇒ 记「今天做不成」，
-# **哪怕计数已经 2/3、再来一次就成了**。
-# ⇒ 6 = 要求 3 次 + 3 次容错。分享只要 1 次，容错更宽。
-TASK_ATTEMPT_LIMIT = 6
-# 「那颗 👍 已经是绿的 ⇒ 再滑一次换一张卡片」的次数上限。
+# ⚠️ 语义（2026-10-07 改）：老版是「读到那颗 👍 已经是绿的才滑」，而那次读数
+# 读的是 tab 栏（见 ``FEED_FIRST_POST`` 上方那段）—— 也就是说这个补偿机制
+# **从来没被触发过正确的输入**。现在触发条件是字面意义上的「没找到」：
+# 模板在整条卡片带里都没过阈（这一屏没有卡片 / 卡片全点过了）。
+#
 # ⚠️ 必须有上限，否则「一路都是已点过的卡片」会变成死循环（项目红线：绝不死循环）。
+# 计的是**连着**滑了几次都没找到，一旦找到并点下去就归零。
 LIKE_RESWIPE_LIMIT = 3
 
 # ⚠️ 这一个是**横屏**坐标（1982x1132 兼容画布），不是竖屏的 —— 入口那一下发生在
@@ -203,7 +342,55 @@ _ENTRY_ROTATION_WAIT_SECONDS = 20.0
 #: 即便等不到也只是让基类那步失败并留下原因，**不影响退出码**。
 _EXIT_ROTATION_WAIT_SECONDS = 8.0
 
+# 社区这几页上有**三颗**长得像的 ⊗，位置与外径都不一样，而它们的语义是**同一件事**：
+# **关掉整个社区**（点完模拟器转回横屏，回到网页活动列表）。
+#
+# ⚠️ 这张表是 2026-10-09 用真机一步步量出来的，别照图目测、更别假设「同一个按钮」：
+#   - 信息流右上 X ：外径 44，圆环中心 (937,  92)  ← 最早认的就是它（``FEED_CLOSE``）
+#   - 兑换中心右上 ✕：外径 48，圆环中心 (989, 123)
+#   - H5 死掉那屏   ：外径 33，圆环中心 (1000, 78)  ← 「网络连接异常，下拉刷新」页
+# 三个外径 33/44/48 互不相等 ⇒ 是**三颗不同的钮**（各页自己画自己的头），
+# **不是同一颗挪了位置**。所以「按判页挑对的那一颗」是必须的，不能拿一颗顶三颗。
+#
+# ## 为什么收工走这里，而不是左上角的 `<`
+#
+# 2026-10-09 真机实跑（19:49）把 `<` 钉死了：它是 **H5 历史返回**，而兑换中心是从
+# 「我的任务」点「去兑换」进来的 ⇒ 点 `<` 回到的是**「我的任务」**，不是信息流。
+# 更糟的是「我的任务」的 `<` 又指回兑换中心 —— 两页**互为历史上一页**，
+# 靠返回键**永远回不到信息流**（19:49:50 兑换中心 --(36,121)--> 我的任务，
+# 19:49:56 我的任务 --(35,130)--> 兑换中心，来回打转，两次各干等 150 秒超时才停）。
+#
+# ## ⚠️⚠️ 2026-10-09 20:2x 探针复量：兑换中心这颗 ✕ **关的是整个社区**
+#
+# 19:58 那次实跑点了它之后卡死（150 秒超时）。当时的猜测是「它只关掉兑换中心这一层、
+# 回信息流，所以要接着点信息流的 X」—— **猜错了**。真机探针
+# （``.workbuddy/_probe_exchange_close_layer.py``）逐步判页走到底：
+#
+#     信息流判页=feed_home → 点「兑换」→ 判页=exchange_center
+#     → 点 (989,123) → **3 秒后 ``is_portrait()`` 已经是 False、客户区 1920x1080**
+#     → 8 秒后仍是横屏，画面就是**网页活动列表**
+#
+# 也就是说：**在兑换中心点一下 ✕，社区就整个关掉了，一次点击直达横屏，中间没有信息流。**
+# 同一个结论还有第二条独立证据：H5 死掉那屏（「网络连接异常，下拉刷新」）点它自己那颗
+# ⊗ (1000,78)，窗口同样在 4 秒内从 1023x1820 变回 1920x1080。
+#
+# ⇒ 收工从兑换中心**一步到位**，「先回信息流再点 X」那一段**根本不需要**，
+# 而且它建立在「✕ 只关一层」这个错误前提上 —— 这正是 19:58 那次卡死的原因：
+# 社区已经关了，状态机却停在 ``FEED`` 等一页**永远不会出现**的竖屏信息流。
 EXCHANGE_BACK = (36, 121)
+#: 兑换中心右上角的 ✕：**关掉整个社区**（不是「关掉这一层浮层」）。
+#: 点完模拟器转回横屏、落在网页活动列表 ⇒ 收工那一步的动作与 ``close_community`` 同形。
+EXCHANGE_CLOSE = (989, 123)
+#: H5 整页死掉那一屏（白底 +「网络连接异常，下拉刷新」）右上角那颗 ⊗ —— 它**同样关掉整个社区**
+#: （真机实测：点完 4 秒内 ``1023x1820`` → ``1920x1080``）。收尾扫地出门时要试到它。
+NETWORK_PAGE_CLOSE = (1000, 78)
+
+#: 收尾「扫地出门」时**按序试**的三颗 ⊗。⚠️ 只给 ``_leave_portrait_if_needed`` 用 ——
+#: 主流程**不许**这样试，必须按判页挑对的那一颗（三颗外径 33/44/48，不是同一颗挪位置）。
+_EXIT_CLOSE_POINTS = (FEED_CLOSE, EXCHANGE_CLOSE, NETWORK_PAGE_CLOSE)
+#: 收尾里**每一颗** ⊗ 的等转屏预算。三颗全试满也才 15 秒（原来的总预算 8 秒一个都不够试）；
+#: 正常情况第一颗就该成功（转屏实测 1~3 秒），所以这个数只对「试错了」那一档有意义。
+_EXIT_CLOSE_ATTEMPT_SECONDS = 5.0
 EXCHANGE_BALANCE_BOX = (160, 246, 92, 46)
 EXCHANGE_GAIN_POINTS_CARD = (800, 270)
 
@@ -262,16 +449,40 @@ class TaskStep:
     这三条任务的动作横跨信息流 / 帖子详情 / 分享面板三页，脚本一旦和当前页对不上，
     说明中间某一下没点中 ⇒ 必须**停下重来**，不能拿着错页的坐标硬点
     （那是 2026-10-05 竞技场入口那种事故的形状）。
+
+    ## 入口标志 ``enter``：动手**之前**必须看到什么
+
+    ``page`` 只说「必须停在哪一页」，但「在信息流这一页」**不等于**「该点第二篇了」——
+    浏览第二篇时，信息流必须已经**往下滑过一次**，否则点下去还是第一篇。
+    这句人话就是补上这个缺口的：它和 ``note`` / ``evidence`` 一样先当**文档**，
+    等哪一项有了机器可读的判据，就提到 ``verify`` 上去真读。
+    （2026-10-07 用户要求：每个动作都要有**输入和输出**两个标志。输入 = ``page`` +
+    ``enter``；输出 = ``next_page`` 或 ``evidence`` + ``verify``。）
     """
 
-    kind: str                       # tap / tap_like / swipe
+    kind: str                       # tap / tap_post / tap_like / swipe
     page: str                       # 这一步必须在哪一页动手
-    point: tuple[int, int]          # 点击点；滑动时是**起点**
+    # 点击点；滑动时是**起点**。
+    # ⚠️ ``None`` = 「**位置运行时现找**」，``tap_like`` 与 ``tap_post`` 允许这么写：
+    #
+    # - ``tap_like`` ⇒ ``pages.locate_card_like``：那颗 👍 的 y 随卡片高度漂
+    #   （同帧实测能差 558px），钉死坐标就是点空、点空之后可能落在 tab 栏上。
+    # - ``tap_post`` ⇒ ``pages.locate_feed_post_tap``：钉死的 y 会落到**帖子里的图片**上
+    #   ⇒ 图片被放大成全屏查看器 ⇒ 画面认不出、整条路线卡死（2026-10-08 连续两次实跑）。
+    #
+    # 两个都是「**找不到就不许动手**」：现找返回 ``None`` 时调用方只许报错收手或再滑一屏。
+    # ``_step_action`` 拿到 ``None`` 且调用方没给替代点时会**当场抛**，不会静默点 (0,0)。
+    point: Optional[tuple[int, int]]
     note: str                       # 日志用的人话
+    enter: str = ""                 # 入口标志：动手前必须看到什么（见类文档）
     next_page: str = ""             # 换页：这一步做完应该在哪一页
     evidence: str = ""              # 不换页：靠页面内什么变化验收（给人 + 给契约看）
     verify: str = ""                # 不换页：``_evidence_seen`` 真去读的检查项
     end: tuple[int, int] = ()       # 滑动的终点（只有 ``swipe`` 用）
+    # 出手之后**再停几秒**（0 = 不停）。浏览那一篇要用：滑一下之后得停 5~10 秒，
+    # 游戏才认这次浏览（用户 2026-10-07 口径）。睡眠由 Runner 去做 ——
+    # 状态机「不碰 sleep」，只声明意图（同 ``swipe_end`` 的分工）。
+    dwell_seconds: float = 0.0
 
 
 # 不换页那一步的验收检查项。值就是 ``TaskStep.verify`` 的取值。
@@ -281,56 +492,175 @@ _VERIFY_LIKE_ON = "like_on"        # 卡片 👍 由灰转绿
 # ⚠️ 等不到就**作废本遍**，绝不重复出手 —— 那颗 👍 是开关，点第二次会把赞取消。
 _VERIFY_FRAME_LIMIT = 8
 
+# ── 一轮的脚本 ────────────────────────────────────────────────────────────────
+#
+# 粒度是**一轮**：轮内**连续做完** ``TASK_ROUND_TIMES`` 次，做完才回「我的任务」对账一次。
+# 每条任务写成「一个单元 × N 次」，中间夹一次「换下一个」的动作（只有浏览需要）。
+
+# 浏览**一篇**：点开 → 在详情里往下滑一下并停留 → 返回。
+_BROWSE_ONE: tuple[TaskStep, ...] = (
+    TaskStep(
+        "tap_post",
+        "feed_home",
+        None,  # 位置**现找**：见 pages.locate_feed_post_tap 与 FEED_FIRST_POST 那段
+        "点开一张帖子（落点现找，绝不在图片上下手）",
+        enter="在信息流，这一篇还没点过（本轮还没为它滑过）",
+        next_page="post_detail",
+    ),
+    TaskStep(
+        "swipe",
+        "post_detail",
+        POST_SCROLL_START,
+        "在帖子里往下滑一下，再停一会儿",
+        enter="在帖子详情（刚点进来）",
+        evidence="帖子详情往上滚了一小段，并停够 5~10 秒（本页不变）",
+        end=POST_SCROLL_END,
+        dwell_seconds=POST_DWELL_SECONDS,
+    ),
+    TaskStep(
+        "tap",
+        "post_detail",
+        POST_BACK,
+        "看完退回信息流",
+        enter="在帖子详情，已经滑过、停够了",
+        next_page="feed_home",
+    ),
+)
+
+# 回到信息流之后要**往下滑一次**才换得到下一篇 —— 不滑的话点下去还是同一篇
+# （返回信息流时滚动位置不会自己往前走）。
+# ⚠️ 「滑一次 = 往前一篇」用的是 10-07 实测的位移，**跨天没复验**；位移动了就要重标。
+_BROWSE_NEXT_POST = TaskStep(
+    "swipe",
+    "feed_home",
+    FEED_TASK_SCROLL_START,
+    "往下滑一次，把下一篇帖子带上来",
+    enter="在信息流，下一篇还没上来",
+    evidence="信息流滚动了一屏（本页不变）",
+    end=FEED_TASK_SCROLL_END,
+)
+
+# 点赞**一个**：**先找再点**（用户拍板的 C 方案）。位置不写死 —— 见 ``TaskStep.point``。
+#
+# ⚠️ 这一单元**只有一步**，是刻意的：
+#
+# - 老写法是「先滑一次 → 再点固定坐标」，而滑动是**无条件**发的 ⇒ 只要这一屏
+#   已经有一颗没点过的 👍 露在外面，这一滑就把它推走了，白白多点一屏。
+#   现在的顺序反过来：**先找，找不到才滑**（滑动那个补偿动作在 ``_drive_task`` 里，
+#   由 ``LIKE_RESWIPE_LIMIT`` 封顶）。
+# - 「点之前先确认这颗还没点过」**由模板本身承担**：``card_like_off`` 只收
+#   **空心描边**那颗，已点过的实心青绿在它下面只到 0.43 ⇒ 「命中」即「还没点过」。
+#   不需要再补一道读色闸门（补了也是跑不到的分支，而跑不到的分支比没有更糟）。
+_LIKE_ONE: tuple[TaskStep, ...] = (
+    TaskStep(
+        "tap_like",
+        "feed_home",
+        None,  # 位置现找：见 TaskStep.point 与 pages.locate_card_like
+        "找一颗还没点过的 👍 点下去",
+        enter="在信息流，这一屏还有一颗没点过的 👍（没有就先往下滑，见 _drive_task）",
+        evidence="那颗 👍 由空心描边变成实心青绿",
+        verify=_VERIFY_LIKE_ON,
+    ),
+)
+
+# 分享**一次**：本来就是一次做完，不重复。
+_SHARE_ROUND: tuple[TaskStep, ...] = (
+    TaskStep(
+        "tap_post",
+        "feed_home",
+        None,  # 位置**现找**（同上）
+        "点开一张帖子（落点现找，绝不在图片上下手）",
+        enter="在信息流",
+        next_page="post_detail",
+    ),
+    TaskStep(
+        "tap",
+        "post_detail",
+        POST_SHARE,
+        "点帖子底部的分享",
+        enter="在帖子详情",
+        next_page="share_sheet",
+    ),
+    TaskStep(
+        "tap",
+        "share_sheet",
+        SHARE_COPY_LINK,
+        "点「复制链接」",
+        enter="在分享面板",
+        next_page="post_detail",
+    ),
+    TaskStep(
+        "tap",
+        "post_detail",
+        POST_BACK,
+        "返回信息流",
+        enter="在帖子详情（分享面板已收起）",
+        next_page="feed_home",
+    ),
+)
+
+
+def _round_script(
+    unit: tuple[TaskStep, ...],
+    times: int,
+    *,
+    between: TaskStep | None = None,
+) -> tuple[TaskStep, ...]:
+    """把「一个单元」重复 ``times`` 次拼成一**轮**；``between`` 夹在两次之间。
+
+    为什么要拼而不是手抄：浏览一轮是 11 步，手抄很容易把中间那次下滑多写一次或
+    少写一次 —— 多滑一次会**跳过一篇**（少浏览一次），少滑一次会**重复浏览同一篇**。
+    两种错都只在真机上才看得出来，所以在源头消掉。
+    """
+    steps: list[TaskStep] = []
+    for index in range(times):
+        steps.extend(unit)
+        if between is not None and index + 1 < times:
+            steps.append(between)
+    return tuple(steps)
+
+
 TASK_SCRIPT: dict[str, tuple[TaskStep, ...]] = {
-    "browse": (
-        TaskStep("tap", "feed_home", FEED_FIRST_POST, "点开第一张帖子", next_page="post_detail"),
-        TaskStep("tap", "post_detail", POST_BACK, "看完退回信息流", next_page="feed_home"),
+    "browse": _round_script(
+        _BROWSE_ONE, TASK_ROUND_TIMES["browse"], between=_BROWSE_NEXT_POST
     ),
-    "like": (
-        # ⚠️ 这一步**必须走滑动**，不能当点击发出：``FEED_TASK_SCROLL_START`` 是起点、
-        # ``end`` 是终点；只给一个点会变成「在信息流中间点一下」⇒ 点开一张帖子，
-        # 下一步就对不上页（2026-10-07 之前的写法正是这样，点赞任务三遍全废）。
-        # 滑动本身可逆、没有业务代价，所以不设强制校验（``verify`` 留空），
-        # 它的成败由下一步「读 👍 颜色」和对账兜住。
-        TaskStep(
-            "swipe",
-            "feed_home",
-            FEED_TASK_SCROLL_START,
-            "往下滑一次，把卡片 👍 带进视野",
-            evidence="信息流滚动了一屏（卡片位置变了，本页不变）",
-            end=FEED_TASK_SCROLL_END,
-        ),
-        # ⚠️ 这一步写成 ``tap_like``（不是 ``tap``）**只为让 ``_drive_task`` 认出它**：
-        # 点之前先读一次那颗 👍 的颜色（它是**开关**：已经绿的再点一下会把点赞
-        # **取消**掉 —— 计数不涨、白费一遍，2026-10-07 实测 ``act01`` 就白掉过一次），
-        # 点之后还要读到「变绿了」才准推进（``verify=_VERIFY_LIKE_ON``）。
-        TaskStep(
-            "tap_like",
-            "feed_home",
-            FEED_CARD_LIKE,
-            "点卡片右下角的 👍",
-            evidence="卡片右下角那颗 👍 由灰转绿（绿底白手）",
-            verify=_VERIFY_LIKE_ON,
-        ),
-    ),
-    "share": (
-        TaskStep("tap", "feed_home", FEED_FIRST_POST, "点开第一张帖子", next_page="post_detail"),
-        TaskStep("tap", "post_detail", POST_SHARE, "点帖子底部的分享", next_page="share_sheet"),
-        TaskStep("tap", "share_sheet", SHARE_COPY_LINK, "点「复制链接」", next_page="post_detail"),
-        TaskStep("tap", "post_detail", POST_BACK, "返回信息流", next_page="feed_home"),
-    ),
+    "like": _round_script(_LIKE_ONE, TASK_ROUND_TIMES["like"]),
+    "share": _SHARE_ROUND,
 }
 
 # 任务 key → 中文名（日志用；与「我的任务」页面上的字一一对应）。
 TASK_LABELS = {row.key: row.label for row in pages.TASK_ROWS}
 
-# 「网络连接异常」页退出重进的**次数上限**。
+# ── 「网络连接异常，下拉刷新」：**照它要求的做 —— 下拉刷新** ────────────────────
 #
-# 为什么要有上限：这一页不会自愈，退出去重进是唯一办法；但重进之后如果还是这页
-# （H5 真死了 / 网络真断了），那就是「点 X → 重进 → 又见异常页」的乒乓——
-# 两边的动作名不同，主循环那本「同一动作 4 次」的账**记不到它**（每次都是新动作），
-# 于是会一直转下去。所以自己记一笔账，转两次就停。
-NETWORK_RETRY_LIMIT = 2
+# 2026-10-07 用户拍板改掉旧做法（旧的是「退出去重进」），原话：
+# 「你就是应该按照他的要求下拉刷新」。两条理由：
+#
+#  ① 这一页**自己写了出路**，就照它写的做。退出重进的代价是「大厅 → 活动页 →
+#     网页活动列表 → 转竖屏」整条链重来（实跑一轮 90 秒以上），而重进之后落在
+#     信息流顶部，已经做完的任务进度全要重新对账。
+#  ② 旧做法在真机上**压根没生效**。实跑日志 20:31:35 点「兑换」→ 20:32:00
+#     连记 3 次「网络异常」，中间**一条 ``执行点击 动作=logout_community`` 都没有**：
+#     那个动作被主循环当成「转场中的杂音」丢掉了（见 ``CommunityRunner._transition_completed``
+#     的覆写）。而且它点的 ``FEED_CLOSE``=(937,92) 也**不是这一页的 X** ——
+#     这一页的 X 实测在 (1000, 78)（暗色连通域外接框 (984,62,33,33)，
+#     夹具 ``network_error_live_20261006``），(937,92) 落在空白上。
+#
+# 手势：从画面中上部**往下拖**（手指下移 = 内容下拉复位）。时长取 800ms 是刻意的 ——
+# 下拉刷新手势要**慢**，快甩会被当成惯性滑动，不会触发刷新。
+NETWORK_PULL_START = (540, 560)
+NETWORK_PULL_END = (540, 1560)
+NETWORK_PULL_MS = 800
+
+# 一次运行内**总共**拉活几次就不再试。按「页面刚死」那一次记一笔，**不是按帧** ——
+# 按帧记的话计数器几秒就穿（实跑证据：旧计数器 21 秒内涨了 3）。
+#
+# ⚠️ 上限的作用与旧写法**不同**，别照旧注释理解：旧写法每次换一个动作名
+# （``logout_community`` / ``enter_community``），主循环那本「同一动作 4 次」的账
+# **记不到它**，所以才要自己记一笔账防乒乓。现在动作名**固定**
+# （``refresh_community_page``），同一页反复拉活由主循环那本账兜住（4 次即失败关闭）；
+# 这道闸门管的是另一件事 —— 「拉活 → 活过来 → 干两下 → 又死」这种**跨页面**的反复横跳。
+NETWORK_REFRESH_LIMIT = 3
 
 
 class CommunityDataMissing(RuntimeError):
@@ -354,7 +684,9 @@ class CommunityState(Enum):
     ORDER_CONFIRM = "order_confirm"
     REDEEM_DONE = "redeem_done"
     CLOSING = "closing"          # 已点「退出社区」，等模拟器转回横屏
-    BLOCKED = "blocked"          # 网络异常，H5 已死，要退出重进
+    REFRESHING = "refreshing"    # 已发出「下拉刷新」，等 H5 活过来
+    IMAGE_VIEWER = "image_viewer"  # 图片被点开放大成全屏，已按返回键，等它消失
+    BLOCKED = "blocked"          # 网络异常，连着拉活也没活过来，停
     DONE = "done"
 
 
@@ -371,13 +703,31 @@ STATE_LABELS = {
     CommunityState.ORDER_CONFIRM: "订单确认",
     CommunityState.REDEEM_DONE: "兑换成功",
     CommunityState.CLOSING: "已退出社区，等转回横屏",
-    CommunityState.BLOCKED: "网络异常",
+    CommunityState.IMAGE_VIEWER: "图片被放大成全屏，已按返回键等它消失",
+    CommunityState.REFRESHING: "已下拉刷新，等 H5 活过来",
+    CommunityState.BLOCKED: "网络异常（拉活没成功）",
     CommunityState.DONE: "已收工",
 }
 
 
 def state_label(state: CommunityState) -> str:
     return STATE_LABELS.get(state, state.value)
+
+
+# 「正在转场 / 加载，页面还没稳」的状态。这几档里 ``observe`` 判不出页面**不算故障**，
+# 正确反应是**只等**（转场契约：来源已离开、目标未稳 ⇒ 只等待）。
+#
+# ⚠️ 只放真的**在转场**的那几档。竖屏段别的状态认不出仍然是硬错误 —— 那时页面早该在了，
+# 认不出就是真出问题了，不该拿「可能是加载中」当借口。
+_SETTLING_STATES = frozenset(
+    {
+        CommunityState.ENTERING,    # 点完「游戏社区」：等模拟器转竖屏 + H5 画出首帧
+        CommunityState.REFRESHING,  # 发完下拉刷新：等 H5 重新画出来
+        # 按完返回键关查看器：那一刻 H5 正在收这个覆盖层，会有几帧谁也认不出。
+        # 不放进这里的话，那几帧会走「认不出 ⇒ 硬错误」⇒ 刚修好的路又断在这儿。
+        CommunityState.IMAGE_VIEWER,
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -393,6 +743,20 @@ class CommunityAction(RouteAction):
 
     point: tuple[int, int]
     swipe_end: tuple[int, int] = ()
+    #: 出手之后**再停几秒**（0 = 不停）。浏览那一篇要用。睡眠由 Runner 去做 ——
+    #: 与 ``swipe_end`` 同一条分工：状态机只声明意图，不碰 ``sleep``。
+    dwell_seconds: float = 0.0
+    #: 这一步按**返回键**而不是点击（``point`` 只是兜底落点）。
+    #:
+    #: 目前只有「图片查看器」用它：那一屏上**没有任何可点的控件** —— 实测上下两条
+    #: 全黑带占 83%、中间只有一张帖子里的图，连返回箭头都没有，能消掉它的只有
+    #: 系统返回键（``runtime._back``，竖屏段走 ``portrait.back()``，
+    #: 与收尾那步用的是同一条通道）。
+    #:
+    #: ⚠️ 仍然要填 ``point``（``RouteAction`` 的契约，没有默认值）—— 填的是**图片正中**：
+    #: 万一这面旗子没被认出来，落在图片上（有可能顺手关掉查看器）也比落在 ``(0, 0)``
+    #: 强得多 ——「静默点 (0,0)」正是本文件明确要避免的那种最难查的失败。
+    press_back: bool = False
 
 
 # ── 固定兑换清单 ──────────────────────────────────────────────────────────────
@@ -631,15 +995,24 @@ def feed_signin_state(screen: np.ndarray) -> str:
     return "todo" if saturation >= SIGNIN_ICON_SATURATION else "done"
 
 
-def card_like_is_on(screen: np.ndarray) -> Optional[bool]:
-    """信息流卡片右下角那颗 👍 是不是**已经点过**（绿底白手）。
+def card_like_is_on(screen: np.ndarray, point: tuple[int, int]) -> Optional[bool]:
+    """``point`` 那颗 👍 现在是不是**已经点过**（实心青绿）。
 
     读不出来（出界 / 画面尺寸不对）返回 ``None``。
 
-    ⚠️ 为什么必须读一下再点：那颗 👍 是**开关**。已绿的再点一次会把点赞**取消**，
+    ## ⚠️ 必须给「哪一颗」
+
+    老签名是 ``card_like_is_on(screen)``，读的是一个**写死的框**
+    ``FEED_CARD_LIKE_BOX = (880, 700, 70, 70)``。2026-10-07 真机复量：那一块是
+    tab 栏「骑士团」三个字，纯白 ⇒ 这个函数**恒返回 False**（=「没点过」），
+    两道用它做的判断（点之前别点已绿的、点之后要读到变绿）**两边都失效**。
+    现在框由 ``pages.card_like_reading_box(point)`` 按**实际点下去的那个点**现算，
+    所以这道读数终于落在真正要读的那颗 👍 上。
+
+    为什么必须读一下再点：那颗 👍 是**开关**。已绿的再点一次会把点赞**取消**，
     计数不但不涨还会倒扣（2026-10-07 实测 `act01` 把一张已绿的卡片点灰、白花一次额度）。
     """
-    patch = _box_patch(screen, FEED_CARD_LIKE_BOX)
+    patch = _box_patch(screen, pages.card_like_reading_box(point))
     if patch is None:
         return None
     red, green, blue = (
@@ -697,7 +1070,9 @@ class CommunityStateMachine:
         # 非空表示「要点码 2 退出」的原因（积分不够）。为什么用字段而不是直接抛：
         # 见 ``_on_exchange_center`` 的 insufficient 分支 —— 得先把社区关掉转回横屏。
         self.stop_reason = ""
-        self._network_retries = 0
+        # 这一次运行里**拉活 H5**（下加拉活）了几次。按「页面刚死」那一次记一笔，
+        # 不是按帧 —— 按帧记的话计数器几秒就穿（旧写法实跑 21 秒涨了 3）。
+        self._network_refreshes = 0
         self._confirmed_page = ""
         # 「每日签到」那一下点过没有。点过就一直等弹窗（实测可能等到一分多钟），
         # **不重复点** —— 重复点没有意义，只会把日志刷满。
@@ -713,9 +1088,28 @@ class CommunityStateMachine:
         # 等不到就作废本遍，**绝不重复出手**（那颗 👍 是开关）。
         self.pending_verify = ""
         self._verify_frames = 0
-        # 「点赞」那一步因为 👍 已经是绿的而**临时再滑一次**的次数（每次 attempt 重置）。
-        # 没有它，一次「一路都是已点过的卡片」就能把主循环卡在信息流里空转。
+        # 「点赞」那一步因为**这一屏找不到没点过的 👍** 而**临时再滑一屏**的次数。
+        # 没有它，一屏全是已点过的卡片就能把主循环卡在信息流里空转。
+        # 计的是**连着**几次都没找到；一找到并点下去就归零。
         self.like_reswipes = 0
+        # 最近一次「点赞」**实际点下去的那个点**（``pages.locate_card_like`` 现找出来的）。
+        # 两个用处：① 出手之后按**这个点**去读「变绿了没有」—— 老代码读的是写死的
+        # 框（实际是 tab 栏），于是那道验收永远读成「没变」；② 日志里报得出到底点了哪。
+        # ``None`` 表示还没点过任何一颗。
+        self.like_point: Optional[tuple[int, int]] = None
+        # 「回我的任务」那一步因为**这一屏看不见信息流顶部的「兑换」图标**而
+        # **往回滚一屏**的次数。原因见 ``_return_to_tasks``：任务做完时信息流多半
+        # 已经滑过好几屏，四宫格早滚出视野，钉死的那个坐标底下是帖子图片。
+        # 计的是**连着**几次都没看见；看见并点下去就归零。
+        self.feed_icon_reswipes = 0
+        # ⚠️ 2026-10-09：滑动手势的「账本证据」。上面两个 reswipe 计数器数的必须是
+        # **真的执行了的滑动**，而主循环对同名动作有重试节流 —— 节流窗口里每个帧
+        # 都会重新「想滑」。这里记着「上一次发出的是哪个滑动手势 + 发出时的正文带
+        # 位置表」：位置表变了 = 上一滑真的执行了 = 下一次发出才准记账。
+        # 详见 ``_register_swipe_emission`` 与 ``SWIPE_UNEXECUTED_FRAME_LIMIT``。
+        self._pending_swipe_name: Optional[str] = None
+        self._pending_swipe_tops: Optional[list[int]] = None
+        self._pending_swipe_streak = 0
         # 每条任务试过几遍、哪几条已经判定「今天做不成」。
         self.task_attempts: dict[str, int] = {}
         self.stuck_tasks: set[str] = set()
@@ -725,17 +1119,21 @@ class CommunityStateMachine:
     # ---- 观察 ----
 
     def observe(self, screen: np.ndarray) -> pages.PageJudgement:
-        """判当前在哪一页。认不出时**返回 unknown**，不抛（上层据此等待/告警）。"""
-        observations = pages.observe_pages(screen, self.templates)
-        top = pages.top_page(observations)
-        if top is not None:
-            return pages.PageJudgement(top.name, top.confidence, observations)
-        # 栈内没有盖层 ⇒ 试栈根兜底（首页列表 / 商品详情这两页没有专有判据）。
-        for root in ("feed_home", "item_detail"):
-            resolved = pages.resolve_stack_root(observations, root)
-            if resolved is not None:
-                return resolved
-        return pages.PageJudgement("unknown", 0.0, observations)
+        """判当前在哪一页。认不出时**返回 unknown**，不抛（上层据此等待/告警）。
+
+        ⚠️⚠️ **只许委托 ``pages.judge_page`` —— 不许在这里另抄一份判页逻辑。**
+
+        2026-10-08 亲手踩到：这个方法原先自己抄了一遍
+        「``observe_pages`` → ``top_page`` → 栈根兜底」，
+        于是往 ``judge_page`` 里新加的「图片查看器」判据**生产路径根本走不到** ——
+        单独跑 ``test_community_pages.py`` 全绿，真机却照旧认不出查看器、
+        照旧卡 150 秒。两份实现的代价就是这样：**测试守住了 A，生产跑的是 B**。
+
+        判据只留一份（与「判据不许静默降级」是同一条道理）。
+        ``test_community.py::test_the_machine_and_judge_page_agree_on_every_frame``
+        逐帧核两边结论一致，防止再分家。
+        """
+        return pages.judge_page(screen, self.templates)
 
     # ---- 决策 ----
 
@@ -764,17 +1162,21 @@ class CommunityStateMachine:
         # 下面就会抛「认不出画面」，主循环按**失败**收尾 —— 而它其实只是**还没到**。
         #
         # 规范里那一档叫「来源已离开、目标未稳 ⇒ 只等」。这里落地成：
-        # **已点过入口、方向已转竖屏、但页面还认不出 ⇒ 返回 None（只等）**，
+        # **已点过入口 / 已发下拉刷新、画面还认不出 ⇒ 返回 None（只等）**，
         # 由主循环的「认不出画面 → 等/唤醒」通道处理，够久才超时。
-        # ⚠️ 只在 ``ENTERING`` 生效：竖屏段的其它状态认不出仍然是硬错误 ——
-        #    那时页面早该在了，认不出就是真出问题了，不该拿「可能是加载中」当借口。
-        if self.state is CommunityState.ENTERING and page.name == "unknown":
-            self.last_reason = (
-                "已转成竖屏但社区页面还没加载出来（转场中），只等不判失败"
-            )
+        # ⚠️ 只放真的**在转场**的那几档（``_SETTLING_STATES``）：竖屏段别的状态认不出
+        #    仍然是硬错误 —— 那时页面早该在了，认不出就是真出问题了，
+        #    不该拿「可能是加载中」当借口。
+        if self.state in _SETTLING_STATES and page.name == "unknown":
+            self.last_reason = {
+                CommunityState.ENTERING: "已转成竖屏但社区页面还没加载出来（转场中），只等不判失败",
+                CommunityState.REFRESHING: "已发出下拉刷新、H5 还没画出来，只等不判失败",
+                CommunityState.IMAGE_VIEWER: "已按返回键关图片查看器、H5 还没画回来，只等不判失败",
+            }.get(self.state, "转场中，只等不判失败")
             return None
         handler = {
             "network_error": self._on_network_error,
+            "image_viewer": self._on_image_viewer,
             "redeem_done": self._on_redeem_done,
             "order_confirm": self._on_order_confirm,
             "item_detail": self._on_item_detail,
@@ -875,6 +1277,15 @@ class CommunityStateMachine:
         ⚠️ 每加一个「``next_action`` 会改的字段」都要同时加到这里 —— 漏了就会把
         「一次点击」记成两次（这是项目里踩过的坑）。所以这里写成**显式元组**，
         而不是 ``__dict__`` 拷贝之类的聪明写法：漏了能一眼看出来。
+
+        ⚠️ **2026-10-10 又踩了一次同一句话**：``_register_swipe_emission`` 的账本
+        （``_pending_swipe_*``）是 10-09 新加的字段，当时**没同步进来**。后果不是
+        「记成两次」而是更隐蔽的**「一次也不记」** —— 见 ``_register_swipe_emission``
+        的 docstring：主循环每帧先 ``preview`` 再真跑，两次都拿**同一帧**算账，
+        真跑那次永远比到「刚刚试算时留下的基线」⇒ 恒判「页面没动」
+        ⇒ ``like_reswipes`` / ``feed_icon_reswipes`` 永远停在 0
+        ⇒ 两条「滑了 N 屏就收手」的闸门**同时失效**（10-10 实跑就是这么炸的：
+        日志里全是「仍在等第 0 屏生效」，一次「第 2/3 次」都没有）。
         """
         return (
             self.state,
@@ -886,7 +1297,7 @@ class CommunityStateMachine:
             self.last_page,
             self.last_reason,
             self.stop_reason,
-            self._network_retries,
+            self._network_refreshes,
             self._confirmed_page,
             self.signin_clicked,
             self.via_exchange,
@@ -895,9 +1306,18 @@ class CommunityStateMachine:
             self.pending_verify,
             self._verify_frames,
             self.like_reswipes,
+            self.like_point,
+            self.feed_icon_reswipes,
             dict(self.task_attempts),
             set(self.stuck_tasks),
             dict(self._tasks_before),
+            # 滑动手势的账本（2026-10-10 补）。三个都要 ——
+            # 少了 name ⇒ 真跑那次以为「换了手势」，白记一笔；
+            # 少了 tops ⇒ 真跑那次拿试算的基线比自己，恒判没动（本次事故）；
+            # 少了 streak ⇒ 试算也把它 +1，30 帧的上限提前一半烧穿。
+            self._pending_swipe_name,
+            None if self._pending_swipe_tops is None else list(self._pending_swipe_tops),
+            self._pending_swipe_streak,
         )
 
     def _restore(self, snapshot: tuple) -> None:
@@ -911,7 +1331,7 @@ class CommunityStateMachine:
             self.last_page,
             self.last_reason,
             self.stop_reason,
-            self._network_retries,
+            self._network_refreshes,
             self._confirmed_page,
             self.signin_clicked,
             self.via_exchange,
@@ -920,44 +1340,139 @@ class CommunityStateMachine:
             self.pending_verify,
             self._verify_frames,
             self.like_reswipes,
+            self.like_point,
+            self.feed_icon_reswipes,
             self.task_attempts,
             self.stuck_tasks,
             self._tasks_before,
+            # 滑动手势的账本（2026-10-10 补，理由见 ``_snapshot``）。
+            # ``_pending_swipe_tops`` 直接收下那份拷贝：它只会被**整体重新绑定**，
+            # 代码里没有任何一处 mutate 它的元素。
+            self._pending_swipe_name,
+            self._pending_swipe_tops,
+            self._pending_swipe_streak,
         ) = snapshot
 
     # ---- 各页的处理 ----
 
     def _on_network_error(self, screen: np.ndarray, page) -> CommunityAction:
-        """H5 死了（「网络连接异常，下拉刷新」）。退出去重进 —— 这页不会自己恢复。
+        """H5 死了（整页「网络连接异常，下拉刷新」）⇒ **照它要求的做：下拉刷新**。
 
-        ⚠️ 上限见 ``NETWORK_RETRY_LIMIT``：重进之后还是这页就是乒乓，转两次就停。
+        ## 为什么不是「退出去重进」（2026-10-07 用户拍板改掉）
+
+        用户原话：「你就是应该按照他的要求下拉刷新」。理由与真机证据见常量
+        ``NETWORK_PULL_START`` 上方那一段 —— 简洁版：① 页面自己写了出路就照它做，
+        退出重进的代价是整条入口链重来（90 秒起）且进度要重新对账；
+        ② 旧做法在真机上**连点都没点上**（动作被主循环丢掉 + 点的坐标也不是这页的 X）。
+
+        ## 两道闸门（都不许省）
+
+        - **同行**: 同一页连着几帧都报异常 ⇒ 只记**一次**账（按帧记的话计数器几秒就穿）。
+        - **跨页**: 一次运行里总共只拉活 ``NETWORK_REFRESH_LIMIT`` 次；
+          同一页反复拉活另由主循环那本「同一动作 4 次」的账兜住（动作名固定了，
+          记得到它 —— 这正是改掉旧写法顺带修好的一个洞）。
+
+        ⚠️ 发出去之后状态置 ``REFRESHING``：刷新期间 H5 会白屏一会儿，
+        ``observe`` 必然判 ``unknown``，那一档必须**只等**（见 ``_SETTLING_STATES``），
+        否则每一次正常的刷新都会被判成「认不出画面」。
         """
-        self._network_retries += 1
-        if self._network_retries > NETWORK_RETRY_LIMIT:
+        if self.state is not CommunityState.REFRESHING:
+            self._network_refreshes += 1
+        if self._network_refreshes > NETWORK_REFRESH_LIMIT:
             self.state = CommunityState.BLOCKED
             raise RuntimeError(
-                f"社区网页连续 {self._network_retries} 次报网络异常，退出去重进没用；"
-                "H5 起不来了（网络断了 / 活动页维护中），停止并留诊断"
+                f"社区网页这次运行里已经拉了 {self._network_refreshes - 1} 次活，"
+                "每次还是「网络连接异常」；H5 起不来了（网络断了 / 活动页维护中），"
+                "停止并留诊断"
             )
-        # 退回网页活动列表：`_after_action_click` 会把通道切回横屏，而状态回到
-        # ``WEB_ENTRY`` ⇒ 下一帧会自动重进一次。
-        self.state = CommunityState.WEB_ENTRY
+        self.state = CommunityState.REFRESHING
         return CommunityAction(
-            "logout_community",
-            FEED_CLOSE,
+            "refresh_community_page",
+            NETWORK_PULL_START,
+            swipe_end=NETWORK_PULL_END,
             source_page=page.name,
-            target_pages=("web_activity_list",),
-            reason=f"网络异常页不会自愈，关闭社区后重新进入（第 {self._network_retries} 次）",
+            in_page_evidence="「网络连接异常，下拉刷新」这一页消失（刷新后落回社区页面）",
+            reason=(
+                "H5 报「网络连接异常，下拉刷新」，照它要求的做：往下拖一屏触发刷新"
+                f"（第 {self._network_refreshes}/{NETWORK_REFRESH_LIMIT} 次）"
+            ),
+        )
+
+    def _on_image_viewer(self, screen: np.ndarray, page) -> CommunityAction:
+        """有人把帖子里的图片**点开放大**了 ⇒ 按**返回键**关掉它，接着走。
+
+        ## 为什么值得单独立一档，而不是「认不出就报错」
+
+        这个坑一天咬了三次（2026-10-08 18:58 / 19:10，外加 2026-10-07 20:39 同形）。
+        每一次的代价都不只是「这一遍白跑」：人一直卡在查看器里 ⇒ **收尾那步连社区都关不掉**
+        （「退出社区」点的是信息流右上角，那一块正被查看器盖着）⇒ 模拟器留在竖屏 ⇒
+        回家那步报「画面宽高比与模板基准不一致」。2026-10-08 18:58 那次的日志原文：
+
+            19:00:48 收尾=人还在社区竖屏页面里 动作=先退出社区，等转回横屏再回首页
+            19:00:59 收尾=退出社区失败（已忽略） 原因=等待模拟器切成横屏超时（已等 8.0 秒）
+            19:01:02 异常收尾=回首页失败 原因=RuntimeError: 画面宽高比与模板基准不一致
+
+        ## 为什么是返回键，而不是点某个控件
+
+        实测那一屏上**没有任何可点的控件**：上下两条纯黑带占 83%（全黑行占比
+        0.828~0.837），中间只剩一张帖子里的图，**连返回箭头都没有**。
+        能消掉它的只有系统返回键 —— 竖屏段走 ``portrait.back()``，
+        与收尾那步用的是同一条通道。
+
+        ## 为什么出口只写 ``in_page_evidence``
+
+        查看器是从哪一页点开的**并不固定**（信息流、帖子详情都可能），关掉之后落回
+        哪一页也就不固定 ⇒ 这里**不能**声明 ``target_pages``，交给下一帧重新判页。
+        """
+        viewer = pages.detect_image_viewer(screen)
+        point = (
+            viewer.center
+            if viewer is not None
+            else (screen.shape[1] // 2, screen.shape[0] // 2)
+        )
+        self.state = CommunityState.IMAGE_VIEWER
+        return CommunityAction(
+            "dismiss_image_viewer",
+            point,
+            press_back=True,
+            source_page=page.name,
+            in_page_evidence="图片查看器消失（退回社区页面）",
+            reason="整屏只剩一张帖子里的图（上下都是纯黑），按返回键关掉这个查看器",
         )
 
     def _on_redeem_done(self, screen: np.ndarray, page) -> CommunityAction:
+        """「兑换成功！」弹窗 ⇒ 点「确认」收起。
+
+        ⚠️⚠️ **出口目标曾被写错，代价是整条兑换流程卡死一次再失败**（2026-10-07 真机抓到）。
+
+        原来只声明 ``target_pages=("item_detail",)``。真机实测**收回的落点是兑换中心**：
+        「确认」一点，H5 是**一次退回两级**（订单确认 + 商品详情）落到兑换中心，
+        不是退回商品详情页。两轮实跑都在同一处转场超时，日志原文：
+
+            ack_redeem_done 原页面=redeem_done 期望页面=item_detail
+            当前已确认页面=exchange_center 内部状态=兑换中心
+
+        现场帧 ``runtime_diagnostics/epic7_community/20261007_212358_801234_timeout_transition_ack_redeem_done.png``
+        就是兑换中心本体（四张卡都在、行动力已经是「每日限购 2/2」）。
+
+        ⚠️ 为什么「目标写错」会**卡到超时**、而不是点不动就重试 —— 这一点必须写下来，
+        否则下次还会照同样的方式踩：主循环对「已发出、还没验收的换页动作」有一条规矩，
+        ``confirmed_page`` 既不是来源页也不是目标页时，**把状态机这一帧给出的动作丢掉**
+        （``runner_base`` 里 `elif last_transition_action is not None` 那一段）。
+        于是状态机明明已经认出「我在兑换中心、下一件该兑强化石」并给出了 ``open_item``，
+        那一下**根本没发出去** ⇒ 干等到状态超时（``EXCHANGE`` 60 秒）才报失败。
+
+        ⇒ 目标补上实测落点。两个都留着：兑的是最后一件时同样落回兑换中心，
+        而 ``item_detail`` 是这条流程上真实存在的一页，接受它不会让动作变错
+        （状态机每帧重新判页，落在哪一页就走哪一页的处理）。
+        """
         self.state = CommunityState.REDEEM_DONE
         return CommunityAction(
             "ack_redeem_done",
             REDEEM_CONFIRM,
             source_page=page.name,
-            target_pages=("item_detail",),
-            reason="兑换成功弹窗，点「确认」收起",
+            target_pages=("exchange_center", "item_detail"),
+            reason="兑换成功弹窗，点「确认」收起（收起后一次退两级，落回兑换中心）",
         )
 
     def _on_order_confirm(self, screen: np.ndarray, page) -> Optional[CommunityAction]:
@@ -1038,24 +1553,31 @@ class CommunityStateMachine:
             # 收尾那步要拿横屏通道去取图，会抛「render size changed」——
             # 于是「资源耗尽」这条正常结论会变成一次看不懂的失败，
             # 而且模拟器被留在竖屏（下一个任务连大厅都回不去）。
-            # 所以先按正常出口把社区关掉、等转回横屏，到横屏那一帧再抛。
+            # 所以先按正常出口退出社区、等转回横屏，到横屏那一帧再抛
+            # （抛的时机在 ``_finish_closing``）。
             self.stop_reason = step.reason
-            self.state = CommunityState.FEED
+            self.state = CommunityState.CLOSING
             return CommunityAction(
                 "leave_exchange",
-                EXCHANGE_BACK,
+                EXCHANGE_CLOSE,
                 source_page=page.name,
-                target_pages=("feed_home",),
-                reason=f"{step.reason}；先退回信息流准备退出社区",
+                target_pages=("web_activity_list",),
+                reason=(
+                    f"{step.reason}；点兑换中心右上角 ✕ 退出社区"
+                    "（真机实测：这一下关的是**整个社区**，一步回到横屏）"
+                ),
             )
         if step.kind == "done":
-            self.state = CommunityState.FEED
+            # ⚠️ 与 ``_on_feed`` 里那句 ``close_community`` **同形**（``CLOSING`` +
+            # 目标 ``web_activity_list``）：两处都是「关掉整个社区」，只是那一颗 ✕
+            # 长在信息流右上角、这一颗长在兑换中心右上角。同一种语义就只该有一种写法。
+            self.state = CommunityState.CLOSING
             return CommunityAction(
                 "leave_exchange",
-                EXCHANGE_BACK,
+                EXCHANGE_CLOSE,
                 source_page=page.name,
-                target_pages=("feed_home",),
-                reason="兑换清单已跑满，回信息流收工",
+                target_pages=("web_activity_list",),
+                reason="兑换清单已跑满，点兑换中心右上角 ✕ 退出社区（一步回横屏）",
             )
         if step.kind == "retry_empty":
             return CommunityAction(
@@ -1070,19 +1592,28 @@ class CommunityStateMachine:
     def _on_tasks(self, screen: np.ndarray, page) -> CommunityAction:
         """「我的任务」：三条每日任务 + 去兑换。
 
-        ## 循环的骨架
+        ## 循环的骨架（粒度是**一轮**，不是一次）
 
         ```
-        我的任务 --点「去完成」--> 信息流 --按脚本做完--> (兑换中心 → 获取积分卡)
-             ^                                                        |
-             +---------- 回来对账：那一行变成「已完成」了吗？ -----------+
+        我的任务 --点「去完成」--> 信息流 --一轮里连做 N 次--> (兑换中心 → 获取积分卡)
+             ^                    （浏览 3 篇 / 点赞 3 个 / 分享 1 次）          |
+             +---------- 回来对账：那一行变成「已完成」了吗？ ------------------+
         ```
+
+        ⚠️ **一轮之内连续做完**，中途不回这一页。原因见 ``TASK_ROUND_TIMES``：
+        每次点「去完成」都重新落在信息流顶部，做一次就回来一趟的话，第二遍
+        「下滑一次」又滑到同一张卡/同一篇帖 —— 重复浏览，甚至把已点赞的赞取消掉。
+
+        ⚠️ 正常情况**第 1 轮**那一行就翻成「已完成」（3 次都是在这一轮里做完的），
+        ``TASK_ATTEMPT_LIMIT`` 留的两轮是纯容错。
 
         ⚠️ 为什么必须**回来对账**：这三条任务的成败只有页面上那个按钮说得准 ——
         脚本跑完不等于这一行变成「已完成」（2026-10-07 实测：同一套动作，一次涨、一次没涨）。
-        「已完成」是唯一权威，脚本只是手段。所以每条任务「跑一遍 → 回来看这一行」，
-        成了才算数，没成再来一遍，连着 ``TASK_ATTEMPT_LIMIT`` 遍都没成
+        「已完成」是唯一权威，脚本只是手段。所以每条任务「跑完一轮 → 回来看这一行」，
+        成了才算数，没成再来一轮，连着 ``TASK_ATTEMPT_LIMIT`` **轮**都没成
         就**记一笔、跳过它继续跑别的**（绝不死循环，也绝不无声跳过）。
+        ⚠️ 「一轮没跑完就回来了」也要记一笔 —— 不记就是死循环（那一串动作名相邻
+        两两都不同，主循环那本「同一动作 4 次」的账记不到它）。
 
         ⚠️ **措辞纪律**：这里读的是**按钮长相**（``task_todo`` / ``task_done`` 两个锚点），
         **不是** ``x/3`` 那个数字。写日志时别再写「计数没动」——
@@ -1098,14 +1629,28 @@ class CommunityStateMachine:
                 "「我的任务」有三行认不出做没做：" + "、".join(unknown)
             )
         if self.active_task is not None:
-            script = TASK_SCRIPT.get(self.active_task, ())
+            key = self.active_task
+            script = TASK_SCRIPT.get(key, ())
+            why = ""
             if self.task_step < len(script):
-                # 脚本**一步都没走完**就回到了这一页 ⇒ 那一下「去完成」没点中。
-                # 再点一次即可，**不记账** —— 一遍都没跑完就记一笔，会把三次机会
-                # 白白烧在「点击没生效」上（2026-10-07 写这一版时踩过）。
-                # 一直点不动由主循环那本「同一动作 4 次」的账兜住。
-                return self._start_task(self.active_task, page)
-            retry = self._reconcile_task(rows, page)
+                if self.task_step == 0:
+                    # **一步都没走完**就回到了这一页 ⇒ 那一下「去完成」没点中。
+                    # 再点一次即可，**不记账** —— 一步都没做就记一轮，会把三次机会
+                    # 白白烧在「点击没生效」上（2026-10-07 写这一版时踩过）。
+                    # 一直点不动由主循环那本「同一动作 4 次」的账兜住：那几下
+                    # **动作名完全一样**（都是 ``start_task``），账记得上。
+                    return self._start_task(key, page)
+                # ⚠️ 走了一半作废 ⇒ **必须记账**，否则是**死循环**：
+                # 「作废 → 回任务页 → 重排 → 又作废」那一串动作名相邻两两都不同
+                # （``start_task`` / ``task_xx_1`` / ``back_to_tasks_via_exchange`` /
+                # ``goto_tasks_card``）⇒ 主循环那本「同一动作 4 次」的账**记不到它**，
+                # 而每次点击都会刷新 ``absolute_started``、绝对超时也兜不住。
+                # 项目红线：绝不死循环。
+                why = (
+                    f"任务「{TASK_LABELS.get(key, key)}」这一轮没跑完就回来了"
+                    "（中途那一下没生效）"
+                )
+            retry = self._reconcile_task(rows, page, why=why)
             if retry is not None:
                 return retry
         pending = next(
@@ -1118,7 +1663,12 @@ class CommunityStateMachine:
             # 页面上有这一行、却没有对应脚本 ⇒ 记一笔「今天做不成」，别在这儿空转。
             self.stuck_tasks.add(pending.key)
             self.last_reason = f"任务「{pending.label}」没有执行脚本，跳过它继续"
-        if not self._redeem_finished():
+        # ⚠️ 已经决定不再兑换时（``stop_reason`` = 积分不够）**不许再去**：
+        # 「我的任务」与「兑换中心」互为历史上一页（两页的 `<` 各指对方），
+        # 少了这个条件就是**原地打转**（项目红线：绝不死循环）。
+        # 现在正常路径不会退到这一页（兑换中心那边是一步退出社区），
+        # 但**这道闸门得留着** —— 状态机可能从任意一帧被重新判页唤醒。
+        if not self._redeem_finished() and not self.stop_reason:
             return CommunityAction(
                 "goto_exchange",
                 TASKS_GOTO_EXCHANGE,
@@ -1126,26 +1676,41 @@ class CommunityStateMachine:
                 target_pages=("exchange_center", "exchange_empty"),
                 reason="三条任务都有结论了，走「去兑换」进兑换中心",
             )
-        # 任务与兑换都完成 ⇒ 回信息流（那里才有「退出社区」的 X），到那儿再收官。
+        # 任务与兑换都完成 ⇒ 收工（先退回兑换中心，那里右上角的 ✕ 能**一步退出社区**）。
         # ⚠️ 不在这里直接 `_finish()`：收工前必须把社区页关掉、让模拟器转回横屏，
         # 否则收尾「回大厅」那一步拿着横屏通道去取竖屏画面，会直接抛
         # 「render size changed」——任务明明做完了，却报一个看不懂的失败。
-        self.state = CommunityState.FEED
+        #
+        # ⚠️⚠️ 2026-10-09 真机：这一页的 `<` **回不到信息流**，它回到的是**兑换中心**
+        # （上一层）。原来这里写 ``("feed_home",)`` ⇒ 转场永远等不到 ⇒ 干等 150 秒超时
+        # （实跑日志 19:49:56 点 (35,130)，19:52:31「转场超时 … 当前已确认页面=exchange_center」，
+        # 诊断帧就是**兑换中心**那一屏）。所以这里如实写成**回兑换中心**，
+        # 到了那边点右上角 ✕ 就**一步退出社区**（见 ``EXCHANGE_CLOSE``）—— 收尾不再绕信息流。
         return CommunityAction(
             "leave_tasks",
             TASKS_BACK,
             source_page=page.name,
-            target_pages=("feed_home",),
-            reason="任务与兑换都完成，退回信息流准备退出社区",
+            target_pages=("exchange_center",),
+            reason="任务与兑换都完成，退回兑换中心，再由那边点 ✕ 退出社区",
         )
 
     def _start_task(self, key: str, page) -> CommunityAction:
-        """点这一行的「去完成」，并把脚本从头排上。"""
+        """点这一行的「去完成」，并把**这一轮**的脚本从头排上。
+
+        ⚠️ 一轮 = 把 ``TASK_ROUND_TIMES`` 次连续做完（见 ``TASK_SCRIPT``）。
+        所以这里排上的是整轮的动作序列，中途**不回**「我的任务」。
+        """
         self.active_task = key
         self.task_step = 0
         self.like_reswipes = 0
+        self.like_point = None
+        self.feed_icon_reswipes = 0
         self.pending_verify = ""
         self._verify_frames = 0
+        # 新一轮从头排脚本 ⇒ 上一轮的滑动手势账本证据全部作废。
+        self._pending_swipe_name = None
+        self._pending_swipe_tops = None
+        self._pending_swipe_streak = 0
         label = TASK_LABELS.get(key, key)
         return CommunityAction(
             "start_task",
@@ -1155,11 +1720,16 @@ class CommunityStateMachine:
             reason=f"任务「{label}」还没完成，点它那行的「去完成」",
         )
 
-    def _reconcile_task(self, rows, page) -> Optional[CommunityAction]:
-        """回到「我的任务」时给刚跑完的那条任务**对账**。
+    def _reconcile_task(
+        self, rows, page, *, why: str = ""
+    ) -> Optional[CommunityAction]:
+        """回到「我的任务」时给刚跑完的那条任务**对账**（一轮一次）。
 
         返回 ``None`` 表示这条已经了结（做成了 / 判定今天做不成），调用方接着挑下一条；
-        返回一个动作表示「还没做成，原地再来一遍」。
+        返回一个动作表示「还没做成，原地再来一轮」。
+
+        ``why`` 非空表示这一轮**没跑完就回来了**（中途作废）—— 这种也要记账，
+        消息里要如实说清楚，别让它看起来像「跑完一整轮仍然没成」。
         """
         key = self.active_task
         if key is None:  # pragma: no cover - 调用方已经判过
@@ -1170,21 +1740,32 @@ class CommunityStateMachine:
         self.task_step = 0
         self.pending_verify = ""
         self._verify_frames = 0
+        self.feed_icon_reswipes = 0
+        # 对账 = 这一轮了结 ⇒ 滑动手势的账本证据一并作废（下一轮重新立基线）。
+        self._pending_swipe_name = None
+        self._pending_swipe_tops = None
+        self._pending_swipe_streak = 0
+        # ⚠️ 顺序要紧：先清 ``pending_verify`` 再清 ``like_point``。
+        # 反过来的话，万一中间有一帧接着跑，``_evidence_seen`` 会因为
+        # 「要验变绿、却没点过」而抛 —— 那是接线自检，不该在对账路径上响。
+        self.like_point = None
+        lead = f"{why}；" if why else ""
         if row is not None and row.is_done:
             self.task_attempts.pop(key, None)
-            self.last_reason = f"任务「{label}」做成了，计数已推进"
+            self.last_reason = f"{lead}任务「{label}」做成了，计数已推进"
             return None
         attempts = self.task_attempts.get(key, 0) + 1
         self.task_attempts[key] = attempts
         if attempts >= TASK_ATTEMPT_LIMIT:
             self.stuck_tasks.add(key)
             self.last_reason = (
-                f"任务「{label}」连着 {attempts} 遍做完、这一行始终没变成「已完成」，"
+                f"{lead}任务「{label}」连着 {attempts} 轮都没让这一行变成「已完成」，"
                 "判定今天做不成，跳过它继续跑别的"
             )
             return None
         self.last_reason = (
-            f"任务「{label}」做完第 {attempts} 遍，这一行还没变成「已完成」，再来一遍"
+            f"{lead}任务「{label}」第 {attempts} 轮结束，这一行还没变成「已完成」，"
+            "再来一轮"
         )
         return self._start_task(key, page)
 
@@ -1216,35 +1797,80 @@ class CommunityStateMachine:
         # ⚠️ 这里**不清** ``active_task`` —— 「回我的任务对账」那一步要靠它认出
         # 「刚跑的是哪一条」。清早了 `_on_tasks` 就会把任务当新的重排一遍，
         # 计数永远对不上账（2026-10-07 写这一版时踩过）。清空只在 `_reconcile_task` 里做。
+        # ⚠️ 这一段必须在 ``task_step >= len(script)`` **之前**。
+        #
+        # 出手那一帧 ``task_step`` 就已经 +1 ⇒ 只要这一步正好是脚本最后一步，
+        # 写在后面就**永远够不到**：验真一次都没跑过，声明了却没人读。
+        # 2026-10-07 实测正是这样（点赞单元的「点 👍」是最后一步）——
+        # 点完立刻回「我的任务」，``pending_verify`` 一直挂着没人清。
+        #
+        # 用 ``script[task_step - 1]`` 取回**刚出手的那一步**，而不是 ``script[task_step]``
+        # （那是下一步，它的 evidence 文案会被拿错去等）。
+        if self.pending_verify:
+            issued = script[self.task_step - 1] if self.task_step else None
+            if issued is None:  # pragma: no cover - pending_verify 只由出手那一帧设置
+                self.pending_verify = ""
+            else:
+                verdict = self._await_step_result(screen, page, issued, label)
+                if verdict is not None:
+                    return verdict
+                # ⚠️ 走到这里 = 验收函数返回了 ``None``，它有两种含义，靠
+                # ``pending_verify`` 是不是空的来区分（2026-10-07 实跑抓到的 P0）：
+                #   非空 ⇒ **还在等**结果，本帧不出手，下一帧再读；
+                #   已清空 ⇒ **验收通过** ⇒ **落回下面的主流程**，接着推本轮的下一步。
+                #
+                # 旧写法让 ``_await_step_result`` 在验收通过时**自己**
+                # ``return self._return_to_tasks(...)``，于是「一轮 N 次」永远只做第 1 次 ——
+                # 真机实测：点赞一轮只点了 1 个（日志里只有 ``task_like_1``，没有 ``_2``/``_3``），
+                # 回到任务页又因 ``task_step < len(script)`` 被判「这一轮没跑完就回来了」，
+                # 于是重排一轮、再点 1 个 …… 直到 ``TASK_ATTEMPT_LIMIT`` 轮烧完。
+                if self.pending_verify:
+                    return None
         if self.task_step >= len(script):
-            return self._return_to_tasks(page, f"任务「{label}」动作做完，回去核对计数")
+            return self._return_to_tasks(
+                screen, page, f"任务「{label}」一轮动作做完，回去核对计数"
+            )
         step = script[self.task_step]
         if page.name != step.page:
             return self._return_to_tasks(
+                screen,
                 page,
                 f"任务「{label}」第 {self.task_step + 1} 步该在「{step.page}」动手，"
                 f"实际停在「{page.name}」——中间那一下没点中",
             )
-        # 上一步已经出手、但业务结果还没看到 ⇒ 先核对，**绝不出手第二次**。
-        if self.pending_verify:
-            return self._await_step_result(screen, page, step, label)
+        # 「位置运行时现找」那一步找出来的点；别的步保持 ``None``（用脚本里写的）。
+        located: Optional[tuple[int, int]] = None
         if step.kind == "tap_like":
-            already = card_like_is_on(screen)
-            if already is None:
-                # 认不出就说认不出 —— 拿「也许没点过」当答案就是盲点，而盲点的后果是
-                # 把别人的赞取消掉。
-                return self._return_to_tasks(
-                    page, f"任务「{label}」读不出那颗 👍 的颜色，不敢盲点，本遍作废"
+            found = pages.locate_card_like(screen, self.templates)
+            if found is None:
+                # 这一屏**找不到**一颗还没点过的 👍（没卡片 / 卡片全点过了）。
+                # ⇒ 往下滑一屏再看（用户拍板的 C 方案原话：「找不到就继续下滑」）。
+                #
+                # ⚠️ 这里的 ``None`` 是「没找到」，**绝不能**当成「随便点一个」：
+                # 那颗 👍 是开关，点错一颗会把别人的赞取消掉。所以只有两条出路 ——
+                # 再滑一屏，或者滑满上限作废本遍回对账。
+                #
+                # ⚠️ 2026-10-09：账本按**执行了**记（``_register_swipe_emission``）——
+                # 主循环对同名动作有重试节流，按帧记的话上限几秒就烧穿，
+                # 实际却一屏都没滑（与 ``feed_scroll_back_for_exchange`` 同病）。
+                counted = self._register_swipe_emission(
+                    "task_like_reswipe", pages.feed_band_tops(screen)
                 )
-            if already:
-                # 这一张我已经点过了 ⇒ 再滑一次，让**下一张**卡片进到同一个位置。
-                if self.like_reswipes >= LIKE_RESWIPE_LIMIT:
-                    return self._return_to_tasks(
-                        page,
-                        f"任务「{label}」连滑 {self.like_reswipes} 次，卡片全是我点过的，"
-                        "本遍作废",
+                if counted:
+                    if self.like_reswipes >= LIKE_RESWIPE_LIMIT:
+                        return self._return_to_tasks(
+                            screen,
+                            page,
+                            f"任务「{label}」连滑 {self.like_reswipes} 屏都没找到一颗"
+                            "还没点过的 👍，本遍作废",
+                        )
+                    self.like_reswipes += 1
+                    note = f"（第 {self.like_reswipes}/{LIKE_RESWIPE_LIMIT} 次）"
+                else:
+                    note = (
+                        f"（仍在等第 {self.like_reswipes} 屏生效："
+                        "上一滑还没执行，主循环同名动作节流中，不重复记账）"
                     )
-                self.like_reswipes += 1
                 return self._step_action(
                     "task_like_reswipe",
                     TaskStep(
@@ -1252,22 +1878,64 @@ class CommunityStateMachine:
                         "feed_home",
                         FEED_TASK_SCROLL_START,
                         "",
-                        evidence="信息流再滚动一屏，换一张没点过的卡片（本页不变）",
+                        evidence="信息流再滚动一屏，换一屏卡片（本页不变）",
                         end=FEED_TASK_SCROLL_END,
                     ),
                     page,
                     reason=(
-                        f"任务「{label}」：这颗 👍 已经是绿的（点下去会取消点赞），"
-                        f"再往下滑一次换一张卡片（第 {self.like_reswipes}/{LIKE_RESWIPE_LIMIT} 次）"
+                        f"任务「{label}」：这一屏没有还没点过的 👍，"
+                        f"往下滑一屏再找{note}"
                     ),
                 )
             self.like_reswipes = 0
+            self._pending_swipe_name = None
+            self._pending_swipe_tops = None
+            self._pending_swipe_streak = 0
+            self.like_point = found
+            located = found
+        elif step.kind == "tap_post":
+            # 点开一篇帖子：落点**现找**一条「白底 + 有字 + **不是图片**」的正文带。
+            #
+            # ⚠️ 找不到就**收手**（本遍作废回「我的任务」），**绝不退回盲坐标**：
+            # 盲坐标正是 2026-10-08 两次实跑点到帖子图片、图片被放大成查看器、
+            # 整条路线卡死收场的原因（见 ``FEED_FIRST_POST`` 那段）。
+            # 这里没有「再滑一屏再找」的补偿：信息流往下滑只会换一批卡，
+            # 一屏里连一条正文带都没有说明**页本身不对**，再滑只是白花时间。
+            found = pages.locate_feed_post_tap(screen, FEED_FIRST_POST)
+            if found is None:
+                return self._return_to_tasks(
+                    screen,
+                    page,
+                    f"任务「{label}」在信息流里找不到一条能安全点开的正文带"
+                    "（整屏都是图片或空白），不蒙着点，本遍作废",
+                )
+            located = found
         self.task_step += 1
+        if located is not None:
+            # 现找出来的点要**把依据写进 reason**：日志里只看到坐标的话，
+            # 下次再出问题就分不清「现找算错了」还是「点没生效」。
+            if step.kind == "tap_post":
+                why = f"任务「{label}」：现找出来的正文带在 {located}（白底 + 有字 + 不是图片），点它"
+            else:
+                why = f"任务「{label}」：现找出来的 👍 在 {located}（空心 = 还没点过），点它"
+        else:
+            why = f"任务「{label}」：{step.note}"
         action = self._step_action(
-            f"task_{key}_{self.task_step}", step, page, reason=f"任务「{label}」：{step.note}"
+            f"task_{key}_{self.task_step}",
+            step,
+            page,
+            reason=why,
+            # ⚠️ 位置是**现找出来的**，不是脚本里写死的 ⇒ 用 ``point`` 覆盖传下去。
+            # 脚本那一步的 ``point`` 是 ``None``（见 ``TaskStep.point``）。
+            point=located,
         )
         if step.verify:
             # 记下「等什么」，下一帧先核对再推进 —— 声明归声明，结果要真读到。
+            #
+            # ⚠️ 这一段**必须在 ``tap_like`` 那条路也走到**。它原先只挂在通用尾巴上，
+            # 而点赞分支是**提前 return** 的 ⇒ ``pending_verify`` 一直是空的、
+            # 「那颗 👍 变绿了没有」这道验收**一次都没跑过**（2026-10-07 写这一版时
+            # 被 ``test_like_step_clicks_the_point_it_just_located`` 当场抓住）。
             self.pending_verify = step.verify
             self._verify_frames = 0
         return action
@@ -1279,13 +1947,24 @@ class CommunityStateMachine:
         page,
         *,
         reason: str,
+        point: Optional[tuple[int, int]] = None,
     ) -> CommunityAction:
         """把脚本里的一步包装成带出口验收的动作。
+
+        ``point`` 给「位置运行时现找」的那些步用（``TaskStep.point is None``）：
+        调用方先把位置找出来，再从这里覆盖进去。⚠️ 两边都没给就**当场抛** ——
+        静默退回 ``(0, 0)`` 会在屏幕左上角点一下，那种失败最难查。
 
         ⚠️ 换页的一步只写 ``next_page``，另外两个是**全局异常态**（签到弹窗可能迟到
         一分多钟、网络异常页会把 H5 弄死）；它们出现时状态机会优先处理，
         所以必须让这一步的验收放行，否则会卡在「页面既不是来源也不是目标」的缝里。
         """
+        target = point if point is not None else step.point
+        if target is None:
+            raise RuntimeError(
+                f"任务脚本里第 {self.task_step} 步（{name}）没有点击点："
+                "脚本写的是「位置运行时现找」，但调用方没把找出来的点传进来"
+            )
         if step.next_page:
             evidence = {
                 "target_pages": (step.next_page, "signin_done", "network_error"),
@@ -1295,14 +1974,20 @@ class CommunityStateMachine:
         if step.kind == "swipe":
             return CommunityAction(
                 name,
-                step.point,
+                target,
                 swipe_end=step.end,
+                dwell_seconds=step.dwell_seconds,
                 source_page=page.name,
                 reason=reason,
                 **evidence,
             )
         return CommunityAction(
-            name, step.point, source_page=page.name, reason=reason, **evidence
+            name,
+            target,
+            dwell_seconds=step.dwell_seconds,
+            source_page=page.name,
+            reason=reason,
+            **evidence,
         )
 
     def _await_step_result(
@@ -1313,17 +1998,28 @@ class CommunityStateMachine:
         ⚠️ **绝不出手第二次**：那颗 👍 是开关，第一次其实生效了而我们没读到时
         再点一次会把赞**取消**掉。所以这里只等、不对就作废本遍 —— 交给「我的任务」
         对账去判要不要再来一遍（计数才是权威）。
+
+        返回值只有两种：
+        * ``None``  —— 要么「还在等」（``pending_verify`` 仍非空），
+          要么「**这一步做成了**」（已清空）。调用方靠 ``pending_verify`` 区分，
+          看到清空就**接着推本轮的下一步**。
+        * ``CommunityAction`` —— 等超了帧数上限，本遍作废回「我的任务」对账。
         """
         if self._evidence_seen(screen, self.pending_verify):
             self.pending_verify = ""
             self._verify_frames = 0
             self.last_reason = f"任务「{label}」：已看到「{step.evidence}」，这一步做成了"
-            return self._return_to_tasks(page, f"任务「{label}」动作做完，回去核对计数")
+            # ⚠️ **不要在这里回「我的任务」**（2026-10-07 真机实跑抓到的 P0）：
+            # 本轮是把 ``TASK_ROUND_TIMES`` 次拼起来的，验收通过只说明**这一步**做成了。
+            # 这里回 ``None``，让 ``_drive_task`` 接着推本轮的下一步；脚本真走完了，
+            # 那里自会用 ``task_step >= len(script)`` 回对账。
+            return None
         self._verify_frames += 1
         if self._verify_frames >= _VERIFY_FRAME_LIMIT:
             self.pending_verify = ""
             self._verify_frames = 0
             return self._return_to_tasks(
+                screen,
                 page,
                 f"任务「{label}」出手之后等了 {_VERIFY_FRAME_LIMIT} 帧也没看到"
                 f"「{step.evidence}」，本遍作废（不重复点，怕点反）",
@@ -1334,24 +2030,166 @@ class CommunityStateMachine:
         )
         return None
 
-    @staticmethod
-    def _evidence_seen(screen: np.ndarray, verify: str) -> bool:
+    def _evidence_seen(self, screen: np.ndarray, verify: str) -> bool:
         """``verify`` 这一项在当前帧上成立了吗。
 
         ⚠️ 只认有实测依据的检查项。没有检查项（``verify=""``）意味着这一步的验收
         靠换页或下一帧重判画面，这里不拦 ⇒ 返回 True。
+
+        ⚠️ 是**实例方法**（不再是 ``staticmethod``）：「变绿了没有」必须读
+        **刚点下去的那一颗**（``self.like_point``）。老写法读的是写死的框，
+        而那一块是 tab 栏 ⇒ 这道验收恒为「没变」，每遍都会白等 8 帧再作废。
         """
         if verify == _VERIFY_LIKE_ON:
-            return card_like_is_on(screen) is True
+            if self.like_point is None:
+                # 没点过任何一颗却要验「变绿了」⇒ 接线断了（只有出手那一帧会设它）。
+                # 报错而不是猜：猜「绿了」会把没做的事记成做成了。
+                raise RuntimeError(
+                    "要验收「👍 变绿了」，但这一轮一次都没点过（like_point 为空）；"
+                    "接线断了（见 _drive_task 的 tap_like 分支）"
+                )
+            return card_like_is_on(screen, self.like_point) is True
         return True
 
-    def _return_to_tasks(self, page, reason: str) -> CommunityAction:
+    def _register_swipe_emission(self, name: str, tops: list[int]) -> bool:
+        """发出滑动手势前对账：这一滑**要不要在「已滑 N 屏」的账本上记一笔**。
+
+        ⚠️ 只在「上一滑**真的执行了**」时才准记 —— 主循环对**同名动作**有重试节流
+        （默认 45 秒内只执行一次），节流窗口里状态机**每一帧**都会重新想滑；
+        按帧记账的话，上限几秒就烧穿，实际却一屏都没滑。2026-10-09 13:04 实跑：
+        日志里只有 **1** 次「执行滑动」，却报了「往回滚了 3 屏」。
+
+        「真的执行了」的证据是**页面结构动了**：正文带位置表
+        （``pages.feed_band_tops``，与生产点帖判据同一套实现）变了。
+        滚 800px 会整体换一批正文带；头像/动图那种局部动画不会。
+
+        返回 ``True`` = 记账；``False`` = 上一滑还没生效，只重发、不记账。
+        连 ``SWIPE_UNEXECUTED_FRAME_LIMIT`` 帧都没看到页面动 ⇒ 如实报错
+        （是「手势没被执行/页面锁滚动」，**不是**「滚了几屏没找到」—— 两回事）。
+
+        ⚠️⚠️ **它碰的三个字段必须留在 ``_snapshot`` / ``_restore`` 里**（2026-10-10，
+        上线一小时就被真机抓到）：主循环**每帧先 ``preview`` 再真跑 ``next_action``，
+        两次喂的是同一帧画面**（``transactional_runner_base.run``）。preview 会把基线
+        设成本帧、再回滚 —— 只要账本**没被回滚**，真跑那次就是拿「刚刚试算时写下的
+        基线」跟「同一帧」比，**恒等 ⇒ 恒判「页面没动」**。症状极具误导性：
+        日志里全是「上一滑还没执行」和「仍在等第 0 屏生效」，
+        而实际上页面滚得好好的（同一段日志里点赞点坐标一直在变、也拿回过四宫格）。
+        ⇒ 凡是「跨帧对比」的账本，进了 ``next_action`` 就必须进快照；
+        护栏见 ``tests/test_community.py`` 的 ``PreviewKeepsSwipeLedgerTests``。
+        """
+        if self._pending_swipe_name != name or self._pending_swipe_tops is None:
+            # 第一滑（或上一个手势已被别的动作打断）⇒ 记账并立基线。
+            self._pending_swipe_name = name
+            self._pending_swipe_tops = tops
+            self._pending_swipe_streak = 0
+            return True
+        prev = self._pending_swipe_tops
+        # ``strict=False``：长度不等那一支由前面的 ``or`` 短路包住了，走到 ``zip`` 时
+        # 两条带子必然等长；显式声明只是别让 zip 静默截断（ruff B905）。
+        moved = len(prev) != len(tops) or any(
+            abs(a - b) >= SWIPE_MOVE_MIN_PX for a, b in zip(prev, tops, strict=False)
+        )
+        if moved:
+            # 上一滑执行了 ⇒ 记账，拿当前帧当新基线。
+            self._pending_swipe_tops = tops
+            self._pending_swipe_streak = 0
+            return True
+        self._pending_swipe_streak += 1
+        if self._pending_swipe_streak > SWIPE_UNEXECUTED_FRAME_LIMIT:
+            raise RuntimeError(
+                f"动作 {name} 连发 {self._pending_swipe_streak} 帧都没看到页面滚动："
+                "滑动手势一直没被执行（主循环节流没放开 / 页面锁滚动），"
+                "停止并留诊断——这与「滚了几屏没找到目标」是两回事"
+            )
+        return False
+
+    def _return_to_tasks(self, screen: np.ndarray, page, reason: str) -> CommunityAction:
         """从任意一页把路线带回「我的任务」。
 
         路径是**信息流 → 兑换中心 →「获取积分卡」→ 我的任务**。⚠️ 底栏那个「我的」
         不是我的任务，是社区个人主页（2026-10-07 实测：点过去得到一张认不出的页面）。
+
+        ⚠️ **2026-10-07 真机实跑加的一道闸门**：``FEED_ICON_EXCHANGE`` 那个点击点
+        只在**未滚动的信息流**上成立。而任务做完时信息流多半已经滑过好几屏
+        （点赞要下滑找 👍、浏览要点开帖子）⇒ 四宫格早滚出视野，那个坐标底下已经是
+        **帖子里的图片**：点下去打开了图片查看器、画面认不出、整条路线卡到超时
+        （20:39 实跑现场帧 ``..._timeout_feed.png`` 就是那张「平衡性调整公告」大图）。
+
+        所以先问一句 ``pages.feed_exchange_icon_visible``：看不见就**往回滚**再问一次；
+        真滚满 ``FEED_ICON_RESWIPE_LIMIT`` 次、或者**画面连着几次纹丝不动**（滚到顶了）
+        还看不见，就报错收手 —— **绝不蒙着点**（那一按的代价是不可逆的：
+        图片查看器一旦打开就卡死）。
+
+        ⚠️ **2026-10-09**：「滚了几屏」的账本改按**执行了**记（``_register_swipe_emission``）。
+        旧写法按帧记，主循环节流窗口里几秒就烧穿 —— 实跑只滑 1 屏就报「滚了 3 屏」。
+
+        ⚠️⚠️ **2026-10-10 收口（用户拍板「滚到顶为止」）**：一天之内这里修了两处，
+        别把它们当成一回事 ——
+
+        ① **账本被自己污染**：``_pending_swipe_*`` 没进 ``_snapshot`` ⇒ 主循环
+           「先试算再真跑、两次同一帧」让真跑**恒判「画面没动」** ⇒ 计数永远是 0
+           ⇒ 下面那两条闸门**根本没生效过**（症状：日志满屏「上一滑还没执行」，
+           而画面明明在滚）。修法与护栏见 ``_snapshot``。
+        ② **闸门即使生效也不够宽**：一次滚 800px、上限 3 ⇒ 最多退 2400px，
+           而实跑里任务段往下滚过 6 屏（≈4800px）。⇒ 行程加大到 ~1390px、
+           上限提到 4（与主循环的 4 次对齐，别让它先炸）；
+           并且**不再只靠次数**：加了「滚不动了」这条判据
+           （``FEED_ICON_STUCK_FRAMES``）—— 到顶的页面再往下拖就是不动。
         """
         if page.name == "feed_home":
+            if not pages.feed_exchange_icon_visible(screen, self.templates):
+                counted = self._register_swipe_emission(
+                    "feed_scroll_back_for_exchange", pages.feed_band_tops(screen)
+                )
+                if counted:
+                    if self.feed_icon_reswipes >= FEED_ICON_RESWIPE_LIMIT:
+                        raise CommunityDataMissing(
+                            f"往回滚了 {self.feed_icon_reswipes} 次，信息流顶部还是看不见"
+                            "「兑换」图标，没法经兑换中心回我的任务（入口可能搬家了）"
+                        )
+                    self.feed_icon_reswipes += 1
+                    note = f"（第 {self.feed_icon_reswipes}/{FEED_ICON_RESWIPE_LIMIT} 次）"
+                else:
+                    # 走到这里 = 上一次滑动**没有让画面动**（真跑那一遍；
+                    # 试算造成的假「没动」已在 2026-10-10 由 ``_snapshot`` 修掉）。
+                    #
+                    # ⚠️ 必须把「滚到顶了」和「手势根本没执行」分开（两者画面都不动，
+                    # 但一个是正常到底、一个是通道/节流故障）：
+                    #   * ``feed_icon_reswipes >= 2`` = **画面确实滚动过**
+                    #     （第 1 笔是立基线、不算「动过」，所以 2 才是「至少动过一次」）
+                    #     ⇒ 手势是好的，现在不动只能是**到底了**；
+                    #   * 一直只停在 1 ⇒ 从头到尾没动过 ⇒ 不在这里报，
+                    #     交给 ``_register_swipe_emission`` 的 30 帧上限如实报
+                    #     「滑动手势一直没被执行」。
+                    if (
+                        self.feed_icon_reswipes >= 2
+                        and self._pending_swipe_streak >= FEED_ICON_STUCK_FRAMES
+                    ):
+                        raise CommunityDataMissing(
+                            f"往回滚了 {self.feed_icon_reswipes} 次，画面上又连着 "
+                            f"{self._pending_swipe_streak} 次纹丝不动（已经滚到顶了），"
+                            "信息流顶部还是看不见「兑换」图标，没法经兑换中心回我的任务"
+                            "（入口可能搬家了）"
+                        )
+                    note = (
+                        f"（第 {self.feed_icon_reswipes} 次滑出去之后画面还没落定，"
+                        "再滚一次看）"
+                    )
+                return CommunityAction(
+                    "feed_scroll_back_for_exchange",
+                    FEED_ICON_SCROLL_START,
+                    swipe_end=FEED_ICON_SCROLL_END,
+                    source_page=page.name,
+                    in_page_evidence="信息流往回滚一屏，把顶部四宫格露出来（本页不变）",
+                    reason=(
+                        f"{reason}；这一屏看不见「兑换」图标（八成滚下去了），"
+                        f"先往回滚一屏再问{note}"
+                    ),
+                )
+            self.feed_icon_reswipes = 0
+            self._pending_swipe_name = None
+            self._pending_swipe_tops = None
+            self._pending_swipe_streak = 0
             self.via_exchange = True
             return CommunityAction(
                 "back_to_tasks_via_exchange",
@@ -1565,9 +2403,11 @@ LIVE_RUN_READY = True
 #: ① 三条每日任务的执行坐标只有 10-07 单日样本；
 #: ② 行动力**第二次**兑换的链路没有真机帧（`REDEMPTION_PLAN` 定的是每日限购 2）。
 MISSING_LIVE_DATA = (
-    "三条每日任务的执行脚本（信息流第一张帖子卡 / 卡片 👍）只在 2026-10-07 单日样本上"
-    "验证过一遍；行动力每日限购 2、但只有第一次兑换的真机帧，第二次的"
-    "「兑换成功 → 回商品详情 → 再兑一次」链路没有样本"
+    "三条每日任务的执行脚本里，`FEED_FIRST_POST`（信息流第一张帖子卡）与"
+    "`FEED_TASK_SCROLL_*`（滑一次的位移量）只在 2026-10-07 单日样本上验证过；"
+    "点赞那颗 👍 已改成模板定位（`card_like_off`，离线分离度 1.0000 vs 0.43、"
+    "全库零误报），但**还没在真机上跑完一整轮**；行动力每日限购 2、"
+    "但只有第一次兑换的真机帧，第二次的「兑换成功 → 回商品详情 → 再兑一次」链路没有样本"
 )
 
 
@@ -1875,7 +2715,16 @@ class CommunityRunner(ModeRunnerBase):
         CommunityState.REDEEM_DONE: 45,
         CommunityState.SIGNIN_DONE: 45,
         CommunityState.CLOSING: 90,
+        # 下拉刷新之后 H5 要重新拉数据、重画首帧；给足一屏时间。
+        # ⚠️ 这一档只在「拉完刷新之后一帧都没动作」时才用得上；正常情况下状态机会
+        # 继续发 ``refresh_community_page``（同一页还在报异常），那本账由主循环记。
+        CommunityState.REFRESHING: 60,
         CommunityState.BLOCKED: 45,
+        # 图片查看器：返回键按下去，那一屏要么没了、要么还在（实测 H5 立刻响应）。
+        # 45 秒纯属「别让状态机卡死」的上限 —— 正常一两帧就换页了。
+        # ⚠️ 真要点满 45 秒，说明返回键没生效（例如点开的其实是游戏原生全屏预览、
+        # 不吃 keyevent 4），那时日志里会留下「已按返回键关图片查看器」而画面不动。
+        CommunityState.IMAGE_VIEWER: 45,
         CommunityState.DONE: 45,
     }
     # 这条路线不打架，没有「已承诺战斗」环节。
@@ -1896,9 +2745,32 @@ class CommunityRunner(ModeRunnerBase):
             "leave_tasks",
             "close_community",
             "logout_community",
+            # 下拉刷新的效果看得很快：手势一松，要么页面消失、要么还是那一页。
+            # 按默认 45 秒等，白白把「拉活→再看一眼」的循环拖成一分钟一次。
+            "refresh_community_page",
+            # 关图片查看器同理：返回键按下去，那一屏要么没了、要么还在。
+            "dismiss_image_viewer",
         }
     )
     _QUICK_RETRY_SECONDS = 8.0
+    # ⚠️ 2026-10-09：滑动手势（`task_like_reswipe` / `feed_scroll_back_for_exchange`）
+    # 的重试窗口给 **3 秒**。默认 45 秒是给「换页点击」定的；手势的效果**下一帧**
+    # 就看得见（页面滚没滚），45 秒纯是把「滚回去找入口」拖成一分钟一屏 ——
+    # 2026-10-09 13:04 实跑里 3 屏预算只来得及执行 1 屏，就是被它卡住的。
+    # 「账记得诚实」由状态机的「页面动了才算数」（``_register_swipe_emission``）保证，
+    # 不靠这个窗口；这里只管节奏。3 秒 ≥ 两帧竖屏采集的间隔，不会连着帧连滑。
+    _SWIPE_RETRY_SECONDS = 3.0
+    _SWIPE_ACTIONS = frozenset({"task_like_reswipe", "feed_scroll_back_for_exchange"})
+    #: 盖住整屏、**可能出现在任何一步之后**的浮层页。
+    #:
+    #: 判据是「这一页在 ``next_action`` 里**有收场动作**」——三个都有：
+    #: ``image_viewer`` 按返回键、``network_error`` 下拉刷新、``signin_done`` 点「关闭」。
+    #: 它们一旦出现，上一动作的出口验收就此作废（见 ``_transition_completed``）。
+    #:
+    #: ⚠️ 往里加人之前先问「它那一页真能推得动吗」：放行一个推不动的页等于把死锁
+    #: 从主循环搬到状态机里，更难查。``test_community.py`` 有一条用例拿 ``handler``
+    #: 那张表逐个核。
+    _GLOBAL_OVERLAY_PAGES = frozenset({"image_viewer", "network_error", "signin_done"})
     # ⚠️ 入口那一下的重试间隔**必须比竖屏通道的等待更宽**（默认等满 20 秒才认输），
     # 否则会在转屏动画还没走完时又点一次 —— 那时的横屏坐标已经不可信了。
     _ENTRY_RETRY_SECONDS = 25.0
@@ -2001,29 +2873,62 @@ class CommunityRunner(ModeRunnerBase):
             return self._ENTRY_RETRY_SECONDS
         # 任务脚本那几步（点开帖子 / 返回 / 点赞 / 复制链接 / 再滑一次）点完**立刻**
         # 能看出生效没有，按 45 秒等就是白等 —— 一天三条任务各来几遍，时间全耗在这。
+        if action_name in self._SWIPE_ACTIONS:
+            return self._SWIPE_RETRY_SECONDS
         if action_name in self._QUICK_ACTIONS or action_name.startswith("task_"):
             return self._QUICK_RETRY_SECONDS
         return super()._action_retry_seconds(action_name)
 
     def _perform_action(self, action: Any) -> None:
-        """滑动的那几步走 ``runtime.swipe``，其余照旧点击。
+        """按 ``action`` 的三面旗子分派：**返回键 / 滑动 / 点击**。
 
         ⚠️ 为什么必须覆写：主循环（``runner_base``）只会 ``runtime.click``，而社区
         那两条脚本里的「往下滑一次」是**状态机产出的动作**、没法像商店刷新那样
         自己绕开主循环去调 ``swipe``。不换发的话，滑动会变成「在起点点一下」——
         点在信息流中部会**点开一张帖子**，于是下一步要求的页对不上、本遍作废，
         一天三次机会就这么白烧掉（2026-10-07 实测）。
+
+        ## 三条路各治什么
+
+        - ``press_back`` —— **图片查看器**。那一屏上下两条全黑带占 83%、中间只有一张
+          帖子里的图、**连返回箭头都没有**，能消掉它的只有系统返回键。不换发的话
+          会去点 ``point``（图片正中），运气好顺手关掉、运气不好**再放大一层**，
+          而这一屏的判据已经命中 ⇒ 状态机会一直等一个不会发生的变化。
+          判定**放在最前**：``swipe_end`` 与 ``point`` 都不该在这次里生效。
+        - ``swipe_end`` —— 信息流里上下滑。
+        - 其余 —— 照旧点击（``super()._perform_action``）。
         """
-        end = getattr(action, "swipe_end", ())
-        if not end:
-            super()._perform_action(action)
+        if getattr(action, "press_back", False):
+            # 走 ``runtime.back`` 而不是 ``_back``：前者会 ``_stop_if_requested()``
+            # 并把这一下写进日志（「安全停止」要能在等待期间生效），后者是裸通道。
+            # 竖屏段由 ``_install_dual_channel`` 打的补丁自动转成 ``portrait.back()``
+            # （keyevent 4），与收尾那步用的是同一条通道。
+            #
+            # ⚠️ 这里 **return**：``press_back`` 与「滑动 + 停留」是互斥的两条路。
+            # 不断开的话，后面 ``else`` 分支会补一次点击（点在图片正中），
+            # 等于刚按完返回又去点那一屏 —— 正好把要关的东西再打开。
+            self.runtime.back(action.name)
             return
-        self.runtime.swipe(
-            action.point,
-            end,
-            FEED_TASK_SCROLL_MS,
-            action.name,
-        )
+        end = getattr(action, "swipe_end", ())
+        if end:
+            self.runtime.swipe(
+                action.point,
+                end,
+                FEED_TASK_SCROLL_MS,
+                action.name,
+            )
+        else:
+            super()._perform_action(action)
+        dwell = getattr(action, "dwell_seconds", 0.0)
+        if dwell > 0:
+            # 「浏览」那一篇：滑完要**停一会儿**，游戏才认这次浏览（用户口径 5~10 秒）。
+            # 睡眠放在发完动作之后；状态机只声明意图（``TaskStep.dwell_seconds``），
+            # 睡多久归这一层管 —— 与 ``swipe_end`` 同一条分工。
+            self.runtime.log(
+                f"模式={self._MODE_LABEL} 动作={action.name} 停留={dwell:.0f}秒 "
+                "处理=浏览帖子要在详情里停住一会儿才算一次"
+            )
+            self.sleep(dwell)
 
     def _capture_frame(self) -> np.ndarray:
         """取一帧；**换向那一两秒里取不到图属于转场中，不是失败**。
@@ -2076,17 +2981,79 @@ class CommunityRunner(ModeRunnerBase):
     def _after_action_click(self, action: Any) -> None:
         """点完「进/出社区」之后把通道方向预期拨过去。
 
-        为什么必须在这里拨：这两下点击是**唯一**会改变屏幕方向的动作，而方向一变，
+        为什么必须在这里拨：这几下点击是**唯一**会改变屏幕方向的动作，而方向一变，
         取图/点击的坐标系就整个换了（横屏 1982x1132 vs 竖屏 1080x1920）。
         拨晚了会拿错坐标系点一下，拨早了会在转屏动画中途取图。
+
+        ⚠️ 2026-10-09 补 ``leave_exchange``：兑换中心右上角那颗 ✕ 真机实测**关的是
+        整个社区**（点完 3 秒内窗口就回 1920x1080）。漏了它，通道记录会一直停在
+        竖屏 —— 19:58 那次实跑就是这么白等 20 秒「等待切换为竖屏」的：
+        窗口明明已经横屏，代码却拿竖屏链路去取图。
         """
         if self._switch is None:
             return
         name = getattr(action, "name", "")
         if name == "enter_community":
             self._switch.expect("portrait")
-        elif name in ("close_community", "logout_community"):
+        elif name in ("close_community", "logout_community", "leave_exchange"):
             self._switch.expect("landscape")
+
+    def _transition_completed(
+        self, previous_action: Any, current_action: Any, confirmed_page: str
+    ) -> bool:
+        """把**盖住整屏的全局浮层**当成一个**转场终止**处理（2026-10-07 立，10-08 扩）。
+
+        ## 为什么必须在这里动手
+
+        主循环对「已经发出、还没验收的换页动作」有一条规矩：``confirmed_page``
+        **既不是来源页也不是目标页**时，就把状态机这一帧给出的**新动作丢掉**
+        （``runner_base`` 里 `elif last_transition_action is not None` 那一段，
+        注释写的是「有目标契约的动作遇到短暂未知帧时保留同一重试账本」）。
+
+        平时它是对的（转场动画中途认出的杂乱页面不该当真），但这几层浮层出现时它是错的：
+        等着的那个目标**永远不会到**，而被丢掉的正是唯一能收场的动作。
+
+        ## 两次实跑各自留下的证据
+
+        ① **``network_error``（2026-10-07 20:31）**：点完 ``goto_tasks_via_exchange``
+        网页就死了，状态机连记 3 次「网络异常」，日志里**一条
+        ``执行点击 动作=logout_community`` 都没有** —— 补救动作全被丢掉，最后只能干等到
+        状态超时（现场帧 ``20261007_203326_943958_timeout_web_entry.png``）。
+        改成下拉刷新之后同样如此：不在这里放行，刷新动作一样发不出去。
+
+        ② **``image_viewer``（2026-10-08 18:58 / 19:10）**：任务「浏览帖子」那一指点在
+        帖子的图片上 ⇒ 图被放大成全屏查看器 ⇒ 状态机认出来了、也给出了
+        ``dismiss_image_viewer``（按返回键），但那一下同样被丢掉 ⇒ 干等 150 秒
+        （``FEED`` 那档）⇒ 收尾时人还卡在查看器里，**连社区都关不掉**
+        （``RuntimeError: 画面宽高比与模板基准不一致``）。
+        日志形状：``结论待确认=UnrecognizedCommunityScreen`` 之后再无一条日志。
+
+        ⇒ 浮层一出现就宣布「这个转场到此为止」，把账清掉
+        （基类那一支会顺手 ``last_transition_action = None``），让收场动作真的发得出去。
+        代价是日志里会多一行 `完成=<动作> 目标页面=<浮层>` —— 那**不是**「本步做成了」，
+        所以 ``_transition_success_detail`` 补一句说明，别被它误导。
+
+        ⚠️ 名单在 ``_GLOBAL_OVERLAY_PAGES``。往里加人之前先确认那一页**真能推得动**
+        （``next_action`` 里有收场动作），否则只是把死锁从主循环搬到状态机里。
+        """
+        if confirmed_page in self._GLOBAL_OVERLAY_PAGES:
+            self.runtime.log(
+                f"模式={self._MODE_LABEL} 转场作废={previous_action.name} "
+                f"原因=被「{confirmed_page}」这层盖住了落点，先收掉它再重来"
+            )
+            return True
+        return super()._transition_completed(
+            previous_action, current_action, confirmed_page
+        )
+
+    def _transition_success_detail(
+        self, previous_action: Any, current_action: Any
+    ) -> str:
+        if getattr(current_action, "source_page", "") == "network_error":
+            return "（实为 H5 报「网络连接异常」：这个转场作废，改走下加拉活）"
+        if getattr(current_action, "source_page", "") == "image_viewer":
+            return "（实为帖子图片被放大成查看器：这个转场作废，改走按返回键）"
+        return super()._transition_success_detail(previous_action, current_action)
 
     def _stable_next_action(self, screen: np.ndarray, stable: Any):
         """基类流程 + 一条**等待心跳**。
@@ -2145,14 +3112,41 @@ class CommunityRunner(ModeRunnerBase):
     def _close_out(self) -> None:
         """收尾：先把社区页关掉、等模拟器转回横屏，再交给基类做「回首页」。
 
-        ⚠️ 为什么需要：**异常路径**（缺数据 / 认不出 / 判据 blocked）也会走到这里，
-        而那时人可能还停在社区的竖屏页面里。基类的收尾要拿横屏通道去取图
+        ⚠️⚠️ **本路线的终点契约 = 大厅（首页）**（用户 2026-10-09 明确补充：
+        「这条路线它的终点有点特殊，它一定要回到首页，因为不然的话，它很多按键
+        都没有掉了」）⇒ **「退出社区」只是中途，不是终点**：社区（尤其 H5 网页
+        活动列表）上没有大厅那套按钮，停在那儿下一个任务接不上。
+
+        完整链路四棒，缺一棒都到不了终点：
+
+            状态机 DONE → 基类主循环 ``_close_out()`` → 本方法（退社区 + 等转回横屏）
+                        → ``super()._close_out()`` → ``_finish_home()``
+                        → ``home_return()`` → 大厅
+
+        最后一棒是**通用回家流程**（横屏通道）：从网页活动列表按两次 ESC
+        （``web_activity_list`` → ``activity_web_promo`` → 大厅）。2026-10-09 20:01
+        那次实跑日志就是这么到家的 —— 20:01:40 / 20:01:48 两次「按ESC 点击验收=生效」，
+        20:01:57「页面=大厅 状态=已确认」，紧接着「异常收尾=已回到首页」。
+
+        ⚠️ 为什么需要本方法：**异常路径**（缺数据 / 认不出 / 判据 blocked）也会走到
+        这里，而那时人可能还停在社区的竖屏页面里。基类的收尾要拿横屏通道去取图
         （``return_home``），在竖屏下会直接抛「render size changed」——
         于是「异常也回家」这条规矩在这条路线上**实际做不到**，模拟器还会被留在竖屏。
 
-        正常路径用不到它（状态机会在横屏那一帧才收工）。契约与基类一致：
-        **绝不抛异常** —— 关不掉就记一笔，让基类那步照常失败并留下原因。
+        正常路径下本方法**只做中途那一棒**（状态机会在横屏那一帧才收工），
+        终点仍由 ``super()._close_out()`` 那一棒决定 —— 见上面那张链路图。
+
+        契约与基类一致：**绝不抛异常** —— 关不掉就记一笔，让基类那步照常失败并留下原因。
         """
+        if self._finish_home is None and not self.runtime.dry_run:
+            # ⚠️ 基类 ``_close_out`` 在钩子缺失时是**静默 return**（一行日志都没有）
+            # ⇒「终点保证是首页」这条契约会**悄悄失效**，日志上看不出任何异常。
+            # 本路线既然把终点写进了契约（见 docstring），就在这里出声。
+            self.runtime.log(
+                f"模式={self._MODE_LABEL} 收尾=没有可用的「回首页」钩子 "
+                "影响=退出社区后只会停在网页活动列表（横屏），到不了大厅 "
+                "原因=钩子没装（只挂在能导航且非干跑的运行上）"
+            )
         self._leave_portrait_if_needed()
         super()._close_out()
 
@@ -2170,21 +3164,57 @@ class CommunityRunner(ModeRunnerBase):
         ⇒ 现在点完之后**有界等待**转回横屏（``wait_for_landscape``），
         等到了再让基类接手；等不到就把「当前仍是竖屏」这件事如实记进日志，
         让基类那步照常失败并留下原因（**绝不抛异常** —— 收尾失败不改退出码）。
+
+        ⚠️⚠️ 2026-10-09 补：**确认已经横屏之后，通道记录也要跟着拨回横屏**
+        （``demote_to_landscape``）。旧版只等方向、不动记录 ⇒ 记录停在
+        ``PENDING_PORTRAIT``（异常收尾时没人点过「退出社区」，没人拨它）⇒
+        紧接着基类回首页取图，``use_portrait()`` 在 ``PENDING_PORTRAIT`` 这一支上
+        「还没转成竖屏也返回 True」（它本意是把等待委托给竖屏通道），
+        于是先白等 20 秒竖屏超时、再由 ``_fallback_to_landscape`` 退回横屏。
+        日志形态：13:07:54「收尾=已退出社区且方向已转回横屏」，13:08:18
+        「竖屏通道 方向=等待切换为竖屏 … 超时」—— 中间那 24 秒全耗在
+        等一次**不可能发生**的转屏上。**方向对了，记录没跟上。**
         """
         switch = self._switch
         if switch is None or self.runtime.dry_run:
             return
         try:
             if not switch.portrait.is_portrait():
+                # 已经是横屏 ⇒ 只把通道记录拨回来（见上面那段 2026-10-09 的说明）。
+                switch.demote_to_landscape()
                 return
             self.runtime.log(
                 f"模式={self._MODE_LABEL} 收尾=人还在社区竖屏页面里 "
                 "动作=先退出社区，等转回横屏再回首页"
             )
-            # 竖屏段对返回键的响应不一致（任务页按了没反应），所以先点信息流
-            # 右上角的 X，再补两下返回键；每一步都看一眼方向，转过去了就收手。
+            # 竖屏段对返回键的响应不一致（任务页按了没反应），所以先点右上角的 ⊗，
+            # 再补两下返回键；每一步都看一眼方向，转过去了就收手。
+            #
+            # ⚠️⚠️ 2026-10-09：社区里那几颗 ⊗ **位置各不相同**（信息流 (937,92)、
+            # 兑换中心 (989,123)、H5 死掉那屏 (1000,78)，见 ``EXCHANGE_CLOSE`` 上方那张表），
+            # 所以旧写法「只点信息流那一颗」在别的页面上**等于点空** ⇒ 收尾关不掉 ⇒
+            # 模拟器留在竖屏 ⇒ 紧接着基类回家取图报「画面宽高比与模板基准不一致」
+            # （10-07 / 10-08 连撞多次的就是这条链）。
+            #
+            # 这里**挨个试**，谁把窗口转回横屏就算谁赢。这是**收尾的扫地出门**，
+            # 与主流程的纪律相反 —— 主流程必须按判页挑对的那一颗（三颗外径 33/44/48
+            # 互不相等，不是同一颗挪了位置），**不许**这样试。
             portrait = switch.portrait
-            portrait.click(FEED_CLOSE)
+            for index, point in enumerate(
+                (FEED_CLOSE, EXCHANGE_CLOSE, NETWORK_PAGE_CLOSE), 1
+            ):
+                portrait.click(point)
+                try:
+                    portrait.wait_for_landscape(timeout=_EXIT_CLOSE_ATTEMPT_SECONDS)
+                    break
+                except OrientationError as error:
+                    if index == len(_EXIT_CLOSE_POINTS):
+                        raise
+                    self.runtime.log(
+                        f"模式={self._MODE_LABEL} 收尾=第 {index}/"
+                        f"{len(_EXIT_CLOSE_POINTS)} 颗 ⊗ {point} 没关掉这一屏，"
+                        f"换下一颗 原因={error}"
+                    )
             for _ in range(2):
                 if not portrait.is_portrait():
                     break
@@ -2212,6 +3242,7 @@ class CommunityRunner(ModeRunnerBase):
                 "处理=已忽略，不改本次运行结论"
             )
             return
+        switch.demote_to_landscape()
         self.runtime.log(
             f"模式={self._MODE_LABEL} 收尾=已退出社区且方向已转回横屏 "
             f"已等回横屏≤{_EXIT_ROTATION_WAIT_SECONDS:.0f}秒"

@@ -22,6 +22,13 @@ class ProjectLayoutTests(unittest.TestCase):
                 # 必须点掉才更新）。它是 home_return 点「酒馆」那一页，顺带成了这条
                 # 全局弹窗的唯一正例。
                 "pet_gift_live_20260928.png",
+                # 2026-10-07 真机：游戏内网页（WebView）上那条黑底白字「网络错误」
+                # 长条 —— 当天四次实跑里**两次**卡在它身上（网页只渲染了一半、
+                # 缺了导航要的「游戏社区」那一项 ⇒ 判失败）。
+                # ⚠️ 这张帧同时钉住**两种网络失败不串味**：同一帧上
+                # ``find_network_retry``（断线弹窗，判文案）**完全认不出来**
+                # （全帧最高 0.31，门槛 0.88），而新的长条锚点拿 1.0000。
+                "web_network_error_live_20261007.png",
             },
             {path.name for path in fixture_dir.glob("*.png")},
         )
@@ -335,7 +342,7 @@ class ProjectLayoutTests(unittest.TestCase):
         self.assertTrue((navigation / "lobby_sanctuary.png").is_file())
 
     def test_epic7_community_fixture_set_exists(self):
-        """社区签到的 16 张竖屏夹具，每一张都有不能删的理由。
+        """社区签到的 19 张竖屏夹具，每一张都有不能删的理由。
 
         ⚠️ 这批帧是**唯一**能证明「竖屏判据真的分得开」的物证：社区是网页（H5），
         我们的判据全是「区域限定模板匹配」，跨帧能不能认全靠这批帧覆盖够不够杂。
@@ -365,6 +372,39 @@ class ProjectLayoutTests(unittest.TestCase):
         - ``exchange_before_redeem`` —— 兑换中心**一件都还没兑**的那一态
           （920 分 / 0-2、0-1、0-1、0-1）。原来只有「兑过一次」的帧，
           ``plan_redeem`` 挑卡 1 的第一遍路径没有正样本。
+
+        2026-10-07 傍晚补的两张（现场采集，同一次会话连滚 6 屏）：
+
+        - ``feed_cards_mixed`` —— 一屏里**同时有**一颗已点赞的（实心青绿，y≈780）
+          和一颗没点过的（空心描边，y≈1333）。这是 ``card_like_off`` 模板分离度的
+          **唯一物证**：没有它，「模板只认没点过那颗」就只是一句空话。
+        - ``feed_cards_all_todo`` —— 一屏里两颗都没点过（y≈880 / y≈1690）。
+          钉住「同一屏有多颗候选时取最靠上的那颗」，以及「y 随卡片高度漂
+          （880 vs 1690，同一帧内差 810px）」这件事本身。
+
+        ⚠️ 这两张**一起**才说明问题：只留 mixed，「y 漂」证不了；只留 all_todo，
+        「不会误认已点赞的那颗」证不了。
+
+        2026-10-08 补的一张（现场采集，就是卡死那一刻的画面）：
+
+        - ``image_viewer`` —— **帖子里的图片被点开放大成全屏**。它既是 ``image_viewer``
+          那档**结构性判据**（上下两条全黑带占 0.8370）的唯一正样本，也是**负样本的
+          基准线**：``test_community_pages`` 拿它跟另外 18 张逐张比黑行占比
+          （其余全部 **0.0000**，阈值 0.60 坐在 0.8 宽的空档正中）。
+          删了它 ⇒ 「查看器认得出来」与「别的页不会误判成查看器」两条同时失去物证。
+          ⚠️ 它同时也是 ``feed_cards_all_todo`` 那次误点的**结果帧**：
+          盲坐标 ``(400, 1450)`` 落在卡片 2 的图片带里（见 ``locate_feed_post_tap``）。
+
+        2026-10-09 补的一张（现场采集，用户报「兑换按钮滑下去了找不着」那一刻）：
+
+        - ``feed_grid_at_top`` —— 往回滚到**真正的顶部**之后的信息流。四宫格里的
+          「兑换」图标落在 **y=275**，而原来 ``FEED_ICON_STRIP`` 只搜 y 380~680
+          ⇒ ``feed_exchange_icon_visible()`` 在这张上恒判「看不见」，往回滚 3 次全白滚、
+          最后报 ``CommunityDataMissing`` 收手。**滚回来是对的，是尺子错了。**
+          ⚠️ 它是「搜索带必须同时罩住 y=532（未滚动）与 y=275（滚到顶）」这条规矩的
+          唯一物证：删了它，搜索带上沿再被改回 380 也不会有任何用例变红。
+          实测：这张 1.0000（图标 y=275）、``feed_list`` 1.0000（y=532），
+          而真滚走的 ``feed_cards_mixed`` 0.7080 ⇒ 阈值 0.82 坐在空档里。
         """
         expected = {
             "feed_list_live_20261006.png",
@@ -383,14 +423,19 @@ class ProjectLayoutTests(unittest.TestCase):
             "feed_after_signin_live_20261007.png",
             "signin_success_live_20261007.png",
             "exchange_before_redeem_live_20261007.png",
+            "feed_cards_mixed_live_20261007.png",
+            "feed_cards_all_todo_live_20261007.png",
+            "image_viewer_live_20261008.png",
+            "feed_grid_at_top_live_20261009.png",
         }
         fixture_dir = ROOT / "tests" / "fixtures" / "epic7_community"
         self.assertEqual(expected, {path.name for path in fixture_dir.glob("*.png")})
 
     def test_community_templates_exist(self):
-        """社区路线的三批模板：判页 13 张 + 字模 10 张 + 导航入口 4 张。
+        """社区路线的三批模板：判页 14 张 + 字模 10 张 + 导航入口 4 张。
 
-        - ``pages/`` 里 11 个页面判据 + 2 个任务按钮长相（``task_todo`` / ``task_done``）；
+        - ``pages/`` 里 11 个页面判据 + 2 个任务按钮长相（``task_todo`` / ``task_done``）
+          + 1 张卡片 👍（``card_like_off``，**空心描边**=还没点过那颗）；
           判据型模板**一律不许缺**（``build_page_templates`` 是 fail-closed 的）。
         - ``digits/`` 十张字模，缺一张都会让积分/限购读数安静地失效。
         - ``strings/`` 是**备用路径**（整串模板，不在生产上）—— 修的时候别把它当判据。
@@ -411,6 +456,8 @@ class ProjectLayoutTests(unittest.TestCase):
                 "signin_done.png",
                 "task_todo.png",
                 "task_done.png",
+                "card_like_off.png",
+                "feed_icon_exchange.png",
             },
             {path.name for path in (templates / "pages").glob("*.png")},
         )
@@ -463,6 +510,12 @@ class ProjectLayoutTests(unittest.TestCase):
             # 「获得每周骑士团点数奖励」弹窗（每周一结算）的两个锚点，双锚点同时命中。
             "knights_weekly_reward_title.png",
             "knights_weekly_reward_close.png",
+            # 游戏内网页（WebView）报「网络错误」时的两个锚点（2026-10-07 接，第 9 个
+            # 全局弹窗）。⚠️ 分工与上面那几对**反着来**：长条是**排他判据**
+            # （正例 1.0000、全库 227 张横屏帧最高 0.4908），圆钮 X 只是**定位点击点**
+            # （正常网页帧上也有，0.97+，单独不能当判据）。两张缺谁都点不掉那条长条。
+            "web_network_message.png",
+            "web_error_close.png",
         ):
             self.assertTrue((navigation / name).is_file(), name)
 

@@ -4,6 +4,7 @@ import numpy as np
 import pytest
 from PIL import Image
 
+from auto_game_unified.games.epic7 import global_popups as popups_module
 from auto_game_unified.games.epic7.global_popups import (
     Epic7GlobalPopupGuard,
     find_friend_request_cancel,
@@ -14,6 +15,7 @@ from auto_game_unified.games.epic7.global_popups import (
     find_knights_weekly_reward_close,
     find_network_retry,
     find_pet_gift_badge,
+    find_web_network_error_close,
     load_friend_request_templates,
     load_friendship_points_templates,
     load_gift_support_templates,
@@ -22,6 +24,7 @@ from auto_game_unified.games.epic7.global_popups import (
     load_knights_weekly_reward_templates,
     load_network_reconnect_templates,
     load_pet_gift_templates,
+    load_web_network_error_templates,
 )
 from auto_game_unified.core.runtime import ManualStop, Runtime
 
@@ -39,26 +42,39 @@ def load_screen(name: str = "network_reconnect.png") -> np.ndarray:
     return np.asarray(Image.open(FIXTURES / name).convert("RGB"))
 
 
+def _centre_of(screen: np.ndarray) -> tuple[int, int]:
+    return (screen.shape[1] // 2, screen.shape[0] // 2)
+
+
 @pytest.mark.parametrize(
     "fixture_name",
     [
         "network_reconnect.png",
         "network_reconnect_navigation.png",
         "network_disconnected.png",
+        # 2026-10-04 真机：那一帧是「文案乙 + 按钮甲」的交叉搭配，
+        # 老的双锚点判定两组各缺一半 ⇒ 整层弹窗被漏掉，竞技场连点 4 次
+        # 「战斗开始」都没反应 ⇒ 那条任务记 ✗。
+        "network_disconnected_live_20261004.png",
     ],
 )
-def test_network_retry_requires_message_and_retry_anchors(fixture_name):
+def test_network_retry_points_at_the_screen_centre(fixture_name):
+    """老契约是「文案 + 按钮都在」才出手、并且点的是按钮中心。今天那次事故证明
+    这两种画法会**交叉**出现（历史上只见过甲配甲、乙配乙，第一次出现乙配甲就漏了），
+    所以现在只看文案，Central click 即可。
+    """
     screen = load_screen(fixture_name)
     templates = load_network_reconnect_templates(TEMPLATES)
 
     match = find_network_retry(screen, templates)
 
     assert match is not None
-    assert 875 <= match.center[0] <= 1050
-    assert 695 <= match.center[1] <= 785
+    assert match.center == _centre_of(screen)
+    assert match.score >= 0.88
 
 
-def test_network_retry_rejects_missing_message_or_retry_anchor():
+def test_network_retry_only_needs_the_message_anchor():
+    """按钮不再参与判定：**抹掉按钮照样要认出来**（这正是今天漏掉的那一步）。"""
     screen = load_screen()
     templates = load_network_reconnect_templates(TEMPLATES)
     without_message = screen.copy()
@@ -67,7 +83,23 @@ def test_network_retry_rejects_missing_message_or_retry_anchor():
     without_retry[660:815, 820:1110] = 0
 
     assert find_network_retry(without_message, templates) is None
-    assert find_network_retry(without_retry, templates) is None
+    assert find_network_retry(without_retry, templates) is not None
+
+
+def test_network_retry_catches_the_pairing_that_used_to_slip_through():
+    """今天那张帧四个锚点的实测分数（扫描脚本 runtime_logs/_probe_network_popup.py）：
+
+    message 0.5001（不过阈）/ retry 0.9854 / message_alt 0.9992 / retry_alt 0.4196
+    ⇒ 旧的两两配对两组都不成立。这条把**那张真机帧**钉住，防止再退回去。
+    """
+    screen = load_screen("network_disconnected_live_20261004.png")
+    templates = load_network_reconnect_templates(TEMPLATES)
+
+    match = find_network_retry(screen, templates)
+
+    assert match is not None
+    assert round(match.score, 3) == 0.999
+    assert match.center == _centre_of(screen)
 
 
 def test_network_retry_rejects_normal_game_frames():
@@ -237,6 +269,77 @@ class FakeClock:
 
     def sleep(self, seconds: float) -> None:
         self.value += seconds
+
+
+# ──⚠️⚠️ 竖屏画面必须放行（2026-10-07 修，用户点 2 的真凶）─────────────────
+#
+# 这一层所有判据都是**横屏**控件（基准 1982x1132），定位时按画面尺寸缩放，
+# 并有宽高比守卫（``evidence/sanctuary._scale_region``：横向与纵向缩放比例
+# 相差超过 2% 就抛「画面宽高比与模板基准不一致」）。
+#
+# 社区路线点进「游戏社区」后画面是 1080x1920 ⇒ 横向缩放 0.545、纵向 1.696
+# ⇒ 守卫**必然抛错**，异常从 ``Runtime.capture`` 冒到主循环（它不在主循环的
+# ``try`` 里）⇒ **失败收尾把刚打开的社区关掉**。实跑原文：
+#   14:50:10 执行点击 enter_community
+#   14:50:13 收尾=人还在社区竖屏页面里
+#   运行失败 模式=community 原因=画面宽高比与模板基准不一致
+
+
+def _portrait_screen(height: int = 1920, width: int = 1080) -> np.ndarray:
+    return np.zeros((height, width, 3), np.uint8)
+
+
+def test_portrait_frame_passes_straight_through_the_landscape_popup_guard():
+    """竖屏帧**原样返回、不点任何东西、不报错**。"""
+    portrait = _portrait_screen()
+    clicks: list[tuple[int, int]] = []
+    logs: list[str] = []
+    runtime = Runtime(lambda: portrait, clicks.append, emit=logs.append)
+    runtime.set_capture_guard(
+        Epic7GlobalPopupGuard(
+            load_network_reconnect_templates(TEMPLATES),
+            friendship_templates=load_friendship_points_templates(TEMPLATES),
+            friend_request_templates=load_friend_request_templates(STORY_TEMPLATES),
+        )
+    )
+
+    received = runtime.capture()
+
+    assert np.array_equal(received, portrait), "竖屏帧必须原样放行"
+    assert clicks == [], "竖屏段不该点横屏弹窗的关闭按钮"
+    assert not any("宽高比" in line for line in logs)
+
+
+def test_landscape_frame_still_goes_through_the_guard():
+    """⚠️ 反向守卫：横屏帧**仍然**要走判据（别把这条写成永远放行）。
+
+    用「骑士团签到弹窗」那张真横屏夹具：守卫应当认出来并点掉。
+    """
+    popup = _world_boss_screen("knights_signin_popup.png")[:1132, :1982]
+    assert popup.shape[:2] == (1132, 1982)
+    normal = np.asarray(
+        Image.open(ROOT / "tests" / "fixtures" / "epic7_story" / "stage.png").convert("RGB")
+    )[:1132, :1982]
+    screens = iter([popup, popup, normal])
+    clicks: list[tuple[int, int]] = []
+    logs: list[str] = []
+    clock = FakeClock()
+    runtime = Runtime(
+        lambda: next(screens), clicks.append, monotonic=clock.now, emit=logs.append
+    )
+    runtime.set_capture_guard(
+        Epic7GlobalPopupGuard(
+            load_network_reconnect_templates(TEMPLATES),
+            knights_signin_templates=load_knights_signin_templates(NAVIGATION_TEMPLATES),
+            sleep=clock.sleep,
+            now=clock.now,
+        )
+    )
+
+    runtime.capture()
+
+    assert clicks, "横屏帧仍该点掉骑士团签到弹窗（别把竖屏放行写成永远放行）"
+    assert any("close-knights-signin" in line for line in logs), logs
 
 
 def _world_boss_screen(name: str) -> np.ndarray:
@@ -723,10 +826,13 @@ def test_persistent_intimacy_popup_clicks_four_times_then_safely_stops(tmp_path)
         )
     )
 
-    with pytest.raises(RuntimeError, match="亲密度提升弹窗点击4次后仍未消失"):
+    with pytest.raises(
+        RuntimeError,
+        match=f"亲密度提升弹窗点击{popups_module._MAX_POPUP_CLICKS}次后仍未消失",
+    ):
         runtime.capture()
 
-    assert len(clicks) == 4
+    assert len(clicks) == popups_module._MAX_POPUP_CLICKS
     assert len(list(tmp_path.glob("*_intimacy_level_up_failed.png"))) == 1
 
 
@@ -749,10 +855,13 @@ def test_global_guard_clicks_four_times_then_safely_stops_if_popup_persists(tmp_
         )
     )
 
-    with pytest.raises(RuntimeError, match="断网重连弹窗点击4次后仍未消失"):
+    with pytest.raises(
+        RuntimeError,
+        match=f"断网重连弹窗点击{popups_module._MAX_POPUP_CLICKS}次后仍未消失",
+    ):
         runtime.capture()
 
-    assert len(clicks) == 4
+    assert len(clicks) == popups_module._MAX_POPUP_CLICKS
     assert len(list(tmp_path.glob("*_network_retry_failed.png"))) == 1
 
 
@@ -801,3 +910,137 @@ def test_global_guard_checks_manual_stop_while_waiting_on_popup():
 
     with pytest.raises(ManualStop):
         runtime.capture()
+
+
+# ---- 游戏内网页「网络错误」长条（横屏 WebView，2026-10-07 新接的第九个）---------
+#
+# ⚠️ 这条与上面那条「断线重连弹窗」是**两种不同的网络失败**，别并成一条：
+#   断线弹窗是**模态**的 —— 点画面任何位置都会触发重试，所以命中就点屏幕中央；
+#   这条长条**没有按钮** —— 唯一能消掉它的是网页容器右上角那颗圆钮 X。
+# 下面专门用一组测试把「两者各认各的」钉死（混为一条的代价：网页报错时会去点
+# 屏幕中央，那儿什么都没有，白白烧光点击预算）。
+#
+# 实测余量（2026-10-07，生产口径 `load_template` + `find_template`）：
+#   长条正例 1.0000 ×2（相隔 40 分钟两张真机帧）；「还在转圈」0.2455/0.2450；
+#   正常网页列表 0.2161；**全库 227 张横屏夹具最高 0.4908**（阈值 0.80）。
+#   圆钮正例 1.0000，但在**正常网页帧**上也有 0.9970/0.9739 ⇒ 它单独**不能当判据**，
+#   只能当「点哪儿」—— 这就是这里必须双锚点的原因。
+
+# 实测裁剪框（与 `global_popups.py` 的 `_WEB_NETWORK_MESSAGE_REGION` /
+# `_WEB_ERROR_CLOSE_REGION` 对应）。⚠️ 这里**独立写死**，绝不从被测函数里取：
+# 否则函数挪到哪儿、断言就跟着挪到哪儿，反向注入违规会纹丝不动（已踩过）。
+WEB_BAR_BOX = (624, 550, 672, 84)
+WEB_CLOSE_BOX = (1852, 66, 54, 54)
+
+
+def _erase(screen: np.ndarray, box: tuple[int, int, int, int]) -> np.ndarray:
+    erased = screen.copy()
+    x, y, w, h = box
+    erased[y : y + h, x : x + w] = 0
+    return erased
+
+
+def test_web_network_error_is_dismissed_from_the_top_right_close():
+    screen = load_screen("web_network_error_live_20261007.png")
+    templates = load_web_network_error_templates(NAVIGATION_TEMPLATES)
+
+    match = find_web_network_error_close(screen, templates)
+
+    assert match is not None
+    # 圆钮实测中心 (1879, 93)。
+    assert 1860 <= match.center[0] <= 1900
+    assert 75 <= match.center[1] <= 110
+    assert match.score >= 0.99
+
+
+def test_web_network_error_requires_the_message_bar():
+    """判据是那条**黑底白字长条**：抹掉它就不许再命中（哪怕 X 还挂在那儿）。"""
+    screen = load_screen("web_network_error_live_20261007.png")
+    templates = load_web_network_error_templates(NAVIGATION_TEMPLATES)
+
+    assert find_web_network_error_close(screen, templates) is not None
+    assert find_web_network_error_close(_erase(screen, WEB_BAR_BOX), templates) is None
+
+
+def test_web_network_error_requires_the_close_button():
+    """⚠️ 反向：抹掉 X 也必须不命中 —— 专门盯住「长条在、X 却定位不到」那一支。
+
+    那一支**必须返回 None**，不许退回一个猜的坐标：旁边就是屏幕右边缘，
+    点偏了没有第二次机会（保守不动手，让上层照旧失败并留诊断帧）。
+    """
+    screen = load_screen("web_network_error_live_20261007.png")
+    templates = load_web_network_error_templates(NAVIGATION_TEMPLATES)
+
+    assert find_web_network_error_close(screen, templates) is not None
+    assert find_web_network_error_close(_erase(screen, WEB_CLOSE_BOX), templates) is None
+
+
+def test_web_network_error_rejects_unrelated_landscape_frames():
+    """别的画面不能被误判成网页报错 —— 否则会在屏幕右上角乱点（那儿是返回/关闭）。"""
+    templates = load_web_network_error_templates(NAVIGATION_TEMPLATES)
+    others = [
+        FIXTURES / "network_reconnect.png",
+        FIXTURES / "network_reconnect_navigation.png",
+        FIXTURES / "network_disconnected.png",
+        FIXTURES / "network_disconnected_live_20261004.png",
+        FIXTURES / "intimacy_level_up_live_20260815.png",
+        FIXTURES / "pet_gift_live_20260928.png",
+        WORLD_BOSS_FIXTURES / "knights_home.png",
+        STORY_FIXTURES / "stage.png",
+    ]
+
+    for path in others:
+        if not path.is_file():
+            continue
+        screen = np.asarray(Image.open(path).convert("RGB"))[:1132, :1982]
+        assert find_web_network_error_close(screen, templates) is None, path.name
+
+
+def test_the_two_network_failures_do_not_recognize_each_other():
+    """两种网络失败**各认各的**：网页报错帧上认不出断线弹窗，断线弹窗帧上也认不出长条。
+
+    这是「别把它们并成一条」的机器守门 —— 并了的后果是网页报错时去点屏幕中央
+    （那里什么都没有），点满 4 次才熔断，社区那一轮全废。
+    """
+    reconnect = load_network_reconnect_templates(TEMPLATES)
+    web = load_web_network_error_templates(NAVIGATION_TEMPLATES)
+
+    web_error_frame = load_screen("web_network_error_live_20261007.png")
+    assert find_network_retry(web_error_frame, reconnect) is None
+
+    for name in ("network_reconnect.png", "network_disconnected.png"):
+        assert find_web_network_error_close(load_screen(name), web) is None, name
+
+
+def test_global_guard_dismisses_web_network_error():
+    """守卫必须能消费掉这条长条，然后交回「长条已消失」的那一帧。"""
+    with_error = load_screen("web_network_error_live_20261007.png")
+    recovered = _erase(with_error, WEB_BAR_BOX)
+    screens = iter([with_error, with_error, recovered])
+    clicks: list[tuple[int, int]] = []
+    logs: list[str] = []
+    clock = FakeClock()
+    runtime = Runtime(
+        lambda: next(screens),
+        clicks.append,
+        monotonic=clock.now,
+        emit=logs.append,
+    )
+    runtime.set_capture_guard(
+        Epic7GlobalPopupGuard(
+            load_network_reconnect_templates(TEMPLATES),
+            web_network_error_templates=load_web_network_error_templates(
+                NAVIGATION_TEMPLATES
+            ),
+            sleep=clock.sleep,
+            now=clock.now,
+        )
+    )
+
+    received = runtime.capture()
+
+    assert np.array_equal(received, recovered)
+    assert len(clicks) == 1
+    assert 1860 <= clicks[0][0] <= 1900
+    assert 75 <= clicks[0][1] <= 110
+    assert any("动作=dismiss-web-network-error" in line for line in logs)
