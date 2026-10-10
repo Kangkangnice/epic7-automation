@@ -62,6 +62,165 @@ class TemplateMatchingTests(unittest.TestCase):
         )
 
 
+class MatchModeTests(unittest.TestCase):
+    """``white_mask`` 口径：把「控件」从「背景」里抠出来再比。
+
+    背景无关这件事**只能用分数证明** —— 同一枚图标贴在两种完全不同的底图上，
+    原样比会掉下去、白掩膜比必须都站得住。下面的合成画面就是干这个的：
+    一枚白十字画在中灰底上（模板的来源场景），再画到深色底上（换一条路线）。
+    """
+
+    #: 合成块边长；「图标」= 块里的一枚白色十字。
+    SIZE = 20
+    #: 两个场景的整体亮度，以及各自纹理的振幅。
+    LIGHT = 150
+    DARK = 40
+    AMPLITUDE = 40
+
+    def _scene(self, seed: int, background: int) -> np.ndarray:
+        """有纹理的场景底图。
+
+        ⚠️ 底图必须是**有结构的**，不能是纯色：``TM_CCOEFF_NORMED`` 减均值、
+        除标准差 —— 纯色底换成另一个纯色底（150 → 40）分数**一点都不会掉**
+        （实测 1.0000）。真实场景伤到判据的地方是底图的**纹理**，不是亮度。
+        """
+        rng = np.random.default_rng(seed)
+        return rng.integers(
+            max(0, background - self.AMPLITUDE),
+            background + self.AMPLITUDE,
+            (self.SIZE * 3, self.SIZE * 3, 3),
+            dtype=np.uint8,
+        )
+
+    def _draw_cross(self, frame: np.ndarray, top: int, left: int) -> np.ndarray:
+        frame[top + 4 : top + 16, left + 9 : left + 11] = 255
+        frame[top + 9 : top + 11, left + 4 : left + 16] = 255
+        return frame
+
+    def _template(self) -> np.ndarray:
+        """「生在中灰场景里的那张模板」：一块中灰纹理 + 白十字。"""
+        start = self.SIZE
+        block = self._scene(1, self.LIGHT)[
+            start : start + self.SIZE, start : start + self.SIZE
+        ].copy()
+        return self._draw_cross(block, 0, 0)
+
+    def test_the_same_icon_matches_on_a_completely_different_background(self):
+        template = self._template()
+        # 同一个场景（纹理逐像素一致）—— 原样比满分。
+        same = self._draw_cross(self._scene(1, self.LIGHT), self.SIZE, self.SIZE)
+        # 另一条路线的场景：图标画法一样，底图纹理完全不同。
+        other = self._draw_cross(self._scene(2, self.DARK), self.SIZE, self.SIZE)
+
+        raw_same = matcher.find_best_template(same, template, mode="raw").score
+        raw_other = matcher.find_best_template(other, template, mode="raw").score
+        masked_same = matcher.find_best_template(
+            same, template, mode="white_mask"
+        ).score
+        masked_other = matcher.find_best_template(
+            other, template, mode="white_mask"
+        ).score
+
+        # 原样比：底图的纹理一换，分数就掉 ——
+        # 这正是「判据在别的场景里悄悄失效」的样子。
+        # （量级也和真机对得上：月塔事故帧原样比 0.7492~0.7704。）
+        self.assertGreater(raw_same, 0.99)
+        self.assertLess(raw_other, 0.85)
+        # 白掩膜比：两个场景都是满分，因为掩膜里只剩图标的形状。
+        self.assertGreater(masked_same, 0.99)
+        self.assertGreater(masked_other, 0.99)
+        self.assertAlmostEqual(masked_same, masked_other, places=6)
+
+    def test_the_mask_survives_a_light_grey_background_too(self):
+        """⚠️ 白色下界是 200，不是「灰度 > 180」那种松口径。
+
+        亮灰底（180~199）在松口径下会整片变成白色，掩膜糊成一整块 ⇒ 图标反而
+        认不出来（实测 ``epic7_expedition/battle.png`` 的浅灰天空：180 只剩
+        0.4085、200 有 0.8347）。这条用例把「底下那一片亮灰必须留在掩膜外」钉死。
+        """
+        light_grey = 190
+        frame = self._draw_cross(self._scene(3, light_grey), self.SIZE, self.SIZE)
+
+        mask = matcher.white_mask(frame)
+
+        # 底图的亮灰不算白 ⇒ 掩膜里只有十字，占全帧很小一块。
+        self.assertLess(float(np.mean(mask > 0)), 0.20)
+        # 而同一帧里那块「亮灰的图标区」整体不该被算成白 —— 只有十字是白的。
+        self.assertEqual(
+            matcher.WHITE_PIXEL_THRESHOLD,
+            200,
+            "白色下界被改动了：换这个数必须重扫全库真阳性/真阴性，不是随手调",
+        )
+
+    def test_the_default_mode_is_still_the_original_ruler(self):
+        template = self._template()
+        other = self._draw_cross(self._scene(2, self.DARK), self.SIZE, self.SIZE)
+
+        default = matcher.find_best_template(other, template)
+        raw = matcher.find_best_template(other, template, mode="raw")
+        masked = matcher.find_best_template(other, template, mode="white_mask")
+
+        self.assertEqual("raw", matcher.MATCH_MODE_RAW)
+        self.assertEqual(raw, default, "默认口径被动过：既有 2000+ 条调用方的行为会一起变")
+        self.assertNotEqual(default, masked)
+
+    def test_an_unknown_mode_raises_instead_of_falling_back(self):
+        """写错口径必须**出声**：静默退回原样比的话，阈值还是新口径的数字，
+        判据会变成永假 —— 属于「判据不许静默降级」那一类。"""
+        screen = self._draw_cross(self._scene(1, self.LIGHT), self.SIZE, self.SIZE)
+        template = self._template()
+
+        for call in (
+            lambda: matcher.find_best_template(screen, template, mode="白掩膜"),
+            lambda: find_template(screen, template, 0.5, mode="white"),
+            lambda: best_match(screen, template, mode=""),
+        ):
+            with self.assertRaises(ValueError):
+                call()
+
+    def test_the_cache_never_serves_one_mode_an_answer_meant_for_another(self):
+        """两种口径的答案不能互相串 —— 串了就是「分数看着合理、其实换了把尺子」。"""
+        remember = matcher.MATCH_CACHE_ENABLED
+        matcher.MATCH_CACHE_ENABLED = True
+        matcher._MATCH_CACHE.clear()
+        try:
+            template = self._template()
+            other = self._draw_cross(self._scene(2, self.DARK), self.SIZE, self.SIZE)
+
+            with mock.patch.object(
+                matcher.cv2, "matchTemplate", wraps=matcher.cv2.matchTemplate
+            ) as spy:
+                raw = matcher.find_best_template(other, template, mode="raw")
+                masked = matcher.find_best_template(
+                    other, template, mode="white_mask"
+                )
+
+            self.assertEqual(2, spy.call_count, "换口径却吃了另一个口径的缓存答案")
+            self.assertNotEqual(raw.score, masked.score)
+        finally:
+            matcher.MATCH_CACHE_ENABLED = remember
+            matcher._MATCH_CACHE.clear()
+
+    def test_white_mask_is_a_single_channel_zero_or_255_image(self):
+        image = np.array(
+            [
+                [[255, 255, 255], [200, 199, 200]],
+                [[0, 0, 0], [255, 255, 254]],
+            ],
+            dtype=np.uint8,
+        )
+
+        mask = matcher.white_mask(image)
+
+        # 三通道**都**要过界：[200, 199, 200] 里 199 不够白 ⇒ 出局。
+        np.testing.assert_array_equal(
+            np.array([[255, 0], [0, 255]], dtype=np.uint8), mask
+        )
+        self.assertEqual(2, mask.ndim)
+        # 单通道输入（调用方自己先裁好的掩膜）也要能收。
+        np.testing.assert_array_equal(mask, matcher.white_mask(mask))
+
+
 class FindAllTemplatesTests(unittest.TestCase):
     """``find_all_templates``：同一个模板在一屏里出现多次时，**全部**都要拿到。
 

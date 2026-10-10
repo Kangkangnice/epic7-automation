@@ -578,3 +578,92 @@ def test_the_battle_lock_is_engaged_while_observing():
     assert all(observed_locked), "战斗中闸门松了 —— 这一局随时可能被打断"
     # 认出结算页之后必须解锁，否则下一局永远动不了。
     assert gate.locked is False
+
+
+def test_manual_without_a_toggle_point_waits_instead_of_failing_at_once():
+    """★ 2026-10-09 月塔事故：一帧「判成手动又给不出坐标」就 _fail 是错的。
+
+    判据各自都会在真假之间跳：布局靠底座颜色数活人（技能特效会盖住底座），
+    图标是共享模板（背景一换分数就掉进死区）。单帧的结论本来就不可信 ——
+    旧代码却拿它当死刑判决，于是整条路线当场回首页、白打一层。
+
+    这里喂「手动但没坐标」只持续 3 帧，然后判据抖回来（给出坐标并能点开）。
+    期望：**不失败**，且等抖回来之后正常把自动点开。
+    """
+    manual_no_point = BattleObservation(
+        False, True, False, True, AutoBattleState.MANUAL, None
+    )
+    manual = replace(manual_no_point, auto_point=(900, 80))
+    auto = replace(manual, auto_state=AutoBattleState.AUTO, auto_point=None)
+    result = replace(auto, battle_visible=False, result_visible=True)
+    supervisor, gate, observe, clicks, logs, diagnostics = make_supervisor(
+        [manual_no_point] * 3 + [manual] * 2 + [auto, auto, result, result],
+        config_overrides={"auto_point_grace_seconds": 12},
+    )
+
+    assert supervisor.run(observe, cycle=3) is BattleOutcome.RESULT_REACHED
+    assert diagnostics == [], f"不该判失败，却存了诊断：{diagnostics}"
+    assert clicks == [((900, 80), "enable-auto-battle")], clicks
+    assert any("缺开关坐标" in line for line in logs), logs
+
+
+def test_manual_without_a_toggle_point_still_fails_after_the_grace_window():
+    """成对：判据一直抖不回来时，**必须**在窗口用完后收手，不能无限干等。
+
+    没有这一条，把上面那条"修"成「永远不判死」也照样绿 —— 而那样会在
+    真正拿不到开关的场景里一路空转到整场超时，比立刻停下更糟。
+    """
+    manual_no_point = BattleObservation(
+        False, True, False, True, AutoBattleState.MANUAL, None
+    )
+    supervisor, gate, observe, clicks, logs, diagnostics = make_supervisor(
+        [manual_no_point] * 10,
+        config_overrides={
+            "auto_point_grace_seconds": 4,
+            "no_business_progress_seconds": 300,
+            "absolute_seconds": 300,
+            "no_activity_seconds": 300,
+        },
+    )
+
+    with pytest.raises(RuntimeError, match="缺少自动开关坐标"):
+        supervisor.run(observe, cycle=4)
+    assert diagnostics == ["auto_point_missing"]
+    assert clicks == [], "拿不到坐标时一次都不许点"
+
+
+class TestNoBusyLoop:
+    """主循环里不许出现绕过 ``sleep`` 的 ``continue``。
+
+    ⚠️ 2026-10-09 我自己踩的：给 ``auto_point is None`` 加「有界等待」时图省事写了
+    ``continue``，而 ``self.sleep(self.config.poll_seconds)`` 在**循环最末尾**
+    ⇒ 那一支会跳过 sleep，变成**每秒成百上千次截图**的忙循环。
+    真机上这比原来的 bug 更糟（截图是最贵的操作），而单测里看不出来 ——
+    假 clock 的 ``sleep`` 是空操作，跑得飞快，测试全绿。
+
+    判据落在**源码结构**上：``BattleSupervisor.run`` 的 ``while True`` 循环体内
+    不得出现 ``continue``。这条不依赖运行时行为，所以拦得住上面那种「测试照绿」的写法。
+    """
+
+    def test_the_observation_loop_never_continues_past_the_sleep(self):
+        import ast
+        import inspect
+        import textwrap
+
+        from auto_game_unified.core import battle_supervisor as module
+
+        source = textwrap.dedent(inspect.getsource(module.BattleSupervisor.run))
+        tree = ast.parse(source)
+
+        offenders: list[int] = []
+        for node in ast.walk(tree):
+            if isinstance(node, ast.While) and isinstance(node.test, ast.Constant):
+                if node.test.value is True:
+                    for inner in ast.walk(node):
+                        if isinstance(inner, ast.Continue):
+                            offenders.append(inner.lineno)
+
+        assert offenders == [], (
+            "主循环里出现 continue —— 会跳过末尾的 sleep 变成忙循环；"
+            "改用 if/else 包住后续逻辑"
+        )

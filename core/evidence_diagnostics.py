@@ -49,6 +49,9 @@ def inspect_profile(
             template,
             region=atom.region,
             reference_size=atom.reference_size,
+            # ⚠️ 必须跟路线走同一个口径：诊断包里的分数要与实跑判定出自同一把尺子，
+            # 否则工具报「0.7492 未过阈」而实跑用的是白掩膜的 0.9214，等于骗人。
+            mode=atom.match_mode,
         )
         observed = match is not None and match.score >= atom.threshold
         observations[key] = AtomObservation(

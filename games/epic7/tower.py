@@ -22,7 +22,21 @@
 | BATTLE | 战斗中 | 等（交战斗监督） | CARD |
 | CARD | 三选一 | 点中间卡 → 点「决定装置」 | CARD_CONFIRM |
 | CARD_CONFIRM | 三选一（已选中） | 点「决定装置」 | RESULT |
-| RESULT | 结算页 | 点「下一层」 | **TEAM**（下一层，闭环） |
+| RESULT | 结算页 | 点右下角按钮 | **TEAM**（下一层，闭环）／**CONQUERED**（打满了） |
+| CONQUERED | 「征服欧多马顿塔」 | **不点任何东西**（终点） | 收工 |
+
+⚠️ **`RESULT` 有两个出口，靠「点完之后落到哪」自己分**：第 N（<25）层点下去
+约 7 秒落到准备战斗页（`TEAM`，继续下一层）；第 25 层点下去弹出
+「征服欧多马顿塔」叙述屏（`CONQUERED`，整条路线到此结束）。
+
+> **「征服」这一屏 = 整条月塔路线的终点**（用户 2026-10-09 实机拍板）：
+> 「一碰到这个界面就代表要结束了，就是整个环节的最终的一个终点」。
+> 认出它立刻走 `FloorsConquered`（退出码 2，文案「月塔层数已打满」），
+> **一个按钮都不点**，随后按统一的收尾机制回大厅。
+>
+> ⚠️ 别把这一屏当「过场页」去点它底部的「点击关闭」：点了会回到月塔主页
+> （实测），而那时**进度已经清空**（主页显示「已占领层 并领取了奖励」）——
+> 再往下走既没有业务，又可能误开新的一轮。终点就该收手。
 
 ## ⚠️ 两个必须记住的实测事实（2026-10-08）
 
@@ -49,16 +63,23 @@ from auto_game_unified.core.battle_supervisor import (
     BattleObservation,
     valid_game_frame,
 )
-from auto_game_unified.core.matcher import Match, find_template, load_template
+from auto_game_unified.core.matcher import (
+    MATCH_MODE_RAW,
+    Match,
+    find_template,
+    load_template,
+)
 from auto_game_unified.core.runtime import StaminaExhausted
 from auto_game_unified.core.supervisor import meaningful_change
 from auto_game_unified.games.epic7.battle_controls import (
     BattleControls,
     battle_scene_visible,
     observe_battle_controls,
+    resolve_auto_state,
 )
 from auto_game_unified.games.epic7.evidence.common import EvidenceProfile
 from auto_game_unified.games.epic7.evidence.tower import (
+    MATCH_MODES as TOWER_MATCH_MODES,
     REFERENCE_SIZE as TOWER_REFERENCE_SIZE,
     REGIONS as TOWER_REGIONS,
     THRESHOLDS as TOWER_THRESHOLDS,
@@ -81,6 +102,9 @@ class TowerState(Enum):
     CARD = "card"
     CARD_CONFIRM = "card_confirm"
     RESULT = "result"
+    # 打满 25 层后弹出的「征服欧多马顿塔」叙述屏 —— **整条路线的终点**。
+    # 认出它 ⇒ 立刻收工（``FloorsConquered``，退出码 2），**不点任何东西**。
+    CONQUERED = "conquered"
 
 
 # 日志用画面名：state.value -> 中文画面描述
@@ -92,6 +116,7 @@ STATE_LABELS = {
     TowerState.CARD: "选择装置",
     TowerState.CARD_CONFIRM: "选择装置确认",
     TowerState.RESULT: "月塔结算",
+    TowerState.CONQUERED: "月塔已征服",
 }
 
 
@@ -133,6 +158,7 @@ class TowerTemplates:
     card_decide: np.ndarray
     card_hint: np.ndarray
     result_clear: np.ndarray
+    conquer_title: np.ndarray
     # 战斗里「自动战斗关着」的图标 —— 复用 story 的那一张，不另做。
     auto_off: np.ndarray
     evidence: EvidenceProfile | None = None
@@ -151,6 +177,7 @@ def build_tower_templates(template_dir: Path) -> TowerTemplates:
         card_decide=load("card_decide"),
         card_hint=load("card_hint"),
         result_clear=load("result_clear"),
+        conquer_title=load("conquer_title"),
         # ⚠️ 复用 story 的自动战斗关闭图标（与远征/主线同一个控件、同一套渲染），
         # 不另裁一份 —— 同内容跨路线复用的前提是**同一个后端**（都是模拟器）。
         auto_off=load_template(str(template_dir.parent / "story" / "auto_off.png")),
@@ -165,6 +192,9 @@ class TowerStateMachine:
     _THRESHOLD = 0.88
     _THRESHOLDS = TOWER_THRESHOLDS
     _REGIONS = TOWER_REGIONS
+    # 判据 -> 比对口径。与 `_THRESHOLDS` / `_REGIONS` 同一套纪律：类常量
+    # **镜像证据画像**，再由 `__init__` 用真实画像覆盖（见那里）。
+    _MATCH_MODES = TOWER_MATCH_MODES
 
     # 允许为 ``None`` 的模板 —— **月塔一个都不许**。
     #
@@ -211,6 +241,10 @@ class TowerStateMachine:
                 key: atom.threshold
                 for key, atom in self.templates.evidence.atoms.items()
             }
+            self._MATCH_MODES = {
+                key: atom.match_mode
+                for key, atom in self.templates.evidence.atoms.items()
+            }
         self.completed_cycles = 0
         # 本层「中间卡是否已点过」—— CARD -> CARD_CONFIRM 的一次性闸门。
         self.card_picked = False
@@ -254,6 +288,9 @@ class TowerStateMachine:
             self._THRESHOLDS.get(name, self._THRESHOLD),
             region=self._REGIONS[name],
             reference_size=self._REFERENCE_SIZE,
+            # 比对口径由证据画像声明（`auto_off` 是背景无关的白掩膜，其余是原样 RGB）。
+            # 这里**只转发**，不在路线里复刻预处理 —— 复刻就是把同一个判据抄成两份。
+            mode=self._MATCH_MODES.get(name, MATCH_MODE_RAW),
         )
 
     def _required(self, screen: np.ndarray, name: str) -> Match:
@@ -285,6 +322,11 @@ class TowerStateMachine:
             )
         if state == TowerState.RESULT:
             return self._locate(screen, "result_clear") is not None
+        if state == TowerState.CONQUERED:
+            # 打满后的终点屏。⚠️ 它**也**要排除 `result_clear`：那一屏是半透明
+            # 弹窗叠在结算页上，但实测 `result_clear` 掉到 0.3141（不过阈），
+            # 所以只靠标题一条就够，这里不必再加排除条件。
+            return self._locate(screen, "conquer_title") is not None
         return False
 
     def _confirm_page(self, label: str) -> None:
@@ -358,19 +400,18 @@ class TowerStateMachine:
         previous_screen: np.ndarray | None,
     ) -> BattleObservation:
         controls = observe_battle_controls(screen)
+        auto = self._locate(screen, "auto_off")
+        auto_score = "无" if auto is None else f"{auto.score:.4f}"
+        # 布局（强证据）与图标（弱证据）的合并规则见 `resolve_auto_state` 的 docstring
+        # ——2026-10-09 月塔事故就是旧写法「无条件信图标」导致的。
+        resolved = resolve_auto_state(controls, auto is not None)
         auto_state = {
             BattleControls.AUTO_CONTROLS: AutoBattleState.AUTO,
             BattleControls.MANUAL_CONTROLS: AutoBattleState.MANUAL,
             BattleControls.TRANSITION: AutoBattleState.UNKNOWN,
-        }[controls]
-        auto = self._locate(screen, "auto_off")
-        auto_score = "无" if auto is None else f"{auto.score:.4f}"
+        }[resolved]
         auto_evidence = f"布局={controls.value} 自动关图标={auto_score}"
-        # 「右上角关自动图标 ⇒ 判定为手动」：按钮布局判成 transition（看不出长相）
-        # 时靠这个图标兜底 —— 否则那一帧会停在「未知」，而「未知」按安全设计是
-        # 不许点自动的，战斗就会干等到超时。图标认不到就不覆盖上面的布局判定。
-        if auto is not None:
-            auto_state = AutoBattleState.MANUAL
+        if resolved is not controls:
             auto_evidence += " 来源=右上角自动关闭图标"
         progressing = valid_game_frame(screen) and meaningful_change(
             previous_screen, screen
@@ -440,6 +481,11 @@ class TowerStateMachine:
             if result is not None:
                 # 已经到结算页（极少数情况：监督没接住，主循环自己转到了这一页）
                 return None
+            # ⚠️ 终点屏也可能在这里撞上（监督按 `result_visible` 收手时画面已经翻到
+            # 征服弹窗）：**立刻按打满收工**，别掉进下面的 `UnrecognizedScreen`
+            # （那会变成「月塔战斗画面未识别」超时 —— 把正常打满报成故障）。
+            if self.is_in_state(screen, TowerState.CONQUERED):
+                raise FloorsConquered("月塔第 25 层已征服（「征服欧多马顿塔」）")
             # ⚠️ 三选一页同样**返回 None**，不许走到下面的 `UnrecognizedScreen`：
             # 那一页既没有 `result_clear` 也没有战斗场面，但它是「这一层收尾」
             # 的合法落点 —— 监督正要在这里收手。抛错会把整条路线打断
@@ -487,10 +533,38 @@ class TowerStateMachine:
                 "next-floor", self._POINT_NEXT_FLOOR,
                 source_page="月塔结算",
                 # ⚠️ 实测（2026-10-08，逐秒连拍 20 帧）：点「下一层」后约 7 秒落到
-                # **准备战斗页**，不是直接开打。所以这条边是 RESULT -> TEAM。
-                target_states=(TowerState.TEAM,),
-                reason="识别到月塔结算，点击下一层",
+                # **准备战斗页**，不是直接开打。所以正常那一条边是 RESULT -> TEAM。
+                #
+                # ⚠️⚠️ **但第 25 层是另一条边**（2026-10-09 实机）：打满时右下角那个
+                # 槽位的文字从「下一层」变成「征服」，点下去弹出「征服欧多马顿塔」
+                # 叙述屏 ⇒ 落到 CONQUERED，整条路线到此结束。
+                #
+                # 两个目标都写进 ``target_states``，靠「点完之后哪一屏先出现」自己分。
+                # **不需要**为「征服」另做一枚按钮判据 —— 那一屏不遮住这个按钮，
+                # 同一枚模板会同时命中两屏（实测间距 +0.0003，等于没有）；而且两个
+                # 文字本就在**同一个按钮槽**（绿底 bbox 逐像素一致），点谁都一样。
+                # 详见 ``evidence/tower.py`` 的「conquer_button 刻意不存在」。
+                #
+                # ⚠️ 顺序有意义：`CONQUERED` 排在 `TEAM` 前面。两页实测互斥
+                # （征服屏上 `team_battle_start` 只有 0.4323），这里的顺序只是
+                # 「万一同时成立时先认终点」—— 宁可早收工，不可把终点当成下一层。
+                target_states=(TowerState.CONQUERED, TowerState.TEAM),
+                reason="识别到月塔结算，点击右下角按钮（下一层／打满征服）",
             )
+
+        if self.state == TowerState.CONQUERED:
+            # ⚠️⚠️ **整条路线的终点**（用户 2026-10-09 拍板）：认出这一屏 ⇒ 立刻收工。
+            #
+            # 抛 `FloorsConquered` 而不是返回 None：返回 None 只会让主循环每拍
+            # `sleep(poll_seconds)` 空转，直到 60 秒状态超时——那是**假故障**
+            # （走 `RuntimeError`、退出码 1），而这里分明是「正常打满了」（退出码 2）。
+            # 走 `ResourceExhausted` 那条通道，收尾也会照常回家（见基类 `_close_out`）。
+            #
+            # ⚠️ 抛之前**先确认这一屏还在**：主循环的结论门槛要求连续两帧一致，
+            # 这里 `_required` 失败会抛 `UnrecognizedScreen`（不采信结论），
+            # 正是我们想要的 —— 单帧抖动不该宣布「打满了」。
+            self._required(screen, "conquer_title")
+            raise FloorsConquered("月塔第 25 层已征服（「征服欧多马顿塔」）")
 
         raise RuntimeError(f"月塔状态机遇到不支持的状态：{self.state.value}")
 
@@ -540,7 +614,12 @@ TOWER_RESUME_PAGES = frozenset(
 
 # 「接力」探测顺序 —— **顺序即优先级**，不能改。
 #
-# - **HOME 必须排最前**：`home_enter` 是月塔主页独有判据（实测他页最高 0.430），
+# - **CONQUERED 必须排最前**：它是**整条路线的终点**（打满 25 层的征服弹窗）。
+#   排在 HOME 前面有两个理由：① 语义上「认出终点」应当压过一切别的判断；
+#   ② 那一屏是半透明弹窗叠在结算页上，页面上**同时残留着**别的页面的元素，
+#   只是实测都不过阈（`home_enter` 0.5780 / `result_clear` 0.3141 /
+#   `team_battle_start` 0.4323）—— 但顺序上先认它，将来判据漂移也不会误接力。
+# - **HOME 排第二**：`home_enter` 是月塔主页独有判据（实测他页最高 0.430），
 #   两页之间没有包含关系，但主页是「刚进场」的自然落点，优先认它。
 # - **CARD_CONFIRM 排在 CARD 前面**：两态共用同一组判据（`card_decide` +
 #   `card_hint` **同时成立**，实测都 1.000），机器分不出「卡选了没有」。
@@ -553,6 +632,7 @@ TOWER_RESUME_PAGES = frozenset(
 # - **RESULT 排在 BATTLE 前面**：结算页上 `battle_scene_visible` 也可能为真
 #   （背景仍是战场），先认结算页才不会把奖励白扔掉。
 _TOWER_RESUME_ORDER: tuple[TowerState, ...] = (
+    TowerState.CONQUERED,
     TowerState.HOME,
     TowerState.CARD_CONFIRM,
     TowerState.RESULT,
@@ -585,6 +665,10 @@ def detect_resume_point(
     for state in _TOWER_RESUME_ORDER:
         if not machine.is_in_state(screen, state):
             continue
+        # ⚠️ 只有 HOME 给 ``entry``（月塔主页那一页名）。
+        # ``CONQUERED`` 排在最前但**不给 entry**：它不是「可以从这一页接着跑」的
+        # 业务页，而是终点 —— 接力认出它，下一步就是抛 ``FloorsConquered`` 收工。
+        # 给它一个 entry 会让导航器先跑一趟主页，白折腾还多一次误点风险。
         entry = TOWER_ENTRY_PAGE if state is TowerState.HOME else None
         return ResumePoint(state_label(state), state, entry)
     return None
@@ -617,41 +701,45 @@ class TowerRunner(TransactionalRunnerBase):
     # 转场确认**落到战斗页** ⇒ 交战斗监督。
     _HANDOFF_AFTER_TRANSITION_ACTIONS = frozenset({"battle-start"})
 
-    # ⚠️⚠️ **同一槽位换按钮 ⇒ 这个动作绝不许「原地重按」**（2026-10-09 两次实跑）。
+    # ⚠️⚠️ 月塔右下角是**同一个绿色按钮槽**，转场后换按钮 ⇒ 「原地重按」那一手
+    # 会被游戏**攒着**、等下一屏出来时一次性兑现（2026-10-09 两次实跑，诊断帧都是
+    # 战斗进行中的画面）。所以月塔开启基类的「画面冻住就不补点」闸门 ——
+    # 判据、依据与量化见 ``transactional_runner_base._retry_block_reason``。
     #
-    # 月塔右下角那个绿色按钮槽是**同一个位置**放不同的按钮：
-    #   ``_POINT_SELECT_TEAM``  = (1698, 1044)  「选择队伍」（楼层列表）
-    #   ``_POINT_BATTLE_START`` = (1726, 1040)  「战斗开始」（准备战斗）
-    # 两点相距只有 **28 px**（``test_the_second_click_of_select_team_would_land_on_battle_start``
-    # 钉住这个前提）。基类的重试语义是「这一下没生效 ⇒ 再按一次同一个坐标」，
-    # 而这里「同一个坐标」**已经换成另一颗按钮了** ⇒ 重按 = 直接开打。
+    # ⚠️ **第一版是列动作名单**（``_RETRY_UNSAFE_ACTIONS = {"select-team"}``），
+    # 已废弃，两处都错：
     #
-    # 实测（08:16 与 08:21 两次，诊断帧都是战斗进行中的画面）：
-    #   点 select-team 08:21:12 → 重试 ×3 → 源页 08:21:33 才离开 → 白等 39 秒超时
-    # 对照同一次会话里安全的 `enter-tower`（主页→楼层列表）：**5 秒一次过、零重试**。
-    # ⇒ 说明第一下本来就是生效的，是**重试自己把战斗点起来的**，属自伤循环。
+    #   1. **落点重叠是布局的普遍属性，不是那一个槽位的特例**。实测
+    #      （``.workbuddy/_retry_overlap.py``，按钮本体宽 231~242px）：
     #
-    # ⚠️ **为什么不靠加大 ``_SETTLE_SECONDS`` 解决**（我第一版就是这么改的，输了）：
-    # 那是拿一个固定值去赌转场时长。第一次按「导航段 2~3 秒」取 3.0 秒，
-    # 结果这个转场实测 >5 秒（源页 21 秒才离开）⇒ 照样重试。
-    # 而且转场时长随机器负载波动，**赌不赢**；加大还会拖慢「真·点击失效」的发现。
+    #      ==============  ===============  ================  =======
+    #      动作             落点             下一屏的按钮      偏差
+    #      ==============  ===============  ================  =======
+    #      ``enter-tower`` (1640, 1055)     ``select-team``  59 px
+    #      ``select-team`` (1698, 1044)     ``battle-start`` 28 px
+    #      ``next-floor``  (1787, 1041)     ``battle-start`` 61 px
+    #      ``battle-start``(1726, 1040)     （下一屏是战斗）   无害
+    #      ==============  ===============  ================  =======
     #
-    # 按转场契约：「来源已离开 ⇒ 只等待，禁止重复旧动作」；真正「点不中」由
-    # 60 秒状态超时兜底。所以正确的修法是**关掉这个动作的重试**，不是延长等待。
+    #      四条里三条压住下一屏的按钮，名单只列了一条。旧注释还写着
+    #      「``enter-tower`` / ``battle-start`` / ``next-floor`` 的落点与别的按钮离得远、
+    #      重按无害」——**这句是错的**，别照抄。
+    #   2. **名单的尺子本身就不好定**：第一版拿「两点距离 <= 40px」当判据，只抓到
+    #      28px 那条，59px / 61px 两条全部漏掉。而且用户明确否掉了「一律禁止重试」：
+    #      那会把「真的没点到」也一起禁掉。
     #
-    # ⚠️ 目前只有 ``select-team`` 一条：``enter-tower`` / ``battle-start`` /
-    # ``next-floor`` 的落点与别的按钮离得远（不在同一槽位），重按无害，保持默认。
-    _RETRY_UNSAFE_ACTIONS = frozenset({"select-team"})
+    # ⇒ 改问**当下这一下的危险程度**：画面还在动 = 真没点到，允许补点；画面完全冻结
+    # = 游戏正忙、这一下会被攒着，只等。
+    #
+    # ⚠️ 判据必须落在**现象**上，不能退回成名单 —— 名单的失效方式是「漏」，而漏的那
+    # 一次恰恰是把战斗误开起来的那一次。
+    _RETRY_REQUIRES_MOTION = True
 
     # 点完先静置再截第一帧。默认 ``None`` ⇒ 退化成 ``poll_seconds``（1.0 秒）。
-    # ⚠️ 这个值**不再是**防重试的主力（那是上面 ``_RETRY_UNSAFE_ACTIONS`` 的活），
+    # ⚠️ 这个值**不承担安全职责**（那是上面 ``_RETRY_REQUIRES_MOTION`` 的活），
     # 它只是让第一帧尽量落在转场窗口之外、少空转几帧。取 3.0 的参照是竞技场（1.5）
-    # —— 月塔转场更慢；再大意义有限，因为它已不承担安全职责。
+    # —— 月塔转场更慢；再大意义有限，反而会拖慢「真·点击失效」的发现。
     _SETTLE_SECONDS = 3.0
-
-    def _retry_is_safe(self, action: TowerAction) -> bool:
-        """``select-team`` 那个槽位转场后会变成「战斗开始」，重按等于开打。"""
-        return action.name not in self._RETRY_UNSAFE_ACTIONS
 
     def _battle_config(self) -> BattleConfig:
         """战斗看护的两条时限放宽到 20 分钟。

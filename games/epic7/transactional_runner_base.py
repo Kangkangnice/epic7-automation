@@ -7,8 +7,9 @@
   ``_ACTION_RETRY_SECONDS`` 秒才允许再点（上限 4 次）→ 靠
   ``machine._confirmed_page ∈ action.target_pages`` 判「转场完成」。
 - **本基类**：点一次 → 每隔一拍看一眼 → **目标页面连续两帧**出现才
-  ``machine.commit()`` → 源页面还在就再点（上限 4 次）→ 可选「画面长时间没变化
-  就收手存档」。
+  ``machine.commit()`` → 源页面还在就问 ``_retry_block_reason``（默认放行，
+  ``_RETRY_REQUIRES_MOTION`` 的路线会在「画面完全冻结」时拦住）→ 放行才再点
+  （上限 4 次）→ 可选「画面长时间没变化就收手存档」。
 
 为什么要有这一族、而不是把两条并进 ``ModeRunnerBase``（2026-09-26 评估结论）：
 两条路线的状态机是 ``state-driven`` —— ``self.state`` 只在显式 ``commit()`` 里前进，
@@ -40,6 +41,7 @@ from auto_game_unified.core.battle_supervisor import (
     BattleConfig,
     BattleOutcome,
     BattleSupervisor,
+    valid_game_frame,
 )
 from auto_game_unified.core.evidence_diagnostics import (
     save_runtime_evidence_diagnostic,
@@ -50,6 +52,7 @@ from auto_game_unified.core.supervisor import (
     ConclusionGate,
     StableObservation,
     meaningful_change,
+    screens_are_identical,
 )
 from auto_game_unified.games.epic7.unknown_screen import (
     UnrecognizedScreen,
@@ -73,6 +76,23 @@ class TransactionalRunnerBase:
     # 点击后**第一帧**之前先静置多久（跳过点击后的动画帧）。
     # ``None`` = 用 ``poll_seconds``：等价于「点完先睡一轮再截第一帧」。
     _SETTLE_SECONDS: Optional[float] = None
+
+    # ---- 重按闸门 ----
+    # 「源页仍在、要不要原地重按同一个坐标」之前，要不要先看**画面还在不在动**？
+    #
+    # * 画面还在动 ⇒ 这一下确实没生效（真没点到）⇒ 允许补点；
+    # * 画面完全冻结 ⇒ 游戏正忙（转场 / 加载），它不是没收到点击 ⇒ 只等；
+    #   这时候补的那一下会被游戏**攒着**，等下一屏出来一次性兑现（详见
+    #   ``_retry_block_reason``）。
+    #
+    # ⚠️ 默认 ``False`` = 沿用历史口径「源页仍在就补点」，**不改既有路线
+    # （远征 / 竞技场）的逐帧行为**。谁开谁负责，现在只有月塔开。
+    #
+    # ⚠️ 别觉得「更安全」就顺手改成默认 ``True``：竞技场的 5 条转场用例
+    # （``tests/test_arena_runner.py``）喂的就是**同一张静态夹具**，默认一开，
+    # 「源页仍在 ⇒ 重试」这条既有契约立刻集体变红 —— 那是行为变更，得单独评估、
+    # 单独取证，不能混在这一次里。
+    _RETRY_REQUIRES_MOTION = False
 
     # ---- 战斗移交 ----
     # 状态枚举由子类填（基类不认识具体游戏的状态）。
@@ -125,7 +145,7 @@ class TransactionalRunnerBase:
         )
         self.resource_exhausted = False
         self.finish_home = None
-        # 「这个动作因为重按不安全而被拦下」只记一次日志用（见 ``_retry_is_safe``）。
+        # 「这个动作因为重按不安全而被拦下」只记一次日志用（见 ``_retry_block_reason``）。
         self._retry_blocked_action: Optional[str] = None
         self.battle_supervisor = battle_supervisor or BattleSupervisor(
             runtime,
@@ -203,31 +223,64 @@ class TransactionalRunnerBase:
     def _after_result_state(self, *, cycle: int) -> None:
         """战斗监督正常打到结算页、状态已拨到 ``_RESULT_STATE`` 之后（竞技场记战绩用）。"""
 
-    def _retry_is_safe(self, action: Any) -> bool:
-        """这一下「源页仍在」时，允许不允许**原地重按同一个坐标**？默认允许。
+    def _retry_block_reason(
+        self,
+        screen: np.ndarray,
+        frozen: bool,
+    ) -> Optional[str]:
+        """这一下「源页仍在」时，允许不允许**原地重按同一个坐标**？
 
-        ⚠️ 默认 ``True`` 是为了不改动既有路线（远征 / 竞技场）的逐帧行为。
+        返回 ``None`` ⇒ 允许补点；返回原因字符串 ⇒ **不补点**，并把这句话记进日志。
 
-        什么时候必须覆写成 ``False``（2026-10-09 月塔实跑事故）：
+        ⚠️ 默认实现直接返回 ``None``（等价于历史 ``_retry_is_safe()`` 恒 ``True``），
+        只有声明了 ``_RETRY_REQUIRES_MOTION = True`` 的路线才真的做判断。
 
-        重试的语义是「这一下没生效 ⇒ 再按一次**同一个**按钮」。这个语义成立的前提是
-        **那个坐标上放的还是原来那颗按钮**。若路线里存在「同一个槽位、转场后换按钮」
-        的布局，前提就没了 —— 转场播到一半时重按，落点是**下一屏的按钮**：
+        ## 为什么要这道闸门（2026-10-09 月塔两次实跑 + 真机录帧取证）
 
-            ``select-team``  →  (1698, 1044) 「选择队伍」（楼层列表）
-            ``battle-start`` →  (1726, 1040) 「战斗开始」（准备战斗）
-            两点相距 28px，共用右下角同一个绿色按钮槽。
+        重试的语义是「这一下没生效 ⇒ 再按一次**同一个坐标**」，前提是那个坐标上放的
+        还是原来那颗按钮。月塔右下角是**同一个绿色按钮槽**，而按钮本体宽 231~242px
+        （``.workbuddy/_retry_overlap.py`` 实测）：
 
-        ⇒ 重试那一下**直接把战斗开起来**，而状态机还在等「准备战斗」页
-        ⇒ 白等到状态超时，日志报 ``no_transition-<动作>``。
+        ==============  ===============  ==============  =======
+        动作             落点             下一屏的按钮     偏差
+        ==============  ===============  ==============  =======
+        ``enter-tower`` (1640, 1055)     ``select-team`` 59 px
+        ``select-team`` (1698, 1044)     ``battle-start`` 28 px
+        ``next-floor``  (1787, 1041)     ``battle-start`` 61 px
+        ``battle-start``(1726, 1040)     （下一屏是战斗）  无害
+        ==============  ===============  ==============  =======
 
-        ⚠️ **不要靠加大 ``_SETTLE_SECONDS`` 来躲这个问题**：那是拿一个固定值去赌
-        转场时长（实测同一台机器上 2~21 秒都有），赌输了照样重试，而且拖慢真·点击
-        失效的发现速度。转场慢**不是**重试的理由 —— 按转场契约，来源已离开就该
-        「只等待，禁止重复旧动作」；真正「点不中」由状态超时兜底。
+        ⇒ 转场途中补点，那一下会被游戏**攒着**，等下一屏出来时一次性兑现 ——
+        直接按在「战斗开始」上开打，而状态机还在等「准备战斗」页，白等到超时。
+
+        ## 为什么判「画面冻没冻」，而不是列一份动作名单
+
+        * 名单只能覆盖**已知会换按钮**的槽位，但落点重叠是**布局的普遍属性**：
+          上表四条动作里三条都压住下一屏的按钮。
+        * 名单的尺子本身也不好定：第一版拿「两点距离 <= 40px」当判据，只抓到 28px
+          那条，59px / 61px 两条全部漏掉（旧注释甚至写着「别的按钮离得远、重按无害」，
+          是**错的**）。
+        * 用户明确否掉了「一律禁止重试」：那会把「真的没点到」也一起禁掉。
+
+        ⇒ 改问**当下这一下的危险程度**：
+
+        * **画面完全冻结** ⇒ 游戏正忙（转场 / 加载），它不是没收到点击 ⇒ 只等，
+          因为这时候补的那一下一定被攒着；
+        * **画面还在动** ⇒ 这一下确实没生效（真没点到）⇒ 允许补点。
+
+        依据与量化见 ``core.supervisor.screens_are_identical`` 的 docstring。
         """
-        del action
-        return True
+
+        if not self._RETRY_REQUIRES_MOTION:
+            return None
+        # ⚠️ 「取不到图」与「画面冻住」要分开说：前者是**我们看不见**（窗口被遮挡，
+        # ``PrintWindow`` 拿不到画面），后者是**游戏不发新帧**。两者都不该补点，但
+        # 混成一句话会让复盘时误判成「游戏在加载」。
+        if not valid_game_frame(screen):
+            return "这一帧取不到游戏画面（全黑或被窗口遮挡），不敢盲点"
+        if frozen:
+            return "画面完全冻结，判为游戏正忙（转场或加载中），只等不补点"
+        return None
 
     # ---- 公共工具 ----
 
@@ -405,9 +458,17 @@ class TransactionalRunnerBase:
         progressed = self.now()
         screen: Optional[np.ndarray] = None
         previous: Optional[np.ndarray] = None
+        # ⚠️ 与 ``previous`` **刻意分开、别合并**：``previous`` 只服务
+        # ``meaningful_change`` 的 ``no_progress`` 计时，而那条分支在
+        # ``no_progress >= absolute`` 时**整段不跑**（月塔 / 远征就是这个情形，
+        # 见 ``_transition_budget``）⇒ 它恒为 ``None``。「画面冻没冻」每一拍都要有
+        # 上一帧可比，所以另开一个、**每拍都推进**（写在下面 ``capture()`` 之后）。
+        last_screen: Optional[np.ndarray] = None
         while self.now() - started < absolute:
             screen = self.runtime.capture()
             self._save_frame(screen)
+            frozen = screens_are_identical(last_screen, screen)
+            last_screen = screen
             target = self.machine.action_target_state(screen, action)
             if (
                 target_stable.update(target.value if target is not None else "other")
@@ -428,19 +489,20 @@ class TransactionalRunnerBase:
                 # 「``if source_left: continue``」：那会连下面「画面有没有在动」
                 # 的计时一起跳过，正好是竞技场那条会生效的判据。
                 #
-                # ``_retry_is_safe`` 是「同槽换按钮」路线的刹车：那种布局下重按会
-                # 落到**下一屏的按钮**上（月塔 select-team ⇒ 重按直接开打）。
-                # 默认 True，只有明确声明不安全的动作才不走重试。
+                # ``_retry_block_reason`` 是「重按会落到下一屏按钮上」的刹车：
+                # 画面冻住 = 这一下会被游戏攒着 = 唯一危险的时刻。
+                # 默认返回 None（允许补点），只有 ``_RETRY_REQUIRES_MOTION`` 的
+                # 路线才真的判断。
                 if not source_left:
-                    if not self._retry_is_safe(action):
+                    block_reason = self._retry_block_reason(screen, frozen)
+                    if block_reason is not None:
                         # 「不动手」也要留证据，否则复盘只看到「一直没重试」。
                         # 每个动作只记一次，别每帧刷屏。
                         if self._retry_blocked_action != action.name:
                             self._retry_blocked_action = action.name
                             self.runtime.log(
                                 f"模式={self._MODE_LABEL} 不重试 动作={action.name} "
-                                f"来源={source_page}仍在 "
-                                f"原因=这个槽位换按钮了，重按会落到下一屏"
+                                f"来源={source_page}仍在 原因={block_reason}"
                             )
                     elif attempts < 4:
                         attempts += 1

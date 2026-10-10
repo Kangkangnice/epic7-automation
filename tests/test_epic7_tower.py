@@ -15,7 +15,8 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from auto_game_unified.core.battle_supervisor import AutoBattleState
+from auto_game_unified.core.battle_supervisor import AutoBattleState, valid_game_frame
+from auto_game_unified.core.evidence_diagnostics import inspect_profile
 from auto_game_unified.core.matcher import find_best_template, load_template
 from auto_game_unified.core.runtime import Runtime
 from auto_game_unified.games.epic7.evidence.tower import build_tower_evidence
@@ -49,6 +50,11 @@ FIXTURE_STATES: dict[str, TowerState] = {
     "card_unselected": TowerState.CARD,
     "card_selected": TowerState.CARD,
     "result": TowerState.RESULT,
+    # 打满 25 层那一次的结算页（右下角按钮是「征服」而不是「下一层」）。
+    # ⚠️ 它**仍然是结算页**（`RESULT`），不是终点屏 —— 终点是下面那张征服弹窗。
+    "result_conquered_floor": TowerState.RESULT,
+    # 打满后的「征服欧多马顿塔」叙述屏 = **整条路线的终点**。
+    "conquered": TowerState.CONQUERED,
 }
 
 # 判据 -> 该判据「本页」的夹具名。分离度断言用它区分正负样本。
@@ -60,7 +66,12 @@ JUDGE_OWNERS: dict[str, tuple[str, ...]] = {
     "prepare_title": ("team", "team_next_floor"),
     "card_decide": ("card", "card_unselected", "card_selected"),
     "card_hint": ("card", "card_unselected", "card_selected"),
-    "result_clear": ("result",),
+    # ⚠️ 两张结算页都算 `result_clear` 的**正样本**：25 层那张只是右下角换了字、
+    # 少了体力条，CLEAR 本身与普通层一模一样（实测 0.9327 / 1.0000 都过阈）。
+    # 把它当负样本会让「分离度」断言拿「本页自己的另一张」去比自己 —— 那是假红。
+    "result_clear": ("result", "result_conquered_floor"),
+    # 终点屏的判据。⚠️ 它在 `conquered.png` 上 1.0000、其余最高 0.2810。
+    "conquer_title": ("conquered",),
 }
 
 
@@ -156,12 +167,16 @@ class TowerStateMachineTests(unittest.TestCase):
     # ---- 页面唯一性 ----
 
     def test_every_fixture_matches_exactly_one_page(self):
-        """14 张夹具逐帧判页：**每张只许命中自己的那一个状态**。
+        """17 张夹具逐帧判页：**每张只许命中自己的那一个状态**。
 
         这是「零误报」的正面证据。``result`` 命中 BATTLE 是**设计如此**
         （``is_in_state(BATTLE)`` 接受「结算页可见」，好让战斗监督收手），
         所以 BATTLE 从这条唯一性检查里排除，它的交叉放行单独由下面
         ``test_result_page_is_also_a_valid_battle_handoff_frame`` 守。
+
+        ⚠️ ``pages`` 名单是**独立写死**的，不遍历 ``TowerState`` —— 否则将来
+        加一个状态、断言跟着自动放行，等于没守（2026-10-08 反向验证抓过这类空护栏）。
+        新增 ``CONQUERED`` 时这里也同步补上，是有意为之的那一次「手改」。
         """
         machine = self.machine()
         pages = [
@@ -170,6 +185,7 @@ class TowerStateMachineTests(unittest.TestCase):
             TowerState.TEAM,
             TowerState.CARD,
             TowerState.RESULT,
+            TowerState.CONQUERED,
         ]
         for name, expected in sorted(FIXTURE_STATES.items()):
             screen = recorded_screen(name)
@@ -306,11 +322,15 @@ class TowerStateMachineTests(unittest.TestCase):
                 self.assertLess(score, 0.88)
 
     def test_the_second_click_of_select_team_would_land_on_battle_start(self):
-        """把「重试 = 误开战斗」量化钉住：两个点击点必须近到落在同一颗按钮上。
+        """把「重按 = 误开战斗」这条**前提**钉住：两个点击点落在同一颗按钮上。
 
-        这条断言不是重复上面那条 —— 它守的是**前提**：只要这两点还这么近，
-        「重试」就永远等价于「按下战斗开始」，第二道防线就不可回退。
-        （若将来某次改版把「战斗开始」挪远了，这条会红，提醒重新评估该防线。）
+        守的是前提，不是实现：只要这两点还这么近，转场中途补的那一下就等于
+        「按下战斗开始」，「画面冻住就不补点」那道闸门就还有存在的理由。
+        （若将来某次改版把「战斗开始」挪远了，这条会红，提醒重新评估那道闸门。）
+
+        ⚠️ 这里的 40 是「两点落在同一颗按钮内」的**保守代理**（按钮本体实测宽
+        231~242px），**不是**实现里的判据 —— 实现按「画面冻没冻」判，不按距离判。
+        拿距离当判据是第二版修法的错误，见 ``docs/maintenance/tower.md``。
         """
         self.assertLessEqual(
             abs(
@@ -328,19 +348,28 @@ class TowerStateMachineTests(unittest.TestCase):
         )
 
     def test_settle_window_outlasts_the_recorded_tower_transitions(self):
-        """第一道防线：点完先等的时长必须**不小于**实测转场时长上界（3.1 秒）。
+        """``_SETTLE_SECONDS`` 不小于实测转场时长（3.1 秒）—— 只是**少空转几帧**。
 
         依据来自 2026-10-09 一次真机每日任务的日志（``runtime_logs/epic7_tower.log``）：
             00:18:43 点「战斗」→ 00:18:46 点击验收 耗时=2.0秒
             00:18:48 点「进入月塔」→ 00:18:51 点击验收 耗时=3.1秒
             00:18:53 点「入场」→ 00:18:56 转场确认（约 3 秒）
         阈值 **独立写死**（不从被测模块取），改回默认 ``None``（⇒1.0 秒）会红。
+
+        ⚠️ 这条**不是**安全护栏，别当它是：settle 加大到 3.0 之后实跑**照样重试**
+        （该转场实测 >5 秒、源页 21 秒才离开）。安全职责在
+        ``_RETRY_REQUIRES_MOTION`` / ``screens_are_identical`` 那道闸门上，
+        这条只管「别把第一帧白白扔在转场动画里」。
         """
         self.assertIsNotNone(TowerRunner._SETTLE_SECONDS)
         self.assertGreaterEqual(TowerRunner._SETTLE_SECONDS, 3.0)
 
     def test_other_states_still_report_their_source_page_normally(self):
-        """第二道防线只该管 ``select-team``：别的动作的源页判据不许被顺带改掉。"""
+        """源页判据本身没被顺带改掉：别的动作照样能认出自己的来源页。
+
+        ⚠️ 这条管的是 ``action_source_visible`` 的**正常性**，不是重试策略 ——
+        重试策略现在按「画面冻没冻」判（见 ``RetrySuppressionTests``），与动作名无关。
+        """
         machine = self.machine(TowerState.HOME)
         enter = machine.next_action(recorded_screen("home"))
         self.assertTrue(machine.action_source_visible(recorded_screen("home"), enter))
@@ -430,13 +459,92 @@ class TowerStateMachineTests(unittest.TestCase):
 
         早先一次勘察误判成「直接开打」，是看帧时机太早。这条断言钉住正确的那条边 ——
         写成 BATTLE 会让状态机白等 60 秒超时，然后整条路线报失败。
+
+        ⚠️ 2026-10-09 起这条边**多了一个出口**：打满 25 层时同一个按钮变成「征服」，
+        点下去落到 ``CONQUERED``（终点屏）。所以 ``target_states`` 现在是两个 ——
+        断言按「两个都在、且 CONQUERED 在前」写死（名单独立写，不从实现取）。
         """
         machine = self.machine(TowerState.RESULT)
 
         action = machine.next_action(recorded_screen("result"))
 
         self.assertEqual("next-floor", action.name)
-        self.assertEqual((TowerState.TEAM,), action.target_states)
+        self.assertEqual(
+            (TowerState.CONQUERED, TowerState.TEAM), action.target_states
+        )
+
+    def test_the_conquer_button_does_not_change_the_click_point(self):
+        """⚠️ 打满那一层的结算页，点的是**同一个坐标** —— 不许为「征服」另写一个落点。
+
+        实测两张结算页的按钮绿色本体 **bbox 逐像素一致**（`1483,997 → 1879,1092`），
+        只有文字不同（「下一层」/「征服」）。**坐标独立写死**成实测值
+        `(1787, 1041)`，不从实现里取常量 —— 否则实现一挪，断言跟着挪，等于没守。
+        """
+        machine = self.machine(TowerState.RESULT)
+
+        normal = machine.next_action(recorded_screen("result"))
+        conquered = machine.next_action(recorded_screen("result_conquered_floor"))
+
+        self.assertEqual("next-floor", normal.name)
+        self.assertEqual("next-floor", conquered.name)
+        self.assertEqual((1787, 1041), normal.point)
+        self.assertEqual((1787, 1041), conquered.point)
+
+    def test_the_conquered_screen_is_the_end_of_the_route(self):
+        """⚠️⚠️ 终点屏：认出「征服欧多马顿塔」⇒ **立刻收工、一个按钮都不点**。
+
+        用户 2026-10-09 实机拍板：「一碰到这个界面就代表要结束了，就是整个环节的
+        最终的一个终点」。实现方式是**抛 ``FloorsConquered``**（退出码 2，走
+        ``ResourceExhausted`` 那条正常业务退出通道）—— **不是**返回 None
+        （那会让主循环空转到 60 秒超时，把「打满了」报成故障）。
+        """
+        machine = self.machine(TowerState.CONQUERED)
+
+        with self.assertRaises(FloorsConquered) as caught:
+            machine.next_action(recorded_screen("conquered"))
+
+        self.assertEqual("月塔层数已打满", caught.exception.stop_label)
+
+    def test_the_conquered_screen_is_reachable_from_the_battle_state_too(self):
+        """终点屏也要被 ``BATTLE`` 状态接住 —— 否则监督收手时那一帧会报「战斗画面未识别」。
+
+        ⚠️ 这是**成对契约的另一半**：``BATTLE`` 分支里认到终点屏必须走 ``FloorsConquered``，
+        掉进 ``UnrecognizedScreen`` 就把「正常打满」报成了故障（超时 + 退出码 1）。
+        """
+        machine = self.machine(TowerState.BATTLE)
+
+        with self.assertRaises(FloorsConquered):
+            machine.next_action(recorded_screen("conquered"))
+
+    def test_the_conquered_screen_does_not_advance_the_floor_counter(self):
+        """⚠️ 走到终点**不加层数** —— 打满那一刻不该被记成「又打完一层」。
+
+        ``commit()`` 的计数条件是 ``action.name == "next-floor" and target is TEAM``；
+        终点那条边落到 ``CONQUERED``（不是 TEAM）⇒ 天然不计。这条用例把它钉住，
+        防止将来有人把计数条件放宽成「只要是 next-floor 就 +1」。
+        """
+        machine = self.machine(TowerState.RESULT)
+
+        action = machine.next_action(recorded_screen("result_conquered_floor"))
+        machine.commit(action, TowerState.CONQUERED)
+
+        self.assertEqual(0, machine.completed_cycles)
+        self.assertIs(TowerState.CONQUERED, machine.state)
+
+    def test_the_conquered_screen_wins_the_resume_order(self):
+        """接力：认出终点屏时拨到 ``CONQUERED``，且**不给导航入口**。
+
+        给它 ``entry`` 会让导航器白跑一趟月塔主页 —— 而那一趟毫无业务意义
+        （终点就该收工），还多一次误点风险。
+        """
+        from auto_game_unified.games.epic7.tower import detect_resume_point
+
+        machine = self.machine()
+        point = detect_resume_point(machine, recorded_screen("conquered"))
+
+        self.assertIsNotNone(point)
+        self.assertIs(TowerState.CONQUERED, point.state)
+        self.assertIsNone(point.entry)
 
     def test_card_gate_resets_when_a_new_floor_starts(self):
         """新的一层开始点卡：「本层已选卡」的闸门必须复位，否则第二层永远不点卡。
@@ -613,6 +721,179 @@ class TowerStateMachineTests(unittest.TestCase):
         self.assertFalse(machine.auto_click_attempted)
 
 
+#: 月塔**非战斗页**的全部夹具名。独立写死，不遍历实现里的任何名单。
+NON_BATTLE_FIXTURES = (
+    "home",
+    "home_2",
+    "home_alt",
+    "season",
+    "season_2",
+    "floor_list",
+    "floor_list_2",
+    "floor_list_alt",
+    "team",
+    "team_next_floor",
+    "card",
+    "card_unselected",
+    "card_selected",
+    "result",
+)
+
+
+class AutoOffJudgeIsBackgroundFreeTests(unittest.TestCase):
+    """右上角「自动战斗已关闭」图标：判据只认图标的白色形状，与底图无关。
+
+    ## 为什么要换尺子（2026-10-09 月塔实跑事故）
+
+    这张模板是**共享**的（`templates/story/auto_off.png`，主线那边裁的），
+    生在亮灰雾天场景里。原样 RGB 比的时候 `TM_CCOEFF_NORMED` 把底图的**纹理**
+    一起算进相似度 —— 同一枚图标叠到月塔的深色书架上只剩 **0.7492**（阈 0.80）
+    ⇒ 判据失效 ⇒ 12 秒后 `auto_point_missing`，整条路线卡死在第一层开头。
+
+    换成「白像素掩膜」口径（两侧先二值化成白色像素再比）后，同一帧回到 **0.9214**。
+
+    ⚠️ 这条用例守的是「**同一枚控件换场景也认得出**」。谁把 `match_mode` 摘了、
+    或者把阈值放水到 0.80 以下来「修」，都会在这里变红。
+    """
+
+    #: 事故帧的真机夹具。自动化诊断目录里那两张（19:34 / 13:59）原帧与它同分，
+    #: 但诊断目录按路线滚动清理，所以钉夹具这一张。
+    DEAD_ZONE = "battle_manual_auto_icon_dead_zone"
+    #: 新口径下这张帧的实测分 —— 三帧真机素材都是这个数。
+    DEAD_ZONE_SCORE = 0.9214
+    #: 月塔页面上「这个图标本不该出现」时的实测上限（最亮的一张 0.4499）。
+    NON_BATTLE_CEILING = 0.60
+
+    def test_the_shared_icon_is_found_on_a_scene_it_was_not_cut_from(self):
+        machine = real_machine(TowerState.BATTLE)
+
+        found = machine._locate(recorded_screen(self.DEAD_ZONE), "auto_off")
+
+        self.assertIsNotNone(found)
+        # 断言写到「依据」：多高就是多高，不是「只要不是 None 就算过」。
+        self.assertAlmostEqual(self.DEAD_ZONE_SCORE, found.score, places=3)
+        self.assertGreater(
+            found.score,
+            machine._THRESHOLDS["auto_off"] + 0.05,
+            "余量太薄 —— 擦着阈值过等于下次换个场景又失效",
+        )
+
+    def test_the_real_frame_is_reported_as_manual_with_a_click_point(self):
+        """**事故的直接复现**：这一帧必须给出「手动 + 有坐标」。
+
+        事故就是这一帧走到了 `auto_point is None` ⇒ 12 秒后 `auto_point_missing`。
+        """
+        machine = real_machine(TowerState.BATTLE)
+
+        observation = machine.observe_battle(recorded_screen(self.DEAD_ZONE), None)
+
+        self.assertEqual(AutoBattleState.MANUAL, observation.auto_state)
+        self.assertIsNotNone(observation.auto_point)
+
+    def test_the_real_frame_drives_the_route_from_the_production_entry(self):
+        """从**生产入口**（`next_action`）再验一遍，而不是只看 `_locate`。
+
+        ⚠️ 只验 `_locate` 是不够的 —— 「单测全绿、实跑照旧卡死」正是「判据被人
+        抄了第二份、改的那份生产走不到」的典型症状。
+        """
+        machine = real_machine(TowerState.BATTLE)
+        screen = recorded_screen(self.DEAD_ZONE)
+
+        action = machine.next_action(screen)
+
+        self.assertIsNotNone(action)
+        self.assertEqual("enable-auto-battle", action.name)
+        self.assertEqual(machine._locate(screen, "auto_off").center, action.point)
+
+    def test_the_old_ruler_is_what_was_broken_not_the_threshold(self):
+        """同一锚点、同一帧，用**原样 RGB** 比必须仍然过不了阈 —— 修的是尺子。
+
+        旧阈值 0.80 写死在这里：它和现在的 0.85 都过不了，所以「把阈值放水」
+        解释不了这次修复。谁把 `match_mode` 摘掉，这条立刻变红。
+        """
+        templates = build_tower_templates(TEMPLATES_DIR)
+
+        raw = find_best_template(
+            recorded_screen(self.DEAD_ZONE),
+            templates.auto_off,
+            region=TowerStateMachine._REGIONS["auto_off"],
+            reference_size=(1982, 1132),
+            mode="raw",
+        )
+
+        self.assertLess(raw.score, 0.80, "原样比居然过阈了：事故前提不成立，先查夹具")
+
+    def test_only_the_shared_icon_changes_ruler(self):
+        """口径是**逐锚点**声明的：只有这个跨路线共享的图标走白掩膜。
+
+        ⚠️ 名字列表独立写死（不遍历 `_MATCH_MODES` 自己），否则实现一改断言
+        跟着改，注入违规纹丝不动。用**实例**上的那张表，因为它才是 `_locate`
+        真正照着走的那一份（构造期由证据画像铺满每个锚点）。
+        """
+        modes = real_machine(TowerState.BATTLE)._MATCH_MODES
+
+        for name in (
+            "season_tower_title",
+            "home_enter",
+            "floor_select_team",
+            "team_battle_start",
+            "prepare_title",
+            "card_decide",
+            "card_hint",
+            "result_clear",
+        ):
+            with self.subTest(judge=name):
+                self.assertEqual("raw", modes[name])
+        with self.subTest(judge="auto_off"):
+            self.assertEqual("white_mask", modes["auto_off"])
+
+    def test_the_diagnostics_tool_uses_the_same_ruler_as_the_route(self):
+        """诊断包里的分数必须与实跑判定出自**同一把尺子**。
+
+        ⚠️ 这条守的是「判据只能有一份实现」：诊断侧漏掉口径的话，工具会报
+        「0.7492 未过阈」而实跑用的是 0.9214 —— 排查时等于骗人。
+        """
+        screen = recorded_screen(self.DEAD_ZONE)
+
+        report = inspect_profile(
+            screen, build_tower_evidence(TEMPLATES_DIR), TEMPLATES_DIR
+        )
+        route = real_machine(TowerState.BATTLE)._locate(screen, "auto_off")
+
+        self.assertTrue(report.atoms["auto_off"].observed)
+        self.assertAlmostEqual(route.score, report.atoms["auto_off"].score, places=6)
+
+    def test_no_tower_page_other_than_a_battle_shows_the_icon(self):
+        """月塔自己的页面上，这个图标**一次都不许**被认出来。
+
+        负样本名单独立写死；同时钉住「都不是 None」和「最高分有多低」——
+        只看 None 的话，把阈值抬到 0.99 也能全绿，那是拿误判换漏判。
+        """
+        machine = real_machine(TowerState.BATTLE)
+        region = TowerStateMachine._REGIONS["auto_off"]
+        scores: dict[str, float] = {}
+
+        for name in NON_BATTLE_FIXTURES:
+            screen = recorded_screen(name)
+            with self.subTest(fixture=name):
+                self.assertIsNone(machine._locate(screen, "auto_off"))
+            scores[name] = find_best_template(
+                screen,
+                machine.templates.auto_off,
+                region=region,
+                reference_size=(1982, 1132),
+                mode="white_mask",
+            ).score
+
+        highest = max(scores.values())
+        self.assertLess(
+            highest,
+            self.NON_BATTLE_CEILING,
+            f"月塔非战斗页上这个图标的分太高了：{max(scores, key=scores.get)}"
+            f"={highest:.4f}",
+        )
+
+
 class OptionalTemplateGuardTests(unittest.TestCase):
     """把「静默降级」钉死在代码门槛上。
 
@@ -683,26 +964,37 @@ class FloorStopTests(unittest.TestCase):
 
 
 class RetrySuppressionTests(unittest.TestCase):
-    """``select-team`` **绝不许原地重按** —— 那个槽位转场后是「战斗开始」。
+    """「源页仍在」时，月塔**先看画面冻没冻**，再决定要不要原地重按。
 
     2026-10-09 两次实跑：点完 ``select-team`` 后基类按「源页连续 2 帧仍在 =
-    这一下没生效」重试，重按的 (1698,1044) 与「战斗开始」(1726,1040) 只差 28px
-    ⇒ **重试把战斗开起来了**，状态机还在等「准备战斗」页 ⇒ 白等到超时，
-    诊断帧全是战斗进行中的画面。
+    这一下没生效」补点，而转场中途补的那一下会被游戏**攒着**、等下一屏出来时一次性
+    兑现 ⇒ 直接按在「战斗开始」上开打，状态机还在等「准备战斗」页，白等到超时。
+
+    ⚠️ 判据是**现象**（画面冻没冻），不是动作名单：落点重叠是布局的普遍属性，
+    实测四条动作里三条压住下一屏按钮（``enter-tower`` 59px / ``select-team`` 28px /
+    ``next-floor`` 61px，按钮本体宽 231~242px），列名单列不全 —— 第一版就是名单，
+    用「两点距离 <= 40px」当尺子，只抓到 28px 那条。
 
     ⚠️ 这一组是**行为测试**：真的跑 ``_execute_transition`` 的循环、数真点了几次。
-    只断言「``_SETTLE_SECONDS`` 够大」是**空护栏** —— 我第一版就是这么写的，
+    只断言「``_SETTLE_SECONDS`` 够大」是**空护栏** —— 第一版就是这么写的，
     把 settle 从 1.0 加到 3.0 之后实跑照样重试（该转场实测 >5 秒、源页 21 秒才离开）。
     """
 
     class _FakeRuntime:
-        """一直报「源页仍在」的假运行时：专门逼出重试分支。"""
+        """按给定序列**循环**回帧的假运行时：专门逼出「源页仍在」这条分支。
+
+        ⚠️ 喂一张帧 = 模拟器不重绘（画面冻住）；喂两张不同的帧 = 页面还在动。
+        这正是判据要分的两种情况，所以这个假运行时必须能表达「两张」，
+        不能像第一版那样恒返回同一张 —— 那样会让「冻结闸门」永远命中，
+        「画面在动就该补点」那半条契约测不到。
+        """
 
         diagnostic_dir = None
         dry_run = False
 
-        def __init__(self, screen: np.ndarray) -> None:
-            self._screen = screen
+        def __init__(self, screens: tuple[np.ndarray, ...]) -> None:
+            self._screens = screens
+            self._index = 0
             self.clicks: list[tuple[tuple[int, int], str]] = []
             self.messages: list[str] = []
             self.clock = 0.0
@@ -713,7 +1005,9 @@ class RetrySuppressionTests(unittest.TestCase):
             return self.clock
 
         def capture(self) -> np.ndarray:
-            return self._screen
+            frame = self._screens[self._index % len(self._screens)]
+            self._index += 1
+            return frame
 
         def click(self, point, name) -> None:
             self.clicks.append((point, name))
@@ -728,9 +1022,9 @@ class RetrySuppressionTests(unittest.TestCase):
             del screen
             return Path(label)
 
-    def _runner_with_screen(self, screen: np.ndarray):
+    def _runner(self, screens: tuple[np.ndarray, ...]):
         machine = real_machine(TowerState.FLOOR_LIST)
-        runtime = self._FakeRuntime(screen)
+        runtime = self._FakeRuntime(screens)
         runner = TowerRunner(
             machine,  # type: ignore[arg-type]
             runtime,  # type: ignore[arg-type]
@@ -739,14 +1033,12 @@ class RetrySuppressionTests(unittest.TestCase):
         )
         return runner, runtime
 
-    def _select_team_and_retries(self, screen: np.ndarray) -> tuple[int, list[str]]:
+    def _run_select_team(
+        self, screens: tuple[np.ndarray, ...]
+    ) -> tuple[int, list[str]]:
         """跑一次 ``select-team`` 转场，返回 (点了几次, 日志)。"""
-        runner, runtime = self._runner_with_screen(screen)
-        action = None
-        for candidate in (
-            runner.machine.next_action(screen),
-        ):
-            action = candidate
+        runner, runtime = self._runner(screens)
+        action = runner.machine.next_action(screens[0])
         self.assertIsNotNone(action, "楼层列表帧上应当能给出下一步动作")
         assert action is not None
         self.assertEqual("select-team", action.name)
@@ -759,68 +1051,103 @@ class RetrySuppressionTests(unittest.TestCase):
         clicks = [name for _point, name in runtime.clicks if name == "select-team"]
         return len(clicks), runtime.messages
 
-    def test_select_team_is_never_clicked_twice_even_when_the_source_stays(self):
-        """源页一直在 ⇒ 也**只点一次**（重按会落到「战斗开始」上）。"""
-        screen = recorded_screen("floor_list")
-        count, messages = self._select_team_and_retries(screen)
+    def test_a_frozen_screen_is_never_clicked_twice(self):
+        """画面完全冻结（模拟器不重绘）⇒ 判为游戏正忙：**只点一次**。
+
+        ⚠️ 这正是 2026-10-09 那两次事故的现场形态：源页判据在**陈旧帧**上一直命中
+        （实测 21:03:43 点完，源页被判「仍在」整整 11 秒），而画面其实早就冻住了。
+        """
+        count, messages = self._run_select_team((recorded_screen("floor_list"),))
 
         self.assertEqual(
             1,
             count,
-            f"select-team 被点了 {count} 次；重按会落在下一屏的「战斗开始」上，"
-            f"日志：{messages}",
+            f"画面冻住时补点会落到下一屏的「战斗开始」上；日志：{messages}",
         )
 
     def test_the_suppression_is_reported_in_the_log(self):
         """「不动手」也要留证据，否则复盘只看到「一直没重试」。"""
-        screen = recorded_screen("floor_list")
-        _count, messages = self._select_team_and_retries(screen)
+        _count, messages = self._run_select_team((recorded_screen("floor_list"),))
 
         self.assertTrue(
-            any("不重试" in message and "select-team" in message for message in messages),
-            f"日志里应当有一行说明为什么不重试；实际：{messages}",
+            any(
+                "不重试" in message
+                and "select-team" in message
+                and "冻结" in message
+                for message in messages
+            ),
+            f"日志里应当有一行说明为什么不动手；实际：{messages}",
         )
 
-    def test_other_actions_still_retry_normally(self):
-        """⚠️ 与上一条成对：别人**不许**被顺带改掉 —— 重试机制本身要还活着。"""
-        machine = real_machine(TowerState.HOME)
-        screen = recorded_screen("home")
-        runtime = self._FakeRuntime(screen)
-        runner = TowerRunner(
-            machine,  # type: ignore[arg-type]
-            runtime,  # type: ignore[arg-type]
-            sleep=lambda _seconds: None,
-            poll_seconds=0.0,
-        )
-        action = runner.machine.next_action(screen)
-        self.assertIsNotNone(action)
-        assert action is not None
-        self.assertEqual("enter-tower", action.name)
-        self.assertTrue(
-            runner._retry_is_safe(action),
-            "enter-tower 不在同一个槽位上换按钮，重按无害，必须保持可重试",
+    def test_a_live_screen_still_retries(self):
+        """⚠️ 与上一条成对：画面还在动 ⇒ 这一下确实没点到，**必须继续补点**。
+
+        两张真机帧都是同一页（楼层列表），是两次不同时刻的实拍 —— 页面在动。
+        """
+        count, _messages = self._run_select_team(
+            (recorded_screen("floor_list"), recorded_screen("floor_list_2"))
         )
 
-        try:
-            runner._execute_transition(action)
-        except RuntimeError:
-            pass
-        clicks = [name for _point, name in runtime.clicks if name == "enter-tower"]
         self.assertGreater(
-            len(clicks), 1, "源页一直在时，可重试的动作仍应重试（上限 4 次）"
+            count,
+            1,
+            "画面在动时不许把重试机制一起关掉（真没点到就得再点一次）",
         )
 
-    def test_the_declared_unsafe_set_matches_the_two_click_points(self):
-        """两条「重按 = 误开打」的前提：点相距很近 **且** 声明集合只含它。"""
-        machine = TowerStateMachine
-        select_team = machine._POINT_SELECT_TEAM
-        battle_start = machine._POINT_BATTLE_START
+    def test_a_single_different_pixel_counts_as_motion(self):
+        """判据是**零阈值**的：只差一个字节也算「画面在动」⇒ 允许补点。
 
-        # 前提一：两点近到会互相覆盖（阈值独立写死，不从实现常量反推）。
-        self.assertLessEqual(abs(select_team[0] - battle_start[0]), 40)
-        self.assertLessEqual(abs(select_team[1] - battle_start[1]), 40)
-        # 前提二：声明名单**独立写死** —— 不许遍历被测集合本身。
-        self.assertEqual({"select-team"}, set(TowerRunner._RETRY_UNSAFE_ACTIONS))
+        真机待机的抖动正是这个量级：实测两帧之间有 112 万个像素在变，但幅度只有
+        ±1~2 级，区域平均差只有 0.095~0.862 —— 用平均值做阈值的判据在这里必然失效
+        （``meaningful_change`` 会把待机整个判成「冻住」）。
+        """
+        base = recorded_screen("floor_list")
+        ticking = base.copy()
+        ticking[0, 0, 0] = (int(ticking[0, 0, 0]) + 7) % 256
+
+        count, _messages = self._run_select_team((base, ticking))
+
+        self.assertGreater(count, 1, "差一个像素也说明页面还活着，不该拦着重按")
+
+    def test_a_frame_we_cannot_read_is_not_reported_as_frozen(self):
+        """全黑帧（窗口被遮挡）**不算**「画面冻住」—— 两件事要分开说。
+
+        ⚠️ 这是**钩子级**用例：全黑帧上源页判据必然不命中，走不到循环里那条分支，
+        所以直接调钩子证明分支可达、且两种原因**不是同一句话**（复盘时靠这句话区分
+        「游戏在加载」还是「我们看不见」）。
+        """
+        runner, _runtime = self._runner((recorded_screen("floor_list"),))
+        live = recorded_screen("floor_list")
+        blank = np.zeros(SIZE, dtype=np.uint8)
+
+        unreadable = runner._retry_block_reason(blank, frozen=True)
+        self.assertIsNotNone(unreadable, "取不到画面时不许放行补点")
+        assert unreadable is not None
+        self.assertIn("取不到", unreadable)
+        self.assertNotIn("冻结", unreadable)
+
+        frozen = runner._retry_block_reason(live, frozen=True)
+        self.assertIsNotNone(frozen)
+        assert frozen is not None
+        self.assertIn("冻结", frozen)
+
+        # 成对：画面在动 ⇒ 放行。
+        self.assertIsNone(runner._retry_block_reason(live, frozen=False))
+
+    def test_every_recorded_page_is_a_valid_frame(self):
+        """⚠️ 另一方向：**正常页面不许被当成「取不到画面」**。
+
+        否则这道闸门会退化成「永远不重试」—— 判据恒真，护栏就成了摆设。
+        """
+        names = sorted(path.stem for path in FIXTURES.glob("*.png"))
+        self.assertGreater(len(names), 8, "夹具目录不对劲，先查路径")
+
+        for name in names:
+            with self.subTest(fixture=name):
+                self.assertTrue(
+                    valid_game_frame(recorded_screen(name)),
+                    f"{name} 被「有效帧」判据判成取不到画面",
+                )
 
 
 if __name__ == "__main__":

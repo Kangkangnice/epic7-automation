@@ -54,6 +54,11 @@ class BattleConfig:
     # 一场战斗里「自动开关点开之后又被关掉」最多容忍几次。超过就判定是游戏侧行为，
     # 不再拨开关（继续监督到结算），免得整场都在自动/手动之间来回跳。
     auto_recovery_limit: int = 3
+    # 「判成手动、但又给不出开关坐标」最多容忍几秒。
+    # ⚠️ 这不是「等游戏自己想通」的宽容值，而是给**判据抖动**留的复原窗口：
+    # 布局判据与图标判据各自都会在真假之间跳（见下面 auto_point is None 分支的注释），
+    # 单帧判成手动且图标恰好没认出来，是**正常波动**，不该当场判死刑。
+    auto_point_grace_seconds: float = 12.0
 
 
 BattleObserver = Callable[[np.ndarray, np.ndarray | None], BattleObservation]
@@ -115,6 +120,10 @@ class BattleSupervisor:
         auto_recoveries = 0
         auto_interference_stopped = False
         auto_interference_logged = False
+        # 「判成手动、但图标没给出坐标」的起始时刻与「已记过一次日志」标记。
+        # 判据抖回来就一起清掉（见 auto_point is None 分支）。
+        auto_point_missing_since: float | None = None
+        auto_point_missing_logged = False
         last_allowed_action = None
         allowed_action_clicks = 0
         allowed_action_clicked_at: float | None = None
@@ -296,62 +305,109 @@ class BattleSupervisor:
                     stable_auto
                     and observation.auto_state is AutoBattleState.MANUAL
                 ):
+                    # ---- 「判成手动、但给不出开关坐标」不是故障，是判据抖动 ----
+                    #
+                    # ⚠️ 2026-10-09 月塔实跑事故：这一支原来**一帧就 _fail**，
+                    # 于是整条路线当场安全停止、放弃本层回首页。复盘三帧分数：
+                    #
+                    #   13:59:13 「自动战斗已开启」   ← 布局判据说 auto_controls
+                    #   13:59:29 「开启自动战斗 1/4」 ← 同一场战斗，布局又判 manual
+                    #   13:59:43 auto_point is None  ← 图标那一下没过阈，坐标没了
+                    #
+                    # 两个判据**各自**都会在真假之间跳，本来就不该由**单帧**定生死：
+                    #   * 布局判据（`observe_battle_controls`）靠底座颜色数活人，
+                    #     月塔这种底座偏暗的画面会在 auto/manual 之间来回；
+                    #     实测该帧四格底座 blue 只有 0.021~0.118，
+                    #     而手动三钮的边框白占比 0.716/0.165/0.618 又凑出了 3 个圆。
+                    #   * 图标判据（共享 `story/auto_off.png`）背景是**亮灰底**，
+                    #     叠在月塔深色书架背景上只剩 0.7704（阈值 0.80）——
+                    #     同一帧换用背景更贴的 `auto_off.png` 是 0.9114。
+                    #
+                    # ⇒ 处理：**只在坐标确实拿得到时才动手**；拿不到就**有界等待**，
+                    # 让判据自己抖回来（下一帧布局认回 auto、或图标过阈给出坐标）。
+                    # 等满 `auto_point_grace_seconds` 仍拿不到，才认为真的没救了。
+                    # ⚠️ 为什么不是「干等更久」：这是**有界**窗口，与无进展看门狗
+                    # 各自独立计时，赌的是「判据抖回来」而不是「游戏自己想通」。
                     if observation.auto_point is None:
-                        self._fail(
-                            "auto_point_missing",
-                            "手动战斗状态下缺少自动开关坐标",
-                            screen,
+                        if auto_point_missing_since is None:
+                            auto_point_missing_since = current
+                        waited = current - auto_point_missing_since
+                        if waited >= self.config.auto_point_grace_seconds:
+                            self._fail(
+                                "auto_point_missing",
+                                "手动战斗状态下缺少自动开关坐标",
+                                screen,
+                            )
+                        if not auto_point_missing_logged:
+                            auto_point_missing_logged = True
+                            self.runtime.log(
+                                f"模式={self.label} 轮次={cycle} 阶段=战斗 "
+                                f"状态=手动但缺开关坐标 处理=等判据抖回来 "
+                                f"已等={waited:.0f}秒 上限={self.config.auto_point_grace_seconds:.0f}秒 "
+                                f"证据={observation.auto_evidence or '未标注'}"
+                            )
+                        # ⚠️ 这里**不能** `continue`：循环末尾的
+                        # `self.sleep(self.config.poll_seconds)` 会被跳过，
+                        # 变成**每秒成百上千次截图**的忙循环 —— 比原 bug 更糟。
+                        # 用 `if/else` 包住下面整块，让 sleep 照常执行。
+                    else:
+                        auto_point_missing_since = None
+                        auto_point_missing_logged = False
+                    if observation.auto_point is not None:
+                        auto_confirmed = False
+                        if (
+                            auto_interference_stopped
+                            and not auto_interference_logged
+                        ):
+                            # 本场已经反复出现「点开 → 又被关掉」：再拨下去只是来回跳。
+                            # 停手，交给下面的无进展看门狗兜底，日志留一行说明为什么停手。
+                            auto_interference_logged = True
+                            self.runtime.log(
+                                f"模式={self.label} 轮次={cycle} 阶段=战斗 "
+                                f"状态=自动战斗反复被关闭 "
+                                f"累计={auto_recoveries}次 "
+                                "判定=游戏侧行为 处理=不再反复拨自动开关，继续监督本场战斗 "
+                                f"证据={observation.auto_evidence or '未标注'}"
+                            )
+                        since_auto_click = (
+                            None
+                            if auto_clicked_at is None
+                            else current - auto_clicked_at
                         )
-                    auto_confirmed = False
-                    if auto_interference_stopped and not auto_interference_logged:
-                        # 本场已经反复出现「点开 → 又被关掉」：再拨下去只是来回跳。
-                        # 停手，交给下面的无进展看门狗兜底，日志留一行说明为什么停手。
-                        auto_interference_logged = True
-                        self.runtime.log(
-                            f"模式={self.label} 轮次={cycle} 阶段=战斗 "
-                            f"状态=自动战斗反复被关闭 累计={auto_recoveries}次 "
-                            "判定=游戏侧行为 处理=不再反复拨自动开关，继续监督本场战斗 "
-                            f"证据={observation.auto_evidence or '未标注'}"
+                        should_click_auto = not auto_interference_stopped and (
+                            auto_clicked_at is None
+                            or (
+                                auto_clicks < 4
+                                and since_auto_click is not None
+                                and since_auto_click
+                                >= self.config.allowed_action_retry_seconds
+                            )
                         )
-                    since_auto_click = (
-                        None
-                        if auto_clicked_at is None
-                        else current - auto_clicked_at
-                    )
-                    should_click_auto = not auto_interference_stopped and (
-                        auto_clicked_at is None
-                        or (
-                            auto_clicks < 4
+                        if should_click_auto:
+                            auto_clicks += 1
+                            self.runtime.log(
+                                f"模式={self.label} 轮次={cycle} "
+                                f"阶段=战斗 动作=开启自动战斗 "
+                                f"尝试={auto_clicks}/4 依据=自动关闭来源连续=2 "
+                                f"证据={observation.auto_evidence or '未标注'}"
+                            )
+                            self.runtime.click(
+                                observation.auto_point, "enable-auto-battle"
+                            )
+                            auto_clicked_at = current
+                            auto_source_gone_logged = False
+                            auto_stable.reset()
+                        elif (
+                            auto_clicks >= 4
                             and since_auto_click is not None
                             and since_auto_click
-                            >= self.config.allowed_action_retry_seconds
-                        )
-                    )
-                    if should_click_auto:
-                        auto_clicks += 1
-                        self.runtime.log(
-                            f"模式={self.label} 轮次={cycle} "
-                            f"阶段=战斗 动作=开启自动战斗 "
-                            f"尝试={auto_clicks}/4 依据=自动关闭来源连续=2 "
-                            f"证据={observation.auto_evidence or '未标注'}"
-                        )
-                        self.runtime.click(
-                            observation.auto_point, "enable-auto-battle"
-                        )
-                        auto_clicked_at = current
-                        auto_source_gone_logged = False
-                        auto_stable.reset()
-                    elif (
-                        auto_clicks >= 4
-                        and since_auto_click is not None
-                        and since_auto_click
-                        >= self.config.allowed_action_failure_seconds
-                    ):
-                        self._fail(
-                            "auto_not_confirmed",
-                            "点击4次后仍为手动战斗",
-                            screen,
-                        )
+                            >= self.config.allowed_action_failure_seconds
+                        ):
+                            self._fail(
+                                "auto_not_confirmed",
+                                "点击4次后仍为手动战斗",
+                                screen,
+                            )
                 elif (
                     stable_auto
                     and observation.auto_state is AutoBattleState.AUTO

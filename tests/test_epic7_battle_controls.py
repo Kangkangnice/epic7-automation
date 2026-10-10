@@ -8,6 +8,7 @@ from PIL import Image
 from auto_game_unified.games.epic7.battle_controls import (
     BattleControls,
     observe_battle_controls,
+    resolve_auto_state,
 )
 from auto_game_unified.games.epic7 import battle_controls as battle_controls_module
 
@@ -196,6 +197,77 @@ class SharedBattleControlsTests(unittest.TestCase):
                     BattleControls.MANUAL_CONTROLS,
                     observe_battle_controls(load_fixture(group, name)),
                 )
+
+
+class ResolveAutoStateTests(unittest.TestCase):
+    """布局（强证据）与右上角图标（弱证据）的合并规则（2026-10-09 月塔事故）。
+
+    事故现场：同一场战斗（自动其实一直开着）在 23 秒里翻了三次判定 ——
+
+        13:59:13  布局=auto_controls 图标=None    -> AUTO   「已开启」  ✅ 对的
+        13:59:29  布局=auto_controls 图标=0.8055  -> MANUAL 「点一下」  ❌ 余量 0.0055
+        13:59:30  图标掉下阈                      -> UNKNOWN
+        13:59:43  布局=manual_controls 图标=None  -> MANUAL 无坐标 -> 判死
+
+    旧写法 `if auto is not None: auto_state = MANUAL` **无条件信弱证据**，
+    于是 13:59:29 无中生有地点了一次开关，还把坐标弄丢了。
+
+    ⚠️ 这组断言**独立写死**期望值，不调用被测函数去算「该判什么」。
+    """
+
+    def test_strong_layout_evidence_is_not_overruled_by_the_icon(self):
+        """★ 核心断言：布局明说自动开着时，图标擦阈命中不得改判。"""
+        self.assertEqual(
+            BattleControls.AUTO_CONTROLS,
+            resolve_auto_state(BattleControls.AUTO_CONTROLS, True),
+        )
+
+    def test_strong_layout_evidence_holds_without_the_icon(self):
+        """成对：图标没命中时，布局结论同样不变。"""
+        self.assertEqual(
+            BattleControls.AUTO_CONTROLS,
+            resolve_auto_state(BattleControls.AUTO_CONTROLS, False),
+        )
+
+    def test_manual_layout_is_kept_regardless_of_the_icon(self):
+        for hit in (True, False):
+            with self.subTest(icon_hit=hit):
+                self.assertEqual(
+                    BattleControls.MANUAL_CONTROLS,
+                    resolve_auto_state(BattleControls.MANUAL_CONTROLS, hit),
+                )
+
+    def test_icon_still_rescues_a_transition_frame(self):
+        """★ 兜底必须还在：transition 时图标是唯一线索，不许一起收掉。
+
+        没有这一条，把上面三条全"修"成「永远返回布局判定」也照样绿 ——
+        而那样会让 transition 帧永远停在「未知」，而「未知」按安全设计
+        不许点自动，战斗只能干等到超时。
+        """
+        self.assertEqual(
+            BattleControls.MANUAL_CONTROLS,
+            resolve_auto_state(BattleControls.TRANSITION, True),
+        )
+
+    def test_transition_stays_transition_when_the_icon_misses(self):
+        self.assertEqual(
+            BattleControls.TRANSITION,
+            resolve_auto_state(BattleControls.TRANSITION, False),
+        )
+
+    def test_the_live_tower_incident_frame_is_manual(self):
+        """真机事故帧：布局判 manual、图标 0.7704（低于 0.80 阈值）。
+
+        这条锁的是**真实素材**：把那张诊断帧当夹具，保证「判成手动且拿不到
+        坐标」这个组合在代码里仍然可复现 —— 它是 `auto_point_grace_seconds`
+        有界等待存在的理由。
+        """
+        screen = load_fixture("epic7_tower", "battle_manual_auto_icon_dead_zone")
+        controls = observe_battle_controls(screen)
+        self.assertEqual(BattleControls.MANUAL_CONTROLS, controls)
+        self.assertEqual(
+            BattleControls.MANUAL_CONTROLS, resolve_auto_state(controls, False)
+        )
 
 
 if __name__ == "__main__":

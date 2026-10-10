@@ -5,6 +5,8 @@ from enum import Enum
 from pathlib import Path
 from typing import Callable, Mapping
 
+from auto_game_unified.core.matcher import MATCH_MODE_RAW, MATCH_MODES
+
 
 class EvidenceState(Enum):
     SAFE = "SAFE"
@@ -27,6 +29,15 @@ class AtomEvidence:
     # 「锚点缺失」把整条路线打挂（详见 evidence/shop_refresh.py 的常量注释）。
     # 判定语义：**任一候选过阈即算命中**，命中取过阈候选中分数最高的那个。
     alt_template_paths: tuple[str, ...] = ()
+    # 比对口径。``raw`` = 原样 RGB 比（历史口径，默认）；``white_mask`` = 先把两侧
+    # 都二值化成「白色像素掩膜」再比 ⇒ **背景无关**（见 ``core/matcher.py`` 顶部
+    # 的常量注释与实测数据）。
+    #
+    # ⚠️ 换口径**必须同时重定 threshold**：两个口径的分数不在同一个量纲上。
+    # 沿用旧门槛不是保守，是把判据变成永假或永真。
+    # ⚠️ 这个字段是**声明式**的：路线只要在 AtomEvidence 上写一次，`_locate()`
+    # 就会跟着走；不需要在每条路线里各抄一份预处理（抄三份 = 同一个 bug 抄三份）。
+    match_mode: str = MATCH_MODE_RAW
 
 
 @dataclass(frozen=True)
@@ -98,8 +109,23 @@ def validate_profile(profile: EvidenceProfile, root: Path) -> list[str]:
         path = root / atom.template_path
         if atom.required and not path.is_file():
             errors.append(f"{key}: 模板不存在: {path}")
+        # ⚠️ 候选模板（同一控件的其它长相）**一样要做存在性检查**。
+        # 以前这里只查主模板：候选模板被删时 `validate_profile()` 一声不吭，
+        # 判据就少了一档长相 —— 正是「判据静默降级」这一类（加载器最后会
+        # `FileNotFoundError`，但那是开跑前才炸，工具/测试侧兜不住）。
+        for alt in atom.alt_template_paths:
+            alt_path = root / alt
+            if atom.required and not alt_path.is_file():
+                errors.append(f"{key}: 候选模板不存在: {alt_path}")
         if not 0.0 <= atom.threshold <= 1.0:
             errors.append(f"{key}: 阈值必须在 0 到 1 之间: {atom.threshold}")
+        # 未知口径同样**出声**：写错一个字就退回原样比的话，阈值还是新口径的
+        # 数字，判据会静默变成永假 —— 正是「判据不许静默降级」要拦的那一类。
+        if atom.match_mode not in MATCH_MODES:
+            errors.append(
+                f"{key}: 未知的匹配口径: {atom.match_mode}"
+                f"（可用: {', '.join(MATCH_MODES)}）"
+            )
         if len(atom.region) != 4:
             errors.append(f"{key}: 搜索区域必须包含 x,y,width,height")
             continue
