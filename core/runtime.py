@@ -38,6 +38,19 @@ class ManualStop(RuntimeError):
     """Raised before the next action when the user presses the stop hotkey."""
 
 
+def _safe_label(label: str) -> str:
+    """把标签里的路径分隔符换成下划线，保证它只当**文件名**用。
+
+    ⚠️ 调用方会用 ``"/".join(targets)`` 这类拼法产生**多目标**标签
+    （如 ``battle_menu/season_menu``）。这个名字直接拼进文件名后，``/`` 在
+    Windows 上会被 ``Path`` 当成**目录分隔符** ⇒ 落点变成**不存在的子目录**
+    ⇒ ``cv2.imwrite`` 失败 ⇒ 抛「诊断截图保存失败」。而它是在处理**另一个失败**
+    的过程中抛的 ⇒ **把真正的失败原因盖掉**（2026-10-03 远征 21:10:43 实测：
+    日志里只剩「诊断截图保存失败」，看不出真正原因是「导航转场失败」）。
+    """
+    return label.replace("/", "_").replace("\\", "_")
+
+
 class Runtime:
     """One coordinate system for capture, clicks, dry-run logging and diagnostics."""
 
@@ -57,6 +70,7 @@ class Runtime:
         log_path: Path | None = None,
         emit: Callable[[str], None] | None = None,
         stop_requested: Callable[[], bool] | None = None,
+        input_channel_probe: Callable[[], None] | None = None,
         diagnostic_limit: int = 30,
         max_log_bytes: int = 5 * 1024 * 1024,
         log_backups: int = 4,
@@ -72,6 +86,7 @@ class Runtime:
         self.log_path = log_path
         self._emit = emit or (lambda message: print(message, flush=True))
         self._stop_requested = stop_requested
+        self._input_channel_probe = input_channel_probe
         self._last_screen: np.ndarray | None = None
         self.diagnostic_limit = diagnostic_limit
         self.max_log_bytes = max_log_bytes
@@ -116,6 +131,23 @@ class Runtime:
                 self._wake(point)
             else:
                 self._click(point)
+
+    def ensure_input_channel(self) -> None:
+        """确认模拟器输入通道还活着；没装配探针就静默跳过。
+
+        ⚠️ 为什么不能只在开跑前自检一次：``Epic7Window.ensure_input_channel``
+        目前只由 ``main._build_runtime`` 调一次。跑到一半通道坏掉（模拟器重启、
+        adb 连接掉了），就没人再检查 —— 上层只看到「点击验收无效」，重试到上限后
+        报「导航转场失败」，**分不清「通道断了」还是「游戏没响应」**。
+        2026-10-03 实测正是这种局面：连点 8 次无效，诊断图却是完好的大厅画面，
+        光看日志无法定论。
+
+        导航在「连续点不动」时会调这里，让日志里留下通道的真实状态。
+        干跑不装配探针（干跑不该去动 adb 服务）⇒ 这里静默返回，行为与改动前一致。
+        """
+        if self._input_channel_probe is None:
+            return
+        self._input_channel_probe()
 
     def swipe(
         self,
@@ -179,7 +211,7 @@ class Runtime:
             raise RuntimeError("未配置诊断截图目录")
         self.diagnostic_dir.mkdir(parents=True, exist_ok=True)
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-        path = self.diagnostic_dir / f"{timestamp}_{label}.png"
+        path = self.diagnostic_dir / f"{timestamp}_{_safe_label(label)}.png"
         self._write_image(path, self.capture() if screen is None else screen)
         self._prune_diagnostics()
         self.log(f"已保存诊断 {path}")

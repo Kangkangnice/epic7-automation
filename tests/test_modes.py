@@ -26,6 +26,7 @@ class Epic7ModeRegistryTests(unittest.TestCase):
                 "labyrinth_stone",
                 "sanctuary",
                 "community",
+                "tower",
             },
             set(MODE_SPECS),
         )

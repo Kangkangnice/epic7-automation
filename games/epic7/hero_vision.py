@@ -306,24 +306,64 @@ class HeroVisionMixin:
         )
         return any(is_centered_dot(blob) for blob in (*blobs, *extra))
 
-    def _material_page_sss_score(self, screen: np.ndarray) -> float:
-        if self.templates.sss_material is None:
-            return -1.0
+    def _sss_material_region_score(
+        self, screen: np.ndarray, region: tuple[int, int, int, int]
+    ) -> float:
+        """给「SSS 材料」徽记在指定区域里打分：**候选模板 × 尺度档位**逐对匹配，取最高分。
+
+        为什么要多张候选：同一枚徽记有不同长相 —— 排在材料列表后面的卡上，整张
+        卡连同徽记一起被缩小、压暗。语义与 ``NavigationTemplates.lobby_shop_entry``
+        一致：**任一候选过阈即算命中**。
+
+        为什么要多档尺度：这张列表**在第几位就画多大**，而列表里有几张材料取决于
+        当时开到哪儿 ⇒ 尺寸档位不是固定的两三种，**补模板补不完**。2026-10-04
+        08:36 现场：只按原尺寸匹配量到 0.5928，正好落进 0.55~0.80 的不确定带，
+        判据**静默失效**（不出手、不打分、不报警），刻印页干等 90 秒超时。
+        实测同一张徽记至少被画成核心宽 56 / 50 / 45 三档。
+
+        内缩 ``_SSS_TEMPLATE_INSET`` 是为了去掉模板边缘的卡片背景，避免普通传送卡在
+        背景纹理上蹭到 0.55+。返回 -1.0 是哨兵值，含义是「一个候选位置都没匹配上」，
+        不是「分数低」。
+
+        成本：候选数 × 尺度数 次匹配。实测 2 × 6 档共 12 次约 73ms（单尺度 15ms）。
+        没有做「先按 1.00 倍量、落死区才展开」的省时优化 —— 那样会在
+        「原尺寸量到 ≤0.55（判 NON_SSS）、换个尺度其实过阈」时**漏判**，
+        而漏判 NON_SSS 会让 SSS 材料卡被当成普通材料点下去（合成消耗材料，不可逆）。
+        """
         inset = self._SSS_TEMPLATE_INSET
-        template = self.templates.sss_material[inset:-inset, inset:-inset]
-        match = find_template(
-            screen,
-            template,
-            -1.0,
-            region=self._region("sss_material"),
-            reference_size=self._REFERENCE_SIZE,
-        )
-        return match.score if match is not None else -1.0
+        best = -1.0
+        for candidate in self.templates.sss_material:
+            core = candidate[inset:-inset, inset:-inset]
+            height, width = core.shape[:2]
+            for scale in self._SSS_TEMPLATE_SCALES:
+                shaped = core
+                if scale != 1.0:
+                    shaped = cv2.resize(
+                        core,
+                        (max(2, round(width * scale)), max(2, round(height * scale))),
+                        interpolation=cv2.INTER_AREA,
+                    )
+                match = find_template(
+                    screen,
+                    shaped,
+                    -1.0,
+                    region=region,
+                    reference_size=self._REFERENCE_SIZE,
+                )
+                if match is not None and match.score > best:
+                    best = match.score
+        return best
+
+    def _material_page_sss_score(self, screen: np.ndarray) -> float:
+        return self._sss_material_region_score(screen, self._region("sss_material"))
 
     def _classify_material_page(self, screen: np.ndarray) -> SafetyClass:
-        """先对整列材料做 SSS 安全分类；不确定时禁止点击任何卡。"""
-        if self.templates.sss_material is None:
-            return SafetyClass.UNKNOWN
+        """先对整列材料做 SSS 安全分类；不确定时禁止点击任何卡。
+
+        ⚠️ 「模板缺失」**不再**走这条路径 —— 那种情况在构造期就被拦下了
+        （``HeroSynthStateMachine._assert_anchor_templates``）。这里只剩下
+        「量到了，但分数落在不确定区间」。
+        """
         score = self._material_page_sss_score(screen)
         if score < 0:
             return SafetyClass.UNKNOWN
@@ -337,12 +377,12 @@ class HeroVisionMixin:
         return self._classify_material_page(screen) is SafetyClass.SSS
 
     def _sss_material_warning_close(self, screen: np.ndarray) -> Optional[Match]:
-        """返回 SSS 材料风险提示层的关闭控件，避免点击覆盖层下的按钮。"""
-        if (
-            self.templates.sss_material_warning_title is None
-            or self.templates.sss_material_warning_close is None
-        ):
-            return None
+        """返回 SSS 材料风险提示层的关闭控件，避免点击覆盖层下的按钮。
+
+        ⚠️ 这两张模板**曾经是可选的**，缺了就直接 ``return None`` —— 于是
+        「提示层必须先关掉」这条覆盖层优先级**静默消失**，可能点到提示层底下的
+        材料卡（合成消耗材料，不可逆）。现在它们是必需模板，缺失在构造期被拦下。
+        """
         title = self._locate(screen, "sss_material_warning_title")
         close = self._locate(screen, "sss_material_warning_close")
         return close if title is not None and close is not None else None
@@ -443,8 +483,6 @@ class HeroVisionMixin:
         *,
         region_override: tuple[int, int, int, int] | None = None,
     ) -> float:
-        if self.templates.sss_material is None:
-            return -1.0
         start, end = row
         material_region = self._region("sss_material")
         region = region_override or (
@@ -453,25 +491,11 @@ class HeroVisionMixin:
             material_region[2],
             min(material_region[3], end - start + 90),
         )
-        inset = self._SSS_TEMPLATE_INSET
-        # 去掉模板边缘的卡片背景，避免普通传送卡在背景纹理上得到 0.55+。
-        template = self.templates.sss_material[
-            inset:-inset, inset:-inset
-        ]
-        match = find_template(
-            screen,
-            template,
-            -1.0,
-            region=region,
-            reference_size=self._REFERENCE_SIZE,
-        )
-        return match.score if match is not None else -1.0
+        return self._sss_material_region_score(screen, region)
 
     def _classify_material_row(
         self, screen: np.ndarray, row: tuple[int, int]
     ) -> SafetyClass:
-        if self.templates.sss_material is None:
-            return SafetyClass.UNKNOWN
         score = self._material_sss_score(screen, row)
         if score < 0:
             return SafetyClass.UNKNOWN
@@ -592,11 +616,12 @@ class HeroVisionMixin:
         return low <= count <= high
 
     def _transmit_reward_present(self, screen: np.ndarray) -> bool:
-        if (
-            self.templates.transmit_reward_title is None
-            or self.templates.transmit_reward_close is None
-        ):
-            return False
+        """传送奖励覆盖层是否出现。
+
+        ⚠️ 曾经两张模板可选，缺了直接 ``return False`` —— 等于「奖励层没出现」，
+        于是 ``next_action`` 会跳过「先关奖励层」直接去点下面的东西。
+        现在它们必需，缺了在构造期就被拦下。
+        """
         title = self._locate(screen, "transmit_reward_title")
         close = self._locate(screen, "transmit_reward_close")
         return (
@@ -606,11 +631,12 @@ class HeroVisionMixin:
         )
 
     def _imprint_result_present(self, screen: np.ndarray) -> bool:
-        if (
-            self.templates.imprint_result_title is None
-            or self.templates.imprint_result_close is None
-        ):
-            return False
+        """合成结果覆盖层是否出现。
+
+        ⚠️ 同上：模板可选时缺了会返回 False，于是
+        「合成结果覆盖层必须先关闭，不能点击覆盖层下的返回箭头」这条保护**静默消失**。
+        现在必需。
+        """
         title = self._locate(screen, "imprint_result_title")
         close = self._locate(screen, "imprint_result_close")
         return title is not None and close is not None
@@ -669,7 +695,7 @@ class HeroVisionMixin:
         screen: np.ndarray,
         card: tuple[int, int, str] | None,
     ) -> SafetyClass:
-        if card is None or self.templates.sss_material is None:
+        if card is None:
             return SafetyClass.UNKNOWN
         _, y, _ = card
         region = (1500, max(200, y - 70), 480, 140)
@@ -707,13 +733,11 @@ class HeroVisionMixin:
         )
 
     def _observe_filter(self, screen: np.ndarray) -> FilterObservation:
-        """Classify only filter states backed by explicit simulator evidence."""
-        if (
-            self.templates.filter_attribute_label is None
-            or self.templates.filter_star3_unselected is None
-        ):
-            return FilterObservation.UNKNOWN
+        """Classify only filter states backed by explicit simulator evidence.
 
+        ⚠️ 两张筛选模板曾经可选，缺了直接返回 ``UNKNOWN`` —— 表现是筛选面板永远
+        认不出、于是反复点漏斗直到超时（不点错，但卡死）。现在必需。
+        """
         keys = (
             "filter_level_label",
             "filter_attribute_label",

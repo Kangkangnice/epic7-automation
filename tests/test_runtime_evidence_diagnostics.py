@@ -181,6 +181,32 @@ def test_runtime_evidence_diagnostic_never_raises_when_failure_log_also_fails(
     assert output is None
 
 
+def test_diagnostic_label_with_path_separator_still_lands_as_one_file(tmp_path):
+    """多目标标签里的 ``/`` 不能把诊断落点变成**不存在的子目录**。
+
+    2026-10-03 实测：导航拼 ``f"navigation_{source}_to_{target_label}_failed"``，
+    而 ``target_label = "/".join(targets)`` —— 多目标（``battle_menu/season_menu``）
+    时这个 ``/`` 被 ``Path`` 当**目录分隔符**，落点变成不存在的子目录 ⇒
+    ``cv2.imwrite`` 失败 ⇒ 抛「诊断截图保存失败」。而它是在处理**另一个失败**的过程中
+    抛的 ⇒ **把真正的「导航转场失败」盖掉**（远征 21:10:43 日志里只剩存图失败）。
+    """
+    screen = np.zeros((20, 20, 3), dtype=np.uint8)
+    runtime = Runtime(
+        lambda: screen,
+        lambda point: None,
+        dry_run=True,
+        diagnostic_dir=tmp_path / "diagnostics",
+    )
+
+    path = runtime.save_diagnostic(
+        "navigation_lobby_to_battle_menu/season_menu_failed", screen
+    )
+
+    assert path.is_file()
+    assert path.parent == runtime.diagnostic_dir
+    assert "/" not in path.name and "\\" not in path.name
+
+
 def test_formal_route_failure_entry_points_write_evidence_packs(tmp_path):
     profile, screen = _profile(tmp_path)
     runtime = FakeRuntime(tmp_path / "diagnostics")

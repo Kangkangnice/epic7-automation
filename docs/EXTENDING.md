@@ -231,6 +231,11 @@ tests/test_hunt_runner.py
 - **接力的落点判据与运行期同源** —— 复用状态机自己的页面判据，不另定阈值、不加新锚点。
   哪些画面**不该**接（弹窗通例 / 不可逆动作页 / 终态）见 [TRANSITION_CONTRACTS.md](TRANSITION_CONTRACTS.md)。
 - 接力覆盖面已登记进 [RESUME_COVERAGE.md](RESUME_COVERAGE.md)。
+- **桌面助手的分组表了态**：`desktop/catalog.py` 的 `RouteInfo` 里填了 `group`
+  （`GROUP_DAILY` / `GROUP_SEASON` / `GROUP_EVENT`）。⚠️ **默认值是「日常」**，
+  所以忘填不会报错 —— 但赛季轮换的（远征那类）或限时活动的路线必须显式标出来，
+  否则用户在一堆「日常」里找不到它，也不会知道它会被轮换掉。
+  判据见 [每日任务分组维护](maintenance/daily_tasks_grouping.md)。
 - README 补充新模式命令和实机验证边界。
 - `docs/TODO.md` 和 PC 迁移矩阵同步更新，不把候选模板写成已支持。
 

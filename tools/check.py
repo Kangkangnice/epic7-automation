@@ -128,6 +128,11 @@ ROUTE_KEYWORDS = {
     "community": "community",
     "community_pages": "community",
     "community_numbers": "community",
+    # 月塔：主模块 `tower.py` + 证据画像 `evidence/tower.py`。
+    # `route_of()` 按**文件名**查表 ⇒ `tower.py` 一条就够（证据文件同名 `tower.py`）；
+    # 顺带 `test_epic7_tower` / `test_tower_resume` / `test_tower_evidence` 三个测试
+    # 文件名里也都带 `tower`，定向判定能一并挑中。
+    "tower": "tower",
 }
 
 DOC_SUFFIXES = (".md", ".txt", ".json", ".yaml", ".yml")

@@ -448,8 +448,48 @@ class WindowViewportTests(unittest.TestCase):
         self.assertEqual([], probes, "重建后必须再探一次通道")
         self.assertEqual(2, sum(1 for call in calls if "--command" in call))
 
-    def test_input_channel_fails_loudly_when_adb_never_recovers(self):
-        """重建也救不回来时必须显式失败，而不是放行让第一条路线默默打挂。"""
+    def test_input_channel_falls_back_to_rebooting_the_emulator(self):
+        """`adb kill-server` → `start-server` 试满仍不通 ⇒ 必须去重启模拟器内部系统。
+
+        2026-10-04 实测：坏的是模拟器内部接收端时，端口还在监听、adb 连上去就是
+        `offline`，一级恢复做得再多也碰不到病根 —— 只重启 adb 等于什么都没做。
+        """
+        game = Epic7Window()
+        calls: list[list[str]] = []
+
+        def run(args, **_kwargs):
+            calls.append(list(args))
+            if "shell echo ping" in args:
+                return subprocess.CompletedProcess(
+                    args=[],
+                    returncode=0,
+                    stdout=b"adb.exe: device 'emulator-5554' not found\n",
+                    stderr=b"",
+                )
+            return subprocess.CompletedProcess(
+                args=[], returncode=0, stdout=b"", stderr=b""
+            )
+
+        with (
+            patch.object(
+                game,
+                "_instance_channel",
+                return_value=(Path("D:/epic7/ldconsole.exe"), "0", 456),
+            ),
+            patch.object(Path, "exists", return_value=True),
+            patch("auto_game_unified.core.window.subprocess.run", side_effect=run),
+            patch("auto_game_unified.core.window.sleep"),
+            self.assertRaisesRegex(RuntimeError, "重启模拟器内部系统后仍未恢复"),
+        ):
+            game.ensure_input_channel()
+
+        self.assertIn(["D:\\epic7\\ldconsole.exe", "reboot", "--index", "0"], calls)
+        adb = str(Path("D:/epic7/adb.exe"))
+        self.assertIn([adb, "kill-server"], calls)
+        self.assertIn([adb, "start-server"], calls)
+
+    def test_input_channel_fails_loudly_when_nothing_recovers(self):
+        """两级都救不回来时必须显式失败，而不是放行让第一条路线默默打挂。"""
         game = Epic7Window()
 
         def run(args, **_kwargs):
@@ -473,9 +513,65 @@ class WindowViewportTests(unittest.TestCase):
             patch.object(Path, "exists", return_value=True),
             patch("auto_game_unified.core.window.subprocess.run", side_effect=run),
             patch("auto_game_unified.core.window.sleep"),
-            self.assertRaisesRegex(RuntimeError, "自动重建 adb 服务 3 次仍未恢复"),
+            self.assertRaisesRegex(RuntimeError, "重启模拟器内部系统后仍未恢复"),
         ):
             game.ensure_input_channel()
+
+    def test_reboot_recovery_relanunches_the_game_and_stops_the_run(self):
+        """重启模拟器救回通道后：必须把游戏拉起来，且不能当作「可以继续跑」。
+
+        模拟器重启会把游戏一起关掉（2026-10-04 实测重启后前台是安卓桌面、
+        游戏进程为零），留一个空桌面给业务层等于换一种方式失败。
+        游戏停在大厅、原路线的现场已经没了 ⇒ 明确报错，让外部重跑整轮。
+        """
+        game = Epic7Window()
+        calls: list[list[str]] = []
+        probes = [
+            b"adb.exe: device offline\n",
+            b"adb.exe: device offline\n",
+            b"adb.exe: device offline\n",
+            b"ping\n",
+        ]
+
+        def run(args, **_kwargs):
+            calls.append(list(args))
+            if "shell echo ping" in args:
+                return subprocess.CompletedProcess(
+                    args=[], returncode=0, stdout=probes.pop(0), stderr=b""
+                )
+            if any("shell pidof" in item for item in args):
+                return subprocess.CompletedProcess(
+                    args=[], returncode=0, stdout=b"4321\n", stderr=b""
+                )
+            return subprocess.CompletedProcess(
+                args=[], returncode=0, stdout=b"", stderr=b""
+            )
+
+        with (
+            patch.object(
+                game,
+                "_instance_channel",
+                return_value=(Path("D:/epic7/ldconsole.exe"), "0", 456),
+            ),
+            patch.object(Path, "exists", return_value=True),
+            patch("auto_game_unified.core.window.subprocess.run", side_effect=run),
+            patch("auto_game_unified.core.window.sleep"),
+            self.assertRaisesRegex(RuntimeError, "本次运行不续跑"),
+        ):
+            game.ensure_input_channel()
+
+        self.assertEqual([], probes, "重启后必须再探一次通道")
+        self.assertIn(
+            [
+                "D:\\epic7\\ldconsole.exe",
+                "runapp",
+                "--index",
+                "0",
+                "--packagename",
+                game._GAME_PACKAGE,
+            ],
+            calls,
+        )
 
     def test_legacy_swipe_is_converted_and_sent_through_indexed_adb(self):
         game = Epic7Window()

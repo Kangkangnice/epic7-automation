@@ -349,9 +349,18 @@ class DesktopApp:
         self.cycle_vars: dict[str, tk.StringVar] = {}
         self._backend_buttons: list[ttk.Radiobutton] = []
         self._checking = False
-        # 「每日任务」那张卡。存着是为了 `_task_panel_descendants()`（测试导航用），
-        # 生产逻辑不用它 —— 别拿它当「面板根」去算任何布局。
+        # 「每日任务」那张卡。`_task_panel_descendants()`（测试导航用）与折叠
+        # （``_set_task_panel_collapsed``）都拿它当根 —— 但**只用来 grid /
+        # grid_remove**，别拿它去算任何尺寸（尺寸一律走令牌与 grid 权重）。
         self._task_panel: ttk.Frame | None = None
+        # 「任务清单」是不是收起来了。
+        #
+        # ⚠️ 用户 2026-10-09 的诉求：跑起来之后日志只剩 6 行，最后一行还被切掉。
+        # 实测（截图量像素）：窗口 1844px 高，日志区**只有 171px、占 9.3%** ——
+        # 连它自己的下限（``theme.LOG_MIN_HEIGHT`` = 160 逻辑像素 = 320 物理像素）
+        # 都没保住，因为上方那张清单一直完整展开、把高度吃光了。
+        # 收起之后省下来的高度全部落到日志区（它是唯一 ``weight=1`` 的行）。
+        self._task_collapsed = False
 
         # 令牌 + ttk 样式一次性装好，之后的排布只引用语义名。
         self.theme = theme.build(self.root)
@@ -728,6 +737,27 @@ class DesktopApp:
         self.start_button.pack(side=tk.LEFT)
         self.stop_button = ttk.Button(actions, text="安全停止", command=self._stop)
         self.stop_button.pack(side=tk.LEFT, padx=(px(theme.SPACE_SM), 0))
+        # 收起任务清单 = 把高度让给日志（见 ``_set_task_panel_collapsed``）。
+        # 按钮放在**这一条**上而不是清单卡头里：清单收起来之后卡头也没了，
+        # 按钮搁在里头就没人能再把它展开。
+        self.collapse_button = ttk.Button(
+            actions,
+            text="收起清单",
+            style="Tool.TButton",
+            command=self._toggle_task_panel,
+        )
+        self.collapse_button.pack(side=tk.LEFT, padx=(px(theme.SPACE_MD), 0))
+
+        # 中间那一栏原本是纯留白（``columnconfigure(1, weight=1)``）。清单收起后
+        # 计划就从界面上消失了，所以这一栏用来放一行摘要 —— 它是「收起」能不让人
+        # 心里没底的前提，不是额外的功能。
+        self.plan_summary_var = tk.StringVar(value="")
+        self.plan_summary_label = ttk.Label(
+            bar, textvariable=self.plan_summary_var, style="Caption.TLabel"
+        )
+        self.plan_summary_label.grid(
+            row=0, column=1, sticky="w", padx=(px(theme.SPACE_XL), px(theme.SPACE_LG))
+        )
 
         utilities = ttk.Frame(bar, style="Bar.TFrame")
         utilities.grid(row=0, column=2, sticky="e")
@@ -742,6 +772,42 @@ class DesktopApp:
                 side=tk.LEFT, padx=(px(theme.SPACE_SM) if index else 0, 0)
             )
         return bar
+
+    def _toggle_task_panel(self) -> None:
+        self._set_task_panel_collapsed(not self._task_collapsed)
+
+    def _set_task_panel_collapsed(self, collapsed: bool) -> None:
+        """收起／展开「任务清单」那一整块，把省下的高度全部让给日志区。
+
+        日志区是整窗**唯一** ``weight=1`` 的那一行（``_build_layout``），所以清单一
+        收起，省下的高度自动全归它 —— 窗口再拖大时也跟着一起长。
+
+        ⚠️ 用 ``grid_remove`` 而不是 ``grid_forget``：前者**记住**原来的 grid 参数，
+        展开时一句无参 ``grid()`` 就回原位。用 forget 就得把
+        ``row / column / sticky / pady`` 再抄一遍 —— 同一件事写两处，以后改了这里
+        忘了那里（``_build_layout`` 里那几个参数）。
+        """
+        if self._task_panel is None or collapsed == self._task_collapsed:
+            return
+        self._task_collapsed = collapsed
+        if collapsed:
+            self._task_panel.grid_remove()
+        else:
+            self._task_panel.grid()
+        self.collapse_button.configure(text="展开清单" if collapsed else "收起清单")
+        self._refresh_plan_summary()
+
+    def _refresh_plan_summary(self) -> None:
+        """收起时在操作条中间写「这次要跑什么」；展开时清空（信息本来就在眼前）。"""
+        if not self._task_collapsed:
+            self.plan_summary_var.set("")
+            return
+        chosen = list(self.controller.selection)
+        if not chosen:
+            self.plan_summary_var.set("（没有勾选任何路线）")
+            return
+        names = "、".join(route_by_name(mode).label for mode in chosen)
+        self.plan_summary_var.set(f"本次依次运行 {len(chosen)} 条：{names}")
 
     def _build_log_panel(self, parent: ttk.Frame) -> ttk.Frame:
         """日志卡：整窗唯一吃剩余高度的地方，所以要够高（有下限）。"""
@@ -866,12 +932,15 @@ class DesktopApp:
         """
         if not self.controller.selection:
             self.route_description_var.set("")
+            self._refresh_plan_summary()
             return
         route = route_by_name(self.controller.selection[-1])
         status_text = "正式功能" if not route.experimental else "实验功能，可能不稳定"
         self.route_description_var.set(
             f"【{route.label}】{status_text}\n{route.description}"
         )
+        # 收起状态下摘要就摆在操作条上，勾选一变它得跟着变。
+        self._refresh_plan_summary()
 
     def _check_environment(self) -> None:
         if self._checking or self.controller.worker.running:
@@ -998,6 +1067,9 @@ class DesktopApp:
                 f"{route_by_name(mode).label} {count} 次" for mode, count in plan
             )
         )
+        # 跑起来之后清单就没用了 —— 收起它，把高度让给日志（跑完自动展开，见
+        # ``_poll_worker``）。放在真正 start 成功之后：复检失败提前返回时清单照旧。
+        self._set_task_panel_collapsed(True)
         self._refresh_controls()
 
     def _stop(self) -> None:
@@ -1070,6 +1142,8 @@ class DesktopApp:
             else:
                 self._append_log(f"[{event.message}]")
             if event.kind == "finished":
+                # 跑完了，清单该回来 —— 下次要改勾选和次数就在那张卡上。
+                self._set_task_panel_collapsed(False)
                 self._refresh_controls()
         self.root.after(100, self._poll_worker)
 

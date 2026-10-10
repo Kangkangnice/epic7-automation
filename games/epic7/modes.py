@@ -69,6 +69,16 @@ from auto_game_unified.games.epic7.survivor import (
     SurvivorState,
     SurvivorStateMachine,
 )
+from auto_game_unified.games.epic7.tower import (
+    TOWER_BATTLE_MENU_PAGE,
+    TOWER_ENTRY_PAGE,
+    TOWER_RESUME_PAGES,
+    TOWER_SEASON_PAGE,
+    TowerRunner,
+    TowerState,
+    TowerStateMachine,
+    detect_resume_point as detect_tower_resume_point,
+)
 from auto_game_unified.games.epic7.navigation_plan import (
     QUICK_MENU_PAGE,
     NavigationPlan,
@@ -200,6 +210,13 @@ def _build_expedition(template_root: Path, state: str) -> ExpeditionStateMachine
     return ExpeditionStateMachine(
         template_root / "expedition",
         initial_state=ExpeditionState(state),
+    )
+
+
+def _build_tower(template_root: Path, state: str) -> TowerStateMachine:
+    return TowerStateMachine(
+        template_root / "tower",
+        initial_state=TowerState(state),
     )
 
 
@@ -444,6 +461,12 @@ TRANSITION_EXEMPT = {
         "它走 `ExpeditionAction.source_page` / `target_pages` ＋ 基类 `_execute_transition`："
         "来源/目标合同缺任一**直接 raise**，且目标页要连续两帧才算转场成功。"
     ),
+    "tower": (
+        "与 `expedition` 同族：继承**事务型主循环基类** `TransactionalRunnerBase`，"
+        "**不是** `ModeRunnerBase` ⇒ 这个开关的读取点在基类 `run()` 里，对它无效。"
+        "它走 `TowerAction.source_page` / `target_pages` ＋ 基类 `_execute_transition`："
+        "来源/目标合同缺任一**直接 raise**，且目标页要连续两帧才算转场成功。"
+    ),
     "shop_refresh": (
         "自带独立主循环，验收靠自己的 `_wait_stable` / `_open_with_retry`："
         "每次购买或刷新都「点完等到目标页稳定」才放行，不经过基类的转场账本。"
@@ -561,8 +584,64 @@ MODE_SPECS = {
             resume_state_done="已在远征主页",
         ),
     ),
+    "tower": ModeSpec(
+        name="tower",
+        label="月塔",
+        default_state=TowerState.HOME.value,
+        states=frozenset(state.value for state in TowerState),
+        build_machine=_build_tower,
+        runner_type=TowerRunner,
+        # ⚠️ 默认 **25 层**（用户 2026-10-08 拍板）：月塔一个赛季总共约 25 层，
+        # 「默认打满」就是连打 25 层。每层耗 **15 点体力**（实测逐层 -15），
+        # 所以 25 层不是「次数」而是「打满整座塔」—— 体力不够时走
+        # `StaminaExhausted`（退出码 2），**不补充体力、不买叶子**。
+        default_cycles=25,
+        # 次数可改：用户想只打几层清个体力也合理。
+        cycles_editable=True,
+        # 开局不无脑回大厅：导航链四级（战斗菜单/赛季菜单/月塔主页）都开放接力，
+        # 业务页从楼层列表一路到结算页也都接得住。
+        # ⚠️ 落点必须拨状态：``next_action`` 是纯状态驱动的，拨错**不会自愈**。
+        resume_probe=_resume_probe(detect_tower_resume_point, use_navigator=True),
+        navigation_plan=NavigationPlan(
+            mode="tower",
+            steps=(
+                NavigationStep(
+                    "lobby",
+                    (TOWER_BATTLE_MENU_PAGE, TOWER_SEASON_PAGE),
+                    "lobby_battle",
+                    "进入战斗菜单",
+                ),
+                NavigationStep(
+                    TOWER_BATTLE_MENU_PAGE,
+                    (TOWER_SEASON_PAGE,),
+                    "expedition_season_tab",
+                    "切换到赛季",
+                    skip_if_observed=(TOWER_SEASON_PAGE,),
+                ),
+                # ⚠️ 最后一步用**固定坐标**：月塔卡片没有自己那一格的专有锚点
+                # （`season_tower_title` 是卡片标题，实测在卡片被点开前后都在，
+                # 拿它定位会点到标题而不是卡片中心）；而卡片在赛季页上的位置
+                # 实测稳定（标题 x=[992,1197] y=[331,373]，点 (1000, 420)）。
+                # 为什么敢用固定坐标：**来源页身份仍由本步的 ``targets`` 验收**
+                # （点空了 `tower_home` 不出现 ⇒ 按额度重试 ⇒ 失败留诊断），
+                # 页面身份这一道「眼睛」没有少（与社区「前往活动页」同一个道理）。
+                NavigationStep(
+                    TOWER_SEASON_PAGE,
+                    (TOWER_ENTRY_PAGE,),
+                    "lobby_battle",
+                    "进入月塔",
+                    fixed_point=(1000, 420),
+                ),
+            ),
+            resume_entries=TOWER_RESUME_PAGES,
+            resume_action="跳过回大厅与进入月塔",
+            resume_action_middle="跳过回大厅与进入战斗菜单",
+            resume_state_done="已在月塔主页",
+        ),
+    ),
     "fodder": ModeSpec(
         name="fodder",
+
         label="狗粮",
         default_state=FodderState.STAGE.value,
         states=frozenset(state.value for state in FodderState),
@@ -888,6 +967,11 @@ MODE_SPECS = {
                         "activity_more",
                         "选中「更多精彩活动」",
                         skip_if_observed=("activity_web_promo", "web_activity_list"),
+                        # ⚠️ 兜底：**游戏记得上次点了哪个活动** ⇒ 再进来还停在那一个。
+                        # 上次点的活动排在「更多精彩活动」下面时，那一行就被挤出视野
+                        # ⇒ 找不到锚点 ⇒ 第一步都走不过去（用户 2026-10-08）。
+                        # 锚点找不着时先滚一屏再找，最多 3 次。
+                        scroll_before_retry="activity_column",
                     ),
                     NavigationStep(
                         "activity_web_promo",
@@ -895,6 +979,10 @@ MODE_SPECS = {
                         "web_activity_gate",
                         "打开网页活动列表",
                         skip_if_observed=("web_activity_list",),
+                        # ⚠️ 同上：这一屏的「前往活动页」按钮虽然给了固定坐标，
+                        # 但**选中态那一行本身可能在视野外**（左侧列表滚动位置不同），
+                        # 点了也白点 ⇒ 同样允许「重试前先滚一屏」。
+                        scroll_before_retry="activity_column",
                         # ⚠️⚠️ **固定坐标点击**，不再用模板定位这颗按钮。
                         #
                         # 为什么：按钮上有一颗**来回滑动的光球**。2026-10-06 光球
@@ -984,6 +1072,14 @@ CONCLUSION_GATE_DECLARATION = {
         "``ConclusionGate`` 接在基类 ``run()`` 里：``preview`` 抛出的终止性结论先过门槛、"
         "两帧一致才允许按结论处理。覆盖见 "
         "``tests/test_conclusion_gate.py::ExpeditionLoopConclusionTests``。"
+    ),
+    "tower": (
+        "与 ``expedition`` 同族：继承**事务型主循环基类** ``TransactionalRunnerBase``"
+        "（不是 ``ModeRunnerBase``）。``ConclusionGate`` 接在基类 ``run()`` 里："
+        "``preview`` 抛出的终止性结论先过门槛、两帧一致才允许按结论处理。"
+        "⚠️ 月塔的终止性结论目前只有一条 —— 打满 25 层（``FloorsConquered``）；"
+        "「体力不足」是**资源耗尽**通道（``StaminaExhausted``，退出码 2），"
+        "不经过这道门槛。"
     ),
     "shop_refresh": (
         "不是「每帧下一结论」的形态：全程靠 ``_wait_stable`` / ``_observe_stable`` "
