@@ -14,10 +14,19 @@ if TYPE_CHECKING:
 
 @dataclass(frozen=True)
 class NetworkReconnectTemplates:
+    """断线弹窗的**文案**锚点（这层弹窗的文案有两种画法，各存一张）。
+
+    ⚠️ **别当成「新旧版本」**：没有证据表明游戏改过版，「8 月先出甲/后出乙」只是当年
+    提交的顺序，不是版本先后。已核实的事实是 —— 文案有两种画法、按钮也有两种画法，
+    两者**互不绑定**，四种交叉组合都可能出现（证据见 ``find_network_retry``）。
+
+    判定只用文案。按钮图（``network_retry.png`` / ``network_disconnected_retry.png``）
+    曾经也是判定条件，2026-10-04 整层弹窗就是栽在「文案与按钮必须配对」上。
+    两张按钮图仍留在 ``templates/global/`` 下存档，但不再读进内存、也不参与判定。
+    """
+
     message: np.ndarray
-    retry: np.ndarray
     message_alt: np.ndarray | None = None
-    retry_alt: np.ndarray | None = None
 
 
 @dataclass(frozen=True)
@@ -63,9 +72,44 @@ class PetGiftTemplates:
     badge: np.ndarray
 
 
+@dataclass(frozen=True)
+class WebNetworkErrorTemplates:
+    """游戏内网页（WebView）报「网络错误」时的两个锚点。
+
+    ⚠️ 这一层**必须双锚点**，而且两个锚点的分工与别的弹窗**反着来**，别照抄：
+
+    - ``message``（那条黑底白字的长条）= **排他锚点**。它出现 = 网页这条路出事了。
+    - ``close``（网页容器右上角那颗圆钮 X）= **点击点**。
+      ⚠️ 它是**网页本来就有的控件** —— 每一张网页帧上都在（实测正常网页帧上
+      0.9739~0.9970），所以它**单独不能当判据**，只能当「点哪儿」。
+
+    与 ``NetworkReconnectTemplates`` 的区别：那片断线弹窗是**模态**的，点画面任何位置都
+    能消掉，所以那里「主锚点排他即可、命中点屏幕中央」；而这条长条**只有那个 X 能消**，
+    点别处没用 —— 所以它的第二个锚点不是「多余的配对」，而是**必须存在的点击目标**。
+    """
+
+    message: np.ndarray
+    close: np.ndarray
+
+
 _REFERENCE_SIZE = (1982, 1132)
+
+# 同一层弹窗的**点击预算**：点满这么多次仍不消失 ⇒ 判定熔断（存诊断 + 抛错）。
+# 对所有全局弹窗通吃，不按弹窗类型区分（见 ``Epic7GlobalPopupGuard.__call__``）。
+#
+# ⚠️⚠️ 这是本模块**唯一**允许出现「4」的地方 —— 下方 9 条失败文案、
+# ``__call__`` 的两处判断、``tests/test_global_popups.py`` 的断言全部从这里取值。
+# **别在别处再写死这个数字。** 历史教训：2026-08-21 把它从 2 调到 4 的时候，
+# README 那份副本没跟上，一路错到 2026-10-04 才被用户发现。
+# 实测节奏（探针 ``runtime_logs/_probe_click_budget.py``）：1/4/7/10 秒各点一次，
+# 25.0 秒熔断。改回 2 次只省 6 秒，而 adb 侧「命令送达但界面没消化」至今无法
+# 自动检测（见 ``topics/click_channel.md``），多点两次的容错值得留着。
+_MAX_POPUP_CLICKS = 4
+
 _MESSAGE_REGION = (700, 450, 600, 180)
-_RETRY_REGION = (780, 630, 400, 230)
+# 断线弹窗文案的门槛：沿用原先双锚点时那个 0.88，没有重调。
+# 排他余量见 ``find_network_retry`` 的 docstring（跨页最高 0.5543，余量 0.33）。
+_NETWORK_THRESHOLD = 0.88
 _INTIMACY_TITLE_REGION = (800, 220, 700, 180)
 _INTIMACY_DISMISS_REGION = (850, 780, 650, 250)
 _FRIENDSHIP_TITLE_REGION = (600, 150, 800, 180)
@@ -120,17 +164,56 @@ _KNIGHTS_WEEKLY_REWARD_THRESHOLD = 0.80
 _PET_GIFT_BADGE_REGION = (1500, 300, 300, 220)
 _PET_GIFT_THRESHOLD = 0.80
 
+# ── 游戏内网页（WebView）的「网络错误」长条（2026-10-07 接）────────────────────
+#
+# 用户要求接进来的**第三种网络失败**。用户原话：「网络错误那个右上角是有一个叉的，
+# 可以把它给擦掉的，你就按照这个来做，就相当于这是也是一种情况嘛，对吧」。
+#
+# ⚠️⚠️ **三种网络失败千万别混成一个**（2026-10-07 实测三者互不相同，各有各的判据）：
+#
+# | # | 长什么样 | 在哪 | 归谁管 |
+# | --- | --- | --- | --- |
+# | ① | 断线弹窗「与服务器的连接已中断 / 点击重试」 | 任何横屏页 | ``find_network_retry``（判文案、点屏幕中央） |
+# | ② | 整页「网络连接异常，下拉刷新」1080x1920 | 社区 H5（竖屏） | ``community`` 那条路线（下加拉活）；本模块竖屏直接放行，够不到 |
+# | ③ | 黑底白字「网络错误」长条，**只有文案、没有按钮** | 网页活动列表（横屏） | **本条**；唯一出路是网页容器右上角那颗 X |
+#
+# ①在③的帧上**完全认不出来**（实测全帧最高 message 0.3147 / message_alt 0.3619，
+# 门槛 0.88）—— 两条判据不串味，这就是「不是同一个东西」的直接证据。
+#
+# 为什么要接③：2026-10-07 四次实跑里**两次**卡在这里。日志形状是
+# 「点击验收=无效 → 提前重试 → 转场失败」，现场帧上那个 H5 **其实已经渲染出来了**
+# （「RTA战绩查询网站上线啦」+ 侧栏），只是**缺了「游戏社区」那一项** ⇒
+# 导航要的 ``web_community`` 锚点拿不到 ⇒ 判失败。长条就是那次请求失败留下的。
+#
+# 排他余量（2026-10-07 全库扫描，脚本 ``.workbuddy/_probe_web_error_tpl.py``）：
+#
+# | 样本 | 长条 | 圆钮 X |
+# | --- | --- | --- |
+# | 真机正例 ×2（相隔 40 分钟、页面内容不同） | **1.0000** | 1.0000 |
+# | 「还在转圈」两张 | 0.2455 / 0.2450 | 0.9970 |
+# | 正常网页活动列表（10-06 夹具） | 0.2161 | 0.9739 |
+# | 全库 227 张横屏帧最高 | **0.4908** | 0.3155（非网页帧）|
+#
+# ⇒ 长条排他；圆钮 X **不排他**（网页上本来就有）⇒ 必须双锚点。
+_WEB_NETWORK_MESSAGE_REGION = (560, 500, 860, 190)
+_WEB_ERROR_CLOSE_REGION = (1790, 20, 192, 140)
+# 门槛取 0.80，比别的弹窗那两档（0.82 / 0.88）都宽，是**故意的** —— 代价不对称：
+#   漏掉长条 ⇒ 网页加载不完整、整条社区路线进不去（就是今天的形状，代价最大）；
+#   误命中   ⇒ 在正常网页上点一下 X，把网页关掉，导航重试一次即可恢复。
+# 而最近的负例只有 0.4908，0.80 离它仍有 0.31 的余量（正例是纯黑底 + 白字，对比度极高，
+# ``TM_CCOEFF_NORMED`` 给的是 1.0000，留 0.20 的抗渲染差异余量）。
+_WEB_NETWORK_THRESHOLD = 0.80
+# 圆钮 X 只负责**定位**（判据是长条）：正例最低实测 0.9739、非网页帧 0.3155 ⇒ 0.85 够。
+_WEB_ERROR_CLOSE_THRESHOLD = 0.85
+
 
 def load_network_reconnect_templates(
     template_dir: Path,
 ) -> NetworkReconnectTemplates:
     alt_message = template_dir / "network_disconnected_message.png"
-    alt_retry = template_dir / "network_disconnected_retry.png"
     return NetworkReconnectTemplates(
         message=load_template(str(template_dir / "network_message.png")),
-        retry=load_template(str(template_dir / "network_retry.png")),
         message_alt=(load_template(str(alt_message)) if alt_message.exists() else None),
-        retry_alt=(load_template(str(alt_retry)) if alt_retry.exists() else None),
     )
 
 
@@ -194,6 +277,21 @@ def load_pet_gift_templates(template_dir: Path) -> PetGiftTemplates:
     )
 
 
+def load_web_network_error_templates(
+    template_dir: Path,
+) -> WebNetworkErrorTemplates:
+    """读「网页网络错误」的两个锚点（``templates/navigation`` 下）。
+
+    ⚠️ **fail closed**：两张都直接 ``load_template``，缺一张就当场抛 —— 不做
+    ``if exists() else None``。判据型模板静默降级过一次就走了一个月弯路
+    （2026-10-03 血泪），这里不再重演。
+    """
+    return WebNetworkErrorTemplates(
+        message=load_template(str(template_dir / "web_network_message.png")),
+        close=load_template(str(template_dir / "web_error_close.png")),
+    )
+
+
 def find_intimacy_level_up_dismiss(
     screen: np.ndarray,
     templates: IntimacyLevelUpTemplates,
@@ -242,30 +340,64 @@ def find_network_retry(
     screen: np.ndarray,
     templates: NetworkReconnectTemplates,
 ) -> Match | None:
-    for message_template, retry_template in (
-        (templates.message, templates.retry),
-        (templates.message_alt, templates.retry_alt),
-    ):
-        if message_template is None or retry_template is None:
+    """认断线弹窗（文案两版任一命中即可）；命中就返回**屏幕中央**当点击点。
+
+    ⚠️ 先讲清这层弹窗长什么样：**文案有两种画法（甲 / 乙），按钮也有两种画法（甲 / 乙），
+    两者并不绑定**。这不是「新旧版本」—— 没有证据表明游戏改过版，「8 月先出甲 / 后出乙」
+    只是当年提交顺序。历史样本里出现过三种搭配：甲文案配甲按钮（8/13 两张帧）、
+    乙文案配乙按钮（8/23 帧）、**乙文案配甲按钮（2026-10-04 首次撞见）**；
+    第四种「甲文案配乙按钮」至今没见过 —— 所以别指望「没见过就不会出现」。
+
+    也**不是两个不同弹窗**（按这个方向查过，结论是否定的）：三张真机帧上文案起点
+    都精确落在 ``(780, 510)``、按钮都落在 ``(870~875, 690~695)`` —— 像素级重合，
+    两个独立弹窗不可能共用同一套坐标。跨帧互比也能印证「交叉」确有其事
+    （``runtime_logs/_probe_cross_frame.py``）：今天那帧的**按钮区对 8/13 帧 0.9854、
+    对 8/23 帧只有 0.4183**；**文案区反过来对 8/23 帧 0.9992、对 8/13 帧只有 0.4697**。
+
+    ⚠️ 2026-10-04 事故 —— 这里原先要求**文案与按钮成对**命中：
+    ``(message, retry)`` 一组、``(message_alt, retry_alt)`` 一组，组内两个都要中。
+    可早上竞技场掉线那帧偏偏是「文案乙 + 按钮甲」的交叉组合，两组各缺一半：
+
+    | 锚点 | 分数 |
+    |---|---|
+    | message（文案甲） | 0.5001 不过阈 |
+    | retry（按钮甲） | 0.9854 命中 |
+    | message_alt（文案乙） | 0.9992 命中 |
+    | retry_alt（按钮乙） | 0.4196 不过阈 |
+
+    ⇒ 第一组缺文案、第二组缺按钮 ⇒ **两边都不成立 ⇒ 返回 None** ⇒ 守卫压根看不见这层
+    弹窗 ⇒ 竞技场在「队伍选择」连点 4 次「战斗开始」都不动，按规矩安全停止、那条任务记 ✗
+    （现场帧 ``runtime_diagnostics/epic7_arena/20261004_081019_044061_*``，已存成夹具
+    ``epic7_global/network_disconnected_live_20261004.png``）。
+
+    所以判定**只认文案**：文案排他性实测（全库 **218** 张，扫描脚本
+    ``runtime_logs/_probe_network_message.py``，2026-10-04 重跑复核过）——
+    network_message 自身两帧 1.0000 / 0.9995，跨页最高 0.5254；
+    network_disconnected_message 自身 1.0000，跨页最高 0.5543。
+    门槛 0.88，余量 0.33+。两张模板各自过阈的都是「自己那两种帧」，互不串味。
+
+    命中即点屏幕中央：这层弹窗是**模态**的，点画面任何位置都会触发重试，
+    而底下的页面本来就点不动 ⇒ 不存在「点错地方」的风险。这个兜底写法不是自创的，
+    抄自 ``find_intimacy_level_up_dismiss``（它找不到关闭点时同样是点屏幕中央）。
+
+    ``retry`` / ``retry_alt`` 两张按钮模板**保留在仓库里，但不再读进内存、不参与判定**：
+    既然已经撞见过「文案乙配按钮甲」，再拿按钮去配文案，就是把两个各自独立的画法
+    又硬拧成一组 —— 那是今天事故的老路。
+    """
+    for message_template in (templates.message, templates.message_alt):
+        if message_template is None:
             continue
         message = find_template(
             screen,
             message_template,
-            0.88,
+            _NETWORK_THRESHOLD,
             region=_MESSAGE_REGION,
             reference_size=_REFERENCE_SIZE,
         )
-        if message is None:
-            continue
-        retry = find_template(
-            screen,
-            retry_template,
-            0.88,
-            region=_RETRY_REGION,
-            reference_size=_REFERENCE_SIZE,
-        )
-        if retry is not None:
-            return Match(retry.center, min(message.score, retry.score))
+        if message is not None:
+            return Match(
+                (screen.shape[1] // 2, screen.shape[0] // 2), message.score
+            )
     return None
 
 
@@ -444,6 +576,55 @@ def find_knights_weekly_reward_close(
     return Match(close.center, min(title.score, close.score))
 
 
+def find_web_network_error_close(
+    screen: np.ndarray,
+    templates: WebNetworkErrorTemplates,
+) -> Match | None:
+    """认网页的「网络错误」长条，命中就返回**网页容器右上角那颗 X** 当点击点。
+
+    ## 为什么点击点不是「屏幕中央」（与断线弹窗的关键区别）
+
+    断线弹窗是**模态**的：点画面任何位置都会触发重试，所以那边命中就点中央。
+    这条长条**没有按钮**，点别处什么都不发生 —— 实测证据就是旧写法：
+    社区那条路线原先遇到整页版时点的是 ``FEED_CLOSE``，而点位实测落在空白上。
+
+    ⇒ 唯一能消掉它的就是右上角那颗圆钮 X。它同时**会关掉整个网页**，
+    于是导航会重新点一次「前往活动页」把网页再打开一遍 —— 这正是我们要的重试。
+
+    ## 为什么两个锚点都要，而不是只用长条 + 一个钉死的坐标
+
+    长条出现的位置固定（实测两张真机帧逐像素相同，都在 ``(624,550,672,84)``），
+    但「X 在哪」这件事**应当由画面说了算**：网页面板将来挪一寸，钉死的坐标就点到别处去，
+    而长条仍旧会命中。所以第二个锚点是**定位**用的，不是多余的配对。
+
+    ⚠️ 与 ``find_network_retry`` 那边「文案甲/乙与按钮甲/乙互不绑定」的教训不冲突：
+    那边的问题是「两个各自独立换皮肤的画法被硬拧成一组」。这里两个锚点分工不同 ——
+    长条是**判据**（认事），X 是**定位**（认点），X 换皮肤只会让定位失败（返回 None，
+    保守不动手），不会让判据失真。
+    """
+    message = find_template(
+        screen,
+        templates.message,
+        _WEB_NETWORK_THRESHOLD,
+        region=_WEB_NETWORK_MESSAGE_REGION,
+        reference_size=_REFERENCE_SIZE,
+    )
+    if message is None:
+        return None
+    close = find_template(
+        screen,
+        templates.close,
+        _WEB_ERROR_CLOSE_THRESHOLD,
+        region=_WEB_ERROR_CLOSE_REGION,
+        reference_size=_REFERENCE_SIZE,
+    )
+    if close is None:
+        # 长条在、X 却定位不到 ⇒ **不动手**（返回 None 让上层照旧失败并留诊断），
+        # 而不是退回一个猜的坐标：这一点旁边就是屏幕右边缘，点偏了没有第二次机会。
+        return None
+    return Match(close.center, min(message.score, close.score))
+
+
 def find_pet_gift_badge(
     screen: np.ndarray,
     badge_template: np.ndarray,
@@ -478,6 +659,7 @@ class Epic7GlobalPopupGuard:
         gift_support_templates: GiftSupportTemplates | None = None,
         knights_weekly_reward_templates: KnightsWeeklyRewardTemplates | None = None,
         pet_gift_templates: PetGiftTemplates | None = None,
+        web_network_error_templates: WebNetworkErrorTemplates | None = None,
         sleep: Callable[[float], None] = default_sleep,
         now: Callable[[], float] = monotonic,
         poll_seconds: float = 1.0,
@@ -492,6 +674,7 @@ class Epic7GlobalPopupGuard:
         self.gift_support_templates = gift_support_templates
         self.knights_weekly_reward_templates = knights_weekly_reward_templates
         self.pet_gift_templates = pet_gift_templates
+        self.web_network_error_templates = web_network_error_templates
         self.sleep = sleep
         self.now = now
         self.poll_seconds = poll_seconds
@@ -509,8 +692,20 @@ class Epic7GlobalPopupGuard:
                 "network",
                 "retry-network",
                 "network_retry_failed",
-                "断网重连弹窗点击4次后仍未消失",
+                f"断网重连弹窗点击{_MAX_POPUP_CLICKS}次后仍未消失",
             )
+        if self.web_network_error_templates is not None:
+            match = find_web_network_error_close(
+                screen, self.web_network_error_templates
+            )
+            if match is not None:
+                return (
+                    match,
+                    "web_network_error",
+                    "dismiss-web-network-error",
+                    "web_network_error_failed",
+                    f"网页「网络错误」右上角的 X 点击{_MAX_POPUP_CLICKS}次后仍未消失",
+                )
         if self.intimacy_templates is not None:
             match = find_intimacy_level_up_dismiss(screen, self.intimacy_templates)
             if match is not None:
@@ -519,7 +714,7 @@ class Epic7GlobalPopupGuard:
                     "intimacy",
                     "dismiss-intimacy-level-up",
                     "intimacy_level_up_failed",
-                    "亲密度提升弹窗点击4次后仍未消失",
+                    f"亲密度提升弹窗点击{_MAX_POPUP_CLICKS}次后仍未消失",
                 )
         if self.friendship_templates is not None:
             match = find_friendship_points_popup_close(
@@ -533,7 +728,7 @@ class Epic7GlobalPopupGuard:
                     "friendship_points",
                     "close-friendship-points-popup",
                     "friendship_points_failed",
-                    "友情点数弹窗点击4次后仍未消失",
+                    f"友情点数弹窗点击{_MAX_POPUP_CLICKS}次后仍未消失",
                 )
         if self.friend_request_templates is not None:
             match = find_friend_request_cancel(
@@ -547,7 +742,7 @@ class Epic7GlobalPopupGuard:
                     "friend_request",
                     "cancel-friend-request",
                     "friend_request_failed",
-                    "好友申请弹窗点击4次后仍未消失",
+                    f"好友申请弹窗点击{_MAX_POPUP_CLICKS}次后仍未消失",
                 )
         if self.knights_signin_templates is not None:
             match = find_knights_signin_close(
@@ -561,7 +756,7 @@ class Epic7GlobalPopupGuard:
                     "knights_signin",
                     "close-knights-signin",
                     "knights_signin_failed",
-                    "骑士团签到弹窗点击4次后仍未消失",
+                    f"骑士团签到弹窗点击{_MAX_POPUP_CLICKS}次后仍未消失",
                 )
         if self.gift_support_templates is not None:
             match = find_gift_support_close(
@@ -575,7 +770,7 @@ class Epic7GlobalPopupGuard:
                     "gift_support",
                     "close-gift-support",
                     "gift_support_failed",
-                    "领取支援物品弹窗点击4次后仍未消失",
+                    f"领取支援物品弹窗点击{_MAX_POPUP_CLICKS}次后仍未消失",
                 )
         if self.knights_weekly_reward_templates is not None:
             match = find_knights_weekly_reward_close(
@@ -589,7 +784,7 @@ class Epic7GlobalPopupGuard:
                     "knights_weekly_reward",
                     "close-knights-weekly-reward",
                     "knights_weekly_reward_failed",
-                    "骑士团周结算奖励弹窗点击4次后仍未消失",
+                    f"骑士团周结算奖励弹窗点击{_MAX_POPUP_CLICKS}次后仍未消失",
                 )
         if self.pet_gift_templates is not None:
             match = find_pet_gift_badge(screen, self.pet_gift_templates.badge)
@@ -599,13 +794,43 @@ class Epic7GlobalPopupGuard:
                     "pet_gift",
                     "claim-pet-gift",
                     "pet_gift_failed",
-                    "宠物小屋礼物角标点击4次后仍未消失",
+                    f"宠物小屋礼物角标点击{_MAX_POPUP_CLICKS}次后仍未消失",
                 )
         return None, None, None, None, None
 
     def __call__(
         self, runtime: "Runtime", screen: np.ndarray
     ) -> tuple[np.ndarray, bool]:
+        # ⚠️⚠️ **竖屏画面直接放行**（2026-10-07 修，用户点 2 的真凶）。
+        #
+        # 这一层所有判据（网络重连、亲密度升级、好友申请、骑士团签到弹窗……）
+        # 都是**横屏**控件，基准是横屏画布 1982x1132，定位时按
+        # ``screen.shape / _REFERENCE_SIZE`` 缩放，并有**宽高比守卫**
+        # （``evidence/sanctuary._scale_region``：``abs(scale_x - scale_y) > 0.02``
+        # 就抛「画面宽高比与模板基准不一致」）。
+        #
+        # 社区路线点进「游戏社区」后画面变成 **1080x1920** ⇒ 缩放比例
+        # 横向 1080/1982=0.545、纵向 1920/1132=1.696 ⇒ 守卫**必然抛错** ⇒
+        # 异常从 ``Runtime.capture`` 冒到主循环（它不在主循环的 ``try`` 里）
+        # ⇒ **失败收尾把刚打开的社区关掉**。实跑原文：
+        # ``14:50:10执行点击 enter_community → 14:50:13 收尾=人还在社区竖屏页面里``，
+        # 最后一行是 ``运行失败 模式=community 原因=画面宽高比与模板基准不一致``。
+        #
+        # 为什么放行是对的：这些弹窗是**游戏主界面**的弹窗，竖屏段是游戏内
+        # H5（社区），**根本不会有它们**；而竖屏段自己的弹窗（签到成功、
+        # 兑换成功、网络异常）由 ``community_pages`` 那套 1080x1920 判据管。
+        #
+        # ⚠️ 2026-10-07 新接的「网页网络错误」（``web_network_error``）同样够不到竖屏：
+        # 那条长条长在**横屏**的游戏内 WebView 上（网页活动列表 1982x1132）。
+        # 社区那半边的竖屏 H5 报网络异常是**另一张脸**（整页「网络连接异常，下拉刷新」），
+        # 归 ``community`` 路线管。别把两者当成一个。
+        #
+        # ⚠️ 判据是**画面自身的高宽比**，不依赖任何外部状态 ⇒ 窗口一进竖屏
+        # 它就自动停手，通道切回横屏后自动恢复。
+        height, width = screen.shape[:2]
+        if width < height:
+            return screen, False
+
         stable_frames = 0
         clicks = 0
         last_click_at: float | None = None
@@ -625,12 +850,12 @@ class Epic7GlobalPopupGuard:
                 stable_frames += 1
             current = self.now()
             if stable_frames >= 2:
-                # 点击预算 4 次，间隔 3 秒；模拟器卡顿会吞掉转场期间的输入，
-                # 多给几次机会。末次点击后 15 秒仍无改善才判定熔断。
+                # 点击预算 _MAX_POPUP_CLICKS 次，间隔 3 秒；模拟器卡顿会吞掉
+                # 转场期间的输入，多给几次机会。末次点击后 15 秒仍无改善才熔断。
                 if (
                     last_click_at is None
                     or (
-                        clicks < 4
+                        clicks < _MAX_POPUP_CLICKS
                         and current - last_click_at >= self.retry_interval_seconds
                     )
                 ):
@@ -638,7 +863,7 @@ class Epic7GlobalPopupGuard:
                     clicks += 1
                     last_click_at = current
                 elif (
-                    clicks >= 4
+                    clicks >= _MAX_POPUP_CLICKS
                     and last_click_at is not None
                     and current - last_click_at >= self.failure_seconds
                 ):
