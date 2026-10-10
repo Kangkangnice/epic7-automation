@@ -155,6 +155,56 @@ def observe_battle_controls(screen: np.ndarray) -> BattleControls:
     return BattleControls.TRANSITION
 
 
+def resolve_auto_state(
+    controls: BattleControls, auto_icon_hit: bool
+) -> BattleControls:
+    """把「布局判据」与「右上角自动关图标」合并成一个判定。
+
+    ## 为什么要合并（2026-10-09 月塔实跑事故）
+
+    这两条路线的原始写法是**同一份复制粘贴**（tower / expedition / arena 各一份）：
+
+        auto_state = {AUTO_CONTROLS: AUTO, MANUAL_CONTROLS: MANUAL,
+                      TRANSITION: UNKNOWN}[controls]
+        if auto is not None:
+            auto_state = MANUAL          # 无条件信图标
+
+    **同一份实现抄了三遍**，于是同一个 bug 也抄了三遍 —— 只是只有月塔的
+    背景让图标分数掉进死区，才暴露出来。
+
+    ## 两类证据的强弱
+
+    **强证据**：``AUTO_CONTROLS``（底部四格底座全亮）。实测分离度极大 ——
+    自动开 0.83/0.85/0.80/0.67，手动 0.08/0.18/0.17/0.16。四格底座是自动战斗
+    特有的版面，命中即「自动确实开着」。
+
+    **弱证据**：右上角「自动关闭」图标。它是共享模板（``story/auto_off.png``），
+    底图是**亮灰背景**；叠在月塔那种深色书架背景上，分数会被压低到阈值附近。
+    事故帧同一场战斗实测在 **0.77~0.81 之间抖**，而阈值恰好是 0.80。
+
+    ## 事故时间线（同一场战斗，自动其实一直开着）
+
+    ======================  ==========================  ========================
+    时刻                     证据                        结论
+    ======================  ==========================  ========================
+    13:59:13                布局=auto 图标=None          AUTO  「已开启」  ✅
+    13:59:29                布局=auto 图标=0.8055        MANUAL「点一下」  ❌ 余量 0.0055
+    13:59:30                图标掉下阈                   UNKNOWN
+    13:59:43                布局=manual 图标=None        MANUAL 无坐标 -> 判死
+    ======================  ==========================  ========================
+
+    13:59:29 那一击是**无中生有**：布局这个强证据明说自动开着，却因为图标
+    擦着阈值过了 0.0055 就去点开关 —— 点了个不该点的，还把坐标弄丢了。
+
+    ⇒ 规则：**图标只在布局看不出长相（``TRANSITION``）时才作数。**
+    ``TRANSITION`` 时它必须兜底（否则那一帧停在「未知」，而「未知」按安全设计
+    不许点自动，战斗会干等到超时）；布局已经给出 auto/manual 时，图标不改判。
+    """
+    if controls is BattleControls.TRANSITION and auto_icon_hit:
+        return BattleControls.MANUAL_CONTROLS
+    return controls
+
+
 def battle_scene_visible(screen: np.ndarray) -> bool:
     """Keep battle presence separate from whether skill controls are operable."""
     frame = _reference_frame(screen)

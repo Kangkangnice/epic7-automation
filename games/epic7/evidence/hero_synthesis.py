@@ -75,17 +75,28 @@ _REGION_FOR_TEMPLATE = {
     "imprint_grey": "imprint_button",
 }
 
-_OPTIONAL_TEMPLATES = {
-    "filter_attribute_label",
-    "filter_star3_unselected",
-    "sss_material",
-    "sss_material_warning_title",
-    "sss_material_warning_close",
-    "imprint_result_title",
-    "imprint_result_close",
-    "transmit_reward_title",
-    "transmit_reward_close",
-}
+# 「SSS 材料」徽记在材料页有**两种画法**，同屏可能同时出现：
+#   - 前排那张展开的大卡：徽记按 100% 画  → ``hero/sss_material.png``
+#   - 排在它后面、被压暗的小卡：整张卡连同徽记被缩到约 **90%**
+#                                          → ``hero/sss_material_behind_card.png``
+# 只登记前排那张时，徽记落在「后排小卡」上只量得到 **0.5957** —— 高于「明确排除」
+# 线 0.55、低于门槛 0.80，正好掉进 0.55~0.80 的不确定带。后果不是「点错」而是
+# 「沉默」：`next_action()` 直接返回 None，不打分、不报警；转场验收要靠「下一个
+# 动作」的观察值比对，拿不到 ⇒ 90 秒转场超时 ⇒ 回大厅又认不出页面 ⇒ 整条流程停在
+# 刻印页。2026-10-04 07:22 现场就是这个形态；同形态最早见 2026-09-03 14:05。
+#
+# 语义与大厅「秘密商店」入口一致：**任一候选过阈即算命中**，取过阈候选里的最高分。
+# 候选模板与主模板**同等必需** —— 少一张同样是判据静默降级（三道关都盯它）。
+SSS_MATERIAL_ALT_TEMPLATES = ("hero/sss_material_behind_card.png",)
+
+# ⚠️ **这里不许再出现「可选模板」名单。**
+# 本路线曾经有一份 `_OPTIONAL_TEMPLATES`（9 个），与 `hero_synthesis.build_hero_templates`
+# 里那些 `if path.exists() else None` **并行维护**，两处都在说「这几张缺了也没关系」。
+# 2026-10-03 结论：判据型模板缺一张就是配置故障，一律 `required=True`。
+#   - 好处 1：`validate_profile()` 会把它报成 error（工具/测试侧兜住）
+#   - 好处 2：`build_hero_templates()` 直接 `load_template`，缺文件当场 FileNotFoundError
+#   - 好处 3：`HeroSynthStateMachine._assert_anchor_templates()` 在构造期再兜一层
+# 三处口径一致，不会再出现「一处说可选、另一处说必需」的漂移。
 
 
 def build_hero_evidence(template_root: Path) -> EvidenceProfile:
@@ -103,8 +114,13 @@ def build_hero_evidence(template_root: Path) -> EvidenceProfile:
             template_path=relative_path,
             region=REGIONS[region_key],
             threshold=thresholds.get(key, default_threshold),
-            required=key not in _OPTIONAL_TEMPLATES,
+            # 全部必需：判据型模板缺一张就不该悄悄跑（见上面那段说明）。
+            required=True,
             reference_size=REFERENCE_SIZE,
+            # 「SSS 材料」徽记还有「后排小卡」那种长相（约 90%），见上面那段说明。
+            alt_template_paths=(
+                SSS_MATERIAL_ALT_TEMPLATES if key == "sss_material" else ()
+            ),
         )
     return EvidenceProfile(
         atoms=atoms,

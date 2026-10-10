@@ -28,6 +28,7 @@ from auto_game_unified.games.epic7.battle_controls import (
     BattleControls,
     battle_scene_visible,
     observe_battle_controls,
+    resolve_auto_state,
 )
 from auto_game_unified.games.epic7.pre_battle import (
     PreBattleMode,
@@ -668,19 +669,19 @@ class ArenaStateMachine:
             normal_start=start,
         )
         controls = observe_battle_controls(screen)
+        auto_match = self._locate(screen, "auto_off")
+        auto_score = "无" if auto_match is None else f"{auto_match.score:.4f}"
+        # 布局（强证据）与图标（弱证据）的合并规则见 `resolve_auto_state` 的 docstring。
+        # 本处原先与 tower / expedition 是同一份复制粘贴的旧写法，
+        # 2026-10-09 一并收口成共享实现。
+        resolved = resolve_auto_state(controls, auto_match is not None)
         auto_state = {
             BattleControls.AUTO_CONTROLS: AutoBattleState.AUTO,
             BattleControls.MANUAL_CONTROLS: AutoBattleState.MANUAL,
             BattleControls.TRANSITION: AutoBattleState.UNKNOWN,
-        }[controls]
-        auto_match = self._locate(screen, "auto_off")
-        auto_score = "无" if auto_match is None else f"{auto_match.score:.4f}"
+        }[resolved]
         auto_evidence = f"布局={controls.value} 自动关图标={auto_score}"
-        # 「右上角关自动图标 ⇒ 判定为手动」：按钮布局判成 transition（看不出长相）
-        # 时靠这个图标兜底 —— 否则那一帧会停在「未知」，而「未知」按安全设计是
-        # 不许点自动的，战斗就会干等到超时。图标认不到就不覆盖上面的布局判定。
-        if auto_match is not None:
-            auto_state = AutoBattleState.MANUAL
+        if resolved is not controls:
             auto_evidence += " 来源=右上角自动关闭图标"
         result = self._locate(screen, "confirm")
         no_ticket = self._locate(screen, "no_ticket")

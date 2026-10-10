@@ -81,6 +81,50 @@ def test_inspect_profile_keeps_score_below_threshold(tmp_path: Path):
     assert observation.score < observation.threshold
 
 
+def test_inspect_profile_honours_the_atom_match_mode(tmp_path: Path):
+    """诊断包必须跟路线走**同一个比对口径**。
+
+    画面是「深色噪点底上的一枚白色方块」，模板生在中灰噪点底上：原样比够不着
+    阈值，白掩膜比满分。诊断侧要是漏了口径，工具就会报一个比实跑低得多的分数
+    —— 排查时等于骗人。
+
+    ⚠️ 两侧底图都必须**有纹理**：``TM_CCOEFF_NORMED`` 减均值除标准差，纯色底
+    换成另一个纯色底分数一点都不会掉（实测 1.0000），那样这条用例就白写了。
+    """
+    rng = np.random.default_rng(4)
+    template = rng.integers(110, 190, (6, 6, 3), dtype=np.uint8)
+    template[2:4, 2:4] = 255
+    cv2.imwrite(
+        str(tmp_path / "icon.png"),
+        cv2.cvtColor(template, cv2.COLOR_RGB2BGR),
+    )
+    screen = rng.integers(0, 80, (20, 20, 3), dtype=np.uint8)
+    block = rng.integers(0, 80, (6, 6, 3), dtype=np.uint8)
+    block[2:4, 2:4] = 255
+    screen[7:13, 7:13] = block
+
+    def build(mode: str) -> EvidenceProfile:
+        return EvidenceProfile(
+            atoms={
+                "icon": AtomEvidence(
+                    "icon",
+                    "icon.png",
+                    (0, 0, 20, 20),
+                    0.95,
+                    reference_size=(20, 20),
+                    match_mode=mode,
+                )
+            }
+        )
+
+    masked = inspect_profile(screen, build("white_mask"), tmp_path)
+    raw = inspect_profile(screen, build("raw"), tmp_path)
+
+    assert masked.atoms["icon"].observed is True
+    assert masked.atoms["icon"].score > 0.99
+    assert raw.atoms["icon"].score < 0.95, "原样比这一帧本来就不该过阈"
+
+
 def test_write_evidence_diagnostic_saves_json_and_crops(tmp_path: Path):
     screen = np.zeros((40, 50, 3), dtype=np.uint8)
     output = write_evidence_diagnostic(

@@ -14,6 +14,74 @@ class Match:
     score: float
 
 
+# ── 匹配模式：把「控件」从「背景」里抠出来 ──────────────────────────────────────
+#
+# ``TM_CCOEFF_NORMED`` 把模板的**背景**也一起算进相似度。同一个控件画在不同的
+# 场景底图上，分数会掉到阈值以下 —— 判据「看着好好的」，其实已经失效，而且
+# 失效方式很隐蔽：分数只是「低了一点」，不是报错。
+#
+# 实测（2026-10-09，`story/auto_off.png` 叠在月塔的深色书架底图上）：
+#
+#   ==========================  ==============  =============
+#   同一帧 / 同一区域            原样比（raw）   白像素掩膜
+#   ==========================  ==============  =============
+#   月塔实跑事故帧 19:34          0.7492          0.9214
+#   月塔实跑事故帧 13:59          0.7704          0.9214
+#   月塔真机夹具                  0.7704          0.9214
+#   竞技场真机帧（auto 关）        0.7953          0.9280
+#   ==========================  ==============  =============
+#
+# 为什么「白色像素」是对的：右上那排图标（倍速 / 自动 / 聊天）是**纯白矢量图**，
+# 背景是照片或渐变。把两侧都压成「哪些像素是白的」之后，留下的只有**控件形状**，
+# 底图被抹平 ⇒ 判据与背景无关，同一条路线换场景、或新路线复用同一张模板都不必重裁。
+#
+# ⚠️ 白色下界取 200，**不要退回 180**。180 会把「亮灰底图」整片算成白色：
+# 实测 `epic7_expedition/battle.png`（浅灰天空）同一帧 180 只剩 0.4085、
+# 200 有 0.8347 —— 掩膜糊成一整块白，图标反而认不出来。亮场景下 180 等于瞎。
+#
+# ⚠️ 换口径**必须同时重定阈值**：两种口径的分数不在同一个量纲上（raw 的真阳性
+# 可以低到 0.44，白掩膜的真阳性最低 0.92）。沿用旧门槛不是「保守」，是让判据
+# 变成永假或永真。
+MATCH_MODE_RAW = "raw"
+MATCH_MODE_WHITE_MASK = "white_mask"
+MATCH_MODES = (MATCH_MODE_RAW, MATCH_MODE_WHITE_MASK)
+WHITE_PIXEL_THRESHOLD = 200
+
+
+def white_mask(
+    image: np.ndarray, threshold: int = WHITE_PIXEL_THRESHOLD
+) -> np.ndarray:
+    """把「近乎纯白的像素」抠成 0/255 单通道掩膜。
+
+    三通道**都**要 >= ``threshold`` 才算白，而不是「灰度 > threshold」：亮但
+    带色的像素（图标旁边的高光、浅色插画）不该混进形状里，否则掩膜会把底图
+    的一部分也算成控件。
+
+    返回单通道（``uint8``）—— 与输入的三通道 RGB 形状不同，所以两种口径的
+    缓存指纹天然不会撞。
+    """
+    if image.ndim == 2:
+        bright = image >= threshold
+    else:
+        bright = np.all(image[:, :, :3] >= threshold, axis=2)
+    return bright.astype(np.uint8) * 255
+
+
+def _prepare(image: np.ndarray, mode: str) -> np.ndarray:
+    """按 ``mode`` 把图像变成可比对的形态。
+
+    ⚠️ 未登记的模式**直接抛错**，不许静默退回原样：那等于判据悄悄换了口径而
+    阈值没跟着改，是本项目最忌讳的那类「静默降级」。
+    """
+    if mode == MATCH_MODE_RAW:
+        return image
+    if mode == MATCH_MODE_WHITE_MASK:
+        return white_mask(image)
+    raise ValueError(
+        f"未知的匹配模式: {mode!r}；可用: {', '.join(MATCH_MODES)}"
+    )
+
+
 # 模板在进程内不会变，但同一个文件会被反复解码：全量测试里最热的
 # 一张小图被加载上千次，每次都要重新读盘 + BGR->RGB。
 # 用 (mtime_ns, size) 当版本号，文件被替换时会自动重新解码，
@@ -61,12 +129,24 @@ def _match_key(search: np.ndarray, template: np.ndarray) -> bytes:
     return digest.digest()
 
 
-def best_match(search: np.ndarray, template: np.ndarray) -> tuple[float, tuple[int, int]]:
+def best_match(
+    search: np.ndarray,
+    template: np.ndarray,
+    *,
+    mode: str = MATCH_MODE_RAW,
+) -> tuple[float, tuple[int, int]]:
     """在 ``search`` 里找 ``template`` 的最佳匹配 -> ``(score, (x, y))``，结果按内容缓存。
 
     ``search`` 必须是**已经裁好、已经按基准尺寸缩放好**的那一块；返回的坐标相对于
     ``search`` 的左上角，偏移由调用方自己加。
+
+    ``mode`` 见模块顶部的常量注释；默认 ``raw`` ⇒ 既有调用方一个字节的行为都不变。
+    二值化**发生在缩放与裁剪之后**：反过来先二值化、再让 ``INTER_AREA`` 缩放会把
+    0/255 插值回灰阶，掩膜就糊了。
     """
+    if mode != MATCH_MODE_RAW:
+        search = _prepare(search, mode)
+        template = _prepare(template, mode)
     key: bytes | None = None
     if MATCH_CACHE_ENABLED:
         key = _match_key(search, template)
@@ -75,6 +155,12 @@ def best_match(search: np.ndarray, template: np.ndarray) -> tuple[float, tuple[i
             _MATCH_CACHE.move_to_end(key)
             return cached
     result = cv2.matchTemplate(search, template, cv2.TM_CCOEFF_NORMED)
+    if mode != MATCH_MODE_RAW:
+        # 掩膜里「整块全黑」的窗口会让归一化分母为 0（0/0）⇒ OpenCV 给出 nan，
+        # 而 nan 会把 minMaxLoc 整个带偏。二值口径下这种窗口的语义很明确：
+        # 「一块白都没有」= 负样本，压到 -1.0。
+        # 只在非原始口径上加这一步：raw 路径保持与原实现逐字节一致。
+        result = np.nan_to_num(result, nan=-1.0, posinf=-1.0, neginf=-1.0)
     _, score, _, location = cv2.minMaxLoc(result)
     value = (float(score), (int(location[0]), int(location[1])))
     if key is not None:
@@ -110,12 +196,17 @@ def find_best_template(
     template: np.ndarray,
     region: tuple[int, int, int, int] | None = None,
     reference_size: tuple[int, int] | None = None,
+    *,
+    mode: str = MATCH_MODE_RAW,
 ) -> Optional[Match]:
     """Return the highest-scoring template position without applying a threshold.
 
     ``reference_size`` is the image size used to create the template.  When the
     emulator window is displayed at another uniform scale, both its templates
     and search region are scaled to the live capture before matching.
+
+    ``mode`` selects the comparison domain (see ``MATCH_MODE_*``); it is applied
+    to the already-cropped, already-resized pair.
     """
     if reference_size is not None:
         scale_x = screen.shape[1] / reference_size[0]
@@ -143,7 +234,7 @@ def find_best_template(
     if search.shape[0] < height or search.shape[1] < width:
         return None
 
-    score, location = best_match(search, template)
+    score, location = best_match(search, template, mode=mode)
     return Match(
         center=(offset_x + location[0] + width // 2, offset_y + location[1] + height // 2),
         score=score,
@@ -156,6 +247,8 @@ def find_template(
     threshold: float,
     region: tuple[int, int, int, int] | None = None,
     reference_size: tuple[int, int] | None = None,
+    *,
+    mode: str = MATCH_MODE_RAW,
 ) -> Optional[Match]:
     """Find a template when its highest score reaches ``threshold``."""
     best = find_best_template(
@@ -163,6 +256,7 @@ def find_template(
         template,
         region=region,
         reference_size=reference_size,
+        mode=mode,
     )
     if best is None or best.score < threshold:
         return None
