@@ -10,6 +10,36 @@ from auto_game_unified.games.epic7.modes import MODE_SPECS
 PRODUCT_NAME = "第七史诗自动助手"
 PRODUCT_VERSION = "0.1.0-dev"
 
+# ── 「每日任务」面板里的三个分组（用户 2026-10-08 拍板）──────────────────────
+#
+# 分组的依据是**「这条路线的内容会不会轮换 / 是不是限时」**：
+#
+# - `GROUP_DAILY`（日常）：**常驻**路线 —— 天天都在、与赛季无关。
+# - `GROUP_SEASON`（赛季）：**按赛季轮换**的路线。赛季一换，内容与阶段就变了。
+# - `GROUP_EVENT`（活动）：**限时活动**路线，随活动开合出现 / 消失。
+#
+# ⚠️ 三个名字是**界面分组**，与「路线本身是什么」无关：
+#   - 它们**不进** `ModeSpec`（模式名 / 次数 / 状态机才是路线的属性）；
+#   - 「日常」这个分组名与模块 `daily_tasks` 不是一回事 —— 后者是「把几条串起来
+#     一次跑完」的**编排**，它读的清单仍然按勾选先后走，与分组无关。
+#   - ⚠️ 分组的**顺序**就是面板上从上到下的顺序，由 `GROUPS` 定死，
+#     不从 `ROUTES` 的书写顺序派生（免得插一条新路线就把面板顺序搅乱）。
+GROUP_DAILY = "日常"
+GROUP_SEASON = "赛季"
+GROUP_EVENT = "活动"
+
+# 面板上从上到下的分组次序。**顺序即展示优先级**。
+#
+# ⚠️ 「活动」放最后且**单独一组**是刻意的：`survivor` 的 `needs_navigation=False`
+# （起点得由人先把游戏摆好），所以界面上它不能与非活动路线一起勾 —— 见
+# `RouteInfo.standalone_only`。把它单独列一组，用户一眼就能看出
+# 「这条不能和别的混着选」。
+GROUPS: tuple[str, ...] = (GROUP_DAILY, GROUP_SEASON, GROUP_EVENT)
+
+# 「全选（不含活动）」按钮要跳过的分组 —— 单独定义一份，避免与 `GROUPS` 的
+# 展示顺序耦合（以后往 `GROUPS` 里插新组，不该悄悄改变「不含活动」的语义）。
+EXCLUDED_FROM_SELECT_ALL: frozenset[str] = frozenset({GROUP_EVENT})
+
 # ── 界面上露不露面：窗口后端 ───────────────────────────────────────────────────
 #
 # ⚠️ PC 客户端**默认不在界面上露面**（2026-09-30 用户拍板「把它收起来」）。理由：
@@ -41,7 +71,7 @@ def visible_backends(environ: Mapping[str, str] | None = None) -> tuple[str, ...
 class RouteInfo:
     """桌面助手视角下的一条路线。
 
-    ⚠️ 只有 ``status`` / ``description`` 是**桌面助手特有的**（界面文案，
+    ⚠️ 只有 ``status`` / ``description`` / ``group`` 是**桌面助手特有的**（界面文案，
     别的入口用不上）。中文名与次数都**从 ``modes.MODE_SPECS`` 读**，不在这里
     再写一份 —— 以前它们是字段，与 CLI / 菜单三处手工对齐，实测漂移过
     （``shop_refresh`` 这里叫「刷书签」、每日任务里叫「商店刷新」）。
@@ -50,6 +80,10 @@ class RouteInfo:
     mode: str
     status: str
     description: str
+    # 「每日任务」面板里的分组（见 `docs/maintenance/daily_tasks_grouping.md`）。
+    # ⚠️ 这个字段是**界面分组**，不是路线本身的属性 —— 所以留在 catalog，
+    # 不进 `ModeSpec`（模式名 / 次数 / 状态机那些才是路线的属性）。
+    group: str = GROUP_DAILY
 
     @property
     def label(self) -> str:
@@ -91,7 +125,17 @@ ROUTES = (
     ),
     RouteInfo("story", "正式功能", "主线和刷图循环"),
     RouteInfo("arena", "正式功能", "新手竞技场循环"),
-    RouteInfo("expedition", "正式功能", "三阶段远征循环"),
+    RouteInfo("expedition", "正式功能", "三阶段远征循环", group=GROUP_SEASON),
+    RouteInfo(
+        "tower",
+        "实验功能",
+        "欧多马顿塔（月塔）赛季爬塔：从大厅进战斗 → 赛季页点月塔卡片入场 →"
+        "楼层列表选队伍 → 准备战斗点「战斗开始」自动打；打完进三选一装置页，"
+        "固定选中间那张再点「决定装置」→ 结算页点「下一层」直接进下一层的准备战斗页。"
+        "默认连打 25 层（一层耗 15 体力）；体力不足时**只识别、不购买**，"
+        "打满 25 层即停。⚠️ 只支持模拟器",
+        group=GROUP_SEASON,
+    ),
     RouteInfo("fodder", "实验功能", "特别的时间之书 Episode 3-7"),
     RouteInfo(
         "shop_refresh",
@@ -105,6 +149,7 @@ ROUTES = (
         "实验功能",
         "活动小游戏（类幸存者）挂机；需先把游戏停在「选第一张卡」页；"
         "每轮自动选卡、走位、结算、重新进行；只支持模拟器",
+        group=GROUP_EVENT,
     ),
     RouteInfo(
         "world_boss",
@@ -153,6 +198,51 @@ def route_by_name(mode: str) -> RouteInfo:
         return next(route for route in ROUTES if route.mode == mode)
     except StopIteration as error:
         raise ValueError(f"未知路线：{mode}") from error
+
+
+def routes_in_group(group: str) -> tuple[RouteInfo, ...]:
+    """按分组取路线，顺序沿用 `ROUTES` 的书写顺序（= 界面上的顺序）。
+
+    ⚠️ 分组名从 `GROUPS` 里取，**不许在调用处写中文字面量** —— 界面与
+    「全选 / 全选（不含活动）/ 取消全选」三个按钮读的是同一份常量。
+    """
+    if group not in GROUPS:
+        raise ValueError(f"未知分组：{group}")
+    return tuple(route for route in ROUTES if route.group == group)
+
+
+def grouped_routes() -> tuple[tuple[str, tuple[RouteInfo, ...]], ...]:
+    """面板从上到下的分组内容：``((分组名, 该组路线), ...)``。
+
+    ⚠️ **空组不返回**。目前三个分组都非空，但「活动」是随活动开合出现的 ——
+    哪天 `survivor` 撤了，界面上不该留一个光秃秃的「活动」标题。
+    这个过滤放在这里（而不是界面层写 `if routes:`），是为了让「面板渲染什么」
+    只有一处来源；界面层拿到什么就画什么。
+    """
+    return tuple(
+        (group, routes)
+        for group in GROUPS
+        if (routes := routes_in_group(group))
+    )
+
+
+def selectable_modes(*, include_events: bool = True) -> tuple[str, ...]:
+    """「全选」按钮要勾上的路线，**按面板顺序**（= 分组顺序、组内按书写顺序）。
+
+    ``include_events=False`` 就是那个「全选（不含活动）」按钮 —— 跳过
+    `EXCLUDED_FROM_SELECT_ALL` 里的分组（目前只有「活动」）。
+
+    ⚠️ 顺序必须是**面板顺序**而不是 `ROUTES` 的书写顺序。用户拍板
+    「勾选先后就是执行顺序」，而批量勾选之后用户看到的顺序就是面板顺序 ——
+    两者一旦不同（分组之后 `expedition` 排到了 `fodder` 前面），执行顺序
+    就会跟屏幕上写的序号对不上。所以这里走 `grouped_routes()` 摊平。
+    """
+    return tuple(
+        route.mode
+        for _group, routes in grouped_routes()
+        for route in routes
+        if include_events or route.group not in EXCLUDED_FROM_SELECT_ALL
+    )
 
 
 # ── 「每日任务」：勾选多条、依次跑 ─────────────────────────────────────────

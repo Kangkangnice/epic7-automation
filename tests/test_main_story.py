@@ -75,6 +75,7 @@ class MainStoryTests(unittest.TestCase):
                 gift_support_templates = object()
                 knights_weekly_reward_templates = object()
                 pet_gift_templates = object()
+                web_network_error_templates = object()
                 # ⚠️ 本文件三处 B023 抑制标记都是误报：events 虽然在外层循环里被重新赋值，
                 # 但这些 side_effect / on_call 都是**当轮同步调用**的（mock 在被调用的那一刻
                 # 就执行它），取不到下一轮的值。ruff 只看语法，看不出调用时机。
@@ -125,6 +126,14 @@ class MainStoryTests(unittest.TestCase):
                         "load_pet_gift_templates",
                         return_value=pet_gift_templates,
                     ),
+                    # 网页「网络错误」长条（2026-10-07 接，第 9 个全局弹窗）。
+                    # ⚠️ 这个 patch 与被写死的 kwargs 断言**必须同进同出** ——
+                    # 少一个，加载期就会真的去读模板目录，在没模板的环境里直接报错。
+                    patch.object(
+                        main_module,
+                        "load_web_network_error_templates",
+                        return_value=web_network_error_templates,
+                    ),
                     patch.object(main_module, "Epic7Navigator") as navigator_type,
                     patch.object(main_module, "HomeReturn") as home_return_type,
                 ):
@@ -164,6 +173,7 @@ class MainStoryTests(unittest.TestCase):
                     gift_support_templates=gift_support_templates,
                     knights_weekly_reward_templates=knights_weekly_reward_templates,
                     pet_gift_templates=pet_gift_templates,
+                    web_network_error_templates=web_network_error_templates,
                 )
                 self.assertEqual(["guard", "navigation"], events)
 

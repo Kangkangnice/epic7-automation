@@ -289,8 +289,8 @@
 2026-09-23 逐条查实。**登记不等于合格**：这张表是现状快照，不是“已验收”清单。
 
 ⚠️ **判断某条路线有没有判据，不能靠搜索某个字段名。** 各路线的判据载体是历史上分别长出来的，
-字段名叫法不统一，而且 12 条路线分属**三个族**：走 `ModeRunnerBase` 的 8 条、走
-`transactional_runner_base.py`（事务型）的 2 条（`arena` / `expedition`，2026-09-26 起）、
+字段名叫法不统一，而且 13 条路线分属**三个族**：走 `ModeRunnerBase` 的 8 条、走
+`transactional_runner_base.py`（事务型）的 3 条（`arena` / `expedition` / `tower`，后者 2026-10-08 起）、
 以及**仍自带独立主循环的裸定义** 2 条（`shop_refresh` / `survivor`）。
 下面“判据载体”一栏才是依据。
 
@@ -298,6 +298,7 @@
 |---|---|---|---|---|---|
 | `arena` | 竞技场 | `Action.source_state` / `target_states`；缺任一直接报错 | 有 | 有 | 无（本项目最严） |
 | `expedition` | 远征 | `ExpeditionAction.source_page` / `target_pages` ＋ 基类 `_execute_transition`（缺任一直接 raise） | 有 | 有 | 无 |
+| `tower` | 月塔 | `TowerAction.source_page` / `target_pages` ＋ 基类 `_execute_transition`（**同远征口径**，进 `TRANSITION_EXEMPT` 并写明「用与远征逐字相同的事务验收」） | 有 | 有 | 无（2026-10-08 首版即对齐远征。三选一装置页与结算页的**分流**是这条路线特有的坑：两者都在打完一层之后出现，`next_action` 必须先把它们岔开，否则三选一页会撞 `UnrecognizedScreen` 打断整条路线） |
 | `hero_synthesis` | 英雄合成 | `source_page` + `target_pages` / `in_page_evidence`（**第五条打开机器强制**，2026-10-04） | 有 | 有 | 无（2026-10-03 补齐两处 `open_filter` 与刻印页那个裸 `return back`；2026-10-04 字段名从自造的 `source_observation` 对齐到 `in_page_evidence` 后才打开开关 —— 不对齐时那 12 个同页动作「形式合规、实质没用」。`tests/test_hero_synthesis.py::GuardTests` 的 AST 静态守 + `TransitionContractSwitchTests` 钉住） |
 | `story` | 主线 | `target_pages` | 有 | 有 | 无 |
 | `world_boss` | 世界首领战 | `source_page` + `target_pages` / `in_page_evidence`（**第二条打开机器强制**，2026-09-24） | 有 | 有 | 无（此前同页动作的页内证据只写在代码里、没登记成字段） |

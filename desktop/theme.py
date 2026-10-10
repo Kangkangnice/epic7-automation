@@ -198,6 +198,15 @@ def apply_styles(root: tk.Misc, theme: Theme) -> None:
         foreground=palette.text_muted,
         font=theme.font(TYPE_CAPTION),
     )
+    # 分组标题（「日常 / 赛季 / 活动」）：比正文小一档、比说明文字重一点，
+    # 靠**字重 + 位置**区分层级，不额外给底色 —— 卡片本来就是白的，再铺一层
+    # 只会让「三个分组」看起来像三个卡片，反而比路线本身还抢眼。
+    style.configure(
+        "Group.TLabel",
+        background=palette.surface,
+        foreground=palette.text,
+        font=theme.font(TYPE_BODY, bold=True),
+    )
 
     # 按钮：主行动（Accent，靠字号加粗与更大内边距强调）/ 次行动（默认）/ 工具条
     style.configure(

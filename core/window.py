@@ -393,18 +393,38 @@ class Epic7Window:
     # `adb reconnect offline` / `adb connect 127.0.0.1:5555` 两次实测都**无效**，
     # 别往这里加（详见 .workbuddy/memory/topics/click_channel.md）。
     _ADB_REBUILD_COMMANDS = (("kill-server",), ("start-server",))
+    # 二级恢复：重启**模拟器内部系统**。⚠️ 只有一级（重启 adb 服务）确实救不回来才走到这。
+    # 2026-10-04 实测：`device 'emulator-5554' not found` 和 `device offline` 两种形态
+    # 一级都修不好 —— 模拟器进程还在、5555 端口也还在监听（netstat 看得到），
+    # 但 adb 连上去状态就是 offline；手动 `adb connect 127.0.0.1:5555` 同样连不通。
+    # 也就是说坏的是**模拟器内部的接收端**，PC 侧怎么重启 adb 都碰不到它。
+    # 实测 `ldconsole reboot --index 0` 后约 30 秒通道恢复正常（dnplayer 进程号会变）。
+    # ⚠️ 用「轮询次数」而不是墙钟预算：测试里 sleep 被打桩时不会变成几分钟的空转。
+    _REBOOT_CHANNEL_ATTEMPTS = 18  # 18 × 5 秒 ≈ 90 秒
+    _REBOOT_POLL_SECONDS = 5.0
+    # 重启后必须把游戏重新拉起来：模拟器重启完停在安卓桌面（2026-10-04 实测前台是
+    # launcher3、游戏进程为零），只把通道修好而留一个空桌面，下一次跑进来还是没东西可点。
+    _GAME_PACKAGE = "com.zlongame.cn.epicseven"
+    _GAME_START_ATTEMPTS = 12  # 12 × 5 秒 = 60 秒等游戏进程出现
+    _GAME_LOBBY_SETTLE_SECONDS = 60.0  # 进程起来之后还要等它加载进大厅
 
     def ensure_input_channel(self, attempts: int = 3, settle_seconds: float = 2.0) -> None:
-        """开跑前自检模拟器输入通道（点击/滑动/返回），坏了就用代码把它拉起来。
+        """确认模拟器输入通道（点击/滑动/返回）还活着，坏了就用代码把它拉起来。
 
-        背景：host 侧 adb server 是**长驻进程**，模拟器重启后若连接没重建，设备就停在
-        `offline`，`ldconsole adb` 会回 `adb.exe: device offline`（退出码却仍是 0）——
-        表现是「画面看得见、点不动」。2026-09-24 与 2026-09-28 各实测一次，
-        **两次都是 adb server 比模拟器早起十几小时**，两次都是
-        `adb kill-server` → `start-server` 一步到位。
+        分两级恢复，判据都是「探一次通道」，不是猜：
 
-        只在实跑前调用（`main._build_runtime` 的 `not dry_run` 分支）：
-        干跑不点击，不该去动 adb 服务。窗口本身不存在时 `_window()` 会先抛错，
+        1. **重启 adb 服务** —— 只对一种情况有效：host 侧 adb server 是长驻进程，
+           模拟器重启后连接没重建，设备停在 `offline`（2026-09-24 与 2026-09-28 各实测
+           一次，两次都是 `kill-server` → `start-server` 一步到位）。
+        2. **重启模拟器内部系统** —— 2026-10-04 实测：坏的是模拟器内部的接收端时，
+           一级完全无效（端口在听、adb 连上就是 offline），只有 `reboot` 能救回来
+           （约 30 秒），代价是**游戏会被一并关掉**，所以救完必须重新拉起游戏。
+
+        ⚠️ 恢复成功也照旧抛错退出（本次运行不续跑）：模拟器重启后游戏停在大厅，
+        原来那条路线已经跑不下去了，继续跑只会瞎点；让外部重新跑一整轮才是安全的。
+
+        只在实跑调用（`main._build_runtime` 的 `not dry_run` 分支，以及导航「连续点不动」
+        时的补检）。干跑不点击，不该去动 adb 服务。窗口本身不存在时 `_window()` 会先抛错，
         所以不会引入新的失败模式。
         """
         last_error: Exception | None = None
@@ -425,9 +445,88 @@ class Epic7Window:
                 else f"模拟器通道 状态=已恢复 尝试={attempt}/{attempts}"
             )
             return
+        # 一级试满仍不可用 ⇒ 二级：重启模拟器内部系统。
+        self._emit("模拟器通道 状态=不可用 动作=重启模拟器内部系统")
+        self._reboot_instance()
+        for attempt in range(1, self._REBOOT_CHANNEL_ATTEMPTS + 1):
+            try:
+                self._probe_input_channel()
+            except (RuntimeError, subprocess.SubprocessError, OSError) as error:
+                last_error = error
+                sleep(self._REBOOT_POLL_SECONDS)
+                continue
+            self._emit(
+                f"模拟器通道 状态=已恢复 尝试={attempt}/{self._REBOOT_CHANNEL_ATTEMPTS} "
+                "动作=重启模拟器内部系统"
+            )
+            self._launch_game()
+            raise RuntimeError(
+                "模拟器输入通道已修复（重启模拟器内部系统），但游戏被一并关闭、"
+                f"本次运行不续跑：已重新拉起 {self._GAME_PACKAGE}，"
+                "请确认它停在大厅后重跑整轮"
+            )
         raise RuntimeError(
-            f"模拟器输入通道不可用，自动重建 adb 服务 {attempts} 次仍未恢复：{last_error}"
+            f"模拟器输入通道不可用，重启 adb 服务 {attempts} 次并重启模拟器内部系统后"
+            f"仍未恢复：{last_error}"
         )
+
+    def _reboot_instance(self) -> None:
+        """重启模拟器内部系统（`ldconsole reboot --index N`）。
+
+        ⚠️ 这个动作会**关掉游戏**：dnplayer 进程号会变，安卓回到桌面。
+        只在通道确实探不通时才由 `ensure_input_channel` 调用，别单独拿来用。
+        """
+        console_path, instance_index, _ = self._instance_channel()
+        subprocess.run(
+            [str(console_path), "reboot", "--index", instance_index],
+            check=False,
+            capture_output=True,
+            timeout=30,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+
+    def _launch_game(self) -> None:
+        """把被模拟器重启关掉的游戏拉起来，等它进程出现，再留一段加载时间。
+
+        ⚠️ 这里**不验证**是否已进大厅：页面判定在 `games/epic7` 层，核心层不该知道，
+        所以只能「等进程出现 + 固定等一段」，并在抛给上层的消息里写明要人工确认。
+        """
+        console_path, instance_index, _ = self._instance_channel()
+        subprocess.run(
+            [
+                str(console_path),
+                "runapp",
+                "--index",
+                instance_index,
+                "--packagename",
+                self._GAME_PACKAGE,
+            ],
+            check=False,
+            capture_output=True,
+            timeout=30,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        for attempt in range(1, self._GAME_START_ATTEMPTS + 1):
+            result = subprocess.run(
+                [
+                    str(console_path),
+                    "adb",
+                    "--index",
+                    instance_index,
+                    "--command",
+                    f"shell pidof {self._GAME_PACKAGE}",
+                ],
+                check=False,
+                capture_output=True,
+                timeout=10,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+            if result.stdout.strip():
+                self._emit(f"游戏已拉起 包名={self._GAME_PACKAGE} 尝试={attempt}")
+                sleep(self._GAME_LOBBY_SETTLE_SECONDS)
+                return
+            sleep(self._REBOOT_POLL_SECONDS)
+        self._emit(f"游戏启动确认=超时 包名={self._GAME_PACKAGE} 状态=未能确认进程")
 
     def _probe_input_channel(self) -> None:
         """走真实点击那条 `ldconsole adb` 链路发一条无害命令，确认有回显。"""

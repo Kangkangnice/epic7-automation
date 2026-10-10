@@ -45,6 +45,7 @@ from auto_game_unified.games.epic7.global_popups import (
     load_knights_weekly_reward_templates,
     load_network_reconnect_templates,
     load_pet_gift_templates,
+    load_web_network_error_templates,
 )
 
 
@@ -122,12 +123,6 @@ def _build_runtime(
     else:
         game_window = Epic7Window()
         game_window.activate()
-        if not dry_run:
-            # 实跑才需要点击通道。开跑前自检一次：模拟器重启后 host 侧 adb server
-            # 常还挂在旧连接上（设备 offline），此时画面看得见、点不动，
-            # 上层只会看到「点击验收无效」并把整条路线打挂。
-            # 自检发现不可用就用代码重建 adb 服务（2026-09-24 / 2026-09-28 各踩一次）。
-            game_window.ensure_input_channel()
     stop_hotkey = None if dry_run else WindowsPStopHotkey()
 
     def stop_requested() -> bool:
@@ -146,9 +141,25 @@ def _build_runtime(
         diagnostic_dir=ROOT / "runtime_diagnostics" / f"epic7_{mode}",
         log_path=ROOT / "runtime_logs" / f"epic7_{mode}.log",
         stop_requested=None if dry_run else stop_requested,
+        # 跑到一半的通道自检（导航「连续点不动」时会调）。干跑与 PC 后端不装配：
+        # 干跑不该去动 adb 服务，PC 后端也没有这条通道。
+        input_channel_probe=(
+            game_window.ensure_input_channel
+            if window_backend == "emulator" and not dry_run
+            else None
+        ),
     )
     # 模拟器窗口也要能往运行日志里说话（例如「最小化已自动还原」）。
     game_window.set_event_sink(runtime.log)
+    if not dry_run and window_backend == "emulator":
+        # 实跑才需要点击通道，开跑前自检一次：模拟器重启后 host 侧 adb server
+        # 常还挂在旧连接上（设备 offline），此时画面看得见、点不动，
+        # 上层只会看到「点击验收无效」并把整条路线打挂。
+        # ⚠️ 必须放在接上日志出口**之后**：自检过程说的每一句（探了几次、
+        # 重启了 adb 还是模拟器）都靠这个出口落盘。放前面时这些话一条都打不出来
+        # （2026-10-04 实测全仓库只剩 2 条自检记录，且都不是开跑前那次），
+        # 事后只能猜到底发生了什么。
+        game_window.ensure_input_channel()
     if calibration is not None:
         runtime.log(
             "模式=PC初始化 "
@@ -437,6 +448,13 @@ def run_mode(
                 ),
                 # 宠物小屋礼物角标（快捷菜单页，宠物送礼时挂出的小角标），放 global 下。
                 pet_gift_templates=load_pet_gift_templates(template_root / "global"),
+                # 「网页网络错误」那条黑底白字的长条（游戏内 WebView 上，横屏）。
+                # ⚠️ 放 **navigation** 下，与它管的那两张网页锚点
+                # （``web_activity_gate`` / ``web_community``）同目录 ——
+                # 它们说的是同一个 WebView 上的事，模板别散到两处去。
+                web_network_error_templates=load_web_network_error_templates(
+                    template_root / "navigation"
+                ),
             )
         )
         if spec.needs_navigation:
