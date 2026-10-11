@@ -302,7 +302,15 @@ POST_DWELL_SECONDS = 6.0
 #
 # 次数依据：任务页那五张进度字形模板的命名（``strings/tasks/`` 的
 # ``0_1 / 0_3 / 1_1 / 1_3 / 3_3``）⇒ 浏览与点赞是 ``x/3``，分享是 ``x/1``。
-TASK_ROUND_TIMES: dict[str, int] = {"browse": 3, "like": 3, "share": 1}
+TASK_ROUND_TIMES: dict[str, int] = {"browse": 3, "share": 1}
+# ⚠️ 原为 ``{"browse": 3, "like": 3, "share": 1}`` —— **2026-10-11 摘掉 "like"**
+# （用户拍板）。原因见 ``community_pages.TASK_ROWS`` 那段：点赞状态被服务端永久记住
+# ⇒ 越翻越找不到可点的 👍 ⇒ 死循环。
+#
+# ⚠️⚠️ **``"like": 3`` 这个值本身仍然有效**，只是不在生产清单里了：
+# ``_LIKE_ONE`` / ``LIKE_RESWIPE_LIMIT`` / ``pages.locate_card_like`` / ``_VERIFY_LIKE_ON``
+# 这些**代码与机制一律保留**（用户拍板「保留代码」），护栏在 ``test_community.py`` 里
+# 用 ``patch.dict`` 临时把 "like" 注册回来跑。要真正恢复点赞，把这一项加回来即可。
 
 # 一条任务最多跑几**轮** —— **绝不死循环**（账本要记的是「跑了几轮」，而不是
 # 「试到成功为止」，后者会在判据失灵时无声转到底）。
@@ -624,7 +632,6 @@ TASK_SCRIPT: dict[str, tuple[TaskStep, ...]] = {
     "browse": _round_script(
         _BROWSE_ONE, TASK_ROUND_TIMES["browse"], between=_BROWSE_NEXT_POST
     ),
-    "like": _round_script(_LIKE_ONE, TASK_ROUND_TIMES["like"]),
     "share": _SHARE_ROUND,
 }
 

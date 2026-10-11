@@ -176,14 +176,19 @@ class CommunityPageTests(unittest.TestCase):
     # ---- 任务行（三态：未完成 / 已完成 / 认不出） ----
 
     def test_reads_task_rows_on_every_known_layout(self):
-        """三行任务在各排版下的读数都要与肉眼一致。"""
+        """两行任务在各排版下的读数都要与肉眼一致。
+
+        ⚠️ **2026-10-11：清单里只剩 browse / share**（「点赞帖子」已摘掉，
+        理由见 ``community_pages.TASK_ROWS`` 那段）。所以期望值里**不许再有 like** ——
+        不是「它读不出来」，是它**已经不在清单里**、压根不会被读。
+        """
         # (夹具, {行: 期望})
         cases = {
             "tasks_one_browse_done_live_20261006": {
-                "browse": "todo", "like": "done", "share": "todo",
+                "browse": "todo", "share": "todo",
             },
             "tasks_all_done_live_20261006": {
-                "browse": "done", "like": "done", "share": "done",
+                "browse": "done", "share": "done",
             },
         }
         for frame_name, expected in cases.items():
@@ -193,13 +198,19 @@ class CommunityPageTests(unittest.TestCase):
                 self.assertEqual(rows, expected)
 
     def test_task_rows_abstain_when_the_buttons_are_missing(self):
-        """按钮位置是空白时三行都必须认不出 —— 不许默认成「已完成」。"""
+        """按钮位置是空白时每一行都必须认不出 —— 不许默认成「已完成」。"""
         blank = np.full((1920, 1080, 3), 255, np.uint8)
         rows = cp.observe_task_rows(blank, self.templates)
-        self.assertEqual([row.state for row in rows], ["unknown"] * 3)
+        self.assertEqual([row.state for row in rows], ["unknown"] * len(cp.TASK_ROWS))
 
-    def test_task_rows_cover_all_three_bands(self):
-        self.assertEqual([row.key for row in cp.TASK_ROWS], ["browse", "like", "share"])
+    def test_task_rows_cover_the_declared_bands(self):
+        """清单里的每一行：**按钮带必须真的框住那行按钮**（不许把按钮切掉）。
+
+        ⚠️ 名字里的「all three」已改（2026-10-11 摘掉点赞后只剩两行）——
+        但**断言名单仍然独立写死**，不从 ``cp.TASK_ROWS`` 反推，
+        否则「清单少了一行」这种改动它照样绿。
+        """
+        self.assertEqual([row.key for row in cp.TASK_ROWS], ["browse", "share"])
         for row in cp.TASK_ROWS:
             with self.subTest(row=row.key):
                 x, y, w, h = row.band
