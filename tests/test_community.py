@@ -730,7 +730,23 @@ class CommunityStateMachineTests(unittest.TestCase):
         ``test_community_pages`` 里的口径守卫），而 ``tasks_one_browse_done``
         那一帧的点赞行读出来**已经是「已完成」**。所以这里直接摆状态 ——
         被测的是 ``_drive_task`` 的「先找再点」，不是「挑哪条任务」那一步。
+
+        ⚠️⚠️ **2026-10-11：点赞已摘出生产清单**（``TASK_SCRIPT`` / ``TASK_ROWS``，
+        理由见 ``community_pages.TASK_ROWS`` 那段：服务端永久记住点赞状态 ⇒
+        翻不到可点的 👍 ⇒ 死循环）。但**点赞的代码与机制一律保留**（用户拍板），
+        所以这里的测试照旧要跑 —— 办法是**临时把点赞脚本注册回 ``TASK_SCRIPT``**。
+        用 ``mock.patch.dict`` 而不是改生产常量：生产代码**一行不用动**，
+        而机制护栏（先找再点 / 找不到就滑 / 滑满作废 / 点后验绿）**照旧被罩住**。
+        将来要真正恢复点赞，只需把清单那一行加回去。
         """
+        patcher = unittest.mock.patch.dict(
+            cm.TASK_SCRIPT,
+            # 次数**独立写死 3**（与 ``TASK_ROUND_TIMES`` 原来的值一致）：
+            # 生产清单里已经没有 "like" 了，测试不该去读一个被删掉的常量。
+            {"like": cm._round_script(cm._LIKE_ONE, 3)},
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
         machine = self.machine(state=cm.CommunityState.FEED)
         machine.active_task = "like"
         machine.task_step = 0
@@ -960,11 +976,18 @@ class CommunityStateMachineTests(unittest.TestCase):
         """位置没找着、脚本又没写死 ⇒ **当场抛**，绝不静默点 (0,0)。
 
         静默退回原点那种失败最难查：屏幕上真的会在左上角点一下，而日志一片祥和。
+
+        ⚠️ 2026-10-11：载体从「点赞」换成「浏览」—— 点赞已摘出 ``TASK_SCRIPT``，
+        但这条测的是 ``_step_action`` 的**通用机制**（位置现找的那一步，
+        定位器没给出点时必须抛），浏览的 ``tap_post`` 用的是同一套。
+        **机制还在，就得还有护栏。**
         """
-        machine = self._like_machine_at_the_step()
+        machine = self.machine(state=cm.CommunityState.FEED)
+        machine.active_task = "browse"
+        machine.task_step = 0
         with self.assertRaises(RuntimeError) as ctx:
             machine._step_action(
-                "task_like_1", cm.TASK_SCRIPT["like"][0], machine.last_page or type(
+                "task_browse_1", cm.TASK_SCRIPT["browse"][0], machine.last_page or type(
                     "P", (), {"name": "feed_home"}
                 )(),
                 reason="人为构造：没把找出来的点传进来",
@@ -2399,12 +2422,17 @@ class CommunityRunnerTests(unittest.TestCase):
         self.assertIn("雷电", str(ctx.exception))
 
     def test_a_swipe_step_is_sent_through_the_swipe_channel_not_as_a_click(self):
-        """like 脚本的第一步是**滑动**：不许被当成「在起点点一下」。
+        """脚本里的**滑动步**：不许被当成「在起点点一下」。
 
         ⚠️ 2026-10-07 实跑：主循环只会 ``runtime.click`` ⇒ 滑动变成「在信息流中部
-        点一下」⇒ **点开一张帖子** ⇒ 下一步要求 ``feed_home`` 对不上 ⇒ 点赞任务
+        点一下」⇒ **点开一张帖子** ⇒ 下一步要求 ``feed_home`` 对不上 ⇒ 任务
         三遍机会全废。修法是 Runner 认 ``swipe_end`` 换发 ``runtime.swipe``。
         这条钉的是「脚本 → 动作 → 真的走滑动通道」整条链，不是只看动作字段。
+
+        ⚠️ 2026-10-11：载体从「点赞」换成「浏览」（点赞已摘出生产清单）。
+        浏览脚本第 3 步是 ``feed_home`` 上的一次滑动（终点 ``FEED_TASK_SCROLL_END``），
+        与点赞原来用的那条滑动是同一条常量 —— 换成浏览后，这条护栏**盯的是
+        真在生产跑的路径**，比原来更有意义。
         """
         clicks: list = []
         swipes: list = []
@@ -2416,7 +2444,14 @@ class CommunityRunnerTests(unittest.TestCase):
         runtime._swipe = lambda start, end, ms: swipes.append((start, end, ms))
         machine = cm.CommunityStateMachine(self.templates, self.glyphs)
         runner = cm.CommunityRunner(machine, runtime, sleep=lambda _: None)
-        machine.active_task = "like"
+        machine.active_task = "browse"
+        # 摆到浏览脚本里那一步「在信息流往下滑，把下一篇带上来」。
+        swipe_index = next(
+            index
+            for index, step in enumerate(cm.TASK_SCRIPT["browse"])
+            if step.end == cm.FEED_TASK_SCROLL_END
+        )
+        machine.task_step = swipe_index
         action = machine._drive_task(
             fixture("feed_list_live_20261006"),
             cp.PageJudgement("feed_home", 1.0, ()),
