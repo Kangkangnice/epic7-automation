@@ -105,6 +105,10 @@ PAGE_LABELS = {
     "story_playing": "剧情播放中",
     "lobby": "大厅",
     "battle_menu": "战斗菜单",
+    # 「战斗」菜单的**第三个**标签页（既不是「一般」也不是「赛季」）。它的文字会变
+    # （09-25 写着「活动」、10-12 写着「事件」），所以名字只按**位置**取，
+    # 判据只用「一般与赛季都没被选中」这个骨架条件。见 ``battle_general_active``。
+    "battle_other_menu": "战斗菜单·其他标签页",
     "season_menu": "赛季菜单",
     "expedition_home": "远征主页",
     "tower_home": "月塔主页",
@@ -251,7 +255,56 @@ class NavigationTemplates:
     # 2026-10-04 每日任务就卡在这里：迷宫的导航链只认 battle_menu，落到 season_menu
     # 后干等 92 秒然后报「导航开始前应处于[大厅]」。这枚锚点是 season_menu →
     # battle_menu 的唯一通道（远征那条链是反向的：battle_menu → season_menu）。
-    battle_general_tab: np.ndarray
+    #
+    # ⚠️ 它只有「切回一般页」那一步在用（当点击定位源），**不参与判页** ——
+    # 判「这一页是不是一般页」看下面的 ``battle_general_active``。
+    #
+    # ⚠️⚠️ 2026-10-13：这枚锚点从**单张**改成**两张候选**。「切回一般页」这一步的
+    # 来源页有两个（赛季页 / 第三页），而「一般」标签在两者上的底纹不同 ——
+    # 同框 (105,175,240,90) 实测（246 张 1982x1132 帧全扫）：
+    #
+    #     截自赛季页的那张：第三页 0.8185（差 0.0015 不到 0.82 门槛 ⇒ **定位不到**）
+    #     截自第三页的那张：第三页 1.0000、赛季页 0.7154
+    #
+    # 只留第一张的代价就是「第三页上这一步直接抛『缺少导航锚点』」。两张合起来，
+    # 两个来源页都能靠图定位。语义与 ``lobby_shop_entry`` / ``novice_arena`` 一致：
+    # **任一候选过阈即命中**，取过阈里分数最高的（见 ``_locate``）。
+    #
+    # 为什么点得准：本锚点区域 (100,165,250,105) 只比模板大 10x15 像素，命中中心
+    # 恒在 (225±5, 222±3) 之内 —— 无论哪张候选胜出，落点都在「一般」标签这一格里。
+    # 六类页面实测命中中心**全是 (225, 220)**。所以它不需要 ``fixed_point``。
+    battle_general_tab: tuple[np.ndarray, ...]
+    # 「一般」标签的**选中态**。判「这是不是一般页」用**它**。
+    #
+    # ⚠️⚠️ 2026-10-12：游戏记住的标签页**不止「赛季」一种**。那天迷宫强化石从大厅
+    # 点进「战斗」落在**第三个标签页**上（当天它叫「事件」），而旧口径是
+    # 「顶栏标题 + 『赛季』**未**选中」—— 第三个标签页同样满足 ⇒ 被当成一般页
+    # ⇒ 迷宫的「切回一般页」被 ``skip_if_observed`` 跳过 ⇒ 迷宫路线接手后只认
+    # 一般页那四张卡片 ⇒ 判「认不出」⇒ 干等 60 秒超时（诊断帧
+    # ``20261012_230105_464105_unknown_screen_unresolved.png``，实跑日志
+    # ``epic7_labyrinth_stone.log`` 23:01:02）。
+    #
+    # ⚠️ 第三个标签页的**文字会变**（09-25 的帧上写着「活动」、10-12 的帧上写着
+    # 「事件」）⇒ 绝不许拿它的文字当模板（``topics/disciplines.md``：模板里不放
+    # 会变化的内容）。所以三个标签页一律按「**哪个标签被选中**」分，不认第三个
+    # 标签叫什么。
+    #
+    # 源帧：``tests/fixtures/epic7_labyrinth_stone/battle_menu.png``（2026-09-25 真机
+    # 帧，一般页），框 ``(105, 175, 240, 90)`` —— 与 ``battle_general_tab`` **严格
+    # 同框**（同框的意义见 ``topics/anchors.md`` 第 9 条：命中中心不变，两态可比）。
+    #
+    # 分离度（**246 张** 1982x1132 帧全扫，门槛 0.82，2026-10-13 实测）：
+    #
+    #     1.0000  epic7_labyrinth_stone/battle_menu.png        （真·一般页 09-25）
+    #     0.9734  epic7_navigation/expedition_battle_menu.png  （真·一般页）
+    #     0.6313  epic7_navigation/arena_mode.png              （次高，负例）
+    #     0.5259  battle_menu_third_tab_20261012               （第三页，负例）
+    #     0.2891  expedition_season_menu.png                   （赛季页，负例）
+    #
+    # ⇒ 过阈只有那两张真·一般页，与次高之间空档 **0.19**，零误命中。
+    # ⚠️ 已知边界：正例只有那两张一般页帧；「命中」这一侧没有 10 月的帧背书
+    # （10-12 有帧的是**第三页**，它 0.5259 是负例、符合预期）。
+    battle_general_active: np.ndarray
     expedition_entry: np.ndarray
     expedition_home: np.ndarray
     lobby_story_click_offset: tuple[int, int]
@@ -396,11 +449,20 @@ def build_navigation_templates(template_root: Path) -> NavigationTemplates:
         expedition_season_active=load_template(
             str(navigation / "expedition_season_active.png")
         ),
-        # 源帧：今天 08:17 卡在赛季栏的真机帧（见 ``battle_general_tab`` 注释里的
-        # 事故经过）。模板取的是「一般」处于**未选中**时的样子 —— 也正是需要点它
-        # 时它的样子。选中态同格实测只有 0.3532（``battle_menu`` 夹具），
-        # 236 张夹具全扫：过阈的只有两张赛季栏页（1.0000 / 0.8668），分离余量充足。
-        battle_general_tab=load_template(str(navigation / "battle_general_tab.png")),
+        # 两张候选：「一般」标签在**赛季页**上的样子（源帧 2026-10-04 08:17，迷宫的
+        # 「切回一般页」就是照它写的）与在**第三页**上的样子（源帧 2026-10-12 23:02）。
+        # 模板取的都是「一般」处于**未选中**时的样子 —— 也正是需要点它时它的样子。
+        # 为什么必须是两张、各管哪个来源页，见
+        # ``NavigationTemplates.battle_general_tab``。
+        battle_general_tab=(
+            load_template(str(navigation / "battle_general_tab.png")),
+            load_template(str(navigation / "battle_general_tab_third_page.png")),
+        ),
+        # 直接 load_template：缺文件就抛 FileNotFoundError（fail closed）。
+        # 与 ``battle_general_tab`` 同框、同一枚标签的**选中态**。
+        battle_general_active=load_template(
+            str(navigation / "battle_general_active.png")
+        ),
         expedition_entry=load_template(str(navigation / "expedition_entry.png")),
         expedition_home=load_template(str(navigation / "expedition_home.png")),
         lobby_story_click_offset=(65, 11),
@@ -516,6 +578,10 @@ class Epic7Navigator:
         # 「一般」标签条那一格：x 105..345、y 175..265（左右各留 5px 余量）。
         # 区域比「赛季」那两个窄，是因为它本身就是要把**左边这一格**抠出来。
         "battle_general_tab": (100, 165, 250, 105),
+        # 与 ``battle_general_tab`` **同区域**：同一枚「一般」标签的两个态在同一格里
+        # 取值，实测两态互斥（一般页：选中态 1.0000 / 未选中态 0.3532；第三页：
+        # 选中态 0.5259 / 未选中态 0.8185）。
+        "battle_general_active": (100, 165, 250, 105),
         # 赛季页那排卡片会随赛季换序：上赛季是「战术档案/远征队/考验殿堂」，
         # 远征队居中；2026-09-17 新赛季多了一张「星座考验」，远征队被挤到最右。
         # 原先区域 (850,240,500,260) 只罩住中间那张卡，远征队右移后只拿 0.4395
@@ -922,21 +988,53 @@ class Epic7Navigator:
         #   最近负样本 → ``expedition_battle_menu`` 0.6006、``arena_list`` 0.5727
         # 最小分离度 **+0.3772**（0.9772 - 0.6006）。
         expedition_title = self._locate(screen, "expedition_battle_title")
-        season_active = self._locate(screen, "expedition_season_active")
-        if expedition_title and season_active:
-            return PageObservation(
-                "season_menu",
-                min(expedition_title.score, season_active.score),
-            )
-        # ⚠️ 「一般」页判据同理：只由顶栏标题 + 「赛季」标签条的**未选中态**构成，
-        # 不掺任何卡片内容。``expedition_season_active`` 与 ``expedition_season_tab``
-        # 在同一块区域上取值，实测两态互斥（选中帧未选中模板 0.6006、未选中帧选中
-        # 模板 0.35~0.53），所以顺序不影响正确性。
-        season_tab = self._locate(screen, "expedition_season_tab")
-        if expedition_title and season_tab:
-            return PageObservation(
-                "battle_menu", min(expedition_title.score, season_tab.score)
-            )
+        # ⚠️⚠️ 2026-10-12 起，这一页按「**哪个标签被选中**」分成三页
+        # （旧口径是「标题 + 『赛季』未选中」，把第三页也当成了 battle_menu）：
+        #
+        #   一般选中 -> ``battle_menu``       （迷宫入口在这一页）
+        #   赛季选中 -> ``season_menu``       （远征 / 月塔入口在这一页）
+        #   都不是   -> ``battle_other_menu`` （第三页；见 ``battle_general_active``）
+        #
+        # 三态互斥，**但判据强度不一样，所以下面的顺序是有讲究的**（2026-10-13 实测，
+        # 四张真机帧：一般页 x2 / 赛季页 / 第三页）：
+        #
+        #   ``battle_general_active``（一般选中）  一般页 1.0000 / 0.9734，其余 0.2891 / 0.5259
+        #   ``expedition_season_active``（赛季选中）赛季页 1.0000，第三页 0.7975、
+        #                                          一般页 **0.8129**（离 0.82 只差 0.0071）
+        #   ``expedition_season_tab``（赛季未选中）一般页 **0.8975** / 第三页 1.0000、
+        #                                          赛季页 0.6006 —— 它只说明「赛季没被选中」，
+        #                                          所以在**一般页**上也是过阈的
+        #
+        # 结论：``battle_general_active`` 必须**第一个**判（它最强、抓得最牢）；第三页那一条
+        # 必须排在 ``battle_menu`` **之后**（否则一般页会被它抢走 —— ``season_tab`` 在一般页
+        # 0.8975 是过阈的）。两处都靠顺序兜住，不能靠「三态分数天然分开」。
+        #
+        # ⚠️ 「标题没命中就整块不算」是**等价但更快**的写法：旧代码无条件算下面
+        # 三个锚点，而它们的结论全部以标题为与条件，title 为 None 时一个都不会成立。
+        if expedition_title is not None:
+            general_active = self._locate(screen, "battle_general_active")
+            if general_active is not None:
+                return PageObservation(
+                    "battle_menu",
+                    min(expedition_title.score, general_active.score),
+                )
+            season_active = self._locate(screen, "expedition_season_active")
+            if season_active is not None:
+                return PageObservation(
+                    "season_menu",
+                    min(expedition_title.score, season_active.score),
+                )
+            # ⚠️ 第三页的判据**只用「『赛季』没被选中」这一个骨架条件**，不掺第三个
+            # 标签的文字（它会变，见 ``battle_general_active``）。走到这里时
+            # 「一般」也已确认没选中，两者合起来正好等价于「停在第三页」。
+            # ⚠️ ``expedition_season_tab``（未选中态）在**一般页**上同样过阈
+            # （实测 0.8975），所以这一条**必须**排在 ``battle_menu`` 后面。
+            season_tab = self._locate(screen, "expedition_season_tab")
+            if season_tab is not None:
+                return PageObservation(
+                    "battle_other_menu",
+                    min(expedition_title.score, season_tab.score),
+                )
 
         arena_title = self._locate(screen, "arena_mode_title")
         novice = self._locate(screen, "novice_arena")
