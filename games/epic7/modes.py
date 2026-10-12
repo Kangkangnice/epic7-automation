@@ -559,8 +559,13 @@ MODE_SPECS = {
             mode="expedition",
             steps=(
                 NavigationStep(
+                    # ⚠️ ``battle_other_menu`` 必须在这份落点名单里（2026-10-12 补）：
+                    # 判页改成「按哪个标签被选中分三页」之后，落在**第三个标签页**上
+                    # 返回的就是这个名字；不写进来，这一跳会「目标页未出现」而重试到失败。
+                    # 后面「切换到赛季」那一步不受影响（''skip_if_observed'' 只跳赛季页，
+                    # 第三页会照常点「赛季」标签 —— 那枚锚点在第三页上是过阈的）。
                     "lobby",
-                    (EXPEDITION_BATTLE_MENU_PAGE, EXPEDITION_SEASON_PAGE),
+                    (EXPEDITION_BATTLE_MENU_PAGE, EXPEDITION_SEASON_PAGE, "battle_other_menu"),
                     "lobby_battle",
                     "进入战斗菜单",
                 ),
@@ -606,8 +611,18 @@ MODE_SPECS = {
             mode="tower",
             steps=(
                 NavigationStep(
+                    # ⚠️ ``battle_other_menu`` 必须在这份落点名单里（2026-10-12 补）：
+                    # 判页改成「按哪个标签被选中分三页」之后，从大厅点进「战斗」落在
+                    # **第三个标签页**上时返回的就是这个名字。不写进来，这一跳会一直
+                    # 「目标页未出现」直到报「导航开始前应处于[大厅]」。
+                    #
+                    # 与远征链同形同理由；为什么第三页不必单独处理，见
+                    # ``navigation.NavigationTemplates.battle_general_active``
+                    # 与远征链那一段注释。下面「切换到赛季」这一步**不用改**：
+                    # 它用的 ``expedition_season_tab`` 在第三页实测 1.0000、
+                    # 一般页 0.8975，两页都过阈，点下去都进赛季页。
                     "lobby",
-                    (TOWER_BATTLE_MENU_PAGE, TOWER_SEASON_PAGE),
+                    (TOWER_BATTLE_MENU_PAGE, TOWER_SEASON_PAGE, "battle_other_menu"),
                     "lobby_battle",
                     "进入战斗菜单",
                 ),
@@ -858,22 +873,43 @@ MODE_SPECS = {
             mode="labyrinth_stone",
             steps=(
                 NavigationStep(
-                    # 两个落点都接：游戏**记住**上次停在哪个标签页，跑过远征之后
-                    # 从大厅点进来就是赛季页。2026-10-04 每日任务这第一跳只认
-                    # battle_menu，落到 season_menu 后没有下一步可走，干等 92 秒
-                    # 报「导航开始前应处于[大厅]」。远征那条链早就这么写了。
+                    # **三个落点都接**：游戏**记住**上次停在哪个标签页。
+                    #   2026-10-04 落在「赛季」页（前一趟跑过远征，它要点「赛季」）；
+                    #   2026-10-12 落在**第三个标签页**（那天它的文字是「事件」）。
+                    # 只认 battle_menu 的那一版：落到赛季页后「没有下一步可走」，
+                    # 干等 92 秒报「导航开始前应处于[大厅]」（远征那条链早就写全了）。
+                    # 只补了 season_menu 的那一版：落到第三页时会被**误判成一般页**
+                    # —— 旧判据问的是「『赛季』有没有被选中」，第三页同样满足
+                    # => 下面的「切回一般页」被 skip_if_observed 跳过 => 迷宫路线
+                    # 接手后只认一般页那四张卡片 => 判「认不出」=> 干等 60 秒超时。
+                    # 三页怎么分、为什么不能拿第三个标签的文字当判据，见
+                    # ``navigation.NavigationTemplates.battle_general_active``。
+                    # 10-12 那张现场帧已升为夹具
+                    # ``tests/fixtures/epic7_navigation/battle_menu_third_tab_20261012.png``
+                    # （原图 runtime_diagnostics/epic7_labyrinth_stone/
+                    # 20261012_230202_433099_timeout_battle_menu.png）。
                     "lobby",
-                    ("battle_menu", "season_menu"),
+                    ("battle_menu", "season_menu", "battle_other_menu"),
                     "lobby_battle",
                     "进入战斗菜单",
                 ),
-                # 迷宫入口只在「一般」页；从赛季页切回就这一步。
+                # 迷宫入口只在「一般」页；从**赛季页或第三页**切回就这一步。
+                #
+                # ``source`` 写 ``season_menu`` 只是沿用，它**不参与等页**（``navigate``
+                # 把上一跳返回的帧直接喂进来）—— 落到第三页时日志里的「页面=赛季菜单」
+                # 指的是「这一步本来是为赛季页准备的」，别据此判断实际在哪一页。
                 NavigationStep(
                     "season_menu",
                     ("battle_menu",),
                     "battle_general_tab",
                     "切回一般页",
                     skip_if_observed=("battle_menu",),
+                    # 位置由 ``battle_general_tab`` 定位（**不用固定坐标**，2026-10-13）：
+                    # 这一步可能在赛季页或第三页上被调起来，「一般」标签在这两页上的
+                    # 底纹不同，所以那枚锚点配了**两张候选图**，各管一个来源页
+                    # （第三页上原来那张只有 0.8185，差 0.0015 过不了 0.82 的阈 ——
+                    # 改进经过见 ``navigation.NavigationTemplates.battle_general_tab``）。
+                    # 两张候选命中的中心恒在 (225±5, 222±3)，都落在「一般」标签那一格里。
                 ),
             ),
             ready_note="战斗菜单「一般」页已就绪",

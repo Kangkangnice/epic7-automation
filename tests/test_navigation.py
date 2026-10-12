@@ -2048,32 +2048,126 @@ class NavigationTests(unittest.TestCase):
 
         self.assertEqual([(1827, 531)], clicks)
 
-    def test_general_tab_anchor_only_fires_on_the_season_page(self):
-        """「一般」标签条只在**赛季页**（需要点它的场合）命中；在一般页必须不过阈。
+    def test_general_tab_candidates_cover_both_source_pages(self):
+        """「一般」标签是**两张候选图**，各管一个来源页 —— 缺一张那一步就点不下去。
 
-        分数是硬依据：赛季页 1.0000（另一张赛季夹具 0.8668），一般页实测 0.3532
-        —— 与 0.82 的门槛之间隔着 0.45，余量足够，不必担心跨 Tab 误点。
+        这一步（``modes.py`` 迷宫链的「切回一般页」）的来源页有两个：赛季页与第三页，
+        而「一般」标签在两者上的底纹不同。同框 (105,175,240,90) 实测（246 张全扫）：
+
+            截自赛季页的那张：赛季页 0.8668 / 第三页 **0.8185**（差 0.0015 不到 0.82）
+            截自第三页的那张：第三页 1.0000 / 赛季页 0.7154
+
+        只留第一张时，第三页上 ``_locate`` 返回 None ⇒ ``_transition`` 抛
+        「缺少导航锚点」，连点都点不下去 —— 这是 2026-10-12 那次失败的第二个成因
+        （现场帧 ``tests/fixtures/epic7_navigation/battle_menu_third_tab_20261012.png``）。
+
+        ⚠️ 敢用「哪张胜出都行」是因为**命中中心恒在同一格**：锚点区域
+        (100,165,250,105) 只比模板大 10x15 像素 ⇒ 中心必在 (225±5, 222±3) 之内，
+        两张候选都落在「一般」标签那一格里。所以这一步不需要固定坐标。
         """
         navigator = self.navigator([])
-        template = navigator.templates.battle_general_tab
-        region = navigator._REGIONS["battle_general_tab"]
+        season_page = fixture("season_menu_general_tab_20261004")
+        third_page = fixture("battle_menu_third_tab_20261012")
+        general_page = labyrinth_fixture("battle_menu")
 
-        on_season = find_best_template(
-            fixture("season_menu_general_tab_20261004"),
-            template,
-            region=region,
-            reference_size=REFERENCE_SIZE,
-        )
-        on_general = find_best_template(
-            labyrinth_fixture("battle_menu"),
-            template,
-            region=region,
-            reference_size=REFERENCE_SIZE,
+        on_season = navigator._locate(season_page, "battle_general_tab")
+        on_third = navigator._locate(third_page, "battle_general_tab")
+
+        # 两个来源页都必须定位得到。
+        self.assertIsNotNone(on_season)
+        self.assertIsNotNone(on_third)
+        # 落点都在「一般」标签这一格里（区域只比模板大 10x15，中心不可能跑远）。
+        for match in (on_season, on_third):
+            self.assertLessEqual(abs(match.center[0] - 225), 5)
+            self.assertLessEqual(abs(match.center[1] - 220), 3)
+        # 一般页上它不该乱命中（这一步在一般页本来就该被 skip_if_observed 跳过）。
+        self.assertIsNone(navigator._locate(general_page, "battle_general_tab"))
+
+    def test_battle_menu_identity_is_decided_by_which_tab_is_selected(self):
+        """同一屏按「哪个标签被选中」分成三页，五张真机帧各归各的。
+
+        旧口径是「顶栏标题 + 『赛季』**未**选中」—— 一般页与第三页都满足它，
+        于是第三页被当成一般页（2026-10-12 迷宫失败的根因）。
+        """
+        navigator = self.navigator([])
+        cases = (
+            (labyrinth_fixture("battle_menu"), "battle_menu"),
+            (fixture("expedition_battle_menu"), "battle_menu"),
+            (fixture("season_menu_general_tab_20261004"), "season_menu"),
+            (fixture("expedition_season_menu_live_20260917"), "season_menu"),
+            (fixture("battle_menu_third_tab_20261012"), "battle_other_menu"),
         )
 
-        self.assertAlmostEqual(1.0, on_season.score, places=4)
-        self.assertEqual((225, 220), on_season.center)
-        self.assertLess(on_general.score, 0.82)
+        for frame, expected in cases:
+            with self.subTest(expected=expected):
+                observation = navigator.observe(frame)
+                self.assertEqual(expected, observation.name)
+                self.assertGreaterEqual(observation.confidence, 0.95)
+
+    def test_the_old_season_tab_judgement_would_have_mistaken_the_third_page(self):
+        """把「旧口径为什么错」钉死，顺带钉住**三条判据的先后顺序**是判据的一部分。
+
+        机制本身：旧代码问「顶栏标题在 **且** 『赛季』没被选中」，第三页答「是」
+        ⇒ ``observe()`` 报 ``battle_menu`` ⇒ ``skip_if_observed`` 把「切回一般页」
+        跳过 ⇒ 迷宫路线在第三页上找不到一般页那四张卡片 ⇒ 判「认不出」干等超时。
+
+        所以这里同时钉两件事：第三页上「赛季未选中」**过阈**（旧口径的错因），
+        而「一般选中」**不过阈**（新口径的依据）；再加一条顺序约束 ——
+        「赛季未选中」在**一般页**上也过阈，所以第三页那一条必须排在
+        ``battle_menu`` 之后，挪到前面就会把一般页抢走。
+        """
+        navigator = self.navigator([])
+        third_page = fixture("battle_menu_third_tab_20261012")
+        general_page = labyrinth_fixture("battle_menu")
+
+        def season_tab_score(screen):
+            return find_best_template(
+                screen,
+                navigator.templates.expedition_season_tab,
+                reference_size=REFERENCE_SIZE,
+            ).score
+
+        # 旧口径在第三页上是「成立」的 —— 这就是当年误判成一般页的机制。
+        self.assertGreaterEqual(season_tab_score(third_page), 0.82)
+        # 同样在一般页上也过阈 ⇒ 第三页那一条只能排在 battle_menu 后面。
+        self.assertGreaterEqual(season_tab_score(general_page), 0.82)
+        # 新口径真正区分一般页的那枚锚点，在第三页上必须不过阈。
+        self.assertLess(
+            find_best_template(
+                third_page,
+                navigator.templates.battle_general_active,
+                region=navigator._REGIONS["battle_general_active"],
+                reference_size=REFERENCE_SIZE,
+            ).score,
+            0.82,
+        )
+
+    def test_labyrinth_navigation_switches_back_from_the_remembered_third_tab(self):
+        """游戏记住的是**第三个**标签页时，迷宫也要能自己切回「一般」页。
+
+        2026-10-12 每日任务卡死在这里：那天落点是第三页（当天写着「事件」），
+        旧口径把它当成一般页 ⇒ 这一步被 ``skip_if_observed`` 跳过 ⇒ 迷宫路线接手后
+        在第三页上找不到一般页那四张卡片 ⇒ 判「认不出」⇒ 干等 60 秒超时
+        （runtime_diagnostics/epic7_labyrinth_stone/20261012_230202_433099）。
+        """
+        clicks: list[tuple[int, int]] = []
+        third_frame = fixture("battle_menu_third_tab_20261012")
+        navigator = self.navigator(
+            [
+                fixture("lobby"),
+                fixture("lobby"),
+                third_frame,
+                third_frame,
+                labyrinth_fixture("battle_menu"),
+                labyrinth_fixture("battle_menu"),
+            ],
+            clicks=clicks,
+        )
+
+        navigator.navigate("labyrinth_stone")
+
+        # 第二下点的还是「一般」标签条的中心 —— 第三页上必须点得下去。
+        self.assertEqual([(1827, 531), (225, 220)], clicks)
 
     def test_classifies_season_menu_after_the_expedition_card_moved_to_the_right(self):
         """赛季轮换把「远征队」从中间挤到最右，赛季页仍须被识别。
