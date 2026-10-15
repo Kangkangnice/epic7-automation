@@ -465,7 +465,12 @@ def build_navigation_templates(template_root: Path) -> NavigationTemplates:
         ),
         expedition_entry=load_template(str(navigation / "expedition_entry.png")),
         expedition_home=load_template(str(navigation / "expedition_home.png")),
-        lobby_story_click_offset=(65, 11),
+        # 「故事入口」的点击点在命中中心之上加这个偏移。
+        # 2026-10-15：模板从 350x110 裁到 310x60（去掉上部会变的公告板背景 + 左侧门框，
+        # 见 docs/maintenance/template_dynamic_content_review.md 第七节），命中中心随之
+        # 从 (1725,315) 漂到 (1745,340)。这里把偏移由 (65,11) 调成 (45,-14)，
+        # 使**点击点保持原来的 (1790,326) 不动**，改动对真机点击零影响。
+        lobby_story_click_offset=(45, -14),
         lobby_side_story=load_template(str(navigation / "lobby_side_story.png")),
         side_story_special_book=load_template(
             str(navigation / "side_story_special_book.png")
@@ -673,7 +678,10 @@ class Epic7Navigator:
         # ⚠️ 同上，**未复验**。
         "web_community": (1540, 180, 400, 160),
     }
-    _CLICK_OFFSETS = {"lobby_story": (65, 11)}
+    # 锚点的点击点相对命中框中心的偏移。
+    # ``lobby_story`` 走 ``templates`` 上那份（见 ``_click_offset``），这里的同名条目只为
+    # 与历史写法一致而留着；``lobby_arena`` 用这里的。
+    _CLICK_OFFSETS = {"lobby_story": (45, -14), "lobby_arena": (0, -12)}
 
     @classmethod
     def _assert_anchor_templates(cls, templates: NavigationTemplates) -> None:
