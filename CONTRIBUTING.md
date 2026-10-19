@@ -67,6 +67,30 @@ python auto_game_unified/tools/check.py --install-hook
 
 `git commit --no-verify` **默认禁止**：钩子是这套流程里唯一的强制关卡。
 
+## 打包（改动了打包配置才需要）
+
+```powershell
+python packaging/build.py
+```
+
+它会做四件事：PyInstaller 目录版打包 → 跑一次 `Epic7AutoAssistant.exe --self-check`
+（检查产物目录可写、模板在不在、十五条路线能不能全部加载）→ 打便携 ZIP → 记 SHA256。
+产物在 `packaging/dist/`（已 gitignore，不进历史）。
+
+安装包需要装 **Inno Setup 6**，本机没有时先跳过：
+
+```powershell
+& "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" "/DMyAppVersion=0.1.0" packaging\installer.iss
+```
+
+两个容易踩的点：
+
+- 打包版的运行产物写在 `%LOCALAPPDATA%\Epic7AutoAssistant`，源码运行仍写在仓库目录 ——
+  规则在 `core/data_paths.py`，别在别处再写一份；
+- `modes.py` 的加载期自查要用 `inspect.getsource` 读源码，所以 spec 里
+  `module_collection_mode={"auto_game_unified": "py"}` **不能改成压 pyc**，
+  否则打包版一启动就 `OSError: could not get source code`。
+
 ## 新增一条路线的准入条件
 
 缺任何一样都算没做完：
