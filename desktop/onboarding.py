@@ -205,8 +205,34 @@ class ConsentDialog(tk.Toplevel):
         )
         self._refresh_buttons()
 
+        self._center_on(parent)
         self.grab_set()
         self.focus_set()
+
+    def _center_on(self, parent: tk.Misc) -> None:
+        """摆到父窗口中间偏上。
+
+        ⚠️ 不摆的话 Tk 会把新窗口丢在**屏幕左上角**（2026-10-19 打包装上后截图才看到），
+        用户第一眼看到的提示框贴着屏幕边缘，像没装好。
+
+        父窗口还没映射（宽高为 1）时按屏幕居中 —— 那不正常的调用方也需要一个像样的位置。
+        """
+        self.update_idletasks()
+        width = self.winfo_reqwidth()
+        height = self.winfo_reqheight()
+        parent_width = parent.winfo_width()
+        parent_height = parent.winfo_height()
+        if parent_width > 1 and parent_height > 1:
+            left = parent.winfo_rootx() + (parent_width - width) // 2
+            # 垂直方向偏上三分之一：对话框下方通常还有用户想看的按钮，不要压住
+            top = parent.winfo_rooty() + (parent_height - height) // 3
+        else:
+            left = (self.winfo_screenwidth() - width) // 2
+            top = (self.winfo_screenheight() - height) // 3
+        # 别把窗口中心摆到屏幕外（父窗口贴着边缘时会出现负坐标）
+        left = max(0, left)
+        top = max(0, top)
+        self.geometry(f"+{left}+{top}")
 
     # ── 排布小工具 ────────────────────────────────────────────────────────
     def _heading(self, parent: ttk.Frame, text: str, size: int) -> None:
