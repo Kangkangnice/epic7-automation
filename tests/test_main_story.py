@@ -76,6 +76,7 @@ class MainStoryTests(unittest.TestCase):
                 knights_weekly_reward_templates = object()
                 pet_gift_templates = object()
                 web_network_error_templates = object()
+                worldboss_support_reward_templates = object()
                 # ⚠️ 本文件三处 B023 抑制标记都是误报：events 虽然在外层循环里被重新赋值，
                 # 但这些 side_effect / on_call 都是**当轮同步调用**的（mock 在被调用的那一刻
                 # 就执行它），取不到下一轮的值。ruff 只看语法，看不出调用时机。
@@ -134,6 +135,13 @@ class MainStoryTests(unittest.TestCase):
                         "load_web_network_error_templates",
                         return_value=web_network_error_templates,
                     ),
+                    # 「世界首领辅助队伍奖励」弹窗（2026-10-19 接，第 10 个全局弹窗）。
+                    # 同一条规矩：这个 patch 与被写死的 kwargs 断言必须同进同出。
+                    patch.object(
+                        main_module,
+                        "load_worldboss_support_reward_templates",
+                        return_value=worldboss_support_reward_templates,
+                    ),
                     patch.object(main_module, "Epic7Navigator") as navigator_type,
                     patch.object(main_module, "HomeReturn") as home_return_type,
                 ):
@@ -174,6 +182,9 @@ class MainStoryTests(unittest.TestCase):
                     knights_weekly_reward_templates=knights_weekly_reward_templates,
                     pet_gift_templates=pet_gift_templates,
                     web_network_error_templates=web_network_error_templates,
+                    worldboss_support_reward_templates=(
+                        worldboss_support_reward_templates
+                    ),
                 )
                 self.assertEqual(["guard", "navigation"], events)
 
@@ -336,7 +347,9 @@ class MainStoryTests(unittest.TestCase):
             states=frozenset({"x"}),
             build_machine=lambda *_a, **_k: object(),
             runner_type=_SpyRunner,
-            # 钩子拿到的必须是**主线的仓库根**，不是 modes 自己猜的一个。
+            # 钩子拿到的必须是**主线的运行时产物根**，不是 modes 自己猜的一个。
+            # 源码运行时它就是包目录；打包安装后是 %LOCALAPPDATA%\Epic7AutoAssistant
+            # （竞技场的买票印记 ``arena_ticket_purchase.txt`` 落在它的 runtime_logs 下）。
             runner_options=lambda root, dry_run: {"收到的根": root, "干跑": dry_run},
         )
 
@@ -352,7 +365,7 @@ class MainStoryTests(unittest.TestCase):
                 window_backend="emulator",
             )
 
-        self.assertEqual(main_module.ROOT, seen["收到的根"])
+        self.assertEqual(main_module.DATA_ROOT, seen["收到的根"])
         self.assertIs(True, seen["干跑"])
         # recovery_gate 由 run_mode 自己给，不该被路线钩子挤掉。
         self.assertIn("recovery_gate", seen)

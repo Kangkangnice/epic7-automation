@@ -8,6 +8,17 @@
 - 当前帧：`runtime_diagnostics/epic7_<mode>/current.png`
 - 失败诊断：同一目录下带故障原因的 PNG
 
+这两处都在**运行产物根目录**下，根目录是哪个取决于你怎么跑的：
+
+| 怎么跑的 | 产物根目录 |
+| --- | --- |
+| 源码运行（`python -m auto_game_unified.main`） | 仓库里的 `auto_game_unified/` 目录 |
+| 安装版 / 便携版（`Epic7AutoAssistant.exe`） | `%LOCALAPPDATA%\Epic7AutoAssistant\` |
+| 设了环境变量 `EPIC7_DATA_DIR` | 该变量的值 |
+
+安装版不往安装目录写任何东西 —— 装进 `Program Files` 时那里是只读的，写进去会直接报权限错误。
+界面上「打开日志 / 打开诊断」两个按钮打开的就是上面这个目录，**不用自己去猜路径**。
+
 终端日志与文件日志同步输出。排障时重点看最后一次已执行动作、等待的目标页面、重试次数和停止原因。
 
 ## 退出码

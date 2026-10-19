@@ -10,6 +10,7 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, scrolledtext, ttk
 from typing import Callable
 
+from auto_game_unified.core.data_paths import data_root
 from auto_game_unified.desktop import theme
 from auto_game_unified.desktop.catalog import (
     DAILY_DESCRIPTION,
@@ -39,6 +40,8 @@ from auto_game_unified.desktop.worker import (
 ROOT = Path(__file__).resolve().parents[1]
 REPO_PARENT = ROOT.parent
 TEMPLATE_ROOT = ROOT / "games" / "epic7" / "templates"
+# 运行产物写到哪：源码运行时就是 ROOT，打包安装后是 %LOCALAPPDATA%\Epic7AutoAssistant。
+DATA_ROOT = data_root()
 STARTUP_ORDER_HINT = (
     "请先启动雷电模拟器并进入《第七史诗》，再启动本助手并检测环境。"
 )
@@ -321,6 +324,7 @@ class DesktopApp:
         *,
         controller: DesktopController,
         project_root: Path = ROOT,
+        data_root: Path | None = None,
         preflight_runner: Callable[..., PreflightReport] = run_preflight,
         route_validator: Callable[[str, Path], None] = validate_route_templates,
         thread_factory: Callable[..., threading.Thread] = threading.Thread,
@@ -331,6 +335,9 @@ class DesktopApp:
         self.root = root
         self.controller = controller
         self.project_root = project_root
+        # 运行产物（日志 / 诊断 / 诊断包）的根目录。打包安装后与 project_root 不是同一个：
+        # 安装目录可能只读，产物必须落到 %LOCALAPPDATA%。见 core/data_paths.py。
+        self.data_root = data_root or project_root
         self.template_root = TEMPLATE_ROOT
         self._preflight_runner = preflight_runner
         self._route_validator = route_validator
@@ -1184,7 +1191,7 @@ class DesktopApp:
         self.log_text.configure(state=tk.DISABLED)
 
     def _open_logs(self) -> None:
-        self._open_directory(self.project_root / "runtime_logs")
+        self._open_directory(self.data_root / "runtime_logs")
 
     def _primary_mode(self) -> str:
         """诊断相关操作用哪条路线 —— 取勾选的第一条（没勾就取列表第一条）。
@@ -1198,7 +1205,7 @@ class DesktopApp:
 
     def _open_diagnostics(self) -> None:
         self._open_directory(
-            self.project_root
+            self.data_root
             / "runtime_diagnostics"
             / f"epic7_{self._primary_mode()}"
         )
@@ -1217,7 +1224,7 @@ class DesktopApp:
         try:
             path = export_diagnostics(
                 self._primary_mode(),
-                root=self.project_root,
+                root=self.data_root,
                 output_dir=Path(selected),
             )
         except Exception as error:
@@ -1242,8 +1249,8 @@ class DesktopApp:
 
 def main() -> int:
     root = tk.Tk()
-    worker = WorkerController(repo_parent=REPO_PARENT)
+    worker = WorkerController(repo_parent=REPO_PARENT, data_root=DATA_ROOT)
     controller = DesktopController(worker=worker)
-    DesktopApp(root, controller=controller)
+    DesktopApp(root, controller=controller, data_root=DATA_ROOT)
     root.mainloop()
     return 0

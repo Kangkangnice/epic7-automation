@@ -37,7 +37,21 @@ import sys
 
 PACKAGE_DIR = Path(__file__).resolve().parents[1]
 WORKSPACE = PACKAGE_DIR.parent
-LOG_PATH = PACKAGE_DIR / "runtime_logs" / "desktop_launch.log"
+
+# 这个文件是**被直接双击 / 用 pythonw 运行**的，此时 sys.path 上没有工作区，
+# 包内的相对导入一律失败。所以先把工作区加进去，后面才能问到 data_root。
+if str(WORKSPACE) not in sys.path:
+    sys.path.insert(0, str(WORKSPACE))
+
+
+def _default_log_path() -> Path:
+    """启动日志放在运行产物根下（打包后是 %LOCALAPPDATA%，安装目录可能只读）。"""
+    from auto_game_unified.core.data_paths import data_root
+
+    return data_root() / "runtime_logs" / "desktop_launch.log"
+
+
+LOG_PATH = _default_log_path()
 
 # 这个日志只用来兜住「启动就失败」这种看不到的情况，不需要留历史，超过就滚动一份。
 _MAX_LOG_BYTES = 1 * 1024 * 1024

@@ -42,6 +42,7 @@ class WorkerController:
         self,
         *,
         repo_parent: Path,
+        data_root: Path | None = None,
         popen: Callable[..., subprocess.Popen[str]] = subprocess.Popen,
         log_path: Path | None = None,
         max_log_bytes: int = 5 * 1024 * 1024,
@@ -49,9 +50,12 @@ class WorkerController:
         snapshot_limit: int = 30,
     ) -> None:
         self.repo_parent = repo_parent
+        # 运行产物（工作进程日志、失败快照）的根目录。打包安装后由 app 传入
+        # %LOCALAPPDATA%\Epic7AutoAssistant；源码运行时退回包目录，与原来一致。
+        self.data_root = data_root or (repo_parent / "auto_game_unified")
         self._popen = popen
         self.log_path = log_path or (
-            repo_parent / "auto_game_unified" / "runtime_logs" / "desktop_worker.log"
+            self.data_root / "runtime_logs" / "desktop_worker.log"
         )
         self.max_log_bytes = max_log_bytes
         self.log_backups = log_backups
@@ -287,12 +291,12 @@ class WorkerController:
     def _snapshot_current_frame(self, exit_code: int) -> Path | None:
         if exit_code in {0, 2, 130}:
             return None
-        project_root = self.repo_parent / "auto_game_unified"
+        root = self.data_root
         # 一次可能跑了好几条路线，每条各写各的 ``epic7_<模式>/current.png``。
         # 出问题的那条一定是刚写过的那条 ⇒ 取**最新**的一张存下来，
         # 不去猜「是哪条路线挂的」（猜错会把别的路线的旧帧当成现场）。
         candidates = list(
-            (project_root / "runtime_diagnostics").glob("epic7_*/current.png")
+            (root / "runtime_diagnostics").glob("epic7_*/current.png")
         )
         if not candidates:
             return None
@@ -300,7 +304,7 @@ class WorkerController:
             source = max(candidates, key=lambda path: path.stat().st_mtime_ns)
         except OSError:
             return None
-        destination_dir = project_root / "runtime_diagnostics" / "desktop_worker"
+        destination_dir = root / "runtime_diagnostics" / "desktop_worker"
         destination_dir.mkdir(parents=True, exist_ok=True)
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
         route = source.parent.name.removeprefix("epic7_")
