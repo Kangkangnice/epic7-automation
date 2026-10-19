@@ -34,6 +34,7 @@ PACKAGING = Path(__file__).resolve().parent
 REPO = PACKAGING.parent
 APP_NAME = "Epic7AutoAssistant"
 SPEC = PACKAGING / "epic7_auto_assistant.spec"
+INSTALLER = PACKAGING / "installer.iss"
 DIST = PACKAGING / "dist"
 BUILD = PACKAGING / "build"
 
@@ -120,9 +121,41 @@ def sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def find_iscc() -> Path | None:
+    """找 Inno Setup 的命令行编译器。用户级安装优先（不需要管理员）。"""
+    candidates = [
+        Path(os.environ.get("LOCALAPPDATA", "")) / "Programs" / "Inno Setup 6" / "ISCC.exe",
+        Path(r"C:\Program Files (x86)\Inno Setup 6\ISCC.exe"),
+        Path(r"C:\Program Files\Inno Setup 6\ISCC.exe"),
+    ]
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def build_installer(version: str) -> Path | None:
+    """出安装包。没装 Inno Setup 6 就跳过 —— 便携版不依赖它。"""
+    iscc = find_iscc()
+    if iscc is None:
+        print("[build] 没装 Inno Setup 6，跳过安装包（便携版不受影响）", flush=True)
+        return None
+    print(f"[build] 安装包：{iscc}", flush=True)
+    subprocess.run(
+        [str(iscc), f"/DMyAppVersion={version}", str(INSTALLER)],
+        cwd=REPO,
+        check=True,
+        stdout=subprocess.DEVNULL,
+    )
+    archive = DIST / f"第七史诗自动助手-安装版-{version}.exe"
+    if not archive.is_file():
+        raise SystemExit(f"ISCC 返回成功但找不到安装包：{archive}")
+    return archive
+
+
 def main() -> int:
-    parser = argparse.ArgumentParser(description="构建第七史诗自动助手便携版")
-    parser.add_argument("--no-build", action="store_true", help="复用已有 dist，只重打 ZIP")
+    parser = argparse.ArgumentParser(description="构建第七史诗自动助手便携版与安装版")
+    parser.add_argument("--no-build", action="store_true", help="复用已有 dist，只重打包")
     parser.add_argument("--skip-smoke", action="store_true", help="跳过 exe 自检")
     args = parser.parse_args()
 
@@ -139,15 +172,21 @@ def main() -> int:
         raise SystemExit(f"没有可打包的产物：{exe}")
 
     archive = make_zip(version)
-    digest = sha256(archive)
+    installer = build_installer(version)
+
+    artifacts = [archive] + ([installer] if installer is not None else [])
     (DIST / "SHA256SUMS.txt").write_text(
-        f"{digest}  {archive.name}\n", encoding="utf-8"
+        "".join(f"{sha256(path)}  {path.name}\n" for path in artifacts),
+        encoding="utf-8",
     )
 
     print("")
     print(f"[build] 目录版：{DIST / APP_NAME}  ({directory_size(DIST / APP_NAME) / 2**20:.1f} MB)")
-    print(f"[build] 便携版：{archive}  ({archive.stat().st_size / 2**20:.1f} MB)")
-    print(f"[build] SHA256：{digest}")
+    print(f"[build] 便携版：{archive.name}  ({archive.stat().st_size / 2**20:.1f} MB)")
+    if installer is not None:
+        print(f"[build] 安装版：{installer.name}  ({installer.stat().st_size / 2**20:.1f} MB)")
+    for path in artifacts:
+        print(f"[build] SHA256 {path.name}：{sha256(path)}")
     return 0
 
 

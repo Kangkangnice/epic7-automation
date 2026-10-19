@@ -14,6 +14,14 @@
 
 这些素材在本仓库中仅用于**离线识别测试与模板匹配**这一技术目的，不随 MIT 许可对外授权，也不构成对权利人的任何主张。
 
+## 第三方组件
+
+- `packaging/languages/ChineseSimplified.isl` —— Inno Setup 安装界面的简体中文消息文件，
+  取自 [jrsoftware/issrc](https://github.com/jrsoftware/issrc) 的 `Files/Languages/Unofficial/`
+  目录（维护者 Zhenghan Yang，另见 https://github.com/kira-96/Inno-Setup-Chinese-Simplified-Translation）。
+  该文件按 Inno Setup 自身的许可随官方源码一同分发，本项目原样收录，未作修改。
+  它只影响安装向导的界面文字，不参与任何运行逻辑。
+
 ## 移除请求
 
 若你是权利人，认为本仓库中某项素材不应被收录，请通过以下任一渠道联系，我们会**在确认后删除**：
