@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 使用手册（先看这个）
+    url: https://github.com/Kangkangnice/epic7-automation/blob/main/docs/USER_GUIDE.md
+    about: 安装、路线说明、次数含义、退出码
+  - name: 故障排查
+    url: https://github.com/Kangkangnice/epic7-automation/blob/main/docs/TROUBLESHOOTING.md
+    about: 认不出页面、黑屏、点击没反应、卡在某一屏
+  - name: 参与贡献
+    url: https://github.com/Kangkangnice/epic7-automation/blob/main/CONTRIBUTING.md
+    about: 新增路线的准入条件、素材规范、本地跑测试

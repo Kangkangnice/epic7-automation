@@ -1,0 +1,118 @@
+name: Bug 报告（认不出 / 点错 / 卡住 / 崩溃）
+description: 某条路线在真实游戏画面上没跑通，或者桌面界面出问题
+title: "[Bug] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        提交前请先看一遍 [故障排查](https://github.com/Kangkangnice/epic7-automation/blob/main/docs/TROUBLESHOOTING.md)。
+
+        **认不出页面、卡住、安全停止**大多是因为游戏界面改版或环境不符合基准，日志里通常已经写了原因。
+        没有日志的「跑不了」几乎无法定位，请尽量按下面几项填全。
+
+  - type: dropdown
+    id: route
+    attributes:
+      label: 出问题的路线
+      options:
+        - 主线 story
+        - 竞技场 arena
+        - 远征 expedition
+        - 英雄合成 hero_synthesis
+        - 月塔 tower
+        - 狗粮 fodder
+        - 刷书签 shop_refresh
+        - 支线故事 side_story
+        - 月光剧场 moonlight_theater
+        - 活动挂机 survivor
+        - 世界首领战 world_boss
+        - 骑士团捐赠 knights_donation
+        - 迷宫强化石 labyrinth_stone
+        - 圣域收菜 sanctuary
+        - 社区签到 community
+        - 桌面界面本身（不涉及具体路线）
+        - 不确定
+    validations:
+      required: true
+
+  - type: dropdown
+    id: how
+    attributes:
+      label: 怎么启动的
+      options:
+        - 桌面助手（勾选路线后点开始任务）
+        - 命令行 python -m auto_game_unified.main
+        - 其它
+    validations:
+      required: true
+
+  - type: input
+    id: env
+    attributes:
+      label: 模拟器与分辨率
+      description: 模拟器名称与版本、渲染区分辨率、是否改过缩放
+      placeholder: 雷电 14，1920x1080，缩放 100%
+    validations:
+      required: true
+
+  - type: dropdown
+    id: exit-code
+    attributes:
+      label: 退出码（界面底部或日志末尾会写）
+      options:
+        - "0：完成目标次数"
+        - "1：运行故障 / 认不出页面 / 超时"
+        - "2：资源耗尽停止"
+        - "130：我手动停止的"
+        - 不知道
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: 复现步骤
+      description: 从哪一屏开始、勾了哪几条、填了几次
+      placeholder: |
+        1. 游戏停在大厅
+        2. 只勾「迷宫强化石」，次数默认
+        3. 点开始任务，约 40 秒后停下
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: 期望发生什么 / 实际发生了什么
+      placeholder: |
+        期望：买完强化石后自己回大厅
+        实际：停在商店页，日志写「连按 2 次 ESC 页面都没有变化」
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: 关键日志
+      description: |
+        粘出停下前的最后 20~30 行即可（`runtime_logs/epic7_<路线>.log`）。
+        **不要**粘整份日志，也不要粘环境变量。
+      render: text
+
+  - type: checkboxes
+    id: selfcheck
+    attributes:
+      label: 提交前自检
+      options:
+        - label: 我看过故障排查文档，确认环境符合「雷电 14 + 1920x1080」
+          required: true
+        - label: 我贴的截图/日志里没有游戏昵称、好友名、Token 等个人信息
+          required: true
+        - label: 我确认这不是「游戏刚更新、界面变了」导致的（如果是，请在下方说明）
+          required: false
+
+  - type: textarea
+    id: extra
+    attributes:
+      label: 补充信息
+      description: 诊断包（可选）、游戏版本、最近一次能正常跑的时间、其它你观察到的现象
