@@ -73,23 +73,42 @@ python auto_game_unified/tools/check.py --install-hook
 python packaging/build.py
 ```
 
-它会做四件事：PyInstaller 目录版打包 → 跑一次 `Epic7AutoAssistant.exe --self-check`
-（检查产物目录可写、模板在不在、十五条路线能不能全部加载）→ 打便携 ZIP → 记 SHA256。
+它会做五件事：PyInstaller 目录版打包 → 跑一次 `Epic7AutoAssistant.exe --self-check`
+（检查产物目录可写、模板在不在、十五条路线能不能全部加载）→ 打便携 ZIP →
+调 Inno Setup 出安装包 → 两个产物的 SHA256 一起写进 `SHA256SUMS.txt`。
 产物在 `packaging/dist/`（已 gitignore，不进历史）。
 
-安装包需要装 **Inno Setup 6**，本机没有时先跳过：
+`--no-build` 复用已有目录版，只重打 ZIP 与安装包；`--skip-smoke` 跳过自检。
+
+安装包要 **Inno Setup 6**。没装就自动跳过（便携版不依赖它），只出 ZIP。单独编也可以：
 
 ```powershell
-& "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" "/DMyAppVersion=0.1.0" packaging\installer.iss
+& "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe" "/DMyAppVersion=0.1.0" packaging\installer.iss
 ```
 
-两个容易踩的点：
+在 Git Bash 里调 ISCC 必须加 `MSYS2_ARG_CONV_EXCL='*'`，否则 `/D...` 会被当成路径转换，
+报 `You may not specify more than one script filename`。
+
+四个容易踩的点：
 
 - 打包版的运行产物写在 `%LOCALAPPDATA%\Epic7AutoAssistant`，源码运行仍写在仓库目录 ——
   规则在 `core/data_paths.py`，别在别处再写一份；
 - `modes.py` 的加载期自查要用 `inspect.getsource` 读源码，所以 spec 里
   `module_collection_mode={"auto_game_unified": "py"}` **不能改成压 pyc**，
-  否则打包版一启动就 `OSError: could not get source code`。
+  否则打包版一启动就 `OSError: could not get source code`；
+- `installer.iss` 必须是 **UTF-8 带 BOM**，否则 Inno 按 ANSI 读，中文全乱码；
+- `packaging/languages/ChineseSimplified.isl` **不要删**。Inno 官方发行版不带简体中文，
+  这份是从 issrc 的 `Files/Languages/Unofficial/` 取的第三方翻译，`installer.iss`
+  的 `[Languages]` 直接引它。删了脚本编不过。
+
+安装版的行为（改 `installer.iss` 前先确认这几点仍然成立）：
+
+- **按用户安装、不提权**：`PrivilegesRequired=lowest` 时 `{autopf}` 自动展开成
+  `%LOCALAPPDATA%\Programs\Epic7AutoAssistant`，全程不弹 UAC，非管理员账户也能装。
+  想装到 `Program Files` 得显式传 `/ALLUSERS`；
+- **卸载保留用户数据**：`%LOCALAPPDATA%\Epic7AutoAssistant` 下的日志与诊断不删，
+  那是用户自己的运行记录；
+- 打完包至少走一遍「装 → 跑 `--self-check` → 卸」，别只看 ISCC 返回 0 就当成能用。
 
 ## 新增一条路线的准入条件
 
