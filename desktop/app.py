@@ -512,6 +512,30 @@ class DesktopApp:
         )
         self.startup_hint_label.bind("<Configure>", self._wrap_at_own_width)
 
+        # 第三行：「能跑、但大概率点不动」的提示（目前只有一种 —— 模拟器权限比我们高，
+        # 点击会被 UIPI 拦掉）。平时用 grid_remove 收起，既不留空行也不占高度。
+        self.warning_var = tk.StringVar(value="")
+        self.warning_label = tk.Label(
+            bar,
+            textvariable=self.warning_var,
+            background=palette.surface,
+            foreground=palette.error,
+            font=self.theme.font(theme.TYPE_CAPTION, bold=True),
+            anchor="w",
+            justify="left",
+            wraplength=px(theme.WRAP_MIN_WIDTH),
+        )
+        self.warning_label.grid(
+            row=2,
+            column=1,
+            sticky="ew",
+            padx=(px(theme.SPACE_XL), px(theme.SPACE_LG)),
+            pady=(px(theme.SPACE_XS), 0),
+        )
+        self.warning_label.bind("<Configure>", self._wrap_at_own_width)
+        self.warning_label.grid_remove()
+
+
         backend_row = ttk.Frame(bar, style="Bar.TFrame")
         backend_row.grid(row=0, column=2, sticky="e")
         self.backend_var = tk.StringVar(value=self.controller.selected_backend)
@@ -997,8 +1021,22 @@ class DesktopApp:
         self.environment_label.configure(
             foreground=self.theme.palette.success if report.can_start else self.theme.palette.error
         )
+        self._show_warning(report.warning)
         self._append_log(f"环境检测：{report.message}")
         self._refresh_controls()
+
+    def _show_warning(self, warning: str | None) -> None:
+        """状态带第三行：只在「能跑、但大概率点不动」时出现，没有就收起。
+
+        ⚠️ 不要把它塞进 `environment_var` 同一个 label：那一行是「检测结果」，
+        用绿/红表示通过与否；把提示拼进去会让「通过」变绿的同时挂着一段红字。
+        """
+        if not warning:
+            self.warning_label.grid_remove()
+            return
+        self.warning_var.set(warning)
+        self.warning_label.grid()
+        self._append_log(f"注意：{warning}")
 
     def _start(self) -> None:
         """唯一的启动入口：勾了哪几条就跑哪几条，按勾选先后依次跑。

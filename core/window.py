@@ -177,6 +177,18 @@ class Epic7Window:
         ctypes.windll.user32.GetWindowThreadProcessId(window._hWnd, ctypes.byref(process_id))
         return psutil.Process(process_id.value).name().lower()
 
+    def process_id(self) -> int:
+        """窗口所属进程的 PID。
+
+        用来判断「对方权限是不是比我们高」（UIPI 会因此拦掉点击）——
+        见 ``core/elevation.py::privilege_warning_for``。
+        """
+        process_id = ctypes.c_ulong()
+        ctypes.windll.user32.GetWindowThreadProcessId(
+            self._window()._hWnd, ctypes.byref(process_id)
+        )
+        return int(process_id.value)
+
     def _rect(self) -> WindowRect:
         window = self._window()
         return WindowRect(window.left, window.top, window.width, window.height)
