@@ -9,6 +9,7 @@ import time
 import tkinter as tk
 from tkinter import filedialog, messagebox, scrolledtext, ttk
 from typing import Callable
+import webbrowser
 
 from auto_game_unified.core.data_paths import data_root
 from auto_game_unified.desktop import theme
@@ -35,6 +36,7 @@ from auto_game_unified.desktop.preflight import (
     run_preflight,
     validate_route_templates,
 )
+from auto_game_unified.desktop.update_check import UpdateInfo, check_for_update
 from auto_game_unified.desktop.worker import (
     RunRequest,
     WorkerController,
@@ -339,6 +341,7 @@ class DesktopApp:
         consent_required: bool = False,
         consent_probe: Callable[[Path], bool] = has_consent,
         consent_prompt: Callable[[tk.Misc, theme.Theme], bool] = prompt_consent,
+        update_check: Callable[[], UpdateInfo | None] | None = None,
     ) -> None:
         self.root = root
         self.controller = controller
@@ -356,6 +359,11 @@ class DesktopApp:
         self._consent_probe = consent_probe
         self._consent_prompt = consent_prompt
         self.consented = (not consent_required) or consent_probe(self.data_root)
+        # 版本检查：默认 None = 不查。只有 ``main()`` 传真的进来 —— 测试与嵌入式调用
+        # 不该在后台悄悄联网。它是一个**返回 ``UpdateInfo`` 或 ``None`` 的函数**，
+        # 网络与落盘都在它内部处理完（见 desktop/update_check.py）。
+        self._update_check = update_check
+        self._update_info: UpdateInfo | None = None
         self.template_root = TEMPLATE_ROOT
         self._preflight_runner = preflight_runner
         self._route_validator = route_validator
@@ -406,6 +414,9 @@ class DesktopApp:
         # 主窗口先画出来再弹须知：反过来的话，模态窗后面是一片空白，
         # 用户会以为自己只打开了对话框、根本没装上东西。
         self.root.after(150, self._ensure_consent)
+        # 版本检查排在须知之后、且更晚：先把用户该看到的（须知、主界面）画出来，
+        # 再在后台悄悄问一次 GitHub。它没有任何阻塞行为，慢也不会影响使用。
+        self.root.after(400, self._start_update_check)
         self.root.after(100, self._poll_worker)
 
     def _fit_initial_window(self) -> None:
@@ -534,6 +545,30 @@ class DesktopApp:
         )
         self.warning_label.bind("<Configure>", self._wrap_at_own_width)
         self.warning_label.grid_remove()
+
+        # 第四行：发现新版本。点了打开浏览器去发布页，**不下载、不替换任何文件** ——
+        # 「静默更新」等于在用户机器上执行新代码，那是另一件需要认真设计的事。
+        self.update_var = tk.StringVar(value="")
+        self.update_label = tk.Label(
+            bar,
+            textvariable=self.update_var,
+            background=palette.surface,
+            foreground=palette.primary,
+            font=self.theme.font(theme.TYPE_CAPTION),
+            anchor="w",
+            justify="left",
+            wraplength=px(theme.WRAP_MIN_WIDTH),
+            cursor="hand2",
+        )
+        self.update_label.grid(
+            row=3,
+            column=1,
+            sticky="ew",
+            padx=(px(theme.SPACE_XL), px(theme.SPACE_LG)),
+            pady=(px(theme.SPACE_XS), 0),
+        )
+        self.update_label.bind("<Button-1>", self._open_release_page)
+        self.update_label.grid_remove()
 
 
         backend_row = ttk.Frame(bar, style="Bar.TFrame")
@@ -1038,6 +1073,39 @@ class DesktopApp:
         self.warning_label.grid()
         self._append_log(f"注意：{warning}")
 
+    def _start_update_check(self) -> None:
+        """后台问一次有没有新版。**查不到什么都不做** —— 不报错、不弹窗。"""
+        if self._update_check is None:
+            return
+
+        def work() -> None:
+            try:
+                info = self._update_check()
+            except Exception:  # noqa: BLE001 —— 版本检查失败不该影响任何别的事
+                return
+            self.root.after(0, lambda: self._show_update(info))
+
+        self._thread_factory(
+            target=work, name="epic7-update-check", daemon=True
+        ).start()
+
+    def _show_update(self, info: UpdateInfo | None) -> None:
+        """有新版就在状态带留一行；没有就什么都不做（那一行本来就是收起的）。"""
+        self._update_info = info
+        if info is None:
+            return
+        self.update_var.set(
+            f"发现新版本 {info.latest}（当前 {info.current}），点这里查看"
+        )
+        self.update_label.grid()
+        self._append_log(f"发现新版本 {info.latest}（当前 {info.current}）：{info.url}")
+
+    def _open_release_page(self, _event: object = None) -> None:
+        """点那行字 → 用系统浏览器打开发布页。不下载、不安装、不改任何文件。"""
+        if self._update_info is None:
+            return
+        webbrowser.open(self._update_info.url)
+
     def _start(self) -> None:
         """唯一的启动入口：勾了哪几条就跑哪几条，按勾选先后依次跑。
 
@@ -1361,7 +1429,11 @@ def main() -> int:
     controller = DesktopController(worker=worker)
     # 这里是**用户双击打开**的那条路，也是全项目唯一开 `consent_required` 的地方。
     DesktopApp(
-        root, controller=controller, data_root=DATA_ROOT, consent_required=True
+        root,
+        controller=controller,
+        data_root=DATA_ROOT,
+        consent_required=True,
+        update_check=lambda: check_for_update(PRODUCT_VERSION, DATA_ROOT),
     )
     root.mainloop()
     return 0
