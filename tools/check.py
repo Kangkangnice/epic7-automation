@@ -107,6 +107,9 @@ ROUTE_KEYWORDS = {
     "arena": "arena",
     "expedition": "expedition",
     "fodder": "fodder",
+    # 支线故事：主模块 `side_story.py`，模板在 `templates/side_story/`。
+    # `route_of()` 按**文件名**查表，所以这里一条就够；测试文件名也带 `side_story`。
+    "side_story": "side_story",
     "hero": "hero",
     "hero_synthesis": "hero",
     "shop_refresh": "shop_refresh",
@@ -133,6 +136,9 @@ ROUTE_KEYWORDS = {
     # 顺带 `test_epic7_tower` / `test_tower_resume` / `test_tower_evidence` 三个测试
     # 文件名里也都带 `tower`，定向判定能一并挑中。
     "tower": "tower",
+    # 月光剧场：主模块 `moonlight_theater.py` + 证据 `evidence/moonlight_theater.py`
+    # + 测试 `test_moonlight_theater*.py`，三者文件名都带这个词 ⇒ 一条就够。
+    "moonlight_theater": "moonlight_theater",
 }
 
 DOC_SUFFIXES = (".md", ".txt", ".json", ".yaml", ".yml")
