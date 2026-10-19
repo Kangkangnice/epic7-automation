@@ -1,0 +1,68 @@
+name: 功能建议（新增一条日常路线 / 改进现有路线）
+description: 想让助手帮你做某件每天重复的事，或改进现有路线
+title: "[建议] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        本项目的取舍标准是**「这件事是不是每天都要做、而且很枯燥」**，不是「能不能做到」。
+        请先说明场景，再说明做法 —— 只写「加一个 XX 功能」通常没法评估。
+
+        ⚠️ 本项目只做 **PVE 视觉辅助**：不读内存、不改客户端、不做反检测，**不接受 PVP 自动对战**。
+
+  - type: textarea
+    id: pain
+    attributes:
+      label: 你现在每天要手动做什么
+      description: 具体到点击顺序和耗时
+      placeholder: |
+        每天要进骑士团 → 骑士团活动 → 资源支援，先请求精灵之花，再逐个支援 8 个团员，
+        全程约 2 分钟，每周还要去任务页领 3 个档位奖励。
+    validations:
+      required: true
+
+  - type: dropdown
+    id: kind
+    attributes:
+      label: 这是哪种需求
+      options:
+        - 新增一条路线
+        - 改进现有路线（跑得更稳 / 多做一步 / 少点一次）
+        - 界面或使用体验
+        - 文档
+    validations:
+      required: true
+
+  - type: dropdown
+    id: irreversible
+    attributes:
+      label: 这条流程里有没有不可逆的消耗
+      description: 这一点直接决定能不能做、以及要加多少保护
+      options:
+        - 有：消耗钻石 / 天空石 / 人民币等付费货币
+        - 有：消耗体力、生命之叶、金币等可再获得的资源
+        - 有：会永久改变账号状态（合成、传送、消耗角色）
+        - 没有，只是查看和领取
+        - 不确定
+    validations:
+      required: true
+
+  - type: dropdown
+    id: evidence
+    attributes:
+      label: 你能提供真机截图吗
+      description: |
+        模板识别必须从**当前客户端**的真实画面裁切。没有真机帧，这条路线做不了 ——
+        用旧版本截图或网上图片冒充，会在下一次改版后失效。
+      options:
+        - 能，可以按需要的页面逐张提供
+        - 能提供一部分
+        - 不能
+    validations:
+      required: true
+
+  - type: textarea
+    id: detail
+    attributes:
+      label: 补充说明
+      description: 入口在哪、每天/每周限制几次、什么时候刷新、有没有必须先满足的条件
