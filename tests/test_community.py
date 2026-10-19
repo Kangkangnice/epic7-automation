@@ -1291,11 +1291,138 @@ class CommunityStateMachineTests(unittest.TestCase):
 
     # ---- 认不出就不动 ----
 
-    def test_unrecognized_screen_raises_instead_of_clicking(self):
-        blank = np.full((1920, 1080, 3), 128, np.uint8)
+    # ---- 陌生页：先退出去，而不是干等到超时（2026-10-18 立）----
+
+    def test_an_unrecognized_page_is_left_by_pressing_back_not_by_clicking(self):
+        """⚠️ 认不出这一页 ⇒ **按返回键退出它**，既不盲点、也不原地干等。
+
+        两件事必须同时守住：
+
+        - 9-26 删掉的是「认不出就点屏幕中央」（用户抓包「眼睛瞎了一直点中间」）——
+          这里不许复辟：唯一的手段是 ``press_back``；
+        - 10-18 卡死两分半的形状是「认不出 ⇒ 什么都不做 ⇒ 等满 150 秒」——
+          这里也不许：**两帧确认之后就动手**。
+
+        前几帧只确认不动手，是为了排除「点完页面、H5 正在画下一屏」那一段
+        （那时整个画面本来就认不出，误按返回会把一次正常转场按掉）。
+        日志里「点击 → 目标页确认」的间隔实测是 4~5 秒，所以确认帧数**至少 2**，
+        当前常量见 ``cm.STRANGER_WAIT_FRAMES``。
+        """
         machine = self.machine(state=cm.CommunityState.FEED)
-        with self.assertRaises(cm.UnrecognizedCommunityScreen):
-            machine.next_action(blank)
+        frame = fixture("stranger_account_page_live_20261018")
+        self.assertGreaterEqual(
+            cm.STRANGER_WAIT_FRAMES,
+            2,
+            "确认帧数降到 2 以下，一次正常的换页转场就会被当成陌生页、按返回按掉",
+        )
+        for index in range(cm.STRANGER_WAIT_FRAMES):
+            self.assertIsNone(
+                machine.next_action(frame),
+                f"第 {index + 1} 帧就动手了 —— 确认期内一律不动",
+            )
+        self.assertEqual(machine.state, cm.CommunityState.RECOVERING)
+        action = machine.next_action(frame)
+        self.assertIsNotNone(action, "确认完两帧还不出手 —— 又变成干等 150 秒")
+        assert action is not None
+        self.assertEqual(action.name, "stranger_back")
+        self.assertTrue(action.press_back, "陌生页的出路是系统返回键，不是在某处点一下")
+
+    def test_the_escape_ladder_is_bounded_then_fails_loudly(self):
+        """三级走完还退不出去 ⇒ 响亮报错。
+
+        ⚠️ **不许无限按返回**：连按会把这个社区**整个退出去**（代价是重进 90 秒），
+        比现在的错还贵。阶梯的内容与长度都是常量，这里核的就是常量本身。
+        """
+        machine = self.machine(state=cm.CommunityState.FEED)
+        frame = fixture("stranger_account_page_live_20261018")
+        issued: list[str] = []
+        error: Optional[BaseException] = None
+        for _ in range(40):
+            try:
+                action = machine.next_action(frame)
+            except cm.UnrecognizedCommunityScreen as exc:
+                error = exc
+                break
+            if action is not None:
+                issued.append(action.name)
+        self.assertEqual(
+            issued,
+            ["stranger_back", "stranger_back", "stranger_back_arrow"],
+            "逃生阶梯变了 —— 第 3 级原本是给「返回键按不动」的页（我的任务页）留的",
+        )
+        self.assertIsNotNone(error, "三级用尽必须抛错收手，不许一直按下去")
+        assert error is not None
+        self.assertIn("最像的三页", str(error), "报错里必须带上真实分数（诊断用）")
+
+    def test_coming_back_to_the_feed_rewinds_the_failed_step(self):
+        """退回已知页之后，**那一步要退回来重做**，不是整轮作废。
+
+        不退的话：``task_step`` 已经翻到「下一步该在帖子详情」，而人在信息流 ⇒
+        ``_drive_task`` 判「中间那一下没点中」⇒ 整轮任务作废 ⇒ 白烧一次尝试机会。
+        10-18 那次就是「点歪一次 = 一轮白做 = 一天只有三次机会」。
+        """
+        machine = self.machine(state=cm.CommunityState.FEED)
+        machine.active_task = "browse"
+        machine.task_step = 1  # task_browse_1（第 1 步 tap_post）刚出手
+        stranger = fixture("stranger_account_page_live_20261018")
+        for _ in range(cm.STRANGER_WAIT_FRAMES):
+            self.assertIsNone(machine.next_action(stranger))
+        action = machine.next_action(stranger)
+        assert action is not None, "确认期过完就得动手，不许一直不动"
+        self.assertEqual(action.name, "stranger_back", "前提：先得发出逃生动作")
+        again = machine.next_action(fixture("feed_list_live_20261006"))
+        self.assertEqual(machine.state, cm.CommunityState.FEED)
+        self.assertIsNotNone(again)
+        assert again is not None
+        self.assertEqual(
+            again.name,
+            "task_browse_1",
+            "回退之后应当重做刚才那一步；名字不对说明 task_step 没退回来",
+        )
+
+    def test_the_same_step_is_never_rewound_twice(self):
+        """同一步只准回退一次。
+
+        回退 + 又点歪 = 再回退 ⇒ 那两件事可以互相抵消成一个死循环
+        （点歪 → 退回 → 再点同一个位置 → 再点歪…）。所以第二次必须不退了，
+        交给「我的任务」对账去判。
+        """
+        machine = self.machine(state=cm.CommunityState.FEED)
+        machine.active_task = "browse"
+        machine.task_step = 1
+        machine._stranger_task = "browse"
+        machine._stranger_step = 1
+        machine._stranger_rewound_for = 0  # 第 0 步已经退过一次
+        machine.state = cm.CommunityState.RECOVERING
+        page = machine.observe(fixture("feed_list_live_20261006"))
+        machine._on_recovered(page)
+        self.assertEqual(machine.task_step, 1, "同一步被回退了两次 —— 会变成死循环")
+
+    def test_an_unrecognized_frame_still_reports_how_close_each_page_was(self):
+        """⚠️ 诊断：认不出时**必须留下真实分数**。
+
+        以前这里只有 ``PageJudgement("unknown", 0.0, ...)`` —— 那个 ``0.0`` 是
+        **写死的**，``observations`` 在 unknown 时必然是空列表。于是 11 天 15 次失败
+        的日志**字字相同**：``最高分 0.0000；已知观察=[]``。
+        事后想查「是陌生页还是差 0.01」根本查不到 —— 每次修都只能猜。
+
+        ``scores`` 是同一趟匹配顺带留下的全部真实分（没有多跑匹配），
+        这条用例钉的就是「它不许再是空的」。
+        """
+        screen = fixture("stranger_account_page_live_20261018")
+        page = cp.judge_page(screen, self.templates)
+        self.assertEqual(page.name, "unknown", "这一帧必须仍然认不出（它就是账号主页）")
+        self.assertEqual(page.observations, (), "不许有锚点过阈，否则它就不是陌生页了")
+        self.assertGreaterEqual(
+            len(page.scores), len(cp.ANCHORS), "全部锚点的真实分数都要留下来"
+        )
+        top = page.scores[0]
+        self.assertGreater(top.confidence, 0.10, "最像的那一页也该有个非零的真实分")
+        self.assertLess(
+            top.confidence,
+            cp.THRESHOLD,
+            "它仍然没过阈 —— 「差多少」正是这条要给的数字",
+        )
 
     # ---- 预览不许改状态 ----
 

@@ -437,6 +437,10 @@ class ProjectLayoutTests(unittest.TestCase):
             "feed_cards_all_todo_live_20261007.png",
             "image_viewer_live_20261008.png",
             "feed_grid_at_top_live_20261009.png",
+            # 2026-10-18：点歪进「作者账号主页」那次事故的现场帧。
+            # 它同时是两件事的唯一物证：① 陌生页逃生门的入口用例；
+            # ② 「作者名行跨度 251px < 500」那条通栏门槛的反例。
+            "stranger_account_page_live_20261018.png",
         }
         fixture_dir = ROOT / "tests" / "fixtures" / "epic7_community"
         self.assertEqual(expected, {path.name for path in fixture_dir.glob("*.png")})

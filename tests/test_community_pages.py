@@ -481,14 +481,29 @@ class CommunityPageTests(unittest.TestCase):
             f"现找出来的 {found} 底下那条带不满足「白底 + 有字 + 不是图片」",
         )
 
-    def test_locate_feed_post_tap_keeps_the_hint_when_it_already_was_text(self):
-        """**原来点得对的时候行为不变** —— 现找只在盲坐标落进死区时才改判。"""
-        screen = fixture("feed_list_live_20261006")
-        hint = cm.FEED_FIRST_POST
-        found = cp.locate_feed_post_tap(screen, hint)
-        self.assertIsNotNone(found)
-        assert found is not None
-        self.assertLess(abs(found[1] - hint[1]), cp.FEED_TAP_SLAB * 2)
+    def test_locate_feed_post_tap_keeps_the_hint_when_it_already_was_body(self):
+        """盲坐标**已经落在通栏正文上**时，行为必须一点不变。
+
+        ⚠️ 2026-10-18 换判据之后，「原来点得对」这件事的含义变了：
+        以前是「落在一条像文字的带上」，现在是「落在一条**通栏**的带上」。
+        用 ``feed_list`` + ``FEED_FIRST_POST`` 已经测不出这条了 —— 那一帧的
+        ``(400, 1450)`` 其实落在**标题行**（跨度 255），新判据会正确地把它挪到正文段落上
+        （详见 ``test_the_author_row_is_not_clickable_even_though_it_is_text``）。
+        所以这里换一帧、换一个 hint，专门守「该不动就别动」。
+        """
+        screen = fixture("feed_cards_mixed_live_20261007")
+        hint = (400, 1060)
+        self.assertTrue(
+            cp.feed_tap_band_is_post_body(
+                screen, hint[1] - cp.FEED_TAP_SLAB // 2, cp.FEED_TAP_SLAB
+            ),
+            "这条用例的前提是 hint 正好压在正文段落上；前提不成立就换样本，别删用例",
+        )
+        self.assertEqual(
+            cp.locate_feed_post_tap(screen, hint),
+            hint,
+            "hint 本来就压在正文上，现找却把它挪开了 —— 等于换了一套点法",
+        )
 
     def test_locate_feed_post_tap_abstains_on_the_image_viewer(self):
         """查看器那一屏上**一条正文带都没有** ⇒ 必须返回 ``None``。
@@ -507,6 +522,120 @@ class CommunityPageTests(unittest.TestCase):
             cp.locate_feed_post_tap(
                 np.zeros((1080, 1920, 3), np.uint8), cm.FEED_FIRST_POST
             )
+
+
+class FeedPostTapRulerTests(unittest.TestCase):
+    """「可点的东西必须唯一」—— 2026-10-18 点歪进作者主页之后立的尺子。
+
+    ## 它守的是什么
+
+    ``feed_tap_band_is_text``（白底 + 有字 + 不是图片）在信息流上**放行两类完全不同的东西**：
+    正文段落，和**作者名行**。两者外观一样、语义完全不同：
+
+    - 点正文段落 ⇒ 打开这一篇帖子（要的）；
+    - 点作者名行 ⇒ 打开**作者账号主页**（一个没登记过的页面）⇒ 认不出 ⇒ 卡死 150 秒。
+
+    事故现场：同一轮实跑、同一个坐标 ``(400, 1444)``，18:30:33 点开帖子、
+    18:30:57（往下滑 800px 之后）点开作者主页。**坐标和判据都没变，变的是底下那行是谁。**
+
+    ## 尺子怎么立的
+
+    不是再调一次阈值（那不叫唯一性，只叫改概率），而是换一维**能证伪**的量：
+    这一行的字**横跨多宽**。卡片里只有正文段落通栏，作者名/标题/标签都只有一小条。
+    ``FEED_TAP_SPAN_MIN`` 上面那张实测表：跨度 ≤399 的 63 条全是短行、
+    ≥569 的 116 条全是正文、**400~549 一条都没有**。
+    """
+
+    def setUp(self):
+        self.screen = fixture("feed_cards_mixed_live_20261007")
+
+    def test_the_author_row_is_not_clickable_even_though_it_is_text(self):
+        """⚠️ 现场帧上的**作者行**：前三条判据全过，第 4 条必须拦住。
+
+        这一帧 y≈910~947 是卡片 2 的作者行（头像 + 「第七史诗」+ 日期）。
+        ``feed_tap_band_is_text`` 在 y=912/918/924/930/936 上**全部为真** ——
+        这就是当初把它放进去的原因，也是事故的全部原因。
+        """
+        passed_as_text = [
+            top
+            for top in range(906, 942, 6)
+            if cp.feed_tap_band_is_text(self.screen, top, cp.FEED_TAP_SLAB)
+        ]
+        self.assertGreaterEqual(
+            len(passed_as_text),
+            3,
+            "现场帧上的作者行居然不是「像文字」了 —— 这条用例的前提变了，先复核再改",
+        )
+        for top in passed_as_text:
+            with self.subTest(top=top):
+                self.assertFalse(
+                    cp.feed_tap_band_is_post_body(self.screen, top, cp.FEED_TAP_SLAB),
+                    f"y={top} 的作者名行被判成「可点的正文」—— 点下去就是作者主页，"
+                    "整条路线会卡死在那个认不出的页面上",
+                )
+        # 横跨只有两个字那么宽 —— 这才是它和正文的**真实差别**
+        self.assertLess(cp.feed_tap_band_span(self.screen, 918, cp.FEED_TAP_SLAB), 300)
+
+    def test_the_body_paragraph_right_below_is_clickable(self):
+        """同一帧、同一张卡片里往下几十像素就是正文段落 —— 它**必须**仍然可点。
+
+        ⚠️ 少了这一条，把第 4 条写成 ``span >= 890``（正文全挡掉）也能绿。
+        那样「浏览帖子」会变成永远找不到可点的地方 ⇒ 任务直接作废。
+        """
+        body = 1060
+        self.assertTrue(
+            cp.feed_tap_band_is_text(self.screen, body, cp.FEED_TAP_SLAB),
+            "前提：这一条在旧判据下也是可点的（说明拦它的只能是第 4 条）",
+        )
+        self.assertTrue(
+            cp.feed_tap_band_is_post_body(self.screen, body, cp.FEED_TAP_SLAB)
+        )
+        self.assertGreater(
+            cp.feed_tap_band_span(self.screen, body, cp.FEED_TAP_SLAB), 600
+        )
+
+    def test_the_span_threshold_sits_in_an_empty_gap_on_every_fixture(self):
+        """门槛必须坐在**一条都没有**的空档里，两边都留够余量（不许贴边）。
+
+        这条是「尺子本身准不准」的护栏：全库信息流帧、整条搜索区逐 12px 扫，
+        把被旧判据放行的带的跨度分成「短行」与「正文」两堆，然后要求门槛
+        比短行最大者高至少 50px、比正文最小者低至少 50px。
+
+        ⚠️ 这正是 2026-10-15 那一课的通用版本：**换判据必须同时复核阈值**，
+        而且要看「真阳性地板 ↔ 必须挡住那一类的天花板」之间的间隔，
+        不是看自己调的这版的分数好不好看。
+        """
+        spans: list[int] = []
+        for name in (
+            "feed_list_live_20261006",
+            "feed_before_signin_live_20261007",
+            "feed_after_signin_live_20261007",
+            "feed_cards_all_todo_live_20261007",
+            "feed_cards_mixed_live_20261007",
+            "feed_grid_at_top_live_20261009",
+        ):
+            screen = fixture(name)
+            y0, height = cp.FEED_TAP_STRIP[1], cp.FEED_TAP_STRIP[3]
+            for top in range(y0, y0 + height - cp.FEED_TAP_SLAB + 1, cp.FEED_TAP_SLAB):
+                if cp.feed_tap_band_is_text(screen, top, cp.FEED_TAP_SLAB):
+                    spans.append(cp.feed_tap_band_span(screen, top, cp.FEED_TAP_SLAB))
+        self.assertGreaterEqual(len(spans), 100, "扫到的带太少，这条护栏在空转")
+        short = [span for span in spans if span < cp.FEED_TAP_SPAN_MIN]
+        body = [span for span in spans if span >= cp.FEED_TAP_SPAN_MIN]
+        self.assertTrue(short, "一条短行都没扫到 —— 阈值可能低到没有区分力")
+        self.assertTrue(body, "一条正文都没扫到 —— 阈值可能高到把正文也挡了")
+        self.assertGreaterEqual(
+            cp.FEED_TAP_SPAN_MIN - max(short),
+            50,
+            f"门槛离短行天花板（{max(short)}px）太近，贴边了；空档两端是 "
+            f"{max(short)} ~ {min(body)}",
+        )
+        self.assertGreaterEqual(
+            min(body) - cp.FEED_TAP_SPAN_MIN,
+            50,
+            f"门槛离正文地板（{min(body)}px）太近，贴边了；空档两端是 "
+            f"{max(short)} ~ {min(body)}",
+        )
 
 
 if __name__ == "__main__":
