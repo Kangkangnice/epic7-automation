@@ -415,3 +415,24 @@ def test_failure_snapshot_comes_from_the_route_that_wrote_last(tmp_path):
     assert snapshot is not None
     assert snapshot.read_bytes() == b"new story frame"
     assert snapshot.name.endswith("_story_exit_23.png")
+
+
+def test_data_root_keeps_artifacts_out_of_the_install_dir(tmp_path):
+    """装进只读目录时，工作进程的日志与失败快照必须落到用户目录。
+
+    这是「安装目录视为只读」的唯一可验证形态：跑完之后安装目录里**一个字节都不该多**。
+    """
+    install = tmp_path / "Program Files" / "Epic7AutoAssistant"
+    data = tmp_path / "LocalAppData" / "Epic7AutoAssistant"
+    worker = WorkerController(repo_parent=install, data_root=data)
+
+    assert worker.log_path == data / "runtime_logs" / "desktop_worker.log"
+
+    current = data / "runtime_diagnostics" / "epic7_story" / "current.png"
+    current.parent.mkdir(parents=True)
+    current.write_bytes(b"frame")
+    snapshot = worker._snapshot_current_frame(1)
+
+    assert snapshot is not None
+    assert snapshot.parent == data / "runtime_diagnostics" / "desktop_worker"
+    assert not install.exists()

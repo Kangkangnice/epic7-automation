@@ -7,6 +7,7 @@ from typing import Any, Callable, Optional
 
 import numpy as np
 
+from auto_game_unified.core.data_paths import data_root
 from auto_game_unified.core.hotkey import WindowsPStopHotkey
 from auto_game_unified.core.qqbot import send_qqbot_c2c
 from auto_game_unified.core.recovery import RecoveryGate
@@ -50,6 +51,10 @@ from auto_game_unified.games.epic7.global_popups import (
 
 
 ROOT = Path(__file__).resolve().parent
+# 运行产物（日志、诊断）的根目录。源码运行时与 ROOT 是同一个目录；
+# 打包安装后变成 %LOCALAPPDATA%\Epic7AutoAssistant（安装目录只读，写不进去）。
+# 规则见 core/data_paths.py。
+DATA_ROOT = data_root()
 # 中文名从 ``modes.MODE_SPECS`` 派生（那边是唯一来源），本模块不再自己写一份。
 # 以前这里是第二张表，与 ``navigation.MODE_LABELS`` 各自维护 ⇒ 实测漂移过
 # （survivor 一处有、一处没有）。
@@ -96,7 +101,7 @@ def _notify_live(
     if error is not None:
         lines.insert(1, f"原因：{error}")
         lines.append(
-            f"诊断目录：{ROOT / 'runtime_diagnostics' / f'epic7_{mode}'}"
+            f"诊断目录：{DATA_ROOT / 'runtime_diagnostics' / f'epic7_{mode}'}"
         )
     title = titles[status]
     body = "\n".join(lines)
@@ -138,8 +143,8 @@ def _build_runtime(
         wake=game_window.wake,
         back=game_window.back,
         dry_run=dry_run,
-        diagnostic_dir=ROOT / "runtime_diagnostics" / f"epic7_{mode}",
-        log_path=ROOT / "runtime_logs" / f"epic7_{mode}.log",
+        diagnostic_dir=DATA_ROOT / "runtime_diagnostics" / f"epic7_{mode}",
+        log_path=DATA_ROOT / "runtime_logs" / f"epic7_{mode}.log",
         stop_requested=None if dry_run else stop_requested,
         # 跑到一半的通道自检（导航「连续点不动」时会调）。干跑与 PC 后端不装配：
         # 干跑不该去动 adb 服务，PC 后端也没有这条通道。
@@ -490,7 +495,7 @@ def run_mode(
     # 路线级的额外构造参数（比如竞技场实跑要落两个盘）。同样按注册表取，
     # 这里不认具名路线 —— 新增路线需要专属参数时，在 ``modes.py`` 注册项旁边写。
     if spec.runner_options is not None:
-        runner_options.update(spec.runner_options(ROOT, dry_run))
+        runner_options.update(spec.runner_options(DATA_ROOT, dry_run))
     runner = spec.runner_type(machine, runtime, **runner_options)
     _install_finish_home(runner, home_return, runtime, mode=spec.name)
     try:
