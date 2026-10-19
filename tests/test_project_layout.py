@@ -105,6 +105,11 @@ class ProjectLayoutTests(unittest.TestCase):
             "results.png",
             "complete.png",
             "next_stage.png",
+            # 「无法前往下一个关卡，请选择下方按钮」—— 重复打同一关时的常态落点。
+            # 两张来自**不同关卡、不同背景**（10-18 第 3 章白色悬崖森林 / 10-14 室内），
+            # 是「重新进行」判据能不能泛化的唯一物证；只留一张就退化成记图。
+            "retry_stage_live_20261018.png",
+            "retry_stage_live_20261014.png",
         }
         fixture_dir = ROOT / "tests" / "fixtures" / "epic7_story"
         self.assertEqual(expected, {path.name for path in fixture_dir.glob("*.png")})
@@ -210,6 +215,11 @@ class ProjectLayoutTests(unittest.TestCase):
             # 与上面那张 #1 是同一屏的两个箱子：实跑日志里 #1 已被领掉（亮度比 1.011），
             # #2 还亮着（3.197）却没被领 —— 顺序反了、判据又没接线，两件事一起犯。
             "worldboss_home_chest2_claimable.png",
+            # 2026-10-19 08:11 每日任务「世界首领战 ✗」的**原始诊断帧**：同僚团员借了
+            # 辅助队伍并拿到奖励，进主页时弹「世界首领辅助队伍奖励」。它把底页压暗 ⇒
+            # 「选择队伍」认不出来 ⇒ 导航转场等到超时。
+            # 是那个新弹窗两个锚点（标题 + 点击关闭）的唯一正例。
+            "worldboss_support_reward_live_20261019.png",
         }
         fixture_dir = ROOT / "tests" / "fixtures" / "epic7_world_boss"
         self.assertEqual(expected, {path.name for path in fixture_dir.glob("*.png")})

@@ -76,6 +76,12 @@ DAILY_TASKS: tuple[DailyTask, ...] = (
     DailyTask(mode="shop_refresh"),
     DailyTask(mode="labyrinth_stone"),
     DailyTask(mode="arena"),
+    # 月光剧场：**周的**内容、但放在日常里跑（用户 2026-10-17 拍板）。
+    # 每天顺手看一眼是有意义的：免费额度是「存量」——别人先领完就没了，
+    # 所以越早跑越好。没有额度时它只走「大厅 → 支线故事 → 看见入口没绿 F」，
+    # 三秒收工，且出口是 ``ResourceExhausted``（汇总里记成 ``resource``，
+    # 不是 ✗ 失败）。有额度时才变成「看几幕剧情」的长流程，所以放整张表的最后。
+    DailyTask(mode="moonlight_theater"),
 )
 
 

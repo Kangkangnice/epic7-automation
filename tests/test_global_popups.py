@@ -16,6 +16,7 @@ from auto_game_unified.games.epic7.global_popups import (
     find_network_retry,
     find_pet_gift_badge,
     find_web_network_error_close,
+    find_worldboss_support_reward_close,
     load_friend_request_templates,
     load_friendship_points_templates,
     load_gift_support_templates,
@@ -25,6 +26,7 @@ from auto_game_unified.games.epic7.global_popups import (
     load_network_reconnect_templates,
     load_pet_gift_templates,
     load_web_network_error_templates,
+    load_worldboss_support_reward_templates,
 )
 from auto_game_unified.core.runtime import ManualStop, Runtime
 
@@ -655,6 +657,134 @@ def test_global_guard_dismisses_knights_weekly_reward_popup():
     assert 900 <= clicks[0][0] <= 1020
     assert 820 <= clicks[0][1] <= 875
     assert any("动作=close-knights-weekly-reward" in line for line in logs)
+
+
+def test_worldboss_support_reward_popup_is_recognized_from_both_anchors():
+    """「世界首领辅助队伍奖励」弹窗：标题 + 「点击关闭」双锚点都要命中。
+
+    现场帧是 2026-10-19 08:11 那次「世界首领战 ✗」的诊断图 —— 它盖在**世界首领战
+    主页**上，把右下角「选择队伍」压得认不出来，导航转场一路等到超时。
+    """
+    popup = _world_boss_screen("worldboss_support_reward_live_20261019.png")
+    templates = load_worldboss_support_reward_templates(NAVIGATION_TEMPLATES)
+
+    match = find_worldboss_support_reward_close(
+        popup, templates.title, templates.close
+    )
+
+    assert match is not None
+    # 底部「点击关闭」实测中心 (960, 813)。
+    assert 900 <= match.center[0] <= 1020
+    assert 780 <= match.center[1] <= 850
+
+
+def test_worldboss_support_reward_popup_requires_title_and_close_anchor():
+    """两个锚点缺一不可：标题挡住「点击关闭」的乱命中，关闭点给出点击位置。"""
+    popup = _world_boss_screen("worldboss_support_reward_live_20261019.png")
+    templates = load_worldboss_support_reward_templates(NAVIGATION_TEMPLATES)
+    without_title = popup.copy()
+    without_title[262:342, 700:1220] = 0
+    without_close = popup.copy()
+    without_close[770:860, 860:1160] = 0
+
+    assert (
+        find_worldboss_support_reward_close(
+            without_title, templates.title, templates.close
+        )
+        is None
+    )
+    assert (
+        find_worldboss_support_reward_close(
+            without_close, templates.title, templates.close
+        )
+        is None
+    )
+
+
+def test_worldboss_support_reward_popup_rejects_the_page_underneath_it():
+    """点掉弹窗后的世界首领战主页不能还被当成弹窗（否则会一直点下去）。"""
+    templates = load_worldboss_support_reward_templates(NAVIGATION_TEMPLATES)
+
+    for name in (
+        "worldboss_home.png",
+        "worldboss_home_chest_claimable.png",
+        "worldboss_home_exhausted.png",
+        "knights_home_after_popup.png",
+    ):
+        assert (
+            find_worldboss_support_reward_close(
+                _world_boss_screen(name), templates.title, templates.close
+            )
+            is None
+        ), name
+
+
+def test_worldboss_support_reward_title_is_exclusive_against_sibling_popups():
+    """标题必须在**同类**弹窗之间也能分开 —— 它们共用同一块标题 ROI。
+
+    全库 280 张横屏帧实测：标题跨页最高 **0.3320**（骑士团签到弹窗），
+    门槛 0.80 的余量 0.47；而「点击关闭」那行灰字在 `reward_popup` 上就有
+    **0.8993** ⇒ 那一个点**绝不能单独当判据**（这里一并钉住）。
+    """
+    templates = load_worldboss_support_reward_templates(NAVIGATION_TEMPLATES)
+
+    for name in (
+        "knights_signin_popup.png",
+        "gift_support_popup.png",
+        "knights_weekly_reward_popup.png",
+    ):
+        assert (
+            find_worldboss_support_reward_close(
+                _world_boss_screen(name), templates.title, templates.close
+            )
+            is None
+        ), name
+
+    reward_popup = np.asarray(
+        Image.open(
+            ROOT / "tests" / "fixtures" / "epic7_hero" / "reward_popup.png"
+        ).convert("RGB")
+    )[:1132, :1982]
+    assert (
+        find_worldboss_support_reward_close(
+            reward_popup, templates.title, templates.close
+        )
+        is None
+    ), "「点击关闭」在别的领奖弹窗上分数很高，标题必须把它挡住"
+
+
+def test_global_guard_dismisses_worldboss_support_reward_popup():
+    """守卫必须能把这一层消费掉，露出世界首领战主页（10-19 那次失败的现场）。"""
+    popup = _world_boss_screen("worldboss_support_reward_live_20261019.png")
+    home = _world_boss_screen("worldboss_home_chest_claimable.png")
+    screens = iter([popup, popup, home])
+    clicks: list[tuple[int, int]] = []
+    logs: list[str] = []
+    clock = FakeClock()
+    runtime = Runtime(
+        lambda: next(screens),
+        clicks.append,
+        monotonic=clock.now,
+        emit=logs.append,
+    )
+    runtime.set_capture_guard(
+        Epic7GlobalPopupGuard(
+            load_network_reconnect_templates(TEMPLATES),
+            worldboss_support_reward_templates=(
+                load_worldboss_support_reward_templates(NAVIGATION_TEMPLATES)
+            ),
+            sleep=clock.sleep,
+            now=clock.now,
+        )
+    )
+
+    received = runtime.capture()
+
+    assert np.array_equal(received, home)
+    assert len(clicks) == 1
+    assert 900 <= clicks[0][0] <= 1020
+    assert 780 <= clicks[0][1] <= 850
+    assert any("动作=close-worldboss-support-reward" in line for line in logs)
 
 
 def test_global_guard_requires_two_frames_then_returns_recovered_screen():

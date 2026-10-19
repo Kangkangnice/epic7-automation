@@ -9,7 +9,7 @@ from PIL import Image
 
 from auto_game_unified.core.battle_supervisor import BattleOutcome
 from auto_game_unified.core.matcher import Match
-from auto_game_unified.core.runtime import Runtime
+from auto_game_unified.core.runtime import ManualStop, Runtime
 from auto_game_unified.games.epic7.story import StoryAction, StoryRunner, StoryState, StoryStateMachine, build_story_templates
 
 
@@ -255,6 +255,96 @@ class StoryRunnerTests(unittest.TestCase):
 
         self.assertEqual(1, completed)
         self.assertEqual([], clicks)
+
+    def test_the_replay_screen_stops_without_clicking_when_the_target_is_reached(self):
+        """打满目标轮数就停在「重新进行」这一页，不再点第 N+1 次。
+
+        用户要的是「打 10 次」；多点的这一下会白烧一轮。
+        """
+        screens = iter(fixture("retry_stage_live_20261018") for _ in range(4))
+        clicks: list[tuple[int, int]] = []
+        runner = StoryRunner(
+            StoryStateMachine(
+                build_story_templates(TEMPLATES),
+                initial_state=StoryState.WAIT_RESULTS,
+            ),
+            Runtime(lambda: next(screens), clicks.append, emit=lambda _: None),
+            sleep=lambda _: None,
+        )
+
+        completed = runner.run(max_cycles=1)
+
+        self.assertEqual(1, completed)
+        self.assertEqual([], clicks, "已经打满目标轮数还点了「重新进行」")
+
+    def test_confirm_landing_on_the_replay_page_is_not_dropped(self):
+        """21:14 实跑：结算确认之后直接落到「无法前往下一关」，主循环把动作吞了。
+
+        主循环的转场逻辑是：新页面不在上一个动作的 ``target_pages`` 里 ⇒ 判「这一下没点成功」
+        ⇒ 把状态机刚给出的 ``retry_stage`` **整个丢掉**，干等 45 秒后报「转场超时」。
+        日志长得像「点了没反应」，根因是**契约漏了一个落点**。
+
+        所以这条用例要同时钉住两件事：
+        ① 转场被承认为**完成**；② 那颗按钮**真的被点了**。
+        只看 ① 会把「日志漂亮了、其实没点」放过去。
+        """
+        script = ["results"] * 3 + ["retry_stage_live_20261018"] * 3 + ["assistant"] * 3
+        frames = [fixture(name) for name in script]
+
+        def capture() -> np.ndarray:
+            if not frames:
+                raise ManualStop("脚本演完了")
+            return frames.pop(0)
+
+        logs: list[str] = []
+        runtime = Runtime(capture, lambda _point: None, emit=logs.append)
+        runner = StoryRunner(
+            StoryStateMachine(
+                build_story_templates(TEMPLATES),
+                initial_state=StoryState.WAIT_RESULTS,
+            ),
+            runtime,
+            sleep=lambda _: None,
+        )
+        runner._ACTION_RETRY_SECONDS = 0
+
+        with self.assertRaises(ManualStop):
+            runner.run(max_cycles=2)
+
+        joined = "\n".join(logs)
+        self.assertIn(
+            "完成=results_confirm 目标页面=无法前往下一关",
+            joined,
+            "主循环仍然认为「结算确认没转场成功」—— 新动作会被吞掉",
+        )
+        self.assertIn(
+            "执行点击 动作=retry_stage",
+            joined,
+            "「重新进行」压根没点（动作被转场逻辑吞了）",
+        )
+        self.assertIn(
+            "执行点击 动作=select_team",
+            joined,
+            "重打之后没接上「选择队伍」—— 下一轮进不去",
+        )
+
+    def test_the_replay_action_declares_every_way_a_new_round_starts(self):
+        """重打的落点必须把「下一轮开头的几种页面」都声明上。
+
+        实测狗粮 replay → 「准备战斗」→ 选助手；万一有的关卡直接到选队伍，
+        漏一个就又是 45 秒转场超时。这里钉住这四个名字，删一个就红。
+        """
+        machine = StoryStateMachine(
+            build_story_templates(TEMPLATES), initial_state=StoryState.WAIT_RESULTS
+        )
+
+        action = machine.next_action(fixture("retry_stage_live_20261018"))
+
+        assert action is not None
+        self.assertEqual(
+            {"关卡入口", "剧情关卡入口", "助手选择", "队伍准备"},
+            set(action.target_pages),
+        )
 
     def test_same_action_stops_after_four_failed_clicks(self):
         clicks: list[tuple[int, int]] = []

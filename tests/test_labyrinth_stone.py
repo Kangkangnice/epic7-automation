@@ -342,7 +342,9 @@ def test_shop_skips_the_rows_that_are_already_bought(monkeypatch):
 
     ⚠️ 2026-09-25 第二次真机事故：这里原来断言的是**相对亮度**，真机上它把
     「已售罄」判成「还能买」⇒ 对着一行写着 0/1 的行连点 4 次、整条路线卡死。
-    现在改判「按钮区域的最亮像素」：亮按钮有纯白「购买」字（255），灰按钮只有 ~145。
+    ⚠️ 2026-10-19 第三次事故：改判「按钮区域的最亮像素」之后又被**一颗**游离白像素
+    骗过（底边被裁那行的按钮块混进邻行白字碎片，239 > 200）。
+    现在判「按钮上有多少颗白字像素」：亮行 817~844 颗，售罄行 0~3 颗。
     """
     machine = build_machine(entered=True, teleported=True)
 
@@ -351,13 +353,60 @@ def test_shop_skips_the_rows_that_are_already_bought(monkeypatch):
     # 反证：把「有没有白字」这条判据撤掉（门槛设为 0），已经卖完的行就会被当成还能买。
     #
     # ⚠️ 2026-09-26 实测（``runtime_logs/_probe_shop_rows.py``）：门槛归零后它选中的是
-    # **(1792, 408)** 那一行，**最亮像素只有 142** —— 正是「已售罄」的灰按钮
-    # （还能买的按钮是 255 ⇒ 142 就是事故现场）。
+    # **(1792, 408)** 那一行，**白字像素只有 0 颗** —— 正是「已售罄」的灰按钮
+    # （还能买的按钮是 800 多颗 ⇒ 0 就是事故现场）。
     # 不是早先断言的 (1789,186)：那一行的按钮在这一帧上另有判据挡着，拿它做反证
     # 等于拿一张不存在的后果去吓人 —— 反证必须指着**真会发生的那个后果**。
-    monkeypatch.setattr(labyrinth_stone, "BUY_BUTTON_LIVE_V", 0.0)
+    monkeypatch.setattr(labyrinth_stone, "BUY_BUTTON_WHITE_PIXELS", 0)
     machine = build_machine(entered=True, teleported=True)
     assert machine.next_action(frame("shop_mostly_bought")).point == (1792, 408)
+
+
+def test_a_clipped_sold_out_row_is_not_bought(monkeypatch):
+    """**钉住 2026-10-19 真机事故**：窗口越界 + 「取最亮一颗」⇒ 对着售罄行连点 4 次。
+
+    现场帧 ``shop_clipped_bottom_row_live_20261019``（= 那次 ``retry_exhausted_buy-stone``
+    的诊断图）：商店列表滚到顶上半行被裁，最底下那行「下级装备强化石 0/1」的按钮被
+    窗口底边切掉，而它**右边**紧挨着下一行天头被切断的白字碎片（纯白）。
+
+    旧窗口 ``BUY_PAD_HALF`` = ±(80,32) 比按钮模板（116×46）左右各宽 22px ⇒ 把碎片圈了
+    进来，一整块 143 的灰按钮被量出 **239**（>200）⇒ 判「还亮着」⇒ 点 (1792,1061)
+    四次 ⇒ 重试耗尽 ⇒ 回家流程又在商店页上耗满 120 秒。
+
+    新口径（窗口收进模板 footprint + 数白字像素）在这帧上的读数：
+    亮行 **817 / 835 / 844** 颗，售罄行 **0** 颗，被裁的售罄行 **3** 颗（阈 400）。
+    """
+    from auto_game_unified.games.epic7.evidence import labyrinth_stone as evidence
+
+    screen = frame("shop_clipped_bottom_row_live_20261019")
+
+    # 同时把「旧口径在这帧上确实会翻车」钉住 —— 反证必须指着真会发生的后果。
+    half_w, half_h = evidence.BUY_PAD_HALF
+    cx, cy = 1792, 1061
+    wide_window = screen[cy - half_h : cy + half_h, cx - half_w : cx + half_w]
+    assert int(wide_window.max(axis=2).max()) == 239, "旧口径应当被邻行碎片抬到 239"
+
+    assert evidence.button_white_pixels(screen, (cx, cy)) == 3
+
+    machine = build_machine(entered=True, teleported=True)
+    action = machine.next_action(screen)
+
+    assert action.name == "scroll-shop"
+    assert machine.buy_armed is False
+
+
+def test_the_white_pixel_floor_and_ceiling_leave_a_wide_gap():
+    """真阳性地板 ↔ 必须挡住的天花板：阈值必须两头都留够，不许贴着任何一边。"""
+    from auto_game_unified.games.epic7.evidence import labyrinth_stone as evidence
+
+    live = evidence.button_white_pixels(frame("shop"), (1792, 299))
+    clipped = evidence.button_white_pixels(
+        frame("shop_clipped_bottom_row_live_20261019"), (1792, 1061)
+    )
+
+    assert live >= evidence.BUY_BUTTON_WHITE_PIXELS * 2, "真阳性地板离阈值太近"
+    assert clipped <= 10, "必须挡住的那类行给出了太多白像素"
+    assert evidence.BUY_BUTTON_WHITE_PIXELS > clipped * 40, "离噪声太近"
 
 
 def test_a_row_with_no_white_text_is_sold_out_even_at_the_old_ratio(
@@ -375,7 +424,7 @@ def test_a_row_with_no_white_text_is_sold_out_even_at_the_old_ratio(
     旧阈值是 1.20 ⇒ 售罄行**全部**被判成「还能买」。这条用例把那个后果钉住：
     在售罄帧上，无论旧阈值调到哪里，新判据都必须给出 ``scroll-shop``。
     """
-    monkeypatch.setattr(labyrinth_stone, "BUY_BUTTON_LIVE_V", 200.0)
+    monkeypatch.setattr(labyrinth_stone, "BUY_BUTTON_WHITE_PIXELS", 400)
     machine = build_machine(entered=True, teleported=True)
 
     action = machine.next_action(frame("shop_mostly_bought"))
@@ -402,7 +451,7 @@ def test_shop_scrolls_a_few_times_and_then_leaves(monkeypatch):
     ⚠️ 没有「一行都买不到」的真帧，所以这里用把「有没有白字」的阈值拉到 999
     的办法**模拟**。它证明的是「收尾这条分支接上了」，不是阈值本身。
     """
-    monkeypatch.setattr(labyrinth_stone, "BUY_BUTTON_LIVE_V", 999.0)
+    monkeypatch.setattr(labyrinth_stone, "BUY_BUTTON_WHITE_PIXELS", 999.0)
     machine = build_machine(entered=True, teleported=True)
 
     names = [machine.next_action(frame("shop")).name for _ in range(5)]
@@ -413,7 +462,7 @@ def test_shop_scrolls_a_few_times_and_then_leaves(monkeypatch):
 
 def test_leaving_the_shop_says_how_many_stone_rows_were_sold_out(monkeypatch):
     """收工时要说清「认出来几行是强化石、只是都卖完了」，别让人以为没认出来。"""
-    monkeypatch.setattr(labyrinth_stone, "BUY_BUTTON_LIVE_V", 999.0)
+    monkeypatch.setattr(labyrinth_stone, "BUY_BUTTON_WHITE_PIXELS", 999.0)
     machine = build_machine(entered=True, teleported=True)
 
     reasons = [machine.next_action(frame("shop")).reason for _ in range(4)]
@@ -541,7 +590,7 @@ def test_runner_walks_the_whole_route_and_closes_one_pass(monkeypatch):
     「今天全买过了」，因为手上的真帧每次都还有东西可买。它走的是收尾分支
     （下滑 → 离开），买东西那一支由上面的用例单独钉住。
     """
-    monkeypatch.setattr(labyrinth_stone, "BUY_BUTTON_LIVE_V", 999.0)
+    monkeypatch.setattr(labyrinth_stone, "BUY_BUTTON_WHITE_PIXELS", 999.0)
     machine = build_machine()
     runtime = FakeRuntime(_script(*FULL_CHAIN))
     runner = LabyrinthStoneRunner(

@@ -39,6 +39,7 @@ def test_catalog_lists_every_route_in_menu_order():
         "expedition",
         "tower",
         "fodder",
+        "side_story",
         "shop_refresh",
         "survivor",
         "world_boss",
@@ -46,10 +47,13 @@ def test_catalog_lists_every_route_in_menu_order():
         "labyrinth_stone",
         "sanctuary",
         "community",
+        "moonlight_theater",
     ]
     assert route_by_name("hero_synthesis").status == "正式功能"
     assert route_by_name("story").status == "正式功能"
-    assert sum(route.experimental for route in ROUTES) == 9
+    # 正式功能只有两条（英雄合成 / 主线），其余全标「实验功能」——
+    # 这个数字涨到 11 是因为 2026-10-17 新增了月光剧场。
+    assert sum(route.experimental for route in ROUTES) == 11
 
 
 def test_community_is_experimental_and_warns_about_daily_limits():
@@ -161,15 +165,18 @@ def test_knights_donation_is_experimental_and_fixed_to_one_pass():
 
 
 def test_groups_are_defined_in_display_order():
-    """三个分组名与它们的展示顺序。
+    """四个分组名与它们的展示顺序。
 
     ⚠️ 这里**写死**中文名与顺序，不从实现里读 —— 否则改实现时断言跟着改，
     等于没护栏。分组的顺序就是面板上从上到下的顺序。
+
+    依据用户 2026-10-18 的原话：「最终就是四类：每日、按需、赛季、活动」。
     """
-    assert catalog.GROUP_DAILY == "日常"
+    assert catalog.GROUP_DAILY == "每日"
+    assert catalog.GROUP_ONDEMAND == "按需"
     assert catalog.GROUP_SEASON == "赛季"
     assert catalog.GROUP_EVENT == "活动"
-    assert catalog.GROUPS == ("日常", "赛季", "活动")
+    assert catalog.GROUPS == ("每日", "按需", "赛季", "活动")
 
 
 def test_every_route_belongs_to_exactly_one_known_group():
@@ -180,23 +187,27 @@ def test_every_route_belongs_to_exactly_one_known_group():
 def test_group_membership_is_what_the_user_asked_for():
     """分组归属：**写死一份真值表**，不遍历实现。
 
-    依据用户 2026-10-08 的原话：
-      - 「这些都属于赛季，就它有时候会轮换」⇒ 远征 + 月塔；
-      - 「狗粮算日常」；
-      - 「活动单独一组」⇒ survivor。
+    依据用户 2026-10-18 的口述：
+      - 「英雄合成、主线、狗粮、支线故事、月光剧场，这几个都是按需」；
+      - 「剩下的就是每日」；
+      - 赛季（会轮换的远征 + 月塔）与活动（survivor）沿用 2026-10-08 的结论。
     """
     expected = {
         catalog.GROUP_DAILY: [
-            "hero_synthesis",
-            "story",
             "arena",
-            "fodder",
             "shop_refresh",
             "world_boss",
             "knights_donation",
             "labyrinth_stone",
             "sanctuary",
             "community",
+        ],
+        catalog.GROUP_ONDEMAND: [
+            "hero_synthesis",
+            "story",
+            "fodder",
+            "side_story",
+            "moonlight_theater",
         ],
         catalog.GROUP_SEASON: ["expedition", "tower"],
         catalog.GROUP_EVENT: ["survivor"],
@@ -208,11 +219,11 @@ def test_group_membership_is_what_the_user_asked_for():
 def test_grouped_routes_returns_display_order_and_skips_empty_groups():
     grouped = catalog.grouped_routes()
 
-    assert [group for group, _ in grouped] == ["日常", "赛季", "活动"]
-    # 三组摊平之后必须一条不漏、一条不重。
+    assert [group for group, _ in grouped] == ["每日", "按需", "赛季", "活动"]
+    # 四组摊平之后必须一条不漏、一条不重。
     #
     # ⚠️ 断言的是**集合**相等，不是「等于 `ROUTES` 的书写顺序」—— 两者本就
-    # **故意不同**：分组渲染会把「赛季」那两条提到「日常」全组之后，
+    # **故意不同**：分组渲染会把「赛季」那两条提到「按需」全组之后，
     # 而 `ROUTES` 里 `expedition` 写在 `fodder` 前面。要求顺序一致等于
     # 要求「分组不起作用」，是自相矛盾的。
     flattened = [route.mode for _group, routes in grouped for route in routes]
@@ -229,37 +240,3 @@ def test_grouped_routes_returns_display_order_and_skips_empty_groups():
 def test_routes_in_group_rejects_an_unknown_group():
     with pytest.raises(ValueError):
         catalog.routes_in_group("不存在的分组")
-
-
-def test_select_all_covers_every_route():
-    """「全选」条数对得上，且**顺序 = 面板顺序**（这是批量勾选后的执行顺序）。"""
-    modes = catalog.selectable_modes()
-
-    assert sorted(modes) == sorted(route.mode for route in ROUTES)
-    assert modes == tuple(
-        route.mode
-        for _group, routes in catalog.grouped_routes()
-        for route in routes
-    )
-
-
-def test_select_all_without_events_skips_exactly_the_event_group():
-    """「全选（不含活动）」= 全量减去「活动」那一组。
-
-    ⚠️ 这里**独立算**出「该少哪些」再比对，不是拿 `EXCLUDED_FROM_SELECT_ALL`
-    去验证它自己（那是循环论证）。
-    """
-    everything = catalog.selectable_modes()
-    without_events = catalog.selectable_modes(include_events=False)
-
-    event_modes = {route.mode for route in catalog.routes_in_group(catalog.GROUP_EVENT)}
-    assert event_modes == {"survivor"}
-    assert set(everything) - set(without_events) == event_modes
-    # 顺序也要保持面板顺序（批量勾选后「执行顺序 = 看到的顺序」）。
-    assert list(without_events) == [
-        mode for mode in everything if mode not in event_modes
-    ]
-
-
-def test_only_the_event_group_is_excluded_from_select_all():
-    assert catalog.EXCLUDED_FROM_SELECT_ALL == frozenset({"活动"})

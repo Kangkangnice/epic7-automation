@@ -14,7 +14,6 @@ import webbrowser
 from auto_game_unified.core.data_paths import data_root
 from auto_game_unified.desktop import theme
 from auto_game_unified.desktop.catalog import (
-    DAILY_DESCRIPTION,
     DAILY_LABEL,
     PRODUCT_NAME,
     PRODUCT_VERSION,
@@ -22,7 +21,7 @@ from auto_game_unified.desktop.catalog import (
     RouteInfo,
     grouped_routes,
     route_by_name,
-    selectable_modes,
+    routes_in_group,
     visible_backends,
 )
 from auto_game_unified.desktop.diagnostics import export_diagnostics
@@ -82,17 +81,27 @@ STOP_POLL_SECONDS = 0.5
 MIN_WINDOW_WIDTH = 900
 MIN_WINDOW_HEIGHT = 600
 # 初始尺寸的上限：**不跟着屏幕撑满**。屏幕再大也别一上来就糊住整个桌面。
-# 依据：用户要的是「日志看得清」而不是「窗口尽量大」——宽度超过约 1280 之后，
+# 依据：用户要的是「日志看得清」而不是「窗口尽量大」——宽度超过约 1200 之后，
 # 任务卡与日志区都不再受益（日志行本身是短文本），反而挤掉旁边能开的别的窗口。
-INITIAL_MAX_WIDTH = 1280
+#
+# ⚠️ 2026-10-18 从 1280 收到 1200（用户：「整体的分辨率往下调一点，我不太好拖动」）。
+# 同年 10-18 撤掉卡头那三颗批量按钮之后，说明文字拿回了整行宽度，1200 宽也不折行。
+INITIAL_MAX_WIDTH = 1200
 # 初始尺寸占屏幕的上限比例：**宽高分开**。
 #
 # ⚠️ 为什么不做成同一个比例（2026-10-09 调）：用户的诉求是「日志看得清」，
 # 而日志**只吃高度**、不吃宽度。宽度压低能让旁边开别的窗口（用户在看日志时
 # 多半要对照游戏/编辑器），高度压低却直接把日志挤到最小值 160px。
-# ⇒ 宽度压到 85%（且不超过 ``INITIAL_MAX_WIDTH``），高度给到 92% 让日志有地方长。
+# ⇒ 宽度压到 85%（且不超过 ``INITIAL_MAX_WIDTH``），高度给到 88% 让日志有地方长。
+# ⚠️ 2026-10-18 的高度调过两次，两次都是**先量再定**：
+#   ① 先试 0.86 —— 不够，内容自然高度约 1009 逻辑像素，而本机逻辑屏幕只有 1000，
+#      日志会被挤到下限以下。于是先收紧间距（不动字号）省出约 200 设备像素；
+#   ② 卡头那一条（「每日任务」+ 操作说明）按用户要求整块删掉，又省 76 设备像素，
+#      reqheight 落到 **1743**，0.88（=1760）才装得下且日志不挨饿。
+# ⚠️ 再往下压就会开始吃日志的高度了 —— 真要更矮，得先动 `theme.LOG_MIN_HEIGHT`，
+# 那等于跟用户当年那句「日志看不清」对着干，别擅自改。
 INITIAL_SCREEN_RATIO_WIDTH = 0.85
-INITIAL_SCREEN_RATIO_HEIGHT = 0.92
+INITIAL_SCREEN_RATIO_HEIGHT = 0.88
 
 
 def fit_window_size(
@@ -134,6 +143,14 @@ def fit_window_size(
     height = min(height, int(screen[1] * INITIAL_SCREEN_RATIO_HEIGHT))
     # ④ 再兜一次下限（屏幕极小时 ①~③ 可能把它压到不可用）。
     return max(width, floor_width), max(height, floor_height)
+
+
+def _all_selected(routes: tuple[RouteInfo, ...], selection: list[str]) -> bool:
+    """这一组的路线是不是**全都**勾上了（空组按「没勾」算）。
+
+    组标题那颗勾选框显示的就是这个值 —— 它是**回算出来的**，不是「上次按了什么」。
+    """
+    return bool(routes) and all(route.mode in selection for route in routes)
 
 
 class DesktopController:
@@ -200,39 +217,41 @@ class DesktopController:
             ]
         self.selection.append(mode)
 
-    def select_all(self, *, include_events: bool = True) -> None:
-        """三个批量按钮的**唯一实现**：把 ``selection`` 换成一整批。
+    def select_group(self, group: str) -> None:
+        """整组勾上：把该组每一条都加进选择，**已勾的跳过、新来的排在末尾**。
 
-        批量动作用 ``toggle`` 逐条点会有两个毛病：① 每点一条都要跑一遍
-        ``standalone_only`` 的互斥逻辑，勾到「活动」时前面已勾好的会被清空，
-        最终结果取决于**遍历顺序**（纯属巧合）；② 顺序由遍历决定，而「勾选先后
-        就是执行顺序」是用户拍板的语义 —— 批量勾完的顺序应当就是**面板上看到的
-        顺序**，不能听遍历的。
+        这是界面上「点分类名 = 整组勾上」的唯一实现（2026-10-18 取代了原来卡头那
+        三颗「全选 / 全选（不含活动）/ 取消全选」按钮）。
 
-        所以这里**整体替换**：直接给出一份有序清单 —— `catalog.selectable_modes`
-        **按面板顺序**排好（分组顺序 + 组内书写顺序），正好就是用户看到的那份，
-        不逐条走 `toggle`。
+        ⚠️ 为什么是「追加到末尾」而不是像旧的 ``select_all`` 那样整体替换：用户拍板
+        的语义是「勾选先后就是执行顺序」。用户点某一组的勾选框，等于**现在才开始勾
+        这一组** ⇒ 它们排到已勾的后面。整体替换会把用户先前手挑的顺序抹掉。
 
-        ⚠️ 互斥仍然成立：「全选（不含活动）」本来就把活动排除在外；而
-        「全选」把活动一起勾上时，`standalone_only` 的路线与其它路线谁都不能共存 ——
-        由于活动组**只有一条**，此时结果就是「只勾活动这一条」。这不是特例，是
-        `toggle` 里那条互斥规则在批量语境下的自然结论。
+        ⚠️ ``standalone_only``（目前只有「活动」）互斥仍然成立，且是**双向**的：
+        - 这一组里只要有一条只能单独跑 ⇒ 结果**就只剩这一组**（组内其他路线照常勾）；
+        - 这一组没有这种路线 ⇒ 先把 selection 里那条「只能单独跑」的踢掉，再追加。
         """
         if self.worker.running:
             raise RuntimeError("运行期间不能修改任务")
-        wanted = selectable_modes(include_events=include_events)
-        if any(route_by_name(mode).standalone_only for mode in wanted):
-            # 批里有只能单独跑的（活动）：它与非活动路线互斥 ⇒ 只留它自己。
-            wanted = tuple(
-                mode for mode in wanted if route_by_name(mode).standalone_only
-            )
-        self.selection = list(wanted)
+        routes = routes_in_group(group)
+        if not routes:
+            return
+        if any(route.standalone_only for route in routes):
+            self.selection = [route.mode for route in routes]
+            return
+        self.selection = [
+            name for name in self.selection if not route_by_name(name).standalone_only
+        ]
+        for route in routes:
+            if route.mode not in self.selection:
+                self.selection.append(route.mode)
 
-    def clear_selection(self) -> None:
-        """「取消全选」：一条都不勾，回到「每次自己挑」的初始状态。"""
+    def clear_group(self, group: str) -> None:
+        """整组取消：只把这一组的路线从选择里拿掉，**别组的一条都不动**。"""
         if self.worker.running:
             raise RuntimeError("运行期间不能修改任务")
-        self.selection.clear()
+        dropping = {route.mode for route in routes_in_group(group)}
+        self.selection = [name for name in self.selection if name not in dropping]
 
     def set_cycles(self, mode: str, cycles: int) -> None:
         """改某条路线的次数（界面上那个输入框）。
@@ -378,6 +397,10 @@ class DesktopApp:
         # 勾选框文字里的序号上（见 ``_route_text``）。
         self._route_buttons: dict[str, ttk.Checkbutton] = {}
         self._cycle_inputs: dict[str, ttk.Spinbox] = {}
+        # 一个分组一个勾选框（``group`` → 控件 / 变量）。点它就是整组勾 / 整组取消，
+        # 语义是「这一组是否全部选中」——见 ``_build_group_header``。
+        self._group_buttons: dict[str, ttk.Checkbutton] = {}
+        self._group_vars: dict[str, tk.BooleanVar] = {}
         self.route_vars: dict[str, tk.BooleanVar] = {}
         self.cycle_vars: dict[str, tk.StringVar] = {}
         self._backend_buttons: list[ttk.Radiobutton] = []
@@ -449,9 +472,14 @@ class DesktopApp:
         self.root.minsize(*floor)
 
     def _build_layout(self) -> None:
-        """上下三段的骨架。间距全部走令牌，**没有裸数字**。"""
+        """上下三段的骨架。间距全部走令牌，**没有裸数字**。
+
+        ⚠️ 2026-10-18 整体紧凑一档（用户：「整体往下调一点」）：外框 24→16、
+        区块间距 16→12、任务卡内边距与格/标题行距各收一档。**字号一个都没动** ——
+        用户以前明确说过「日志看不清」，紧凑只能靠间距，不能靠缩字。
+        """
         px = self.theme.px
-        outer = ttk.Frame(self.root, style="App.TFrame", padding=px(theme.SPACE_XL))
+        outer = ttk.Frame(self.root, style="App.TFrame", padding=px(theme.SPACE_LG))
         outer.grid(row=0, column=0, sticky="nsew")
         self.root.rowconfigure(0, weight=1)
         self.root.columnconfigure(0, weight=1)
@@ -459,7 +487,7 @@ class DesktopApp:
         # 只有**日志**那一行吃掉多余高度 ⇒ 窗口拉高时长大的是日志，不是留白。
         outer.rowconfigure(3, weight=1)
 
-        gap = px(theme.SPACE_LG)
+        gap = px(theme.SPACE_MD)
         self._build_status_bar(outer).grid(row=0, column=0, sticky="ew")
         self._task_panel = self._build_task_panel(outer)
         self._task_panel.grid(row=1, column=0, sticky="ew", pady=(gap, 0))
@@ -570,7 +598,6 @@ class DesktopApp:
         self.update_label.bind("<Button-1>", self._open_release_page)
         self.update_label.grid_remove()
 
-
         backend_row = ttk.Frame(bar, style="Bar.TFrame")
         backend_row.grid(row=0, column=2, sticky="e")
         self.backend_var = tk.StringVar(value=self.controller.selected_backend)
@@ -596,61 +623,36 @@ class DesktopApp:
         return bar
 
     def _build_task_panel(self, parent: ttk.Frame) -> ttk.Frame:
-        """「每日任务」区块：勾选要跑的路线 + 每条跑几次。
+        """任务清单区块：勾选要跑的路线 + 每条跑几次。
 
         勾选是**多选且有序**的：勾上的先后就是执行顺序，名字前面的序号（①②③…）
         实时反映它现在排第几。取消勾选后面的序号自动顺移；取消再重新勾 = 排到最后。
 
-        排布要点（2026-10-08 分组改版）：
-        - 路线按 `catalog.GROUPS` 分成 **日常 / 赛季 / 活动** 三段，每段一个
-          小标题；分组的**内容与次序**都从 catalog 读，这里不写中文字面量、
+        排布要点（2026-10-18 四分组改版）：
+        - 路线按 `catalog.GROUPS` 分成 **每日 / 按需 / 赛季 / 活动** 四段，每段一个
+          组标题；分组的**内容与次序**都从 catalog 读，这里不写中文字面量、
           也不自己遍历 `ROUTES`（插一条新路线只改 catalog）；
-        - 卡头右侧那三个小按钮是**批量勾选**（全选 / 全选（不含活动）/ 取消全选），
-          逻辑在 `DesktopController.select_all` / `clear_selection`；
+        - **组标题本身就是整组的勾选框**（`_build_group_header`）：点一下整组勾上、
+          再点一下整组取消；
         - 每段内部：列数由 `theme.route_columns()` 算出来，一条路线一格，
           **格内紧贴、格间留白**（`weight=1` 让每格平均吃伸缩）⇒ 富余宽度落在
-          「组」的外面 ⇒ 次数框离它自己的名字最近，不会读成下一条路线的；
-        - 说明文字挪到标题右边同行，用宽度换高度（旧版把它压在卡片底部一条窄栏里，
-          折成很多行、右边全空）。
+          「组」的外面 ⇒ 次数框离它自己的名字最近，不会读成下一条路线的。
+
+        ⚠️ **没有卡头**（2026-10-18 用户划掉整条要求去掉）：
+        原来这里有一行「每日任务 + 操作说明」，实测那两行文字是整个面板里最占地方的
+        一块 —— 去掉之后窗口可以再矮一截。代价是**「点分组名可以整组勾选」不再有
+        界面提示**，这条交互只能靠用户自己发现（分组名左边带勾选框本身是个暗示）。
+        那块说明仍留在 `docs/maintenance/daily_tasks_grouping.md` 与 USER_GUIDE 里。
         """
         px = self.theme.px
-        pad = px(theme.SPACE_LG)
+        pad = px(theme.SPACE_MD)
         panel = ttk.Frame(parent, style="Card.TFrame", padding=pad)
         columns = self._route_columns_count
 
-        head = ttk.Frame(panel, style="Card.TFrame")
-        head.grid(row=0, column=0, columnspan=columns, sticky="ew")
-        head.columnconfigure(1, weight=1)
-        ttk.Label(head, text=DAILY_LABEL, style="Section.TLabel").grid(
-            row=0, column=0, sticky="w"
-        )
-        # 说明文字放标题**右边同行**：旧版把它压在卡片底部一条窄栏里，行数很多、
-        # 右边一大片空白。同行之后它摊满标题右侧那段空白，两行内说完。
-        hint = ttk.Label(
-            head,
-            text=DAILY_DESCRIPTION,
-            style="Body.TLabel",
-            justify="left",
-            wraplength=px(theme.WRAP_MIN_WIDTH),
-        )
-        hint.grid(row=0, column=1, sticky="ew", padx=(px(theme.SPACE_XL), 0))
-        hint.bind("<Configure>", self._wrap_at_own_width)
-        # 三个批量按钮紧贴卡头右端。放在**卡头**而不是各组标题旁，是因为
-        # 「全选（不含活动）」天然是跨组的动作 —— 挂在任何一组下面都名不副实。
-        self._build_bulk_buttons(head).grid(row=0, column=2, sticky="e")
-
         # 分组渲染：`grouped_routes()` 已按展示顺序排好、且滤掉空组。
-        row = 1
+        row = 0
         for group, routes in grouped_routes():
-            ttk.Label(panel, text=group, style="Group.TLabel").grid(
-                row=row,
-                column=0,
-                columnspan=columns,
-                sticky="w",
-                # 组标题上方留得比组内行距大 ⇒ 一眼看出「标题属于下面那一堆」，
-                # 而不是浮在上一组的尾巴上。
-                pady=(px(theme.SPACE_LG), px(theme.SPACE_XS)),
-            )
+            self._build_group_header(panel, group, routes, row=row, columns=columns)
             row += 1
             self._build_group_grid(panel, routes, first_row=row)
             row += -(-len(routes) // columns)
@@ -677,24 +679,70 @@ class DesktopApp:
         description.bind("<Configure>", self._wrap_at_own_width)
         return panel
 
-    def _build_bulk_buttons(self, parent: ttk.Frame) -> ttk.Frame:
-        """卡头右端那三个批量勾选按钮。
+    def _build_group_header(
+        self,
+        panel: ttk.Frame,
+        group: str,
+        routes: tuple[RouteInfo, ...],
+        *,
+        row: int,
+        columns: int,
+    ) -> None:
+        """一个分组标题 —— 它**本身就是整组的勾选框**。
 
-        ⚠️ 三颗按钮的**文案与动作成对**写死在这里，但「勾哪些」一律问
-        `catalog.selectable_modes` —— 界面层不写路线名单。
-        「不含活动」的语义由 `include_events=False` 表达，不是这里再减一遍。
+        勾上 = 这一组全部勾上（`DesktopController.select_group`），
+        取消 = 这一组全部取消（`clear_group`）；别组的一条都不动。
+
+        ⚠️ 勾选框的语义是「**这一组是否全部勾上了**」，不是「上一次我按了什么」：
+        `_refresh_task_rows` 每次都会按真实勾选回算它。所以手动取消组内一条之后，
+        组标题的勾会自己消失（此时它是"部分选中"，视觉上不勾）—— 再点一下就是
+        **重新整组勾上**，而不是"清空"。这样「点一下全选、再点一下全不选」
+        这个来回始终成立，也不需要引入 Tk 的三态（vista 主题下 `alternate`
+        状态没有可靠的视觉反馈，用户会以为是画错了）。
+
+        ⚠️ 别把组标题改回 `Label` 再加一颗按钮：那正是 2026-10-18 撤掉的样子 ——
+        按钮占着卡头右侧的宽度，说明文字被挤得折更多行。
         """
         px = self.theme.px
-        bar = ttk.Frame(parent, style="Card.TFrame")
-        for text, command in (
-            ("全选", lambda: self._bulk_select(include_events=True)),
-            ("全选（不含活动）", lambda: self._bulk_select(include_events=False)),
-            ("取消全选", self._bulk_clear),
-        ):
-            ttk.Button(bar, text=text, style="Tool.TButton", command=command).pack(
-                side=tk.LEFT, padx=(px(theme.SPACE_SM), 0)
+        var = tk.BooleanVar(value=_all_selected(routes, self.controller.selection))
+        self._group_vars[group] = var
+        checkbox = ttk.Checkbutton(
+            panel,
+            text=group,
+            variable=var,
+            command=lambda name=group: self._on_group_toggle(name),
+            style="Group.TCheckbutton",
+        )
+        checkbox.grid(
+            row=row,
+            column=0,
+            columnspan=columns,
+            sticky="w",
+            # 组标题上方留得比组内行距大 ⇒ 一眼看出「标题属于下面那一堆」，
+            # 而不是浮在上一组的尾巴上。
+            # ⚠️ 2026-10-18 从 (LG, XS) 收到 (MD, XS)：四组标题一共省下 4 档间距，
+            # 这是「整体紧凑一档」的一部分（见 `INITIAL_SCREEN_RATIO_HEIGHT`）。
+            pady=(px(theme.SPACE_MD), px(theme.SPACE_XS)),
+        )
+        self._group_buttons[group] = checkbox
+
+    def _on_group_toggle(self, group: str) -> None:
+        """点了某个组标题：勾上就整组勾、取消就整组取消。
+
+        方向直接读那个变量 —— Checkbutton 已经先一步把它翻转了，翻转后的值就是
+        用户的意图（True = 要整组勾上）。
+        """
+        if self.controller.worker.running:
+            messagebox.showwarning(
+                "正在运行", "运行期间不能修改任务，请先等它跑完或点「安全停止」。"
             )
-        return bar
+            self._refresh_task_rows()  # 把被拒绝的那一次点击撤回去
+            return
+        if self._group_vars[group].get():
+            self.controller.select_group(group)
+        else:
+            self.controller.clear_group(group)
+        self._after_selection_change()
 
     def _build_group_grid(
         self,
@@ -722,7 +770,10 @@ class DesktopApp:
                 column=column,
                 sticky="ew",
                 padx=(0, px(theme.SPACE_XL)),
-                pady=px(theme.SPACE_SM),
+                # ⚠️ 2026-10-18 从 SM 收到 XS：四组一共 6~7 行格子，每行省 8 个逻辑
+                # 像素，合起来是这次「界面紧凑一档」里省得最多的一处。
+                # 再往上收紧就该动字号了 —— 用户明确说过「日志看不清」，字不许变小。
+                pady=px(theme.SPACE_XS),
             )
             var = tk.BooleanVar(value=route.mode in self.controller.selection)
             self.route_vars[route.mode] = var
@@ -797,10 +848,19 @@ class DesktopApp:
         return text
 
     def _refresh_task_rows(self) -> None:
-        """把 controller 里的勾选真值刷回界面：勾选状态 + 序号 + 那条路线的说明。"""
+        """把 controller 里的勾选真值刷回界面：勾选状态 + 序号 + 各组标题的勾选框。
+
+        ⚠️ 组标题那颗勾是**回算**的（`_all_selected`）：手动取消组内一条之后，组标题
+        会自己变成不勾（= 这一组只是部分选中）。这一条必须在这里做 —— 否则界面上会
+        出现「组标题还打着勾、里面却有一条没勾」这种自相矛盾的样子。
+        """
         for mode, button in self._route_buttons.items():
             self.route_vars[mode].set(mode in self.controller.selection)
             button.configure(text=self._route_text(mode))
+        for group, routes in grouped_routes():
+            var = self._group_vars.get(group)
+            if var is not None:
+                var.set(_all_selected(routes, self.controller.selection))
 
     def _build_action_bar(self, parent: ttk.Frame) -> ttk.Frame:
         """控制条：左边主行动、右边工具，两组**贴住两端**。
@@ -929,26 +989,9 @@ class DesktopApp:
         )
         return panel
 
-    def _bulk_select(self, *, include_events: bool) -> None:
-        """「全选」/「全选（不含活动）」。勾选顺序 = 面板顺序（见 `select_all`）。"""
-        try:
-            self.controller.select_all(include_events=include_events)
-        except Exception as error:
-            messagebox.showerror("无法修改任务", str(error), parent=self.root)
-            return
-        self._after_bulk_change()
-
-    def _bulk_clear(self) -> None:
-        """「取消全选」：一条都不勾（= 出厂状态，每次自己挑）。"""
-        try:
-            self.controller.clear_selection()
-        except Exception as error:
-            messagebox.showerror("无法修改任务", str(error), parent=self.root)
-            return
-        self._after_bulk_change()
-
-    def _after_bulk_change(self) -> None:
-        """批量改完勾选后的统一收尾 —— 和单条 `_on_toggle` 走同一套刷新。
+    def _after_selection_change(self) -> None:
+        """勾选改完之后的统一收尾 —— 单条 `_on_toggle` 与整组 `_on_group_toggle`
+        走同一套刷新。
 
         ⚠️ 三处刷新一个都不能少：勾选状态与序号（`_refresh_task_rows`）、
         底部说明（`_refresh_route_details`，它读的是「最后勾的那条」）、
@@ -969,9 +1012,7 @@ class DesktopApp:
             return
         # 互斥（勾「活动」会清掉别的、勾别的会清掉「活动」）⇒ 必须整块重刷，
         # 不能只改被点的那一行。
-        self._refresh_task_rows()
-        self._refresh_route_details()
-        self._refresh_controls()
+        self._after_selection_change()
 
     def _collect_cycles(self) -> bool:
         """把界面上填的次数收进 controller；填坏了就弹框并返回 False。

@@ -112,7 +112,7 @@ from auto_game_unified.core.recovery import RecoveryGate
 from auto_game_unified.core.runtime import Runtime
 from auto_game_unified.games.epic7.evidence.common import EvidenceState
 from auto_game_unified.games.epic7.evidence.labyrinth_stone import (
-    BUY_BUTTON_LIVE_V,
+    BUY_BUTTON_WHITE_PIXELS,
     BUY_ROW_PAIR_TOLERANCE,
     BUY_TO_CATEGORY_DY,
     STONE_NAME_TOLERANCE,
@@ -123,7 +123,7 @@ from auto_game_unified.games.epic7.evidence.labyrinth_stone import (
     MERCHANT_PIN_TO_TARGET,
     REFERENCE_SIZE,
     build_labyrinth_stone_evidence,
-    button_live_v,
+    button_white_pixels,
     map_button_blue_blob,
 )
 from auto_game_unified.games.epic7.resume_probe import ResumePoint
@@ -505,22 +505,27 @@ class LabyrinthStoneStateMachine:
     def _buyable_row(self, screen: np.ndarray):
         """从上往下找第一个**三道锁都过**的行。
 
-        返回 ``(匹配, 最亮像素)``，没有就 None。
+        返回 ``(匹配, 白字像素数)``，没有就 None。
 
         ⚠️ **三道锁，缺一不可**：
 
         1. 这一行的**类别标签**写着「强化石」（``stone_category``，位置见
            ``BUY_TO_CATEGORY_DY``）；
         2. 这一行的**商品名里有一个「石」字**（``stone_in_name``）；
-        3. 这一行的**按钮还亮着**（``button_live_v`` ≥ ``BUY_BUTTON_LIVE_V``）。
+        3. 这一行的**按钮上有一片白字**（``button_white_pixels`` ≥
+           ``BUY_BUTTON_WHITE_PIXELS``）。
 
         为什么要有第 2 道：2026-09-25 第一次事故是第 1 道单独失灵（偏移写反 ⇒ 每一行
         都拿下一行的类别来判断自己），于是「强化拳套」被当成强化石买了。第 2 道问的是
         完全不同的一件事（商品名里有没有「石」），两者不会一起错。
 
-        为什么第 3 道换成了**绝对**口径：2026-09-25 第二次事故是「相对亮度」在真机上
-        把**已售罄**（按钮旁写着「0/1」）判成「还能买」，于是对着一行售罄行连点 4 次、
-        整条路线卡死。详见 ``button_live_v``。
+        为什么第 3 道是「数白字」而不是「取最亮一颗」：
+        - 2026-09-25 第二次事故：「相对亮度」在真机上把**已售罄**（0/1）判成「还能买」，
+          于是对着售罄行连点 4 次、整条路线卡死。
+        - 2026-10-19 第三次事故：「最亮一颗」被**一颗**游离白像素骗过 —— 底边被裁那行
+          的按钮块里混进了邻行天头的白字碎片（239 > 200），结果又对着售罄行点了 4 次。
+        现在的口径：窗口收进模板 footprint，且要求**一片**白字（亮行 800 多颗 /
+        售罄行 0~3 颗）。详见 ``button_white_pixels``。
 
         认不出就**一律不点** —— 花的是真金白银，宁可少买一次。
         """
@@ -540,9 +545,9 @@ class LabyrinthStoneStateMachine:
             )
             if not (category_ok and name_ok):
                 continue
-            live = button_live_v(screen, button.center)
-            if live < BUY_BUTTON_LIVE_V:
-                continue  # 这一行已经卖完了（按钮旁写着 0/1，按钮没有白字）
+            live = button_white_pixels(screen, button.center)
+            if live < BUY_BUTTON_WHITE_PIXELS:
+                continue  # 这一行已经卖完了（按钮旁写着 0/1，按钮上没有白字）
             return button, live
         return None
 
@@ -895,8 +900,8 @@ class LabyrinthStoneStateMachine:
                 source_page=page,
                 target_pages=(state_label(LabyrinthStoneState.BUY_CONFIRM),),
                 reason=(
-                    f"这一行类别写着强化石、名字里有「石」、按钮有白字（最亮 {live:.0f} "
-                    f"≥ {BUY_BUTTON_LIVE_V}，说明还没卖完），点「购买」@{button.center}"
+                    f"这一行类别写着强化石、名字里有「石」、按钮上有 {live} 颗白字像素"
+                    f"（≥ {BUY_BUTTON_WHITE_PIXELS}，说明还没卖完），点「购买」@{button.center}"
                 ),
             )
         sold_out = self._sold_out_stone_rows(screen)
@@ -957,7 +962,7 @@ class LabyrinthStoneStateMachine:
             )
             if not (category_ok and name_ok):
                 continue
-            if button_live_v(screen, button.center) < BUY_BUTTON_LIVE_V:
+            if button_white_pixels(screen, button.center) < BUY_BUTTON_WHITE_PIXELS:
                 sold.append(button.center)
         return sold
 

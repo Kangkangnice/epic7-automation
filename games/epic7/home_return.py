@@ -134,8 +134,24 @@ v2 第一版只做了「看一眼 → 做动作 → 睡一会儿 → 再看一�
 
 | 动作 | 无效时怎么办 | 为什么 |
 | --- | --- | --- |
-| 点酒馆 / 蓝四格 / 放弃 / 确认 | 记日志，交回主循环重新看一眼 | 主循环本来就会重新判定，重看一遍是安全的 |
+| 点酒馆 / 蓝四格 / 放弃 / 确认 | 记日志，交回主循环重新看一眼；**连续两次无效就停用这个动作** | 重看一遍是安全的；但重看**不能变成重试同一招**（见下） |
 | **按 ESC** | **不再重复按**，记号后改判当前页 | 重复按 = 同一层退两层，这正是要修的 bug |
+
+### 「重看一遍」≠「重试同一招」（2026-10-19 补）
+
+⚠️ 上面第一行原来说「交回主循环重新看一眼」就完了 —— **那是错的**：
+主循环重看之后，条件还成立，于是**又选了同一招**。
+
+真机后果（``desktop_worker.log`` 19:36:51~19:38:20，迷宫商店页）：那颗「蓝色四格」
+被商店浮层盖住了但模板照样命中 0.835 ⇒ 每轮点一次、空等 12 秒，
+**同一行重复 8 次**，120 秒预算烧光后只报「超过 120 秒仍未回到大厅」。
+
+修法：同一动作在同一页面上**连续两次**验收无效 ⇒ 记入停用表
+（``_ActionVerifier.is_retired``），四个点击分支进门先查它 ⇒ 落空即一路下坠到
+**⑧ 的 ESC 兜底**。停用时留一行
+``状态=停用该动作改走ESC兜底`` 的日志，**不许悄悄换招**。
+页面身份一变（哪怕只是 ESC 退成功一层）停用表立刻作废 —— 没用是「这一页上没用」，
+不是「永远没用」。
 
 ## 降级路径（无导航器时）
 
@@ -238,6 +254,13 @@ _VERIFY_TIMEOUT_SECONDS = 12.0
 # 规格与老流程一致（90 帧 × poll_seconds）。
 _INVALID_FRAME_LIMIT = 90
 
+# 同一个**点击**动作在同一个页面上连续无效几次就停用（改走 ESC 兜底）。
+#
+# 取 2 与「连按两次 ESC 没反应就报错」同一口径：一次无效可能只是转场慢，
+# 两次无效就是这条判据在这一页上不成立。⚠️ 2026-10-19 事故：不设这个上限时，
+# 商店页上那颗被浮层盖住的「蓝色四格」被点了 8 次、每次空等 12 秒 ⇒ 120 秒超时。
+_MAX_INEFFECTIVE_CLICKS = 2
+
 
 @dataclass(frozen=True)
 class HomeReturnTemplates:
@@ -328,6 +351,9 @@ def return_home_v2(
     runtime.log("模式=导航 目标=大厅 流程=v2 状态=开始")
     back_count = 0
     invalid_count = 0
+    # 只为了让「120 秒超时」那条报错说清**最后停在哪一页** —— 没有这个，
+    # 事故报告里就只剩「超过 120 秒」五个字，跟 8 行一模一样的动作日志对不上。
+    last_observed = ""
     started_at = runtime.now()
     stable = StableObservation(required=2)
     verifier = _ActionVerifier(runtime, observe, sleep, poll_seconds)
@@ -350,7 +376,8 @@ def return_home_v2(
         if runtime.now() - started_at >= _OBSERVATION_SECONDS:
             diagnostic = _save(runtime, "return_home_v2_timeout")
             raise RuntimeError(
-                f"返回首页失败：超过 {_OBSERVATION_SECONDS:.0f} 秒仍未回到大厅；"
+                f"返回首页失败：超过 {_OBSERVATION_SECONDS:.0f} 秒仍未回到大厅"
+                f"（最后一帧认作页面={last_observed or '未知'}）；"
                 f"已保存诊断 {diagnostic}"
             )
         screen = runtime.capture()
@@ -379,6 +406,7 @@ def return_home_v2(
         invalid_count = 0
 
         observed = _observe_page(screen)
+        last_observed = observed
         is_stable = stable.update(observed)
 
         # ① 大厅 —— **必须第一个问**。大厅右上角也有蓝色四格，晚一步就会去点它。
@@ -424,9 +452,17 @@ def return_home_v2(
             return screen
 
         # ③ 快捷菜单已展开 ⇒ 点酒馆（一步到家）。
+        #
+        # ⚠️ 四个点击分支都带 ``is_retired`` 闸门：同一个动作在同一页上连续两次
+        # 验收无效，就**不许再选它**，让流程落到 ⑧ 的 ESC 兜底。没有这道闸门，
+        # 2026-10-19 那次就在商店页上把「打开快捷菜单」点了 8 次、空耗 120 秒。
         tavern = _locate(screen, templates.quick_menu_tavern, "quick_menu_tavern")
         grid = _locate(screen, templates.quick_menu_grid_top, "quick_menu_grid_top")
-        if grid is not None and tavern is not None:
+        if (
+            grid is not None
+            and tavern is not None
+            and not verifier.is_retired("点酒馆", observed)
+        ):
             runtime.log(
                 f"模式=导航 流程=v2 页面=快捷菜单 动作=点酒馆 "
                 f"置信度={tavern.score:.3f} 坐标={tavern.center}"
@@ -449,10 +485,14 @@ def return_home_v2(
             continue
 
         # ⑤ 有蓝色四格 ⇒ 点它打开快捷菜单。
+        #
+        # ⚠️ 这一条是 2026-10-19 事故的正主：商店页上那颗四格**被浮层盖住了**，
+        # 但模板匹配对压暗不敏感 ⇒ 照样 0.835（阈值 0.80）。点下去无效 ✓ 由
+        # ``is_retired`` 兜住，两次之后就改走 ESC。
         blue_grid = _locate(
             screen, templates.quick_menu_button, "quick_menu_button"
         )
-        if blue_grid is not None:
+        if blue_grid is not None and not verifier.is_retired("打开快捷菜单", observed):
             runtime.log(
                 f"模式=导航 流程=v2 动作=打开快捷菜单 "
                 f"置信度={blue_grid.score:.3f} 坐标={blue_grid.center}"
@@ -467,7 +507,10 @@ def return_home_v2(
             continue
 
         # ⑥ 暂停菜单 ⇒ 点「放弃战斗」。
-        if _locate(screen, templates.pause_title, "pause_title") is not None:
+        if (
+            _locate(screen, templates.pause_title, "pause_title") is not None
+            and not verifier.is_retired("放弃战斗", observed)
+        ):
             give_up = _locate(screen, templates.giveup_button, "giveup_button")
             if give_up is None:
                 raise RuntimeError("返回首页失败：暂停菜单里找不到「放弃战斗」按钮")
@@ -488,7 +531,9 @@ def return_home_v2(
         finish = _locate(
             screen, templates.giveup_dialog_finish, "giveup_dialog_finish"
         )
-        if finish is not None:
+        if finish is not None and not verifier.is_retired(
+            "结束（放弃战斗）", observed
+        ):
             runtime.log(
                 f"模式=导航 流程=v2 页面=放弃战斗确认框 动作=结束 "
                 f"置信度={finish.score:.3f} 坐标={finish.center}"
@@ -542,6 +587,11 @@ class _ActionVerifier:
         self._downgrade_logged = False
         # 「按了 ESC 但页面没动」的连续次数：用来给重复按止损。
         self._esc_ineffective = 0
+        # 「点了按钮但页面没动」的连续次数，按动作名分开记。
+        self._click_ineffective: dict[str, int] = {}
+        # 已被证明「在这个页面上点了没用」的动作 ⇒ 动作名 -> 当时的页面身份。
+        # 页面身份一变就重新放开（见 ``is_retired``）。
+        self._retired_clicks: dict[str, str] = {}
 
     # ---- 动作 ----------------------------------------------------------------
 
@@ -568,7 +618,54 @@ class _ActionVerifier:
             f"模式=导航 流程=v2 动作={action} 状态=已发出 动作前页面={before or '未知'}"
         )
         perform()
-        return self._wait_for_change(action, before, before_screen)
+        changed = self._wait_for_change(action, before, before_screen)
+        self._record_click_verdict(action, changed, before)
+        return changed
+
+    # ---- 「点了没用」的止损 -----------------------------------------------------
+
+    def _record_click_verdict(self, action: str, changed: bool, page: str) -> None:
+        """记一次点击验收结果，连续无效就把这个动作**停用**。
+
+        ⚠️ 2026-10-19 真机事故：``return_home_v2`` 在迷宫的**商店页**（对导航层是
+        ``unknown``）上认出了「蓝色四格」（0.835，阈值 0.80 —— 那颗按钮其实被商店
+        浮层盖住了），于是点它。点一次无效、再点、再点……每一轮都要等满
+        ``_VERIFY_TIMEOUT_SECONDS``(12 秒)，**整整耗掉 120 秒预算**才报超时。
+        日志里 8 轮长得一模一样，事后完全看不出「它到底想干什么」。
+
+        止损口径与「连按两次 ESC 没反应就报错」同源：**同一个动作在同一个页面上
+        连续两次证明没用，就不许再选它**，让主循环落到 ESC 兜底那一档
+        （「未登记页必须有有界逃生门」）。
+        """
+        if changed:
+            self._click_ineffective.pop(action, None)
+            self._retired_clicks.pop(action, None)
+            return
+        count = self._click_ineffective.get(action, 0) + 1
+        self._click_ineffective[action] = count
+        if count < _MAX_INEFFECTIVE_CLICKS:
+            return
+        self._retired_clicks[action] = page
+        self._runtime.log(
+            f"模式=导航 流程=v2 动作={action} 连续无效={count} "
+            f"页面={page or '未知'} 状态=停用该动作改走ESC兜底"
+        )
+
+    def is_retired(self, action: str, page: str) -> bool:
+        """这个动作在**当前页面**上是否已被证明没用？页面一变就重新放开。
+
+        为什么要跟着页面身份走：动作没用是「这一页上没用」，不是「永远没用」。
+        卡在同一个 ``unknown`` 上时它一直停用（正是我们要的），一旦换了页
+        （哪怕只是 ESC 退成功一层），旧结论立刻作废、动作重新可用。
+        """
+        retired_on = self._retired_clicks.get(action)
+        if retired_on is None:
+            return False
+        if retired_on != page:
+            self._retired_clicks.pop(action, None)
+            self._click_ineffective.pop(action, None)
+            return False
+        return True
 
     def press_esc(
         self,

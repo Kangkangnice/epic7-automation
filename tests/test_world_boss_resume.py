@@ -78,6 +78,10 @@ REFUSED_FIXTURES = (
     "lobby_with_knights",
     "stamina_popup",
     "knights_weekly_reward_popup",
+    # 2026-10-19 每日任务「世界首领战 ✗」的诊断帧：盖在主页上的
+    # 「世界首领辅助队伍奖励」弹窗。它认得出页名（``worldboss_support_reward_popup``）
+    # 但**不落脚** —— 弹窗要先被全局弹窗守卫点掉，接力从主页开始，不是从弹窗开始。
+    "worldboss_support_reward_live_20261019",
 )
 
 ALL_FIXTURES = tuple(RESUMABLE_FIXTURES) + KNIGHTS_HOME_FIXTURES + REFUSED_FIXTURES

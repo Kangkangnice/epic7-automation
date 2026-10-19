@@ -216,6 +216,117 @@ class NavigationTests(unittest.TestCase):
         ).score
         self.assertGreaterEqual(score, 0.82)
 
+    def test_battle_entry_ignores_the_event_badge_hanging_over_another_row(self):
+        """回归守卫（2026-10-19 08:14 每日任务实跑 ✗ 迷宫强化石）：「战斗」入口的模板
+        以前把**上方那条 EVENT 标**一起裁了进去（旧图 165x87，标占 y 1~24）。
+
+        那条标是**活动期才挂、而且会挂到不同入口上**的：10-19 那天它挂在「竞技场」
+        上方（现场帧 `lobby_battle_badge_on_arena_live_20261019`）⇒ 模板里那一格空着
+        ⇒ 全区域最高只有 **0.6749**（阈 0.82）⇒ `页面[大厅]缺少导航锚点 lobby_battle`
+        ⇒ 迷宫强化石这条路**连点都没点**就失败关闭。
+
+        所以模板改成只裁「战斗」二字。这条测试钉的三件事**都是依据**：
+        ① 标挂在「竞技场」上的真帧要过阈（就是这次失败的现场）；
+        ② 标挂在「战斗」上的真帧也要过阈，且两者分数接近
+           —— 谁把那条标裁回去，①② 立刻红；
+        ③ 模板里不许再出现那条蓝标（EVENT 标是纯蓝底，白字只有 r≈g≈b）。
+        """
+        template = build_navigation_templates(TEMPLATES).lobby_battle
+        region = (1650, 430, 332, 220)
+        threshold = 0.82
+
+        def best(image) -> float:
+            return find_best_template(
+                image, template, region=region, reference_size=REFERENCE_SIZE
+            ).score
+
+        badge_on_arena = best(
+            labyrinth_fixture("lobby_battle_badge_on_arena_live_20261019")
+        )
+        badge_on_battle = best(shop_fixture("current_probe"))
+
+        self.assertGreaterEqual(
+            badge_on_arena, threshold, "标挂在「竞技场」上时又认不出「战斗」了"
+        )
+        self.assertGreaterEqual(
+            badge_on_battle, threshold, "标挂在「战斗」上时反而认不出了"
+        )
+        self.assertLess(
+            abs(badge_on_arena - badge_on_battle),
+            0.05,
+            "两种挂法分数被拉开了，说明模板里又混进了会变的东西",
+        )
+        blue_over_red = int(
+            np.max(template[:, :, 2].astype(int) - template[:, :, 0].astype(int))
+        )
+        self.assertLess(
+            blue_over_red,
+            40,
+            "模板把那条 EVENT 蓝标裁进去了（它挂在哪个入口上是会变的）",
+        )
+
+    def test_the_battle_entry_step_clicks_on_the_frame_that_failed(self):
+        """端到端：就那一步（大厅 → 战斗菜单）在 10-19 的现场帧上要真点得下去。
+
+        只断言模板分数不够 —— 生产路径是 `_transition` 里「认页 → 定位锚点 → 点击」，
+        锚点定位失败那一层就是 `RuntimeError: 页面[大厅]缺少导航锚点 lobby_battle`。
+        """
+        clicks: list[tuple[int, int]] = []
+        failed = labyrinth_fixture("lobby_battle_badge_on_arena_live_20261019")
+        navigator = self.navigator(
+            [failed, failed, labyrinth_fixture("battle_menu"), labyrinth_fixture("battle_menu")],
+            clicks=clicks,
+        )
+
+        navigator._transition(
+            "lobby", ("battle_menu",), "lobby_battle", "进入战斗菜单"
+        )
+
+        self.assertEqual(1, len(clicks), "这一步该点且只点一下")
+        x, y = clicks[0]
+        # 「战斗」那一条按钮的底纹实测约 x 1770~1885 / y 512~575：落点必须还在里面，
+        # 不能因为换裁剪把点击点带偏到「竞技场」那一条上去。
+        self.assertTrue(1770 <= x <= 1885 and 512 <= y <= 575, f"落点跑出按钮：{clicks[0]}")
+
+    def test_battle_entry_floor_stays_far_from_the_threshold(self):
+        """全库地板：真大厅帧上「战斗」锚点最低多少分，和 0.82 的门槛隔多远。
+
+        ⚠️ 这里同时把**唯一那个例外**写在代码里：`lobby_animated_updated`（录屏压过的
+        帧，字形被压粗、底纹被压暗）只到 **0.5790**，过不了阈。它不参与地板计算，
+        但必须继续被 `observe()` 认成大厅 —— 那一天的身份由 `lobby_arena`（0.8483）
+        与 `lobby_story`（0.8646）那两条锚点担着。**谁要是把 `lobby_arena` 再裁窄，
+        这一页就会整页认不出**，这条断言会把那件事暴露出来。
+        """
+        navigator = self.navigator([])
+        template = build_navigation_templates(TEMPLATES).lobby_battle
+        region = navigator._REGIONS["lobby_battle"]
+
+        def best(image) -> float:
+            return find_best_template(
+                image, template, region=region, reference_size=REFERENCE_SIZE
+            ).score
+
+        real_frames = [
+            fixture("lobby"),
+            fixture("lobby_fodder"),
+            world_boss_fixture("lobby_with_knights"),
+            fixture("lobby_activity_entry_live_20261006"),
+            shop_fixture("current_probe"),
+            labyrinth_fixture("lobby_battle_badge_on_arena_live_20261019"),
+        ]
+        floor = min(best(image) for image in real_frames)
+        self.assertGreaterEqual(
+            floor, 0.95, "真大厅帧的地板掉到 0.95 以下了，离 0.82 的门槛不够远"
+        )
+        self.assertGreater(
+            floor - 0.82, 0.13, "地板与门槛的间隔不足 —— 换句话说门槛卡在分布里"
+        )
+
+        recorded = fixture("lobby_animated_updated")
+        with self.subTest(case="录屏帧：锚点不过阈，但页面身份不能丢"):
+            self.assertLess(best(recorded), 0.82)
+            self.assertEqual("lobby", navigator.observe(recorded).name)
+
     def test_arena_mode_page_is_recognised_in_every_known_entry_look(self):
         """端到端：**每一种已知的入口长相**都要能把这一页认成 `arena_mode`。
 
@@ -914,6 +1025,13 @@ class NavigationTests(unittest.TestCase):
             # 重启冒险」×2，一个回归活动），把「更多精彩活动」从 y=460 挤到 y=686。
             # 那天社区路线就死在这一步（模板还在 0.9145，框空了 ⇒ 整页 unknown）。
             ("activity_menu_shifted_live_20261007", "activity_menu"),
+            # 2026-10-18 真机：同一个活动页，这次是**往上漂** —— 列表顶部换成了
+            # 「网页活动入口」分组标题，且它前面没有别的活动排着 ⇒「更多精彩活动」
+            # 落到 **y=258**，比当时定的上界 300 还高 42px ⇒ 模板 0.9959 却判
+            # unknown ⇒ 社区签到重试 4 次全失败。这条夹具是「上界必须罩住整列、
+            # 不只是往下罩」的唯一证据，`test_the_raised_row_is_invisible_to_the_old_band`
+            # 专门钉住它为什么进不来。
+            ("activity_menu_raised_live_20261018", "activity_menu"),
             ("activity_web_promo_live_20261006", "activity_web_promo"),
             # 2026-10-07 真机：列表更长 ⇒ 「更多精彩活动」选中态那一行落在 y=726
             # （10-06 那张是 y=443，**相差 283px**）。这张是「新判据跨天复验」的
@@ -959,6 +1077,8 @@ class NavigationTests(unittest.TestCase):
             "lobby_activity_entry_live_20261006": "lobby_activity",
             "activity_menu_live_20261006": "activity_more",
             "activity_menu_shifted_live_20261007": "activity_more",
+            # 2026-10-18：这一行往上漂到 y=258 的那一帧，判页仍必须归 ``activity_more``。
+            "activity_menu_raised_live_20261018": "activity_more",
             "activity_web_promo_live_20261006": "activity_more_selected",
             "activity_web_promo_shifted_live_20261007": "activity_more_selected",
             "web_activity_list_live_20261006": "web_community",
@@ -977,6 +1097,66 @@ class NavigationTests(unittest.TestCase):
                         match,
                         f"{name} 上 {anchor} 不该命中（页面会互相串味）",
                     )
+
+    def test_the_raised_row_is_invisible_to_the_old_band(self):
+        """上界收回 300 时，2026-10-18 那帧**判不出来** —— 这是那次失败的复现。
+
+        为什么要单独钉这一条（而不是只靠上面那条页面名断言）：
+
+        - 页面名断言证明的是「**现在的**区域判得出」，它抓不住「区域被人改窄回去」——
+          因为一旦改窄，那一帧会掉进 ``unknown``，而 ``unknown`` **这条用例本来就会红**……
+          但它红的方式是「和另外十几条用例混在一起红」，看日志的人分不清是哪一处退化。
+        - 这里用**最原始的像素事实**说话：拿模板去裁 ``y 300~1150``（旧区域）比一次，
+          分数**必须低于阈值**；再拿现在的区域比一次，分数**必须高于阈值**。
+          两个数一起看，就证明了「改的正是这里，而且确实管用」。
+
+        ⚠️ 别把这条改成「调 `navigator._locate` 看返不返回 None」：那等于让被测函数
+        自己证明自己。这里直接 `cv2.matchTemplate` 裁区域算，中间不经过任何项目代码。
+        """
+        navigator = self.navigator([])
+        screen = fixture("activity_menu_raised_live_20261018")
+        template = cv2.imread(
+            str(
+                Path(__file__).resolve().parents[1]
+                / "games"
+                / "epic7"
+                / "templates"
+                / "navigation"
+                / "activity_more.png"
+            )
+        )
+        self.assertIsNotNone(template, "activity_more 模板缺失")
+
+        def score(region: tuple[int, int, int, int]) -> tuple[float, int]:
+            x, y, w, h = region
+            roi = screen[y : y + h, x : x + w]
+            result = cv2.matchTemplate(roi, template, cv2.TM_CCOEFF_NORMED)
+            _, best, _, location = cv2.minMaxLoc(result)
+            return float(best), y + location[1]
+
+        old_score, _ = score((0, 300, 420, 850))
+        new_score, new_y = score((0, 150, 420, 1000))
+
+        # ① 旧区域（上界 300）**够不着**这一行 —— 这就是 12:17 那次判 unknown 的原因。
+        self.assertLess(
+            old_score,
+            0.80,
+            f"旧区域居然还能命中（{old_score:.4f}）：夹具或区域有一个已经不是当年的样子了",
+        )
+        # ② 现区域既能命中、分数也远高于阈值。
+        self.assertGreater(new_score, 0.95)
+        # ③ 命中位置确实在旧上界**上方** —— 把「往上漂」这个事实钉成数字。
+        self.assertLess(new_y, 300, f"这一行应该落在旧上界上方，实测 y={new_y}")
+        # ④ 实现里那块区域的上界**也必须罩得住**这个命中点。
+        # ⚠️ 少了这一条，「有人把区域改回 300」时本用例仍然会绿 —— 因为上面三处
+        # 断言用的都是**测试自己写死的坐标**，跟实现没关系。这一条是把测试和实现
+        # 拴在一起的那颗钉子：区域上界一旦高于命中位置，这里立刻红。
+        band = type(navigator)._REGIONS["activity_more"]
+        self.assertLessEqual(
+            band[1],
+            new_y,
+            f"实现的 activity_more 区域上界 y={band[1]} 罩不住这一行（命中在 y={new_y}）",
+        )
 
     def test_selected_state_judgement_survives_the_sliding_glow_orb(self):
         """选中态判据**不许**再依赖那颗会滑动的光球。
@@ -1213,12 +1393,16 @@ class NavigationTests(unittest.TestCase):
             "第 2 步没声明滚一屏：那一行被挤出视野时整条路线直接失败",
         )
 
-    def test_the_declared_scroll_hook_actually_exists_on_the_navigator(self):
-        """计划里声明的每个 ``scroll_before_retry`` 名字，导航器上都要有对应方法。
+    def test_the_declared_scan_hook_actually_exists_on_the_navigator(self):
+        """计划里声明的每个 ``scroll_before_retry`` 名字，导航器上都要有对应搜索器。
 
         ⚠️ 名字写错（或方法改名）时，执行器会在锚点找不到的那一刻抛
         ``RuntimeError``——**在真机上、在已经跑了一半的时候**。
         这里在构造期就把这条对账做掉：名字 ↔ 方法名必须一一对上。
+
+        ⚠️ 2026-10-18：钩子从 ``_scroll_<名字>`` 改名为 ``_scan_<名字>``。
+        语义跟着变了 —— 以前是「滚一屏」，现在是「在一个页面里上下扫、每扫一屏
+        重新认一次」，所以一个只会滚、不会认的方法已经不够用了。
         """
         from auto_game_unified.games.epic7.modes import MODE_SPECS
 
@@ -1231,101 +1415,53 @@ class NavigationTests(unittest.TestCase):
                     continue
                 with self.subTest(mode=mode, anchor=step.anchor):
                     self.assertTrue(
-                        hasattr(Epic7Navigator, f"_scroll_{step.scroll_before_retry}"),
+                        hasattr(Epic7Navigator, f"_scan_{step.scroll_before_retry}"),
                         f"路线 {mode} 的 [{step.anchor}] 步声明了 "
                         f"scroll_before_retry={step.scroll_before_retry!r}，"
-                        f"但 Epic7Navigator 上没有 _scroll_{step.scroll_before_retry}",
+                        f"但 Epic7Navigator 上没有 _scan_{step.scroll_before_retry}",
                     )
 
-    def test_the_scroll_retry_is_bounded_and_never_guesses(self):
-        """滚满上限仍然找不到 ⇒ **报错收手**，既不许无限滚，也不许蒙着点。
+    # ---- 活动页左列：页内扫描（2026-10-18 重写）----
+    #
+    # 这四条用例原来是「滚一屏能不能把那一行拉回来」。那个前提在 2026-10-18 被
+    # 用户推翻了：「这个活动我点进去，它可能在任何位置都有可能……可能还要上滑下滑」。
+    # 位置**没有上界**，所以判据不能再是位置，只能是扫描。用例也跟着换：
+    # 现在钉的是「扫得完、扫得有界、扫不到不瞎点、页面在行不在时还认得出」。
 
-        ⚠️ 这条顺带钉住一个**结构性事实**（本轮差点又踩一次的坑）：第 2 步的判页
-        锚点（``activity_menu``）**就是**这一步要找的那张模板 —— 所以「页面还认得出、
-        但那一行找不到」这个状态**在代码里根本不存在**；那一行被挤出视野时，
-        整页直接判 ``unknown`` ⇒ ``_wait_for_page`` 在拿到帧之前就抛了。
-        这正是兜底必须同时挂在**两个位置**（等来源页 / 找锚点）的原因：
-        只挂在「锚点返回 None」那一支，真机上**永远走不到**。
+    def _list_with_row_scrolled_away(self, offset: int = 520):
+        """合成一帧「列表滚到下面、那一行跑到屏幕上方之外」。
 
-        看的是**依据**（滚动次数 + 抛出的文案），不是「跑通了没有」。
-
-        ⚠️ **必须走「不传 source_screen」这条路**（= 生产路径）。传了帧就等于告诉
-        执行器「来源页已经确认过了」，那样兜底根本不会被问到 —— 这条细节上一轮
-        就地吃了亏：反向验证给「只挂锚点那一支」注入违规时，**这条用例纹丝不动**，
-        它其实在测一个生产走不到的分支（跟本轮那个坑同形）。
+        ⚠️ **只滚列表区**（``ACTIVITY_COLUMN_Y0``~``Y1``），**不滚顶栏**。
+        旧用例把整条左列（y 0~1132）一起 ``np.roll``，那等于把「‹ 活动」横幅
+        也一起滚了 —— 真机上列表滚动时顶栏一动不动，那种画面**不存在**。
+        而新的页面判据（``activity_page_shell``）就在顶栏里，所以这一条细节
+        决定了用例到底在测真机还是测幻觉。
         """
-        logs: list[str] = []
-        swipes: list[tuple] = []
-        # 「那一行被挤出视野」的那一帧：见上面那段注释 —— 它的判页结果就是 unknown。
-        pushed = fixture("activity_menu_shifted_live_20261007").copy()
-        pushed[:, 0:430] = np.roll(pushed[:, 0:430], -420, axis=0)
-
-        runtime = Runtime(
-            lambda: pushed,
-            lambda *_: None,
-            emit=logs.append,
-            swipe=lambda *args, **kwargs: swipes.append((args, kwargs)),
-        )
-        navigator = Epic7Navigator(
-            build_navigation_templates(TEMPLATES),
-            runtime,
-            sleep=lambda _: None,
-            transition_frames=6,
-        )
-        limit = navigator._SCROLL_RETRY_LIMIT
-        with self.assertRaisesRegex(RuntimeError, "活动页"):
-            # ⚠️ **不传 source_screen** —— 生产路径就是这样调的。
-            navigator._transition(
-                "activity_menu",
-                ("activity_web_promo",),
-                "activity_more",
-                "选中「更多精彩活动」",
-                scroll_before_retry="activity_column",
-            )
-        self.assertEqual(
-            limit, len(swipes), f"滚的次数不是声明的上限 {limit} —— 兜底必须是有界的"
-        )
-        self.assertTrue(
-            any(f"第={limit}/{limit}次" in line for line in logs),
-            f"日志里没有滚动记账（最后一次应记 {limit}/{limit}）；实际：{logs}",
+        from auto_game_unified.games.epic7.activity_column import (
+            ACTIVITY_COLUMN_Y0,
+            ACTIVITY_COLUMN_Y1,
         )
 
-    def test_the_scroll_happens_before_the_page_wait_gives_up(self):
-        """兜底的**位置**：滚动必须发生在「等来源页失败」**之前**（而不是之后）。
+        frame = fixture("activity_menu_raised_live_20261018").copy()
+        band = frame[ACTIVITY_COLUMN_Y0:ACTIVITY_COLUMN_Y1, 0:430].copy()
+        # ⚠️ **不能用 ``np.roll``**（原来那两条用例就是栽在这儿的）：``roll`` 会把
+        # 顶上被推出画面的那些行**从底部卷回来**，于是「已经滚走的行」在合成帧上
+        # 又出现在 y≈702 ⇒ 用例自以为复现了事故，其实那一行一直在画面里，
+        # 断言就变成了一句空话。这里改成「整体上移 + 底部补最后一行」。
+        shifted = np.empty_like(band)
+        shifted[:-offset] = band[offset:]
+        shifted[-offset:] = band[-1]
+        frame[ACTIVITY_COLUMN_Y0:ACTIVITY_COLUMN_Y1, 0:430] = shifted
+        return frame
 
-        这条是上一条的正面对照。做法：先给几帧「那一行被挤出视野」的合成帧，
-        之后给一张**恢复后的**帧（模拟「滚一下内容就拉回来了」）。
-
-        断言的是**依据**：① 确实滚过；② 日志里出现滚动记账行；
-        ③ 滚动之后**点下去了**，而且落点**在恢复后的那一帧上**
-        —— 也就是兜底真的把路接上了，不是空转。
-
-        ⚠️ **必须走「不传 source_screen」这条路**（= 生产路径）：传了帧就等于告诉
-        执行器「来源页已经确认过了」，那样兜底根本不会被问到 —— 这个细节正是
-        本轮踩到的坑本身（判据写好了、生产走不到）。
-
-        ⚠️ 不断言「转场成功」：假帧不会因为点了一下就真的换页，最后必然抛
-        「导航转场失败」，那是测试模型的偏差，不是被测行为。
-        """
-        logs: list[str] = []
-        swipes: list[tuple] = []
-        clicks: list[tuple] = []
-        base = fixture("activity_menu_shifted_live_20261007")
-        pushed = base.copy()
-        pushed[:, 0:430] = np.roll(base[:, 0:430], -420, axis=0)
-        # 「往上滚一屏」之后内容下移 ACTIVITY_SCROLL_STEP ⇒ 那一行回到视野里。
-        revealed = base.copy()
-        revealed[:, 0:430] = np.roll(
-            base[:, 0:430], -420 + ACTIVITY_SCROLL_STEP * 4, axis=0
-        )
-        # ⚠️ 前 6 帧给「被挤出去」的那一帧（足够 ``transition_frames=6`` 走完一轮
-        # 等页窗口），之后一直给恢复后的帧。
-        frames = [pushed] * 6 + [revealed] * 60
+    def _scan_navigator(self, screens, swipes, clicks, logs):
+        """喂序列 + 记录滑动/点击。序列喂完就回放最后一帧（同 ``self.navigator``）。"""
+        images = list(screens)
         sent: list = []
 
         def capture():
-            if frames:
-                sent.append(frames.pop(0))
+            if images:
+                sent.append(images.pop(0))
             return sent[-1]
 
         runtime = Runtime(
@@ -1334,14 +1470,146 @@ class NavigationTests(unittest.TestCase):
             emit=logs.append,
             swipe=lambda *args, **kwargs: swipes.append((args, kwargs)),
         )
-        navigator = Epic7Navigator(
+        return Epic7Navigator(
             build_navigation_templates(TEMPLATES),
             runtime,
             sleep=lambda _: None,
             transition_frames=6,
         )
+
+    def test_the_row_off_the_top_is_still_the_activity_page(self):
+        """⚠️ **这一版的地基**：那一行滚出画面之后，页面**仍然认得出是活动页**。
+
+        为什么这是地基：只要判页还挂在那一行上，「页面认得出、入口找不到」这个
+        状态就**在代码里不存在** —— 整页直接判 ``unknown`` ⇒ ``_wait_for_page``
+        在拿到帧之前就抛了 ⇒ 页内扫描那一支**永远走不到**。
+        这正是 10-08 踩过的「判据写好了、生产走不到」，也是这次换判据的全部理由。
+
+        断言三件事（用裸 matcher 与 ``observe()`` 各算一遍，不互为依据）：
+          ① 这一帧上 ``activity_more`` 确实找不着（事故场景复现了）；
+          ② ``observe()`` 仍然判 ``activity_menu``（靠的是页面骨架）；
+          ③ 骨架的分数离阈值有余量（不是压线过的）。
+        """
+        frame = self._list_with_row_scrolled_away()
+        navigator = self.navigator([])
+
+        row = navigator._locate(frame, "activity_more")
+        self.assertIsNone(
+            row, "这一帧上居然还找得到那一行 —— 用例没复现出事故场景"
+        )
+
+        observation = navigator.observe(frame)
+        self.assertEqual(
+            "activity_menu",
+            observation.name,
+            "那一行滚出视野后整页判成了别的 —— 页内扫描在生产上永远走不到",
+        )
+        self.assertGreaterEqual(
+            observation.confidence,
+            0.90,
+            f"骨架分数只到 {observation.confidence:.4f}，贴着阈值过的不算稳",
+        )
+
+    def test_the_shell_anchor_tells_the_activity_page_apart(self):
+        """骨架锚点必须**只在**活动页过阈 —— 它是判页的唯一依据，不能含糊。
+
+        正样本：三张活动页（含 10-18 漂移帧、10-07 下移帧）；
+        负样本：大厅 / 赛季页 / 竞技场 / 战斗第三页 —— 这些页面上都有左上角
+        返回箭头，所以**箭头本身不能当判据**（全库实测那里全是 1.0000）。
+        """
+        navigator = self.navigator([])
+        positive = {
+            "activity_menu_live_20261006": 0.90,
+            "activity_menu_shifted_live_20261007": 0.90,
+            "activity_menu_raised_live_20261018": 0.90,
+        }
+        for name, threshold in positive.items():
+            frame = fixture(name)
+            with self.subTest(case=f"活动页 {name}"):
+                match = navigator._locate(frame, "activity_page_shell", threshold)
+                self.assertIsNotNone(match, f"{name} 上骨架没过阈")
+                self.assertEqual(
+                    "activity_menu",
+                    navigator.observe(frame).name,
+                    f"{name} 没被判成活动页",
+                )
+
+        for name in ("lobby", "expedition_season_menu", "arena_mode",
+                     "battle_menu_third_tab_20261012"):
+            frame = fixture(name)
+            with self.subTest(case=f"其它页 {name}"):
+                match = navigator._locate(frame, "activity_page_shell", 0.90)
+                self.assertIsNone(
+                    match,
+                    f"{name} 上骨架也过了阈，会把别的页面判成活动页",
+                )
+
+    def test_the_page_scan_is_bounded_and_never_guesses(self):
+        """上下扫满预算仍然找不到 ⇒ **报错收手**：不许无限扫，更不许蒙着点。
+
+        断言的是**依据**：① 滑动次数正好等于声明预算（每方向
+        ``ACTIVITY_SCROLL_LIMIT_PER_DIRECTION``，反方向双倍）；
+        ② 一下都没点；③ 抛出的文案里点名了扫过几屏。
+        """
+        from auto_game_unified.games.epic7.activity_column import (
+            ACTIVITY_SCROLL_LIMIT_PER_DIRECTION,
+        )
+
+        logs: list[str] = []
+        swipes: list[tuple] = []
+        clicks: list[tuple] = []
+        # 每一帧都是「那一行在画面之上」⇒ 扫多少次都不会出现。
+        stuck = self._list_with_row_scrolled_away()
+        navigator = self._scan_navigator(
+            [stuck] * 60, swipes, clicks, logs
+        )
+        budget = ACTIVITY_SCROLL_LIMIT_PER_DIRECTION * 3
+
+        with self.assertRaisesRegex(RuntimeError, "缺少导航锚点") as ctx:
+            # ⚠️ **不传 source_screen** —— 生产路径就是这样调的。
+            navigator._transition(
+                "activity_menu",
+                ("activity_web_promo",),
+                "activity_more",
+                "选中「更多精彩活动」",
+                scroll_before_retry="activity_column",
+            )
+
+        self.assertEqual(
+            [], clicks, "扫不到的时候居然还点下去了 —— 这是最危险的一种「成功」"
+        )
+        self.assertEqual(
+            budget,
+            len(swipes),
+            f"滑动次数不是声明的预算 {budget}（两个方向各计入）",
+        )
+        self.assertIn(
+            f"{budget} 屏",
+            str(ctx.exception),
+            f"报错文案没说扫过几屏，事后查不到底：{ctx.exception}",
+        )
+
+    def test_the_scan_finds_the_row_after_one_scroll(self):
+        """扫描**真的有用**：那一行不在画面里时，滑一屏就能把它找回来。
+
+        构造：先给 8 帧「那一行在画面之上」的合成帧 —— 前 4 帧会被两次
+        ``_wait_for_page``（各要「连续 2 帧稳定」）吃掉，剩下的才是扫描的取景；
+        之后一直给**原始**那帧（= 滚回列表头之后它又出现在画面里）。
+
+        断言的都是**依据**：① 确实滑过；② 点击落点**在原始帧那一行上**
+        （期望值用裸 matcher 独立算，不调被测函数）。
+        不断言「转场成功」：假帧不会因为点了一下就真换页。
+        """
+        logs: list[str] = []
+        swipes: list[tuple] = []
+        clicks: list[tuple] = []
+        away = self._list_with_row_scrolled_away()
+        revealed = fixture("activity_menu_raised_live_20261018")
+        navigator = self._scan_navigator(
+            [away] * 8 + [revealed] * 60, swipes, clicks, logs
+        )
+
         try:
-            # ⚠️ **不传 source_screen** —— 这就是生产路径。
             navigator._transition(
                 "activity_menu",
                 ("activity_web_promo",),
@@ -1350,69 +1618,63 @@ class NavigationTests(unittest.TestCase):
                 scroll_before_retry="activity_column",
             )
         except RuntimeError:
-            pass  # 假帧不换页 ⇒ 最终失败是模型偏差，兜底该做的已经做完了
+            pass  # 假帧不换页 ⇒ 最终失败是模型偏差，扫描该做的已经做完了
 
-        self.assertGreaterEqual(len(swipes), 1, "压根没滚：兜底没接到线上")
+        self.assertGreaterEqual(len(swipes), 1, "压根没滑：扫描没接到线上")
         self.assertTrue(
-            any("滚一屏再找" in line for line in logs),
-            f"日志里没有滚动的记账行；实际：{logs}",
+            any("上下扫" in line for line in logs),
+            f"日志里没有扫描的记账行；实际：{logs}",
         )
-        self.assertGreaterEqual(len(clicks), 1, "滚完之后没有再去找：兜底没把路接上")
-        # 落点必须落在**恢复后**那一行上。期望值**独立算**（不调被测函数）。
+        self.assertGreaterEqual(len(clicks), 1, "扫完之后没有再去找：扫描没把路接上")
+
         expected = find_template(
             revealed,
             load_template(str(TEMPLATES / "navigation" / "activity_more.png")),
             0.82,
-            region=(0, 300, 420, 850),
+            region=(0, 150, 420, 1000),
         )
         self.assertIsNotNone(expected, "恢复帧本身就没过阈，用例前提不成立")
         self.assertEqual(
             expected.center,
             clicks[0],
-            f"点歪了：落点 {clicks[0]} 不在恢复后那一行上 {expected.center}",
+            f"点歪了：落点 {clicks[0]} 不在恢复后那一行 {expected.center} 上",
         )
 
-    def test_the_scroll_reveals_the_row_that_was_pushed_off_screen(self):
-        """兜底**真的有用**：那一行被挤出视野后，滚一屏就能找回来。
+    def test_the_scan_skips_the_click_when_the_row_is_already_selected(self):
+        """扫描看到的是**选中态**那一行 ⇒ 目标态已经达成 ⇒ **绝不点**。
 
-        构造方式（可复现，不依赖真机）：把 10-07 那张真机帧的左列整体**上移**，
-        模拟「列表滚到了更下面 ⇒ 那一行跑到屏幕上方之外」；然后按声明的那一下
-        滚动（内容下移 ``ACTIVITY_SCROLL_STEP``）把它拉回来，量模板分数。
-
-        断言的都是**依据**：① 上移后确实识别不出（复现事故）；② 拉回来之后
-        分数回到过阈；③ 用的滚动量与声明值一致。
+        ⚠️ 这一条是**新判据带来的新风险**的护栏：页面骨架分不出「未选中 / 选中」
+        两个态（同一块横幅），而列表滚走时行模板也看不见 ⇒ 唯一能分辨的机会
+        就在扫描里。如果扫描只会找 ``activity_more``，那「已经是选中态」会被
+        判成「找不到」⇒ 整条路线失败；如果收手时不加判断就点，**点一下会把选中
+        取消掉** —— 两种都错，所以这里把「认出选中态 ⇒ 跳过点击」钉死。
         """
-        import numpy as np
-
-        from auto_game_unified.games.epic7.activity_column import (
-            ACTIVITY_SCROLL_STEP,
+        logs: list[str] = []
+        swipes: list[tuple] = []
+        clicks: list[tuple] = []
+        # 10-06 的选中态帧：那一行是橙底白字 ⇒ ``activity_more`` 只有 0.25~0.34。
+        selected = fixture("activity_web_promo_live_20261006")
+        navigator = self._scan_navigator(
+            [selected] * 30, swipes, clicks, logs
         )
 
-        base = fixture("activity_menu_shifted_live_20261007")
-        navigator = self.navigator([])
+        screen, match, reached = navigator._scan_activity_column(
+            "activity_more", ("activity_web_promo",), "activity_menu", "选中"
+        )
+        self.assertTrue(reached, "认出选中态时没报「目标态已达成」")
+        self.assertIsNone(match)
+        self.assertIsNotNone(screen)
 
-        def shifted(offset: int):
-            frame = base.copy()
-            frame[:, 0:430] = np.roll(base[:, 0:430], offset, axis=0)
-            return frame
+        # 同样的画面，但这一趟要去的不是那一态 ⇒ 不许谎报「已达成」。
+        _screen, _match, reached_other = navigator._scan_activity_column(
+            "activity_more", ("web_activity_list",), "activity_menu", "选中"
+        )
+        self.assertFalse(
+            reached_other, "目标里没有那个态，却报了「已达成」—— 会被当成成功跳过"
+        )
 
-        pushed_off = shifted(-420)  # 内容上移 420px ⇒ 那一行出了上边界
-        with self.subTest(case="被挤出视野后确实识别不出"):
-            match = navigator._locate(pushed_off, "activity_more")
-            self.assertIsNone(
-                match, "这张合成帧上居然还找得到 —— 用例没复现出事故场景"
-            )
-
-        with self.subTest(case="按声明的滚动量拉回来之后找得到"):
-            revealed = shifted(-420 + ACTIVITY_SCROLL_STEP * 4)
-            match = navigator._locate(revealed, "activity_more")
-            self.assertIsNotNone(
-                match, "滚了几屏还是找不到 —— 兜底没生效"
-            )
-            self.assertGreaterEqual(match.score, 0.82)
-
-    def test_the_activity_scroll_starts_on_the_left_column_text(self):
-        """滚动起点的 x 必须落在**左列活动名文字**上，不许跑到右侧。
+    def test_the_activity_scroll_gestures_stay_inside_the_column(self):
+        """两个方向的滑动都必须落在**左列文字**上、且在列表可见区内。
 
         ⚠️ 与竖屏信息流那条护栏（``SCROLL_GUTTER_X``）取向**不同**：左列**没有**
         一条干净的白边可躲 —— 实测 x=15/30/60/90/120 的彩色占比都是 0.17~0.24，
@@ -1420,14 +1682,19 @@ class NavigationTests(unittest.TestCase):
         点到什么**：落在活动名那行文字上只会切换选中项（无害可恢复），落在右侧
         就会打开别的东西。
 
-        断言：① 起点 x 在左列内且贴住文字列（30~200）；② 拿真机帧量那一列，
-        它在左列区域内（不是跑到插图那边）。
+        断言：① x 在左列内、贴住文字列（30~200）；② 两个方向的 y 都在列表可见区
+        （``ACTIVITY_COLUMN_Y0``~``Y1``）里 —— 滑到顶栏或屏幕边缘外会让手势落空；
+        ③ 两个方向**相反**（同向等于只扫了一半，另一半永远到不了）。
         """
         from auto_game_unified.games.epic7.activity_column import (
+            ACTIVITY_COLUMN_X1,
+            ACTIVITY_COLUMN_Y0,
+            ACTIVITY_COLUMN_Y1,
             ACTIVITY_SCROLL_END_Y,
             ACTIVITY_SCROLL_START_Y,
+            ACTIVITY_SCROLL_TAIL_END_Y,
+            ACTIVITY_SCROLL_TAIL_START_Y,
             ACTIVITY_SCROLL_X,
-            ACTIVITY_COLUMN_X1,
         )
 
         self.assertGreaterEqual(ACTIVITY_SCROLL_X, 30, "起点跑到最左边那条装饰带上了")
@@ -1436,17 +1703,45 @@ class NavigationTests(unittest.TestCase):
             200,
             "起点跑到左列外面了 —— 退化成点击时会点到右侧内容",
         )
+        self.assertLess(ACTIVITY_SCROLL_X, ACTIVITY_COLUMN_X1, "起点没落在左列范围里")
+
+        for label, start_y, end_y in (
+            ("回列表头", ACTIVITY_SCROLL_START_Y, ACTIVITY_SCROLL_END_Y),
+            ("往列表尾部", ACTIVITY_SCROLL_TAIL_START_Y, ACTIVITY_SCROLL_TAIL_END_Y),
+        ):
+            with self.subTest(direction=label):
+                for y in (start_y, end_y):
+                    self.assertGreaterEqual(
+                        y, ACTIVITY_COLUMN_Y0, f"{label} 的 y={y} 滑到顶栏上去了"
+                    )
+                    self.assertLessEqual(
+                        y, ACTIVITY_COLUMN_Y1, f"{label} 的 y={y} 滑出屏幕了"
+                    )
+                self.assertNotEqual(
+                    start_y, end_y, f"{label} 的起终点相同，这一下什么都不做"
+                )
+
         self.assertLess(
-            ACTIVITY_SCROLL_X,
-            ACTIVITY_COLUMN_X1,
-            "起点没落在左列范围里",
-        )
-        # y 方向：起点在下、终点在上（内容往上走 = 看更下面的活动）。
-        self.assertGreater(
             ACTIVITY_SCROLL_START_Y,
             ACTIVITY_SCROLL_END_Y,
-            "滚动方向反了：这个兜底要的是「往上拉，看更下面」",
+            "回列表头那一下的方向应该是「手指往下拖」（内容下移，露出上面的行）",
         )
+        self.assertGreater(
+            ACTIVITY_SCROLL_TAIL_START_Y,
+            ACTIVITY_SCROLL_TAIL_END_Y,
+            "两个方向必须相反，否则等于只扫了一半",
+        )
+
+        # ⚠️ 这套扫描**唯一**的硬几何约束：步长必须**小于**搜索带高度。
+        # 否则会造出「漏行」—— 某一行正好从带子上沿被滑过去，前后两次取景都没罩住它，
+        # 而在真机上「漏行」的表现和「入口不见了」一模一样，查起来极难。
+        # 现在 940 的带高配 400 的步长，相邻两次取景重叠 540px，怎么滑都漏不掉。
+        self.assertLess(
+            ACTIVITY_SCROLL_STEP,
+            ACTIVITY_COLUMN_Y1 - ACTIVITY_COLUMN_Y0,
+            "步长不能大于等于搜索带高度，否则会漏行：某一行正好从带上沿滑过去，两次取景都没看见",
+        )
+
 
     def test_missing_community_anchor_fails_closed(self):
         """判据锚点缺模板必须在**构造期**炸，不许悄悄降级成「画面认不出」。
@@ -1978,7 +2273,7 @@ class NavigationTests(unittest.TestCase):
 
         navigator.navigate("expedition")
 
-        self.assertEqual([(1827, 531), (465, 220), (1080, 357)], clicks)
+        self.assertEqual([(1819, 537), (465, 220), (1080, 357)], clicks)
 
     def test_expedition_navigation_accepts_remembered_season_tab(self):
         clicks: list[tuple[int, int]] = []
@@ -2002,7 +2297,7 @@ class NavigationTests(unittest.TestCase):
             error = caught
 
         self.assertIsNone(error)
-        self.assertEqual([(1827, 531), (1080, 357)], clicks)
+        self.assertEqual([(1819, 537), (1080, 357)], clicks)
 
     def test_labyrinth_navigation_switches_back_from_the_remembered_season_tab(self):
         """游戏记住上次停在哪一栏：跑过远征之后，迷宫进战斗页会直接落在赛季页。
@@ -2029,7 +2324,7 @@ class NavigationTests(unittest.TestCase):
         navigator.navigate("labyrinth_stone")
 
         # 第二下点的是「一般」标签条的中心 —— 它必须有，否则赛季页出不去。
-        self.assertEqual([(1827, 531), (225, 220)], clicks)
+        self.assertEqual([(1819, 537), (225, 220)], clicks)
 
     def test_labyrinth_navigation_leaves_the_general_tab_alone_when_already_on_it(self):
         """已经站在「一般」页就别再点那一栏（点了没坏处，但会拖慢、也徒增点击）。"""
@@ -2046,7 +2341,7 @@ class NavigationTests(unittest.TestCase):
 
         navigator.navigate("labyrinth_stone")
 
-        self.assertEqual([(1827, 531)], clicks)
+        self.assertEqual([(1819, 537)], clicks)
 
     def test_general_tab_candidates_cover_both_source_pages(self):
         """「一般」标签是**两张候选图**，各管一个来源页 —— 缺一张那一步就点不下去。
@@ -2167,7 +2462,7 @@ class NavigationTests(unittest.TestCase):
         navigator.navigate("labyrinth_stone")
 
         # 第二下点的还是「一般」标签条的中心 —— 第三页上必须点得下去。
-        self.assertEqual([(1827, 531), (225, 220)], clicks)
+        self.assertEqual([(1819, 537), (225, 220)], clicks)
 
     def test_classifies_season_menu_after_the_expedition_card_moved_to_the_right(self):
         """赛季轮换把「远征队」从中间挤到最右，赛季页仍须被识别。
@@ -2305,7 +2600,7 @@ class NavigationTests(unittest.TestCase):
 
         navigator.navigate("expedition")
 
-        self.assertEqual([(1827, 531), (465, 220), (1540, 357)], clicks)
+        self.assertEqual([(1819, 537), (465, 220), (1540, 357)], clicks)
 
     def test_season_menu_entry_anchor_only_matches_the_expedition_card(self):
         """区域放宽到整行后，匹配不能被旁边两张卡抢走。
@@ -2488,6 +2783,89 @@ class WorldBossNavigationTests(unittest.TestCase):
 
         self.assertEqual("knights_weekly_reward_popup", popup.name)
         self.assertNotEqual("unknown", popup.name)
+
+    def test_worldboss_support_reward_popup_is_reported_instead_of_unknown(self):
+        """「世界首领辅助队伍奖励」弹窗必须被单独报出来，而不是掉进「未知画面」。
+
+        ⚠️ 2026-10-19 08:11 每日任务「世界首领战 ✗」的现场：同僚团员借了辅助队伍
+        并拿到奖励，进世界首领战主页时弹这层。它把底页压暗（右下角「选择队伍」直接
+        认不出来）⇒ ``observe()`` 报 unknown ⇒ 导航转场
+        `骑士团主页 → worldboss_home` 一路等到 08:12:44 失败。
+
+        报出页名是为了让 ``Epic7GlobalPopupGuard``（装在 ``runtime.capture`` 上）点掉它。
+        """
+        navigator = self.navigator([])
+
+        popup = navigator.observe(world_boss_fixture("worldboss_support_reward_live_20261019"))
+
+        self.assertEqual("worldboss_support_reward_popup", popup.name)
+        self.assertNotEqual("unknown", popup.name)
+
+    def test_worldboss_home_is_reached_after_the_support_reward_popup_is_closed(self):
+        """端到端：那一步转场（骑士团主页 → 世界首领战主页）带着弹窗也要走得通。
+
+        这条钉的是**整条链**：守卫在 `runtime.capture` 里点掉弹窗 → 下一帧
+        `observe()` 认出 `worldboss_home` == 本步 ``targets`` → 转场确认。
+        只钉判据分数是不够的 —— 生产路径是「转场循环等目标页」。
+        """
+        from auto_game_unified.games.epic7.global_popups import (
+            Epic7GlobalPopupGuard,
+            load_network_reconnect_templates,
+            load_worldboss_support_reward_templates,
+        )
+
+        popup = world_boss_fixture("worldboss_support_reward_live_20261019")
+        home = world_boss_fixture("worldboss_home_chest_claimable")
+        knights = world_boss_fixture("knights_home")
+        pending = [popup, popup, popup, home, home, home]
+        last = [home]
+
+        def capture():
+            if pending:
+                last[0] = pending.pop(0)
+            return last[0]
+
+        clicks: list[tuple[int, int]] = []
+        logs: list[str] = []
+        runtime = Runtime(capture, clicks.append, emit=logs.append)
+        runtime.set_capture_guard(
+            Epic7GlobalPopupGuard(
+                load_network_reconnect_templates(
+                    ROOT / "games" / "epic7" / "templates" / "global"
+                ),
+                worldboss_support_reward_templates=(
+                    load_worldboss_support_reward_templates(
+                        ROOT / "games" / "epic7" / "templates" / "navigation"
+                    )
+                ),
+                sleep=lambda _: None,
+                now=lambda: 0.0,
+            )
+        )
+        navigator = Epic7Navigator(
+            build_navigation_templates(TEMPLATES),
+            runtime,
+            sleep=lambda _: None,
+            transition_frames=12,
+        )
+
+        final = navigator._transition(
+            "knights_home",
+            ("worldboss_home",),
+            "worldboss_entry",
+            "进入世界首领战",
+            source_screen=knights,
+        )
+
+        self.assertEqual("worldboss_home", navigator.observe(final).name)
+        self.assertTrue(
+            any("close-worldboss-support-reward" in line for line in logs),
+            "弹窗没被点掉（那一步又会等到超时）",
+        )
+        self.assertTrue(
+            any("页面=世界首领战主页" in line and "转场确认" in line for line in logs),
+            "转场没确认到目标页",
+        )
 
     def test_knights_home_is_recognized_again_once_the_signin_popup_is_closed(self):
         """弹窗点掉之后必须能正常认出骑士团主页（别把「压暗」当永久状态）。"""

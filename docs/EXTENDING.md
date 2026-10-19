@@ -232,10 +232,13 @@ tests/test_hunt_runner.py
   哪些画面**不该**接（弹窗通例 / 不可逆动作页 / 终态）见 [TRANSITION_CONTRACTS.md](TRANSITION_CONTRACTS.md)。
 - 接力覆盖面已登记进 [RESUME_COVERAGE.md](RESUME_COVERAGE.md)。
 - **桌面助手的分组表了态**：`desktop/catalog.py` 的 `RouteInfo` 里填了 `group`
-  （`GROUP_DAILY` / `GROUP_SEASON` / `GROUP_EVENT`）。⚠️ **默认值是「日常」**，
-  所以忘填不会报错 —— 但赛季轮换的（远征那类）或限时活动的路线必须显式标出来，
-  否则用户在一堆「日常」里找不到它，也不会知道它会被轮换掉。
-  判据见 [每日任务分组维护](maintenance/daily_tasks_grouping.md)。
+  （`GROUP_DAILY` / `GROUP_ONDEMAND` / `GROUP_SEASON` / `GROUP_EVENT`）。
+  ⚠️ **默认值是「每日」**，所以忘填不会报错 —— 但**按需**的（主线 / 狗粮 / 支线故事 /
+  月光剧场 / 英雄合成那类：内容常驻、只是不用天天跑）、赛季轮换的（远征那类）
+  或限时活动的路线**必须显式标出来**，否则用户在一堆「每日」里找不到它，
+  也不会知道它会被轮换掉。三个非默认值的分界见
+  [每日任务分组维护](maintenance/daily_tasks_grouping.md)（那里有一条判据：
+  「按需」与「每日」的差别是**跑不跑**，不是内容在不在）。
 - README 补充新模式命令和实机验证边界。
 - `docs/TODO.md` 和 PC 迁移矩阵同步更新，不把候选模板写成已支持。
 

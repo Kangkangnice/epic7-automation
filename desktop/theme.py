@@ -198,13 +198,16 @@ def apply_styles(root: tk.Misc, theme: Theme) -> None:
         foreground=palette.text_muted,
         font=theme.font(TYPE_CAPTION),
     )
-    # 分组标题（「日常 / 赛季 / 活动」）：比正文小一档、比说明文字重一点，
+    # 分组标题（「每日 / 按需 / 赛季 / 活动」）：比正文小一档、比说明文字重一点，
     # 靠**字重 + 位置**区分层级，不额外给底色 —— 卡片本来就是白的，再铺一层
-    # 只会让「三个分组」看起来像三个卡片，反而比路线本身还抢眼。
+    # 只会让「四个分组」看起来像四个卡片，反而比路线本身还抢眼。
+    #
+    # ⚠️ 2026-10-18：组标题从 `Label` 换成了**勾选框**（点它整组勾上 / 取消），
+    # 所以样式名从 `Group.TLabel` 变成 `Group.TCheckbutton` —— 字重与字号不变，
+    # 只多了一个系统绘制的勾选框。`Group.TLabel` 已随旧标题一起删掉。
     style.configure(
-        "Group.TLabel",
+        "Group.TCheckbutton",
         background=palette.surface,
-        foreground=palette.text,
         font=theme.font(TYPE_BODY, bold=True),
     )
 

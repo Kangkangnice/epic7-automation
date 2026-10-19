@@ -316,6 +316,8 @@ class StoryTemplates:
     complete: np.ndarray
     bonus_reward: np.ndarray
     next_stage: np.ndarray
+    # 「重复打同一关」那页的右下角按钮（「无法前往下一个关卡，请选择下方按钮」）。
+    retry_stage: np.ndarray
     threshold: float = 0.80
     stamina_popup: Optional[np.ndarray] = None
     stamina_material: Optional[np.ndarray] = None
@@ -352,6 +354,7 @@ def build_story_templates(template_dir: Path) -> StoryTemplates:
         complete=load_template(str(template_dir / "complete.png")),
         bonus_reward=load_template(str(template_dir / "bonus_reward.png")),
         next_stage=load_template(str(template_dir / "next_stage.png")),
+        retry_stage=load_template(str(template_dir / "retry_stage.png")),
         **asdict(load_stamina_templates(template_dir)),
         quick_battle=load_simulator_quick_battle_detector(template_dir),
         threshold=evidence.atom("start_mission").threshold,
@@ -715,7 +718,16 @@ class StoryStateMachine:
             (
                 "results_confirm",
                 "结算确认",
-                ("通关提示", "额外奖励", "下一关入口"),
+                # ⚠️ 「无法前往下一关」是**第四种**落点（2026-10-18 21:14 实跑）。
+                #
+                # 结算确认点完，游戏可能直接给「无法前往下一关，请选择下方按钮」
+                # （重复打同一关时的常态）。漏声明的后果**不是「认不出这一页」那么简单**：
+                # 主循环发现「新页面不在转场目标里」，会判定这一下没点成功，
+                # 于是把状态机刚给出的 `retry_stage` 动作**整个丢掉**（runner_base 里
+                # 那个 `action = last_transition_action if confirmed_page == source_page else None`），
+                # 干等 45 秒后报「转场超时」。日志表现完全像「点了没反应」，
+                # 但根因是**契约漏了一个落点**。
+                ("通关提示", "额外奖励", "下一关入口", "无法前往下一关"),
                 StoryState.WAIT_RESULTS,
                 (StoryState.WAIT_COMPLETE, StoryState.WAIT_NEXT_STAGE),
                 "结算确认按钮位于底部确认区",
@@ -906,6 +918,39 @@ class StoryStateMachine:
                     target_states=(StoryState.TEAM,),
                 )
 
+        # ── 「重复打同一关」那一页（2026-10-18 立）─────────────────────────────
+        #
+        # 现场：10-18 19:50（第 3 章·白色悬崖森林）与 10-14 18:42（另一关）两次同形 ——
+        # 结算确认点完，游戏给的是「无法前往下一个关卡，请选择下方按钮」，
+        # 左下角「离开 / 大厅」、右下角「S 体力/上限 + 重新进行」。
+        # 这一页**原来一个锚点都没有** ⇒ 认不出 ⇒ 静默干等 45 秒 ⇒ 退出码 1。
+        #
+        # 放在**所有前进判据之后**，就是用户要的优先级：
+        # 能「进行下一个关卡」就先走它（`complete` / `next_stage` / `prepare_battle`
+        # 都在上面已经判过），只有都认不到时才重打同一关。
+        #
+        # 落点依据不是猜的：狗粮路线 2026-09-13 的实跑日志里，
+        # 点 `replay` 之后 4 秒落到「准备战斗」页（`select_team` 那一屏），
+        # 再选队、开战 —— 所以这里按「回到关卡入口 / 助手选择」声明契约。
+        match = self._locate(screen, "retry_stage")
+        if match is not None:
+            if self._confirmed_page != "无法前往下一关":
+                # 这一屏本身 = 一局刚打完。只记一次：点歪重试（尝试 2/4、3/4）
+                # 时同一屏还会再判一次，不许把一轮算成两轮。
+                self.completed_cycles += 1
+            return self._action(
+                "retry_stage",
+                match.center,
+                source_page="无法前往下一关",
+                # 落点：`助手选择`（实测狗粮 replay 后到的那一页）/ `队伍准备`（万一直接跳过选助手）。
+                # `关卡入口 / 剧情关卡入口` 保留 —— 有的关卡重打会先回地图。
+                # ⚠️ 这四个都是「下一轮开头」的页面，不是随便凑的；
+                # 多写一个错页面 = 转场验收形同虚设。
+                target_pages=("关卡入口", "剧情关卡入口", "助手选择", "队伍准备"),
+                reason="「重新进行」已识别（本关没有下一关可去，重打同一关）",
+                target_states=(StoryState.STAGE, StoryState.TEAM),
+            )
+
         self._confirmed_page = ""
         raise UnrecognizedScreen(
             f"主线画面[{state_label(self.state)}]未识别"
@@ -983,6 +1028,10 @@ _STORY_RESUME_ORDER: tuple[tuple[str, StoryState, str], ...] = (
     ("clear", StoryState.WAIT_RESULTS, "通关结算"),
     ("reward", StoryState.WAIT_RESULTS, "奖励结算"),
     ("next_stage", StoryState.WAIT_NEXT_STAGE, "下一关入口"),
+    # 「无法前往下一个关卡」那一页，**故意排最后**：它是「前进无路可走时的兜底」，
+    # 不是比 `next_stage` 更优先的落点。实测这一页上 `next_stage` 只有 0.1411，
+    # 排在前后都不影响结果；排最后只是把「优先级」写成可读的顺序。
+    ("retry_stage", StoryState.WAIT_RESULTS, "重新进行"),
 )
 
 

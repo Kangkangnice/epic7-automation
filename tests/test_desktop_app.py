@@ -9,7 +9,7 @@ from unittest.mock import patch
 from auto_game_unified.desktop import app as app_module
 from auto_game_unified.desktop import theme
 from auto_game_unified.desktop.app import DesktopApp, DesktopController, fit_window_size
-from auto_game_unified.desktop.catalog import ROUTES, grouped_routes
+from auto_game_unified.desktop.catalog import ROUTES, grouped_routes, routes_in_group
 from auto_game_unified.desktop.preflight import PreflightReport, PreflightStatus
 
 
@@ -124,7 +124,9 @@ def test_controller_cycles_default_to_each_route_own_default():
     assert list(controller.cycles) == [route.mode for route in ROUTES]
     assert controller.cycles["world_boss"] == 2
     assert controller.cycles["hero_synthesis"] == 1
-    assert controller.cycles["arena"] == 1
+    # ⚠️ 竞技场默认 **10 次**（用户 2026-10-18 拍板）—— 原来是 1，等于
+    # 「点开只打一场就走」。见 `modes.MODE_SPECS["arena"]` 那里的注释。
+    assert controller.cycles["arena"] == 10
     assert controller.cycles["survivor"] == 3
 
 
@@ -595,8 +597,9 @@ def test_task_panel_renders_a_checkbox_and_a_cycle_input_per_route(
     tk_window.update_idletasks()
 
     # ⚠️ 这里断言的是**集合相同 + 顺序 = 分组顺序**，不是 `ROUTES` 的书写顺序：
-    # 2026-10-08 分组改版后，面板按「日常 / 赛季 / 活动」三段渲染，所以控件
-    # 是按**分组顺序**建出来的（赛季那两条被挪到日常之后）。断言 `ROUTES` 顺序
+    # 分组改版后（2026-10-08 三组，2026-10-18 拆成四组），面板按
+    # 「每日 / 按需 / 赛季 / 活动」四段渲染，所以控件是按**分组顺序**建出来的
+    # （「按需」那几条被挪到「每日」全组之后）。断言 `ROUTES` 顺序
     # 会把「分组生效了」这件正事判成失败。
     assert set(app._route_buttons) == {route.mode for route in ROUTES}
     assert list(app._route_buttons) == [
@@ -610,7 +613,8 @@ def test_task_panel_renders_a_checkbox_and_a_cycle_input_per_route(
         assert actual == expected
     assert all(var.get() is False for var in app.route_vars.values())
     assert app.cycle_vars["world_boss"].get() == "2"
-    assert app.cycle_vars["arena"].get() == "1"
+    # 竞技场默认 10 次（用户 2026-10-18 拍板，原来是 1）。
+    assert app.cycle_vars["arena"].get() == "10"
     # 「刷书签」默认 **0 次**（只扫不刷新，用户 2026-09-29 拍板）——
     # 次数框必须能显示 0，且箭头下限跟着路线走，否则会出现
     # 「框里写着 0、按一下上去就再也回不到 0」的僵尸状态。
@@ -656,8 +660,10 @@ def test_task_panel_columns_are_derived_from_the_screen_budget(tmp_path, tk_wind
     assert {column for _, column in cells.values()} == set(range(columns))
 
     # 逐组核对：标题占 1 行，然后该组的格子按 `columns` 折行接着往下排。
-    # 用 `grouped_routes()` 走真实分组（面板渲染的就是它），但**行号从 1 起算**
+    # 用 `grouped_routes()` 走真实分组（面板渲染的就是它），但**行号从 0 起算**
     # 是这里独立写死的 —— 不是问实现「你觉得该从第几行开始」。
+    # ⚠️ 2026-10-18 起是 **0** 而不是 1：卡头那一条（「每日任务」+ 操作说明）
+    # 已经整块删掉，第一组标题直接坐在第 0 行。
     for route in ROUTES:
         assert route.mode in cells, f"{route.mode} 这一行没画出来"
     # 最后一行 = 最后一个分组的最后一行格子。独立算一遍：
@@ -665,8 +671,8 @@ def test_task_panel_columns_are_derived_from_the_screen_budget(tmp_path, tk_wind
     grids_above = sum(
         -(-len(routes) // columns) for _g, routes in grouped_routes()[:-1]
     )
-    # 起始行 1 + 前面各组(标题1行 + 格子若干行) + 本组标题1行 + 本组格子若干行
-    last_row = 1 + (len(grouped_routes()) - 1 + grids_above) + -(
+    # 起始行 0 + 前面各组(标题1行 + 格子若干行) + 本组标题1行 + 本组格子若干行
+    last_row = 0 + (len(grouped_routes()) - 1 + grids_above) + -(
         -len(last_group_routes) // columns
     )
     actual_rows = {row for row, _ in cells.values()}
@@ -750,7 +756,8 @@ def test_an_invalid_cycle_blocks_the_start(tmp_path, tk_window):
 
     assert worker.request is None
     assert showerror.called
-    assert app.cycle_vars["arena"].get() == "1"
+    # 填坏了要**回显成原值**（竞技场的默认值是 10，见 `modes.MODE_SPECS`）。
+    assert app.cycle_vars["arena"].get() == "10"
 
 
 def test_start_uses_the_edited_panel_cycle(tmp_path, tk_window):
@@ -1015,12 +1022,16 @@ def test_the_window_is_usable_again_after_a_forced_kill(tmp_path, tk_window):
 
 
 # --------------------------------------------------------------------------
-# 三分组渲染 + 批量勾选按钮（用户 2026-10-08 拍板）
+# 四分组渲染 + 组标题上的整组勾选（用户 2026-10-18 改版）
+#
+# ⚠️ 2026-10-18 之前这里测的是卡头右侧那三颗「全选 / 全选（不含活动）/ 取消全选」
+# 按钮。用户当天把它们整排撤掉，改成**每组标题自己就是勾选框**（点一下整组勾上、
+# 再点一下整组取消）。所以这批用例测的是组勾选框，不是按钮。
 # --------------------------------------------------------------------------
 
 
-def test_task_panel_renders_a_titled_section_per_group(tmp_path, tk_window):
-    """面板按「日常 / 赛季 / 活动」分三段，每段有自己的标题。
+def test_task_panel_renders_a_group_header_per_group(tmp_path, tk_window):
+    """面板按「每日 / 按需 / 赛季 / 活动」分四段，每段标题**本身就是勾选框**。
 
     ⚠️ 标题文案与顺序**写死**在断言里 —— 不许调 `catalog.GROUPS` 来比对，
     那等于问实现「你自己觉得该显示啥」。
@@ -1035,21 +1046,22 @@ def test_task_panel_renders_a_titled_section_per_group(tmp_path, tk_window):
     )
     tk_window.update_idletasks()
 
-    titles = [
+    group_names = ("每日", "按需", "赛季", "活动")
+    headers = [
         widget
         for widget in app._task_panel_descendants()
-        if isinstance(widget, ttk.Label) and widget.cget("text") in ("日常", "赛季", "活动")
+        if isinstance(widget, ttk.Checkbutton) and widget.cget("text") in group_names
     ]
-    titles.sort(key=lambda label: int(label.grid_info()["row"]))
+    headers.sort(key=lambda box: int(box.grid_info()["row"]))
 
-    assert [label.cget("text") for label in titles] == ["日常", "赛季", "活动"]
+    assert [box.cget("text") for box in headers] == list(group_names)
 
-    rows = [int(label.grid_info()["row"]) for label in titles]
-    assert rows == sorted(rows) and len(set(rows)) == 3, f"标题行号不正常：{rows}"
+    rows = [int(box.grid_info()["row"]) for box in headers]
+    assert rows == sorted(rows) and len(set(rows)) == 4, f"标题行号不正常：{rows}"
 
     # 每个分组标题必须排在**它那一组的第一条路线**之前（否则标题挂在人家下面）。
-    for label, (group, routes) in zip(titles, grouped_routes(), strict=True):
-        title_row = int(label.grid_info()["row"])
+    for header, (group, routes) in zip(headers, grouped_routes(), strict=True):
+        title_row = int(header.grid_info()["row"])
         for route in routes:
             cell_row = int(app._route_buttons[route.mode].master.grid_info()["row"])
             assert title_row < cell_row, (
@@ -1058,7 +1070,12 @@ def test_task_panel_renders_a_titled_section_per_group(tmp_path, tk_window):
             )
 
 
-def test_bulk_buttons_exist_with_the_three_labels(tmp_path, tk_window):
+def test_the_old_bulk_buttons_are_gone(tmp_path, tk_window):
+    """卡头那三颗批量按钮必须**真的没了**（用户 2026-10-18：「这一行全部去掉」）。
+
+    留着它们不只是多余 —— 它们占着卡头右侧的宽度，说明文字被挤得折更多行，
+    而那正是用户要腾出来的高度。
+    """
     app = DesktopApp(
         tk_window,
         controller=DesktopController(worker=FakeWorker()),
@@ -1071,89 +1088,158 @@ def test_bulk_buttons_exist_with_the_three_labels(tmp_path, tk_window):
         for widget in app._task_panel_descendants()
         if isinstance(widget, ttk.Button)
     }
-    assert {"全选", "全选（不含活动）", "取消全选"} <= texts
+    assert not ({"全选", "全选（不含活动）", "取消全选"} & texts), texts
 
 
-def test_select_all_ticks_every_route_in_panel_order(tmp_path, tk_window):
-    """「全选」勾上全部路线，且**顺序 = 面板顺序**（= 显示顺序）。
+def test_a_group_header_ticks_the_whole_group(tmp_path, tk_window):
+    """点「每日」⇒ 那 7 条全勾上，**别的组一条都不动**。"""
+    controller = DesktopController(worker=FakeWorker())
+    app = DesktopApp(tk_window, controller=controller, project_root=tmp_path)
+    tk_window.update_idletasks()
 
-    顺序是这里的关键：用户拍板「勾选先后就是执行顺序」，批量勾完的顺序必须是
-    他看到的那份清单，不能是 `ROUTES` 的书写顺序（分组后两者不同）。
+    app._group_vars["每日"].set(True)
+    app._on_group_toggle("每日")
+    tk_window.update_idletasks()
+
+    expected = [route.mode for route in routes_in_group("每日")]
+    assert controller.selection == expected
+    # 真值表独立算一遍（不拿 `routes_in_group` 自证条数）。
+    assert expected == [
+        "arena",
+        "shop_refresh",
+        "world_boss",
+        "knights_donation",
+        "labyrinth_stone",
+        "sanctuary",
+        "community",
+    ]
+    for mode in expected:
+        assert app.route_vars[mode].get() is True, mode
+    # 别的组一条都没被勾上。
+    assert app.route_vars["story"].get() is False
+    assert app.route_vars["tower"].get() is False
+    assert app._group_vars["按需"].get() is False
+
+
+def test_a_group_header_untickes_the_whole_group_and_leaves_others_alone(
+    tmp_path, tk_window
+):
+    """再点一下「每日」⇒ 整组取消，**别的组保留**。
+
+    这正是用户要的「取消全选某一类」—— 旧的「取消全选」会把所有组一起清空，
+    做不到「只清这一类」。
     """
     controller = DesktopController(worker=FakeWorker())
     app = DesktopApp(tk_window, controller=controller, project_root=tmp_path)
     tk_window.update_idletasks()
 
-    app._bulk_select(include_events=True)
+    app._group_vars["每日"].set(True)
+    app._on_group_toggle("每日")
+    app._group_vars["按需"].set(True)
+    app._on_group_toggle("按需")
+    assert len(controller.selection) == 12, controller.selection
+
+    app._group_vars["每日"].set(False)
+    app._on_group_toggle("每日")
     tk_window.update_idletasks()
 
-    expected = [
-        route.mode for _group, routes in grouped_routes() for route in routes
+    assert controller.selection == [
+        route.mode for route in routes_in_group("按需")
     ]
-    # ⚠️ 例外：「活动」只能单独跑（standalone_only），与别的路线互斥 ——
-    # 所以「全选」把活动一起勾上时，结果就是**只勾活动这一条**。
+    for mode in ("arena", "shop_refresh", "world_boss"):
+        assert app.route_vars[mode].get() is False, mode
+    assert app.route_vars["story"].get() is True
+    # 底部说明不许被清空 —— 它读的是「最后勾的那条」，按需那组还在。
+    assert app.route_description_var.get() != ""
+
+
+def test_unticking_one_route_drops_the_group_box(tmp_path, tk_window):
+    """手动取消组内一条 ⇒ 组标题的勾**自动消失**（= 这一组只是部分选中）。
+
+    ⚠️ 这条守的是「界面不许自相矛盾」：组标题还打着勾、里面却有一条没勾，
+    会让人以为点一下能把那条补上，实际点下去是整组**重勾**。
+    """
+    controller = DesktopController(worker=FakeWorker())
+    app = DesktopApp(tk_window, controller=controller, project_root=tmp_path)
+    tk_window.update_idletasks()
+
+    app._group_vars["每日"].set(True)
+    app._on_group_toggle("每日")
+    assert app._group_vars["每日"].get() is True
+
+    # 手动取消其中一条（走单条那条路，和真实点击一致）。
+    app.route_vars["arena"].set(False)
+    app._on_toggle("arena")
+    tk_window.update_idletasks()
+
+    assert app._group_vars["每日"].get() is False
+    # 其余六条仍然勾着 —— 组标题不勾 ≠ 整组被清空。
+    assert len(controller.selection) == 6, controller.selection
+    # 再点一下组标题 = 整组**重新勾上**（把 arena 补回末尾）。
+    app._group_vars["每日"].set(True)
+    app._on_group_toggle("每日")
+    assert len(controller.selection) == 7
+    assert controller.selection[-1] == "arena"
+
+
+def test_group_selection_appends_after_what_is_already_ticked(tmp_path, tk_window):
+    """先把某几条勾上、再点整组 ⇒ 新来的**追加在末尾**，不抹掉原来的顺序。
+
+    ⚠️ 这是「勾选先后就是执行顺序」那条语义在整组操作下的落点：点赞组的用户
+    表达的是「现在开始跑这一组」，所以它们排在已勾内容之后。
+    """
+    controller = DesktopController(worker=FakeWorker())
+    app = DesktopApp(tk_window, controller=controller, project_root=tmp_path)
+    tk_window.update_idletasks()
+
+    app.route_vars["story"].set(True)
+    app._on_toggle("story")
+    app.route_vars["tower"].set(True)
+    app._on_toggle("tower")
+
+    app._group_vars["每日"].set(True)
+    app._on_group_toggle("每日")
+
+    assert controller.selection[:2] == ["story", "tower"]
+    assert controller.selection[2:] == [
+        route.mode for route in routes_in_group("每日")
+    ]
+
+
+def test_the_event_group_replaces_other_selections(tmp_path, tk_window):
+    """「活动」只能单独跑 ⇒ 勾上它就是**只剩它**，其余全灭。"""
+    controller = DesktopController(worker=FakeWorker())
+    app = DesktopApp(tk_window, controller=controller, project_root=tmp_path)
+    tk_window.update_idletasks()
+
+    app._group_vars["每日"].set(True)
+    app._on_group_toggle("每日")
+    assert controller.selection
+    app._group_vars["活动"].set(True)
+    app._on_group_toggle("活动")
+    tk_window.update_idletasks()
+
     assert controller.selection == ["survivor"]
-    assert expected.count("survivor") == 1
-    # 界面上要跟着走：活动亮着、其余全灭。
     assert app.route_vars["survivor"].get() is True
     assert app.route_vars["arena"].get() is False
-    assert app.route_vars["tower"].get() is False
+    # 整组被清掉之后，那些组的勾选框也得跟着灭。
+    assert app._group_vars["每日"].get() is False
 
 
-def test_select_all_without_events_ticks_the_daily_and_season_routes(
-    tmp_path, tk_window
-):
-    """「全选（不含活动）」—— 这是最常用的那颗，必须避开 survivor。"""
-    controller = DesktopController(worker=FakeWorker())
-    app = DesktopApp(tk_window, controller=controller, project_root=tmp_path)
-    tk_window.update_idletasks()
-
-    app._bulk_select(include_events=False)
-    tk_window.update_idletasks()
-
-    assert "survivor" not in controller.selection
-    # 顺序与面板一致，并且**每个分组都有人**（三组不许有一组被漏掉）。
-    assert controller.selection == [
-        route.mode
-        for _group, routes in grouped_routes()
-        for route in routes
-        if route.mode != "survivor"
-    ]
-    assert app.route_vars["survivor"].get() is False
-    assert app.route_vars["tower"].get() is True
-    assert app.route_vars["arena"].get() is True
-
-
-def test_bulk_clear_untickes_everything(tmp_path, tk_window):
-    controller = DesktopController(worker=FakeWorker())
-    app = DesktopApp(tk_window, controller=controller, project_root=tmp_path)
-    tk_window.update_idletasks()
-
-    app._bulk_select(include_events=False)
-    tk_window.update_idletasks()
-    assert controller.selection  # 先确保确实勾上了一批
-
-    app._bulk_clear()
-    tk_window.update_idletasks()
-
-    assert controller.selection == []
-    assert all(var.get() is False for var in app.route_vars.values())
-    # 底部说明也要跟着清空 —— 它读的是「最后勾的那条」。
-    assert app.route_description_var.get() == ""
-
-
-def test_bulk_selection_numbers_reflect_panel_order(tmp_path, tk_window):
-    """批量勾完之后每行的序号（①②③…）必须按面板顺序发下去。
+def test_group_numbers_reflect_panel_order(tmp_path, tk_window):
+    """整组勾完之后每行的序号（①②③…）必须按面板顺序发下去。
 
     ⚠️ 这里**独立**算前缀（头 10 位圈码、之后阿拉伯数字），不调
     `app._position_prefix` —— 拿被测函数去算「该显示什么」等于没断言。
-    12 条路线会跨过第 10 位这个坎，正好覆盖曾经的 IndexError。
+    「每日」+「按需」= 12 条，会跨过第 10 位这个坎，正好覆盖曾经的 IndexError。
     """
     controller = DesktopController(worker=FakeWorker())
     app = DesktopApp(tk_window, controller=controller, project_root=tmp_path)
     tk_window.update_idletasks()
 
-    app._bulk_select(include_events=False)
+    for group in ("每日", "按需"):
+        app._group_vars[group].set(True)
+        app._on_group_toggle(group)
     tk_window.update_idletasks()
 
     circled = "①②③④⑤⑥⑦⑧⑨⑩"
@@ -1165,8 +1251,8 @@ def test_bulk_selection_numbers_reflect_panel_order(tmp_path, tk_window):
         )
 
 
-def test_bulk_selection_is_refused_while_running(tmp_path, tk_window):
-    """运行期间不许改勾选 —— 三个批量入口都要守住（和单条 `toggle` 一样）。"""
+def test_group_toggle_is_refused_while_running(tmp_path, tk_window):
+    """运行期间不许改勾选 —— 组标题这条入口也要守住（和单条 `toggle` 一样）。"""
     worker = FakeWorker()
     controller = DesktopController(worker=worker)
     controller.apply_preflight(passed_preflight())
@@ -1174,9 +1260,11 @@ def test_bulk_selection_is_refused_while_running(tmp_path, tk_window):
     app = DesktopApp(tk_window, controller=controller, project_root=tmp_path)
     tk_window.update_idletasks()
 
-    with patch.object(app_module.messagebox, "showerror") as showerror:
-        app._bulk_select(include_events=False)
-        app._bulk_clear()
+    app._group_vars["每日"].set(True)
+    with patch.object(app_module.messagebox, "showwarning") as showwarning:
+        app._on_group_toggle("每日")
 
-    assert showerror.call_count == 2
+    assert showwarning.called
     assert controller.selection == []
+    # 被拒绝的那一次点击要**撤回去**：勾选框不许停在「已勾」上骗人。
+    assert app._group_vars["每日"].get() is False
