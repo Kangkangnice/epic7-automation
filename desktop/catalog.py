@@ -8,7 +8,7 @@ from auto_game_unified.games.epic7.modes import MODE_SPECS
 
 
 PRODUCT_NAME = "第七史诗自动助手"
-PRODUCT_VERSION = "0.1.0-dev"
+PRODUCT_VERSION = "0.1.0"
 
 # ── 「每日任务」面板里的三个分组（用户 2026-10-08 拍板）──────────────────────
 #
