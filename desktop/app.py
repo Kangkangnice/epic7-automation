@@ -25,6 +25,11 @@ from auto_game_unified.desktop.catalog import (
     visible_backends,
 )
 from auto_game_unified.desktop.diagnostics import export_diagnostics
+from auto_game_unified.desktop.onboarding import (
+    has_consent,
+    prompt_consent,
+    record_consent,
+)
 from auto_game_unified.desktop.preflight import (
     PreflightReport,
     run_preflight,
@@ -331,6 +336,9 @@ class DesktopApp:
         stop_grace_seconds: float = STOP_GRACE_SECONDS,
         clock: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], None] = time.sleep,
+        consent_required: bool = False,
+        consent_probe: Callable[[Path], bool] = has_consent,
+        consent_prompt: Callable[[tk.Misc, theme.Theme], bool] = prompt_consent,
     ) -> None:
         self.root = root
         self.controller = controller
@@ -338,6 +346,16 @@ class DesktopApp:
         # 运行产物（日志 / 诊断 / 诊断包）的根目录。打包安装后与 project_root 不是同一个：
         # 安装目录可能只读，产物必须落到 %LOCALAPPDATA%。见 core/data_paths.py。
         self.data_root = data_root or project_root
+        # 「使用须知」确认状态。``consent_required`` 默认 False —— **只有真正的入口
+        # （``main()``，也就是用户双击打开的那条路）才把它打开**。测试与嵌入式调用
+        # 不该因为没点过同意就被挡在门外，也不该凭空弹一个 grab 住的窗口。
+        #
+        # ⚠️ 别把默认值改成 True：那样每个构造 `DesktopApp` 的地方都会弹出模态窗，
+        # 而现有 GUI 测试正是这么构造它的（见 tests/test_desktop_app.py）。
+        self._consent_required = consent_required
+        self._consent_probe = consent_probe
+        self._consent_prompt = consent_prompt
+        self.consented = (not consent_required) or consent_probe(self.data_root)
         self.template_root = TEMPLATE_ROOT
         self._preflight_runner = preflight_runner
         self._route_validator = route_validator
@@ -385,6 +403,9 @@ class DesktopApp:
         self._refresh_route_details()
         self._refresh_controls()
         self._fit_initial_window()
+        # 主窗口先画出来再弹须知：反过来的话，模态窗后面是一片空白，
+        # 用户会以为自己只打开了对话框、根本没装上东西。
+        self.root.after(150, self._ensure_consent)
         self.root.after(100, self._poll_worker)
 
     def _fit_initial_window(self) -> None:
@@ -770,6 +791,7 @@ class DesktopApp:
         utilities.grid(row=0, column=2, sticky="e")
         for index, (text, command) in enumerate(
             (
+                ("使用须知", self._show_onboarding),
                 ("打开日志", self._open_logs),
                 ("打开诊断", self._open_diagnostics),
                 ("导出诊断包", self._export),
@@ -984,6 +1006,13 @@ class DesktopApp:
         流程与原来「单路线」那条通道逐字同形：收次数 → 实验功能提醒 → 复检环境 →
         逐条查模板 → 启动。两条通道合并之后，以后改这里只有一处。
         """
+        if not self.consented:
+            # 按钮本来就该是灰的（见 ``_refresh_controls``）。走到这里只可能是
+            # 有人绕过了按钮状态（脚本调用 / 事件顺序异常），仍然守住这条线。
+            messagebox.showwarning(
+                "使用须知", "请先阅读并同意《使用须知》再开始。", parent=self.root
+            )
+            return
         if not self.controller.selection:
             messagebox.showwarning(
                 DAILY_LABEL, "至少要勾选一条路线再开始。", parent=self.root
@@ -1164,12 +1193,13 @@ class DesktopApp:
         self.check_button.configure(
             state=tk.DISABLED if running or self._checking else tk.NORMAL
         )
-        # 「开始任务」：要勾了至少一条、且完成过环境检测、且当前没在跑。
+        # 「开始任务」：要勾了至少一条、且完成过环境检测、且当前没在跑、且确认过使用须知。
         self.start_button.configure(
             state=(
                 tk.NORMAL
                 if self.controller.ready
                 and self.controller.can_start
+                and self.consented
                 and not self._checking
                 else tk.DISABLED
             )
@@ -1183,6 +1213,46 @@ class DesktopApp:
                     else tk.DISABLED
                 )
             )
+
+    def _ensure_consent(self) -> None:
+        """首次启动（或条款改版后）确认一次使用须知。
+
+        拒绝不弹第二个窗、不拦着关窗口，只在日志里说明「开始任务」为什么点不动、
+        去哪里能重新看 —— 它本来就该由**按钮状态**表达，而不是一串弹窗。
+        """
+        if self.consented or not self._consent_required:
+            return
+        if not self._consent_prompt(self.root, self.theme):
+            self._append_log(
+                "尚未确认使用须知，「开始任务」保持禁用。"
+                "想阅读时点控制条右侧的「使用须知」。"
+            )
+            return
+        self._grant_consent()
+        # 新手确认完的下一步几乎一定是「现在能不能跑」——直接替他点一次检测，
+        # 省掉「还得自己找到检测按钮」。检测本来就只读，跑失败也只是给出一句原因。
+        self._check_environment()
+
+    def _grant_consent(self) -> None:
+        """记下「已同意」，并把按钮状态刷回来。
+
+        ⚠️ 落盘失败**照样放行**：用户刚刚确实点了同意，写不进去是这个目录的问题
+        （`core/data_paths.py` 的自检会报），不是让他在门口再走一遍的理由。
+        代价只是下次启动再问一次，可以接受。
+        """
+        self.consented = True
+        if not record_consent(self.data_root):
+            self._append_log(
+                f"提示：无法保存确认记录（{self.data_root} 不可写），下次启动会再问一次。"
+            )
+        self._refresh_controls()
+
+    def _show_onboarding(self) -> None:
+        """控制条上的「使用须知」：已同意过的只是重看，未同意的走一次完整确认。"""
+        if self.consented:
+            self._consent_prompt(self.root, self.theme)
+            return
+        self._ensure_consent()
 
     def _append_log(self, message: str) -> None:
         self.log_text.configure(state=tk.NORMAL)
@@ -1251,6 +1321,9 @@ def main() -> int:
     root = tk.Tk()
     worker = WorkerController(repo_parent=REPO_PARENT, data_root=DATA_ROOT)
     controller = DesktopController(worker=worker)
-    DesktopApp(root, controller=controller, data_root=DATA_ROOT)
+    # 这里是**用户双击打开**的那条路，也是全项目唯一开 `consent_required` 的地方。
+    DesktopApp(
+        root, controller=controller, data_root=DATA_ROOT, consent_required=True
+    )
     root.mainloop()
     return 0
