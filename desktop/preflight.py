@@ -8,6 +8,7 @@ from typing import Callable
 
 import numpy as np
 
+from auto_game_unified.core.elevation import privilege_warning_for
 from auto_game_unified.core.pc_window import Epic7PcWindow
 from auto_game_unified.core.window import Epic7Window
 from auto_game_unified.games.epic7.modes import get_mode
@@ -23,6 +24,10 @@ class PreflightReport:
     status: PreflightStatus
     message: str
     screen_size: tuple[int, int] | None = None
+    #: 「能跑，但大概率点不动」的提示（目前只有一种：模拟器权限比本程序高，
+    #: 点击会被 UIPI 拦掉）。**它不影响 ``can_start``** —— 检测是通过的，
+    #: 只是需要用户以管理员身份重启一次。空字符串与 None 都表示没有提示。
+    warning: str | None = None
 
     @property
     def can_start(self) -> bool:
@@ -85,8 +90,12 @@ def run_preflight(
     if window_backend == "pc":
         return _probe_pc(pc_window_factory())
 
+    # PC 后端不查提权：它只用于采集模板与开发验证，而且 PC 客户端本身要求以管理员
+    # 身份运行助手（见 app.STARTUP_HINTS），提示「请以管理员重启」是废话。
+    probe: Epic7Window | None = None
     try:
-        screen = window_factory().capture()
+        probe = window_factory()
+        screen = probe.capture()
         height, width = screen.shape[:2]
         if (width, height) != (1982, 1132):
             raise RuntimeError(
@@ -97,8 +106,12 @@ def run_preflight(
     except Exception as error:
         return PreflightReport(PreflightStatus.BLOCK, str(error))
 
+    # 截图能过、点击未必能过：模拟器若以管理员启动，输入会被 UIPI 静默拦掉。
+    # 这一步只提示、不阻断 —— 检测本身是成功的，见 PreflightReport.warning。
+    warning = privilege_warning_for(probe) if probe is not None else None
     return PreflightReport(
         PreflightStatus.PASS,
         "雷电模拟器和截图检查通过",
         (width, height),
+        warning=warning,
     )
