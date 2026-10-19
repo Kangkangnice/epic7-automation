@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from datetime import datetime
 import json
+import re
 
 import pytest
 import tkinter as tk
@@ -221,6 +222,26 @@ def test_text_has_no_markdown_markup():
     assert "**" not in text
     assert "__" not in text
     assert "](" not in text
+
+
+def test_the_consent_dialog_gets_a_sane_position(tk_window):
+    """不摆位置的话 Tk 会把对话框丢在屏幕左上角 —— 2026-10-19 打包版截图才发现。
+
+    这里只守两件事：位置被显式设过、且不在负坐标（父窗口贴边时算出来的负值）。
+    """
+    from auto_game_unified.desktop import theme as theme_module
+    from auto_game_unified.desktop.onboarding import ConsentDialog
+
+    theme = theme_module.build(tk_window)
+    dialog = ConsentDialog(tk_window, theme)
+    try:
+        geometry = dialog.geometry()
+        match = re.match(r"^\d+x\d+\+(-?\d+)\+(-?\d+)$", geometry)
+        assert match, f"geometry 里没有位置：{geometry}"
+        assert int(match.group(1)) >= 0
+        assert int(match.group(2)) >= 0
+    finally:
+        dialog.destroy()
 
 
 # --------------------------------------------------------------------------
