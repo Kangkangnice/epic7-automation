@@ -71,8 +71,27 @@ def _indoor_frame() -> np.ndarray:
     return image[:1132, :1982]
 
 
+def _shop_frame() -> np.ndarray:
+    """迷宫商店页（**对导航层是 unknown**）—— 2026-10-19 那次卡死 120 秒的现场。
+
+    这张帧上「蓝色四格」照样得 **0.835**（阈值 0.80），因为商店浮层只把它压暗、
+    没把它移走；但点下去**什么也不会发生**（那颗按钮其实被浮层盖着）。
+    """
+    image = np.asarray(
+        Image.open(
+            ROOT
+            / "tests"
+            / "fixtures"
+            / "epic7_labyrinth_stone"
+            / "shop_clipped_bottom_row_live_20261019.png"
+        ).convert("RGB")
+    )
+    return image[:1132, :1982]
+
+
 LOBBY_FRAME = _lobby_frame()
 INDOOR_FRAME = _indoor_frame()
+SHOP_FRAME = _shop_frame()
 
 
 def _sequence_runtime(frames: list, *, sleeps: list | None = None, logs: list | None = None):
@@ -474,6 +493,54 @@ class RealWiringTests(unittest.TestCase):
             joined,
             "已经接入了页面识别，却还在走降级路径 —— 说明 observe 没传到验收器。"
             f"日志：\n{joined}",
+        )
+
+    def test_a_click_that_never_moves_the_page_is_retired_instead_of_retried(self):
+        """**钉住 2026-10-19 事故**：点了没用就必须换招，不许原地重试到 120 秒。
+
+        现场（``runtime_logs/desktop_worker.log`` 19:36:51~19:38:20）是这样的 ——
+        同一行重复了 **8 次**，中间一个字都没变::
+
+            动作=打开快捷菜单 置信度=0.835 坐标=(1858, 103) 动作前页面=unknown
+            动作=打开快捷菜单 点击验收=无效 页面=unknown 已等=12秒
+
+        每一轮还要空等 12 秒 ⇒ 120 秒预算全烧光，最后只报「超过 120 秒仍未回到大厅」，
+        事后完全看不出它卡在哪一页。
+
+        这一条守两件事：
+
+        1. **同一个动作最多点 2 次**（``_MAX_INEFFECTIVE_CLICKS``），然后停用；
+        2. **不许以「120 秒超时」收场** —— 停用后落到 ESC 兜底，ESC 两次无效就
+           带着页面身份报错。报错要能说明「停在哪一页」。
+        """
+        logs: list[str] = []
+        navigator = _real_navigator(SHOP_FRAME, logs=logs)
+        home_return = main_module.HomeReturn(
+            navigator, navigator.runtime, mode="labyrinth_stone"
+        )
+
+        with self.assertRaises(RuntimeError) as caught:
+            home_return()
+
+        message = str(caught.exception)
+        self.assertNotIn(
+            "超过 120 秒",
+            message,
+            "点无效之后应当立刻换招，而不是把 120 秒预算原地烧光；"
+            f"实际报错：{message}",
+        )
+        self.assertIn("ESC", message, f"换招应当落到 ESC 兜底；实际报错：{message}")
+
+        clicks = navigator.runtime.clicks
+        self.assertLessEqual(
+            len(clicks),
+            2,
+            f"同一个无效点击被重复了 {len(clicks)} 次（上限 2）：{clicks}",
+        )
+        self.assertIn(
+            "停用该动作改走ESC兜底",
+            "\n".join(logs),
+            "停用动作必须留下日志 —— 不许悄悄换招",
         )
 
     def test_without_observe_the_downgrade_is_announced(self):

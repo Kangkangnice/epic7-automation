@@ -66,6 +66,25 @@ class KnightsWeeklyRewardTemplates:
 
 
 @dataclass(frozen=True)
+class WorldBossSupportRewardTemplates:
+    """「世界首领辅助队伍奖励」弹窗（标题 + 点击关闭，与骑士团那三个同形）。
+
+    ⚠️ 两个锚点**分工不同**，别照抄成「两个判据」：
+    - ``title``（「世界首领辅助队伍奖励」）= **排他锚点**，跨页最高只有 0.3320；
+    - ``close``（底部「点击关闭」那行灰字）= **点击点**。它单独**完全不排他**
+      —— 全库扫下来 `reward_popup` 0.8993、`popup_spring` / `popup_penguin_*`
+      都在 0.8991（同一种「底部居中 点击关闭」灰字控件），所以必须靠标题兜住。
+
+    ⚠️ ``close`` 只能用**原样比较**（``MATCH_MODE_RAW``）：那行灰字峰值亮度只有
+    **171**，低于白掩膜的 200 下界 —— 走 ``MATCH_MODE_WHITE_MASK`` 会被整片抹成 0，
+    常量模板在 CCOEFF 下退化成「处处 1.0000」（实测世界首领主页十几张帧全变 1.0）。
+    """
+
+    title: np.ndarray
+    close: np.ndarray
+
+
+@dataclass(frozen=True)
 class PetGiftTemplates:
     """宠物小屋礼物角标（**单锚点**：整个角标就是要点的目标，没有标题/关闭点）。"""
 
@@ -148,6 +167,21 @@ _GIFT_SUPPORT_THRESHOLD = 0.80
 _KNIGHTS_WEEKLY_REWARD_TITLE_REGION = (700, 260, 600, 90)
 _KNIGHTS_WEEKLY_REWARD_CLOSE_REGION = (860, 810, 300, 80)
 _KNIGHTS_WEEKLY_REWARD_THRESHOLD = 0.80
+# 「世界首领辅助队伍奖励」弹窗（2026-10-19 接）：同僚团员借你的辅助队伍出战并拿到
+# 奖励后，**进世界首领战主页时**弹出，盖在主页上（底页被压暗 ⇒ `lobby_worldboss_select_team`
+# 认不出来 ⇒ `observe()` 报 unknown）。那天就在它身上失败了：
+#   08:11:10 进入世界首领战 → 08:11:12 点击验收=生效 从=骑士团主页 到=无效画面
+#   → 08:11:17 unknown_screen_unresolved（诊断帧就是这条弹窗）→ 08:12:44 转场失败。
+# 判据与骑士团那三个**同形同理由**：标题排他 + 「点击关闭」当点击点，双锚点同时命中。
+# 实测（`runtime_logs/_scratch_wb_popup.py` 的做法，全库 280 张）：
+#   | 锚点 | 弹窗帧 | 跨页最高 |
+#   | 标题 | 1.0000 | **0.3320**（knights_signin_popup） |
+#   | 关闭 | 1.0000 | 0.8993（reward_popup）⇒ 不排他，只能当点击点 |
+# 标题区域里非文字像素均值只有 **6.3**（弹窗把底页压到近乎全黑）⇒ 原样比较等价于
+# 「只看白字轮廓」，不必上白掩膜。
+_WORLDBOSS_SUPPORT_TITLE_REGION = (700, 262, 520, 80)
+_WORLDBOSS_SUPPORT_CLOSE_REGION = (860, 770, 300, 90)
+_WORLDBOSS_SUPPORT_THRESHOLD = 0.80
 # 「宠物小屋礼物角标」：**不是盖住页面的模态弹窗**，而是挂在**快捷菜单页**上的一个小角标
 # （就是回家流程点那颗「啤酒杯 → 酒馆」的那一页）。宠物送礼时，宠物小屋图标旁边会挂出
 # 一个「紫金礼盒 + 对话气泡」的角标；**点它一下才会领取礼物、角标才消失**，
@@ -268,6 +302,20 @@ def load_knights_weekly_reward_templates(
     return KnightsWeeklyRewardTemplates(
         title=load_template(str(template_dir / "knights_weekly_reward_title.png")),
         close=load_template(str(template_dir / "knights_weekly_reward_close.png")),
+    )
+
+
+def load_worldboss_support_reward_templates(
+    template_dir: Path,
+) -> WorldBossSupportRewardTemplates:
+    """读「世界首领辅助队伍奖励」弹窗的两个锚点（``templates/navigation`` 下）。
+
+    与骑士团那三个弹窗同目录（它们说的是同一页上的事：盖在骑士团 / 世界首领战主页上）。
+    两张都直接 ``load_template`` —— 缺一张就开跑前抛，不做静默降级。
+    """
+    return WorldBossSupportRewardTemplates(
+        title=load_template(str(template_dir / "worldboss_support_reward_title.png")),
+        close=load_template(str(template_dir / "worldboss_support_reward_close.png")),
     )
 
 
@@ -576,6 +624,42 @@ def find_knights_weekly_reward_close(
     return Match(close.center, min(title.score, close.score))
 
 
+def find_worldboss_support_reward_close(
+    screen: np.ndarray,
+    title_template: np.ndarray,
+    close_template: np.ndarray,
+) -> Match | None:
+    """认「世界首领辅助队伍奖励」弹窗，命中就返回底部「点击关闭」那行灰字的中心。
+
+    这是**每天都会遇到**的一层：同僚团员借你的辅助队伍出战并拿到奖励后，进
+    「世界首领战主页」时弹出。它把底页压暗，主页右下角那颗「选择队伍」直接认不出来
+    ⇒ ``observe()`` 报 unknown ⇒ 2026-10-19 08:11 那条导航转场一路等到 08:12:44 失败。
+
+    为什么必须双锚点：标题排他（跨页最高 0.3320），但「点击关闭」这四个字在
+    ``reward_popup`` 上是 0.8993、``popup_spring`` / ``popup_penguin_*`` 都是 0.8991
+    —— 那是游戏里通用的一条灰字控件，**单独用会在别的领奖弹窗上乱点**。
+    """
+    title = find_template(
+        screen,
+        title_template,
+        _WORLDBOSS_SUPPORT_THRESHOLD,
+        region=_WORLDBOSS_SUPPORT_TITLE_REGION,
+        reference_size=_REFERENCE_SIZE,
+    )
+    if title is None:
+        return None
+    close = find_template(
+        screen,
+        close_template,
+        _WORLDBOSS_SUPPORT_THRESHOLD,
+        region=_WORLDBOSS_SUPPORT_CLOSE_REGION,
+        reference_size=_REFERENCE_SIZE,
+    )
+    if close is None:
+        return None
+    return Match(close.center, min(title.score, close.score))
+
+
 def find_web_network_error_close(
     screen: np.ndarray,
     templates: WebNetworkErrorTemplates,
@@ -658,6 +742,8 @@ class Epic7GlobalPopupGuard:
         knights_signin_templates: KnightsSigninTemplates | None = None,
         gift_support_templates: GiftSupportTemplates | None = None,
         knights_weekly_reward_templates: KnightsWeeklyRewardTemplates | None = None,
+        worldboss_support_reward_templates: WorldBossSupportRewardTemplates
+        | None = None,
         pet_gift_templates: PetGiftTemplates | None = None,
         web_network_error_templates: WebNetworkErrorTemplates | None = None,
         sleep: Callable[[float], None] = default_sleep,
@@ -673,6 +759,7 @@ class Epic7GlobalPopupGuard:
         self.knights_signin_templates = knights_signin_templates
         self.gift_support_templates = gift_support_templates
         self.knights_weekly_reward_templates = knights_weekly_reward_templates
+        self.worldboss_support_reward_templates = worldboss_support_reward_templates
         self.pet_gift_templates = pet_gift_templates
         self.web_network_error_templates = web_network_error_templates
         self.sleep = sleep
@@ -785,6 +872,20 @@ class Epic7GlobalPopupGuard:
                     "close-knights-weekly-reward",
                     "knights_weekly_reward_failed",
                     f"骑士团周结算奖励弹窗点击{_MAX_POPUP_CLICKS}次后仍未消失",
+                )
+        if self.worldboss_support_reward_templates is not None:
+            match = find_worldboss_support_reward_close(
+                screen,
+                self.worldboss_support_reward_templates.title,
+                self.worldboss_support_reward_templates.close,
+            )
+            if match is not None:
+                return (
+                    match,
+                    "worldboss_support_reward",
+                    "close-worldboss-support-reward",
+                    "worldboss_support_reward_failed",
+                    f"世界首领辅助队伍奖励弹窗点击{_MAX_POPUP_CLICKS}次后仍未消失",
                 )
         if self.pet_gift_templates is not None:
             match = find_pet_gift_badge(screen, self.pet_gift_templates.badge)

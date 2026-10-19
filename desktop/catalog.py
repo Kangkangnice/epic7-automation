@@ -10,35 +10,37 @@ from auto_game_unified.games.epic7.modes import MODE_SPECS
 PRODUCT_NAME = "第七史诗自动助手"
 PRODUCT_VERSION = "0.1.0"
 
-# ── 「每日任务」面板里的三个分组（用户 2026-10-08 拍板）──────────────────────
+# ── 「每日任务」面板里的四个分组（2026-10-18 用户拍板「按需」单独成组）──────
 #
-# 分组的依据是**「这条路线的内容会不会轮换 / 是不是限时」**：
+# 分组的依据是**「这条路线该按什么节奏跑」**：
 #
-# - `GROUP_DAILY`（日常）：**常驻**路线 —— 天天都在、与赛季无关。
+# - `GROUP_DAILY`（每日）：**几乎每天都要跑**的常驻日常。天天在，且跑不跑不该犹豫。
+# - `GROUP_ONDEMAND`（按需）：**内容常驻、但跑不跑看当下需不需要**。主线 / 狗粮 /
+#   英雄合成 / 支线故事 / 月光剧场都属于这档 —— 它们不是限时内容，只是不用天天跑。
 # - `GROUP_SEASON`（赛季）：**按赛季轮换**的路线。赛季一换，内容与阶段就变了。
 # - `GROUP_EVENT`（活动）：**限时活动**路线，随活动开合出现 / 消失。
 #
-# ⚠️ 三个名字是**界面分组**，与「路线本身是什么」无关：
+# ⚠️ 四个名字是**界面分组**，与「路线本身是什么」无关：
 #   - 它们**不进** `ModeSpec`（模式名 / 次数 / 状态机才是路线的属性）；
-#   - 「日常」这个分组名与模块 `daily_tasks` 不是一回事 —— 后者是「把几条串起来
+#   - 「每日」这个分组名与模块 `daily_tasks` 不是一回事 —— 后者是「把几条串起来
 #     一次跑完」的**编排**，它读的清单仍然按勾选先后走，与分组无关。
 #   - ⚠️ 分组的**顺序**就是面板上从上到下的顺序，由 `GROUPS` 定死，
 #     不从 `ROUTES` 的书写顺序派生（免得插一条新路线就把面板顺序搅乱）。
-GROUP_DAILY = "日常"
+GROUP_DAILY = "每日"
+GROUP_ONDEMAND = "按需"
 GROUP_SEASON = "赛季"
 GROUP_EVENT = "活动"
 
 # 面板上从上到下的分组次序。**顺序即展示优先级**。
 #
+# 「每日」放第一（天天要用的最顺手），「按需」紧随其后（同属常驻内容、
+# 只是节奏不同），然后才是按赛季 / 按活动轮换的两组。
+#
 # ⚠️ 「活动」放最后且**单独一组**是刻意的：`survivor` 的 `needs_navigation=False`
 # （起点得由人先把游戏摆好），所以界面上它不能与非活动路线一起勾 —— 见
 # `RouteInfo.standalone_only`。把它单独列一组，用户一眼就能看出
 # 「这条不能和别的混着选」。
-GROUPS: tuple[str, ...] = (GROUP_DAILY, GROUP_SEASON, GROUP_EVENT)
-
-# 「全选（不含活动）」按钮要跳过的分组 —— 单独定义一份，避免与 `GROUPS` 的
-# 展示顺序耦合（以后往 `GROUPS` 里插新组，不该悄悄改变「不含活动」的语义）。
-EXCLUDED_FROM_SELECT_ALL: frozenset[str] = frozenset({GROUP_EVENT})
+GROUPS: tuple[str, ...] = (GROUP_DAILY, GROUP_ONDEMAND, GROUP_SEASON, GROUP_EVENT)
 
 # ── 界面上露不露面：窗口后端 ───────────────────────────────────────────────────
 #
@@ -122,8 +124,9 @@ ROUTES = (
         "hero_synthesis",
         "正式功能",
         "三星英雄刻印合成和 SSS 副本处理",
+        group=GROUP_ONDEMAND,
     ),
-    RouteInfo("story", "正式功能", "主线和刷图循环"),
+    RouteInfo("story", "正式功能", "主线和刷图循环", group=GROUP_ONDEMAND),
     RouteInfo("arena", "正式功能", "新手竞技场循环"),
     RouteInfo("expedition", "正式功能", "三阶段远征循环", group=GROUP_SEASON),
     RouteInfo(
@@ -136,7 +139,18 @@ ROUTES = (
         "打满 25 层即停。⚠️ 只支持模拟器",
         group=GROUP_SEASON,
     ),
-    RouteInfo("fodder", "实验功能", "特别的时间之书 Episode 3-7"),
+    RouteInfo(
+        "fodder", "实验功能", "特别的时间之书 Episode 3-7", group=GROUP_ONDEMAND
+    ),
+    RouteInfo(
+        "side_story",
+        "实验功能",
+        "支线故事：一次把本期所有关卡打完。关卡位置**每期都变**，靠画面定位"
+        "当前角色身上那枚发光徽记（金色准星环 + 中间青色菱形）再点它下方；"
+        "打完一关点场景页右下角闪烁的蓝色三箭头进下一关，场景页上找不到箭头了"
+        "就是这一期已经到头。⚠️ 只支持模拟器",
+        group=GROUP_ONDEMAND,
+    ),
     RouteInfo(
         "shop_refresh",
         "实验功能",
@@ -190,6 +204,17 @@ ROUTES = (
         "按每日限购数量兑换）。⚠️ 签到 / 任务 / 兑换各有每日上限，一天内重复跑"
         "什么也领不到，别拿它当冒烟测试反复跑",
     ),
+    RouteInfo(
+        "moonlight_theater",
+        "实验功能",
+        "月光剧场（每周刷新的免费观览），一次把本周免费的都打完：大厅 → 支线故事 →"
+        "月光剧场（入口卡片左上角没有绿色 F 就直接结束）→ 在横向剧场列表里逐个看"
+        "「当前剧场」左上角有没有 Free 全称角标，有就点「入场」→ 分集页「进行观览」→"
+        "观览指南点确认 → 剧情不可跳过，靠点字幕推进（中途会进自动战斗）→ CLEAR 后"
+        "领「观览奖励」→ 左上返回，再往右换下一个剧场。"
+        "⚠️ 只领免费额度，**永不花金币买门票**；门票不足弹窗出现时只点取消。",
+        group=GROUP_ONDEMAND,
+    ),
 )
 
 
@@ -226,35 +251,11 @@ def grouped_routes() -> tuple[tuple[str, tuple[RouteInfo, ...]], ...]:
     )
 
 
-def selectable_modes(*, include_events: bool = True) -> tuple[str, ...]:
-    """「全选」按钮要勾上的路线，**按面板顺序**（= 分组顺序、组内按书写顺序）。
-
-    ``include_events=False`` 就是那个「全选（不含活动）」按钮 —— 跳过
-    `EXCLUDED_FROM_SELECT_ALL` 里的分组（目前只有「活动」）。
-
-    ⚠️ 顺序必须是**面板顺序**而不是 `ROUTES` 的书写顺序。用户拍板
-    「勾选先后就是执行顺序」，而批量勾选之后用户看到的顺序就是面板顺序 ——
-    两者一旦不同（分组之后 `expedition` 排到了 `fodder` 前面），执行顺序
-    就会跟屏幕上写的序号对不上。所以这里走 `grouped_routes()` 摊平。
-    """
-    return tuple(
-        route.mode
-        for _group, routes in grouped_routes()
-        for route in routes
-        if include_events or route.group not in EXCLUDED_FROM_SELECT_ALL
-    )
-
-
 # ── 「每日任务」：勾选多条、依次跑 ─────────────────────────────────────────
 # 界面上的名字。它同时是那块面板的标题与唯一那个启动按钮的文案来源。
+#
+# ⚠️ 2026-10-18：面板**卡头整条去掉了**（用户划掉那两行文字要求删），所以
+# `DAILY_LABEL` 现在只剩一个引用点 —— 「一条都没勾就点开始」时那个提示框的标题。
+# 原来那句操作说明 `DAILY_DESCRIPTION` 也随之删除（它没有别的引用者）。
+# 说明文字本身没丢：`docs/maintenance/daily_tasks_grouping.md` 与 USER_GUIDE 里都有。
 DAILY_LABEL = "每日任务"
-
-# 下面这段是**左边那栏量高度的大头**（每行约 23px）⇒ 宁短勿全：
-# 只说「怎么选、次数怎么算、错了怎么办」，内部怎么回首页不写在这儿。
-DAILY_DESCRIPTION = (
-    "勾选要跑的路线，勾选先后就是执行顺序（名字前面的序号会跟着变）；"
-    "每条后面填跑几次，灰掉的有每日上限、不能改；"
-    "刷书签花天空石、不可逆，次数请按需填；"
-    "上一条跑完会自动回首页，再进下一条；"
-    "某条失败会跳过它继续跑，最后给一份汇总"
-)

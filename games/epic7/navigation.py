@@ -20,8 +20,11 @@ from auto_game_unified.core.supervisor import (
 from auto_game_unified.games.epic7.arena import find_rank_promotion_confirm
 from auto_game_unified.games.epic7.activity_column import (
     ACTIVITY_SCROLL_END_Y,
+    ACTIVITY_SCROLL_LIMIT_PER_DIRECTION,
     ACTIVITY_SCROLL_MS,
     ACTIVITY_SCROLL_START_Y,
+    ACTIVITY_SCROLL_TAIL_END_Y,
+    ACTIVITY_SCROLL_TAIL_START_Y,
     ACTIVITY_SCROLL_X,
 )
 from auto_game_unified.games.epic7.evidence.arena import THRESHOLDS as ARENA_THRESHOLDS
@@ -32,6 +35,7 @@ from auto_game_unified.games.epic7.global_popups import (
     find_gift_support_close,
     find_knights_signin_close,
     find_knights_weekly_reward_close,
+    find_worldboss_support_reward_close,
 )
 from auto_game_unified.games.epic7.home_return import (
     HomeReturnTemplates,
@@ -134,6 +138,7 @@ PAGE_LABELS = {
     "knights_signin_popup": "骑士团签到弹窗",
     "gift_support_popup": "领取支援物品弹窗",
     "knights_weekly_reward_popup": "骑士团周结算奖励弹窗",
+    "worldboss_support_reward_popup": "世界首领辅助队伍奖励弹窗",
     "unknown": "未知画面",
 }
 
@@ -345,16 +350,40 @@ class NavigationTemplates:
     gift_support_close: np.ndarray
     knights_weekly_reward_title: np.ndarray
     knights_weekly_reward_close: np.ndarray
+    worldboss_support_reward_title: np.ndarray
+    worldboss_support_reward_close: np.ndarray
     # ---- 社区签到路线（2026-10-06）----
     # 大厅左侧竖排最后一个「活动」入口（记事本+星+时钟图标 与「活动」二字）。
     # ⚠️ 与 ``lobby_knights`` 同理：实测 220 张同尺寸夹具里过阈 12 张、**全是大厅类帧**
     # ⇒ 它是**大厅常驻控件**，只作**点击目标**，**不能判页**（判页看下面三张）。
     lobby_activity: np.ndarray
     # 游戏内「活动」页左列表里的「更多精彩活动」那一行（**未选中态**）。
-    # 既是这一步的点击目标，也是 ``activity_menu`` 的页判据。
+    #
+    # ⚠️⚠️ **2026-10-18 起它不再是 ``activity_menu`` 的判据**，只当点击目标。
+    # 它同时被当成判页锚点害了三次（10-07 挤到 y=686、10-18 漂到 y=258）：
+    # 那一行会随列表滚动上下跑，而游戏**记得上次点了哪个活动** ⇒ 列表停在哪
+    # 完全由上一次的点击决定 ⇒ 它是**会动的**，不配当判据。
+    # 判页改用下面的 ``activity_page_shell``。
     # ⚠️ 选中的那个会出现「前往活动页」，是**另一个态**（``activity_web_promo``）；
     # 本模板在那个态上只有 0.25~0.34 —— 两态靠下面那张白字模板区分。
     activity_more: np.ndarray
+    # 活动页的**页面骨架**：横幅底部那一条（缎带 + 星角 + 虚线），y 130~175。
+    #
+    # ⚠️ 为什么是这一条而不是别的东西（2026-10-18 全库扫描定的）：
+    #   * 标题文字不行 —— 同一条横幅上的标题**从「活动」改成了「事件」**
+    #     （10-06 帧 vs 10-18 帧），文字会随版本改口；
+    #   * 左上角那个返回箭头 ``‹`` 不行 —— 它在所有子页上都是 1.0000
+    #     （战斗三页 / 赛季页 / 竞技场页全中），完全分不开；
+    #   * 横幅右半边不行 —— 它跨进了右侧内容区（10-18 那帧在那里变成了深蓝）。
+    #
+    # 阈值 0.90（``observe`` 里登记）。全库 340 张 1982x1132 横屏帧实测：
+    #   **正样本 6 张（含选中态 3 张）0.9659~1.0000**
+    #   **负样本最高 0.6496（``pause_menu``）** ⇒ 分离度 **+0.316**。
+    #
+    # 它是一块**画面**而不是文字，所以对「返回箭头 + 列表」这种结构判断不上的
+    # 场景也成立；同时它的失效方式是可预期的：活动换皮换了横幅 ⇒ 判不出活动页
+    # ⇒ 导航在第一步报「应处于[活动页]」收手，**不会瞎点**。
+    activity_page_shell: np.ndarray
     # 「更多精彩活动」**选中态**那一行里的**白字**（橙底白字）。
     #
     # ⚠️⚠️ **为什么不用「前往活动页」按钮（``web_activity_gate``）当选中态判据**：
@@ -517,10 +546,19 @@ def build_navigation_templates(template_root: Path) -> NavigationTemplates:
         knights_weekly_reward_close=load_template(
             str(navigation / "knights_weekly_reward_close.png")
         ),
+        worldboss_support_reward_title=load_template(
+            str(navigation / "worldboss_support_reward_title.png")
+        ),
+        worldboss_support_reward_close=load_template(
+            str(navigation / "worldboss_support_reward_close.png")
+        ),
         # 社区签到路线（2026-10-06）。全部直接 ``load_template``：缺文件就抛
         # ``FileNotFoundError``（fail closed），不写 ``exists() else None``。
         lobby_activity=load_template(str(navigation / "lobby_activity.png")),
         activity_more=load_template(str(navigation / "activity_more.png")),
+        activity_page_shell=load_template(
+            str(navigation / "activity_page_shell.png")
+        ),
         activity_more_selected=load_template(
             str(navigation / "activity_more_selected.png")
         ),
@@ -528,6 +566,23 @@ def build_navigation_templates(template_root: Path) -> NavigationTemplates:
         web_community=load_template(str(navigation / "web_community.png")),
         shop_refresh_observer=build_shop_refresh_observer(template_root),
     )
+
+
+# ---- 活动页左列里「那一行」的三个态（2026-10-18）----
+#
+# 「更多精彩活动」这一行有两个态，两个态在画面上的**位置相同、长相不同**：
+# 未选中 = 灰字（``activity_more``）；选中 = 橙底白字（``activity_more_selected``）。
+# 扫描时两个都要认，否则「已经是选中态」会被误当成「这一行不在」。
+_ACTIVITY_ROW_ANCHORS = frozenset({"activity_more", "activity_more_selected"})
+_ACTIVITY_ROW_SIBLINGS = {
+    "activity_more": "activity_more_selected",
+    "activity_more_selected": "activity_more",
+}
+# 「那一行的这个态」代表页面上的哪一态 —— 扫描时用来判断「目标态是不是已经在了」。
+_ACTIVITY_ROW_STATE = {
+    "activity_more": "activity_menu",
+    "activity_more_selected": "activity_web_promo",
+}
 
 
 class Epic7Navigator:
@@ -550,11 +605,12 @@ class Epic7Navigator:
     _HERO_DETAIL_TAB_POINT = HERO_INFORMATION_TAB_POINT
     _HERO_DETAIL_TAB_MAX_ATTEMPTS = 4
     _HERO_DETAIL_TAB_RETRY_SECONDS = 2.0
-    # 「锚点被挤出视野」时**最多滚几屏再找**（``NavigationStep.scroll_before_retry``）。
+    # 「锚点不在画面里」时，页内扫描最多滑几下（每个方向）。
     #
-    # 取值同社区路线回滚找「兑换」图标的 ``FEED_ICON_RESWIPE_LIMIT``：滚到底还没有
-    # 就说明不是「滚过头」而是这一页真改版了 —— 那时必须**报错收手**，绝不蒙着点。
-    _SCROLL_RETRY_LIMIT = 3
+    # ⚠️ 2026-10-18：这个数**从 ``_SCROLL_RETRY_LIMIT`` 改名而来**，语义也变了 ——
+    # 旧的 3 是「总共滚 3 次」，现在是「**每个方向** 3 次」（反方向给 2 倍）。
+    # 这是必须的：只给总共 3 次的话，第二个方向分不到额度，等于还是单向扫描。
+    _SCAN_LIMIT_PER_DIRECTION = ACTIVITY_SCROLL_LIMIT_PER_DIRECTION
 
     _REGIONS = {
         "lobby_story": (1450, 220, 480, 200),
@@ -646,27 +702,36 @@ class Epic7Navigator:
         # 「活动」二字 y 826~838 ⇒ 控件占 ~75..845），给大厅动画/节日装饰留余量。
         # ⚠️ 它**同时**是「进入活动」这个动作的点击目标（``_transition`` 用命中框中心）。
         "lobby_activity": (10, 700, 220, 200),
-        # 「活动」页左列表那一列 —— ⚠️ **这里曾把整条路线卡死在第一步**（2026-10-07）。
+        # **活动页的页面骨架**（2026-10-18 立）—— ``activity_menu`` / ``activity_web_promo``
+        # 现在**只靠它**认页，与列表滚到哪儿完全无关。
         #
-        # 原来只框 y 400~580（按 2026-10-06 那一帧量的：整行 y 431~535）。10-07 真机
-        # 一跑就翻车：活动页左列**顶部多了两行**（「助继承者重启冒险」×2，一个回归活动），
-        # 把「更多精彩活动」从 y=460 挤到 **y=686**（+226px）⇒ 模板还在（0.9145）、
-        # 但框空了 ⇒ 整页判 ``unknown`` ⇒ 导航第一步就超时失败关闭。
+        # 区域是模板外扩 12px/7px（模板 380x45 在 (0,130)）：留一点余量给窗口缩放的
+        # 亚像素误差，但绝不宽到"随便哪里都能凑上"。
+        # 阈值用 0.90（正样本最低 0.9659 / 负样本最高 0.6496，见模板字段上的扫描记录）。
+        "activity_page_shell": (0, 124, 392, 57),
+        # 「活动」页左列表那一列 —— **点击目标的搜索带，不再是判据**。
         #
-        # ⇒ **区域罩住整列**（y 300~1150），不再随上方活动行数变化而失效。
-        # 安全性实测（``runtime_logs/_whole_scan.py activity_more 0 300 420 850``，
-        # 全库 360 张唯一帧）：区域内过阈的**只有 3 张** —— 10-06 那张夹具 1.0000
-        # 加今天两张真机帧 0.9145；**次高只有 0.4830**，空档极大，放大区域没有代价。
+        # 三次漂移史（10-06 y=425 / 10-07 y=686 / 10-18 y=258）证明这一行的位置
+        # 没有上界：游戏**记得上次点了哪个活动**，列表就停在那一个附近，于是它
+        # 既会被上方新活动挤下去、也会因为上方变空而漂上来。
+        # ⇒ 2026-10-18 起不再靠区域兜它：先由 ``activity_page_shell`` 确认
+        # 「我在活动页」，再交给 ``_scan_activity_column`` **上下扫**
+        # （``activity_column.py``），区域只管"扫到之后在哪一带里认"。
+        #
+        # 安全性实测（2026-10-18，全库 **440 张横屏帧**扫 y 150~320 这条争议窄条）：
+        # 区域内过阈的**只有 4 张，且是同一张画面**（当天 12:17 的活动页，被存成
+        # 诊断图/current/退出帧四份，0.9959 @ y=258）；其余 436 张**全在 0.20 以下**。
         # 点击点仍取**命中框中心**（`_locate`），所以位置随行浮动不影响点击。
-        "activity_more": (0, 300, 420, 850),
-        # 「更多精彩活动」**选中态**那一行的白字。区域同样罩住整列。
+        "activity_more": (0, 150, 420, 1000),
+        # 「更多精彩活动」**选中态**那一行的白字。区域与 ``activity_more`` 共用同一块
+        # 搜索带（两态必须同界，否则会造出「这一态判得出、那一态判不出」的裂缝）。
         #
-        # ⚠️ 上界为什么是 **1150** 而不是跟 ``activity_more`` 一样 850：选中态那一行
-        # 的**位置本身会随上方活动行数漂**（实测 10-06 落 y=443、10-07 落 y=726，
-        # 相差 283px），而未选中态那版区域（y≤1150）在两次实测里都罩住了。
-        # 这里取 y 300~1150 与 ``activity_more`` 对齐，两态用同一块搜索带。
-        # 安全性实测（369 张横屏帧全扫）：过阈 6 张全是选中态帧，次高 0.3732。
-        "activity_more_selected": (0, 300, 420, 850),
+        # 位置漂移同样实测过：10-06 落 y=443、10-07 落 y=726（差 283px、往下），
+        # 10-18 未选中态落 y=258（往上）。所以上界跟 ``activity_more`` 一起放到 150。
+        # 安全性实测（2026-10-18，440 张横屏帧扫 y 150~320）：**0 张过阈**，
+        # 该窄条最高只有 0.1848。更早一次（369 张横屏帧，y 300~1150）过阈 6 张
+        # 全是选中态帧、次高 0.3732。
+        "activity_more_selected": (0, 150, 420, 1000),
         # 「前往活动页」按钮右下角那一段（只裁了光晕盖不到的部分）。
         # 按钮整块约 x 1580~1770 / y 960~1020，这里把区域放宽到 420x140。
         # ⚠️ **它只当点击目标、不当判据** —— 光球会滑动，同一位置跨帧 1.0000→0.7282，
@@ -737,6 +802,9 @@ class Epic7Navigator:
         self.poll_seconds = poll_seconds
         self.transition_frames = transition_frames
         self.unknown_screen_wake = UnknownScreenWake(runtime)
+        # 上一次页内扫描实际滑了几下（只用来把失败文案写成人话：
+        # 「已经在页内上下扫过 N 屏，仍不在画面里」）。
+        self._scan_swipes_done = 0
         # 「回家」用的那套模板（v2）。懒构建：大部分路线压根不回家，别白读 10 张图。
         self._home_return_templates: Optional[HomeReturnTemplates] = None
 
@@ -817,6 +885,24 @@ class Epic7Navigator:
         if weekly_reward_close is not None:
             return PageObservation(
                 "knights_weekly_reward_popup", weekly_reward_close.score
+            )
+
+        # 「世界首领辅助队伍奖励」弹窗（同僚团员借了你的辅助队伍并拿到奖励后，
+        # **进世界首领战主页时**弹出）。与上面三个骑士团弹窗同形同理由：它把底页
+        # 压暗，「选择队伍」那颗按钮直接认不出来 ⇒ 整页 unknown。
+        # ⚠️ 必须排在 ``worldboss_entry`` / ``lobby_worldboss_select_team`` 判定**之前** ——
+        # 2026-10-19 08:11 那次导航转场就是栽在「弹窗开着、底页认不出、一直 unknown」
+        # 上，一路等到 08:12:44 报 `骑士团主页 → worldboss_home 失败`。
+        # 报出页名是为了让 ``Epic7GlobalPopupGuard`` 把它点掉（守卫在 ``runtime.capture``
+        # 里跑，见 ``main.py`` 的装配），从而露出底下的世界首领战主页。
+        support_reward_close = find_worldboss_support_reward_close(
+            screen,
+            self.templates.worldboss_support_reward_title,
+            self.templates.worldboss_support_reward_close,
+        )
+        if support_reward_close is not None:
+            return PageObservation(
+                "worldboss_support_reward_popup", support_reward_close.score
             )
 
         rank_confirm = find_rank_promotion_confirm(
@@ -973,6 +1059,26 @@ class Epic7Navigator:
         activity_more = self._locate(screen, "activity_more")
         if activity_more:
             return PageObservation("activity_menu", activity_more.score)
+
+        # ⚠️⚠️ **2026-10-18：判页从「那一行」换到「页面骨架」**（用户拍板）。
+        #
+        # 上面那条 ``activity_more`` 留作**快路径**（它只在活动页存在，是最精确的
+        # 证据），但它**不能当唯一判据** —— 那一行会随列表滚动上下跑：
+        #     10-06 y=425 → 10-07 y=686 → 10-18 y=258
+        # 而列表停在哪里由「游戏记得上次点了哪个活动」决定，位置**没有上界**。
+        # 拿它当判据的直接后果：那一行一旦滚出视野，**整页判 unknown**，
+        # ``_transition`` 连「页面认得出、锚点找不到」这个状态都进不去，
+        # 于是"滚一屏再找"的兜底在生产上**永远走不到**（这就是 10-08 踩过的
+        # 「判据写好了、生产走不到」）。
+        #
+        # 现在：只要页面骨架在，活动页就认得出 ⇒ 「找不到入口」变成一个**普通状态**
+        # ⇒ 才有资格在后面用扫描去解决（``_scan_activity_column``）。
+        #
+        # 这也是 ``expedition_entry``（10-08）、``web_activity_gate``（10-07）之后再
+        # 一次同一条铁律：**判据必须是页面骨架，不能是"那一步要点的东西"**。
+        activity_shell = self._locate(screen, "activity_page_shell", 0.90)
+        if activity_shell:
+            return PageObservation("activity_menu", activity_shell.score)
 
         # ⚠️⚠️ **赛季页判据在 2026-10-08 摘掉了 ``expedition_entry``**（见下）。
         #
@@ -1336,20 +1442,25 @@ class Epic7Navigator:
         scroll_before_retry: Optional[str] = None,
     ) -> np.ndarray:
         self.unknown_screen_wake.reset()
-        # ⚠️ **来源页等不到时，给「目标被挤出视野」留一条出路**（用户 2026-10-08）。
+        # ⚠️⚠️ **2026-10-18 拆掉了 `_wait_for_page_with_scroll`**，这里只等来源页。
         #
-        # 这一条不是可选的：活动页第 2 步的**判页锚点就是这一步要找的那张模板**
-        # （``observe()`` 里 ``activity_menu`` 由 ``activity_more`` 认），所以
-        # 「那一行被挤出视野」在这套判据下的表现**不是**「页面认得出、锚点找不到」，
-        # 而是**整页判 ``unknown``** ⇒ ``_wait_for_page`` 直接抛
-        # 「导航开始前应处于[活动页]」。只在下面「锚点未过阈」那一支补滚动
-        # **永远走不到** —— 这就是本轮差点又踩一次的「判据写好了、生产走不到」。
-        source_screen = source_screen if source_screen is not None else (
-            self._wait_for_page_with_scroll(source, scroll_before_retry, action)
+        # 旧写法是「等不到来源页 ⇒ 滚一屏再等」，理由是：活动页第 2 步的**判页锚点
+        # 就是这一步要找的那张模板**（``activity_menu`` 由 ``activity_more`` 认），
+        # 于是「那一行被挤出视野」的表现不是「页面认得出、锚点找不到」，而是
+        # **整页判 unknown** ⇒ 只能靠滚一屏把它滚回来。
+        #
+        # 那条兜底本身是对的，但它治的是症状：**判据长了腿**。既然现在判页交给
+        # ``activity_page_shell``（页面骨架，与列表滚动无关），「页面认不出」就不再
+        # 是滚动能解决的问题了（真认不出就是真认不出，滚动帮不上）⇒ 这一层
+        # 整层删掉，只保留 `_wait_for_page` 自己那套超时 + 唤醒。
+        #
+        # 「入口不在画面里」这个**真正的**问题下面单独处理（页内扫描），
+        # 而且此时页面是**认得出的**，所以那个分支终于在生产上走得通了。
+        source_screen = (
+            source_screen if source_screen is not None else self._wait_for_page(source)
         )
         targets = (target,) if isinstance(target, str) else target
         target_label = "/".join(targets)
-        scrolls_done = 0
         for attempt in range(1, 5):
             threshold = 0.80 if anchor == "lobby_story" else 0.82
             if fixed_point is not None:                # ⚠️ **固定坐标点击**：按钮上有会动的元素时，模板定位跨天必然掉出阈
@@ -1375,41 +1486,47 @@ class Epic7Navigator:
                         f"模式=导航 页面={page_label(source)} 目标={target_label} "
                         f"动作={action} 重试=重新等待稳定来源页（过渡帧锚点未过阈）"
                     )
-                    source_screen = self._wait_for_page_with_scroll(
-                        source, scroll_before_retry, action
-                    )
+                    source_screen = self._wait_for_page(source)
                     match = self._locate(source_screen, anchor, threshold)
                     if match is None and scroll_before_retry is not None:
-                        # ⚠️ **「锚点在、但没进视野」的兜底**（用户 2026-10-08）。
+                        # ⚠️⚠️ **「页面认得出、锚点不在画面里」—— 页内扫描**（2026-10-18 重写）。
                         #
-                        # 活动页**记得上次点了哪个活动** ⇒ 再进来还停在那一个；
-                        # 上次点的活动排在「更多精彩活动」下面时，那一行就被挤到
-                        # 屏幕外 ⇒ 找不到锚点 ⇒ 抛错，整条路线第一步就进不去。
-                        # 这里在**报错之前**滚一屏再看一眼；找着了就正常往下走。
+                        # 活动页左列**记得上次点了哪个活动** ⇒ 再进来还停在那一个，
+                        # 「更多精彩活动」可能被挤到屏幕外（10-07 挤到 y=686）
+                        # 也可能因为上面变空而漂上去（10-18 漂到 y=258）。
+                        # 位置**没有上界**，所以不猜、也不放大搜索框 —— 上下扫。
                         #
-                        # ⚠️ 只滚 ``_SCROLL_RETRY_LIMIT`` 次：滚到底还没有就说明
-                        # 不是「滚过头」而是这一页真改版了，那时必须报错收手。
-                        if scrolls_done >= self._SCROLL_RETRY_LIMIT:
-                            raise RuntimeError(
-                                f"页面[{page_label(source)}]找了 {scrolls_done} 次"
-                                f"（每次滚一屏）仍缺少导航锚点 {anchor}"
+                        # 扫描是**有界**的：回列表头 ``LIMIT`` 次 + 反方向 ``2 × LIMIT`` 次
+                        # （第二段多给一倍，专门用来「先抵消第一段滑出去的距离、
+                        # 再从另一头扫回来」⇒ 就算手势方向猜反了也照样扫得完全表）。
+                        # 扫完仍然没有 ⇒ 报错收手，**绝不蒙着点**。
+                        #
+                        # ⚠️ 关键前提（也是这一版最重要的结构变化）：**页面必须是认得出的**。
+                        # 判页还挂在那一行上的话，这里根本走不到（整页 unknown）。
+                        # 现在判页由页面骨架负责，所以这个分支在生产上真的会被执行到。
+                        scanned, match, reached = self._scan_page(
+                            scroll_before_retry, anchor, targets, source, action
+                        )
+                        if reached:
+                            # 导航器自己判定「目标态已经达成」—— 比如活动页里那行的
+                            # **选中态**已经在了（再点一下反而会取消选中）。
+                            # ``_transition`` 不认识具体页面，只负责把这件事转成
+                            # 一次**不点击**的成功返回。
+                            self.runtime.log(
+                                f"模式=导航 页面={page_label(source)} "
+                                f"目标={target_label} 动作={action} "
+                                f"跳过=目标态已经在了（不需要点）"
                             )
-                        scrolls_done += 1
-                        self._scroll_retry(
-                            scroll_before_retry,
-                            source=source,
-                            target_label=target_label,
-                            action=action,
-                            anchor=anchor,
-                            step=scrolls_done,
-                        )
-                        source_screen = self._wait_for_page_with_scroll(
-                            source, scroll_before_retry, action
-                        )
-                        match = self._locate(source_screen, anchor, threshold)
+                            return scanned
+                        if match is not None:
+                            source_screen = scanned
                     if match is None:
+                        swipes = getattr(self, "_scan_swipes_done", 0)
                         raise RuntimeError(
                             f"页面[{page_label(source)}]缺少导航锚点 {anchor}"
+                            f"（已经在页内上下扫过 {swipes} 屏，仍不在画面里；"
+                            f"这一页很可能**确实没有**这个入口，"
+                            f"或者入口被游戏改版搬走了。诊断图已存）"
                         )
                 offset = self._click_offset(anchor)
                 click_point = (match.center[0] + offset[0], match.center[1] + offset[1])
@@ -1670,82 +1787,122 @@ class Epic7Navigator:
             f"导航开始前应处于[{page_label(expected)}]；已保存诊断 {diagnostic}"
         )
 
-    def _wait_for_page_with_scroll(
-        self, expected: str, scroll_before_retry: Optional[str], action: str
-    ) -> np.ndarray:
-        """等来源页；等不到而这一步声明了 ``scroll_before_retry`` ⇒ 滚一屏再来。
-
-        ⚠️ 为什么需要它（本轮差点又踩一次的坑）：活动页第 2 步要点的「更多精彩活动」
-        **同时是** ``activity_menu`` 的**判页锚点** ⇒ 那一行被挤出视野时，画面
-        不是「认得出、锚点找不到」，而是**整页判 ``unknown``** ⇒ ``_wait_for_page``
-        在拿到帧之前就抛了。只在 ``_locate()`` 返回 ``None`` 那一支补滚动，
-        在真机上**永远走不到**（熟悉的「判据写好了、生产走不到」）。
-        """
-        if scroll_before_retry is None:
-            return self._wait_for_page(expected)
-        for step in range(1, self._SCROLL_RETRY_LIMIT + 1):
-            try:
-                return self._wait_for_page(expected)
-            except RuntimeError:
-                if step > self._SCROLL_RETRY_LIMIT:
-                    raise
-                self._scroll_retry(
-                    scroll_before_retry,
-                    source=expected,
-                    target_label="",
-                    action=action,
-                    anchor="",
-                    step=step,
-                    because="来源页没认出来（那一行很可能被挤出视野）",
-                )
-        return self._wait_for_page(expected)  # pragma: no cover - 循环内已返回/抛出
-
-    def _scroll_retry(
+    def _scan_page(
         self,
-        scroll_before_retry: str,
-        *,
-        source: str,
-        target_label: str,
-        action: str,
+        scanner: str,
         anchor: str,
-        step: int,
-        because: str = "锚点未找到",
-    ) -> None:
-        """记一行账 + 滚一屏。名字写错就在这里当场炸（别等到真机上才炸）。"""
-        scroll = getattr(self, f"_scroll_{scroll_before_retry}", None)
-        if scroll is None:
-            raise RuntimeError(
-                f"导航步骤声明了 scroll_before_retry={scroll_before_retry!r}，"
-                f"但导航器上没有 _scroll_{scroll_before_retry} 这个方法"
-            )
-        detail = f" 目标={target_label}" if target_label else ""
-        anchor_part = f" 锚点={anchor}" if anchor else ""
-        self.runtime.log(
-            f"模式=导航 页面={page_label(source)}{detail} 动作={action}{anchor_part} "
-            f"原因={because} 动作=滚一屏再找 "
-            f"第={step}/{self._SCROLL_RETRY_LIMIT}次"
-        )
-        scroll()
+        targets: tuple[str, ...],
+        source: str,
+        action: str,
+    ) -> tuple[np.ndarray, Optional["Match"], bool]:
+        """把这个来源页交给它自己声明的**页内搜索器**去找锚点。
 
-    def _scroll_activity_column(self) -> None:
-        """把「活动」页左列表往上滚一屏（``scroll_before_retry="activity_column"``）。
+        为什么是「具名搜索器」而不是把逻辑写进 ``_transition``：
+        ``_transition`` 是**所有路线共用**的执行器，不许认识「活动页左列」这种东西。
+        这里只做分发（``_scan_<声明名>``），怎么扫由导航器自己的方法决定 ——
+        与 ``_scroll_<声明名>`` 是同一套思路（见 ``navigation_plan.NavigationStep``）。
 
-        用户 2026-10-08 提的兜底：**游戏记得上次点了哪个活动** ⇒ 再进来还停在那一个；
-        上次点的活动排在「更多精彩活动」下面时，那一行就被挤到屏幕外 ⇒ 找不到锚点
-        ⇒ 抛错，整条路线第一步就进不去。滚一屏之后再找一次就够。
-
-        ⚠️ 起点 x 取 ``ACTIVITY_SCROLL_X``（=90，左列文字上）：这一列**没有**一条
-        干净的白边可躲（实测 x 15/30/60/90/120 的彩色占比都是 0.17~0.24，整列
-        橙底加装饰）。所以选择的标准不是「躲到干净的地方」，而是**退化成点击时点到
-        什么** —— 落在活动名那行文字上只会切换选中项，无害且可恢复；落在右侧就会
-        打开别的东西。
+        返回 ``(最后那一帧, 命中的 match 或 None, 目标态是否已经达成)``。
+        第三项是搜索器自己的判断（例如「这一行已经是选中态了，再点会取消选中」），
+        ``_transition`` 只负责把它转成一次**不点击**的成功返回。
         """
-        self.runtime.swipe(
-            (ACTIVITY_SCROLL_X, ACTIVITY_SCROLL_START_Y),
-            (ACTIVITY_SCROLL_X, ACTIVITY_SCROLL_END_Y),
-            ACTIVITY_SCROLL_MS,
-            "活动页左列上滚",
+        self._scan_swipes_done = 0
+        scan = getattr(self, f"_scan_{scanner}", None)
+        if scan is None:
+            raise RuntimeError(
+                f"导航步骤声明了 scroll_before_retry={scanner!r}，"
+                f"但导航器上没有 _scan_{scanner} 这个方法"
+            )
+        return scan(anchor, targets, source, action)
+
+    def _scan_activity_column(
+        self,
+        anchor: str,
+        targets: tuple[str, ...],
+        source: str,
+        action: str,
+    ) -> tuple[np.ndarray, Optional["Match"], bool]:
+        """在「活动」页左列里**上下扫**，把 ``anchor`` 那一行找出来。
+
+        ## 为什么不是「把搜索框放大一点」
+
+        用户 2026-10-18 的原话把这个方案判死了：「这个活动我点进去，它可能在任何
+        位置都有可能……可能还要上滑下滑，对不对？」——**位置没有上界**，
+        而区域是固定的。三次漂移史就是三次放大补丁：
+
+            10-06  y=425（正常）
+            10-07  y=460 → 686（被上方活动挤下去）
+            10-18  y=258（列表往上滚，顶到上面去）
+
+        ## 扫描的形状
+
+        两个阶段，**每个阶段里每滑一屏就重新认一次**：
+
+            阶段 1  回列表头方向  × ``ACTIVITY_SCROLL_LIMIT_PER_DIRECTION``
+            阶段 2  反方向        × ``2 × ACTIVITY_SCROLL_LIMIT_PER_DIRECTION``
+
+        阶段 2 给双倍额度不是随手定的：**手势的物理方向没有在真机上单独验证过**。
+        如果方向猜反了，阶段 1 会把列表往反方向推出去 3 屏，阶段 2 先用 3 屏把它
+        抵消掉、再用剩下的 3 屏往另一头扫 —— 所以**方向猜错不影响正确性，
+        只多花几下**。这就是这套设计要的东西：正确性不依赖一个未验证的假设。
+
+        ## 三个出口（都不是"猜"）
+
+        * 命中 ``anchor`` ⇒ 交给 ``_transition`` 点它（命中框中心）；
+        * 只命中**同一行的另一态** ⇒ 目标态已经在了，返回 ``reached=True``，
+          ``_transition`` **不点**（点一下会把选中取消掉）；
+        * 扫满两个方向仍然没有 ⇒ ``match=None``，调用方**报错收手**。
+          绝不按坐标蒙着点。
+        """
+        # 只对「左列里的行」有意义。别的情况（比如第 3 步那个固定坐标按钮
+        # ``web_activity_gate`` 在右半边）扫这个方向毫无用处，直接返回别浪费预算。
+        if anchor not in _ACTIVITY_ROW_ANCHORS:
+            return self.runtime.capture(), None, False
+
+        sibling = _ACTIVITY_ROW_SIBLINGS.get(anchor)
+
+        screen = self.runtime.capture()
+        match = self._locate(screen, anchor)
+        if match is not None:
+            return screen, match, False
+
+        plan = [
+            (ACTIVITY_SCROLL_START_Y, ACTIVITY_SCROLL_END_Y, "回列表头")
+        ] * ACTIVITY_SCROLL_LIMIT_PER_DIRECTION + [
+            (ACTIVITY_SCROLL_TAIL_START_Y, ACTIVITY_SCROLL_TAIL_END_Y, "往列表尾部")
+        ] * (
+            ACTIVITY_SCROLL_LIMIT_PER_DIRECTION * 2
         )
+        for index, (start_y, end_y, direction) in enumerate(plan, 1):
+            self.runtime.log(
+                f"模式=导航 页面={page_label(source)} 动作={action} "
+                f"锚点={anchor} 原因=入口不在画面里 动作=活动页左列上下扫 "
+                f"方向={direction} 第={index}/{len(plan)}次"
+            )
+            self.runtime.swipe(
+                (ACTIVITY_SCROLL_X, start_y),
+                (ACTIVITY_SCROLL_X, end_y),
+                ACTIVITY_SCROLL_MS,
+                f"活动页左列{direction}",
+            )
+            self._scan_swipes_done = index
+            screen = self.runtime.capture()
+            match = self._locate(screen, anchor)
+            if match is not None:
+                return screen, match, False
+            if sibling is not None:
+                sibling_match = self._locate(screen, sibling)
+                if sibling_match is not None:
+                    # 那一行已经是**另一个态**了 ⇒ 说明这一步要达成的目标态已成立。
+                    # 只有「那一态正是本步的目标」才认，否则仍然算没找到。
+                    reached = _ACTIVITY_ROW_STATE.get(sibling) in targets
+                    return screen, None, reached
+        # 两个方向都扫完了还是没有。⚠️ 先把当时的画面存下来：这种情况八成是
+        # **这一页真的没有那个入口**（活动改版 / 入口搬家），事后只有诊断图
+        # 能告诉我们「当时到底是什么样子」，日志里那句「扫了 9 屏」帮不上这个忙。
+        if self.runtime.diagnostic_dir is not None:
+            self.runtime.save_diagnostic("activity_entry_missing")
+        return screen, None, False
 
     def _diagnostic(self, label: str):
         if self.runtime.diagnostic_dir is None:

@@ -460,6 +460,154 @@ class Epic7StoryStateMachineTests(unittest.TestCase):
             )
         )
 
+    # ── 「重复打同一关」：点「重新进行」 ─────────────────────────────────────
+    #
+    # 2026-10-18 19:50 现场：结算确认点完，游戏给的是「无法前往下一个关卡，
+    # 请选择下方按钮」，左下角「离开 / 大厅」、右下角「S 体力/上限 + 重新进行」。
+    # 这一页原来一个锚点都没有 ⇒ 干等 45 秒 ⇒ 路线退出码 1。
+
+    def test_the_replay_screen_is_clicked_instead_of_waiting_for_a_timeout(self):
+        machine = StoryStateMachine(
+            build_story_templates(TEMPLATES), initial_state=StoryState.WAIT_RESULTS
+        )
+
+        action = machine.next_action(load_fixture("retry_stage_live_20261018"))
+
+        assert action is not None, "认不出这一页 ⇒ 又回到干等 45 秒"
+        self.assertEqual("retry_stage", action.name)
+        self.assertEqual(
+            1, machine.completed_cycles, "这一屏 = 一局刚打完，必须记一轮"
+        )
+        # 必须落在右下角那颗：左下角是「离开 / 大厅」，点错就退出关卡了。
+        self.assertTrue(
+            1700 <= action.point[0] <= 1900,
+            f"点到了左边（x={action.point[0]}）—— 那里是「离开 / 大厅」",
+        )
+        self.assertTrue(990 <= action.point[1] <= 1090)
+
+    def test_the_replay_button_generalizes_to_another_stage(self):
+        """10-14 那次是**另一关、另一套背景**，同一颗按钮必须照样认得出。
+
+        只认 10-18 那一张就是「记住了一张图」，不是判据。
+        """
+        machine = StoryStateMachine(
+            build_story_templates(TEMPLATES), initial_state=StoryState.WAIT_RESULTS
+        )
+
+        action = machine.next_action(load_fixture("retry_stage_live_20261014"))
+
+        assert action is not None
+        self.assertEqual("retry_stage", action.name)
+
+    def test_going_forward_always_wins_over_replaying(self):
+        """两个都遇到时，先走「进行下一个关卡」—— 用户口径，不许反过来。
+
+        这两个按钮在**同一个位置上**（右下角），所以造不出「同屏都有」的真实帧；
+        这里用桩把**前进判据强行点亮**，验的是代码里的**优先级顺序**：
+        只要 `complete` 命中，就绝不许落到 `retry_stage`。
+        """
+        machine = StoryStateMachine(
+            build_story_templates(TEMPLATES), initial_state=StoryState.WAIT_RESULTS
+        )
+        fake = story_module.Match((900, 500), 0.99)
+        real_locate = machine._locate
+
+        def locate(screen, name):
+            if name in ("retry_stage", "complete"):
+                return fake
+            return real_locate(screen, name)
+
+        machine._locate = locate
+
+        action = machine.next_action(load_fixture("retry_stage_live_20261018"))
+
+        assert action is not None
+        self.assertEqual(
+            "complete", action.name, "前进判据在的时候点了「重新进行」—— 优先级反了"
+        )
+
+    def test_a_failed_retry_click_does_not_count_the_cycle_twice(self):
+        """点歪（尝试 2/4）时同一屏会再判一次，轮次不许跟着涨。
+
+        涨了就直接吃满 max_cycles：用户要打 10 次，实际只打了 5 次就收工。
+        """
+        machine = StoryStateMachine(
+            build_story_templates(TEMPLATES), initial_state=StoryState.WAIT_RESULTS
+        )
+        frame = load_fixture("retry_stage_live_20261018")
+
+        first = machine.next_action(frame)
+        second = machine.next_action(frame)
+
+        assert first is not None and second is not None
+        self.assertEqual("retry_stage", second.name, "点歪之后必须能再点一次")
+        self.assertEqual(1, machine.completed_cycles)
+
+    def test_the_replay_glyph_does_not_match_other_screens(self):
+        machine = StoryStateMachine(build_story_templates(TEMPLATES))
+
+        for name in [
+            "stage",
+            "stage_variant",
+            "stage_battle_ready_updated",
+            "stage_prepare_battle_ep5",
+            "next_stage",
+            "complete",
+            "results",
+            "reward",
+            "clear",
+            "team",
+            "story",
+            "bonus_reward",
+        ]:
+            with self.subTest(name=name):
+                self.assertIsNone(machine._locate(load_fixture(name), "retry_stage"))
+
+    def test_the_replay_threshold_sits_in_an_empty_gap(self):
+        """门槛必须坐在空档里，而且两边都留得下余量。
+
+        实测：两张正例 1.0000 / 0.9870；主线其余夹具最像的 0.5173。
+        """
+        machine = StoryStateMachine(build_story_templates(TEMPLATES))
+        threshold = machine._THRESHOLDS["retry_stage"]
+
+        positive = [
+            machine._locate(load_fixture(name), "retry_stage")
+            for name in ("retry_stage_live_20261018", "retry_stage_live_20261014")
+        ]
+        self.assertTrue(all(match is not None for match in positive))
+        lowest_positive = min(match.score for match in positive if match is not None)
+
+        highest_negative = 0.0
+        for path in sorted(FIXTURES.glob("*.png")):
+            if path.stem.startswith("retry_stage_live"):
+                continue
+            match = machine._locate(load_fixture(path.stem), "retry_stage")
+            if match is not None:
+                highest_negative = max(highest_negative, match.score)
+
+        self.assertGreaterEqual(
+            lowest_positive - threshold,
+            0.10,
+            "正例离门槛太近 —— 换个关卡就可能掉下去",
+        )
+        self.assertGreaterEqual(
+            threshold - highest_negative,
+            0.10,
+            f"反例已经到 {highest_negative:.4f} —— 门槛没坐在空档里",
+        )
+
+    def test_resume_on_the_replay_screen_lands_on_the_retry_step(self):
+        machine = StoryStateMachine(build_story_templates(TEMPLATES))
+
+        point = story_module.detect_resume_point(
+            machine, load_fixture("retry_stage_live_20261018")
+        )
+
+        assert point is not None, "停在这一页启动，接力探针认不出来"
+        self.assertEqual("重新进行", point.page)
+        self.assertEqual(StoryState.WAIT_RESULTS, point.state)
+
     def test_skip_detection_ignores_the_changing_story_background(self):
         machine = StoryStateMachine(
             build_story_templates(TEMPLATES), initial_state=StoryState.ACTIVE

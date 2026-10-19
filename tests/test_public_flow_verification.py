@@ -231,7 +231,13 @@ class StanceContentTests(unittest.TestCase):
         1. ``_ActionVerifier`` 这个类真的存在；
         2. 4 处点击**逐个**都经过 ``act``（少一处就红）；
         3. 2 处 ESC **逐个**都经过 ``press_esc``（少一处就红）；
-        4. ``observe`` 真的是函数的形参（而不是写在文档里的词）。
+        4. 4 处点击**逐个**都先查一次 ``is_retired``（少一处就红）；
+        5. ``observe`` 真的是函数的形参（而不是写在文档里的词）。
+
+        ⚠️ 第 4 条是 2026-10-19 事故之后加的闸门：**光验收不够，还得能换招**。
+        那次商店页上「打开快捷菜单」每轮都被判「无效」，但主循环下一轮又选中它，
+        重复 8 次、空耗 120 秒。``is_retired`` 就是那个「别再选它」的开关 ——
+        哪一天有人新加一个点击分支却忘了查它，这条会红。
         """
         source = (PACKAGE_DIR / "home_return.py").read_text(encoding="utf-8")
         tree = ast.parse(source)
@@ -263,8 +269,15 @@ class StanceContentTests(unittest.TestCase):
             calls["press_esc"],
             f"应当有 2 处 ESC 经过验收，实际 {calls['press_esc']} 处",
         )
+        # 4 道「这一招在这个页面上还有没有用」的闸门，与 4 处点击一一对应：
+        # 只要有分支能点，它就得能被停用（见上面的第 4 条）。
         self.assertEqual(
-            {"act", "press_esc"},
+            4,
+            calls["is_retired"],
+            f"4 个点击分支都该先查停用表，实际 {calls['is_retired']} 处",
+        )
+        self.assertEqual(
+            {"act", "press_esc", "is_retired"},
             set(calls),
             "验收器上不该出现计划外的调用入口",
         )

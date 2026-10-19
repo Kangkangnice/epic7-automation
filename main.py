@@ -47,6 +47,7 @@ from auto_game_unified.games.epic7.global_popups import (
     load_network_reconnect_templates,
     load_pet_gift_templates,
     load_web_network_error_templates,
+    load_worldboss_support_reward_templates,
 )
 
 
@@ -449,6 +450,13 @@ def run_mode(
                 ),
                 # 「获得每周骑士团点数奖励」弹窗（每周一结算），同放 navigation 下。
                 knights_weekly_reward_templates=load_knights_weekly_reward_templates(
+                    template_root / "navigation"
+                ),
+                # 「世界首领辅助队伍奖励」弹窗（同僚团员借了你的辅助队伍并拿到奖励后，
+                # 进世界首领战主页时弹出）。与上面三个骑士团弹窗同目录、同形同理由。
+                # ⚠️ 2026-10-19 那次「世界首领战 ✗」就是它：弹窗把底页压暗 ⇒ 主页认不出来
+                # ⇒ 导航转场 `骑士团主页 → worldboss_home` 一路等到超时。
+                worldboss_support_reward_templates=load_worldboss_support_reward_templates(
                     template_root / "navigation"
                 ),
                 # 宠物小屋礼物角标（快捷菜单页，宠物送礼时挂出的小角标），放 global 下。

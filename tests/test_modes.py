@@ -27,6 +27,8 @@ class Epic7ModeRegistryTests(unittest.TestCase):
                 "sanctuary",
                 "community",
                 "tower",
+                "side_story",
+                "moonlight_theater",
             },
             set(MODE_SPECS),
         )
@@ -46,6 +48,31 @@ class Epic7ModeRegistryTests(unittest.TestCase):
         self.assertEqual("web_entry", get_mode("community").default_state)
         with self.assertRaisesRegex(ValueError, "不适用于模式 community"):
             get_mode("community").resolve_state("done")
+
+        # 支线故事从**关卡地图**起步（用户人工停在那张地图上），与主线的
+        # 「关卡入口」不是同一页，只是恰好共用了 StoryState.STAGE 这个名字。
+        self.assertEqual("stage", get_mode("side_story").default_state)
+        # 一次把本期所有关卡打完 ⇒ 次数不给用户填（与 community 同一手法）。
+        self.assertFalse(get_mode("side_story").cycles_editable)
+
+        # 月光剧场从**支线故事页**起步（导航只把游戏带到大厅 → 支线故事那一跳），
+        # 之后「剧场选择页 / 分集页 / 剧情页」都归它自己认。
+        self.assertEqual("entry", get_mode("moonlight_theater").default_state)
+        self.assertFalse(get_mode("moonlight_theater").cycles_editable)
+
+        # ⚠️ 次数是**兜底上限**，不是「跑一幕」：`completed_cycles` 记的是**幕**
+        # （一个剧场一幕），填 1 就成了「打完第一个剧场就收工」，其余剧场白放着。
+        # 真实终点靠 `MoonlightCleared` 提前收工，同 `side_story` 的口径。
+        self.assertGreater(
+            get_mode("moonlight_theater").default_cycles,
+            1,
+            "给 1 会让日常任务只打一个剧场",
+        )
+        self.assertEqual(
+            get_mode("moonlight_theater").default_cycles,
+            get_mode("side_story").default_cycles,
+            "两条都是「一次打光」的路线，上限口径必须一致",
+        )
 
     def test_survivor_starts_inside_the_activity_without_navigation(self):
         survivor = get_mode("survivor")

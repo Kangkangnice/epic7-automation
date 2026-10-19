@@ -37,6 +37,11 @@ from auto_game_unified.games.epic7.fodder import (
     FodderStateMachine,
     build_fodder_templates,
 )
+from auto_game_unified.games.epic7.side_story import (
+    SideStoryRunner,
+    SideStoryStateMachine,
+    build_side_story_machine,
+)
 # 以「模块对象」形式再导一次：``_preflight_community`` 要在调用时读
 # ``LIVE_RUN_READY``（理由见该函数，与刷书签那条同源）。
 from auto_game_unified.games.epic7 import community as _community
@@ -104,6 +109,11 @@ from auto_game_unified.games.epic7.sanctuary import (
     SanctuaryState,
     SanctuaryStateMachine,
     detect_resume_point as detect_sanctuary_resume_point,
+)
+from auto_game_unified.games.epic7.moonlight_theater import (
+    MoonlightRunner,
+    MoonlightState,
+    MoonlightStateMachine,
 )
 from auto_game_unified.games.epic7.world_boss import (
     WORLD_BOSS_ENTRY_PAGE,
@@ -227,6 +237,13 @@ def _build_fodder(template_root: Path, state: str) -> FodderStateMachine:
     )
 
 
+def _build_side_story(template_root: Path, state: str) -> SideStoryStateMachine:
+    # 模板子目录是 templates/side_story，里面只放本路线独有的五张图；
+    # 主线那一整套（队伍/战斗/剧情/结算）由 build_side_story_machine 从兄弟目录
+    # templates/story 复用，不重新加载一遍。
+    return build_side_story_machine(template_root / "side_story", state)
+
+
 def _build_hero_synthesis(template_root: Path, state: str) -> HeroSynthStateMachine:
     return HeroSynthStateMachine(
         build_hero_templates(template_root),
@@ -344,6 +361,17 @@ def _build_sanctuary(template_root: Path, state: str) -> SanctuaryStateMachine:
     )
 
 
+def _build_moonlight_theater(
+    template_root: Path, state: str
+) -> MoonlightStateMachine:
+    # 模板子目录是 templates/moonlight_theater；两张复用图由证据档案用相对路径
+    # （../side_story、../sanctuary）指过去，本目录里没有副本。
+    return MoonlightStateMachine(
+        template_root / "moonlight_theater",
+        initial_state=MoonlightState(state),
+    )
+
+
 # ── 路线级钩子的实现（``ModeSpec.preflight`` / ``ModeSpec.runner_options``）─────────
 # ⚠️ 这两个函数原先就活在 ``main.run_mode`` 里，只是当时写成了 ``if spec.name == ...``。
 # 现在只是把它们搬回各自的路线旁边，**行为逐字不变**（包括报错文案与「在创建 runtime
@@ -431,6 +459,26 @@ RESUME_EXEMPT = {
         "`_enter_mode` **之前**；那是 `main.py` 的活，属于另一件事。"
         "在那之前挂探针等于给用户一个「看起来能接力、实际一起步就炸」的假承诺。"
     ),
+    "side_story": (
+        "2026-10-15 把那条前置事实测了（`runtime_logs/_probe_side_story_consumers.py`）："
+        "**关卡地图页 `battle_scene_visible=False`，但打完一关的场景页是 `True`**"
+        "（`scene.png` / `scene_without_arrow.png` 都是），与狗粮 `replay.png` 同因 ——"
+        "那两个页面「左侧竖列 + 右上角按钮」的白色结构撞上了战斗画面的判据。"
+        "这条路线继承 `StoryRunner`，它那支「接力落在局内」会**跳过状态机、直接把"
+        "这一局交给战斗监督**：停在场景页启动会被当成「已承诺战斗」去监督，"
+        "而监督在那一页上认作「还在战斗中」（`battle_visible=True`）⇒ 一路磨到绝对"
+        "超时，不是自愈。"
+        "⇒ 结论由「缺一条实测」升级为「**实测确认不能接力**」；要接必须先修 "
+        "`battle_controls.battle_scene_visible` 对场景页的误判 —— 那会影响全部 14 条"
+        "路线，不在本路线的改动范围里（狗粮也是用「先不接力」处理同一个坑）。"
+    ),
+    "moonlight_theater": (
+        "用户 2026-10-17 明确「不做」。这条路线**一轮自己就能跑完**（从入口扫到最右端），"
+        "半路接力的收益远小于风险：它的分集页在「刚入场」和「领完奖励」两种状态下长得"
+        "一模一样，只靠一帧认不出该点「进行观览」还是「返回」，而点错「进行观览」"
+        "会弹出 500,000 金币的购买门票确认（用户明确不许花金币）。"
+        "⇒ 宁可不接，也不要给一个会误点花钱的接力点。"
+    ),
 }
 
 
@@ -494,6 +542,10 @@ MODE_SPECS = {
         label="竞技场",
         default_state=ArenaState.LIST.value,
         states=frozenset(state.value for state in ArenaState),
+        # ⚠️ 默认 **10 次**（用户 2026-10-18 拍板）：竞技场每天能免费打的场次
+        # 就在 10 场上下，原来默认 1 次等于「点开只打一场就走」。
+        # 次数仍然可改（下面 `cycles_editable` 默认 True）—— 只想打几场清个体力也合理。
+        default_cycles=10,
         build_machine=_build_arena,
         runner_type=ArenaRunner,
         # 开局不无脑回大厅：先看一眼停在哪一步，停在对战详情/准备战斗/对手列表
@@ -687,6 +739,70 @@ MODE_SPECS = {
                     "进入冒险地图",
                 ),
             ),
+        ),
+    ),
+    "side_story": ModeSpec(
+        name="side_story",
+        label="支线故事",
+        default_state=StoryState.STAGE.value,
+        # 复用主线的状态集：本路线的状态机就是 `StoryStateMachine` 的子类，
+        # 独有页面（关卡地图 / 场景页）不占新状态 —— 它们每帧靠画面现判
+        # （用户 2026-10-15 的要求：地图布局每期都变，位置绝不能写死）。
+        states=frozenset(state.value for state in StoryState),
+        build_machine=_build_side_story,
+        runner_type=SideStoryRunner,
+        # 次数**不给用户选**（用户 2026-10-15 明确）：这条路线是「一次把本期所有关卡
+        # 打光」，没有「打几遍」的概念。所以只给一个兜底上限；真实终点是场景页上
+        # 看不到蓝色三箭头，那一步抛 `SideStoryCleared` 提前收工（退出码 2 = 干完了
+        # 但没得干了，基类会顺手把游戏带回首页）。
+        default_cycles=99,
+        cycles_editable=False,
+        navigation_plan=NavigationPlan(
+            mode="side_story",
+            steps=(
+                # 与狗粮第一步**逐字相同**：同一个大厅入口、同一个落点页
+                # （导航器对这个页面的名字就叫 `fodder_side_story`，它认的是
+                # 右下那颗「特别的时间之书」，两支线共用同一页）。
+                # ⚠️ 导航只做这一跳，往后的「快速入场 / 冒险 / 关卡地图 / 场景页」
+                # 一律交给 `SideStoryStateMachine` 自己认 —— 那几页不在导航器的
+                # 页面表里，为了导航再补一遍锚点等于同一件事写两份判据，
+                # 而两份判据迟早会分叉。
+                NavigationStep(
+                    "lobby", ("fodder_side_story",), "lobby_side_story", "进入支线故事"
+                ),
+            ),
+            ready_note="支线故事页已就绪",
+        ),
+    ),
+    "moonlight_theater": ModeSpec(
+        name="moonlight_theater",
+        label="月光剧场",
+        default_state=MoonlightState.ENTRY.value,
+        states=frozenset(state.value for state in MoonlightState),
+        build_machine=_build_moonlight_theater,
+        runner_type=MoonlightRunner,
+        # 「一次把本周免费的观览都打完」⇒ 没有「打几遍」的概念，次数不给用户选。
+        # 真实终点是「右边没有海报了且当前剧场没有 Free」，那一步抛
+        # ``MoonlightCleared`` 提前收工（退出码 2 = 干完了但没得干了）。
+        #
+        # ⚠️ 给的是**兜底上限**，不是「跑一幕」：``completed_cycles`` 记的是**幕**
+        # （一个剧场一幕），写 1 就变成「打完第一个剧场就收工」，剩下的剧场白放着。
+        # 与 ``side_story`` 同一个口径（它也是「一次打光」⇒ 99）。
+        default_cycles=99,
+        cycles_editable=False,
+        # 接力：用户 2026-10-17 明确不做，理由写在 ``RESUME_EXEMPT``。
+        navigation_plan=NavigationPlan(
+            mode="moonlight_theater",
+            steps=(
+                # 与支线故事 / 狗粮第一步**逐字相同**：同一个大厅入口、同一个落点页。
+                # 导航只做这一跳；往后的「月光剧场入口 → 剧场选择页 → 分集页 → 剧情页」
+                # 一律交给 MoonlightStateMachine 自己认 —— 那几页不在导航器页面表里，
+                # 为了导航再补一遍锚点等于同一件事写两份判据，而两份判据迟早会分叉。
+                NavigationStep(
+                    "lobby", ("fodder_side_story",), "lobby_side_story", "进入支线故事"
+                ),
+            ),
+            ready_note="支线故事页已就绪",
         ),
     ),
     "hero_synthesis": ModeSpec(
@@ -1015,10 +1131,11 @@ MODE_SPECS = {
                         "web_activity_gate",
                         "打开网页活动列表",
                         skip_if_observed=("web_activity_list",),
-                        # ⚠️ 同上：这一屏的「前往活动页」按钮虽然给了固定坐标，
-                        # 但**选中态那一行本身可能在视野外**（左侧列表滚动位置不同），
-                        # 点了也白点 ⇒ 同样允许「重试前先滚一屏」。
-                        scroll_before_retry="activity_column",
+                        # ⚠️ 2026-10-18：**这一行原来的 ``scroll_before_retry`` 删掉了**。
+                        # 它当年是为了「选中态那一行被挤出视野 ⇒ 点了也白点」而加的，
+                        # 但现在这一步**不找那一行了**（用固定坐标点右侧的按钮），
+                        # 而且上一步的扫描已经保证了「那一行看得见、选中态已成立」——
+                        # 一个用不到、又会让「上下扫」在右侧白跑一趟的声明，不如没有。
                         # ⚠️⚠️ **固定坐标点击**，不再用模板定位这颗按钮。
                         #
                         # 为什么：按钮上有一颗**来回滑动的光球**。2026-10-06 光球

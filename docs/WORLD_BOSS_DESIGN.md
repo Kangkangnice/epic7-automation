@@ -357,6 +357,52 @@ story / expedition 的接力同样如此）+ **2 张别的路线的骑士团主�
 `knights_signin_popup` 仍 1 张，判页分布与加判定前**完全一致**，零误伤。
 扫描脚本：`runtime_logs/_gift_support_probe.py`（排他性 + 全库判页对照一体）。
 
+### 「世界首领辅助队伍奖励」弹窗（同僚团员借了你的辅助队伍）✅ 已实现 —— 2026-10-19 每日任务实跑暴露
+
+**现象**：`08:11:12 点击验收=生效 从=骑士团主页 到=无效画面` → `08:11:17 unknown_screen_unresolved`
+→ `08:12:44 模式=导航 转场 骑士团主页 → worldboss_home 失败`，每日任务里「世界首领战 ✗」。
+
+**那一帧长什么样**（诊断图已升为夹具
+`tests/fixtures/epic7_world_boss/worldboss_support_reward_live_20261019.png`）：
+标题「世界首领辅助队伍奖励」+ 说明「同僚团员与我的辅助队伍并肩战斗，获得了以下奖励。」+
+「使用次数：1」+ 货币「指挥官的袖章 ×5」+ 底部「点击关闭」。
+它盖在**世界首领战主页**上并把底页压暗 ⇒ 右下角那颗「选择队伍」
+（`lobby_worldboss_select_team`）认不出来 ⇒ 整页 `unknown`。
+
+**放在哪里**：同骑士团那三个弹窗 —— `Epic7GlobalPopupGuard`，复用共享点击预算
+（`global_popups._MAX_POPUP_CLICKS`）+ 每 3 秒重试 + 15 秒熔断 + 诊断留证。
+守卫装在 `runtime.capture` 上（见 `main.py`），所以**导航链与状态机两条路径都被兜住**，
+不必在导航里再写一遍关弹窗。
+
+**判据（双锚点，与骑士团那三个同形）**：
+
+| 锚点 | 位置 | 本页 | 跨页最高 |
+|---|---|---|---|
+| `worldboss_support_reward_title`（标题） | `(700,262,520,80)` | 1.0000 | **0.3320**（knights_signin_popup） |
+| `worldboss_support_reward_close`（点击关闭） | `(860,770,300,90)` | 1.0000 | **0.8993**（hero/reward_popup） |
+
+⚠️ 「点击关闭」照旧**单独不排他**（`popup_spring` / `popup_penguin_*` 都在 0.8991），
+必须靠标题兜住。点击点实测 **(960, 813)**。
+
+⚠️ 那行灰字**峰值亮度只有 171** ⇒ **不能走 `MATCH_MODE_WHITE_MASK`**（白像素下界 200）：
+模板会被整片抹成 0，常量模板在 `TM_CCOEFF_NORMED` 下退化成「处处 1.0000」
+（实测世界首领主页十几张帧全变 1.0）。这条与 `lobby_battle` 那种「白字黑底」正好相反。
+
+**`observe()` 里的位置**：排在 `worldboss_entry` / `lobby_worldboss_select_team` 判定
+**之前**（弹窗期间底页认不出来），命中返回 `worldboss_support_reward_popup`，
+`PAGE_LABELS` 加「世界首领辅助队伍奖励弹窗」。
+
+**全库回归（280 张）**：判成 `worldboss_support_reward_popup` 的**只有 1 张**（弹窗本身），
+其余 `knights_home` / `worldboss_home` / `lobby` 判页分布与加判定前完全一致，零误伤。
+标题在两个骑士团弹窗上分别只有 0.2x/0.3x ⇒ 与它们互不误触
+（`test_worldboss_support_reward_title_is_exclusive_against_sibling_popups` 守住）。
+
+**回归防线**：`tests/test_global_popups.py` 5 条（双锚点 / 缺一不可 / 不认底页 /
+同类弹窗排他 / 守卫点掉它）+ `tests/test_navigation.py` 2 条（`observe()` 报页名、
+**端到端转场**「守卫点掉弹窗 → 认出 worldboss_home → 转场确认」）。
+扫描脚本：`runtime_logs/_probe_worldboss_support_reward.py`（两个锚点的跨页最高 +
+全库判页 + 守卫复演，一条命令可重跑）。
+
 ### ⚠️ 配置队伍页要分两阶段 + 动作必须声明转场契约 ✅ 已修正 —— 2026-09-22 首次实跑暴露
 
 **现象**：用户实跑反馈「选好辅助队伍之后选择自己的队伍没有成功进行自动配置」。
