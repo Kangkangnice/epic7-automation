@@ -298,6 +298,42 @@ FEED_TAP_SATURATION = 35
 #: 单像素行太噪，一条 12px 的带已经足够窄（正文行高约 40px，不会跨到图片上去）。
 FEED_TAP_SLAB = 12
 
+# ── 「通栏跨度」：让「可点的东西」**唯一**（2026-10-18 立）─────────────────────
+#
+# ## 上面那三条为什么不够 —— 2026-10-18 实跑的原话
+#
+# 上面三条（白底 / 有字 / 不是图片）描述的是「**这一条像不像文字**」，
+# 而屏幕上**像文字的东西有一大堆**：作者名行、标题行、正文行、标签行、点赞数……
+# 于是这个判据**没有区分力**：它放行的东西里**混着"点下去会开到别处去"的**。
+#
+# 那次事故的形状（同一轮实跑、同一坐标、24 秒内一成一败）：
+#
+# | 时间 | 坐标 | 底下实际是什么 | 结果 |
+# | --- | --- | --- | --- |
+# | 18:30:33 | (400, 1444) | 卡片标题行 | 打开帖子详情 ✅ |
+# | 18:30:57 | (400, 1444) | **作者名行**（`task_browse_4` 滑了 800px 之后） | 打开**作者账号主页** ❌ |
+#
+# 作者主页**不在任何已登记判据里** ⇒ `unknown` ⇒ 干等 150 秒 ⇒ 整条路线失败。
+# 而"标题行"和"作者名行"在外观上是同一类东西（白底、黑字、都不是图片），
+# 靠上面三条**永远分不开**——再多调几次阈值也只是改概率。
+#
+# ## 真正能分开它们的量：这一行的字**横跨多宽**
+#
+# 卡片里只有「正文段落」是**通栏**的；作者名、标题、标签、时间戳都是**一窄条**。
+# 全库 6 张信息流夹具、y 250~1750 逐 12px 扫（共 179 条被上面三条放行的 slab）：
+#
+# | 跨度 | 条数 | 是什么 |
+# | --- | --- | --- |
+# | 120 ~ 399 | 63 | 作者名（251±2）/ 标题 / 标签 / 时间戳 / 点赞数 |
+# | **400 ~ 549** | **0** | **空档（150px 宽，一条都没有）** |
+# | 569 ~ 842 | 116 | 正文段落 |
+#
+# ⇒ 门槛 500 落在**空档正中偏右 16px**：左边余量 **101px**、右边余量 **69px**。
+# 这不是"调一调概率"，是**这个量在这批帧上把两类对象彻底分开**。
+#
+# ⚠️ 为什么门槛不放在 600：正文最小实测 569（`feed_grid_at_top`），600 会把它误伤。
+FEED_TAP_SPAN_MIN = 500
+
 # ── 信息流顶部的「兑换」图标（2026-10-07 立）─────────────────────────────────
 #
 # 为什么需要它：回「我的任务」那条路是**信息流 → 兑换图标 → 兑换中心 → 获取积分卡**，
@@ -467,12 +503,32 @@ class PageJudgement:
     ``fallback=True`` 表示**没有任何正向判据命中**，名字是「栈根兜底」推出来的
     （见 ``STACK_ROOT_FALLBACKS``）。业务上要用它时请明确知道这一点，
     别把它当成一个正向判据来用。
+
+    ``scores`` 是**全部锚点的真实分数**（过了阈的、没过阈的都在），按分数从高到低。
+    ``observations`` 只收**过了阈**的那些 —— 判断页面归属只用它。
+
+    ## ⚠️ 为什么必须留着 ``scores``（2026-10-18 立）
+
+    以前只有 ``observations``，于是在「认不出」时它必然是**空列表**，
+    而 ``PageJudgement("unknown", 0.0, ...)`` 里的 ``confidence`` 是**写死的 0**，
+    不是量出来的。结果日志里永远只有一行：
+
+        社区画面认不出（最高分 0.0000）；已知观察=[]
+
+    11 天 15 次失败**字字相同**。事后想查「到底是陌生页，还是差 0.01 没过阈」——
+    查不出来，因为**量都没留下来**。没有这个信息，每次修都只能猜，
+    这就是"改了这么多次还是错"的直接原因。
+
+    ⇒ 诊断要**在失败那一刻**就写到日志里，不能等到 150 秒超时之后，
+    更不能只留一个写死的 0。
     """
 
     name: str
     confidence: float
     observations: tuple[Observation, ...]
     fallback: bool = False
+    #: 全部锚点的真实分数（降序）。``observations`` 是它的**过阈子集**。
+    scores: tuple[Observation, ...] = ()
 
     @property
     def label(self) -> str:
@@ -490,10 +546,16 @@ def observe_pages(
     *,
     threshold: float = THRESHOLD,
     names: Optional[Iterable[str]] = None,
+    collect_all: bool = False,
 ) -> tuple[Observation, ...]:
     """在**各锚点自己的限定区域内**搜模板，返回所有过阈的观察，按分数从高到低。
 
     区域限定是刻意的：与横屏那套一致，既快，也天然挡掉「别处也有个长得像的东西」。
+
+    ``collect_all=True`` ⇒ **不过阈的也返回**（诊断用，见 ``PageJudgement.scores``）。
+    ⚠️ 它只是「别把分数丢掉」，**不是另一个判据**：匹配本身一次都没多跑，
+    返回后由调用方按 ``threshold`` 自己切。**别在别处用它做业务判断**——
+    「没过阈的分数」恰恰是不能当结论用的那些。
     """
     _assert_portrait(screen)
     wanted = set(names) if names is not None else None
@@ -509,7 +571,9 @@ def observe_pages(
         if patch.shape[0] != h or patch.shape[1] != w:
             continue
         score, _ = best_match(patch.astype(np.float32), template.astype(np.float32))
-        if np.isfinite(score) and score >= threshold:
+        if not np.isfinite(score):
+            continue
+        if collect_all or score >= threshold:
             found.append(Observation(anchor.name, float(score), (x, y, w, h)))
     found.sort(key=lambda item: (-item.confidence, LAYER_ORDER.get(item.name, 99)))
     return tuple(found)
@@ -617,7 +681,14 @@ def judge_page(
 
     三步的顺序就是优先级：**查看器 → 正向判据（按叠层次序）→ 栈根兜底 → unknown**。
     """
-    observations = observe_pages(screen, templates, threshold=threshold)
+    # 一趟匹配、两份用途：``scores`` 留全部真实分（诊断），``observations`` 只留过阈的（判页）。
+    # ⚠️ 只许调**一次** ``observe_pages``：调两次等于把 11 个锚点的匹配跑两遍。
+    scores = observe_pages(
+        screen, templates, threshold=threshold, collect_all=True
+    )
+    observations = tuple(
+        item for item in scores if item.confidence >= threshold
+    )
     viewer = detect_image_viewer(screen)
     if viewer is not None:
         band = (  # 区域只用于诊断展示：内容带那一条
@@ -630,17 +701,26 @@ def judge_page(
             "image_viewer",
             1.0,
             (Observation("image_viewer", 1.0, band), *observations),
+            scores=scores,
         )
     top = top_page(observations)
     if top is not None:
-        return PageJudgement(top.name, top.confidence, observations)
+        return PageJudgement(top.name, top.confidence, observations, scores=scores)
     # 栈内没有盖层 ⇒ 试栈根兜底（首页列表 / 商品详情这两页没有专有判据）。
     # 次序就是 ``STACK_ROOT_FALLBACKS`` 的插入序（feed_home 在前），别再抄一份元组。
     for root in STACK_ROOT_FALLBACKS:
         resolved = resolve_stack_root(observations, root)
         if resolved is not None:
-            return resolved
-    return PageJudgement("unknown", 0.0, observations)
+            # 兜底那一支不认识 ``scores``（它只看过阈的观察）⇒ 在这里补上，
+            # 否则「兜底命中」的帧在日志里又变回「没有分数」。
+            return PageJudgement(
+                resolved.name,
+                resolved.confidence,
+                resolved.observations,
+                fallback=resolved.fallback,
+                scores=scores,
+            )
+    return PageJudgement("unknown", 0.0, observations, scores=scores)
 
 
 def observe_task_rows(
@@ -760,6 +840,13 @@ def feed_tap_band_is_text(screen: np.ndarray, top: int, height: int) -> bool:
 
     用 ``max``/``min`` 跨通道取，所以**与色彩口径（RGB/BGR）无关**，
     不会重演「两边不同口径量出假分数」那一课。
+
+    ⚠️⚠️ **它只回答「像不像文字」，不回答「能不能点」。** 两者别混：
+
+    - 当**滚动证据**用（``feed_band_tops``）⇒ 用它就对了，越灵敏越好；
+    - 当**点击判据**用 ⇒ 必须用 ``feed_tap_band_is_post_body``。
+      2026-10-18 就是拿这一条直接去点，而它放行的东西里混着**作者名行** ——
+      点下去开的是作者账号主页，整条路线卡死 150 秒。原因见 ``FEED_TAP_SPAN_MIN``。
     """
     band = screen[top : top + height].astype(np.int16)
     if band.size == 0:
@@ -777,6 +864,51 @@ def feed_tap_band_is_text(screen: np.ndarray, top: int, height: int) -> bool:
     )
 
 
+def feed_tap_band_span(screen: np.ndarray, top: int, height: int) -> int:
+    """``[top, top+height)`` 这几行的**暗像素横向跨度**（最左暗列 .. 最右暗列，px）。
+
+    为什么是「跨度」而不是「暗像素个数」：暗像素个数同时受**字号**和**字数**影响，
+    而跨度只受**这一行铺得多宽**影响 —— 正文段落铺满整行，作者名只有两个字那么宽。
+    实测分布见 ``FEED_TAP_SPAN_MIN`` 上面那张表（400~549 是 150px 宽的空档）。
+
+    没有暗像素 ⇒ 返回 0（「跨度为 0」在下游一定不通过，语义安全）。
+    """
+    band = screen[top : top + height]
+    if band.size == 0:
+        return 0
+    dark = band.max(axis=2) < 128
+    columns = np.flatnonzero(dark.any(axis=0))
+    if columns.size == 0:
+        return 0
+    return int(columns[-1] - columns[0] + 1)
+
+
+def feed_tap_band_is_post_body(screen: np.ndarray, top: int, height: int) -> bool:
+    """这一段是不是**帖子正文段落** —— 点下去**必然**打开这一篇帖子。
+
+    这就是 10-18 之后「可以点」的**唯一**判据，四条同时成立：
+
+    1~3. ``feed_tap_band_is_text``（白底 / 有字 / 不是图片）—— 挡图片和空白；
+    4.   ``feed_tap_band_span`` ≥ ``FEED_TAP_SPAN_MIN``（通栏）—— 挡作者名 / 标题 / 标签。
+
+    ## 第 4 条为什么是「唯一性」而不是「再多一条阈值」
+
+    前三条描述的是「**像不像字**」，而像字的东西有作者名、标题、正文、标签、时间戳、点赞数
+    —— 它们**全部**满足前三条。所以前三条**无法证伪**「这不是正文」，
+    判据在这一层是没有区分力的（2026-10-18 点歪进作者主页就是这么来的）。
+
+    第 4 条引入的是**另一维**的量，而且在实测数据上是**彻底分开**的（400~549 零命中）。
+    满足它的对象在语义上只剩「正文段落」这一类 —— **这就是唯一性**。
+
+    ⚠️ 代价与取舍：一屏里如果**一个正文段落都没有**（整屏全是图，或卡片只有标题），
+    这里返回 False ⇒ ``locate_feed_post_tap`` 返回 ``None`` ⇒ 本遍作废。
+    这是**故意的**：宁可这遍不做，也不点一个「可能开到别处去」的位置。
+    """
+    return feed_tap_band_is_text(screen, top, height) and (
+        feed_tap_band_span(screen, top, height) >= FEED_TAP_SPAN_MIN
+    )
+
+
 def feed_band_tops(
     screen: np.ndarray,
     *,
@@ -791,8 +923,11 @@ def feed_band_tops(
     因为主循环对同名动作有重试节流，**按帧记账会几秒就烧穿**（见
     ``community.SWIPE_UNEXECUTED_FRAME_LIMIT`` 那段）。
 
-    与 ``locate_feed_post_tap`` 用**同一套**判据（``feed_tap_band_is_text``），
-    判据只有这一份实现。
+    ⚠️ 它用的是 ``feed_tap_band_is_text``（「像文字」），**不是**点击用的
+    ``feed_tap_band_is_post_body``（「像文字 + 通栏」）。这是**故意的**：
+    这里要的是「滚动前后这张表有没有变」的灵敏度，带子越多越灵敏；
+    而点击要的是**唯一性**，多一点都可能点到作者名行上去（2026-10-18 事故）。
+    两者共用同一个底层判据 ``feed_tap_band_is_text``，没有抄第二份实现。
     """
     _assert_portrait(screen)
     y0 = strip[1]
@@ -814,7 +949,16 @@ def locate_feed_post_tap(
     """在信息流里**找**一条「可以点开帖子」的正文带 ⇒ 返回点击点；找不到返回 ``None``。
 
     ``hint`` 是脚本里钉着的那个盲坐标（``community.FEED_FIRST_POST``）。以它的 **y**
-    为中心**先往上、再往下**找最近的那条正文带；**x 原样沿用 hint 的 x**。
+    为中心**先往上、再往下**找最近的那条**正文段落**；**x 原样沿用 hint 的 x**。
+
+    ## 判据是 ``feed_tap_band_is_post_body``，不是 ``feed_tap_band_is_text``
+
+    ⚠️⚠️ **2026-10-18 就是因为这里用了「像文字」那一条而翻车的。**
+    「像文字」放行的东西里混着**作者名行**，点下去打开的是**作者账号主页**——
+    一个没登记过的页面 ⇒ 认不出 ⇒ 干等 150 秒 ⇒ 整条路线报错。
+    现在必须同时满足「通栏」（``FEED_TAP_SPAN_MIN``），实测那样只剩正文段落。
+    两张现场帧（正文行 / 作者名行）见 ``tests/fixtures/epic7_community/feed_list_live_20261006.png``
+    与 ``runtime_diagnostics/epic7_community/20261018_183328_870617_timeout_feed.png``。
 
     ## 为什么只纠正 y、不动 x
 
@@ -828,6 +972,9 @@ def locate_feed_post_tap(
     卡片结构是「头像行 → 标题/正文 → **图片** → 标签行」。所以一条图片带**上面**
     紧邻的一定是这篇的正文，点上去就是**打开这篇**——正是我们要的动作。
     往下找只在整屏都没有正文带时才用得到（例如一屏全是图）。
+
+    ⚠️ 「往上找」只在**同一条判据**下成立：上面那条带也必须过「通栏」。
+    否则第一下点上去的可能就是作者名行（10-18 的现场就是它）。
 
     ## ``None`` 的语义
 
@@ -850,7 +997,7 @@ def locate_feed_post_tap(
     order = [*range(begin, -1, -1), *range(begin + 1, len(tops))]
     for index in order:
         top = tops[index]
-        if feed_tap_band_is_text(screen, top, slab):
+        if feed_tap_band_is_post_body(screen, top, slab):
             return (hint[0], top + slab // 2)
     return None
 

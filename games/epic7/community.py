@@ -693,6 +693,9 @@ class CommunityState(Enum):
     CLOSING = "closing"          # 已点「退出社区」，等模拟器转回横屏
     REFRESHING = "refreshing"    # 已发出「下拉刷新」，等 H5 活过来
     IMAGE_VIEWER = "image_viewer"  # 图片被点开放大成全屏，已按返回键，等它消失
+    #: **陌生页**：判页认不出、也不在任何已知浮层里。走「逃生门」（返回键），
+    #: 不再原地干等 —— 见 ``_on_stranger_page`` 与 ``STRANGER_RECOVER_STEPS``。
+    RECOVERING = "recovering"
     BLOCKED = "blocked"          # 网络异常，连着拉活也没活过来，停
     DONE = "done"
 
@@ -712,6 +715,7 @@ STATE_LABELS = {
     CommunityState.CLOSING: "已退出社区，等转回横屏",
     CommunityState.IMAGE_VIEWER: "图片被放大成全屏，已按返回键等它消失",
     CommunityState.REFRESHING: "已下拉刷新，等 H5 活过来",
+    CommunityState.RECOVERING: "陌生页，正在按返回键退出它",
     CommunityState.BLOCKED: "网络异常（拉活没成功）",
     CommunityState.DONE: "已收工",
 }
@@ -735,6 +739,69 @@ _SETTLING_STATES = frozenset(
         CommunityState.IMAGE_VIEWER,
     }
 )
+
+# ── 陌生页逃生门（2026-10-18 立）─────────────────────────────────────────────
+#
+# ## 它治的是什么 —— 先把「根」说清楚
+#
+# 之前的约定是：**认不出这一页 ⇒ 抛错、等状态超时（150 秒）⇒ 整条路线失败**。
+# 这条约定默认了一个前提：**程序只会在已登记的那 11 页之间移动**。
+# 而社区是个 H5，页面是**开放集合**（账号主页 / 话题页 / 转发页 / 举报页 / 活动页…），
+# 这个前提根本不成立。
+#
+# 于是每一次"点歪了一点点"都变成一次整条路线失败。11 天里同样的失败 **15 次**
+# （``runtime_logs/epic7_community.log`` 里 ``UnrecognizedCommunityScreen`` 那 15 行），
+# 每一次都长得一模一样：``最高分 0.0000；已知观察=[]``。
+#
+# ## 为什么「再补一页判据」不是办法
+#
+# 那是**用穷举去对抗一个开放集合**。已经补过：图片查看器、兑换图标、正文带、四宫格两个落点…
+# 每补一个，H5 那边还有下一个。补不完。
+#
+# ## 所以改成：陌生页是一等公民的**可恢复状态**
+#
+# 不认识的页面,**先退出去**再说。退出去之后回到已登记页 —— 判页立刻重新接上。
+# 「返回」是这一族 H5 页面**唯一通用的逃生门**：账号主页、话题页、图片查看器、
+# 分享面板、帖子详情，按返回都回到上一层。
+#
+# ## 动作阶梯（**有界**，绝不死循环）
+#
+# | 序 | 动作 | 为什么 |
+# | --- | --- | --- |
+# | 1 | 系统返回键 | `portrait.back()` = `adb shell input keyevent 4`，通道现成（图片查看器在用） |
+# | 2 | 系统返回键（再来一次） | 有的页第一下只关掉一层浮层；也可能是按早了没吃到 |
+# | 3 | 点**左上角返回箭头** | ⚠️ 实测「我的任务」页对系统返回键**完全没反应**（`core/portrait.py::back` 的 docstring），只靠返回键会漏这一页 |
+#
+# 三步都走完还是认不出 ⇒ 抛错收手（走原有的失败路径）。
+#
+# ## 两条不许省的保险
+#
+# - **按一次 → 判一次**：每按完必须等 ``STRANGER_WAIT_FRAMES`` 帧重新判页，判到已知页立刻停。
+#   连按会把社区**整个退出去**（代价是重进 90 秒），比现在的错还贵。
+# - **先等两帧再动手**：点完页面那一两秒 H5 可能正在画下一屏，那时整个画面本来就认不出。
+#   不等就直接按返回，会把一次**正常的转场**当成陌生页处理掉。
+STRANGER_RECOVER_STEPS: tuple[str, ...] = ("back", "back", "back_arrow")
+
+#: 每一级动作之间**先等几帧再判**。
+#:
+#: ⚠️ 取 4 而不是 2，是有实测依据的：日志里「点击 → 目标页确认」的间隔
+#: （18:30:20→25 / 25→29 / 29→33 / 33→37）一直是 **4~5 秒**。
+#: 等得比它短 ⇒ 会把一次**正常的换页转场**当成陌生页、按返回把它按掉 ——
+#: 那比"晚几秒恢复"贵得多。等得比它长也只是多等一两秒。
+#: 上限：3 级 × (4 帧确认 + 1 次动作) ≈ 15 帧，压在 ``RECOVERING`` 的 60 秒里。
+STRANGER_WAIT_FRAMES = 4
+
+#: 第 3 级那条路用的点：**左上角的返回箭头**。
+#:
+#: 之所以要钉一个点，是因为对一个**不认识的**页面没法现找锚点（认得出就不用逃生门了）。
+#: 账号主页（``20261018_183328_870617_timeout_feed.png``）的 ‹ 实测在 (43, 70) 附近；
+#: 帖子详情是 (154, 97)、我的任务是 (35, 130) —— 三者都在左上这块 200x160 里，
+#: 所以取它们的中间值，落在这块区域的任何一个箭头热区上都仍然算"按到了箭头那一块"。
+STRANGER_BACK_ARROW = (60, 95)
+
+#: 逃生门产出的动作名。``_transition_completed`` 靠它认「这一下是去退陌生页的」，
+#: 从而把上一个动作的出口验收**作废**（不然那个等不来的目标会一直在等）。
+STRANGER_ACTIONS = frozenset({"stranger_back", "stranger_back_arrow"})
 
 
 @dataclass(frozen=True)
@@ -1122,6 +1189,23 @@ class CommunityStateMachine:
         self.stuck_tasks: set[str] = set()
         # 上一次在「我的任务」页读到的三行状态（用来判「刚跑完的那条涨没涨」）。
         self._tasks_before: dict[str, str] = {}
+        # ── 陌生页逃生门的三本账（2026-10-18 立，见 ``STRANGER_RECOVER_STEPS``）──
+        # ① 这一趟陌生页已经发过几级动作（决定下一级是返回键还是左上角箭头）；
+        # ② 发完动作之后等了几帧（「按一次判一次」用的：等满才准发下一级）；
+        # ③ 进陌生页那一刻跑的是哪条任务的第几步 —— 逃生成功后要**退回那一步重做**，
+        #    否则 ``task_step`` 已经翻过去，下一帧会拿"下一步该在帖子详情"去核信息流，
+        #    误判成"中间那一下没点中"把整轮作废。
+        self._stranger_attempts = 0
+        self._stranger_waits = 0
+        self._stranger_task: Optional[str] = None
+        self._stranger_step = 0
+        #: 已经为哪一步回退过一次（同一步只准回退一次，否则就是死循环）。
+        self._stranger_rewound_for: Optional[int] = None
+        #: 「刚从陌生页退回来」这件事的一次性日志文案（由 Runner 取走并打进日志）。
+        #: 为什么不在状态机里直接打：状态机是**纯决策**，不认识 Runtime。
+        #: 为什么不在 ``_on_recovered`` 里塞进 ``last_reason``：下一步的处理函数会
+        #: 立刻覆盖它（任务文案），那句话就永远看不见了。
+        self._recover_note = ""
 
     # ---- 观察 ----
 
@@ -1181,6 +1265,11 @@ class CommunityStateMachine:
                 CommunityState.IMAGE_VIEWER: "已按返回键关图片查看器、H5 还没画回来，只等不判失败",
             }.get(self.state, "转场中，只等不判失败")
             return None
+        # 认不出这一页 ⇒ **不再原地干等到超时**，走逃生门（见 ``STRANGER_RECOVER_STEPS``）。
+        if page.name == "unknown":
+            return self._on_stranger_page(page)
+        if self.state is CommunityState.RECOVERING:
+            self._on_recovered(page)
         handler = {
             "network_error": self._on_network_error,
             "image_viewer": self._on_image_viewer,
@@ -1196,13 +1285,138 @@ class CommunityStateMachine:
             "feed_home": self._on_feed,
         }.get(page.name)
         if handler is None:
-            # 认不出画面：**不猜**。交给主循环的「认不出画面」通道处理（它会重试/告警）。
-            self.last_reason = f"社区画面认不出（最高分 {page.confidence:.4f}）"
-            raise UnrecognizedCommunityScreen(
-                f"社区画面认不出（最高分 {page.confidence:.4f}）；"
-                f"已知观察={[o.describe() for o in page.observations]}"
+            # ⚠️ 走到这里说明**判据认得这一页、但状态机没给它接线**（``ANCHORS`` 里加了
+            # 一页却忘了在 ``handler`` 表里加处理函数）。这是**接线 bug**，不是"认不出"——
+            # 真正的"认不出"（``unknown``）在上面就被 ``_on_stranger_page`` 接走了。
+            self.last_reason = f"「{page.label}」这一页有判据但状态机没接线"
+            raise RuntimeError(
+                f"社区页面「{page.name}」（{page.label}）有判据、判出来了，"
+                "但 next_action 的 handler 表里没有它：新加一页时漏了接线"
             )
         return handler(screen, page)
+
+    # ---- 陌生页逃生门 ----
+
+    def _stranger_report(self, page) -> str:
+        """陌生页的诊断文案：**最像的三页 + 真实分数**。
+
+        ⚠️ 这是整套修复里最便宜、也最重要的一条：2026-10-18 之前，这里写的是
+        ``最高分 {page.confidence:.4f}``，而 ``unknown`` 的 ``confidence`` 是
+        ``PageJudgement("unknown", 0.0, ...)`` 里**写死的 0**。于是 11 天 15 次失败，
+        日志里全是同一行 ``最高分 0.0000；已知观察=[]`` —— 事后连"差多少"都看不见。
+        现在把 ``page.scores``（全部锚点的真实分）里最靠前的三页写出来。
+        """
+        if not page.scores:
+            return "最像的三页=无（连一个锚点都没算出分）"
+        tops = "、".join(item.describe() for item in page.scores[:3])
+        return f"最像的三页={tops}"
+
+    def _on_stranger_page(self, page) -> Optional[CommunityAction]:
+        """判页认不出 ⇒ **先退出去**，而不是原地等到超时。
+
+        见 ``STRANGER_RECOVER_STEPS``（为什么是返回键、为什么必须有 3 级、
+        为什么"按一次判一次"）。这里的职责只有三件：
+
+        1. 第一次进来时记住「当时在跑哪条任务的第几步」（逃生成功后要退回去重做）；
+        2. 每级动作之间**等够帧数再判**（排除"转场画到一半"）；
+        3. 阶梯用尽 ⇒ 抛错收手，走原有的失败路径（不无限按）。
+        """
+        self.state = CommunityState.RECOVERING
+        report = self._stranger_report(page)
+        if self._stranger_attempts == 0 and self._stranger_waits == 0:
+            # 只记一次：这一趟陌生页是从哪条任务的第几步掉进去的。
+            self._stranger_task = self.active_task
+            self._stranger_step = self.task_step
+        total = len(STRANGER_RECOVER_STEPS)
+        if self._stranger_waits < STRANGER_WAIT_FRAMES:
+            self._stranger_waits += 1
+            self.last_reason = (
+                f"陌生页（{report}）：先等 {self._stranger_waits}/{STRANGER_WAIT_FRAMES} 帧，"
+                "排除「转场画到一半」再动手"
+            )
+            return None
+        if self._stranger_attempts >= total:
+            self.last_reason = (
+                f"陌生页（{report}）：返回键 ×2 与左上角箭头都试过，还没退出这一页"
+            )
+            raise UnrecognizedCommunityScreen(
+                f"社区画面认不出（{report}）；"
+                f"已按返回键/箭头共 {total} 次都没能退出这一页，"
+                "判定为「退不出去的陌生页」，停止并留诊断"
+            )
+        step = STRANGER_RECOVER_STEPS[self._stranger_attempts]
+        self._stranger_attempts += 1
+        self._stranger_waits = 0
+        index = f"第 {self._stranger_attempts}/{total} 级"
+        if step == "back":
+            self.last_reason = (
+                f"陌生页（{report}）：{index} —— 按系统返回键，把它退掉回到上一层"
+            )
+            return CommunityAction(
+                "stranger_back",
+                STRANGER_BACK_ARROW,
+                press_back=True,
+                source_page="unknown",
+                in_page_evidence="按系统返回键离开这个陌生页（画面结构应发生变化）",
+                reason=self.last_reason,
+            )
+        self.last_reason = (
+            f"陌生页（{report}）：{index} —— 系统返回键没推动，改点左上角的返回箭头"
+        )
+        return CommunityAction(
+            "stranger_back_arrow",
+            STRANGER_BACK_ARROW,
+            source_page="unknown",
+            in_page_evidence="点左上角的返回箭头离开这个陌生页（画面结构应发生变化）",
+            reason=self.last_reason,
+        )
+
+    def _on_recovered(self, page) -> None:
+        """从陌生页退回来了（这一帧已经判出了已知页）。
+
+        两件事：
+        - **把刚才那一步退回来重做**（``task_step -= 1``）：出手那一帧 ``task_step``
+          已经翻过去了，不退回来的话下一帧会拿"下一步该在帖子详情"去核信息流 ⇒
+          误判成"中间那一下没点中" ⇒ 整轮任务作废。**同一步只准退一次**，
+          否则点歪 + 退回来会变成死循环。
+        - 账本清零：下一次遇到的是**新的**陌生页，阶梯从头走。
+        """
+        rewound = False
+        if (
+            self._stranger_task is not None
+            and self._stranger_task == self.active_task
+            and self._stranger_step == self.task_step
+            and self.task_step > 0
+            and self._stranger_rewound_for != self.task_step - 1
+        ):
+            self._stranger_rewound_for = self.task_step - 1
+            self.task_step -= 1
+            self.pending_verify = ""
+            self._verify_frames = 0
+            rewound = True
+        self.last_reason = f"陌生页已经退出来了，回到「{page.label}」" + (
+            "；刚才那一步退回来重做（同一个位置不会再点第二次）" if rewound else ""
+        )
+        self._recover_note = (
+            f"陌生页已退出（按返回第 {self._stranger_attempts} 级生效），"
+            f"回到「{page.label}」"
+            + ("；那一步退回来重做" if rewound else "")
+        )
+        self._stranger_attempts = 0
+        self._stranger_waits = 0
+        self._stranger_task = None
+        self._stranger_step = 0
+
+    def take_recovered_note(self) -> str:
+        """取走「刚从陌生页退回来」的日志文案（取一次就清空）。
+
+        ⚠️ 必须**取一次就清**：主循环每帧会先 ``preview`` 再真跑，不清的话同一句会打两遍。
+        （``preview`` 会 ``_snapshot`` / ``_restore``，所以试算那一次留下的文案会被还原掉，
+        真正被取走的是真跑那一次 —— 与 ``_pending_swipe_*`` 同一套道理。）
+        """
+        note = self._recover_note
+        self._recover_note = ""
+        return note
 
     def _finish_closing(self) -> None:
         """退出社区之后、画面已回到横屏 ⇒ 收工。
@@ -1266,6 +1480,16 @@ class CommunityStateMachine:
                 target_pages=("feed_home",),
                 reason=self.last_reason,
             )
+        if self.state is CommunityState.RECOVERING:
+            # 逃生门把社区**整个退出去**了（返回键按过头 / 那一页恰好是 H5 的首屏）。
+            # 不猜、也不重进（用户 2026-09-26 拍板「回家就是结束」）——
+            # 只说清为什么，等状态超时收尾。返回 None 是为了让 10 秒心跳持续吐出这句，
+            # 不至于又变成一片空白。
+            self.last_reason = (
+                "陌生页逃生按返回按过头了：社区已经被退到横屏（网页活动列表）。"
+                "这一轮做不下去了，等超时收尾"
+            )
+            return None
         # 别的状态拿到横屏帧：**不点**，等（多半是转屏动画期间）。
         self.last_reason = f"横屏帧，当前状态={state_label(self.state)}，等待画面转过去"
         return None
@@ -1325,6 +1549,16 @@ class CommunityStateMachine:
             self._pending_swipe_name,
             None if self._pending_swipe_tops is None else list(self._pending_swipe_tops),
             self._pending_swipe_streak,
+            # 陌生页逃生门的三本账（2026-10-18 补）。漏一个的后果都是"逃生门按帧重复计"：
+            # 少 ``_stranger_attempts`` ⇒ 试算也 +1，3 级阶梯在真跑那一帧只剩 2 级；
+            # 少 ``_stranger_waits`` ⇒ 试算吃掉确认帧，"先等两帧"直接失效；
+            # 少 ``_stranger_step`` ⇒ 逃生成功后回退到错的那一步。
+            self._stranger_attempts,
+            self._stranger_waits,
+            self._stranger_task,
+            self._stranger_step,
+            self._stranger_rewound_for,
+            self._recover_note,
         )
 
     def _restore(self, snapshot: tuple) -> None:
@@ -1358,6 +1592,13 @@ class CommunityStateMachine:
             self._pending_swipe_name,
             self._pending_swipe_tops,
             self._pending_swipe_streak,
+            # 陌生页逃生门的三本账（2026-10-18 补，理由见 ``_snapshot``）。
+            self._stranger_attempts,
+            self._stranger_waits,
+            self._stranger_task,
+            self._stranger_step,
+            self._stranger_rewound_for,
+            self._recover_note,
         ) = snapshot
 
     # ---- 各页的处理 ----
@@ -1901,20 +2142,25 @@ class CommunityStateMachine:
             self.like_point = found
             located = found
         elif step.kind == "tap_post":
-            # 点开一篇帖子：落点**现找**一条「白底 + 有字 + **不是图片**」的正文带。
+            # 点开一篇帖子：落点**现找**一段「通栏正文段落」。
+            #
+            # ⚠️ 2026-10-18 之前这里是「白底 + 有字 + 不是图片」，**作者名行也满足**
+            # ⇒ 点下去打开的是作者账号主页（一个没登记过的页面）⇒ 认不出 ⇒ 卡死 150 秒。
+            # 现在必须**同时通栏**（``pages.FEED_TAP_SPAN_MIN``）：实测只有正文段落通栏，
+            # 作者名 / 标题 / 标签都只有一小条。判据见 ``page.feed_tap_band_is_post_body``。
             #
             # ⚠️ 找不到就**收手**（本遍作废回「我的任务」），**绝不退回盲坐标**：
             # 盲坐标正是 2026-10-08 两次实跑点到帖子图片、图片被放大成查看器、
             # 整条路线卡死收场的原因（见 ``FEED_FIRST_POST`` 那段）。
             # 这里没有「再滑一屏再找」的补偿：信息流往下滑只会换一批卡，
-            # 一屏里连一条正文带都没有说明**页本身不对**，再滑只是白花时间。
+            # 一屏里连一段通栏正文都没有说明**页本身不对**，再滑只是白花时间。
             found = pages.locate_feed_post_tap(screen, FEED_FIRST_POST)
             if found is None:
                 return self._return_to_tasks(
                     screen,
                     page,
-                    f"任务「{label}」在信息流里找不到一条能安全点开的正文带"
-                    "（整屏都是图片或空白），不蒙着点，本遍作废",
+                    f"任务「{label}」在信息流里找不到一段可以安全点开的通栏正文"
+                    "（整屏只有图片 / 只有标题 / 空白），不蒙着点，本遍作废",
                 )
             located = found
         self.task_step += 1
@@ -1922,7 +2168,10 @@ class CommunityStateMachine:
             # 现找出来的点要**把依据写进 reason**：日志里只看到坐标的话，
             # 下次再出问题就分不清「现找算错了」还是「点没生效」。
             if step.kind == "tap_post":
-                why = f"任务「{label}」：现找出来的正文带在 {located}（白底 + 有字 + 不是图片），点它"
+                why = (
+                    f"任务「{label}」：现找出来的正文段落带在 {located}"
+                    f"（通栏 ≥{pages.FEED_TAP_SPAN_MIN}px + 白底 + 有字 + 不是图片），点它"
+                )
             else:
                 why = f"任务「{label}」：现找出来的 👍 在 {located}（空心 = 还没点过），点它"
         else:
@@ -2727,6 +2976,10 @@ class CommunityRunner(ModeRunnerBase):
         # 继续发 ``refresh_community_page``（同一页还在报异常），那本账由主循环记。
         CommunityState.REFRESHING: 60,
         CommunityState.BLOCKED: 45,
+        # 陌生页逃生门：3 级 × (2 帧确认 + 1 次动作) ≈ 15 秒就该走完。
+        # 给 60 秒是给"返回键按下去 H5 过一会儿才响应"留余量；正常 3 秒内就恢复了。
+        # ⚠️ 这一档同时也是"按返回按过头、社区被退掉"那一档的上限（见 ``_on_landscape``）。
+        CommunityState.RECOVERING: 60,
         # 图片查看器：返回键按下去，那一屏要么没了、要么还在（实测 H5 立刻响应）。
         # 45 秒纯属「别让状态机卡死」的上限 —— 正常一两帧就换页了。
         # ⚠️ 真要点满 45 秒，说明返回键没生效（例如点开的其实是游戏原生全屏预览、
@@ -2757,6 +3010,10 @@ class CommunityRunner(ModeRunnerBase):
             "refresh_community_page",
             # 关图片查看器同理：返回键按下去，那一屏要么没了、要么还在。
             "dismiss_image_viewer",
+            # 陌生页逃生门的两级动作：返回键按下去，要么退回上一层、要么没动。
+            # 按默认 45 秒等，一轮逃生要拖成两分多钟，而它总共只有 3 级。
+            "stranger_back",
+            "stranger_back_arrow",
         }
     )
     _QUICK_RETRY_SECONDS = 8.0
@@ -3049,6 +3306,18 @@ class CommunityRunner(ModeRunnerBase):
                 f"原因=被「{confirmed_page}」这层盖住了落点，先收掉它再重来"
             )
             return True
+        # ⚠️ 2026-10-18：**陌生页也要在这里放行**。
+        # 场景：``task_browse_5``（点了「点开一篇帖子」，期望 post_detail）点歪进了作者主页
+        # ⇒ 判页 ``unknown`` ⇒ 状态机给出 ``stranger_back``。此时 ``confirmed_page``
+        # 既不是来源页也不是目标页，基类会把**这一下逃生动词直接丢掉** ——
+        # 正是 ``network_error`` / ``image_viewer`` 踩过的同一个坑（见本方法上面的两段）。
+        # 丢掉之后就是干等 150 秒。
+        if getattr(current_action, "name", "") in STRANGER_ACTIONS:
+            self.runtime.log(
+                f"模式={self._MODE_LABEL} 转场作废={previous_action.name} "
+                "原因=落点上是个认不出的陌生页，先按返回把它退掉再重来"
+            )
+            return True
         return super()._transition_completed(
             previous_action, current_action, confirmed_page
         )
@@ -3060,6 +3329,8 @@ class CommunityRunner(ModeRunnerBase):
             return "（实为 H5 报「网络连接异常」：这个转场作废，改走下加拉活）"
         if getattr(current_action, "source_page", "") == "image_viewer":
             return "（实为帖子图片被放大成查看器：这个转场作废，改走按返回键）"
+        if getattr(current_action, "name", "") in STRANGER_ACTIONS:
+            return "（实为落到了一个认不出的陌生页：这个转场作废，改走返回键退出它）"
         return super()._transition_success_detail(previous_action, current_action)
 
     def _stable_next_action(self, screen: np.ndarray, stable: Any):
@@ -3074,6 +3345,16 @@ class CommunityRunner(ModeRunnerBase):
         判据沉默 10 秒内就能看出来。
         """
         result = super()._stable_next_action(screen, stable)
+        # ⚠️ 2026-10-18：**恢复成功要有自己的一行日志**。
+        # 状态机是纯决策（不认识 Runtime），它只能把这件事写进 ``last_reason``，
+        # 而下一步的处理函数会立刻把 ``last_reason`` 覆盖成「任务第 N 步」之类的文案
+        # ⇒ "陌生页退出来了"这句话**永远进不了日志**。
+        # 于是走到这里由 Runner 取一次、记一次。
+        # ⚠️ ``getattr`` 是为了离线桩（有些用例拿一个只实现 ``next_action`` 的假机器跑收尾流程）。
+        taker = getattr(self.machine, "take_recovered_note", None)
+        recovered = taker() if callable(taker) else ""
+        if recovered:
+            self.runtime.log(f"模式={self._MODE_LABEL} 恢复={recovered}")
         if result is NOT_STABLE or result is not None:
             self._last_wait_log_at = None
             return result
