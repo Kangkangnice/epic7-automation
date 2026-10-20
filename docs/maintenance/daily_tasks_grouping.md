@@ -113,6 +113,30 @@ grouped_routes()                             # ((组名, 该组路线), ...)，�
 
 `test_the_event_group_replaces_other_selections` 钉住。
 
+### 4.5 点组标题 ⇒ 底部说明换成**这一组**的说明
+
+2026-10-20 用户要求：「每日 / 按需 / 赛季 前面的框，点击的时候是对他们三个的说明，
+不是里面的路线说明」。所以 `_on_group_toggle` 在整组勾上时会记一笔
+`app._detail_group = 分组名`，`_refresh_route_details` 优先读它：
+
+| 用户动作 | 说明区显示 |
+| --- | --- |
+| 点组标题（勾上） | `【每日】` + `catalog.GROUP_DESCRIPTIONS[分组]` |
+| 点组标题（取消） | 清空（除非别的组还勾着，那就退到「最后勾的那条」） |
+| 点具体某条路线 | `【路线名】` + `route.description`，同时 `_detail_group` 归零 |
+
+⚠️ 为什么非得单独记一笔记：`controller.selection` 里没有「这次是整组勾的」这个
+信息 —— 整组勾完它只是一串路线名，`selection[-1]` 是组里最后一条，
+照它显示就会把「圣域收菜」的说明当成「每日」的说明。
+
+⚠️ 还有一道回退：分组被别处清空时（活动互斥、手工取消）要退回路线视角，
+否则说明区会挂一段和勾选对不上的文字。`test_a_stale_group_explanation_falls_back_to_the_routes`
+钉住。
+
+分组说明本身写在 `catalog.GROUP_DESCRIPTIONS`，与路线说明同一套规矩
+（人话、不写实现细节、不用 Markdown、≤160 字），`test_every_group_explains_what_ticking_it_does`
+守格式。
+
 ## 5. 踩过的坑
 
 ### 5.1 序号圈码用尽（真 bug，被新测试当场抓出）

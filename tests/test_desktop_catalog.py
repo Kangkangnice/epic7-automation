@@ -3,8 +3,10 @@ import pytest
 from auto_game_unified.desktop import catalog
 from auto_game_unified.desktop.catalog import (
     DEV_BACKEND_ENV,
+    GROUPS,
     PRODUCT_NAME,
     ROUTES,
+    group_description,
     route_by_name,
     visible_backends,
 )
@@ -165,6 +167,64 @@ def test_every_route_description_explains_itself():
 
         # 「几行」但「不能太多字」：上限按 200 字控住，再长就该搬进维护手册。
         assert len(text) <= 200, f"{where}有 {len(text)} 字，用户要求简明"
+
+
+#: 界面文案里不许出现的词：这是给玩家看的，不是给写代码的人看的。
+#: 用户 2026-10-20 原话：「说明里面不要出现代码术语，什么冒烟测试」。
+#: 只收「一看就是实现细节」的词；「识别 / 判断」这类玩家也会说的不算。
+CODE_JARGON = (
+    "冒烟",
+    "报错",
+    "阈值",
+    "模板",
+    "锚点",
+    "状态机",
+    "字段",
+    "参数",
+    "变量",
+    "函数",
+    "接口",
+    "日志",
+    "重试",
+    "轮询",
+    "断言",
+)
+
+
+def test_the_interface_text_never_leaks_code_jargon():
+    """说明区是给人看的：不许出现「冒烟测试」这类只有写代码的人懂的词。
+
+    这条也覆盖分组说明 —— 它们和路线说明进的是同一个 Label。
+    """
+    texts = [("路线 " + route.mode, route.description) for route in ROUTES]
+    texts += [("分组 " + group, group_description(group)) for group in GROUPS]
+
+    for where, text in texts:
+        for word in CODE_JARGON:
+            assert word not in text, f"{where} 的说明里出现了代码术语「{word}」"
+
+
+def test_every_group_explains_what_ticking_it_does():
+    """分组说明：这一组是什么节奏 + 点这个框会发生什么。
+
+    ⚠️ 用户 2026-10-20 要的就是这一段 —— 点「每日 / 按需 / 赛季」前面的框时，
+    说明区要给这几组各自的说明，不是组里路线的说明。
+    """
+    for group in GROUPS:
+        text = group_description(group)
+        where = f"分组 {group} 的说明"
+
+        assert text, f"{where}是空的"
+        assert text.count("\n") >= 2, f"{where}没分段"
+        assert "点这个框" in text, f"{where}没写清点这个框会做什么"
+        assert "**" not in text, f"{where}里混进了 Markdown 星号"
+        assert len(text) <= 160, f"{where}有 {len(text)} 字，太长了"
+
+
+def test_unknown_group_has_no_description():
+    """拼错的分组名要当场炸，不能返回空字符串让界面显示一片空白。"""
+    with pytest.raises(ValueError):
+        group_description("每周")
 
 
 # --------------------------------------------------------------------------
