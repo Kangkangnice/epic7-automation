@@ -73,14 +73,15 @@ python auto_game_unified/tools/check.py --install-hook
 python packaging/build.py
 ```
 
-它会做五件事：PyInstaller 目录版打包 → 跑一次 `Epic7AutoAssistant.exe --self-check`
-（检查产物目录可写、模板在不在、十五条路线能不能全部加载）→ 打便携 ZIP →
-调 Inno Setup 出安装包 → 两个产物的 SHA256 一起写进 `SHA256SUMS.txt`。
+它会做四件事：PyInstaller 目录版打包 → 确认 spec 剔掉的 videoio ffmpeg 二进制
+真没进产物 → 跑一次 `Epic7AutoAssistant.exe --self-check`（检查产物目录可写、
+模板在不在、十五条路线能不能全部加载）→ 打免安装 ZIP 并写 `SHA256SUMS.txt`。
 产物在 `packaging/dist/`（已 gitignore，不进历史）。
 
-`--no-build` 复用已有目录版，只重打 ZIP 与安装包；`--skip-smoke` 跳过自检。
+`--no-build` 复用已有目录版，只重打 ZIP；`--skip-smoke` 跳过自检。
 
-安装包要 **Inno Setup 6**。没装就自动跳过（便携版不依赖它），只出 ZIP。单独编也可以：
+**默认只出免安装版**（2026-10-20 起，用户拍板）：用户解压 ZIP、双击 `Epic7AutoAssistant.exe`
+就能跑。想要安装包再加 `--installer`，那一步要 **Inno Setup 6**，没装就自动跳过。单独编也可以：
 
 ```powershell
 & "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe" "/DMyAppVersion=0.1.0" packaging\installer.iss

@@ -86,6 +86,7 @@ python auto_game_unified\tools\make_desktop_shortcut.py --dir "D:\desktop\游戏
 
 - Windows。
 - 雷电模拟器中的《第七史诗》，窗口标题为“第七史诗”。
+- 游戏语言为简体中文：模板全部是在中文界面上采集的，换成英文或日文之后页面判定会大面积失效。
 - Python 3.10 或更高版本。
 - 当前模板基准画面为 `1982 x 1132`。
 

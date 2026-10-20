@@ -1,20 +1,31 @@
-"""一条命令出便携版：清理 -> PyInstaller -> 冒烟自检 -> 打 ZIP -> 记 SHA256。
+"""一条命令出免安装版：清理 -> PyInstaller -> 冒烟自检 -> 打 ZIP -> 记 SHA256。
 
 用法（在仓库目录执行）::
 
-    python packaging/build.py              # 全流程
-    python packaging/build.py --skip-smoke # 只打包，不跑自检（调试打包问题时用）
-    python packaging/build.py --no-build   # 复用已有 dist，只重打 ZIP（改文件名/清单时用）
+    python packaging/build.py               # 全流程（只出免安装版）
+    python packaging/build.py --installer   # 额外再编一个 Inno Setup 安装包
+    python packaging/build.py --skip-smoke  # 只打包，不跑自检（调试打包问题时用）
+    python packaging/build.py --no-build    # 复用已有 dist，只重打 ZIP（改文件名/清单时用）
 
 产物都在 ``packaging/dist/``：
 
     Epic7AutoAssistant/                       目录版（双击里面的 exe 即用）
-    第七史诗自动助手-便携版-<版本>.zip        整个目录打成压缩包
+    第七史诗自动助手-免安装版-<版本>.zip      整个目录打成压缩包
     SHA256SUMS.txt                            上面那个 zip 的校验值
 
-为什么冒烟要跑 ``--self-check`` 而不是「启动 GUI 看它有没有崩」：
+## 为什么只发免安装版
+
+2026-10-20 用户拍板：**只保留免安装版**。安装包（Inno Setup）体积更小（62.5 MB），
+但它只是「把同一个目录解到 %LOCALAPPDATA%\\Programs 并建快捷方式」，
+用户多走一道向导、我们还多维护一份 ``installer.iss`` 和简体中文语言包。
+给普通玩家一个「解压 → 双击 exe」就够了，所以 ``--installer`` 变成显式开关。
+
+## 为什么冒烟要跑 ``--self-check`` 而不是「启动 GUI 看它有没有崩」
+
 窗口起不起来没法自动判定，而自检覆盖了真正会坏的三件事 ——
 运行产物目录能不能写、模板在不在、十五条路线的模板能不能全部加载。
+另有一条 ``check_pruned_binaries`` 守着「spec 里剔掉的 videoio ffmpeg 真的没进产物」
+（那两个 DLL 原始 51.9 MB，是免安装版从 88 MB 降到 63 MB 的全部来源）。
 """
 
 from __future__ import annotations
@@ -100,12 +111,44 @@ def smoke_test(exe: Path) -> None:
         print(text, flush=True)
 
 
+#: spec 里被剔掉的那一类二进制（见 ``epic7_auto_assistant.spec`` 的同名前缀说明）。
+#: 打包完必须**一个都不在**产物里 —— 它们在就等于白丢 24.7 MB 的压缩体积。
+PRUNED_BINARY_PREFIX = "opencv_videoio_ffmpeg"
+
+
+def check_pruned_binaries() -> None:
+    """确认 spec 剔掉的 videoio ffmpeg DLL 真的没进产物。
+
+    ⚠️ 这条不是形式主义：那两个 DLL 是 PyInstaller 按「整个 cv2 目录」收集时
+    顺带拖进来的，**升级 opencv 或改 spec 顺序都可能让它们悄悄回来**，
+    而现象只是「免安装版忽然胖了 25 MB」，没有任何报错。
+    """
+    leaked = [
+        item
+        for item in (DIST / APP_NAME).rglob(f"*{PRUNED_BINARY_PREFIX}*")
+        if item.is_file()
+    ]
+    if leaked:
+        names = ", ".join(item.name for item in leaked)
+        raise SystemExit(
+            f"产物里混进了本应剔除的 videoio ffmpeg 后端：{names}\n"
+            "检查 packaging/epic7_auto_assistant.spec 里对 a.binaries 的过滤。"
+        )
+    print(f"[build] 已确认剔除 {PRUNED_BINARY_PREFIX}*", flush=True)
+
+
 def directory_size(path: Path) -> int:
     return sum(item.stat().st_size for item in path.rglob("*") if item.is_file())
 
 
 def make_zip(version: str) -> Path:
-    archive = DIST / f"第七史诗自动助手-便携版-{version}.zip"
+    """打免安装版 ZIP。
+
+    ⚠️ 用 **DEFLATE** 不是为了省事：换 ``ZIP_LZMA`` 能再小 18 MB（63 → 45），
+    但 **Windows 资源管理器自带的「全部解压缩」不认 LZMA 的 zip**，
+    用户得先装 7-Zip —— 那就不是「解压即用」了。2026-10-20 实测过两种压缩率。
+    """
+    archive = DIST / f"第七史诗自动助手-免安装版-{version}.zip"
     with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED) as bundle:
         for item in sorted((DIST / APP_NAME).rglob("*")):
             if item.is_file():
@@ -135,10 +178,13 @@ def find_iscc() -> Path | None:
 
 
 def build_installer(version: str) -> Path | None:
-    """出安装包。没装 Inno Setup 6 就跳过 —— 便携版不依赖它。"""
+    """出安装包。**只有显式传 ``--installer`` 才编**（2026-10-20 起默认不要）。
+
+    没装 Inno Setup 6 就跳过 —— 免安装版本来就不依赖它。
+    """
     iscc = find_iscc()
     if iscc is None:
-        print("[build] 没装 Inno Setup 6，跳过安装包（便携版不受影响）", flush=True)
+        print("[build] 没装 Inno Setup 6，跳过安装包（免安装版不受影响）", flush=True)
         return None
     print(f"[build] 安装包：{iscc}", flush=True)
     subprocess.run(
@@ -154,9 +200,14 @@ def build_installer(version: str) -> Path | None:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="构建第七史诗自动助手便携版与安装版")
+    parser = argparse.ArgumentParser(description="构建第七史诗自动助手免安装版")
     parser.add_argument("--no-build", action="store_true", help="复用已有 dist，只重打包")
     parser.add_argument("--skip-smoke", action="store_true", help="跳过 exe 自检")
+    parser.add_argument(
+        "--installer",
+        action="store_true",
+        help="额外编 Inno Setup 安装包（默认不编，只出免安装版）",
+    )
     args = parser.parse_args()
 
     version = product_version()
@@ -165,6 +216,8 @@ def main() -> int:
     exe = DIST / APP_NAME / f"{APP_NAME}.exe"
     if not args.no_build:
         exe = run_pyinstaller()
+        # 先确认剔掉的东西真没进产物，再花时间跑自检 —— 顺序反了会白跑一遍。
+        check_pruned_binaries()
         if not args.skip_smoke:
             smoke_test(exe)
 
@@ -172,7 +225,7 @@ def main() -> int:
         raise SystemExit(f"没有可打包的产物：{exe}")
 
     archive = make_zip(version)
-    installer = build_installer(version)
+    installer = build_installer(version) if args.installer else None
 
     artifacts = [archive] + ([installer] if installer is not None else [])
     (DIST / "SHA256SUMS.txt").write_text(
@@ -182,7 +235,7 @@ def main() -> int:
 
     print("")
     print(f"[build] 目录版：{DIST / APP_NAME}  ({directory_size(DIST / APP_NAME) / 2**20:.1f} MB)")
-    print(f"[build] 便携版：{archive.name}  ({archive.stat().st_size / 2**20:.1f} MB)")
+    print(f"[build] 免安装版：{archive.name}  ({archive.stat().st_size / 2**20:.1f} MB)")
     if installer is not None:
         print(f"[build] 安装版：{installer.name}  ({installer.stat().st_size / 2**20:.1f} MB)")
     for path in artifacts:
