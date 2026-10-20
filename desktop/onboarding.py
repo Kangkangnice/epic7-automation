@@ -67,11 +67,12 @@ CONSENT_FILENAME = "consent.json"
 
 #: 对话框正文的换行宽度（逻辑像素）。窄一点更好读；窗口本身不跟着变宽。
 #:
-#: ⚠️ 2026-10-20 用户反馈「使用须知太宽了」：原来这里是 560 —— 两栏各 560，加上
-#: 左右内边距（24×2）与栏间隔，整窗约 1200 逻辑像素，1600 的屏要占 3/4，1366 的
-#: 笔记本几乎铺满。收到 360 之后整窗约 800（1600 屏的 50%、1366 屏的 59%）。
-#: **加大之前先按 1366 的屏量一遍**；量法：`d.winfo_reqwidth()`，别只看「看着还行」。
-DIALOG_WRAP = 360
+#: ⚠️ 2026-10-20 用户反馈「使用须知太宽了」，随后又要求「一列写完」：
+#: 这**一版是单栏**，所以 DIALOG_WRAP 基本就等于整窗内文宽度
+#: （整窗 ≈ DIALOG_WRAP + 左右内边距 24×2）。原来两栏各 560 时整窗约 1200 逻辑像素，
+#: 1600 的屏要占 3/4；现在 520 → 整窗约 568，同一块屏只占 35%。
+#: **加大之前先按 1366 的屏量一遍**；量法：`d.winfo_reqwidth()`。
+DIALOG_WRAP = 520
 
 RISK_POINTS = (
     # 2026-10-20 用户要求：原来那四点（非官方 / 只做识别与点击 / 可能被封号 / 竞技场
@@ -86,19 +87,24 @@ RISK_POINTS = (
     # 同日第二版：用户嫌「太宽」，长句拆成短句、去掉重复的「本项目的」，
     # 语义一个都没少（`test_risk_points_state_the_real_boundaries` 逐条钉着）。
     #
-    # ⚠️ 长度是**排版参数**，不是文学偏好：360 的换行宽度下这段正好占 7 行，
-    # 再长一个字就会把句号挤到第 8 行独自成行（2026-10-20 截图里看到过）。
-    # 加字之前先把 `DIALOG_WRAP` 和这段一起量一遍。
-    "非官方的免费第三方工具，非商业用途，与 Smilegate、Super Creative、STOVE "
-    "无关联，未获授权或认可。只做截图视觉识别与普通鼠标点击，"
-    "不读取或修改内存、网络数据与客户端文件，也不含反检测或绕过安全机制的功能。"
+    # ⚠️ 长度与**字符构成**都是排版参数：单栏 520 下这段正好 4 行。
+    # 这里刻意**不写 Smilegate / Super Creative / STOVE** 三个英文名 ——
+    # Tk 的 wraplength 优先在空格处断行，英文名连着写时中间会挤出一行只剩
+    # 「Creative、STOVE」，截图里看着像被截断（2026-10-20 见过）。公司名在
+    # README §许可证 与 NOTICE.md 里都写全了，这一屏只讲身份与边界。
+    "非官方的免费第三方工具，非商业用途，与游戏开发商及发行商均无关联，"
+    "未获授权或认可。只做截图视觉识别与普通鼠标点击，"
+    "不读取或修改内存、网络数据与客户端文件，不含反检测或绕过安全机制的功能。"
     "账号与资源风险由使用者自行承担。",
 )
 
 SETUP_POINTS = (
     "64 位 Windows 10/11 + 雷电模拟器；窗口标题须为「第七史诗」。",
-    "模拟器渲染区设 1920×1080（识别画布 1982×1132），宽高比必须与模板一致；"
-    "改过分辨率、显示缩放或游戏 UI 之后要重新检测。",
+    # 「识别画布 1982×1132」这个数字**刻意不写**：用户只需要知道「渲染区 1920×1080、
+    # 别乱改」，1982×1132 是助手的内部换算（客户区 + 标题栏），写进来只会占一整行
+    # 还把括号拆到两行去（2026-10-20 截图里见过「（识别画布 / 1982×1132）」）。
+    # 需要这个数的人看 README §环境要求。
+    "模拟器渲染区设 1920×1080；改过分辨率、显示缩放或游戏 UI 之后要重新检测。",
     "先把游戏停在大厅，再点「开始任务」；跑完会自动回大厅。",
     # 2026-10-20 用户实测纠正：这条原来写的是「自动化期间游戏必须保持前台，
     # 不能最小化或被别的窗口挡住；不支持后台运行」—— 对**模拟器**来说是错的。
@@ -115,7 +121,11 @@ SETUP_POINTS = (
     # 显卡驱动与 DWM，没有实测证据前不写成承诺。真跑通了再删。
     "不必一直放前台：读的是窗口画面、点击走模拟器自己的输入通道，"
     "被别的窗口挡住也能跑，鼠标可以照常用；建议不要最小化。",
-    "游戏语言用简体中文（模板按中文界面采集）。",
+    # ⚠️ 2026-10-20 用户要求**删掉原文第 5 条**「游戏语言用简体中文：模板是在中文
+    # 界面上采集的」。删掉的是这句话在**首启弹窗**里的位置，不是这个约束本身 ——
+    # 模板全是在中文界面上采的，游戏换成英文/日文之后判定会大面积失效。
+    # 所以这句话搬到了 README §环境要求 与 USER_GUIDE §前置条件；
+    # 哪天又想在弹窗里提醒，从那里抄回来，别自己另编一个说法。
 )
 
 #: 这些文字直接塞进 tk 的 Label，**不解释任何标记语法**。
@@ -211,18 +221,17 @@ class ConsentDialog(tk.Toplevel):
         self._heading(body, "第七史诗自动助手", TYPE_TITLE)
         self._caption(
             body,
-            # 2026-10-20 同批：这句话原来还有「右边这段讲要准备什么」之类的复述，
-            # 两栏标题已经写着「风险」「开始之前先准备好」，正文不必再说一遍。
-            "第一次使用前请读完：左边是风险，右边是开始前的准备。读完点「开始使用」。",
+            # 2026-10-20 用户：「一列写完不就好了吗？」—— 单栏之后这句话也不再说
+            # 「左边/右边」，按阅读顺序讲：先说风险，再说开始前的准备。
+            "第一次使用前请读完：先说风险，再说开始前的准备。读完点「开始使用」。",
         )
 
-        columns = ttk.Frame(body, style="Card.TFrame")
-        columns.pack(fill=tk.BOTH, expand=True, pady=(px(SPACE_LG), 0))
-        columns.columnconfigure(0, weight=1, uniform="onboarding")
-        columns.columnconfigure(1, weight=1, uniform="onboarding")
-
-        self._section(columns, 0, "你需要知道的风险", RISK_POINTS)
-        self._section(columns, 1, "开始之前先准备好", SETUP_POINTS)
+        # ⚠️ 2026-10-20 用户要求**改成单栏**（原来左右两栏并排）：
+        # 两栏的整窗宽度 ≈ 2 × 换行宽度 + 内边距，1600 的屏要占 3/4，还容易出现
+        # 左栏一墙字、右栏几条的难看对比。单栏一段接一段读下来就够了 ——
+        # 这是个说明框，不是对比表，不需要并排。**别再把 columnconfigure 加回来。**
+        self._section(body, "你需要知道的风险", RISK_POINTS)
+        self._section(body, "开始之前先准备好", SETUP_POINTS)
 
         # 2026-10-20 用户要求：**去掉「我已阅读并理解…」勾选框，也不做二次确认** ——
         # 读完直接点「开始使用」就走。原来那个勾选 + 按钮置灰只多一道门、不多一分信息
@@ -278,20 +287,20 @@ class ConsentDialog(tk.Toplevel):
             parent,
             text=text,
             style="Caption.TLabel",
-            wraplength=self._theme.px(DIALOG_WRAP * 2),
+            # ⚠️ 这里是 ``DIALOG_WRAP`` 本身，不是 ``× 2``：``× 2`` 是两栏时代为了让
+            # 引言横跨两栏写的，改成单栏之后它会把整窗**撑宽到两倍**（标题不会，
+            # 只有这段会，所以特别容易看不出来）。
+            wraplength=self._theme.px(DIALOG_WRAP),
             justify="left",
         ).pack(anchor="w", pady=(self._theme.px(SPACE_XS), 0))
 
-    def _section(
-        self, parent: ttk.Frame, column: int, title: str, points: tuple[str, ...]
-    ) -> None:
+    def _section(self, parent: ttk.Frame, title: str, points: tuple[str, ...]) -> None:
+        """一段带标题的正文，竖向接在前一段下面（单栏，没有 column 参数）。
+
+        段与段之间留 ``SPACE_LG``，段内第一条与标题之间留 ``SPACE_SM``。
+        """
         frame = ttk.Frame(parent, style="Card.TFrame")
-        frame.grid(
-            row=0,
-            column=column,
-            sticky="nsew",
-            padx=(0, self._theme.px(SPACE_XL)) if column == 0 else 0,
-        )
+        frame.pack(fill=tk.X, pady=(self._theme.px(SPACE_LG), 0))
         ttk.Label(frame, text=title, style="Section.TLabel").pack(anchor="w")
         for index, point in enumerate(points):
             # ⚠️ 编号用**全角**「．」而不是 ``. ``：Tk 的 wraplength 只在**空格**处

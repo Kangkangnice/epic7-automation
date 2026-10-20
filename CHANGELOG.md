@@ -8,6 +8,9 @@
 
 ### 变更
 
+- **发布形态只保留免安装版**：`packaging/build.py` 默认只产出 `第七史诗自动助手-免安装版-<版本>.zip`（解压 → 双击 `Epic7AutoAssistant.exe`）。Inno Setup 安装包改为显式 `--installer` 才编 —— 它只是把同一个目录解到 `%LOCALAPPDATA%\Programs` 并建快捷方式，普通玩家不值得多走一道向导。
+- **免安装版从 88.0 MB 降到 62.6 MB**：`packaging/epic7_auto_assistant.spec` 剔掉了 OpenCV 的两个 `opencv_videoio_ffmpeg*.dll`（原始共 51.9 MB）。全仓库没有任何 `VideoCapture` / `VideoWriter`，它们只是 PyInstaller 按整个 `cv2/` 收集时顺带拖进来的。打包脚本新增 `check_pruned_binaries`，重新变胖会直接让构建失败。
+
 - **取消「正式 / 实验」路线分级**：十五条路线均已实机验证，界面上的 `[正式]` / `[实验]` 角标、说明区的状态行、以及启动前那道「实验功能提醒」二次确认一并删除。`desktop/catalog.py` 的 `RouteInfo.status` 字段与 `experimental` 属性随之移除，没有留下恒为「正式功能」的哑字段。
 - **首次启动须知**：右侧「开始之前先准备好」第 4 条改写 —— 模拟器**不必**一直放在前台，被其他窗口遮挡也能继续跑（取图走 `PrintWindow`、点击走模拟器自己的输入通道），期间的鼠标可以照常用；建议只别最小化。
 - **首次启动须知去掉勾选框**：不再要求勾「我已阅读并理解」，也不再有二次确认，读完直接点「开始使用」。「暂不使用」和关窗仍然是不同意的出口。

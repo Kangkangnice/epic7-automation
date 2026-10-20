@@ -63,6 +63,28 @@ a = Analysis(
 
 pyz = PYZ(a.pure)
 
+# ⚠️ 剔掉 OpenCV 的 videoio ffmpeg 后端（两个 DLL，原始共 51.9 MB）—— 2026-10-20 加。
+#
+# 事实依据：全仓库搜 `VideoCapture` / `VideoWriter` **零命中**，我们用 cv2 只做
+# `imread` / `matchTemplate`。这两个 DLL 是 PyInstaller 按「整个 cv2 目录」收集
+# 时顺带拖进来的。删掉之后实测跑过一次 ``--self-check``：**结果通过**，
+# 305 张模板、15 条路线全部加载，退出码 0。
+#
+# 收益：免安装版 88.0 MB → 63.3 MB（压缩后省 24.7 MB）。
+#
+# ⚠️ 别顺手把整个 ``cv2/`` 都过滤掉 —— `cv2.pyd`（71.5 MB）是真正的 OpenCV 本体，
+# 少了它程序起不来。这里只按文件名前缀剔 videoio 那两个。
+# `build.py` 的打包冒烟里有一条断言守着「它们真的不在产物里」，别绕过它。
+_VIDEOIO_FFMPEG_PREFIX = "opencv_videoio_ffmpeg"
+
+
+def _is_videoio_ffmpeg(entry) -> bool:
+    return _VIDEOIO_FFMPEG_PREFIX in Path(entry[0]).name
+
+
+a.binaries = [entry for entry in a.binaries if not _is_videoio_ffmpeg(entry)]
+a.datas = [entry for entry in a.datas if not _is_videoio_ffmpeg(entry)]
+
 exe = EXE(
     pyz,
     a.scripts,

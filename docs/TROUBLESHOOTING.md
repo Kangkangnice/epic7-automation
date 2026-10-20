@@ -13,7 +13,7 @@
 | 怎么跑的 | 产物根目录 |
 | --- | --- |
 | 源码运行（`python -m auto_game_unified.main`） | 仓库里的 `auto_game_unified/` 目录 |
-| 安装版 / 便携版（`Epic7AutoAssistant.exe`） | `%LOCALAPPDATA%\Epic7AutoAssistant\` |
+| 免安装版 / 安装版（`Epic7AutoAssistant.exe`） | `%LOCALAPPDATA%\Epic7AutoAssistant\` |
 | 设了环境变量 `EPIC7_DATA_DIR` | 该变量的值 |
 
 安装版不往安装目录写任何东西 —— 装进 `Program Files` 时那里是只读的，写进去会直接报权限错误。

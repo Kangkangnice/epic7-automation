@@ -223,7 +223,9 @@ def test_setup_points_cover_the_limits_users_actually_hit():
 
     assert "大厅" in setup  # 起点是人工停好的大厅
     assert "1920×1080" in setup  # 渲染区尺寸
-    assert "简体中文" in setup  # 模板按中文界面采集
+    # 「游戏语言用简体中文」这条**被用户要求从弹窗里删掉**（2026-10-20）。
+    # 约束本身还在，只是搬到 README §环境要求 与 USER_GUIDE §前置条件。
+    assert "简体中文" not in setup
 
     # 2026-10-20 用户实测纠正：模拟器**可以**被别的窗口挡住跑，鼠标也不占用。
     # 旧文案「自动化期间必须保持前台，不能最小化或被挡住，不支持后台运行」是从
@@ -250,13 +252,14 @@ def test_text_has_no_markdown_markup():
 
 
 def test_the_notice_stays_narrow():
-    """2026-10-20 用户反馈「使用须知太宽了」。
+    """2026-10-20 用户反馈「使用须知太宽了」，随后要求「一列写完」。
 
-    这屏是**两栏并排**，整窗宽度 ≈ 2 × DIALOG_WRAP + 内边距 + 栏间隔。原来是 560，
-    整窗约 1200 逻辑像素（1600 的屏占 3/4）。这条钉住「别再随手调宽」——
-    实测 360 时整窗 800（同一块屏占 50%）。
+    现在是**单栏**，所以 DIALOG_WRAP 基本就是整窗的内文宽度
+    （整窗 ≈ DIALOG_WRAP + 左右内边距 24×2）。两栏时代是每栏 560、整窗约 1200
+    逻辑像素；现在 520 → 整窗 568，同一块 1600 的屏只占 35%。
+    这条钉住「别再随手调宽」，调宽之前先按 1366 的屏量一遍。
     """
-    assert onboarding.DIALOG_WRAP <= 400
+    assert onboarding.DIALOG_WRAP <= 560
 
 
 def test_the_consent_dialog_gets_a_sane_position(tk_window):

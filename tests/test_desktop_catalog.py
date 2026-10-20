@@ -130,12 +130,41 @@ def test_knights_donation_is_fixed_to_one_pass():
     assert donation.label == "骑士团捐赠"
     assert donation.default_cycles == 1
     assert donation.cycles_editable is False
-    # 界面上要能看见「怎么进来的」和「怎么结束的」，否则用户不知道它会自己收工。
-    assert "骑士团活动" in donation.description
+    # 界面上要能看见「干什么」和「怎么结束的」，否则用户不知道它会自己收工。
+    # 2026-10-20 改写说明时为「资源支援页 / 每周任务页」两段，断言跟着换成语义等价的锚点。
+    assert "资源支援" in donation.description
+    assert "每周任务" in donation.description
     # ⚠️ 用户 2026-09-24 更正：有没有红点都要进 ⇒ 界面上不许再写「没红点就结束」。
     assert "红点" not in donation.description
     # 一天只能请求一次支援是用户定的红线，必须写在界面上。
     assert "每天请求一次" in donation.description
+
+
+# --------------------------------------------------------------------------
+# 说明文字的统一规格（2026-10-20 用户：「说明都很古老了…至少写个几行」）
+# --------------------------------------------------------------------------
+
+
+def test_every_route_description_explains_itself():
+    """每条说明都要讲清「干什么 / 一轮到哪 / 注意什么」，并守住三条硬规矩。
+
+    用户原话：「至少写个几行说明一下，每天比如说我们自动循环去打对手什么样之类的，
+    有没有什么注意事项…但是不能太多字儿，又要别人都能看懂」。
+    """
+    for route in ROUTES:
+        text = route.description
+        where = f"路线 {route.mode} 的说明"
+
+        # 三段式：第 1 段干什么，第 2 段「跑一轮 = …」和默认次数，第 3 段「注意：」。
+        assert text.count("\n") >= 2, f"{where}没分段，至少要三段"
+        assert "跑一轮" in text or "跑一遍" in text, f"{where}没写清一轮跑到哪儿"
+        assert "注意：" in text, f"{where}缺「注意：」那一段"
+
+        # ⚠️ 这段文字直接进 tk 的 Label，写 `**重点**` 会原样显示成星号。
+        assert "**" not in text, f"{where}里混进了 Markdown 星号"
+
+        # 「几行」但「不能太多字」：上限按 200 字控住，再长就该搬进维护手册。
+        assert len(text) <= 200, f"{where}有 {len(text)} 字，用户要求简明"
 
 
 # --------------------------------------------------------------------------
