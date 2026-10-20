@@ -38,6 +38,7 @@ from auto_game_unified.games.epic7.modes import (
 from auto_game_unified.games.epic7.navigation import Epic7Navigator, build_navigation_templates
 from auto_game_unified.games.epic7.global_popups import (
     Epic7GlobalPopupGuard,
+    load_arena_rank_reward_templates,
     load_friend_request_templates,
     load_friendship_points_templates,
     load_gift_support_templates,
@@ -457,6 +458,13 @@ def run_mode(
                 # ⚠️ 2026-10-19 那次「世界首领战 ✗」就是它：弹窗把底页压暗 ⇒ 主页认不出来
                 # ⇒ 导航转场 `骑士团主页 → worldboss_home` 一路等到超时。
                 worldboss_support_reward_templates=load_worldboss_support_reward_templates(
+                    template_root / "navigation"
+                ),
+                # 「段位升级奖励」弹窗：竞技场打完一局、点掉「段位提升」之后紧接着弹出的
+                # 第二层，首次升至某段位才出现一次。与上面那个同目录（都盖在底页上）。
+                # ⚠️ 2026-10-20 08:02 那次「竞技场 ✗」就是它：竞技场没有任何判据认它
+                # ⇒ 转场一路等到 45 秒上限。放到守卫里，任何路线撞上都能消掉。
+                arena_rank_reward_templates=load_arena_rank_reward_templates(
                     template_root / "navigation"
                 ),
                 # 宠物小屋礼物角标（快捷菜单页，宠物送礼时挂出的小角标），放 global 下。

@@ -7,6 +7,7 @@ from PIL import Image
 from auto_game_unified.games.epic7 import global_popups as popups_module
 from auto_game_unified.games.epic7.global_popups import (
     Epic7GlobalPopupGuard,
+    find_arena_rank_reward_close,
     find_friend_request_cancel,
     find_friendship_points_popup_close,
     find_gift_support_close,
@@ -17,6 +18,7 @@ from auto_game_unified.games.epic7.global_popups import (
     find_pet_gift_badge,
     find_web_network_error_close,
     find_worldboss_support_reward_close,
+    load_arena_rank_reward_templates,
     load_friend_request_templates,
     load_friendship_points_templates,
     load_gift_support_templates,
@@ -35,6 +37,8 @@ ROOT = Path(__file__).resolve().parents[1]
 FIXTURES = ROOT / "tests" / "fixtures" / "epic7_global"
 STORY_FIXTURES = ROOT / "tests" / "fixtures" / "epic7_story"
 WORLD_BOSS_FIXTURES = ROOT / "tests" / "fixtures" / "epic7_world_boss"
+ARENA_FIXTURES = ROOT / "tests" / "fixtures" / "epic7_arena"
+HERO_FIXTURES = ROOT / "tests" / "fixtures" / "epic7_hero"
 TEMPLATES = ROOT / "games" / "epic7" / "templates" / "global"
 STORY_TEMPLATES = ROOT / "games" / "epic7" / "templates" / "story"
 NAVIGATION_TEMPLATES = ROOT / "games" / "epic7" / "templates" / "navigation"
@@ -1174,3 +1178,144 @@ def test_global_guard_dismisses_web_network_error():
     assert 1860 <= clicks[0][0] <= 1900
     assert 75 <= clicks[0][1] <= 110
     assert any("动作=dismiss-web-network-error" in line for line in logs)
+
+
+# ── 第 11 个全局弹窗：竞技场「段位升级奖励」（2026-10-20）────────────────────
+#
+# 它是竞技场「段位提升」的**下一层**：点掉段位提升之后马上弹出来，只在首次升至
+# 某段位时出现一次。2026-10-20 08:02 那次它把底页压暗、竞技场一条判据都认不出它
+# ⇒ 转场一路等到 45 秒上限、整条竞技场记 ✗（当天唯一失败的路线）。
+
+
+def _global_screen(name: str) -> np.ndarray:
+    return np.asarray(Image.open(FIXTURES / name).convert("RGB"))
+
+
+def _arena_screen(name: str) -> np.ndarray:
+    return np.asarray(Image.open(ARENA_FIXTURES / name).convert("RGB"))
+
+
+def _hero_screen(name: str) -> np.ndarray:
+    return np.asarray(Image.open(HERO_FIXTURES / name).convert("RGB"))
+
+
+def test_arena_rank_reward_popup_is_recognized_from_both_anchors():
+    """标题「升级奖励」+ 底部「点击关闭」，两个锚点都命中才算。
+
+    夹具就是那次失败帧：`20261020_080245_283281_no_transition_confirming_to_list.png`。
+    """
+    popup = _global_screen("arena_rank_reward_live_20261020.png")
+    templates = load_arena_rank_reward_templates(NAVIGATION_TEMPLATES)
+
+    match = find_arena_rank_reward_close(popup, templates.title, templates.close)
+
+    assert match is not None
+    # 「点击关闭」实测中心 (961, 832)。
+    assert 900 <= match.center[0] <= 1020
+    assert 800 <= match.center[1] <= 865
+
+
+def test_arena_rank_reward_popup_requires_title_and_close_anchor():
+    """两个锚点缺一不可：标题挡乱命中，关闭点给点击位置。"""
+    popup = _global_screen("arena_rank_reward_live_20261020.png")
+    templates = load_arena_rank_reward_templates(NAVIGATION_TEMPLATES)
+    without_title = popup.copy()
+    without_title[285:365, 820:1180] = 0
+    without_close = popup.copy()
+    without_close[795:905, 860:1140] = 0
+
+    assert (
+        find_arena_rank_reward_close(
+            without_title, templates.title, templates.close
+        )
+        is None
+    )
+    assert (
+        find_arena_rank_reward_close(
+            without_close, templates.title, templates.close
+        )
+        is None
+    )
+
+
+def test_arena_rank_reward_close_alone_is_not_exclusive():
+    """⚠️ 这条钉住「为什么必须双锚点」，别把标题那半拆掉。
+
+    底部「点击关闭」是游戏里**通用**的一行灰字：在「刻印结果」弹窗上它单独就有
+    0.95+，比任何合理阈值都高。所以它是**点击点**，不是判据 —— 判据是标题。
+    这条测试同时证明两件事：那张图上「关闭点」确实很高分，而**整个判据仍然返回 None**。
+    """
+    from auto_game_unified.core.matcher import find_template
+
+    other = _hero_screen("imprint_result_popup.png")
+    templates = load_arena_rank_reward_templates(NAVIGATION_TEMPLATES)
+
+    close_only = find_template(
+        other,
+        templates.close,
+        popups_module._ARENA_RANK_REWARD_THRESHOLD,
+        region=popups_module._ARENA_RANK_REWARD_CLOSE_REGION,
+        reference_size=(1982, 1132),
+    )
+    assert close_only is not None, "这行灰字在别的弹窗上应当仍然像"
+    assert close_only.score > 0.90
+
+    assert find_arena_rank_reward_close(other, templates.title, templates.close) is None
+
+
+def test_arena_rank_reward_popup_rejects_the_pages_around_it():
+    """弹窗出现前那一页（段位提升）与消失后那一页（对手列表/详情）都不能命中。
+
+    否则守卫会在这两页上反复点、把流程顶住 —— 比不认更糟。
+
+    ⚠️ 只用 1982x1132 的帧：``list.png`` / ``rank_confirm.png`` 是 3200x2000
+    （另一条采集通道），喂进来会先撞 ``matcher`` 的宽高比守卫，
+    测不到判据本身，等于白测。
+    """
+    templates = load_arena_rank_reward_templates(NAVIGATION_TEMPLATES)
+
+    for name in (
+        "rank_promotion_master.png",
+        "selected.png",
+        "result_defeat_live_20260925.png",
+    ):
+        assert (
+            find_arena_rank_reward_close(
+                _arena_screen(name), templates.title, templates.close
+            )
+            is None
+        ), name
+
+
+def test_guard_dismisses_the_arena_rank_reward_popup():
+    popup = _global_screen("arena_rank_reward_live_20261020.png")
+    # 弹窗消掉之后落回的「对手详情/列表」那一页（1982x1132，见上一条的尺寸说明）。
+    recovered = _arena_screen("selected.png")
+    screens = iter([popup, popup, recovered])
+    clicks = []
+    logs = []
+    clock = FakeClock()
+    runtime = Runtime(
+        lambda: next(screens),
+        clicks.append,
+        monotonic=clock.now,
+        emit=logs.append,
+    )
+    runtime.set_capture_guard(
+        Epic7GlobalPopupGuard(
+            load_network_reconnect_templates(TEMPLATES),
+            arena_rank_reward_templates=load_arena_rank_reward_templates(
+                NAVIGATION_TEMPLATES
+            ),
+            sleep=clock.sleep,
+            now=clock.now,
+        )
+    )
+
+    received = runtime.capture()
+
+    assert np.array_equal(received, recovered)
+    assert len(clicks) == 1
+    assert 900 <= clicks[0][0] <= 1020
+    assert 800 <= clicks[0][1] <= 865
+    assert any("动作=close-arena-rank-reward" in line for line in logs)

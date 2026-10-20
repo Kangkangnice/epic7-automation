@@ -85,6 +85,22 @@ class WorldBossSupportRewardTemplates:
 
 
 @dataclass(frozen=True)
+class ArenaRankRewardTemplates:
+    """「竞技场段位升级奖励」弹窗（标题 + 点击关闭，与骑士团那四个同形）。
+
+    它是**段位提升弹窗的下一层**：点掉「段位提升」之后马上弹出来，
+    首次升至各段位时才出现（一次性），所以平时跑不到、也就一直没被发现。
+
+    ``title``（「升级奖励」）= 排他锚点（负样本最高 0.4675）；
+    ``close``（底部「点击关闭」）= 点击点，单独**完全不排他**
+    （同一行灰字在 `reward_popup.png` 一类领奖弹窗上最高 0.9852），必须靠标题兜住。
+    """
+
+    title: np.ndarray
+    close: np.ndarray
+
+
+@dataclass(frozen=True)
 class PetGiftTemplates:
     """宠物小屋礼物角标（**单锚点**：整个角标就是要点的目标，没有标题/关闭点）。"""
 
@@ -182,6 +198,29 @@ _KNIGHTS_WEEKLY_REWARD_THRESHOLD = 0.80
 _WORLDBOSS_SUPPORT_TITLE_REGION = (700, 262, 520, 80)
 _WORLDBOSS_SUPPORT_CLOSE_REGION = (860, 770, 300, 90)
 _WORLDBOSS_SUPPORT_THRESHOLD = 0.80
+# 「竞技场段位升级奖励」：**段位提升弹窗的下一层**（2026-10-20 立）。
+#
+# 链条：战斗结果 → 点「确认」→「段位提升」（竞技场 `结果确认中` 认的就是它）→ 点掉它
+# → 游戏**紧接着**弹「升级奖励」（「已升级为优胜者Ⅳ段位且获得以下奖励。段位升级奖励
+# 只会在首次升至各段位时发放1次」）。这一层把底页压暗，而竞技场**一条判据都认不出它**
+# ⇒ 2026-10-20 08:02 那次转场一路等到 45 秒上限，整条竞技场记 ✗（当天唯一失败的路线）。
+#
+# ⚠️ 为什么是全局弹窗而不是竞技场里新加一页：它是**模态通知窗**，点画面任意位置就能关掉，
+# 与骑士团那三个「标题 + 点击关闭」弹窗同形；放在守卫里，任何路线撞上都能消掉
+# （`runtime.capture` 每帧都会过守卫，竞技场的等待转场循环因此也能自愈）。
+#
+# ⚠️ 必须双锚点：「点击关闭」是游戏里通用的一条灰字，全库实测最像的有
+# **0.9852**（`reward_popup.png` / `knights_weekly_reward_popup.png` /
+# `popup_penguin_before_close.png` 等都属于同一行控件），单锚点必然乱点。
+# 标题「升级奖励」是排他的（负样本最高 0.4675，还是撞在 `support_confirm.png` 上）。
+#
+# 全库 305 张 1982x1132 横屏帧实测（`runtime_logs/_probe_arena_rank_reward.py`）：
+#   正例（20261020_080245 那张失败帧）title 1.0000 / close 1.0000；
+#   **双锚点取 min 后的负样本最高 0.2993**（`battle_guide_warning_live_20260815.png`）
+#   ⇒ 阈值 0.88：地板余量 +0.12、天花板余量 +0.58。
+_ARENA_RANK_REWARD_TITLE_REGION = (820, 285, 360, 80)
+_ARENA_RANK_REWARD_CLOSE_REGION = (860, 795, 280, 110)
+_ARENA_RANK_REWARD_THRESHOLD = 0.88
 # 「宠物小屋礼物角标」：**不是盖住页面的模态弹窗**，而是挂在**快捷菜单页**上的一个小角标
 # （就是回家流程点那颗「啤酒杯 → 酒馆」的那一页）。宠物送礼时，宠物小屋图标旁边会挂出
 # 一个「紫金礼盒 + 对话气泡」的角标；**点它一下才会领取礼物、角标才消失**，
@@ -316,6 +355,22 @@ def load_worldboss_support_reward_templates(
     return WorldBossSupportRewardTemplates(
         title=load_template(str(template_dir / "worldboss_support_reward_title.png")),
         close=load_template(str(template_dir / "worldboss_support_reward_close.png")),
+    )
+
+
+def load_arena_rank_reward_templates(
+    template_dir: Path,
+) -> ArenaRankRewardTemplates:
+    """读「竞技场段位升级奖励」弹窗的两个锚点（``templates/navigation`` 下）。
+
+    放 ``navigation/`` 与 ``worldboss_support_reward_*`` 同一目录 —— 它们都是
+    「盖在某一页上、压暗底页锚点」的模态弹窗，导航那边的 ``observe()`` 也要报出页名，
+    两边读同一份图，别放两处。
+    两张都直接 ``load_template`` —— 缺一张就开跑前抛，不做静默降级。
+    """
+    return ArenaRankRewardTemplates(
+        title=load_template(str(template_dir / "arena_rank_reward_title.png")),
+        close=load_template(str(template_dir / "arena_rank_reward_close.png")),
     )
 
 
@@ -660,6 +715,44 @@ def find_worldboss_support_reward_close(
     return Match(close.center, min(title.score, close.score))
 
 
+def find_arena_rank_reward_close(
+    screen: np.ndarray,
+    title_template: np.ndarray,
+    close_template: np.ndarray,
+) -> Match | None:
+    """认「竞技场段位升级奖励」弹窗，命中就返回底部「点击关闭」那行字的中心。
+
+    现场（2026-10-20 08:02，`epic7_arena` 记的那次 ✗）：打完第 7 局、点掉
+    「段位提升」之后，这一层紧跟着弹出来 —— 它**首次升至各段位才出现**，
+    所以此前从没被撞见过，也就没有判据。它把底页压暗，竞技场那边
+    `list_ready` 只剩 0.640、`confirm` 只剩 0.103 ⇒ 来源页判「已离开」、
+    目标页「对手列表」不出现 ⇒ 一路等到 45 秒上限。
+
+    为什么必须双锚点：标题「升级奖励」排他（全库负样本最高 0.4675），
+    而「点击关闭」这四个字是游戏里通用的一条灰字 —— 全库实测最像的到 **0.9852**
+    （`reward_popup.png` 一类领奖弹窗），单锚点会在它们上面乱点。
+    """
+    title = find_template(
+        screen,
+        title_template,
+        _ARENA_RANK_REWARD_THRESHOLD,
+        region=_ARENA_RANK_REWARD_TITLE_REGION,
+        reference_size=_REFERENCE_SIZE,
+    )
+    if title is None:
+        return None
+    close = find_template(
+        screen,
+        close_template,
+        _ARENA_RANK_REWARD_THRESHOLD,
+        region=_ARENA_RANK_REWARD_CLOSE_REGION,
+        reference_size=_REFERENCE_SIZE,
+    )
+    if close is None:
+        return None
+    return Match(close.center, min(title.score, close.score))
+
+
 def find_web_network_error_close(
     screen: np.ndarray,
     templates: WebNetworkErrorTemplates,
@@ -744,6 +837,7 @@ class Epic7GlobalPopupGuard:
         knights_weekly_reward_templates: KnightsWeeklyRewardTemplates | None = None,
         worldboss_support_reward_templates: WorldBossSupportRewardTemplates
         | None = None,
+        arena_rank_reward_templates: ArenaRankRewardTemplates | None = None,
         pet_gift_templates: PetGiftTemplates | None = None,
         web_network_error_templates: WebNetworkErrorTemplates | None = None,
         sleep: Callable[[float], None] = default_sleep,
@@ -760,6 +854,7 @@ class Epic7GlobalPopupGuard:
         self.gift_support_templates = gift_support_templates
         self.knights_weekly_reward_templates = knights_weekly_reward_templates
         self.worldboss_support_reward_templates = worldboss_support_reward_templates
+        self.arena_rank_reward_templates = arena_rank_reward_templates
         self.pet_gift_templates = pet_gift_templates
         self.web_network_error_templates = web_network_error_templates
         self.sleep = sleep
@@ -886,6 +981,20 @@ class Epic7GlobalPopupGuard:
                     "close-worldboss-support-reward",
                     "worldboss_support_reward_failed",
                     f"世界首领辅助队伍奖励弹窗点击{_MAX_POPUP_CLICKS}次后仍未消失",
+                )
+        if self.arena_rank_reward_templates is not None:
+            match = find_arena_rank_reward_close(
+                screen,
+                self.arena_rank_reward_templates.title,
+                self.arena_rank_reward_templates.close,
+            )
+            if match is not None:
+                return (
+                    match,
+                    "arena_rank_reward",
+                    "close-arena-rank-reward",
+                    "arena_rank_reward_failed",
+                    f"段位升级奖励弹窗点击{_MAX_POPUP_CLICKS}次后仍未消失",
                 )
         if self.pet_gift_templates is not None:
             match = find_pet_gift_badge(screen, self.pet_gift_templates.badge)

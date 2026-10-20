@@ -145,3 +145,60 @@
 接力用的 `arena.result_arena` 页是「rating **或** victory **或** defeat」，
 单靠它分不出是哪个坏了。
 
+
+## 「段位升级奖励」弹窗：竞技场的**第二层**弹窗（2026-10-20）
+
+打满一局、点「确认」之后出现的是一条**两层**的弹窗链：
+
+```
+战斗结果 ──点「确认」──▶ 段位提升（= 竞技场 `结果确认中` 那一页，判据 = 箭头 + 确认）
+                              └──点掉它──▶ 升级奖励（本节的这一层）
+                                              └──点「点击关闭」──▶ 对手列表
+```
+
+第二层只在**首次升至某个段位**时出现一次（「段位升级奖励只会在首次升至各段位时发放1次」），
+所以它一直没被撞见、也就一直没有判据。2026-10-20 08:02 那天撞上了：
+
+| 时间 | 发生了什么 |
+| --- | --- |
+| 08:02:05 | `confirm-rank` 点掉「段位提升」 |
+| 08:02:07 | 来源页判「已离开」（箭头没了 ⇒ `arena.rank_promotion` 不成立） |
+| 08:02:45 | 等「对手列表」40 秒仍不出现 ⇒ 转场失败 ⇒ 异常收尾回大厅，整条竞技场记 ✗ |
+
+失败帧上的真实分数（`runtime_diagnostics/epic7_arena/20261020_080245_283281_*`）：
+`rank_promotion_arrow` 0.354、`list_ready` 0.640、`confirm` 0.103 —— **全灭**，
+只剩那颗被压暗的「确认」按钮还是 0.999，而它被弹窗盖住了、点了没用。
+
+### 为什么修在「全局弹窗守卫」里，而不是在竞技场里加一页
+
+它是**模态通知窗**，点画面任意位置都能关掉，与骑士团那三个「标题 + 点击关闭」同形；
+而守卫挂在 `runtime.capture` 上，**每一帧都要过它** —— 包括竞技场那个「等待转场」循环。
+放在守卫里，任何路线撞上都能自愈；放进竞技场状态机，其它路线撞上照样卡住。
+
+### 两个锚点（**必须两个都中**）
+
+| 锚点 | 模板 | 角色 | 全库 305 张 1982x1132 负样本 |
+| --- | --- | --- | --- |
+| 标题「升级奖励」 | `navigation/arena_rank_reward_title.png` | **判据**（排他） | 最高 0.4675（`support_confirm.png`） |
+| 底部「点击关闭」 | `navigation/arena_rank_reward_close.png` | **点击点**（不排他） | 单独最高 **0.9852**（`reward_popup.png` 一类领奖弹窗） |
+
+阈值 0.88；双锚点取 `min` 后负样本天花板 **0.2993** ⇒ 地板余量 +0.12、天花板余量 +0.58。
+取证脚本：`python -m auto_game_unified.runtime_logs._probe_arena_rank_reward`。
+
+⚠️ **别把「点击关闭」那半拆掉当单锚点** —— 那行灰字是游戏里通用的控件，
+0.9852 的四五张帧全是别的领奖弹窗。`test_arena_rank_reward_close_alone_is_not_exclusive`
+就是钉这件事的：它在 `imprint_result_popup.png` 上单独拿 0.9548，但整个判据**必须**返回 None。
+
+### 改的时候动哪里
+
+1. 模板两张：`games/epic7/templates/navigation/arena_rank_reward_{title,close}.png`
+2. 判据 + 守卫分支：`games/epic7/global_popups.py`（`find_arena_rank_reward_close`、
+   `Epic7GlobalPopupGuard._find_popup`）
+3. 导航页名：`games/epic7/navigation.py`（`arena_rank_reward_popup`）
+4. 装配：`main.py`
+5. 护栏：`tests/test_global_popups.py`（5 条）、`tests/test_navigation.py`、
+   `tests/test_project_layout.py`、`tests/test_main_story.py`
+
+⚠️ 这类弹窗**一次性**，改完没法用实跑复现 ⇒ 回归全靠夹具
+`tests/fixtures/epic7_global/arena_rank_reward_live_20261020.png`。
+别因为「跑一遍没再出现」就以为修好了或没问题了。

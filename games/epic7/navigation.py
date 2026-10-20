@@ -31,6 +31,7 @@ from auto_game_unified.games.epic7.evidence.arena import THRESHOLDS as ARENA_THR
 from auto_game_unified.games.epic7.evidence.story import THRESHOLDS as STORY_THRESHOLDS
 from auto_game_unified.games.epic7.template_paths import resolve_template_dir
 from auto_game_unified.games.epic7.global_popups import (
+    find_arena_rank_reward_close,
     find_friendship_points_popup_close,
     find_gift_support_close,
     find_knights_signin_close,
@@ -139,6 +140,7 @@ PAGE_LABELS = {
     "gift_support_popup": "领取支援物品弹窗",
     "knights_weekly_reward_popup": "骑士团周结算奖励弹窗",
     "worldboss_support_reward_popup": "世界首领辅助队伍奖励弹窗",
+    "arena_rank_reward_popup": "段位升级奖励弹窗",
     "unknown": "未知画面",
 }
 
@@ -352,6 +354,11 @@ class NavigationTemplates:
     knights_weekly_reward_close: np.ndarray
     worldboss_support_reward_title: np.ndarray
     worldboss_support_reward_close: np.ndarray
+    # 「段位升级奖励」弹窗（2026-10-20）。它是**段位提升弹窗的下一层**：
+    # 点掉「段位提升」之后马上弹出来，只在一路升到新段位时出现一次。
+    # 与上面那个世界首领弹窗同形同理 —— 盖住底页、把锚点压暗 ⇒ 必须先报出来让守卫点掉。
+    arena_rank_reward_title: np.ndarray
+    arena_rank_reward_close: np.ndarray
     # ---- 社区签到路线（2026-10-06）----
     # 大厅左侧竖排最后一个「活动」入口（记事本+星+时钟图标 与「活动」二字）。
     # ⚠️ 与 ``lobby_knights`` 同理：实测 220 张同尺寸夹具里过阈 12 张、**全是大厅类帧**
@@ -551,6 +558,12 @@ def build_navigation_templates(template_root: Path) -> NavigationTemplates:
         ),
         worldboss_support_reward_close=load_template(
             str(navigation / "worldboss_support_reward_close.png")
+        ),
+        arena_rank_reward_title=load_template(
+            str(navigation / "arena_rank_reward_title.png")
+        ),
+        arena_rank_reward_close=load_template(
+            str(navigation / "arena_rank_reward_close.png")
         ),
         # 社区签到路线（2026-10-06）。全部直接 ``load_template``：缺文件就抛
         # ``FileNotFoundError``（fail closed），不写 ``exists() else None``。
@@ -904,6 +917,21 @@ class Epic7Navigator:
             return PageObservation(
                 "worldboss_support_reward_popup", support_reward_close.score
             )
+
+        # 「段位升级奖励」弹窗（2026-10-20）。竞技场打完一局、点掉「段位提升」之后
+        # **紧接着**弹出来的第二层，只在首次升至某段位时出现一次。
+        #
+        # ⚠️ 必须排在 ``arena_rank_promotion`` 判定**之前**：这一页上那颗「确认」按钮
+        # 仍在（实测 0.999），只是被弹窗压暗了；段位提升的判据要「箭头 + 确认」两个都中，
+        # 箭头已经消失 ⇒ 本来也不会误判成段位提升，但把更具体的一页放前面，
+        # 日志里报出来的就是「段位升级奖励弹窗」而不是「未知画面」。
+        reward_close = find_arena_rank_reward_close(
+            screen,
+            self.templates.arena_rank_reward_title,
+            self.templates.arena_rank_reward_close,
+        )
+        if reward_close is not None:
+            return PageObservation("arena_rank_reward_popup", reward_close.score)
 
         rank_confirm = find_rank_promotion_confirm(
             screen,

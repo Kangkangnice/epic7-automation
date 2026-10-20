@@ -495,6 +495,22 @@ class NavigationTests(unittest.TestCase):
 
         self.assertEqual("arena_rank_promotion", navigator.observe(screen).name)
 
+    def test_classifies_arena_rank_reward_popup(self):
+        """「段位升级奖励」—— 段位提升的**下一层**（2026-10-20 接）。
+
+        2026-10-20 08:02 那次竞技场 ✗ 的现场帧。它必须**排在**
+        ``arena_rank_promotion`` 之前判：这一页上「确认」按钮还在（实测 0.999，
+        只是被弹窗压暗了），段位提升那条判据要「箭头 + 确认」两个都中，箭头已经
+        消失 ⇒ 本来也不会串味；但先报出更具体的一页，日志里就不会只剩「页面=unknown」。
+        """
+        navigator = self.navigator([])
+
+        observation = navigator.observe(
+            global_fixture("arena_rank_reward_live_20261020")
+        )
+
+        self.assertEqual("arena_rank_reward_popup", observation.name)
+
     def test_return_home_closes_arena_rank_promotion_before_confirming_lobby(self):
         clicks: list[tuple[int, int]] = []
         backs: list[bool] = []

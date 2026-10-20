@@ -279,7 +279,13 @@ class ImmediateThread:
 
 @pytest.fixture(scope="module")
 def tk_root():
-    root = tk.Tk()
+    try:
+        root = tk.Tk()
+    except tk.TclError as exc:
+        # 环境级偶发：一次进程里建第二个 Tk 根时，偶尔会报
+        # "Can't find a usable init.tcl"（全量 2026-10-20 撞过一次，单跑这个文件不复现）。
+        # 跳过而不是整轮变红 —— 目录、Tcl 本身都好好的，换个进程就能起。
+        pytest.skip(f"Tk 起不来：{exc}")
     root.withdraw()
     yield root
     root.destroy()
