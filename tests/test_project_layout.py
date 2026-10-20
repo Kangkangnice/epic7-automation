@@ -29,6 +29,12 @@ class ProjectLayoutTests(unittest.TestCase):
                 # ``find_network_retry``（断线弹窗，判文案）**完全认不出来**
                 # （全帧最高 0.31，门槛 0.88），而新的长条锚点拿 1.0000。
                 "web_network_error_live_20261007.png",
+                # 2026-10-20 08:02 真机：竞技场第 7 局打完、点掉「段位提升」后紧接着
+                # 弹出的**第二层**「升级奖励」。竞技场当时一条判据都不认它 ⇒ 转场一路
+                # 等到 45 秒上限、整条竞技场记 ✗（当天唯一失败的路线）。
+                # 它是「标题 + 点击关闭」这对锚点的唯一正例；同一帧上「点击关闭」单独
+                # 在本页之外也有 0.9548（`imprint_result_popup.png`）⇒ 单锚点不成立。
+                "arena_rank_reward_live_20261020.png",
             },
             {path.name for path in fixture_dir.glob("*.png")},
         )
@@ -530,6 +536,11 @@ class ProjectLayoutTests(unittest.TestCase):
             # （正常网页帧上也有，0.97+，单独不能当判据）。两张缺谁都点不掉那条长条。
             "web_network_message.png",
             "web_error_close.png",
+            # 「段位升级奖励」弹窗（2026-10-20 接，第 11 个全局弹窗）的两个锚点。
+            # 它是竞技场「段位提升」的下一层：标题排他、底部「点击关闭」只当点击点
+            # （那行灰字在 `imprint_result_popup.png` 上单独就有 0.9548）。
+            "arena_rank_reward_title.png",
+            "arena_rank_reward_close.png",
         ):
             self.assertTrue((navigation / name).is_file(), name)
 
