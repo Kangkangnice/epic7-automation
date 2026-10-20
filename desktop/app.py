@@ -186,11 +186,6 @@ class DesktopController:
         """能不能开跑：至少勾了一条，且没有任务在跑。"""
         return bool(self.selection) and not self.worker.running
 
-    @property
-    def needs_experimental_confirmation(self) -> bool:
-        """勾选里有没有仍处于实验阶段的路线。"""
-        return any(route_by_name(mode).experimental for mode in self.selection)
-
     def toggle(self, mode: str, checked: bool) -> None:
         """勾上/取消一条路线。**勾上的时机就是它的执行位次。**
 
@@ -832,17 +827,19 @@ class DesktopApp:
         return tuple(found)
 
     def _route_text(self, mode: str) -> str:
-        """勾选框上的文字：``序号 名字 [正式/实验]``。
+        """勾选框上的文字：``序号 名字``。
 
         没勾选时用全角空格占位，勾上之后文字不会整体右移。
+
+        ⚠️ 2026-10-20 起**不再带 ``[正式]`` / ``[实验]`` 角标**：用户把十五条路线都
+        实机验证过了，分级没有信息量、只占行宽。别加回来（见 `catalog.RouteInfo`）。
         """
         route = route_by_name(mode)
-        marker = "正式" if not route.experimental else "实验"
         if mode in self.controller.selection:
             prefix = self._position_prefix(self.controller.selection.index(mode))
         else:
             prefix = "　"
-        text = f"{prefix} {route.label}  [{marker}]"
+        text = f"{prefix} {route.label}"
         if route.standalone_only:
             text += " · 单独跑"
         return text
@@ -1064,10 +1061,9 @@ class DesktopApp:
             self._refresh_plan_summary()
             return
         route = route_by_name(self.controller.selection[-1])
-        status_text = "正式功能" if not route.experimental else "实验功能，可能不稳定"
-        self.route_description_var.set(
-            f"【{route.label}】{status_text}\n{route.description}"
-        )
+        # 说明区只留路线名与说明 —— 那行「正式功能 / 实验功能，可能不稳定」已随分级
+        # 一起删掉（2026-10-20，见 `catalog.RouteInfo` 的 docstring）。
+        self.route_description_var.set(f"【{route.label}】\n{route.description}")
         # 收起状态下摘要就摆在操作条上，勾选一变它得跟着变。
         self._refresh_plan_summary()
 
@@ -1150,8 +1146,12 @@ class DesktopApp:
     def _start(self) -> None:
         """唯一的启动入口：勾了哪几条就跑哪几条，按勾选先后依次跑。
 
-        流程与原来「单路线」那条通道逐字同形：收次数 → 实验功能提醒 → 复检环境 →
+        流程与原来「单路线」那条通道逐字同形：收次数 → 复检环境 →
         逐条查模板 → 启动。两条通道合并之后，以后改这里只有一处。
+
+        ⚠️ 这里原来还有一道「实验功能提醒」的二次确认（勾了实验路线就问一次
+        「可能不稳定，是否继续」）。2026-10-20 路线分级整体取消后它再也不会触发，
+        已经删掉 —— 别再加回来一层「确定吗」。
         """
         if not self.consented:
             # 按钮本来就该是灰的（见 ``_refresh_controls``）。走到这里只可能是
@@ -1167,15 +1167,6 @@ class DesktopApp:
             return
         if not self._collect_cycles():
             return
-        # 勾选里含实验功能路线（世界首领战 / 骑士团捐赠 / 迷宫强化石等都是）就提醒一次。
-        if self.controller.needs_experimental_confirmation:
-            confirmed = messagebox.askyesno(
-                "实验功能提醒",
-                "勾选的任务里有仍处于实验阶段的路线，可能不稳定。\n\n是否继续运行？",
-                parent=self.root,
-            )
-            if not confirmed:
-                return
         self._checking = True
         self.environment_var.set("正在复检运行环境……")
         self.environment_label.configure(foreground=self.theme.palette.primary)

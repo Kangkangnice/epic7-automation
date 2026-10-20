@@ -199,7 +199,16 @@ def test_clear_consent_tolerates_a_missing_record(tmp_path):
 def test_risk_points_state_the_real_boundaries():
     risk = " ".join(onboarding.RISK_POINTS)
 
+    # 2026-10-20 用户要求把风险那四点**合成一条**讲（非官方 / 不读取数据 /
+    # 只做视觉识别 / 非商业用途），顺序照他给的来。这条断言钉住「是一条」。
+    assert len(onboarding.RISK_POINTS) == 1
     assert "非官方" in risk
+    # 合成的四点各自都要在里面 —— 少一条就不是他要的那一条了。
+    assert "视觉识别" in risk
+    assert "不读取" in risk
+    assert "非商业" in risk
+    # 落点必须还在：可以不说「会封号」，但不能只讲我们干净、不讲风险归谁。
+    assert "自行承担" in risk
     # 不许给出「不会封号」这类保证（NOTICE.md / SECURITY.md 都明确不保证）
     assert "不会封号" not in risk
     assert "不封号" not in risk
@@ -213,9 +222,19 @@ def test_setup_points_cover_the_limits_users_actually_hit():
     setup = " ".join(onboarding.SETUP_POINTS)
 
     assert "大厅" in setup  # 起点是人工停好的大厅
-    assert "前台" in setup  # 不支持后台运行
     assert "1920×1080" in setup  # 渲染区尺寸
     assert "简体中文" in setup  # 模板按中文界面采集
+
+    # 2026-10-20 用户实测纠正：模拟器**可以**被别的窗口挡住跑，鼠标也不占用。
+    # 旧文案「自动化期间必须保持前台，不能最小化或被挡住，不支持后台运行」是从
+    # PC 后端（`core/pc_window.py` 用 SendInput 真实鼠标）那套结论抄过来的，
+    # 对模拟器不成立 —— 别把它写回来。
+    assert "不支持后台运行" not in setup
+    assert "必须保持前台" not in setup
+    assert "挡住" in setup
+    # 「建议不要最小化」是保守留的（最小化后 PrintWindow 还灵不灵要看显卡驱动），
+    # 不是硬限制；这条只保证那句话还在，别悄悄升级成「必须」。
+    assert "建议不要" in setup
 
 
 def test_text_has_no_markdown_markup():
@@ -253,6 +272,30 @@ def test_the_consent_dialog_gets_a_sane_position(tk_window):
 # --------------------------------------------------------------------------
 # 界面门禁
 # --------------------------------------------------------------------------
+
+
+def test_the_accept_button_works_without_a_checkbox(tk_window):
+    """点「开始使用」就是同意 —— 这一屏不该再有勾选框或二次确认。
+
+    2026-10-20 用户要求去掉「我已阅读并理解…」勾选 + 按钮置灰。这里守三件事：
+    按钮一上来就是可点的、没有那颗勾选框、点下去 ``accepted`` 直接翻成真。
+    """
+    from auto_game_unified.desktop import theme as theme_module
+    from auto_game_unified.desktop.onboarding import ConsentDialog
+
+    theme = theme_module.build(tk_window)
+    dialog = ConsentDialog(tk_window, theme)
+    try:
+        assert str(dialog._accept_button.cget("state")) == "normal"
+        # 旧的勾选框属性必须整个消失，而不是留一个永远为真的哑变量 ——
+        # 留着它，下一个人就会以为「这里还有一道确认」。
+        assert not hasattr(dialog, "_acknowledged")
+        assert not hasattr(dialog, "_refresh_buttons")
+
+        dialog._on_accept()
+        assert dialog.accepted is True
+    finally:
+        dialog.destroy()
 
 
 def test_onboarding_is_off_by_default(tk_window, tmp_path):

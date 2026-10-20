@@ -49,14 +49,13 @@ def test_catalog_lists_every_route_in_menu_order():
         "community",
         "moonlight_theater",
     ]
-    assert route_by_name("hero_synthesis").status == "正式功能"
-    assert route_by_name("story").status == "正式功能"
-    # 正式功能只有两条（英雄合成 / 主线），其余全标「实验功能」——
-    # 这个数字涨到 11 是因为 2026-10-17 新增了月光剧场。
-    assert sum(route.experimental for route in ROUTES) == 11
+    # 2026-10-20 用户拍板：路线不再分「正式 / 实验」—— 十五条他都实机验证过了。
+    # 这条守着「分级彻底没有」：字段、属性都不该回来（不是把值都改成「正式功能」）。
+    assert all(not hasattr(route, "status") for route in ROUTES)
+    assert all(not hasattr(route, "experimental") for route in ROUTES)
 
 
-def test_community_is_experimental_and_warns_about_daily_limits():
+def test_community_warns_about_daily_limits():
     """社区签到：界面上必须写清两件事。
 
     ① 这条路线有一半在**竖屏**（用户得知道点下去画面会转过去）；
@@ -70,27 +69,23 @@ def test_community_is_experimental_and_warns_about_daily_limits():
     community = route_by_name("community")
 
     assert community.label == "社区签到"
-    assert community.experimental
     assert community.cycles_editable is False
     assert "竖屏" in community.description
     assert "每日上限" in community.description
 
 
-def test_survivor_is_experimental_and_explains_the_manual_entry_page():
+def test_survivor_explains_the_manual_entry_page():
     survivor = route_by_name("survivor")
 
     assert survivor.label == "活动"
-    assert survivor.experimental
-    assert survivor.status == "实验功能"
     # 起点是用户人工停好的页面，必须写在界面上让人看得见。
     assert "选第一张卡" in survivor.description
     assert "模拟器" in survivor.description
 
 
-def test_shop_refresh_is_experimental_and_explains_cycle_semantics():
+def test_shop_refresh_explains_cycle_semantics():
     shop = route_by_name("shop_refresh")
 
-    assert shop.experimental
     # 用户 2026-09-29 拍板：默认 **0 次** —— 秘密商店自己会随时间自动刷新，
     # 每天进店扫一遍、把自动刷出来的买掉就行，0 次不花天空石。
     assert shop.default_cycles == 0
@@ -109,24 +104,10 @@ def test_hero_synthesis_is_fixed_to_one_cycle():
     assert hero.cycles_editable is False
 
 
-def test_arena_is_a_formal_feature():
-    arena = route_by_name("arena")
-    assert arena.status == "正式功能"
-    assert not arena.experimental
-
-
-def test_expedition_is_a_formal_feature():
-    expedition = route_by_name("expedition")
-    assert expedition.status == "正式功能"
-    assert not expedition.experimental
-
-
-def test_world_boss_is_experimental_and_explains_the_resource_boundary():
+def test_world_boss_explains_the_resource_boundary():
     world_boss = route_by_name("world_boss")
 
     assert world_boss.label == "世界首领战"
-    # 一次实机都没跑过，先按实验功能放进助手。
-    assert world_boss.experimental
     # 「每次 20 体力」和「不会用钻石」是用户定的红线，必须写在界面上让人看得见。
     assert "20 体力" in world_boss.description
     assert "树叶" in world_boss.description
@@ -142,13 +123,11 @@ def test_world_boss_is_fixed_to_two_cycles():
     assert "2 次" in world_boss.description
 
 
-def test_knights_donation_is_experimental_and_fixed_to_one_pass():
+def test_knights_donation_is_fixed_to_one_pass():
     """每天跑一遍就够，用户明确要求「不要让我选择次数」。"""
     donation = route_by_name("knights_donation")
 
     assert donation.label == "骑士团捐赠"
-    # 一次实机都没跑过，先按实验功能放进助手。
-    assert donation.experimental
     assert donation.default_cycles == 1
     assert donation.cycles_editable is False
     # 界面上要能看见「怎么进来的」和「怎么结束的」，否则用户不知道它会自己收工。
