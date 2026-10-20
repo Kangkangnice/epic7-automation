@@ -279,14 +279,6 @@ def test_cycle_rejects_unknown_route():
         controller.set_cycles("nope", 3)
 
 
-def test_experimental_route_requires_confirmation():
-    controller = DesktopController(worker=FakeWorker())
-    controller.toggle("fodder", True)
-    controller.apply_preflight(passed_preflight())
-
-    assert controller.needs_experimental_confirmation is True
-
-
 def test_ticking_another_route_preserves_successful_preflight():
     controller = DesktopController(worker=FakeWorker())
     controller.apply_preflight(passed_preflight())
@@ -782,11 +774,7 @@ def test_start_uses_the_edited_panel_cycle(tmp_path, tk_window):
     app._on_toggle("arena")
     app.cycle_vars["arena"].set("4")
 
-    with patch(
-        "auto_game_unified.desktop.app.messagebox.askyesno",
-        return_value=True,
-    ):
-        app._start()
+    app._start()
     tk_window.update()
 
     assert worker.request.cycles["arena"] == 4
@@ -904,7 +892,13 @@ def test_start_cancelled_when_cycles_change_mid_check(tmp_path, tk_window):
     assert "已变化" in app.environment_var.get()
 
 
-def test_declining_experimental_warning_does_not_start(tmp_path, tk_window):
+def test_formerly_experimental_route_starts_without_asking_again(tmp_path, tk_window):
+    """路线分级取消后，原先标「实验」的路线也要一问不问就开跑。
+
+    2026-10-20 用户拍板：十五条路线他都实机验证过了，界面上不再有正式 / 实验之分，
+    启动前那道「实验功能提醒」也一起删掉。这条断言 askyesno **一次都没被调用**
+    —— 不是「调了但回 True」，否则那道确认只是变了个说法。
+    """
     worker = FakeWorker()
     controller = DesktopController(worker=worker)
     app = DesktopApp(
@@ -918,14 +912,12 @@ def test_declining_experimental_warning_does_not_start(tmp_path, tk_window):
     app.route_vars["fodder"].set(True)
     app._on_toggle("fodder")
 
-    with patch(
-        "auto_game_unified.desktop.app.messagebox.askyesno",
-        return_value=False,
-    ):
+    with patch("auto_game_unified.desktop.app.messagebox.askyesno") as confirm:
         app._start()
     tk_window.update()
 
-    assert worker.request is None
+    assert not confirm.called
+    assert worker.request is not None
 
 
 # --------------------------------------------------------------------------

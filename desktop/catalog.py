@@ -73,14 +73,19 @@ def visible_backends(environ: Mapping[str, str] | None = None) -> tuple[str, ...
 class RouteInfo:
     """桌面助手视角下的一条路线。
 
-    ⚠️ 只有 ``status`` / ``description`` / ``group`` 是**桌面助手特有的**（界面文案，
+    ⚠️ 只有 ``description`` / ``group`` 是**桌面助手特有的**（界面文案，
     别的入口用不上）。中文名与次数都**从 ``modes.MODE_SPECS`` 读**，不在这里
     再写一份 —— 以前它们是字段，与 CLI / 菜单三处手工对齐，实测漂移过
     （``shop_refresh`` 这里叫「刷书签」、每日任务里叫「商店刷新」）。
+
+    ⚠️ **路线之间不再分「正式 / 实验」**（2026-10-20 用户拍板：十五条路线他都
+    实机验证过了，界面上那个 ``[正式]`` / ``[实验]`` 角标与启动前的「实验功能提醒」
+    一起删掉）。以前这里有个 ``status`` 字段加 ``experimental`` 属性，删掉时**没有**
+    留下一个恒为 ``"正式功能"`` 的哑字段 —— 留着它，下一个人就会以为这里还有一道分级。
+    以后真要重新引入分级，请先想清楚「谁来看、看到之后做什么」，别只加一个字符串。
     """
 
     mode: str
-    status: str
     description: str
     # 「每日任务」面板里的分组（见 `docs/maintenance/daily_tasks_grouping.md`）。
     # ⚠️ 这个字段是**界面分组**，不是路线本身的属性 —— 所以留在 catalog，
@@ -105,10 +110,6 @@ class RouteInfo:
         return MODE_SPECS[self.mode].min_cycles
 
     @property
-    def experimental(self) -> bool:
-        return self.status == "实验功能"
-
-    @property
     def standalone_only(self) -> bool:
         """只能单独跑：起点是用户人工摆好的页面，跑起来也不做任何「回家」动作。
 
@@ -122,16 +123,14 @@ class RouteInfo:
 ROUTES = (
     RouteInfo(
         "hero_synthesis",
-        "正式功能",
         "三星英雄刻印合成和 SSS 副本处理",
         group=GROUP_ONDEMAND,
     ),
-    RouteInfo("story", "正式功能", "主线和刷图循环", group=GROUP_ONDEMAND),
-    RouteInfo("arena", "正式功能", "新手竞技场循环"),
-    RouteInfo("expedition", "正式功能", "三阶段远征循环", group=GROUP_SEASON),
+    RouteInfo("story", "主线和刷图循环", group=GROUP_ONDEMAND),
+    RouteInfo("arena", "新手竞技场循环"),
+    RouteInfo("expedition", "三阶段远征循环", group=GROUP_SEASON),
     RouteInfo(
         "tower",
-        "实验功能",
         "欧多马顿塔（月塔）赛季爬塔：从大厅进战斗 → 赛季页点月塔卡片入场 →"
         "楼层列表选队伍 → 准备战斗点「战斗开始」自动打；打完进三选一装置页，"
         "固定选中间那张再点「决定装置」→ 结算页点「下一层」直接进下一层的准备战斗页。"
@@ -140,11 +139,10 @@ ROUTES = (
         group=GROUP_SEASON,
     ),
     RouteInfo(
-        "fodder", "实验功能", "特别的时间之书 Episode 3-7", group=GROUP_ONDEMAND
+        "fodder", "特别的时间之书 Episode 3-7", group=GROUP_ONDEMAND
     ),
     RouteInfo(
         "side_story",
-        "实验功能",
         "支线故事：一次把本期所有关卡打完。关卡位置**每期都变**，靠画面定位"
         "当前角色身上那枚发光徽记（金色准星环 + 中间青色菱形）再点它下方；"
         "打完一关点场景页右下角闪烁的蓝色三箭头进下一关，场景页上找不到箭头了"
@@ -153,35 +151,30 @@ ROUTES = (
     ),
     RouteInfo(
         "shop_refresh",
-        "实验功能",
         "默认 0 次 = 只进店从上到下扫一遍、把想要的买掉，一次都不付费刷新"
         "（秘密商店自己会随时间自动刷新）；填「付费刷新次数」才额外刷；"
         "初始页面也检查；只购买誓约和神秘书签",
     ),
     RouteInfo(
         "survivor",
-        "实验功能",
         "活动小游戏（类幸存者）挂机；需先把游戏停在「选第一张卡」页；"
         "每轮自动选卡、走位、结算、重新进行；只支持模拟器",
         group=GROUP_EVENT,
     ),
     RouteInfo(
         "world_boss",
-        "实验功能",
         "骑士团每日世界首领战；从大厅自动导航到骑士团再进首领战，"
         "每次消耗 20 体力（不够时自动用树叶购买，树叶耗尽即停）；"
         "每天固定 2 次，次数打完或红点消失自动结束",
     ),
     RouteInfo(
         "knights_donation",
-        "实验功能",
         "骑士团每日捐赠，跑一遍就结束：从大厅自动导航到骑士团，点「骑士团活动」进去；"
         "资源支援页每天请求一次下级精灵之花、"
         "再依次支援团员；每周任务页领骑士团点数档位与已完成任务",
     ),
     RouteInfo(
         "labyrinth_stone",
-        "实验功能",
         "迷宫每日强化石采购，跑一遍就结束：从大厅自动导航到战斗菜单 → 迷宫 →"
         "混乱的提雷尔城，确保选中 1 区域后进迷宫；开地图拖到最上方出口传送 →"
         "往西走到流浪商人 → 商店里只买「强化石」这一类（买过的行自动跳过）→"
@@ -189,7 +182,6 @@ ROUTES = (
     ),
     RouteInfo(
         "sanctuary",
-        "实验功能",
         "圣域每日收菜，跑一遍就结束：从大厅左侧最上面那个「圣域」入口进去 →"
         "精灵之森，把三行材料（企鹅巢穴 / 精灵之泉 / 魔罗戈拉种植地）里显示"
         "「领取奖励」的行从上到下依次点掉、关掉「领取完成」弹窗 → 回大厅；"
@@ -197,7 +189,6 @@ ROUTES = (
     ),
     RouteInfo(
         "community",
-        "实验功能",
         "游戏内「游戏社区」的每日任务与积分兑换，跑一遍就结束：从大厅进活动页 →"
         "更多精彩活动 → 网页活动列表，点「游戏社区」；之后模拟器整块变成竖屏，"
         "改用模拟器自己的截图与点击通道识别（签到、三条每日任务、装备强化石等"
@@ -206,7 +197,6 @@ ROUTES = (
     ),
     RouteInfo(
         "moonlight_theater",
-        "实验功能",
         "月光剧场（每周刷新的免费观览），一次把本周免费的都打完：大厅 → 支线故事 →"
         "月光剧场（入口卡片左上角没有绿色 F 就直接结束）→ 在横向剧场列表里逐个看"
         "「当前剧场」左上角有没有 Free 全称角标，有就点「入场」→ 分集页「进行观览」→"

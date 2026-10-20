@@ -9,7 +9,7 @@
 所以第一屏只干三件事：把风险讲清楚、把前置条件列成清单、给一个「检测」按钮。
 攒够一次真实检测，新用户就不用再回去翻文档。
 
-## 三条规矩（改之前先读）
+## 四条规矩（改之前先读）
 
 1. **不同意就不许跑**：`DesktopApp` 的「开始任务」在确认状态为假时保持禁用。
    这不是「弹个窗提示一下」—— 是启动按钮根本点不下去。
@@ -20,6 +20,11 @@
 3. **落盘失败不许把人关在门外**：目录只读、权限不足导致写不进去时，**本次照常放行**
    （用户刚刚确实点了同意），只记一条日志让下次再问。那是 `core/data_paths.py`
    该暴露的问题，不该变成一道进不去的门。
+
+4. **点「开始使用」就是同意，不做二次确认**（2026-10-20 用户明确要求）：
+   这一屏**没有**「我已阅读并理解…」勾选框，按钮也不会因为你没勾而置灰 ——
+   别再把这个勾选框加回来，也别在按钮后面再接一个「确定吗」。
+   「不同意」的出口是「暂不使用」和直接关窗，两者都让 `accepted` 保持 `False`。
 
 ## 文案来源
 
@@ -41,7 +46,6 @@ from typing import Callable
 
 from auto_game_unified.desktop.theme import (
     SPACE_LG,
-    SPACE_MD,
     SPACE_SM,
     SPACE_XL,
     SPACE_XS,
@@ -52,7 +56,12 @@ from auto_game_unified.desktop.theme import (
 
 #: 确认记录的格式版本。**改动条款就把这个号加一** —— 老用户会被重新问一次。
 #: 这是唯一能让「已经同意过旧条款」的人重新看到新条款的机制，别省。
-CONSENT_VERSION = 1
+#:
+#: 变更记录（加号时在下面写一行「为什么」，否则过半年没人知道这个号为什么不是 1）：
+#:   v1 —— 首版。
+#:   v2 —— 2026-10-20：风险那四条合成一条重写，并**新增「非商业用途」**这个约束
+#:         （此前只在 README / NOTICE 里写，弹窗里没有）。新增约束就该重新征得同意。
+CONSENT_VERSION = 2
 
 CONSENT_FILENAME = "consent.json"
 
@@ -60,13 +69,18 @@ CONSENT_FILENAME = "consent.json"
 DIALOG_WRAP = 560
 
 RISK_POINTS = (
-    "本项目是非官方的第三方工具，与 Smilegate、Super Creative、STOVE 均无关联，"
-    "未获其授权或认可。",
-    "它只做两件事：对游戏窗口截图做视觉识别，以及模拟普通鼠标点击。"
-    "不读取或修改游戏内存、网络数据与客户端文件，也没有反检测或绕过游戏安全机制的功能。",
-    "使用第三方辅助工具可能被游戏运营方判定为违规，导致账号被处罚或封禁。"
-    "这个风险由使用者自行承担，本项目不作任何保证。",
-    "竞技场（PVP）路线同样只是模拟点击，不保证对手强度，也不保证胜负 —— 是否使用请自行判断。",
+    # 2026-10-20 用户要求：原来那四点（非官方 / 只做识别与点击 / 可能被封号 / 竞技场
+    # 不保胜负）**合成一点**，并按「非官方第三方工具 → 不读取数据 → 只做视觉识别
+    # → 非商业用途」这个顺序讲。合成后与 README「许可证与免责声明」那一段逐句对得上，
+    # 所以**改这里就要顺手看那一节**，别让两处说两套话。
+    #
+    # ⚠️ 「账号与游戏资源风险由使用者自行承担」这半句**不能省** —— 它是整页的落点，
+    # 也是 `test_risk_points_state_the_real_boundaries` 守着的东西（可以不说「会封号」，
+    # 但不能反过来说「不会封号」，更不能只讲我们干净、不讲风险归谁）。
+    "本项目是非官方的、免费且非商业用途的第三方工具，与 Smilegate、Super Creative、"
+    "STOVE 均无关联，未获其授权或认可。它只通过窗口截图做视觉识别并模拟普通鼠标点击，"
+    "不读取或修改游戏内存、网络数据与客户端文件，也不包含反检测或绕过游戏安全机制的功能。"
+    "使用第三方辅助工具可能带来的账号与游戏资源风险，由使用者自行承担。",
 )
 
 SETUP_POINTS = (
@@ -74,7 +88,21 @@ SETUP_POINTS = (
     "模拟器渲染区按 1920×1080 设置（助手识别画布为 1982×1132）。"
     "窗口宽高比必须与模板一致；改过分辨率、显示缩放或游戏内 UI 之后，要重新检测。",
     "先让游戏进到大厅，再点「开始任务」。助手从大厅出发，跑完会自己回大厅。",
-    "自动化期间游戏必须保持前台，不能最小化或被别的窗口挡住；不支持后台运行。",
+    # 2026-10-20 用户实测纠正：这条原来写的是「自动化期间游戏必须保持前台，
+    # 不能最小化或被别的窗口挡住；不支持后台运行」—— 对**模拟器**来说是错的。
+    # 模拟器这条链路：取图走 `PrintWindow`（`core/window.py::_print_window_render`
+    # 的注释就写着「模拟器被遮挡/失焦时仍能取到正确画面」），点击走
+    # `ldconsole adb shell input tap`，在安卓内部注入，根本不经过 Windows 鼠标栈
+    # ⇒ 被别的窗口压住、不处于前台都照跑，真实鼠标也不被占用。
+    #
+    # ⚠️ **别把 PC 后端那套结论抄过来**：`core/pc_window.py` 的点击是 `SendInput`
+    # 真实鼠标事件，每次点击都要先把游戏窗口抢到前台再还回去，窗口也不能最小化
+    # （见 `docs/PC_TEMPLATE_MIGRATION.md`）。PC 后端还没上界面，这里按模拟器写。
+    #
+    # 「建议不要最小化」这半句是保守留的：最小化之后 `PrintWindow` 还灵不灵取决于
+    # 显卡驱动与 DWM，没有实测证据前不写成承诺。真跑通了再删。
+    "模拟器不必一直放在前台：助手读的是窗口画面、点击走模拟器自己的输入通道，"
+    "被其他窗口挡住也能继续跑，期间的鼠标可以照常用。建议不要把模拟器窗口最小化。",
     "游戏语言用简体中文：模板是在中文界面上采集的。",
 )
 
@@ -171,7 +199,8 @@ class ConsentDialog(tk.Toplevel):
         self._heading(body, "第七史诗自动助手", TYPE_TITLE)
         self._caption(
             body,
-            "第一次使用前，请先读完下面两段。左边这段讲风险，右边这段讲要准备什么。",
+            "第一次使用前，请先读完下面两段。左边这段讲风险，右边这段讲要准备什么；"
+            "读完点「开始使用」就行。",
         )
 
         columns = ttk.Frame(body, style="Card.TFrame")
@@ -182,20 +211,12 @@ class ConsentDialog(tk.Toplevel):
         self._section(columns, 0, "你需要知道的风险", RISK_POINTS)
         self._section(columns, 1, "开始之前先准备好", SETUP_POINTS)
 
-        self._acknowledged = tk.BooleanVar(value=False)
-        self._acknowledge = ttk.Checkbutton(
-            body,
-            text="我已阅读并理解上述内容，并自行承担使用风险",
-            variable=self._acknowledged,
-            command=self._refresh_buttons,
-            style="Route.TCheckbutton",
-        )
-        self._acknowledge.pack(anchor="w", pady=(px(SPACE_LG), 0))
-
+        # 2026-10-20 用户要求：**去掉「我已阅读并理解…」勾选框，也不做二次确认** ——
+        # 读完直接点「开始使用」就走。原来那个勾选 + 按钮置灰只多一道门、不多一分信息
+        # （见模块 docstring 第 4 条规矩）。
+        # 「不同意」的出口是「暂不使用」和直接关窗，两者都让 `accepted` 留在 False。
         footer = ttk.Frame(body, style="Card.TFrame")
-        footer.pack(fill=tk.X, pady=(px(SPACE_MD), 0))
-        # 「开始使用」是这一屏唯一的主行动；没勾同意时它是灰的，且**没有快捷键**，
-        # 想跳过就只能关窗（关窗 = 不同意）。
+        footer.pack(fill=tk.X, pady=(px(SPACE_LG), 0))
         self._accept_button = ttk.Button(
             footer, text="开始使用", style="Accent.TButton", command=self._on_accept
         )
@@ -203,7 +224,6 @@ class ConsentDialog(tk.Toplevel):
         ttk.Button(footer, text="暂不使用", command=self._on_close).pack(
             side=tk.RIGHT, padx=(0, px(SPACE_SM))
         )
-        self._refresh_buttons()
 
         self._center_on(parent)
         self.grab_set()
@@ -277,14 +297,9 @@ class ConsentDialog(tk.Toplevel):
             )
 
     # ── 状态 ──────────────────────────────────────────────────────────────
-    def _refresh_buttons(self) -> None:
-        self._accept_button.configure(
-            state=tk.NORMAL if self._acknowledged.get() else tk.DISABLED
-        )
-
     def _on_accept(self) -> None:
-        if not self._acknowledged.get():
-            return
+        # 勾选框已经去掉（2026-10-20），点这个按钮本身就是同意 —— 没有别的门。
+        # 仍然留成一个方法而不是直接把赋值写进按钮回调，是为了让测试能直接调它。
         self.accepted = True
         self.destroy()
 
