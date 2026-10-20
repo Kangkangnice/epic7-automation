@@ -249,6 +249,16 @@ def test_text_has_no_markdown_markup():
     assert "](" not in text
 
 
+def test_the_notice_stays_narrow():
+    """2026-10-20 用户反馈「使用须知太宽了」。
+
+    这屏是**两栏并排**，整窗宽度 ≈ 2 × DIALOG_WRAP + 内边距 + 栏间隔。原来是 560，
+    整窗约 1200 逻辑像素（1600 的屏占 3/4）。这条钉住「别再随手调宽」——
+    实测 360 时整窗 800（同一块屏占 50%）。
+    """
+    assert onboarding.DIALOG_WRAP <= 400
+
+
 def test_the_consent_dialog_gets_a_sane_position(tk_window):
     """不摆位置的话 Tk 会把对话框丢在屏幕左上角 —— 2026-10-19 打包版截图才发现。
 
