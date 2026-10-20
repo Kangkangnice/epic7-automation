@@ -19,6 +19,7 @@ from auto_game_unified.desktop.catalog import (
     PRODUCT_VERSION,
     ROUTES,
     RouteInfo,
+    group_description,
     grouped_routes,
     route_by_name,
     routes_in_group,
@@ -396,6 +397,13 @@ class DesktopApp:
         # 语义是「这一组是否全部选中」——见 ``_build_group_header``。
         self._group_buttons: dict[str, ttk.Checkbutton] = {}
         self._group_vars: dict[str, tk.BooleanVar] = {}
+        # 说明区现在显示谁：``None`` = 最后勾的那条路线；分组名 = 那一组的说明。
+        #
+        # ⚠️ 2026-10-20 用户要求：**点分组标题上的框，说明区要给这一组的说明**
+        # （每日 / 按需 / 赛季 / 活动各是什么节奏），而不是组里最后一条路线的说明。
+        # 所以这里得单独记一笔 —— `controller.selection` 里没有「这次是整组勾的」
+        # 这个信息，勾完之后它只是一串路线名。
+        self._detail_group: str | None = None
         self.route_vars: dict[str, tk.BooleanVar] = {}
         self.cycle_vars: dict[str, tk.StringVar] = {}
         self._backend_buttons: list[ttk.Radiobutton] = []
@@ -697,6 +705,10 @@ class DesktopApp:
 
         ⚠️ 别把组标题改回 `Label` 再加一颗按钮：那正是 2026-10-18 撤掉的样子 ——
         按钮占着卡头右侧的宽度，说明文字被挤得折更多行。
+
+        ⚠️ 点这个框除了勾选整组，还会把底部说明切成**这一组的说明**（`_detail_group`，
+        见 `_refresh_route_details`）。两者必须同进同退 —— 只勾选不换说明，
+        用户点完会以为「这组里第一条的说明」就是分组的说明。
         """
         px = self.theme.px
         var = tk.BooleanVar(value=_all_selected(routes, self.controller.selection))
@@ -735,8 +747,11 @@ class DesktopApp:
             return
         if self._group_vars[group].get():
             self.controller.select_group(group)
+            # 整组勾上 ⇒ 说明区讲这一组，而不是组里最后那条路线。
+            self._detail_group = group
         else:
             self.controller.clear_group(group)
+            self._detail_group = None
         self._after_selection_change()
 
     def _build_group_grid(
@@ -991,7 +1006,7 @@ class DesktopApp:
         走同一套刷新。
 
         ⚠️ 三处刷新一个都不能少：勾选状态与序号（`_refresh_task_rows`）、
-        底部说明（`_refresh_route_details`，它读的是「最后勾的那条」）、
+        底部说明（`_refresh_route_details`，它读的是「刚点的那一组」或「最后勾的那条」）、
         以及「开始任务」按钮的可用性（`_refresh_controls`）。
         """
         self._refresh_task_rows()
@@ -1009,6 +1024,8 @@ class DesktopApp:
             return
         # 互斥（勾「活动」会清掉别的、勾别的会清掉「活动」）⇒ 必须整块重刷，
         # 不能只改被点的那一行。
+        # 点了具体某一条 ⇒ 说明区回到「这条路线」这个视角，不再停在分组说明上。
+        self._detail_group = None
         self._after_selection_change()
 
     def _collect_cycles(self) -> bool:
@@ -1051,11 +1068,26 @@ class DesktopApp:
         return "正在检测雷电模拟器和截图……"
 
     def _refresh_route_details(self) -> None:
-        """说明区显示**最后勾的那条**路线的说明。
+        """说明区显示**刚点的那一组**的说明，或者**最后勾的那条**路线的说明。
 
-        界面不再有「当前路线」这个概念（勾选是多项的），所以取最后勾的那条 ——
-        正好是用户刚点过、最可能想确认的那条。一条都没勾就留空。
+        2026-10-20 用户要求：点「每日 / 按需 / 赛季」前面的框，那是**整组勾选**，
+        说明区就该讲这一组是什么节奏、点下去会发生什么 —— 而不是组里最后那条路线
+        的说明（用户原话：「点击的时候是对他们三个的说明，不是里面的路线说明」）。
+        勾/取消单条路线时再把视角切回那条路线。
+
+        一条都没勾就留空。
         """
+        # 分组优先。但那一组可能已经被别的东西清空了（「活动」互斥会清掉别的组），
+        # 这种时候要退回去，别在说明区留一段跟勾选对不上的文字。
+        if self._detail_group is not None:
+            routes = routes_in_group(self._detail_group)
+            if any(route.mode in self.controller.selection for route in routes):
+                self.route_description_var.set(
+                    f"【{self._detail_group}】\n{group_description(self._detail_group)}"
+                )
+                self._refresh_plan_summary()
+                return
+            self._detail_group = None
         if not self.controller.selection:
             self.route_description_var.set("")
             self._refresh_plan_summary()

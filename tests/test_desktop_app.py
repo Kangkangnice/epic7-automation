@@ -9,7 +9,13 @@ from unittest.mock import patch
 from auto_game_unified.desktop import app as app_module
 from auto_game_unified.desktop import theme
 from auto_game_unified.desktop.app import DesktopApp, DesktopController, fit_window_size
-from auto_game_unified.desktop.catalog import ROUTES, grouped_routes, routes_in_group
+from auto_game_unified.desktop.catalog import (
+    ROUTES,
+    group_description,
+    grouped_routes,
+    route_by_name,
+    routes_in_group,
+)
 from auto_game_unified.desktop.preflight import PreflightReport, PreflightStatus
 
 
@@ -1178,6 +1184,89 @@ def test_unticking_one_route_drops_the_group_box(tmp_path, tk_window):
     app._on_group_toggle("每日")
     assert len(controller.selection) == 7
     assert controller.selection[-1] == "arena"
+
+
+def test_the_group_box_explains_the_group_not_a_route(tmp_path, tk_window):
+    """点分组前面的框 ⇒ 说明区讲的是**这一组是什么**，不是组里最后那条路线。
+
+    用户原话（2026-10-20）：「每日 / 按需 / 赛季 前面的框，点击的时候是对他们
+    三个的说明，不是里面的路线说明」。整组勾完 `selection[-1]` 是组里最后一条，
+    光读 selection 会以为「圣域收菜」的说明就是「每日」的说明。
+    """
+    controller = DesktopController(worker=FakeWorker())
+    app = DesktopApp(tk_window, controller=controller, project_root=tmp_path)
+    tk_window.update_idletasks()
+
+    app._group_vars["每日"].set(True)
+    app._on_group_toggle("每日")
+    tk_window.update_idletasks()
+
+    text = app.route_description_var.get()
+    assert text == f"【每日】\n{group_description('每日')}"
+    # 组里任何一条路线的说明都不能混进来（它们都以「跑一轮 / 跑一遍」分段）。
+    for route in routes_in_group("每日"):
+        assert route.description not in text, route.mode
+
+
+def test_clicking_one_route_takes_the_description_back(tmp_path, tk_window):
+    """整组勾完再去点具体某一条 ⇒ 说明区切回那条路线。
+
+    ⚠️ 这里必须点一条**当时没勾的**路线：勾一条已经勾着的，`controller.toggle`
+    只会把它留在原位，不会是「最后勾的那条」，断言就测不到这次切换。
+    """
+    controller = DesktopController(worker=FakeWorker())
+    app = DesktopApp(tk_window, controller=controller, project_root=tmp_path)
+    tk_window.update_idletasks()
+
+    app._group_vars["按需"].set(True)
+    app._on_group_toggle("按需")
+    assert app.route_description_var.get().startswith("【按需】")
+
+    app.route_vars["arena"].set(True)
+    app._on_toggle("arena")
+    tk_window.update_idletasks()
+
+    arena = route_by_name("arena")
+    assert app.route_description_var.get() == f"【{arena.label}】\n{arena.description}"
+
+
+def test_unticking_the_group_drops_the_group_explanation(tmp_path, tk_window):
+    """整组取消 ⇒ 说明区留空，不许挂着一段已经不成立的说明。"""
+    controller = DesktopController(worker=FakeWorker())
+    app = DesktopApp(tk_window, controller=controller, project_root=tmp_path)
+    tk_window.update_idletasks()
+
+    app._group_vars["赛季"].set(True)
+    app._on_group_toggle("赛季")
+    app._group_vars["赛季"].set(False)
+    app._on_group_toggle("赛季")
+    tk_window.update_idletasks()
+
+    assert app.route_description_var.get() == ""
+    assert app._detail_group is None
+
+
+def test_a_stale_group_explanation_falls_back_to_the_routes(tmp_path, tk_window):
+    """那一组被别处清空了，说明区要退回「最后勾的那条」，不能继续讲那一组。
+
+    目前唯一的来路是「活动」互斥（勾它会清掉别的组）。这里直接把状态摆成
+    「停在每日的分组说明上、每日却一条都没勾」，守住 `_refresh_route_details`
+    里那道回退 —— 少了它，界面会显示一段与勾选对不上的文字。
+    """
+    controller = DesktopController(worker=FakeWorker())
+    app = DesktopApp(tk_window, controller=controller, project_root=tmp_path)
+    tk_window.update_idletasks()
+
+    app._group_vars["每日"].set(True)
+    app._on_group_toggle("每日")
+    controller.toggle("tower", True)
+    controller.clear_group("每日")
+    app._refresh_route_details()
+    tk_window.update_idletasks()
+
+    tower = route_by_name("tower")
+    assert app.route_description_var.get() == f"【{tower.label}】\n{tower.description}"
+    assert app._detail_group is None
 
 
 def test_group_selection_appends_after_what_is_already_ticked(tmp_path, tk_window):
