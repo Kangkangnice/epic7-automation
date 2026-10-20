@@ -92,8 +92,12 @@ def test_shop_refresh_explains_cycle_semantics():
     # 每天进店扫一遍、把自动刷出来的买掉就行，0 次不花天空石。
     assert shop.default_cycles == 0
     assert shop.min_cycles == 0
-    assert "付费刷新" in shop.description
-    assert "初始页面" in shop.description
+    # 2026-10-20 改写说明（去掉「付费刷新」「初始页面」这类偏实现的措辞）时，
+    # 断言跟着换成语义等价的锚点：**默认不刷新**、**刷新要花天空石**、
+    # **商店自己会刷新**这三件事必须还写在界面上。
+    assert "0 次" in shop.description
+    assert "天空石" in shop.description
+    assert "刷新" in shop.description
     # 「0 次」这条口子只开给刷书签，别的路线照样必须为正。
     for route in ROUTES:
         if route.mode != "shop_refresh":
@@ -148,18 +152,19 @@ def test_knights_donation_is_fixed_to_one_pass():
 
 
 def test_every_route_description_explains_itself():
-    """每条说明都要讲清「干什么 / 一轮到哪 / 注意什么」，并守住三条硬规矩。
+    """每条说明都要讲清「干什么 / 你能决定什么 / 注意什么」。
 
-    用户原话：「至少写个几行说明一下，每天比如说我们自动循环去打对手什么样之类的，
-    有没有什么注意事项…但是不能太多字儿，又要别人都能看懂」。
+    用户原话（2026-10-20）：「用户不关心你是靠什么识别的…他只关心这个运行的时候
+    他在做什么事儿…我能不能自己挑对手啊，我能不能根据战斗力识别对手，我能不能
+    调整队伍阵容」。所以第 2 段必须交代「哪些我能定、哪些它替我决定了」。
     """
     for route in ROUTES:
         text = route.description
         where = f"路线 {route.mode} 的说明"
 
-        # 三段式：第 1 段干什么，第 2 段「跑一轮 = …」和默认次数，第 3 段「注意：」。
+        # 三段式：第 1 段干什么，第 2 段「一轮 = …」+ 能不能自己改，第 3 段「注意：」。
         assert text.count("\n") >= 2, f"{where}没分段，至少要三段"
-        assert "跑一轮" in text or "跑一遍" in text, f"{where}没写清一轮跑到哪儿"
+        assert "一轮" in text or "一遍" in text, f"{where}没写清一轮跑到哪儿"
         assert "注意：" in text, f"{where}缺「注意：」那一段"
 
         # ⚠️ 这段文字直接进 tk 的 Label，写 `**重点**` 会原样显示成星号。
@@ -170,8 +175,11 @@ def test_every_route_description_explains_itself():
 
 
 #: 界面文案里不许出现的词：这是给玩家看的，不是给写代码的人看的。
-#: 用户 2026-10-20 原话：「说明里面不要出现代码术语，什么冒烟测试」。
-#: 只收「一看就是实现细节」的词；「识别 / 判断」这类玩家也会说的不算。
+#:
+#: 用户 2026-10-20 两次收紧：「不要出现代码术语，什么冒烟测试」，
+#: 以及「用户不关心你是靠什么识别的…你要跳出技术，回到业务去」。
+#: 所以除了实现术语，**描述识别动作的词也一并禁掉**（识别 / 判定 / 坐标 / 按钮）——
+#: 要写业务结果（「战斗动画自动跳过」），不写它是怎么认出来的。
 CODE_JARGON = (
     "冒烟",
     "报错",
@@ -188,6 +196,15 @@ CODE_JARGON = (
     "重试",
     "轮询",
     "断言",
+    # 识别动作 —— 玩家不关心它是靠什么认出来的。
+    "识别",
+    "判定",
+    "坐标",
+    "按钮",
+    "检测",
+    "代码",
+    "程序",
+    "算法",
 )
 
 
