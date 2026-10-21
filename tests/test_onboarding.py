@@ -199,14 +199,16 @@ def test_clear_consent_tolerates_a_missing_record(tmp_path):
 def test_risk_points_state_the_real_boundaries():
     risk = " ".join(onboarding.RISK_POINTS)
 
-    # 2026-10-20 用户要求把风险那四点**合成一条**讲（非官方 / 不读取数据 /
-    # 只做视觉识别 / 非商业用途），顺序照他给的来。这条断言钉住「是一条」。
+    # 2026-10-20 用户要求把风险那几点**合成一条**讲（非官方 / 不读取数据 /
+    # 只做视觉识别），顺序照他给的来。这条断言钉住「是一条」。
     assert len(onboarding.RISK_POINTS) == 1
     assert "非官方" in risk
-    # 合成的四点各自都要在里面 —— 少一条就不是他要的那一条了。
+    # 合成的几点各自都要在里面 —— 少一条就不是他要的那一条了。
     assert "视觉识别" in risk
     assert "不读取" in risk
-    assert "非商业" in risk
+    # ⚠️ 2026-10-21 用户拍板**去掉「非商业用途」**（「别人随便怎么用都行，
+    # 许可也不用换，把措辞删掉就行」）。代码是 MIT，界面不该再说反话。
+    assert "非商业" not in risk
     # 落点必须还在：可以不说「会封号」，但不能只讲我们干净、不讲风险归谁。
     assert "自行承担" in risk
     # 不许给出「不会封号」这类保证（NOTICE.md / SECURITY.md 都明确不保证）
