@@ -334,7 +334,7 @@ python -m compileall -q .
 `games/epic7/templates/` 与 `tests/fixtures/` 中从游戏画面裁切的图片 —— 那些归各自权利人所有，
 在本仓库中仅用于离线识别测试。权利人要求移除时请按 [NOTICE.md](NOTICE.md) 联系。
 
-本项目是免费、开源、非商业的第三方工具，**与 Smilegate、Super Creative、STOVE 均无关联**，
+本项目是免费、开源的第三方工具，**与 Smilegate、Super Creative、STOVE 均无关联**，
 未获其授权或认可。程序只通过窗口截图做视觉识别并模拟普通鼠标点击，不读取或修改游戏内存、
 网络数据与客户端文件，也不包含反检测或绕过游戏安全机制的功能。
 
