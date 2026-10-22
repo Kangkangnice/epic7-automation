@@ -29,7 +29,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Mapping, Optional
+from typing import Any, Callable, Mapping, Optional
 
 from auto_game_unified.core.runtime import ManualStop
 from auto_game_unified.games.epic7.modes import MODE_SPECS, get_mode
@@ -195,6 +195,9 @@ def run_daily_tasks(
     dry_run: bool,
     window_backend: str = "emulator",
     stop_file: Path | None = None,
+    # 每条路线的专属参数：``{路线名: {参数名: 值}}``。**按路线名分发**，到这里
+    # 只负责把属于这一条的那份递给 ``run_mode`` —— 本模块不解释任何参数内容。
+    params: Optional[Mapping[str, Mapping[str, Any]]] = None,
     run_mode: Callable[..., object],
     build_probe: Optional[Callable[[], tuple[object, object]]] = None,
     build_home_return: Optional[
@@ -280,6 +283,7 @@ def run_daily_tasks(
                 start_state=spec.default_state,
                 window_backend=window_backend,
                 stop_file=stop_file,
+                params=(params or {}).get(mode),
             )
         except ManualStop:
             # 用户按了 P：停下来的语义是「别跑了」，整轮到此为止，

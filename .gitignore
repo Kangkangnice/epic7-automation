@@ -28,3 +28,5 @@ packaging/dist/
 # 否则每个从源码跑的人 `git status` 立刻变脏。
 /consent.json
 /update_check.json
+# 会话存档（勾选/次数/上次结果）。源码运行时落在包目录，别让它把工作区弄脏。
+/session.json

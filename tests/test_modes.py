@@ -187,13 +187,22 @@ class RouteHookRegistryTests(unittest.TestCase):
         arena = get_mode("arena")
         self.assertIsNotNone(arena.runner_options, "竞技场的落盘参数从注册项上掉了")
 
-        self.assertEqual({}, arena.runner_options(ROOT, True))
+        self.assertEqual({}, arena.runner_options(ROOT, True, {}))
         self.assertEqual(
             {
                 "purchase_stamp_path": ROOT / "runtime_logs" / "arena_ticket_purchase.txt",
                 "outcome_frame_dir": ROOT / "docs" / "manual_review" / "arena",
             },
-            arena.runner_options(ROOT, False),
+            arena.runner_options(ROOT, False, {}),
+        )
+        # 参数通道通了，但**不许**把参数原样塞进 Runner 构造函数 ——
+        # 那会让不接受这个关键字的路线直接 TypeError（14 条路线都没接）。
+        self.assertEqual(
+            {
+                "purchase_stamp_path": ROOT / "runtime_logs" / "arena_ticket_purchase.txt",
+                "outcome_frame_dir": ROOT / "docs" / "manual_review" / "arena",
+            },
+            arena.runner_options(ROOT, False, {"only_npc": True}),
         )
 
     def test_routes_without_special_needs_declare_no_hooks(self):

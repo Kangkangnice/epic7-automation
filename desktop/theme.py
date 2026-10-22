@@ -52,11 +52,15 @@ from tkinter import ttk
 
 # 间距：4px 基准。用法约定：关联元素用 XS~SM，组件内边距用 MD~XL，
 # 区块之间用 LG。**只留用到的档** —— 空档位等真的需要时再加。
-SPACE_XS = 4
-SPACE_SM = 8
-SPACE_MD = 12
-SPACE_LG = 16
-SPACE_XL = 24
+#
+# ⚠️ 2026-10-22 整体收紧约 25%（4/8/12/16/24 → 3/6/10/12/18）：
+# 用户反馈「中间空太多、不够精致」。**只动间距，不动字号** —— 他明确说过
+# 「日志看不清」，字不许变小；能省的是留白，不是字。
+SPACE_XS = 3
+SPACE_SM = 6
+SPACE_MD = 10
+SPACE_LG = 12
+SPACE_XL = 18
 
 # 字号：单屏只用 4 档，避免「12 种字号彼此无梯度」那种漂移。
 TYPE_TITLE = 24
@@ -68,7 +72,7 @@ TYPE_CAPTION = 12
 # 排几列（`route_columns`），**不是** grid 的 minsize —— 格子实际宽度由内容决定。
 # ⚠️ 别把它当下限塞进 `grid_columnconfigure`：那会把次数框推离它自己的名字，
 # 看上去像属于下一条路线（2026-09-29 踩过，见 `app._build_task_panel`）。
-CELL_MIN_WIDTH = 214
+CELL_MIN_WIDTH = 190
 LOG_MIN_HEIGHT = 160
 
 # 说明文字的**初始**换行宽度。真实宽度由控件自己的 ``<Configure>`` 决定
@@ -78,9 +82,10 @@ WRAP_MIN_WIDTH = CELL_MIN_WIDTH * 2
 
 # 任务网格的形状约束。用户两次要求「别太长」，且明说「以后还有很多路线」⇒
 # 行数封顶、多出来的用**加列**解决：加路线不用改排布代码。
+# ⚠️ 2026-10-22 列数上限 4 → 5：一屏更满，且 15 条正好 3 行（配合密度收紧）。
 ROUTE_ROWS_TARGET = 3
 ROUTE_COLUMNS_MIN = 2
-ROUTE_COLUMNS_MAX = 4
+ROUTE_COLUMNS_MAX = 5
 
 FONT_FAMILY = "Microsoft YaHei UI"
 MONO_FAMILY = "Consolas"
@@ -94,16 +99,31 @@ class Palette:
     但把色值收在这里，将来做的时候不用回去翻每个面板。
     """
 
-    bg: str = "#F6F7F9"
-    surface: str = "#FFFFFF"
-    text: str = "#18181B"
-    text_secondary: str = "#52525B"
-    text_muted: str = "#71717A"
-    primary: str = "#2563EB"
-    success: str = "#15803D"
-    error: str = "#B91C1C"
-    log_bg: str = "#18181B"
-    log_text: str = "#E4E4E7"
+    # ⚠️ 2026-10-22 整套换成**竞品的暗色语言**（配色取自它 20 个界面定义里出现最多的
+    # 那几档，不是自己配的）：
+    #   背景 #000000×214 / 面板 #27211A·#131313 / 描边 #907959 / 强调 #E0C436 / 白字。
+    # 这是一次「复刻」，不是「微调」—— 换之前先想清楚：浅色底上做加法永远不像。
+    bg: str = "#0A0A0A"
+    surface: str = "#161616"
+    surface_alt: str = "#1E1E1E"
+    # 描边两档：主描边（棕金，用在卡片与勾选条）与暗描边（同色系压暗，用在行内分隔）。
+    border: str = "#907959"
+    border_dim: str = "#3A3226"
+    text: str = "#FFFFFF"
+    text_secondary: str = "#AB8759"
+    text_muted: str = "#AAAAAA"
+    primary: str = "#E0C436"
+    primary_pressed: str = "#C9AE2C"
+    primary_disabled: str = "#5A4E1F"
+    on_primary: str = "#14140F"
+    # 「选项条」被勾上时的底色。竞品选中项的底就是这一档深棕，未选是 #141414 ——
+    # 只差一层明度，靠**底色**而不是勾号表示选中，正是它的形态。
+    # ⚠️ 第一版取 #27211A，实机截图对比度太弱（跟未选几乎分不出），提到 #3A2E1C。
+    checked: str = "#3A2E1C"
+    success: str = "#4B9705"
+    error: str = "#D9534F"
+    log_bg: str = "#0A0A0A"
+    log_text: str = "#D8D5CE"
 
 
 @dataclass(frozen=True)
@@ -159,19 +179,40 @@ def build(root: tk.Misc) -> Theme:
 def apply_styles(root: tk.Misc, theme: Theme) -> None:
     """把令牌灌进 ttk 样式表。所有面板引用的样式名在这里集中定义。
 
-    ⚠️ 用 `vista`（Windows 原生外观），只覆写**字体与内边距**；不去改控件的
-    绘制方式 —— 原生控件手感对用户更友好，本项目的问题从来不是控件长相，
-    而是间距比例与排布。**推论：vista 主题下控件的背景色由系统绘制，
-    ``Accent.TButton`` 的「强调」只能靠字重与内边距，给不出彩色按钮。**
+    ## 2026-10-22 换基底：vista → clam
+
+    以前刻意用 ``vista``（Windows 原生外观），只覆写字体与内边距 —— 理由写在旧注释里：
+    「原生控件手感对用户更友好，本项目的问题从来不是控件长相，而是间距比例与排布」。
+
+    代价也是明确的：**vista 下按钮的背景由系统绘制，给不出颜色**，主行动只能靠字重与
+    留白强调，整屏偏素。用户 2026-10-22 提出「外观」诉求后换成 ``clam``（ttk 自带、可自绘）：
+    主按钮能上主色、卡片能描边、失效态能变浅。
+
+    这是**刻意的取舍**：换来的是配色可控，失去的是系统原生手感。
+    想改回去只需把下面 ``theme_use`` 的候选顺序换回 ``("vista", "clam")`` ——
+    其余配置对 vista 无害（它只是忽略 ``background`` / ``bordercolor`` 这类选项）。
     """
     palette = theme.palette
     style = ttk.Style(root)
-    if "vista" in style.theme_names():
-        style.theme_use("vista")
+    for candidate in ("clam", "vista"):
+        if candidate in style.theme_names():
+            style.theme_use(candidate)
+            break
 
     # 容器
     style.configure("App.TFrame", background=palette.bg)
-    style.configure("Card.TFrame", background=palette.surface)
+    # 状态带：比卡片再浅一档，让它和下面的任务卡分层（深色界面里靠明度差分层，
+    # 不靠留白）。⚠️ 漏定义这个样式名不会报错，但会 fallback 成主题默认的**浅灰**，
+    # 在深色界面上直接出现一块亮斑 —— 所以用到的样式名必须逐个定义。
+    style.configure("Bar.TFrame", background=palette.surface_alt)
+    # 卡片描一条极浅的边：白卡铺在浅灰底上时，边界不再只靠留白硬撑。
+    style.configure(
+        "Card.TFrame",
+        background=palette.surface,
+        relief="solid",
+        borderwidth=theme.px(1),
+        bordercolor=palette.border,
+    )
 
     # 文字：4 档字号，各配一个固定语义的样式名
     style.configure(
@@ -208,19 +249,53 @@ def apply_styles(root: tk.Misc, theme: Theme) -> None:
     style.configure(
         "Group.TCheckbutton",
         background=palette.surface,
+        # 分组标题用棕金 —— 竞品那套暗色里，标题/强调一律是这个色系，不用纯白抢正文。
+        foreground=palette.text_secondary,
         font=theme.font(TYPE_BODY, bold=True),
     )
 
-    # 按钮：主行动（Accent，靠字号加粗与更大内边距强调）/ 次行动（默认）/ 工具条
+    # 按钮：主行动（金底黑字）/ 次行动（深底 + 棕金边）。
+    # 照竞品的形态：薄、硬边、不圆角 —— 它的按钮是 height 撑死的扁条，不是圆润胶囊。
+    # ⚠️ clam 下光设 background 不生效，必须同时把 lightcolor / darkcolor 压成同一个色，
+    # 否则画出来的仍是主题默认的浅色渐变。
     style.configure(
         "TButton",
-        padding=(theme.px(SPACE_LG), theme.px(SPACE_SM)),
+        padding=(theme.px(SPACE_MD), theme.px(SPACE_XS)),
         font=theme.font(TYPE_BODY),
+        background=palette.surface_alt,
+        foreground=palette.text,
+        bordercolor=palette.border,
+        lightcolor=palette.surface_alt,
+        darkcolor=palette.surface_alt,
+    )
+    style.map(
+        "TButton",
+        background=[
+            ("disabled", palette.surface),
+            ("pressed", palette.border_dim),
+            ("active", palette.border_dim),
+        ],
+        foreground=[("disabled", palette.text_muted)],
     )
     style.configure(
         "Accent.TButton",
-        padding=(theme.px(SPACE_XL), theme.px(SPACE_SM)),
+        padding=(theme.px(SPACE_LG), theme.px(SPACE_XS)),
         font=theme.font(TYPE_BODY, bold=True),
+        background=palette.primary,
+        foreground=palette.on_primary,
+        bordercolor=palette.primary,
+        lightcolor=palette.primary,
+        darkcolor=palette.primary,
+    )
+    # 按压 / 悬停深一档；失效态压暗，字保持可读（金底上不用白字，对比度不够）。
+    style.map(
+        "Accent.TButton",
+        background=[
+            ("disabled", palette.primary_disabled),
+            ("pressed", palette.primary_pressed),
+            ("active", palette.primary_pressed),
+        ],
+        foreground=[("disabled", palette.on_primary)],
     )
     style.configure(
         "Tool.TButton",
@@ -228,11 +303,53 @@ def apply_styles(root: tk.Misc, theme: Theme) -> None:
         font=theme.font(TYPE_CAPTION),
     )
 
-    # 勾选框 / 单选框 / 次数框：都坐在卡片（白底）上
+    # 勾选框 / 单选框 / 次数框：坐在深色卡片上，白字；次数框是深底 + 暗描边。
     for name in ("Route.TCheckbutton", "Route.TRadiobutton"):
-        style.configure(name, background=palette.surface, font=theme.font(TYPE_BODY))
+        style.configure(
+            name,
+            background=palette.surface,
+            foreground=palette.text,
+            font=theme.font(TYPE_BODY),
+        )
     style.configure(
         "Route.TSpinbox",
-        padding=(theme.px(SPACE_XS), theme.px(SPACE_XS)),
+        padding=(theme.px(SPACE_XS), theme.px(1)),
         font=theme.font(TYPE_BODY),
+        fieldbackground=palette.surface_alt,
+        background=palette.surface_alt,
+        foreground=palette.text,
+        bordercolor=palette.border_dim,
+        arrowcolor=palette.text_secondary,
+    )
+
+    # 次数输入框。⚠️ 不用 Spinbox：经典 Tk 那个在 Windows 上**输入区永远是系统白**
+    # （`bg` 设了也不生效，实机截图确认），ttk 那个的上下箭头是画死的白方块。
+    # ttk.Entry 是自绘的，fieldbackground 一定吃得进配色 —— 代价是没有上下箭头，
+    # 次数本来就允许直接输入，这点损失可接受。
+    style.configure(
+        "Route.TEntry",
+        padding=(theme.px(SPACE_XS), theme.px(1)),
+        font=theme.font(TYPE_BODY),
+        fieldbackground=palette.surface_alt,
+        foreground=palette.text,
+        bordercolor=palette.border_dim,
+        insertcolor=palette.text,
+        lightcolor=palette.border_dim,
+        darkcolor=palette.border_dim,
+    )
+
+    # 滚动条：clam 默认是**白底白箭头**，在暗色界面上会亮成一根白条（实机截图确认）。
+    # 这里把槽、滑块、箭头三样都压到暗色系里。
+    style.configure(
+        "Vertical.TScrollbar",
+        background=palette.surface_alt,
+        troughcolor=palette.bg,
+        bordercolor=palette.bg,
+        arrowcolor=palette.text_secondary,
+        lightcolor=palette.surface_alt,
+        darkcolor=palette.surface_alt,
+    )
+    style.map(
+        "Vertical.TScrollbar",
+        background=[("active", palette.border_dim), ("pressed", palette.border_dim)],
     )

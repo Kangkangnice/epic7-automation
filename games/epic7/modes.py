@@ -1,7 +1,7 @@
 import inspect
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Mapping, Optional
 
 import numpy as np
 
@@ -149,9 +149,16 @@ ResumeProbe = Callable[[Any, np.ndarray, Any], Optional[ResumePoint]]
 # ``docs/EXTENDING.md`` 的「不要在 main.py 添加新的条件分支」。
 Preflight = Callable[[str, bool], Optional[str]]
 
-# 「路线级额外构造参数」：给 (仓库根, 是否干跑)，返回要转发给 Runner 构造函数的
-# 关键字参数。像落盘位置这种「只有实跑才需要」的参数走这里，``main`` 不再认具名路线。
-RunnerOptions = Callable[[Path, bool], dict[str, Any]]
+# 「路线级额外构造参数」：给 (仓库根, 是否干跑, 界面传下来的该路线参数)，
+# 返回要转发给 Runner 构造函数的关键字参数。像落盘位置这种「只有实跑才需要」的参数
+# 走这里，``main`` 不再认具名路线。
+#
+# ⚠️ 第三个入参是**通道**，不是义务：现在没有任何路线读它（竞技场也不用）。
+# 留着是为了将来第一条要参数的路线（深渊从第几层开始、竞技场打不打 NPC）只改自己
+# 那一处，不用回头动 ``RunRequest`` / 命令行 / ``main``。
+# 竞品对应：``功能参数初始化`` 先把 ``ui`` 表整理好，再交给各路线读 —— 时序照搬，
+# 参数名与取值规则由各路线自己定。
+RunnerOptions = Callable[[Path, bool, Mapping[str, Any]], dict[str, Any]]
 
 
 @dataclass(frozen=True)
@@ -413,8 +420,15 @@ def _preflight_community(mode: str, dry_run: bool) -> Optional[str]:
     )
 
 
-def _arena_runner_options(root: Path, dry_run: bool) -> dict[str, Any]:
-    """竞技场实跑才需要的两个落盘位置（干跑一个盘都不写）。"""
+def _arena_runner_options(
+    root: Path, dry_run: bool, params: Mapping[str, Any]
+) -> dict[str, Any]:
+    """竞技场实跑才需要的两个落盘位置（干跑一个盘都不写）。
+
+    ``params`` 现在没有消费者 —— 竞技场还没有任何可调参数。签名先接上，
+    等它真要加（打不打 NPC / 输几场换人）时只改这个函数，不用动上层。
+    """
+    del params  # 显式声明「暂时不用」，免得下一个人以为漏读了
     if dry_run:
         return {}
     return {

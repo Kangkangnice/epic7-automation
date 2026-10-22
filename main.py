@@ -1,9 +1,10 @@
 import argparse
+import json
 import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Mapping, Optional
 
 import numpy as np
 
@@ -404,6 +405,9 @@ def run_mode(
     start_state: str,
     window_backend: str = "emulator",
     stop_file: Path | None = None,
+    # 界面传给**这一条路线**的参数（已经从 ``{路线名: {...}}`` 里按名字取好）。
+    # 只有声明了 ``runner_options`` 的路线才拿得到 —— 见下面那一处合并。
+    params: Optional[Mapping[str, Any]] = None,
 ) -> RunResult:
     # 路线级的运行前闸门（比如「刷书签会真花钱，没实证过就不许实跑」）。
     # ⚠️ 必须留在建 runtime **之前**：闸门拦下的路线，不该先开一个窗口再报错。
@@ -511,7 +515,7 @@ def run_mode(
     # 路线级的额外构造参数（比如竞技场实跑要落两个盘）。同样按注册表取，
     # 这里不认具名路线 —— 新增路线需要专属参数时，在 ``modes.py`` 注册项旁边写。
     if spec.runner_options is not None:
-        runner_options.update(spec.runner_options(DATA_ROOT, dry_run))
+        runner_options.update(spec.runner_options(DATA_ROOT, dry_run, params or {}))
     runner = spec.runner_type(machine, runtime, **runner_options)
     _install_finish_home(runner, home_return, runtime, mode=spec.name)
     try:
@@ -567,6 +571,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="capture/input backend: emulator (LDPlayer) or pc (Epic Seven PC client)",
     )
     parser.add_argument("--stop-file", help=argparse.SUPPRESS)
+    # 界面传下来的路线参数（``{路线名: {参数名: 值}}`` 的 JSON）。
+    # 走文件不走命令行：Windows 命令行过一遍引号与编码，中文容易被吃掉。
+    # 现在没有任何路线消费它 —— 通道先通，将来加参数不用回头改这里。
+    parser.add_argument("--params-file", help=argparse.SUPPRESS)
     return parser.parse_args(argv)
 
 
@@ -688,6 +696,24 @@ def _notify_daily(
         print(f"QQ 通知失败：{type(notification_error).__name__}", flush=True)
 
 
+def _load_params(path: str | None) -> dict[str, dict[str, Any]]:
+    """读界面传下来的路线参数（``{路线名: {参数名: 值}}``）。
+
+    读不出来就当没有 —— **参数不该阻断整轮任务**，这与「存档读坏了不许崩」是同一条
+    口径（见 ``desktop/session.py`` 的约定 1）。路线名在这里不校验：
+    认不出的路线自然不会被任何 ``run_mode`` 取到。
+    """
+    if not path:
+        return {}
+    try:
+        payload = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(payload, dict):
+        return {}
+    return {name: dict(value) for name, value in payload.items() if isinstance(value, dict)}
+
+
 def _run_daily(args: argparse.Namespace) -> int:
     """跑「每日任务」编排。退出码沿用单路线那套：0 全成 / 1 有失败 / 130 手动停。"""
     started_at = time.monotonic()
@@ -697,6 +723,7 @@ def _run_daily(args: argparse.Namespace) -> int:
         dry_run=not args.live,
         window_backend=args.window_backend,
         stop_file=Path(args.stop_file) if args.stop_file else None,
+        params=_load_params(args.params_file),
         run_mode=run_mode,
         build_probe=lambda: _build_daily_probe(
             window_backend=args.window_backend,

@@ -3,16 +3,18 @@
 from __future__ import annotations
 
 import os
+from dataclasses import replace
+from datetime import datetime
 from pathlib import Path
 import threading
 import time
 import tkinter as tk
-from tkinter import filedialog, messagebox, scrolledtext, ttk
+from tkinter import filedialog, messagebox, simpledialog, ttk
 from typing import Callable
 import webbrowser
 
 from auto_game_unified.core.data_paths import data_root
-from auto_game_unified.desktop import theme
+from auto_game_unified.desktop import session, theme
 from auto_game_unified.desktop.catalog import (
     DAILY_LABEL,
     PRODUCT_NAME,
@@ -42,6 +44,7 @@ from auto_game_unified.desktop.worker import (
     WorkerController,
     WorkerEvent,
 )
+from auto_game_unified.games.epic7.modes import MODE_SPECS
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -49,6 +52,7 @@ REPO_PARENT = ROOT.parent
 TEMPLATE_ROOT = ROOT / "games" / "epic7" / "templates"
 # 运行产物写到哪：源码运行时就是 ROOT，打包安装后是 %LOCALAPPDATA%\Epic7AutoAssistant。
 DATA_ROOT = data_root()
+ICON_DIR = Path(__file__).resolve().parent / "icons"
 STARTUP_ORDER_HINT = (
     "请先启动雷电模拟器并进入《第七史诗》，再启动本助手并检测环境。"
 )
@@ -146,6 +150,33 @@ def fit_window_size(
     return max(width, floor_width), max(height, floor_height)
 
 
+def _usable_geometry(
+    saved: Mapping[str, int] | None,
+    *,
+    screen: tuple[int, int],
+    minimum: tuple[int, int],
+) -> str | None:
+    """上次的窗口位置还能不能用；不能用就返回 ``None``，让调用方走默认摆放。
+
+    必须校验可见面积：换过显示器、拔掉过扩展屏之后，上次的坐标可能落在屏幕外——
+    表现是「双击打开，窗口看不见」，比不记位置糟得多。
+    """
+    if not saved:
+        return None
+    try:
+        x, y, w, h = saved["x"], saved["y"], saved["w"], saved["h"]
+    except (KeyError, TypeError):
+        return None
+    w = max(int(w), minimum[0])
+    h = max(int(h), minimum[1])
+    # 至少要有一块（200×100）落在屏幕里，才认为这个位置可用。
+    visible_width = min(x + w, screen[0]) - max(x, 0)
+    visible_height = min(y + h, screen[1]) - max(y, 0)
+    if visible_width < 200 or visible_height < 100:
+        return None
+    return f"{w}x{h}+{x}+{y}"
+
+
 def _all_selected(routes: tuple[RouteInfo, ...], selection: list[str]) -> bool:
     """这一组的路线是不是**全都**勾上了（空组按「没勾」算）。
 
@@ -173,6 +204,40 @@ class DesktopController:
         self.cycles: dict[str, int] = {
             route.mode: route.default_cycles for route in ROUTES
         }
+
+    def apply_session(self, state: session.SessionState) -> None:
+        """把上次的勾选 / 次数 / 后端套回来（界面打开时调一次）。
+
+        非法值已经在 ``session.load`` 里挡掉了（未知路线、越界次数、只读路线被改）。
+        这里只再守一条**界面自己的规矩**：「活动」这类只能单独跑的路线不能和别的共存
+        —— 文件可能是旧版本存的，也可能是路线后来才改成 ``standalone_only`` 的。
+        """
+        if self.worker.running:
+            return
+        names = [mode for mode in state.selection if mode in MODE_SPECS]
+        standalone = [mode for mode in names if route_by_name(mode).standalone_only]
+        self.selection = standalone[:1] if standalone else names
+        for mode, cycles in state.cycles.items():
+            if mode in MODE_SPECS:
+                self.cycles[mode] = cycles
+        if state.backend in STARTUP_HINTS:
+            self.selected_backend = state.backend
+
+    def apply_profile(self, profile: session.Profile) -> None:
+        """把一套命名配置套到界面上：勾选顺序 + 每条次数。
+
+        次数先整体回到各路线默认值，再套这套配置里记的 —— 否则「日常」切到「活动」
+        时，活动没提到的路线会带着日常的次数，两套配置互相污染。
+        """
+        if self.worker.running:
+            return
+        names = [mode for mode in profile.selection if mode in MODE_SPECS]
+        standalone = [mode for mode in names if route_by_name(mode).standalone_only]
+        self.selection = standalone[:1] if standalone else names
+        self.cycles = {route.mode: route.default_cycles for route in ROUTES}
+        for mode, cycles in profile.cycles.items():
+            if mode in MODE_SPECS:
+                self.cycles[mode] = cycles
 
     @property
     def can_start(self) -> bool:
@@ -391,8 +456,8 @@ class DesktopApp:
         self._run_generation = 0
         # 一条路线一个勾选框（``mode`` → 控件）。勾选是**有序**的，位次直接写在
         # 勾选框文字里的序号上（见 ``_route_text``）。
-        self._route_buttons: dict[str, ttk.Checkbutton] = {}
-        self._cycle_inputs: dict[str, ttk.Spinbox] = {}
+        self._route_buttons: dict[str, tk.Checkbutton] = {}
+        self._cycle_inputs: dict[str, ttk.Entry] = {}
         # 一个分组一个勾选框（``group`` → 控件 / 变量）。点它就是整组勾 / 整组取消，
         # 语义是「这一组是否全部选中」——见 ``_build_group_header``。
         self._group_buttons: dict[str, ttk.Checkbutton] = {}
@@ -408,6 +473,13 @@ class DesktopApp:
         self.cycle_vars: dict[str, tk.StringVar] = {}
         self._backend_buttons: list[ttk.Radiobutton] = []
         self._checking = False
+        # 上次的勾选 / 次数 / 后端 —— 必须在**建界面之前**套回 controller：
+        # 勾选框是照 ``controller.selection`` 生成的（见 ``_build_group_grid``）。
+        # 读不出来（没存过 / 文件坏了）就维持默认的「一条都不勾」。
+        self._session_path = session.session_path(self.data_root)
+        previous = session.load(self._session_path)
+        if previous is not None:
+            self.controller.apply_session(previous)
         # 「每日任务」那张卡。`_task_panel_descendants()`（测试导航用）与折叠
         # （``_set_task_panel_collapsed``）都拿它当根 —— 但**只用来 grid /
         # grid_remove**，别拿它去算任何尺寸（尺寸一律走令牌与 grid 权重）。
@@ -423,6 +495,8 @@ class DesktopApp:
 
         # 令牌 + ttk 样式一次性装好，之后的排布只引用语义名。
         self.theme = theme.build(self.root)
+        # 路线图标（白色符号）。**必须在建界面之前装好** —— 勾选框建的时候就要用。
+        self._route_icons = self._load_route_icons()
         # 任务网格排几列：按屏幕宽度与路线数算，**不写死** ——
         # 用户 2026-09-29 明说「以后还有很多路线」，加路线不该再回来改排布。
         self._route_columns_count = theme.route_columns(
@@ -434,6 +508,8 @@ class DesktopApp:
         self.root.configure(background=self.theme.palette.bg)
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
         self._build_layout()
+        self._show_last_run()
+        self._refresh_profile_box()
         self._refresh_route_details()
         self._refresh_controls()
         self._fit_initial_window()
@@ -444,6 +520,91 @@ class DesktopApp:
         # 再在后台悄悄问一次 GitHub。它没有任何阻塞行为，慢也不会影响使用。
         self.root.after(400, self._start_update_check)
         self.root.after(100, self._poll_worker)
+
+    # ── 会话存档：上次怎么配的、上次跑成什么样 ─────────────────────────────
+    #
+    # 只做「记住上次」，**不做多套配置**：多套要等真的有两条路线带参数才立得住
+    # （一条路线需要的东西写在它自己那里，两条都要才升到公共层）。
+    # 竞品那边是「保存 / 读取 / 转移 / 替换 / 删除」五件套，这里刻意只取前两件的
+    # 语义 —— 见 desktop/session.py 的模块说明。
+
+    def _current_session(self) -> session.SessionState:
+        """把界面现在这套状态打包成一份存档。
+
+        ⚠️ 用 ``replace`` 在**上次读出来的状态**上改，不是新建一个 —— 这样
+        ``profiles`` / ``active_profile`` / ``window`` / ``params`` 这些「这次没动」的字段
+        会自动保留。**以后 SessionState 再加字段，这里一行都不用改**（防返工的关键）。
+        """
+        previous = session.load(self._session_path) or session.SessionState()
+        return replace(
+            previous,
+            selection=tuple(self.controller.selection),
+            cycles=dict(self.controller.cycles),
+            backend=self.controller.selected_backend,
+        )
+
+    def _save_session(self) -> None:
+        session.save(self._session_path, self._current_session())
+
+    def _summary_line(self) -> str | None:
+        """从子进程输出里取「每日任务汇总：…」那一行的后半段。
+
+        汇总行由 ``main._run_daily`` 打印（``report.summary_line()``）。界面不重算它 ——
+        重算就等于把「谁跑了、跑成没跑成」再实现一遍，两处迟早对不上。
+        """
+        for line in reversed(self.controller.worker.recent_output):
+            if line.startswith("每日任务汇总："):
+                return line.split("：", 1)[1].strip()
+        return None
+
+    def _save_last_run(self, exit_code: int | None) -> None:
+        summary = self._summary_line()
+        if summary is None:
+            return
+        session.save(
+            self._session_path,
+            replace(
+                self._current_session(),
+                last_run=session.LastRun(
+                    at=datetime.now().strftime("%Y-%m-%d %H:%M"),
+                    summary=summary,
+                    exit_code=exit_code,
+                ),
+            ),
+        )
+
+    def _show_last_run(self) -> None:
+        """打开助手时在日志里写一行「上次运行」——打完就关的人最先想知道这个。"""
+        state = session.load(self._session_path)
+        last = state.last_run if state is not None else None
+        if last is None:
+            return
+        self._append_log(f"上次运行（{last.at}）：{last.summary}")
+
+    def _load_route_icons(self) -> dict[str, tk.PhotoImage]:
+        """载入路线图标（`desktop/icons/<模式名>.png`）。
+
+        图标是**装饰**：缺图、文件坏了都只是那条路线没有图标，绝不能让界面起不来 ——
+        所以逐个 try，出错就跳过。PhotoImage 必须自己留引用，否则会被回收成空白。
+
+        图标按 2 倍屏准备（56px）。在 100% 缩放下要缩一半，否则会比文字高出一头。
+        """
+        icons: dict[str, tk.PhotoImage] = {}
+        if not ICON_DIR.is_dir():
+            return icons
+        shrink = self.theme.scale < 1.5
+        for route in ROUTES:
+            path = ICON_DIR / f"{route.mode}.png"
+            if not path.is_file():
+                continue
+            try:
+                image = tk.PhotoImage(file=str(path))
+                if shrink:
+                    image = image.subsample(2, 2)
+            except tk.TclError:
+                continue
+            icons[route.mode] = image
+        return icons
 
     def _fit_initial_window(self) -> None:
         """摆好窗口的初始尺寸，并把**最小尺寸与它分开**。
@@ -465,6 +626,18 @@ class DesktopApp:
             self.theme.px(MIN_WINDOW_WIDTH),
             self.theme.px(MIN_WINDOW_HEIGHT),
         )
+        # 上次的位置能用就照旧 —— 每次打开都回到自己拖好的地方。
+        saved = session.load(self._session_path)
+        placed = _usable_geometry(
+            saved.window if saved is not None else None,
+            screen=(self.root.winfo_screenwidth(), self.root.winfo_screenheight()),
+            minimum=floor,
+        )
+        if placed is not None:
+            self.root.geometry(placed)
+            self.root.minsize(*floor)
+            return
+
         width, height = fit_window_size(
             requested=(self.root.winfo_reqwidth(), self.root.winfo_reqheight()),
             screen=(self.root.winfo_screenwidth(), self.root.winfo_screenheight()),
@@ -700,8 +873,8 @@ class DesktopApp:
         `_refresh_task_rows` 每次都会按真实勾选回算它。所以手动取消组内一条之后，
         组标题的勾会自己消失（此时它是"部分选中"，视觉上不勾）—— 再点一下就是
         **重新整组勾上**，而不是"清空"。这样「点一下全选、再点一下全不选」
-        这个来回始终成立，也不需要引入 Tk 的三态（vista 主题下 `alternate`
-        状态没有可靠的视觉反馈，用户会以为是画错了）。
+        这个来回始终成立，也不需要引入 Tk 的三态（三态在 ttk 各主题下的视觉反馈
+        不一致，用户会以为是画错了；换基底时复查过，这条结论不变）。
 
         ⚠️ 别把组标题改回 `Label` 再加一颗按钮：那正是 2026-10-18 撤掉的样子 ——
         按钮占着卡头右侧的宽度，说明文字被挤得折更多行。
@@ -768,6 +941,7 @@ class DesktopApp:
         套子 Frame 的话每组各算各的列宽，组和组之间会错开。
         """
         px = self.theme.px
+        palette = self.theme.palette
         for offset, route in enumerate(routes):
             row, column = divmod(offset, self._route_columns_count)
             # 每条路线是一个**紧贴的组**（勾选框 + 次数框 + 「次」），组内用 pack
@@ -787,27 +961,55 @@ class DesktopApp:
             )
             var = tk.BooleanVar(value=route.mode in self.controller.selection)
             self.route_vars[route.mode] = var
-            checkbox = ttk.Checkbutton(
+            # 照竞品的「选项条」形态：**整行可点、带描边、选中换底色**，
+            # 而不是 Tk 默认的「小方框 + 一串文字」。ttk 的 Checkbutton 给不出
+            # ``indicatoron=0``（那正是它 308 个 Option 的样子），所以这里用经典 Tk 的。
+            # 选中态只靠**底色**表达（``selectcolor``），不画勾号 —— 和它一致。
+            icon = self._route_icons.get(route.mode)
+            checkbox = tk.Checkbutton(
                 cell,
                 text=self._route_text(route.mode),
                 variable=var,
                 command=lambda mode=route.mode: self._on_toggle(mode),
-                style="Route.TCheckbutton",
+                indicatoron=False,
+                anchor="w",
+                # 有图标就「图标 + 文字」，没图标就只有文字 —— 两条路都排得下去。
+                # 用 ** 展开而不是 image=None：tk 会把 None 当成字符串解。
+                **(
+                    {"image": icon, "compound": "left"}
+                    if icon is not None
+                    else {}
+                ),
+                bg=palette.surface_alt,
+                fg=palette.text,
+                activebackground=palette.border_dim,
+                activeforeground=palette.text,
+                selectcolor=palette.checked,
+                disabledforeground=palette.text_muted,
+                relief="flat",
+                borderwidth=0,
+                highlightthickness=px(1),
+                highlightbackground=palette.border_dim,
+                highlightcolor=palette.border_dim,
+                font=self.theme.font(theme.TYPE_BODY),
+                padx=px(theme.SPACE_SM),
+                pady=px(2),
+                cursor="hand2",
             )
             checkbox.pack(side=tk.LEFT)
             self._route_buttons[route.mode] = checkbox
 
             count_var = tk.StringVar(value=str(self.controller.cycles[route.mode]))
             self.cycle_vars[route.mode] = count_var
-            spinbox = ttk.Spinbox(
+            # ⚠️ 不用 Spinbox：经典 Tk 那个在 Windows 上**输入区永远是系统白**（`bg` 设了
+            # 也不生效），ttk 那个的上下箭头是画死的白方块 —— 两种在暗色界面上都像坏掉。
+            # 这里是自绘的 Entry，配色一定吃得进；次数本来也允许直接输入。
+            spinbox = ttk.Entry(
                 cell,
-                # 箭头能落到的最小值跟着路线走（正常 1；「刷书签」是 0 —— 只扫不刷新），
-                # 否则默认 0 那条路线会「框里写着 0、往上点一下变 1、再往下按不回 0」。
-                from_=route.min_cycles,
-                to=999,
                 width=4,
                 textvariable=count_var,
-                style="Route.TSpinbox",
+                style="Route.TEntry",
+                justify="center",
             )
             spinbox.pack(side=tk.LEFT, padx=(px(theme.SPACE_SM), px(theme.SPACE_XS)))
             self._cycle_inputs[route.mode] = spinbox
@@ -859,6 +1061,80 @@ class DesktopApp:
             text += " · 单独跑"
         return text
 
+    # ── 多套配置：日常 / 活动 / 周末 ────────────────────────────────────────
+    #
+    # 只存「勾哪几条 + 每条几次」。这是用户 2026-10-22 明确要的：
+    # 「有段时间想换一种打法」。它不需要任何路线参数，所以现在就能做。
+
+    def _refresh_profile_box(self) -> None:
+        state = session.load(self._session_path)
+        names = sorted(state.profiles) if state is not None else []
+        self.profile_box.configure(values=names)
+        self.profile_var.set(state.active_profile if state is not None else "")
+
+    def _on_profile_selected(self, event: object = None) -> None:
+        """下拉切换：把这套配置的勾选/次数套到界面上。"""
+        name = self.profile_var.get()
+        state = session.load(self._session_path)
+        if state is None or name not in state.profiles:
+            return
+        self.controller.apply_profile(state.profiles[name])
+        self._refresh_task_rows()
+        self._refresh_route_details()
+        self._refresh_controls()
+        session.save(
+            self._session_path,
+            replace(self._current_session(), active_profile=name),
+        )
+        self._append_log(f"已切换到配置「{name}」")
+
+    def _save_profile(self) -> None:
+        """把界面现在这套存成一命名配置（同名覆盖）。"""
+        initial = self.profile_var.get() or "日常"
+        name = simpledialog.askstring(
+            "保存配置",
+            "给这套配置起个名字（例如：日常 / 活动 / 周末）：",
+            initialvalue=initial,
+            parent=self.root,
+        )
+        if name is None:
+            return
+        name = name.strip()
+        if not name:
+            return
+        state = session.load(self._session_path) or session.SessionState()
+        profiles = dict(state.profiles)
+        profiles[name] = session.Profile(
+            selection=tuple(self.controller.selection),
+            cycles=dict(self.controller.cycles),
+        )
+        session.save(
+            self._session_path,
+            replace(state, profiles=profiles, active_profile=name),
+        )
+        self._refresh_profile_box()
+        picked = "、".join(
+            route_by_name(mode).label for mode in self.controller.selection
+        )
+        self._append_log(f"已保存配置「{name}」：{picked or '（空）'}")
+
+    def _delete_profile(self) -> None:
+        name = self.profile_var.get()
+        if not name:
+            return
+        if not messagebox.askyesno("删除配置", f"删除配置「{name}」？", parent=self.root):
+            return
+        state = session.load(self._session_path)
+        if state is None:
+            return
+        profiles = {key: value for key, value in state.profiles.items() if key != name}
+        session.save(
+            self._session_path,
+            replace(state, profiles=profiles, active_profile=""),
+        )
+        self._refresh_profile_box()
+        self._append_log(f"已删除配置「{name}」")
+
     def _refresh_task_rows(self) -> None:
         """把 controller 里的勾选真值刷回界面：勾选状态 + 序号 + 各组标题的勾选框。
 
@@ -868,7 +1144,16 @@ class DesktopApp:
         """
         for mode, button in self._route_buttons.items():
             self.route_vars[mode].set(mode in self.controller.selection)
-            button.configure(text=self._route_text(mode))
+            # 选中态除了换底色，边框也提亮一档 —— 竞品就是这么区分「已选/未选」的
+            # （底色只差一层明度，单靠底色在小屏上不够，边框一亮就分得开）。
+            button.configure(
+                text=self._route_text(mode),
+                highlightbackground=(
+                    self.theme.palette.border
+                    if mode in self.controller.selection
+                    else self.theme.palette.border_dim
+                ),
+            )
         for group, routes in grouped_routes():
             var = self._group_vars.get(group)
             if var is not None:
@@ -896,6 +1181,32 @@ class DesktopApp:
         self.start_button.pack(side=tk.LEFT)
         self.stop_button = ttk.Button(actions, text="安全停止", command=self._stop)
         self.stop_button.pack(side=tk.LEFT, padx=(px(theme.SPACE_SM), 0))
+        # 配置切换：日常 / 活动 / 周末…… 只存「勾哪几条 + 每条几次」，
+        # 与路线内部参数无关；将来路线参数进配置时，落点是 Profile.params（已预留）。
+        profile_row = ttk.Frame(actions, style="Bar.TFrame")
+        profile_row.pack(side=tk.LEFT, padx=(px(theme.SPACE_LG), 0))
+        ttk.Label(profile_row, text="配置", style="Body.TLabel").pack(side=tk.LEFT)
+        self.profile_var = tk.StringVar()
+        self.profile_box = ttk.Combobox(
+            profile_row,
+            textvariable=self.profile_var,
+            width=8,
+            state="readonly",
+        )
+        self.profile_box.pack(side=tk.LEFT, padx=(px(theme.SPACE_XS), 0))
+        self.profile_box.bind("<<ComboboxSelected>>", self._on_profile_selected)
+        ttk.Button(
+            profile_row,
+            text="存为…",
+            style="Tool.TButton",
+            command=self._save_profile,
+        ).pack(side=tk.LEFT, padx=(px(theme.SPACE_XS), 0))
+        ttk.Button(
+            profile_row,
+            text="删除",
+            style="Tool.TButton",
+            command=self._delete_profile,
+        ).pack(side=tk.LEFT, padx=(px(theme.SPACE_XS), 0))
         # 收起任务清单 = 把高度让给日志（见 ``_set_task_panel_collapsed``）。
         # 按钮放在**这一条**上而不是清单卡头里：清单收起来之后卡头也没了，
         # 按钮搁在里头就没人能再把它展开。
@@ -980,7 +1291,10 @@ class DesktopApp:
         ttk.Label(panel, text="实时日志", style="Section.TLabel").grid(
             row=0, column=0, sticky="w", pady=(0, px(theme.SPACE_MD))
         )
-        self.log_text = scrolledtext.ScrolledText(
+        # ⚠️ 不用 ``ScrolledText``：它自带的是**经典 Tk 滚动条**，在 Windows 上由系统
+        # 绘制、不吃任何配色（`bg` 设了也白搭），暗色界面上会亮成一根白条（实机截图确认）。
+        # 改成 Text + ttk 滚动条：ttk 的那个是自绘的，``Vertical.TScrollbar`` 样式说了算。
+        self.log_text = tk.Text(
             panel,
             width=40,
             height=8,
@@ -992,10 +1306,20 @@ class DesktopApp:
             selectbackground=palette.primary,
             font=self.theme.font(theme.TYPE_CAPTION, mono=True),
             relief=tk.FLAT,
+            borderwidth=0,
+            highlightthickness=0,
             padx=px(theme.SPACE_MD),
             pady=px(theme.SPACE_MD),
         )
+        log_scroll = ttk.Scrollbar(
+            panel,
+            orient="vertical",
+            command=self.log_text.yview,
+            style="Vertical.TScrollbar",
+        )
+        self.log_text.configure(yscrollcommand=log_scroll.set)
         self.log_text.grid(row=1, column=0, sticky="nsew")
+        log_scroll.grid(row=1, column=1, sticky="ns")
         self._append_log(
             f"准备就绪。{STARTUP_HINTS[self.controller.selected_backend]}"
         )
@@ -1267,6 +1591,9 @@ class DesktopApp:
             self._refresh_controls()
             return
         self._run_generation += 1
+        # 真正开跑了才记 —— 复检失败、路线资源检查失败这些提前返回的分支不写存档，
+        # 免得把「没跑成」的那次配置覆盖掉上次能跑的那套。
+        self._save_session()
         self._append_log(
             "开始任务："
             + "、".join(
@@ -1350,6 +1677,9 @@ class DesktopApp:
             if event.kind == "finished":
                 # 跑完了，清单该回来 —— 下次要改勾选和次数就在那张卡上。
                 self._set_task_panel_collapsed(False)
+                # 留一行「上次跑成什么样」。取不到汇总行（比如强行结束、输出被截）
+                # 就什么都不写，绝不编一个结果出来。
+                self._save_last_run(event.exit_code)
                 self._refresh_controls()
         self.root.after(100, self._poll_worker)
 
@@ -1484,7 +1814,27 @@ class DesktopApp:
                 parent=self.root,
             )
             return
+        self._save_window_geometry()
         self.root.destroy()
+
+    def _save_window_geometry(self) -> None:
+        """记住窗口位置与大小。取不到就跳过 —— 关窗口这件事不许因此失败。"""
+        try:
+            x, y = self.root.winfo_x(), self.root.winfo_y()
+            width, height = self.root.winfo_width(), self.root.winfo_height()
+        except tk.TclError:
+            return
+        # 最小化 / 还没摆好时拿到的是怪值，宁可不记，也别把下次开窗弄成一条缝。
+        if width <= 200 or height <= 150:
+            return
+        state = session.load(self._session_path) or session.SessionState()
+        session.save(
+            self._session_path,
+            replace(
+                state,
+                window={"x": x, "y": y, "w": width, "h": height},
+            ),
+        )
 
 
 def main() -> int:

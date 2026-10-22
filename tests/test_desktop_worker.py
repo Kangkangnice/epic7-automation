@@ -1,5 +1,7 @@
+import json
 import os
 import threading
+from pathlib import Path
 
 import pytest
 
@@ -436,3 +438,50 @@ def test_data_root_keeps_artifacts_out_of_the_install_dir(tmp_path):
     assert snapshot is not None
     assert snapshot.parent == data / "runtime_diagnostics" / "desktop_worker"
     assert not install.exists()
+
+
+def test_no_params_means_no_params_file(tmp_path: Path) -> None:
+    """不带参数时命令行必须**和以前一字不差** —— 这是不返工的前提。"""
+    commands: list[list[str]] = []
+
+    def popen(command, **kwargs):
+        commands.append(list(command))
+        process = FakeProcess()
+        process.stdout = iter([])
+        return process
+
+    worker = WorkerController(repo_parent=tmp_path, popen=popen, data_root=tmp_path)
+    worker.start(RunRequest(modes=("arena",), cycles={"arena": 1}))
+    worker.join_reader(timeout=2)
+
+    assert commands
+    assert "--params-file" not in commands[0]
+
+
+def test_params_travel_through_a_file(tmp_path: Path) -> None:
+    """参数走文件、不走命令行 —— 中文与引号不该经过命令行那一层。"""
+    seen: dict[str, object] = {}
+
+    def popen(command, **kwargs):
+        index = command.index("--params-file")
+        payload_path = Path(command[index + 1])
+        # 读的时刻就是子进程要用的时刻：文件必须**已经**写好。
+        seen["payload"] = json.loads(payload_path.read_text(encoding="utf-8"))
+        seen["path"] = payload_path
+        process = FakeProcess()
+        process.stdout = iter([])
+        return process
+
+    worker = WorkerController(repo_parent=tmp_path, popen=popen, data_root=tmp_path)
+    worker.start(
+        RunRequest(
+            modes=("arena",),
+            cycles={"arena": 1},
+            params={"arena": {"只打NPC": True}},
+        )
+    )
+    worker.join_reader(timeout=2)
+
+    assert seen["payload"] == {"arena": {"只打NPC": True}}
+    # 文件在这一次运行的临时目录里，进程收尾后随目录一起清掉。
+    assert not Path(seen["path"]).exists()
