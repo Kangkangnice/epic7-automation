@@ -1,8 +1,9 @@
 """Run the existing CLI in a child process and stream its output to the GUI."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from collections import deque
+import json
 import os
 from pathlib import Path
 import queue
@@ -28,6 +29,15 @@ class RunRequest:
     # 路线按该路线自己的默认值跑 —— 命令行 ``--daily`` 就是这种用法。
     cycles: Mapping[str, int]
     backend: str = "emulator"
+    # 路线内部参数的口袋：``{路线名: {参数名: 值}}``。
+    #
+    # 现在**没有任何路线往里写**，但通道先留着 —— 否则将来第一条路线要参数时，
+    # 又得回来改这个结构、改命令行、改 main。这就是用户 2026-10-22 明确要求
+    # 「不要等改路线时才发现公共层没加」的那条。
+    #
+    # 竞品对应：``功能参数初始化`` 先把 ``ui`` 表整理成运行参数，再交给各路线读；
+    # 这里只是把「整理好的一份」原样传下去，解释权归各路线自己。
+    params: Mapping[str, Mapping[str, object]] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -75,6 +85,15 @@ class WorkerController:
     def running(self) -> bool:
         return self._process is not None and self._process.poll() is None
 
+    @property
+    def recent_output(self) -> tuple[str, ...]:
+        """最近若干行输出，最新的在末尾。
+
+        界面靠它取子进程打印的「每日任务汇总：…」那一行 —— 让汇总只有一处实现
+        （``main._run_daily``），界面不重算「谁跑了、跑成没跑成」。
+        """
+        return tuple(self._recent_output)
+
     def start(self, request: RunRequest) -> None:
         if self.running:
             raise RuntimeError("已有自动化任务正在运行")
@@ -95,6 +114,15 @@ class WorkerController:
             prefix="epic7-auto-assistant-"
         )
         self.stop_file = Path(self._temporary.name) / "stop.signal"
+        # 路线参数走**文件**、不走命令行：Windows 下命令行要过一遍引号与编码，
+        # 中文和引号容易被吃掉（本项目在中文路径上踩过这类坑）。
+        # 文件写在这一次运行专用的临时目录里，子进程结束后随目录一起清掉。
+        params_file: Path | None = None
+        if request.params:
+            params_file = Path(self._temporary.name) / "params.json"
+            params_file.write_text(
+                json.dumps(request.params, ensure_ascii=False), encoding="utf-8"
+            )
         self._last_output = "-"
         self._recent_output.clear()
         self._stop_requested = False
@@ -123,6 +151,8 @@ class WorkerController:
             "--stop-file",
             str(self.stop_file),
         ]
+        if params_file is not None:
+            command += ["--params-file", str(params_file)]
         environment = os.environ.copy()
         environment["PYTHONIOENCODING"] = "utf-8"
         try:

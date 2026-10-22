@@ -623,8 +623,9 @@ def test_task_panel_renders_a_checkbox_and_a_cycle_input_per_route(
     # 次数框必须能显示 0，且箭头下限跟着路线走，否则会出现
     # 「框里写着 0、按一下上去就再也回不到 0」的僵尸状态。
     assert app.cycle_vars["shop_refresh"].get() == "0"
-    assert int(app._cycle_inputs["shop_refresh"].cget("from")) == 0
-    assert int(app._cycle_inputs["arena"].cget("from")) == 1
+    # ⚠️ 2026-10-22：次数框从 Spinbox 换成 Entry（Spinbox 在 Windows 上输入区永远是
+    # 系统白，暗色主题吃不进去），**「箭头下限」这个保护点随之消失** —— 0 是否合法
+    # 改由 ``ModeSpec.min_cycles`` + ``DesktopController.set_cycles`` 守。
     assert str(app._cycle_inputs["world_boss"].cget("state")) == "disabled"
     assert str(app._cycle_inputs["arena"].cget("state")) == "normal"
 

@@ -360,7 +360,12 @@ class MainStoryTests(unittest.TestCase):
             # 钩子拿到的必须是**主线的运行时产物根**，不是 modes 自己猜的一个。
             # 源码运行时它就是包目录；打包安装后是 %LOCALAPPDATA%\Epic7AutoAssistant
             # （竞技场的买票印记 ``arena_ticket_purchase.txt`` 落在它的 runtime_logs 下）。
-            runner_options=lambda root, dry_run: {"收到的根": root, "干跑": dry_run},
+            runner_options=lambda root, dry_run, params: {
+                "收到的根": root,
+                "干跑": dry_run,
+                # 第三个入参是界面传来的路线参数（2026-10-22 开的通道）。
+                "收到的参数": params,
+            },
         )
 
         with (
@@ -373,10 +378,13 @@ class MainStoryTests(unittest.TestCase):
                 max_cycles=1,
                 start_state="x",
                 window_backend="emulator",
+                params={"打不打NPC": True},
             )
 
         self.assertEqual(main_module.DATA_ROOT, seen["收到的根"])
         self.assertIs(True, seen["干跑"])
+        # 参数原样到钩子手里，主入口不解释内容。
+        self.assertEqual({"打不打NPC": True}, seen["收到的参数"])
         # recovery_gate 由 run_mode 自己给，不该被路线钩子挤掉。
         self.assertIn("recovery_gate", seen)
         self.assertEqual(1, seen["cycles"])
