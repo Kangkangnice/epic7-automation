@@ -10,7 +10,7 @@ import threading
 import time
 import tkinter as tk
 from tkinter import filedialog, messagebox, simpledialog, ttk
-from typing import Callable
+from typing import Callable, Mapping
 import webbrowser
 
 from auto_game_unified.core.data_paths import data_root
