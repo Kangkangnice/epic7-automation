@@ -6,11 +6,13 @@
 **全部**改动」⇒ 上一轮没提交的共享模块会把判定永久拖成全量（2026-09-25 实测：只想验一行
 改动，连跑两次全量 408s / 457s，而局部只要 28.7 秒）。
 
-所以这里守住两件事：
+所以这里守住三件事：
 
 1. 判成全量时**一定会**喊话（为什么全量 + 怎么改成定向）—— 让「白跑 7 分钟」在屏幕上
    变得刺眼；
-2. 暂存区为空、退化成「整个工作区判定」时**一定会**提醒 —— 这是白跑的头号成因。
+2. 暂存区为空、退化成「整个工作区判定」时**一定会**提醒 —— 这是白跑的头号成因；
+3. **默认不再自动跑全量**（2026-10-25 用户拍板）：共享模块按文件名定向，映射不到
+   只提示；全量是 `--full` 的显式选项。
 
 ⚠️ 项目里的经验：**没护栏的规矩守不住**（唯一从来没被违反的规矩都带护栏测试）。
 下面这些断言针对的是「提示还在、还接在门槛上」，不是措辞本身 —— 措辞可以改，
@@ -61,6 +63,62 @@ class FullRunNoticeTests(unittest.TestCase):
     def test_the_notice_is_actually_printed_by_the_gate(self):
         # 只断言「函数还在」不够 —— 留着函数却删掉调用，提示一样不会出现在屏幕上。
         self.assertIn("print(full_run_notice(", CHECK_SOURCE)
+
+
+class TargetedSelectionTests(unittest.TestCase):
+    """共享模块按文件名定向，映射不到只提示 —— **默认不再自动跑全量**。"""
+
+    ALL_TESTS = [
+        "test_daily_tasks.py",
+        "test_desktop_worker.py",
+        "test_modes.py",
+        "test_moonlight_theater.py",
+        "test_project_layout.py",
+    ]
+
+    def test_shared_module_maps_to_its_own_test(self):
+        picked, reason, warnings = check_module.plan_tests(
+            ["games/epic7/daily_tasks.py"], self.ALL_TESTS
+        )
+        self.assertIn("test_daily_tasks.py", picked)
+        self.assertIn("test_desktop_worker.py", picked)
+        self.assertNotIn("test_moonlight_theater.py", picked)
+        self.assertEqual([], warnings)
+        self.assertIn("daily_tasks", reason)
+
+    def test_core_module_maps_by_stem(self):
+        self.assertIn("matcher", check_module.test_keywords("core/matcher.py"))
+        picked, _reason, _warnings = check_module.plan_tests(
+            ["core/matcher.py"], ["test_matcher.py", "test_modes.py"]
+        )
+        self.assertEqual(["test_matcher.py"], picked)
+
+    def test_unknown_module_warns_instead_of_running_everything(self):
+        picked, _reason, warnings = check_module.plan_tests(
+            ["games/epic7/no_such_module.py"], self.ALL_TESTS
+        )
+        self.assertEqual([], picked)
+        self.assertTrue(any("no_such_module" in warning for warning in warnings))
+
+    def test_conftest_is_warn_only(self):
+        picked, _reason, warnings = check_module.plan_tests(
+            ["tests/conftest.py"], self.ALL_TESTS
+        )
+        self.assertEqual([], picked)
+        self.assertTrue(any("conftest" in warning for warning in warnings))
+
+    def test_the_gate_no_longer_has_a_force_full_shared_list(self):
+        self.assertIn("TEST_KEYWORD_OVERRIDES", CHECK_SOURCE)
+        self.assertIn("plan_tests(", CHECK_SOURCE)
+        self.assertNotIn("SHARED_PATHS", CHECK_SOURCE)
+        self.assertNotIn("SHARED_PREFIXES", CHECK_SOURCE)
+
+    def test_assets_still_pull_in_the_layout_test(self):
+        picked, _reason, _warnings = check_module.plan_tests(
+            ["tests/fixtures/epic7_moonlight_theater/story_dim.png"],
+            self.ALL_TESTS,
+        )
+        self.assertIn("test_project_layout.py", picked)
 
 
 class WorkspaceModeNoticeTests(unittest.TestCase):

@@ -1,11 +1,12 @@
 #!/bin/sh
-# 项目提交前门槛：调用 tools/check.py，按本次改动范围决定跑定向测试还是全量。
+# 项目提交前门槛：调用 tools/check.py。默认按改动范围跑定向测试；
+# 全量是显式选项（python tools/check.py --full）。
 #
 # 安装（每个 clone 各执行一次，或由 tools/check.py --install-hook 代劳）：
 #     git config core.hooksPath tools/githooks
 #
 # 跳过检查（确有急事时）：git commit --no-verify
-# 手工先跑一遍：python tools/check.py --vs HEAD
+# 手工排查：python tools/check.py --files a.py b.py
 
 if command -v python >/dev/null 2>&1; then
     PY=python
