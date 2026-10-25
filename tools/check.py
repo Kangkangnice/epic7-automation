@@ -8,9 +8,12 @@
   `test_project_layout.py`（它断言各路线夹具的精确文件集）。
 - **改了共享模块**（`core/**`、`desktop/**`、`runner_base`、`navigation`、`modes`、
   `battle_controls`、`pre_battle`、`unknown_screen`、`global_popups`、`stamina`、
-  `hero_transition`、`evidence/common`、`main.py`、`games/epic7/daily_tasks.py`）
-  或**认不出归属**：跑全量。
+  `hero_transition`、`evidence/common`、`main.py`、`games/epic7/daily_tasks.py`）：
+  按**文件 stem** 映射到定向测试（如 `daily_tasks.py` → `test_daily_tasks.py`，
+  `core/matcher.py` → `test_matcher.py`）；映射不到的**只提示、不自动跑全量**，
+  静态检查照常执行。
 - **只改 `tools/`、`.github/`**：只做编译检查（这些没有测试覆盖）。
+- **全量是显式选项**：`--full`（CI / 发布前 / 想一次兜底时用）。
 - **静态检查（2026-09-30 起，每次都跑）**：ruff + mypy，规则与范围见 `auto_game_unified/pyproject.toml`。
   没装就**大声跳过**（不阻塞提交），装了就必须过 —— CI 一定会装。
 
@@ -70,32 +73,70 @@ PACKAGE_DIR = Path(__file__).resolve().parents[1]
 WORKSPACE = PACKAGE_DIR.parent
 PACKAGE = PACKAGE_DIR.name
 
-# 改动这些就等于动了所有路线 -> 必须跑全量
-SHARED_PATHS = {
-    "main.py",
-    # ⚠️ conftest 影响的是**整个套件**（它在 collection 阶段就被导入，改错了所有用例一起变），
-    # 但它的路径以 `tests/` 开头，会先被下面的 NO_TEST_PREFIXES 判成「没有测试覆盖」而跳过测试。
-    # 所以必须显式登记在这里，让改了它就退回全量。
-    "tests/conftest.py",
-    "games/epic7/runner_base.py",
-    # ⚠️ 「事务型」那一族的主循环基类（arena / expedition）。与 runner_base.py 同性质：
-    # 改了它两条路线一起变。**不登记也不会漏测试** —— route_of() 认不出它会退回全量，
-    # 但那个「退回」是不透明的，改一行也要白等 7~8 分钟，且理由看不出来。
-    "games/epic7/transactional_runner_base.py",
-    "games/epic7/modes.py",
-    "games/epic7/navigation.py",
-    "games/epic7/battle_controls.py",
-    "games/epic7/pre_battle.py",
-    "games/epic7/unknown_screen.py",
-    "games/epic7/global_popups.py",
-    "games/epic7/stamina.py",
-    "games/epic7/hero_transition.py",
-    "games/epic7/evidence/common.py",
-    # ⚠️ 串跑编排层（桌面助手的多路线入口也走它）。它不是路线文件，`route_of()` 认不出，
-    # 不登记的话「全量」是靠兜底撞出来的、理由看不出来（同 transactional_runner_base 那条）。
-    "games/epic7/daily_tasks.py",
+#: 共享模块默认按**文件 stem** 找测试（`core/matcher.py` -> 含 "matcher" 的测试）。
+#: 这里只补「stem 匹配不到」或「必须多看几处」的少数情况；不要把它当全量清单用。
+TEST_KEYWORD_OVERRIDES: dict[str, tuple[str, ...]] = {
+    # 串跑编排层：主模块 + 桌面入口 + 圣域（它直接调用 daily_tasks 的编排）。
+    "games/epic7/daily_tasks.py": (
+        "daily_tasks", "desktop_worker", "desktop_app", "sanctuary",
+    ),
+    # 注册表：路线清单、桌面目录、导航计划三处都会读它。
+    "games/epic7/modes.py": (
+        "modes", "desktop_catalog", "project_layout", "navigation_plans",
+    ),
+    # 同构 Runner 基类：没有同名测试，按「这些路线的 Runner/恢复测试」定向。
+    "games/epic7/runner_base.py": (
+        "runner", "resume", "manual_stop_propagation", "battle_safety_invariants",
+        "transition_contracts", "conclusion_gate", "story", "fodder", "side_story",
+        "moonlight_theater", "sanctuary", "shop_refresh", "tower", "world_boss",
+        "knights_donation", "labyrinth_stone", "survivor", "community", "hero",
+    ),
+    # 事务型主循环基类（arena / expedition）。
+    "games/epic7/transactional_runner_base.py": (
+        "arena", "expedition", "runner", "resume", "manual_stop_propagation",
+        "transition_contracts", "conclusion_gate",
+    ),
+    "games/epic7/navigation.py": (
+        "navigation", "story", "expedition", "arena", "resume", "main_story",
+        "ticket_exhaustion",
+    ),
+    "games/epic7/battle_controls.py": (
+        "battle_controls", "battle_supervisor", "battle_safety_invariants",
+        "story", "arena", "expedition", "fodder", "tower", "world_boss",
+        "moonlight_theater", "survivor",
+    ),
+    "games/epic7/pre_battle.py": (
+        "pre_battle", "quick_battle", "story", "arena", "expedition", "fodder",
+    ),
+    "games/epic7/global_popups.py": (
+        "global_popups", "story", "fodder", "arena", "expedition", "side_story",
+        "moonlight_theater", "tower", "world_boss", "knights_donation",
+        "labyrinth_stone", "sanctuary", "community", "hero", "survivor",
+    ),
+    "games/epic7/stamina.py": (
+        "ticket_exhaustion", "story", "fodder", "arena", "world_boss", "tower",
+    ),
+    "games/epic7/hero_transition.py": ("hero",),
+    "games/epic7/evidence/common.py": (
+        "visual_evidence", "hero_evidence", "arena_evidence", "expedition_evidence",
+        "story_evidence", "tower_evidence", "world_boss_evidence",
+        "shop_refresh_evidence", "survivor_evidence",
+    ),
+    "games/epic7/finish_home.py": ("finish_at_home", "home_return_failure"),
+    "games/epic7/activity_column.py": ("community",),
+    "core/matcher.py": ("matcher", "scaled_template_matching"),
+    "core/battle_supervisor.py": ("battle_supervisor", "battle_safety_invariants"),
+    "main.py": (
+        "main_story", "desktop_worker", "desktop_session", "daily_tasks",
+        "navigation", "modes", "route_metadata", "public_flow_verification",
+        "manual_stop_propagation", "ticket_exhaustion", "resume",
+    ),
 }
-SHARED_PREFIXES = ("core/", "desktop/")
+
+#: 这些改动会影响整个套件，但默认**不再自动跑全量** —— 只提示，需要时用 ``--full``。
+#: conftest 在 collection 阶段就被导入，改错了所有用例一起变；它又不像测试文件，
+#: 不能当 target 跑，所以单独拦一道。
+WARN_ONLY_PATHS = {"tests/conftest.py"}
 
 # 这些目录的改动不参与路线判定：既不是路线代码，也没有测试覆盖它们。
 # 只要本次改动全在这里 + 文档，就只做编译检查。
@@ -160,12 +201,12 @@ PARALLEL_PER_WORKER_GB = 1.2
 #: 留给浏览器 / 游戏 / 编辑器 —— 把它们的页面挤出去会拖慢整机，得不偿失。
 PARALLEL_RESERVE_GB = 2.5
 
-# 全量时才说的话。目的不是拦人，而是**让「白跑」这件事在屏幕上变得刺眼**：
-# 门槛判成全量的常见成因不是「改动真的大」，而是用了 `--vs HEAD`，把上一轮未提交的
-# 共享模块改动一起算了进来。护栏：`tests/test_check_gate.py`。
+# 全量时才说的话。默认已经不再自动全量；这段用于 `--full`，同时提醒
+# 「定向测试才是日常姿势」。护栏：`tests/test_check_gate.py`。
 FULL_RUN_NOTICE = """[check] 本次将跑**全量**（约 7~8 分钟），原因：{reason}
-[check] 若只是小改动，改用：`python tools/check.py --files {files}`（约 1~2 分钟）
-[check] 或先 `git add <本次改的文件>` 再不带参数跑 —— 只验暂存区，不会被旧改动拖成全量"""
+[check] 日常提交默认只跑定向测试；全量是 `--full` 的显式选项。
+[check] 只想验本次改动：`python tools/check.py --files {files}`（约 1~2 分钟）
+[check] 或先 `git add <本次改的文件>` 再不带参数跑 —— 只验暂存区"""
 
 # 暂存区为空时会退化成「按整个工作区判定」，那时得先说清楚，别让人以为验的是本次改动。
 WORKSPACE_MODE_NOTICE = (
@@ -223,18 +264,99 @@ def changed_files(args: argparse.Namespace) -> list[str]:
 
 
 def route_of(path: str) -> str | None:
-    """把改动文件映射回它属于哪条路线。认不出返回 None（-> 全量）。"""
+    """路线文件 -> ``ROUTE_KEYWORDS`` 里的关键词；不是路线文件返回 None。"""
     if not path.startswith("games/epic7/") or not path.endswith(".py"):
         return None
     return ROUTE_KEYWORDS.get(Path(path).stem)
 
 
-def route_tests(routes: set[str], all_tests: list[str]) -> list[str] | None:
-    """按路线关键词挑测试文件；一条路线都没匹配到返回 None（-> 全量）。"""
-    selected = sorted(
-        name for name in all_tests if any(route in name for route in routes)
+def test_keywords(path: str) -> set[str]:
+    """把改动文件映射成测试文件名关键词。
+
+    优先级：显式覆盖表 -> 路线表 -> 文件 stem（只对路线/共享目录生效）。
+    返回空集合 = 没有可定向的测试；调用方只提示，**不再自动跑全量**。
+    """
+    override = TEST_KEYWORD_OVERRIDES.get(path)
+    if override:
+        return set(override)
+    route = route_of(path)
+    if route:
+        return {route}
+    if path.startswith(("games/epic7/", "core/", "desktop/")) or path == "main.py":
+        return {Path(path).stem}
+    return set()
+
+
+def route_tests(routes: set[str], all_tests: list[str]) -> list[str]:
+    """按关键词挑测试文件；没有匹配时返回空列表（由调用方提示，不退化成全量）。"""
+    return sorted(name for name in all_tests if any(route in name for route in routes))
+
+
+def plan_tests(
+    files: list[str], all_tests: list[str]
+) -> tuple[list[str], str, list[str]]:
+    """按改动文件选测试，返回 ``(测试文件名, 依据, 警告)``。
+
+    - 改到的测试文件直接跑；
+    - 夹具/模板带上 ``test_project_layout.py``；
+    - 其余 .py 走 ``test_keywords()`` 定向；
+    - 映射不到 / conftest 只记警告，**不自动跑全量**（全量用 ``--full``）。
+    """
+    changed_tests = sorted(
+        Path(path).name
+        for path in files
+        if path.startswith("tests/")
+        and path.endswith(".py")
+        and Path(path).name.startswith("test_")
+        and (PACKAGE_DIR / path).exists()
     )
-    return selected or None
+    assets = [path for path in files if path.startswith(ASSET_PREFIXES)]
+    keywords: set[str] = set()
+    unmapped: list[str] = []
+    warnings: list[str] = []
+
+    for path in files:
+        if path in WARN_ONLY_PATHS:
+            warnings.append(
+                f"{path} 会影响整个套件；默认不自动跑全量，需要时用 --full"
+            )
+            continue
+        if path.startswith(("tests/", "docs/")) or path.startswith(NO_TEST_PREFIXES):
+            continue
+        if not path.endswith(".py") or path.endswith(DOC_SUFFIXES):
+            continue
+        found = test_keywords(path)
+        if found:
+            keywords.update(found)
+        else:
+            unmapped.append(path)
+
+    picked: set[str] = set(changed_tests)
+    if assets:
+        picked.add(LAYOUT_TEST)
+    matched = route_tests(keywords, all_tests)
+    if matched:
+        picked.update(matched)
+    elif keywords:
+        warnings.append(
+            "以下关键词没匹配到测试（已跳过，不自动跑全量）："
+            + "、".join(sorted(keywords))
+        )
+    if unmapped:
+        warnings.append(
+            "以下文件没有定向测试（已跳过，不自动跑全量）："
+            + "、".join(sorted(unmapped))
+        )
+
+    parts: list[str] = []
+    if changed_tests:
+        parts.append("改动到的测试")
+    if assets:
+        parts.append("夹具/模板")
+    if keywords:
+        parts.append("关键词=" + "、".join(sorted(keywords)))
+    reason = "改动范围：" + "；".join(parts) if parts else "没有可定向的测试"
+    return sorted(picked), reason, warnings
 
 
 def run(label: str, command: list[str]) -> int:
@@ -616,7 +738,9 @@ def install_hook() -> int:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="提交前验证门槛")
-    parser.add_argument("--full", action="store_true", help="强制跑全量")
+    parser.add_argument(
+        "--full", action="store_true", help="显式跑全量（默认只跑定向测试）"
+    )
     parser.add_argument("--files", nargs="*", default=None, help="直接指定改动文件")
     parser.add_argument("--vs", default=None, help="相对某个 revision 取改动（如 HEAD）")
     parser.add_argument("--since", default=None, help="相对某个分支取改动（三点比较）")
@@ -671,59 +795,19 @@ def main() -> int:
 
     if args.full:
         targets, reason = list(all_targets), "按要求强制全量"
+        print(full_run_notice(reason, files), flush=True)
     else:
-        changed_tests = [
-            path
-            for path in files
-            if path.startswith("tests/") and path.endswith(".py") and (PACKAGE_DIR / path).exists()
-        ]
-        assets = [path for path in files if path.startswith(ASSET_PREFIXES)]
-        routes: set[str] = set()
-        full_reason: str | None = None
-
-        for path in files:
-            if path in SHARED_PATHS or path.startswith(SHARED_PREFIXES):
-                full_reason = f"改了共享模块 {path}"
-                break
-            if path.startswith(("tests/", "docs/")) or path.startswith(
-                NO_TEST_PREFIXES
-            ):
-                continue
-            if not path.endswith(".py") or path.endswith(DOC_SUFFIXES):
-                continue
-            route = route_of(path)
-            if route:
-                routes.add(route)
-            else:
-                full_reason = f"认不出 {path} 属于哪条路线"
-                break
-
-        if full_reason:
-            targets, reason = list(all_targets), f"{full_reason} -> 全量"
-        elif not (changed_tests or assets or routes):
-            print("[check] 本次改动没有测试覆盖（文档/配置/工具脚本），跳过测试")
+        picked, reason, warnings = plan_tests(files, all_tests)
+        for warning in warnings:
+            print(f"[check] 提示：{warning}", flush=True)
+        if not picked:
+            print(
+                "[check] 本次改动没有可定向的测试，已跳过测试"
+                "（静态检查已通过；需要兜底时用 --full）",
+                flush=True,
+            )
             return 0
-        else:
-            picked: set[str] = {Path(path).name for path in changed_tests}
-            if assets:
-                picked.add(LAYOUT_TEST)
-            if routes:
-                matched = route_tests(routes, all_tests)
-                if matched is None:
-                    targets, reason = (
-                        list(all_targets),
-                        "改了 " + "、".join(sorted(routes)) + " 但没匹配到测试 -> 全量",
-                    )
-                    picked = set()
-                else:
-                    picked.update(matched)
-            if picked:
-                targets = [f"{PACKAGE}/tests/{name}" for name in sorted(picked)]
-                reason = "改动范围：" + "、".join(
-                    sorted([*changed_tests, *assets, *sorted(routes)])
-                )
-            else:
-                targets, reason = list(all_targets), "无可依据的定向选择 -> 全量"
+        targets = [f"{PACKAGE}/tests/{name}" for name in picked]
 
     if not targets:
         print("[check] 没有需要跑的内容")

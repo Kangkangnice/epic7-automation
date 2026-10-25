@@ -50,8 +50,8 @@
 | 逃生与通知 | `core/hotkey.py` | 7 `WindowsPStopHotkey` |
 | 逃生与通知 | `core/qqbot.py` | 56 `send_qqbot_c2c` |
 
-`python -m pdb` 之外的改动前必读：`core/**` 属共享模块，改完要跑全量门槛
-（`tools/check.py --full`）。
+`python -m pdb` 之外的改动前必读：`core/**` 属共享模块，改完默认按文件名跑定向测试
+（如 `core/matcher.py` → `test_matcher.py`）；要一次兜底再跑 `tools/check.py --full`。
 
 ## 重新生成这张图
 
