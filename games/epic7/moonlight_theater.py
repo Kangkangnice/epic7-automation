@@ -44,6 +44,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from enum import Enum
 from hashlib import blake2b
 from pathlib import Path
@@ -228,6 +229,10 @@ class MoonlightStateMachine:
 
     _REFERENCE_SIZE = REFERENCE_SIZE
 
+    # 存样用：由 ``MoonlightRunner`` 在构造时注入。单元测试直接构造状态机时是
+    # ``None`` ⇒ 存样安静跳过（存样只是附带动作，判据不许靠它）。
+    runtime: Any = None
+
     def __init__(
         self,
         templates: MoonlightTemplates | Path,
@@ -266,6 +271,8 @@ class MoonlightStateMachine:
         # 上一帧「中间那张海报」的像素（用来判「点了右边之后选中项换了没有」）。
         self._poster_signature: Optional[np.ndarray] = None
         self._confirmed_page = ""
+        # 本场战斗是否已经存过样张（每场只存一张，见 ``_snapshot_battle``）。
+        self._battle_sampled = False
         # 本帧的实测（只为日志说清楚凭什么）。
         self.has_free = False
         self.free_reason = ""
@@ -419,6 +426,53 @@ class MoonlightStateMachine:
         digest.update(self._crop(screen, THEATER_POSTER_REGION).tobytes())
         return digest.hexdigest()
 
+    def _snapshot_theater(self, screen: np.ndarray, kind: str, key: str) -> None:
+        """遇到没见过的剧场就存一张样张（同一剧场同一页只存一次）。
+
+        **为什么要存**：这条路线有 7 个剧场，每个剧场的海报和分集页背景都不一样，
+        而夹具只覆盖了 2 个 —— 2026-10-24 的两次事故（▼ 半透明、返回键撞亮底图）
+        **都是「第一次撞上某个剧场」**。没有样本就无法验证判据改动，只能靠实跑撞。
+        每次换剧场都存一张，跑几轮就能把 7 个剧场补齐。
+
+        ⚠️ 存样是**附带动作**：没配诊断目录、或写盘失败，都只记一条日志，
+        **绝不影响主线**（判据不许因为「记录不下来」而停）。
+        ⚠️ 去重用「文件已存在就跳过」而不是内存集合：跨运行也不会重复存，而且
+        ``preview()`` 探路时最多多写一张，不必为回滚再加一份状态。
+        ⚠️ 这里跑在**状态机**上，而状态机是单元测试直接构造的（没有 ``runtime``）
+        ⇒ 一律走 ``getattr`` 兜底，取不到就安静返回。
+        """
+        runtime = getattr(self, "runtime", None)
+        directory = getattr(runtime, "diagnostic_dir", None)
+        if runtime is None or directory is None or not key:
+            return
+        path = directory / "theater_samples" / f"{kind}_{key}.png"
+        if path.exists():
+            return
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            cv2.imwrite(str(path), cv2.cvtColor(screen, cv2.COLOR_RGB2BGR))
+        except (OSError, cv2.error) as error:
+            runtime.log(f"模式=月光剧场 存样失败={kind} 原因={error}")
+            return
+        runtime.log(f"模式=月光剧场 存样={kind} 剧场={key} 路径={path}")
+
+    def _snapshot_battle(self, screen: np.ndarray) -> None:
+        """每场战斗存一张样张（同一场只存一张）。
+
+        **为什么要存**：战斗锚点里有两枚**含着会变的内容** ——
+        ``battle_hp_bar`` 模板上是 ``12705/12705`` 的血量数字，``battle_avatar_axis``
+        是具体角色的圆形头像。换队伍 / 换敌人就可能只剩一票（< ``BATTLE_ANCHOR_VOTES``
+        = 2）⇒ 整场战斗认不出 ⇒ 主循环一个动作都不发 ⇒ 磨到 180 秒绝对超时。
+        要验证它们到底靠不靠得住，只能拿**不同血量、不同队伍**的真实战斗帧来比。
+        """
+        if self._battle_sampled:
+            return
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        self._snapshot_theater(
+            screen, "battle", f"{stamp}_cycle{self.completed_cycles + 1}"
+        )
+        self._battle_sampled = True
+
     def _confirm_page(self, page: str) -> None:
         self._confirmed_page = page
 
@@ -465,6 +519,7 @@ class MoonlightStateMachine:
         # 角标没消失时（例如这个剧场还有别的免费集、或者那一集观赏后角标滞后）
         # 「入场 → 购买弹窗 → 取消 → 退回列表 → 又入场」会变成死循环。
         fingerprint = self._poster_fingerprint(screen)
+        self._snapshot_theater(screen, "list", fingerprint)
         if fingerprint not in self._skip_posters and self._probe_free(screen):
             self._current_poster = fingerprint
             self._poster_signature = None
@@ -514,6 +569,7 @@ class MoonlightStateMachine:
         )
 
     def _at_episode(self, screen: np.ndarray) -> Optional[MoonlightAction]:
+        self._snapshot_theater(screen, "episode", self._current_poster)
         # 「能领奖」的证据是下载按钮左上角那枚**橙点**（可领才亮）。这里不用按钮本身
         # 当判据：按钮在「可领 / 已领」两种状态下**长得一样**，拿按钮判会反复领。
         # ⚠️ 判据是「模板 **或** 橙色像素数」，单靠模板会漏（橙点是脉动的，见
@@ -873,6 +929,9 @@ class MoonlightStateMachine:
             and self._locate(screen, "story_continue") is None
         )
         if in_battle:
+            # 每场战斗存一张真机帧：战斗锚点里有两枚含「会变的内容」，需要新样本
+            # 才能判断它们还靠不靠得住（见 ``_snapshot_battle``）。
+            self._snapshot_battle(screen)
             auto_state = {
                 BattleControls.AUTO_CONTROLS: AutoBattleState.AUTO,
                 BattleControls.MANUAL_CONTROLS: AutoBattleState.MANUAL,
@@ -881,6 +940,7 @@ class MoonlightStateMachine:
             auto_evidence = f"布局={controls.value}"
             auto_point = self._scaled_point(screen, self._AUTO_CLICK_POINT)
         else:
+            self._battle_sampled = False
             auto_state = AutoBattleState.UNKNOWN
             auto_evidence = "不在战斗画面（不判自动/手动、不给开关坐标）"
             auto_point = None
@@ -950,6 +1010,9 @@ class MoonlightRunner(ModeRunnerBase):
         )
         # 「等橙点亮」和主循环的状态超时必须看同一块表，否则一个按真时间、一个按假时间。
         machine.set_clock(self.now)
+        # 存样（没见过剧场的样张 / 战斗帧）需要诊断目录 ⇒ 把 runtime 交给状态机。
+        # ⚠️ 只用于写文件，**不参与任何决策**。
+        machine.runtime = runtime
         self.battle_supervisor = battle_supervisor or BattleSupervisor(
             runtime,
             self.recovery_gate,
@@ -1010,4 +1073,52 @@ class MoonlightRunner(ModeRunnerBase):
     def _log_cycle_completed(self) -> None:
         self.runtime.log(
             f"模式=月光剧场 完成第 {self.machine.completed_cycles} 幕"
+        )
+
+    # ---- 收尾：先把剧情推完，再回家 ----
+
+    #: 收尾推剧情的上限（每 ``poll_seconds`` 点一次，120 次 ≈ 1 分钟）。
+    #: 不能给太大：收尾阶段用户可能已经在等着了；也不能太小：一集剧情要几百次点击。
+    _LEAVE_STORY_MAX_CLICKS = 120
+
+    def _close_out(self) -> None:
+        """收尾回大厅之前，先把自己从剧情页里放出来。
+
+        ⚠️ **月光剧场的剧情不能跳过**（观览指南原话「月光剧场的故事情无法跳过」），
+        剧情页右上角只有「记录 / 暂停」两枚图标、**没有「跳过」**；而剧情页又不吃
+        ESC ⇒ 停在这一页上收尾，导航层只能连按两次 ESC 后报「回首页失败」
+        （2026-10-24 三次实跑都栽在这，`return_home_v2_esc_no_effect`）。
+
+        ⚠️ 只处理**正常收尾**。异常退出走 ``main`` 那条路，那里拿不到本路线的
+        状态机，管不了这件事（那一侧靠 ``_try_return_home_after_failure`` 吞异常）。
+        """
+        try:
+            self._leave_story_before_home()
+        except Exception as error:  # noqa: BLE001 —— 收尾绝不能再抛
+            self.runtime.log(
+                f"模式={self._MODE_LABEL} 收尾前离开剧情页失败="
+                f"{type(error).__name__}: {error} 处理=照常尝试回家"
+            )
+        super()._close_out()
+
+    def _leave_story_before_home(self) -> None:
+        """在剧情页上就把字幕点完（有界），离开后立刻返回。
+
+        ⚠️ 前进条件只认 ``advance-story``：收尾阶段**绝不**在这里点别的动作
+        （尤其「进行观览」，那会花掉额度；以及任何门票弹窗上的按钮）。
+        """
+        if self.machine.state is not MoonlightState.STORY:
+            return
+        for _ in range(self._LEAVE_STORY_MAX_CLICKS):
+            screen = self.runtime.capture()
+            if self.machine.observe_page(screen) is not MoonlightState.STORY:
+                return
+            action = self.machine.next_action(screen)
+            if action is None or not action.name.startswith("advance-story"):
+                return
+            self.runtime.click(action.point, action.name)
+            self.sleep(self.poll_seconds)
+        self.runtime.log(
+            f"模式={self._MODE_LABEL} 收尾前推剧情 达到上限="
+            f"{self._LEAVE_STORY_MAX_CLICKS}次，放弃继续推"
         )
