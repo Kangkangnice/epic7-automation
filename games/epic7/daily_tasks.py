@@ -99,6 +99,19 @@ class DailyOutcome:
         return self.status in {"completed", "resource"}
 
 
+def _short_failure(detail: str, limit: int = 90) -> str:
+    """把失败原因压成一句：去掉「已保存诊断 …」那串长路径，再截断。
+
+    ⚠️ 诊断路径动辄 120+ 字符，原样塞进汇总行会把日志和手机通知都撑爆，
+    而**路径本身对「为什么失败」没有信息量**（要找诊断，日志里那条
+    ``已保存诊断 …`` 已经写全了）。
+    """
+    text = detail.split("；已保存诊断")[0].split("; 已保存诊断")[0].strip()
+    if not text:
+        return "原因未记录"
+    return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
 @dataclass
 class DailyReport:
     """整轮每日任务的结果汇总。"""
@@ -112,14 +125,25 @@ class DailyReport:
         return any(not outcome.ok for outcome in self.outcomes)
 
     def summary_line(self) -> str:
-        """一行给日志/通知用的汇总，例：``世界首领战 ✓ / 骑士团捐赠 ✗ / 竞技场 ✓``。"""
+        """一行给日志/通知用的汇总，例：``世界首领战 ✓ / 骑士团捐赠 ✗ / 竞技场 ✓``。
+
+        ⚠️ **失败的条目必须带一句原因**（2026-10-24 补）。原先只打一个 ✗ ——
+        2026-10-24 月光剧场连续失败三次，日志里全是 ``月光剧场 ✗``，真因
+        （静默异常 / 收尾失败）一个字都看不到，只能靠翻子进程日志猜。
+        ``detail`` 早就记下来了，只是没打出来。
+        """
         marks = {
             "completed": "✓",
             "resource": "✓(资源耗尽)",
             "failed": "✗",
             "skipped": "—",
         }
-        parts = [f"{o.label} {marks.get(o.status, '?')}" for o in self.outcomes]
+        parts = []
+        for outcome in self.outcomes:
+            text = f"{outcome.label} {marks.get(outcome.status, '?')}"
+            if outcome.status == "failed" and outcome.detail:
+                text += f"[{_short_failure(outcome.detail)}]"
+            parts.append(text)
         line = " / ".join(parts)
         if self.aborted_reason:
             line += f" ｜ 已中止：{self.aborted_reason}"

@@ -212,6 +212,49 @@ def test_resource_exhausted_counts_as_ok():
     assert "✓" in report.summary_line()
 
 
+def test_a_failed_task_carries_its_reason_into_the_summary():
+    """失败的条目必须带一句原因 —— 只打一个 ✗ 等于把真因藏起来。
+
+    2026-10-24 月光剧场连挂三次，日志里只有 ``月光剧场 ✗``，一份原因都没有，
+    只能去翻子进程的原始输出猜。``detail`` 早就记下来了，没打而已。
+    """
+    report = DailyReport(
+        outcomes=[
+            DailyOutcome(
+                "moonlight_theater",
+                "月光剧场",
+                "failed",
+                "RuntimeError: 应恰好找到一个支持的雷电模拟器窗口，实际找到 0 个",
+            )
+        ]
+    )
+
+    line = report.summary_line()
+    assert "月光剧场 ✗" in line
+    assert "雷电模拟器窗口" in line, "失败原因必须进汇总行"
+
+
+def test_the_summary_drops_the_long_diagnostics_path():
+    """诊断路径对「为什么失败」没有信息量，还会把日志/手机通知撑爆。"""
+    report = DailyReport(
+        outcomes=[
+            DailyOutcome(
+                "moonlight_theater",
+                "月光剧场",
+                "failed",
+                "RuntimeError: 返回首页失败：连按 2 次 ESC 页面都没有变化（停在页面=unknown）"
+                "；已保存诊断 D:\\AI\\codex\\auto_game\\auto_game_unified\\runtime_diagnostics"
+                "\\epic7_moonlight_theater\\20261024_155157_650123_return_home_v2_esc_no_effect.png",
+            )
+        ]
+    )
+
+    line = report.summary_line()
+    assert "连按 2 次 ESC" in line
+    assert "runtime_diagnostics" not in line
+    assert ".png" not in line
+
+
 # --------------------------------------------------------------------------
 # 执行器：真入口
 # --------------------------------------------------------------------------

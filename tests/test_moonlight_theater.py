@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 from auto_game_unified.games.epic7 import moonlight_theater as mt
@@ -85,9 +86,14 @@ class PageTests(unittest.TestCase):
             "episode_fresh": MoonlightState.EPISODE,
             "episode_reward": MoonlightState.EPISODE,
             "episode_claimed": MoonlightState.EPISODE,
+            # 2026-10-24 15:10 事故现场：这个剧场的分集页左上角是**亮蓝天**，
+            # 旧返回键模板（带深黑背景）只有 0.6046。
+            "episode_bright": MoonlightState.EPISODE,
             "guide": MoonlightState.GUIDE,
             "story": MoonlightState.STORY,
             "story_b": MoonlightState.STORY,
+            # 2026-10-24 真机事故现场：▼ 缩到 85% + 半透明 + 背景被角色手臂压住。
+            "story_dim": MoonlightState.STORY,
             "battle": MoonlightState.BATTLE,
             # 2026-10-17 真机事故现场（``timeout_clear``）存下来的那帧 CLEAR。
             "clear": MoonlightState.CLEAR,
@@ -178,6 +184,34 @@ class TheaterListTests(unittest.TestCase):
             probe.next_action(frame)
         self.assertIn("本周已结束", probe.finish_reason)
 
+    def test_a_new_theater_is_snapshotted_once(self) -> None:
+        """遇到没见过的剧场存一张样张，同一张海报只存一次。
+
+        为什么要存：这条路线有 7 个剧场、各有各的美术，而夹具只覆盖 2 个 ——
+        2026-10-24 两次事故都是「第一次撞上某个剧场」。存样是补样本的唯一途径。
+
+        ⚠️ 存样只是附带动作：这里同时断言**动作照常发出**，不许因为它而改变决策。
+        """
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            probe = machine(MoonlightState.LIST)
+            probe.runtime = SimpleNamespace(  # type: ignore[attr-defined]
+                diagnostic_dir=Path(tmp), log=lambda _message: None
+            )
+            frame = load("list_free")
+            action = probe.next_action(frame)
+            probe.next_action(frame)
+            saved = sorted((Path(tmp) / "theater_samples").glob("list_*.png"))
+            self.assertEqual(len(saved), 1, "同一张海报不该重复存")
+            self.assertEqual(action.name, "enter-theater", "存样不许影响主线决策")
+
+    def test_snapshotting_never_raises_without_a_runtime(self) -> None:
+        """状态机在单元测试里是裸构造的（没有 runtime）⇒ 存样必须安静跳过。"""
+        probe = machine(MoonlightState.LIST)
+        action = probe.next_action(load("list_no_free"))
+        self.assertTrue(action.name.startswith("next-theater"), action.name)
+
 
 class EpisodeTests(unittest.TestCase):
     def test_fresh_episode_watches(self) -> None:
@@ -255,6 +289,23 @@ class GuideAndStoryTests(unittest.TestCase):
         probe = machine(MoonlightState.STORY)
         blank = np.zeros((1132, 1982, 3), dtype=np.uint8)
         self.assertIsNone(probe.next_action(blank))
+
+    def test_a_half_faded_arrow_still_counts_as_the_story_page(self) -> None:
+        """2026-10-24 事故帧（``story_dim``）：▼ 缩到 85% + 半透明 + 背景被角色手臂压住。
+
+        这一帧上 ▼ 的位置完全正确，旧模板却只有 **0.7022** —— 因为 44×36 的模板里
+        八成面积是背景，角色手臂一压过来分数就崩。判据失效的直接后果不是「点错」，
+        而是「**一个动作都不发**」：画面停在这一帧不动，满 180 秒绝对超时（退出码 1）。
+        模板裁到箭头本体（27×19）后实测 **0.9005**，与上面那条「没有 ▼ 不许点」
+        并不冲突 —— 它验的是箭头**完全不在**（全黑帧 0.0）。
+        """
+        probe = machine(MoonlightState.STORY)
+        frame = load("story_dim")
+        self.assertIs(probe.observe_page(frame), MoonlightState.STORY)
+        action = probe.next_action(frame)
+        self.assertIsNotNone(action, "认成剧情页就必须发动作，干等就是 180 秒熔断")
+        self.assertTrue(action.name.startswith("advance-story"), action.name)
+        self.assertEqual(action.point, (760, 1000))
 
 
 class ClearTests(unittest.TestCase):
@@ -557,8 +608,8 @@ class RewardClosedLoopTests(unittest.TestCase):
         probe = machine()
         for name in (
             "entry_side_story", "list_free", "list_no_free", "episode_fresh",
-            "episode_claimed", "guide", "story", "story_b", "clear",
-            "reward_popup", "purchase", "ticket",
+            "episode_claimed", "episode_bright", "guide", "story", "story_b",
+            "story_dim", "clear", "reward_popup", "purchase", "ticket",
         ):
             self.assertLess(
                 probe._orange_pixels(load(name)),
@@ -579,6 +630,30 @@ class RewardClosedLoopTests(unittest.TestCase):
         probe.claimed_current = True
         action = probe.next_action(load("episode_claimed"))
         self.assertEqual(action.name, "leave-theater", "领过了就该直接撤")
+
+    def test_the_bright_episode_page_still_locates_the_back_arrow(self) -> None:
+        """2026-10-24 15:10 事故（``episode_bright``）：亮蓝天底图上的分集页。
+
+        ``watch_button`` 0.9996 证明它就是分集页，但旧 ``back_button`` 模板是
+        110×70 的**深黑背景**、箭头只占左下角一小块 ⇒ 0.6046 ⇒ ``_required`` 抛
+        ``UnrecognizedScreen`` ⇒ ``timeout_episode``（退出码 1）。
+        重裁成 47×57（只含完整箭头）+ 白掩膜后 1.0000。
+
+        ⚠️ 第二条断言同样重要：``point=back.center`` ⇒ **模板中心就是点击坐标**。
+        旧模板的中心落在箭头右上方约 40px（「月光剧场」标题上），只是碰巧也能返回。
+        """
+        clock = FakeClock()
+        probe = machine(MoonlightState.EPISODE, clock=clock)
+        probe.watched_current = True
+        probe.claimed_current = True
+        action = probe.next_action(load("episode_bright"))
+        self.assertIsNotNone(
+            action, "认得出分集页却定位不到返回键 -> timeout_episode"
+        )
+        self.assertEqual(action.name, "leave-theater")
+        x, y = action.point
+        self.assertLess(x, 100, f"点击点偏到右边了：{action.point}")
+        self.assertLess(y, 130, f"点击点偏到下面了：{action.point}")
 
     def test_the_waiting_frames_issue_no_action_at_all(self) -> None:
         """宽限期内**不许点任何东西**（尤其不许点「进行观览」，那会花钱）。"""
@@ -619,12 +694,13 @@ class BattleRecognitionTests(unittest.TestCase):
             )
 
     def test_the_anchors_never_fire_on_other_pages(self) -> None:
-        """三枚锚点在其他 13 张夹具上**命中数必须 < 2**（误报就是乱交控制权）。"""
+        """三枚锚点在其他 15 张夹具上**命中数必须 < 2**（误报就是乱交控制权）。"""
         probe = machine()
         for name in (
             "entry_side_story", "list_free", "list_no_free", "episode_fresh",
-            "episode_reward", "episode_claimed", "guide", "story", "story_b",
-            "clear", "reward_popup", "purchase", "ticket",
+            "episode_reward", "episode_claimed", "episode_bright", "guide",
+            "story", "story_b", "story_dim", "clear", "reward_popup",
+            "purchase", "ticket",
         ):
             votes = probe._battle_anchor_votes(load(name))
             self.assertLess(votes, BATTLE_ANCHOR_VOTES, f"{name} 被误判成战斗")
@@ -1030,6 +1106,41 @@ def _swap_template(templates, field: str):
 def _without_free_badge(templates):
     """把入口角标换成随机噪声（常值模板方差为 0，相关系数会退化成接近 1）。"""
     return _swap_template(templates, "entry_free")
+
+
+class CloseOutStoryTests(unittest.TestCase):
+    """收尾前「把剧情推完」—— 剧情页不吃 ESC，不推完就回不了大厅。
+
+    2026-10-24 三次实跑全都栽在这儿：剧情页右上角**没有「跳过」**（观览指南原话
+    「月光剧场的故事情无法跳过」），而收尾只会按 ESC ⇒ 连按两次无效 ⇒ 报
+    ``return_home_v2_esc_no_effect``。
+    """
+
+    @staticmethod
+    def _runner_at(state: MoonlightState, runtime: FakeRuntime) -> MoonlightRunner:
+        return MoonlightRunner(
+            MoonlightStateMachine(machine().templates, initial_state=state),
+            runtime,
+            sleep=lambda _seconds: None,
+            poll_seconds=0.0,
+        )
+
+    def test_it_clicks_the_story_until_the_page_stops_being_story(self) -> None:
+        runtime = FakeRuntime([load("story"), load("story_b"), load("episode_fresh")])
+        self._runner_at(MoonlightState.STORY, runtime)._close_out()
+
+        names = [name for _point, name in runtime.clicks]
+        self.assertEqual(len(names), 2, f"离开剧情页就该停，实际点了 {names}")
+        self.assertTrue(
+            all(name.startswith("advance-story") for name in names),
+            f"收尾阶段只许点字幕：{names}",
+        )
+
+    def test_it_never_touches_the_screen_when_not_on_the_story_page(self) -> None:
+        """正常跑完（停在分集页）时不该多任何一次点击。"""
+        runtime = FakeRuntime([load("episode_fresh")])
+        self._runner_at(MoonlightState.EPISODE, runtime)._close_out()
+        self.assertEqual(runtime.clicks, [])
 
 
 if __name__ == "__main__":
