@@ -1280,22 +1280,35 @@ class NavigationTests(unittest.TestCase):
                 f"{name} 是未选中态，不该命中选中态判据",
             )
 
-    def test_navigation_plan_targets_the_selected_state_by_its_own_anchor(self):
-        """导航第 2 步的目标页判据必须是白字那张，不能是光球那颗。
+    def test_the_community_plan_stops_hunting_the_activity_row(self):
+        """社区签到**不再找左列那一行**，直接点右侧「前往活动页」。
 
-        ⚠️ 断言的是 ``NavigationPlan`` 里的**声明**（数据），不是运行结果 ——
-        计划表写错锚点名的后果是「跳过一个本该做的动作」或「等一个不会出现的
-        页面」，两者都在真机上才炸，而真机一天只能点一次（记忆里那条：
-        「一天只能点一次、别当冒烟测试反复跑」）。
+        2026-10-30 改。原来的第 2 步是「选中『更多精彩活动』」，锚点 ``activity_more``
+        是**旧版**活动页上那一行的样子 —— 新版页面上只有 **0.4024**（阈 0.82）
+        ⇒ 根本认不出 ⇒ 上下扫满 9 屏全是白扫。用户看到的就是
+        「一进去往上滑一下、然后一直往下滑」，而那一行明明就在画面里。
+
+        而右侧那颗「前往活动页」按钮在两个新版页面上位置**一模一样**
+        （``web_activity_gate`` 0.9673 @ (1722,985)），与左侧选中哪个活动无关
+        ⇒ 直接点它。左列怎么变、选中哪个、滚到哪儿，一律不影响。
+
+        ⚠️ 断言的是 ``NavigationPlan`` 里的**声明**（数据）：一旦有人把「先选中那一行」
+        加回来，这条立刻红 —— 那个写法在当前版本上必然失败，而且是用 9 次滑动换来的。
         """
         from auto_game_unified.games.epic7.modes import MODE_SPECS
 
         steps = MODE_SPECS["community"].navigation_plan.steps
-        select_step = next(step for step in steps if step.anchor == "activity_more")
-        self.assertEqual(
-            ("activity_web_promo",),
-            tuple(select_step.targets),
-            "第 2 步的目标页写错了：选中态只有一个判据，认错了就整条路线卡死",
+        self.assertNotIn(
+            "activity_more",
+            [step.anchor for step in steps],
+            "第 2 步又回去找左列那一行了 —— 那个模板在新版页面上只有 0.40，认不出",
+        )
+        gate = next(step for step in steps if step.anchor == "web_activity_gate")
+        self.assertEqual((1722, 985), gate.fixed_point)
+        self.assertIn("web_activity_list", gate.targets)
+        self.assertIsNone(
+            gate.scroll_before_retry,
+            "直接点按钮那一步不需要滚动兜底（右侧按钮本来就在画面里）",
         )
 
     def test_the_gate_step_declares_a_fixed_point_instead_of_hunting_the_glow(self):
@@ -1387,27 +1400,6 @@ class NavigationTests(unittest.TestCase):
         # 点击点跟着行走（不是被区域固定住）。
         self.assertNotEqual(old.center[1], new.center[1])
         self.assertGreater(new.center[1] - old.center[1], 150)
-
-    def test_the_select_step_asks_for_a_scroll_before_giving_up(self):
-        """导航第 2 步必须声明「找不着就先滚一屏」，这是用户 2026-10-08 要的兜底。
-
-        为什么需要（用户原话）：「如果我点进去那个活动页面，因为它会记录我之前是从
-        什么地方点进去的……那后面再进去的话，也是那个位置。然后那个位置很可能看不到
-        那个更多精彩活动……需要往上拉一下才能看到。」
-
-        ⚠️ 断言的是**声明**（数据）而不是运行结果：声明一没，``_transition`` 就会在
-        锚点找不到时**直接抛错**，整条路线第一步就进不去 —— 而这个分支只有在
-        「上次点的是列表靠下的活动」时才走得到，日常冒烟测不出来。
-        """
-        from auto_game_unified.games.epic7.modes import MODE_SPECS
-
-        steps = MODE_SPECS["community"].navigation_plan.steps
-        select_step = next(step for step in steps if step.anchor == "activity_more")
-        self.assertEqual(
-            "activity_column",
-            select_step.scroll_before_retry,
-            "第 2 步没声明滚一屏：那一行被挤出视野时整条路线直接失败",
-        )
 
     def test_the_declared_scan_hook_actually_exists_on_the_navigator(self):
         """计划里声明的每个 ``scroll_before_retry`` 名字，导航器上都要有对应搜索器。
@@ -2297,16 +2289,26 @@ class NavigationTests(unittest.TestCase):
 
         self.assertEqual([(1795, 635), (710, 995)], clicks)
 
-    def test_community_navigation_works_when_the_row_starts_unselected(self):
-        """常规情形：进活动页时「更多精彩活动」**未选中** ⇒ 三步都点。"""
+    def test_community_navigation_goes_straight_to_the_web_activity_gate(self):
+        """常规情形：进活动页后**直接点右侧「前往活动页」**，不再经过「更多精彩活动」。
+
+        2026-10-30 改：原来的第二步是「选中『更多精彩活动』」，锚点 ``activity_more``
+        是**旧版**活动页上那一行的样子 —— 新版页面上它只有 **0.4024**（阈 0.82）
+        ⇒ 根本认不出 ⇒ 上下扫满 9 屏全是白扫（用户看到的就是「一进去往上滑一下、
+        然后一直往下滑」，而那一行明明就在画面里）。
+
+        而右侧那颗「前往活动页」按钮在两个新版页面上位置**一模一样**
+        （实测 ``web_activity_gate`` 0.9673 @ (1722,985)），根本不需要先选中什么
+        —— 它说的是右侧那块固定的网页活动宣传位，与左侧选了哪个活动无关。
+
+        ⇒ 现在只有两步：大厅点「活动」→ 活动页点「前往活动页」。
+        """
         clicks: list[tuple[int, int]] = []
         navigator = self.navigator(
             [
                 fixture("lobby"), fixture("lobby"),
                 fixture("activity_menu_shifted_live_20261007"),
                 fixture("activity_menu_shifted_live_20261007"),
-                fixture("activity_web_promo_shifted_live_20261007"),
-                fixture("activity_web_promo_shifted_live_20261007"),
                 fixture("web_activity_list_live_20261006"),
                 fixture("web_activity_list_live_20261006"),
             ],
@@ -2315,7 +2317,11 @@ class NavigationTests(unittest.TestCase):
 
         navigator.navigate("community", lobby_screen=fixture("lobby"))
 
-        self.assertEqual(3, len(clicks), f"三步都该点，实际点了 {clicks}")
+        self.assertEqual(
+            2,
+            len(clicks),
+            f"应当只点两下（进入活动 + 前往活动页），实际点了 {clicks}",
+        )
 
     def test_community_navigation_works_when_the_row_is_already_selected(self):
         """⚠️ 进活动页时那一行**已经是选中态** ⇒ 一样要走通。
