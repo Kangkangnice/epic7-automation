@@ -1470,8 +1470,13 @@ class NavigationTests(unittest.TestCase):
         frame[ACTIVITY_COLUMN_Y0:ACTIVITY_COLUMN_Y1, 0:430] = shifted
         return frame
 
-    def _scan_navigator(self, screens, swipes, clicks, logs):
-        """喂序列 + 记录滑动/点击。序列喂完就回放最后一帧（同 ``self.navigator``）。"""
+    def _scan_navigator(self, screens, swipes, clicks, logs, backs=None):
+        """喂序列 + 记录滑动/点击。序列喂完就回放最后一帧（同 ``self.navigator``）。
+
+        ``backs`` 给了就记录「按了几次返回」—— 2026-10-30 起，扫完仍找不到时会
+        先退一层再判一次（见 ``_transition`` 那段）。不传就是空操作，多数用例
+        只关心滑动和点击。
+        """
         images = list(screens)
         sent: list = []
 
@@ -1484,6 +1489,7 @@ class NavigationTests(unittest.TestCase):
             capture,
             clicks.append,
             emit=logs.append,
+            back=(lambda: backs.append(1)) if backs is not None else (lambda: None),
             swipe=lambda *args, **kwargs: swipes.append((args, kwargs)),
         )
         return Epic7Navigator(
@@ -1612,10 +1618,11 @@ class NavigationTests(unittest.TestCase):
         logs: list[str] = []
         swipes: list[tuple] = []
         clicks: list[tuple] = []
+        backs: list[int] = []
         # 每一帧都是「那一行在画面之上」⇒ 扫多少次都不会出现。
         stuck = self._list_with_row_scrolled_away()
         navigator = self._scan_navigator(
-            [stuck] * 60, swipes, clicks, logs
+            [stuck] * 60, swipes, clicks, logs, backs
         )
         budget = ACTIVITY_SCROLL_LIMIT_PER_DIRECTION * 3
 
@@ -1637,10 +1644,60 @@ class NavigationTests(unittest.TestCase):
             len(swipes),
             f"滑动次数不是声明的预算 {budget}（两个方向各计入）",
         )
+        self.assertEqual(
+            1,
+            len(backs),
+            f"扫完仍找不到时应当**只**退一层，实际按了 {len(backs)} 次返回",
+        )
         self.assertIn(
             f"{budget} 屏",
             str(ctx.exception),
             f"报错文案没说扫过几屏，事后查不到底：{ctx.exception}",
+        )
+
+    def test_a_detail_page_backs_off_once_and_names_where_it_landed(self):
+        """活动页停在**某个活动的详情页**上时：扫完必须退一层，并说清落到了哪一页。
+
+        现场（2026-10-30 21:03，`community` 记的那次 ✗）：游戏记得上次点了「梅铃」
+        ⇒ 点「活动」进来**直接落在梅铃详情页**，左侧整列都是它的子项
+        （梅铃 / 与梅铃一起吧！/ 修行者兑换所 …），**没有「更多精彩活动」那一行**。
+
+        判页只靠「‹ 活动」标题条（两页都有）⇒ 判成活动页 ⇒ 代码以为那一行只是
+        滚出了视野 ⇒ 上下扫满 9 屏 ⇒ 报「这一页很可能确实没有这个入口」，
+        用户完全看不出它其实是卡在某个活动的详情页里。
+
+        改法：扫完先按一次返回，**退完当场看页面身份**，落到别的页就立刻点名报错，
+        不白等 ``_wait_for_page`` 的超时（那会让失败原因再次失传）。
+
+        钉三件事：① 只退一层；② 报错点名落到了哪一页；③ 一下都没点。
+        """
+        detail = fixture("activity_menu_detail_live_20261030")
+        lobby = fixture("lobby")
+        # 前 12 帧是详情页（扫描期间画面不会动），退完之后变成大厅。
+        swipes: list[tuple] = []
+        clicks: list[tuple] = []
+        logs: list[str] = []
+        backs: list[int] = []
+        navigator = self._scan_navigator(
+            [detail] * 12 + [lobby] * 12, swipes, clicks, logs, backs
+        )
+
+        with self.assertRaises(RuntimeError) as caught:
+            navigator._transition(
+                "activity_menu",
+                ("activity_web_promo",),
+                "activity_more",
+                "选中「更多精彩活动」",
+                source_screen=detail,
+                scroll_before_retry="activity_column",
+            )
+
+        self.assertEqual(1, len(backs), f"应当只退一层，实际按了 {len(backs)} 次返回")
+        self.assertEqual([], clicks, "退一层之前不该点任何地方")
+        self.assertIn(
+            "退到了[大厅]",
+            str(caught.exception),
+            f"报错没点名退到了哪一页，事后查不到底：{caught.exception}",
         )
 
     def test_the_scan_finds_the_row_after_one_scroll(self):

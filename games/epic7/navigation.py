@@ -1509,6 +1509,8 @@ class Epic7Navigator:
         )
         targets = (target,) if isinstance(target, str) else target
         target_label = "/".join(targets)
+        # 「扫完仍找不到 ⇒ 先退一层再试」只做一次（见下面的分支）。
+        backed_off = False
         for attempt in range(1, 5):
             threshold = 0.80 if anchor == "lobby_story" else 0.82
             if fixed_point is not None:                # ⚠️ **固定坐标点击**：按钮上有会动的元素时，模板定位跨天必然掉出阈
@@ -1568,6 +1570,64 @@ class Epic7Navigator:
                             return scanned
                         if match is not None:
                             source_screen = scanned
+                    if match is None and scroll_before_retry is not None and not backed_off:
+                        # ⚠️⚠️ **扫完两个方向仍不在画面里 ⇒ 先退一层再试一次**（2026-10-30）。
+                        #
+                        # 现场：活动页现在**不止一种长相**。游戏记得上次点了哪个活动 ⇒
+                        # 点「活动」进来可能直接落在**那个活动的详情页**上（左侧整列都是
+                        # 它的子项：梅铃 / 与梅铃一起吧！/ 修行者兑换所 …），
+                        # 根本没有「更多精彩活动」那一行。
+                        #
+                        # 判页只靠「‹ 活动」标题条（两个页面都有）⇒ 判成活动页；
+                        # 于是这里以为「只是那一行滚出视野了」，上下扫满 9 屏 ——
+                        # 而那一行在这一页**不存在**，扫多少次都不会出现。
+                        #
+                        # 所以先按一次返回（活动详情页的「‹ 活动」= 退回列表首页），
+                        # 退完**当场看页面身份**：
+                        #   * 还是活动页 ⇒ 两页身份相同，说明退回的很可能就是列表首页，
+                        #     **就地再认一次**那一行（不重扫，理由见下）；
+                        #   * 变成别的页 ⇒ 说明这一页的上级不是活动列表，立刻报明确错误，
+                        #     **不白等 `_wait_for_page` 的超时**（那会让失败原因再次失传）。
+                        #
+                        # ⚠️ 只做一次（``backed_off``）：再退就退到大厅了，那变成了
+                        # 「回家」这件事，不属于本步骤。
+                        backed_off = True
+                        swipes = getattr(self, "_scan_swipes_done", 0)
+                        self.runtime.log(
+                            f"模式=导航 页面={page_label(source)} "
+                            f"目标={target_label} 动作={action} 锚点={anchor} "
+                            "原因=上下扫完仍不在画面里 动作=按返回退一层再试一次"
+                        )
+                        self.runtime.back()
+                        screen_after = None
+                        observation_after = None
+                        for _ in range(6):
+                            self.sleep(self.poll_seconds)
+                            screen_after, observation_after = self._capture()
+                            if observation_after.name != source:
+                                break
+                        if observation_after.name != source:
+                            raise RuntimeError(
+                                f"页面[{page_label(source)}]缺少导航锚点 {anchor}"
+                                f"（已经在页内上下扫过 {swipes} 屏，仍不在画面里；"
+                                "按一次返回后退到了"
+                                f"[{page_label(observation_after.name)}] —— "
+                                "这一页很可能**确实没有**这个入口，例如停在某个"
+                                "活动的详情页上、它的上级并不是活动列表）"
+                            )
+                        # 退回后**仍判为活动页** ⇒ 说明退回的很可能就是活动列表首页
+                        # （两页的身份都是 ``activity_menu``）。就地再认一次；
+                        # 还认不到就收手，**不再扫第二遍** —— 那一行在详情页上根本不存在，
+                        # 多扫一轮只是把失败拖长。
+                        match = self._locate(screen_after, anchor, threshold)
+                        if match is None:
+                            raise RuntimeError(
+                                f"页面[{page_label(source)}]缺少导航锚点 {anchor}"
+                                f"（已经在页内上下扫过 {swipes} 屏，仍不在画面里；"
+                                "按一次返回退了一层、仍判为活动页之后，"
+                                "那一行还是不出现 —— 这一页很可能**确实没有**这个入口）"
+                            )
+                        source_screen = screen_after
                     if match is None:
                         swipes = getattr(self, "_scan_swipes_done", 0)
                         raise RuntimeError(
