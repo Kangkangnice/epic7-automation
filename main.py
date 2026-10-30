@@ -692,9 +692,16 @@ def _notify_daily(
     """每日任务整轮的通知（与单路线分开，标题/内容都是汇总口径）。"""
     if not live:
         return
+    # ⚠️ **用户手动按停止键 ⇒ 不发通知**（2026-10-30 用户要求）。
+    #
+    # 那是他自己做的事，人就在电脑前面 —— 再推一条"已手动停止"纯属打扰。
+    # 通知只留给**程序自己跑出来的结论**（失败 / 中止 / 完成），
+    # 也就是他不在看着的时候才需要手机响一下。
+    # 单路线那边早就是这个口径（``ManualStop`` 直接返回 130、不通知），
+    # 这里漏了，所以手动停也会推一条。
     if report.stopped_by_user:
-        title = "第七史诗：每日任务已手动停止"
-    elif report.aborted_reason:
+        return
+    if report.aborted_reason:
         title = "第七史诗：每日任务中途中止"
     elif report.any_failed:
         title = "第七史诗：每日任务完成（有失败）"

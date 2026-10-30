@@ -769,3 +769,32 @@ def test_daily_requires_live_confirmation(monkeypatch):
 
     with pytest.raises(SystemExit):
         main_module.main(["--daily", "--live"])
+
+
+def test_manual_stop_does_not_send_a_notification(monkeypatch):
+    """用户手动按停止 ⇒ **不发通知**（2026-10-30 用户要求）。
+
+    人就在电脑前面，再推一条「已手动停止」纯属打扰。通知只留给**程序自己跑出来的
+    结论**（失败 / 中途停止 / 完成）—— 也就是他不在看着的时候才需要手机响一下。
+    单路线那边早就是这个口径（``ManualStop`` 直接返回 130、不通知），整轮这边漏了。
+
+    变异验证：删掉 ``_notify_daily`` 里的 ``if report.stopped_by_user: return``
+    ⇒ 立刻红（会推出一条「每日任务已手动停止」）。
+    """
+    from auto_game_unified import main as main_module
+    from auto_game_unified.games.epic7.daily_tasks import DailyReport
+
+    sent: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        main_module,
+        "send_qqbot_c2c",
+        lambda title, body: sent.append((title, body)),
+    )
+
+    main_module._notify_daily(
+        live=True,
+        report=DailyReport(stopped_by_user=True),
+        elapsed_seconds=12,
+    )
+
+    assert sent == [], f"手动停止不该发通知，实际发了：{sent}"
