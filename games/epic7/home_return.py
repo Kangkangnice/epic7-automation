@@ -730,6 +730,14 @@ class _ActionVerifier:
             "状态=不重复按同一个ESC"
         )
         if self._esc_ineffective >= 2:
+            # ⚠️ 连续两次 ESC 都纹丝不动 ⇒ **先确认模拟器输入通道还在不在**。
+            #
+            # 2026-10-30 22:40 月塔那次就是这样收尾的：从「战斗开始」开始，
+            # 之后「打开快捷菜单」×2、「ESC」×2 **全部**无效 —— 说明不是某个按钮
+            # 点歪了，而是整条输入通道断了（画面本身完全正常，两张诊断图都能看清）。
+            # 当时日志里看不出这一点，只能事后翻诊断图猜。
+            # 与导航那边同一个口径（``navigation`` 在「连点两次纹丝不动」时也调这个）。
+            self._runtime.ensure_input_channel()
             diagnostic = _save(self._runtime, "return_home_v2_esc_no_effect")
             raise RuntimeError(
                 f"返回首页失败：连按 {self._esc_ineffective} 次 ESC 页面都没有变化"
