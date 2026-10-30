@@ -121,6 +121,24 @@ class BattleRecordTemplates:
 
 
 @dataclass(frozen=True)
+class KnightsGrowthRankTemplates:
+    """「骑士团成长Rank提升」弹窗（标题 + 点击关闭，与骑士团那四个同形）。
+
+    标题「骑士团成长Rank提升」，下面一行「已达到骑士团成长Rank.NN。」，
+    中间是段位徽章，底部通用「点击关闭」。
+
+    ``title`` = 排他锚点（2026-10-30 实测：真帧 1.0000，全库 559 张横屏帧里
+    次高只有 **0.3210**）；``close`` = 点击点，单独不排他（同一行灰字）。
+
+    ⚠️ 它与「签到 / 领取支援 / 每周点数奖励」是**同一族的第 5 个**，都盖在骑士团相关页上。
+    这一层只在**骑士团成长等级提升**时出现（低频，但撞上就必然卡住整条路线）。
+    """
+
+    title: np.ndarray
+    close: np.ndarray
+
+
+@dataclass(frozen=True)
 class PetGiftTemplates:
     """宠物小屋礼物角标（**单锚点**：整个角标就是要点的目标，没有标题/关闭点）。"""
 
@@ -257,6 +275,20 @@ _ARENA_RANK_REWARD_THRESHOLD = 0.88
 _BATTLE_RECORD_TITLE_REGION = (820, 226, 360, 80)
 _BATTLE_RECORD_CLOSE_REGION = _ARENA_RANK_REWARD_CLOSE_REGION
 _BATTLE_RECORD_THRESHOLD = 0.88
+# 「骑士团成长Rank提升」弹窗（2026-10-30 立，骑士团那一族的第 5 个）。
+#
+# 现场：19:48 世界首领战从大厅打开快捷菜单 → 点「骑士团」→ 弹出这一层盖住骑士团主页
+# ⇒ 导航判「画面已静止但仍认不出是哪一页」⇒ 只等 2 分钟 ⇒
+# 「导航转场 快捷菜单 → knights_home 失败」，那条路线整条记 ✗。
+#
+# 它不是新东西：全库复扫过阈的 5 张里，有一张是 **2026-10-08 骑士团捐赠**那次
+# 的 unknown 帧 —— 说明这层弹窗早就出现过，只是当时没登记，撞一次记一次 ✗。
+#
+# 区域比别的弹窗**宽得多**（标题是「骑士团成长Rank提升」10 个字 + 英文字母，432x54），
+# 关闭点也**更低**（y≈1033，而段位奖励那层在 y≈879）—— 因为这一层弹窗更高。
+_KNIGHTS_GROWTH_TITLE_REGION = (720, 160, 500, 90)
+_KNIGHTS_GROWTH_CLOSE_REGION = (880, 995, 220, 90)
+_KNIGHTS_GROWTH_THRESHOLD = 0.88
 # 「宠物小屋礼物角标」：**不是盖住页面的模态弹窗**，而是挂在**快捷菜单页**上的一个小角标
 # （就是回家流程点那颗「啤酒杯 → 酒馆」的那一页）。宠物送礼时，宠物小屋图标旁边会挂出
 # 一个「紫金礼盒 + 对话气泡」的角标；**点它一下才会领取礼物、角标才消失**，
@@ -391,6 +423,20 @@ def load_worldboss_support_reward_templates(
     return WorldBossSupportRewardTemplates(
         title=load_template(str(template_dir / "worldboss_support_reward_title.png")),
         close=load_template(str(template_dir / "worldboss_support_reward_close.png")),
+    )
+
+
+def load_knights_growth_rank_templates(
+    template_dir: Path,
+) -> KnightsGrowthRankTemplates:
+    """读「骑士团成长Rank提升」弹窗的两个锚点（``templates/navigation`` 下）。
+
+    与骑士团那三个弹窗同目录（它们说的是同一页上的事）。
+    两张都直接 ``load_template`` —— 缺一张就开跑前抛，不做静默降级。
+    """
+    return KnightsGrowthRankTemplates(
+        title=load_template(str(template_dir / "knights_growth_rank_title.png")),
+        close=load_template(str(template_dir / "knights_growth_rank_close.png")),
     )
 
 
@@ -804,6 +850,40 @@ def find_arena_rank_reward_close(
     return Match(close.center, min(title.score, close.score))
 
 
+def find_knights_growth_rank_close(
+    screen: np.ndarray,
+    title_template: np.ndarray,
+    close_template: np.ndarray,
+) -> Match | None:
+    """认「骑士团成长Rank提升」弹窗，命中就返回底部「点击关闭」那行字的中心。
+
+    现场（2026-10-30 19:48，`epic7_world_boss` 记的那次 ✗）：从大厅打开快捷菜单、
+    点「骑士团」之后它盖住骑士团主页 ⇒ 那条路线一路"只等"到 2 分钟上限，
+    报「导航转场 快捷菜单 → knights_home 失败」。
+
+    与「段位升级奖励」同一条分工：标题排他（全库次高 0.3210）、关闭点给位置。
+    """
+    title = find_template(
+        screen,
+        title_template,
+        _KNIGHTS_GROWTH_THRESHOLD,
+        region=_KNIGHTS_GROWTH_TITLE_REGION,
+        reference_size=_REFERENCE_SIZE,
+    )
+    if title is None:
+        return None
+    close = find_template(
+        screen,
+        close_template,
+        _KNIGHTS_GROWTH_THRESHOLD,
+        region=_KNIGHTS_GROWTH_CLOSE_REGION,
+        reference_size=_REFERENCE_SIZE,
+    )
+    if close is None:
+        return None
+    return Match(close.center, min(title.score, close.score))
+
+
 def find_battle_record_close(
     screen: np.ndarray,
     title_template: np.ndarray,
@@ -926,6 +1006,7 @@ class Epic7GlobalPopupGuard:
         | None = None,
         arena_rank_reward_templates: ArenaRankRewardTemplates | None = None,
         battle_record_templates: BattleRecordTemplates | None = None,
+        knights_growth_rank_templates: KnightsGrowthRankTemplates | None = None,
         pet_gift_templates: PetGiftTemplates | None = None,
         web_network_error_templates: WebNetworkErrorTemplates | None = None,
         sleep: Callable[[float], None] = default_sleep,
@@ -944,6 +1025,7 @@ class Epic7GlobalPopupGuard:
         self.worldboss_support_reward_templates = worldboss_support_reward_templates
         self.arena_rank_reward_templates = arena_rank_reward_templates
         self.battle_record_templates = battle_record_templates
+        self.knights_growth_rank_templates = knights_growth_rank_templates
         self.pet_gift_templates = pet_gift_templates
         self.web_network_error_templates = web_network_error_templates
         self.sleep = sleep
@@ -1098,6 +1180,20 @@ class Epic7GlobalPopupGuard:
                     "close-battle-record",
                     "battle_record_failed",
                     f"战斗记录弹窗点击{_MAX_POPUP_CLICKS}次后仍未消失",
+                )
+        if self.knights_growth_rank_templates is not None:
+            match = find_knights_growth_rank_close(
+                screen,
+                self.knights_growth_rank_templates.title,
+                self.knights_growth_rank_templates.close,
+            )
+            if match is not None:
+                return (
+                    match,
+                    "knights_growth_rank",
+                    "close-knights-growth-rank",
+                    "knights_growth_rank_failed",
+                    f"骑士团成长Rank提升弹窗点击{_MAX_POPUP_CLICKS}次后仍未消失",
                 )
         if self.pet_gift_templates is not None:
             match = find_pet_gift_badge(screen, self.pet_gift_templates.badge)

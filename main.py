@@ -45,6 +45,7 @@ from auto_game_unified.games.epic7.global_popups import (
     load_friendship_points_templates,
     load_gift_support_templates,
     load_intimacy_level_up_templates,
+    load_knights_growth_rank_templates,
     load_knights_signin_templates,
     load_knights_weekly_reward_templates,
     load_network_reconnect_templates,
@@ -478,6 +479,13 @@ def run_mode(
                 # 导航判不出页面 ⇒ 只等 129 秒后转场失败；随后回家又栽在快捷菜单上，
                 # **整轮每日任务只跑完竞技场一条就中止**，后面 5 条路线一条没跑。
                 battle_record_templates=load_battle_record_templates(
+                    template_root / "navigation"
+                ),
+                # 「骑士团成长Rank提升」弹窗：只在骑士团成长等级提升时出现（低频），
+                # 但撞上就必然卡住整条路线 —— 2026-10-30 19:48 世界首领战那次 ✗ 就是它：
+                # 从快捷菜单点「骑士团」后被它盖住，导航只等到 2 分钟上限报「转场失败」。
+                # 同一层弹窗 10-08 的骑士团捐赠诊断帧里也出现过，一直没登记。
+                knights_growth_rank_templates=load_knights_growth_rank_templates(
                     template_root / "navigation"
                 ),
                 # 宠物小屋礼物角标（快捷菜单页，宠物送礼时挂出的小角标），放 global 下。
