@@ -40,6 +40,7 @@ from auto_game_unified.games.epic7.navigation import Epic7Navigator, build_navig
 from auto_game_unified.games.epic7.global_popups import (
     Epic7GlobalPopupGuard,
     load_arena_rank_reward_templates,
+    load_battle_record_templates,
     load_friend_request_templates,
     load_friendship_points_templates,
     load_gift_support_templates,
@@ -469,6 +470,14 @@ def run_mode(
                 # ⚠️ 2026-10-20 08:02 那次「竞技场 ✗」就是它：竞技场没有任何判据认它
                 # ⇒ 转场一路等到 45 秒上限。放到守卫里，任何路线撞上都能消掉。
                 arena_rank_reward_templates=load_arena_rank_reward_templates(
+                    template_root / "navigation"
+                ),
+                # 「战斗记录」弹窗：**进竞技场时就弹**的防守战报 / 段位变动通知
+                # （与上面那层「打完一局才弹」的段位奖励不是一件事）。
+                # ⚠️ 2026-10-30 18:27 那次「竞技场 ✗」就是它：它盖住对手列表 ⇒
+                # 导航判不出页面 ⇒ 只等 129 秒后转场失败；随后回家又栽在快捷菜单上，
+                # **整轮每日任务只跑完竞技场一条就中止**，后面 5 条路线一条没跑。
+                battle_record_templates=load_battle_record_templates(
                     template_root / "navigation"
                 ),
                 # 宠物小屋礼物角标（快捷菜单页，宠物送礼时挂出的小角标），放 global 下。

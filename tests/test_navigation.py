@@ -1560,6 +1560,44 @@ class NavigationTests(unittest.TestCase):
                     f"{name} 上骨架也过了阈，会把别的页面判成活动页",
                 )
 
+    def test_the_blue_ui_activity_page_is_recognized_too(self):
+        """活动页换成蓝底面板之后**仍然认得出** —— 靠的是第二个候选，不是运气。
+
+        现场（``epic7_community.log``）：10-29 19:18 与 10-30 08:23 两次社区签到 ✗。
+        点进活动页后判「画面已静止但仍认不出是哪一页」，干等 2 分钟、重试一次仍认不出，
+        最后报「导航开始前应处于[大厅]」—— 它压根还停在活动页里。**每次都必然发生。**
+
+        根因：旧骨架取的是米黄横幅那一条，新版页面根本没有那块 ⇒ 实测 0.6063（阈 0.90）。
+
+        ⚠️ 前提断言（少了它这条会变成假绿）：旧模板在这张帧上**确实**不过阈。
+        否则「加第二个候选」就是没必要的冗余，这张帧也证明不了那次事故。
+        """
+        frame = fixture("activity_menu_blue_ui_live_20261030")
+        navigator = self.navigator([])
+
+        self.assertIsNone(
+            find_template(
+                frame,
+                navigator.templates.activity_page_shell[0],
+                0.90,
+                region=navigator._REGIONS["activity_page_shell"],
+                reference_size=REFERENCE_SIZE,
+            ),
+            "前提变了：旧骨架在新版活动页上已经过阈，这条测试证明不了「必须加候选」",
+        )
+
+        observation = navigator.observe(frame)
+        self.assertEqual(
+            "activity_menu",
+            observation.name,
+            f"新版活动页没被判成活动页（判成了 {observation.name}）",
+        )
+        self.assertGreaterEqual(
+            observation.confidence,
+            0.90,
+            f"新版骨架分数只到 {observation.confidence:.4f}，贴着阈值过的不算稳",
+        )
+
     def test_the_page_scan_is_bounded_and_never_guesses(self):
         """上下扫满预算仍然找不到 ⇒ **报错收手**：不许无限扫，更不许蒙着点。
 

@@ -197,7 +197,6 @@ _REGIONS = {
     "lobby_arena": (1600, 520, 330, 220),
     "lobby_battle": (1650, 430, 332, 220),
     "quick_menu_button": LABYRINTH_REGIONS["quick_menu_button"],
-    "quick_menu_grid_top": LABYRINTH_REGIONS["quick_menu_grid_top"],
     "quick_menu_tavern": LABYRINTH_REGIONS["quick_menu_tavern"],
     "pause_icon": LABYRINTH_REGIONS["pause_icon"],
     "pause_title": LABYRINTH_REGIONS["pause_title"],
@@ -270,7 +269,6 @@ class HomeReturnTemplates:
     lobby_arena: np.ndarray
     lobby_battle: np.ndarray
     quick_menu_button: np.ndarray
-    quick_menu_grid_top: np.ndarray
     quick_menu_tavern: np.ndarray
     pause_icon: np.ndarray
     pause_title: np.ndarray
@@ -286,8 +284,11 @@ def build_home_return_templates(
     ``template_root`` 是 ``games/epic7/templates``；``navigator_templates`` 是
     ``navigation.build_navigation_templates`` 的产物（大厅那两个锚点在里面）。
 
-    ⚠️ 迷宫那六个**直接读同一批模板文件**（``templates/labyrinth_stone/``），
+    ⚠️ 迷宫那五个**直接读同一批模板文件**（``templates/labyrinth_stone/``），
     与迷宫路线同源，**不另存第二份** —— 同一个控件维护两份迟早漂移。
+
+    ⚠️ 那块大网格 ``quick_menu_grid_top`` **刻意不在这里加载**：它已经不是判据了
+    （判「菜单已展开」改用页面身份 ``quick_menu``），详见 ``return_home_v2`` 第 ③ 段。
     """
     labyrinth = template_root / "labyrinth_stone"
 
@@ -299,7 +300,6 @@ def build_home_return_templates(
         lobby_arena=navigator_templates.lobby_arena,
         lobby_battle=navigator_templates.lobby_battle,
         quick_menu_button=labyrinth_template("quick_menu_button"),
-        quick_menu_grid_top=labyrinth_template("quick_menu_grid_top"),
         quick_menu_tavern=labyrinth_template("quick_menu_tavern"),
         pause_icon=labyrinth_template("pause_icon"),
         pause_title=labyrinth_template("pause_title"),
@@ -456,10 +456,19 @@ def return_home_v2(
         # ⚠️ 四个点击分支都带 ``is_retired`` 闸门：同一个动作在同一页上连续两次
         # 验收无效，就**不许再选它**，让流程落到 ⑧ 的 ESC 兜底。没有这道闸门，
         # 2026-10-19 那次就在商店页上把「打开快捷菜单」点了 8 次、空耗 120 秒。
+        # ⚠️ 「菜单是否已展开」**不在这里自己判**，直接用 ``observe`` 给出的页面身份
+        # ``quick_menu`` —— 导航层那份判据是两颗菜单专属图标
+        # （``quick_menu_hero`` / ``quick_menu_knights``：菜单帧 0.997+，全库次高 0.41）。
+        #
+        # 旧写法要求 ``quick_menu_grid_top``（迷宫那块大网格）与酒杯**同时**命中，
+        # 2026-10-30 18:31 实跑就栽在这里：竞技场页上那块网格只有 **0.7977**、门槛 0.82，
+        # 差 0.0023 没过 ⇒ 酒杯明明 0.9979（满分）也点不了 ⇒ 只能 ESC 关菜单 →
+        # 回到竞技场 → 再开菜单，8 轮耗掉 120 秒，**后面 5 条路线全部没跑**。
+        # 那块网格罩住整片菜单底图，对底页不同 / 节日装饰敏感（`navigation` 里两处注释
+        # 早已写明「刻意不用」，只有这条回家路径漏改）。
         tavern = _locate(screen, templates.quick_menu_tavern, "quick_menu_tavern")
-        grid = _locate(screen, templates.quick_menu_grid_top, "quick_menu_grid_top")
         if (
-            grid is not None
+            observed == "quick_menu"
             and tavern is not None
             and not verifier.is_retired("点酒馆", observed)
         ):

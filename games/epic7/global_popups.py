@@ -101,6 +101,26 @@ class ArenaRankRewardTemplates:
 
 
 @dataclass(frozen=True)
+class BattleRecordTemplates:
+    """「战斗记录」弹窗（竞技场防守战绩 / 段位变动通知）。
+
+    标题「战斗记录」下面写着「根据防御队的战斗结果和排名变动，段位变更如下。」，
+    中间是段位从 Ⅱ 掉到 Ⅲ 的图示，底部是通用的「点击关闭」。
+
+    ``title`` = 排他锚点（2026-10-30 实测：真帧 1.0000，其余横屏帧最高 0.2388）；
+    ``close`` = 点击点，**复用「段位升级奖励」那张**（同一行灰字，不另存第二份）。
+    ⚠️ close 单独完全不排他，必须靠标题兜住 —— 与 ``ArenaRankRewardTemplates`` 同一条规矩。
+
+    它和「段位提升」「升级奖励」是**三件不同的事**，别合并：
+    那两层是打完一局之后的流程内弹窗（点确认 → 段位提升 → 升级奖励），
+    这一层是**进竞技场时就弹**的防守战报，业务上跟「刚才那局」没关系。
+    """
+
+    title: np.ndarray
+    close: np.ndarray
+
+
+@dataclass(frozen=True)
 class PetGiftTemplates:
     """宠物小屋礼物角标（**单锚点**：整个角标就是要点的目标，没有标题/关闭点）。"""
 
@@ -221,6 +241,22 @@ _WORLDBOSS_SUPPORT_THRESHOLD = 0.80
 _ARENA_RANK_REWARD_TITLE_REGION = (820, 285, 360, 80)
 _ARENA_RANK_REWARD_CLOSE_REGION = (860, 795, 280, 110)
 _ARENA_RANK_REWARD_THRESHOLD = 0.88
+# 「战斗记录」弹窗（竞技场防守战绩 / 段位变动通知，2026-10-30 立）。
+#
+# 现场：18:27 从大厅点「进入竞技场」，游戏弹出这一层盖住对手列表；它不在任何判据里
+# ⇒ 导航判「画面已静止但仍认不出是哪一页」⇒ 只等（"来源已离开、目标未到"）⇒
+# **129 秒**后报「导航转场 竞技场模式选择 → arena_ready 失败」。
+# 紧接着回家又栽在快捷菜单上（那是另一处，见 ``home_return.return_home_v2``），
+# 结果整轮每日任务只跑完竞技场一条就中止，后面 5 条路线一条没跑。
+#
+# 为什么放全局守卫：它是**进竞技场时必然出现**的模态通知（只要期间有防守战绩/段位变动），
+# 跟「打完之后」的段位提升不是一回事；放进守卫后任何路线撞上都能消掉。
+#
+# 标题区域比「升级奖励」那套**高 59px**：这一层的标题在 y 242~285，而那层在 y 285 以下，
+# 两者用同一块区域会互相切掉。close 区域直接沿用那套（同一行灰字、同一高度）。
+_BATTLE_RECORD_TITLE_REGION = (820, 226, 360, 80)
+_BATTLE_RECORD_CLOSE_REGION = _ARENA_RANK_REWARD_CLOSE_REGION
+_BATTLE_RECORD_THRESHOLD = 0.88
 # 「宠物小屋礼物角标」：**不是盖住页面的模态弹窗**，而是挂在**快捷菜单页**上的一个小角标
 # （就是回家流程点那颗「啤酒杯 → 酒馆」的那一页）。宠物送礼时，宠物小屋图标旁边会挂出
 # 一个「紫金礼盒 + 对话气泡」的角标；**点它一下才会领取礼物、角标才消失**，
@@ -355,6 +391,21 @@ def load_worldboss_support_reward_templates(
     return WorldBossSupportRewardTemplates(
         title=load_template(str(template_dir / "worldboss_support_reward_title.png")),
         close=load_template(str(template_dir / "worldboss_support_reward_close.png")),
+    )
+
+
+def load_battle_record_templates(
+    template_dir: Path,
+) -> BattleRecordTemplates:
+    """读「战斗记录」弹窗的两个锚点（``templates/navigation`` 下）。
+
+    ``close`` **直接读「段位升级奖励」那张**（同一行「点击关闭」灰字）——
+    同一个控件只该有一份图，另存第二份迟早漂移。
+    两张都直接 ``load_template`` —— 缺一张就开跑前抛，不做静默降级。
+    """
+    return BattleRecordTemplates(
+        title=load_template(str(template_dir / "battle_record_title.png")),
+        close=load_template(str(template_dir / "arena_rank_reward_close.png")),
     )
 
 
@@ -753,6 +804,42 @@ def find_arena_rank_reward_close(
     return Match(close.center, min(title.score, close.score))
 
 
+def find_battle_record_close(
+    screen: np.ndarray,
+    title_template: np.ndarray,
+    close_template: np.ndarray,
+) -> Match | None:
+    """认「战斗记录」弹窗，命中就返回底部「点击关闭」那行字的中心。
+
+    现场（2026-10-30 18:27，`epic7_arena` 记的那次 ✗）：从大厅点「进入竞技场」后，
+    游戏先弹出这一层（防守战绩：优胜者Ⅱ → Ⅲ，段位下降）。它把对手列表压暗 ⇒
+    `list_ready` 从 0.8834 掉到 0.7230、竞技场标题却仍有 0.9981（标题在弹窗上方），
+    于是**没有任何一页认得出它** ⇒ 导航一路"只等"到 129 秒报「转场失败」。
+
+    为什么必须双锚点：标题「战斗记录」排他（真帧 1.0000 / 其余横屏帧最高 0.2388），
+    而「点击关闭」是通用灰字（同一行控件在全库最像的到 0.9852），单锚点会乱点。
+    """
+    title = find_template(
+        screen,
+        title_template,
+        _BATTLE_RECORD_THRESHOLD,
+        region=_BATTLE_RECORD_TITLE_REGION,
+        reference_size=_REFERENCE_SIZE,
+    )
+    if title is None:
+        return None
+    close = find_template(
+        screen,
+        close_template,
+        _BATTLE_RECORD_THRESHOLD,
+        region=_BATTLE_RECORD_CLOSE_REGION,
+        reference_size=_REFERENCE_SIZE,
+    )
+    if close is None:
+        return None
+    return Match(close.center, min(title.score, close.score))
+
+
 def find_web_network_error_close(
     screen: np.ndarray,
     templates: WebNetworkErrorTemplates,
@@ -838,6 +925,7 @@ class Epic7GlobalPopupGuard:
         worldboss_support_reward_templates: WorldBossSupportRewardTemplates
         | None = None,
         arena_rank_reward_templates: ArenaRankRewardTemplates | None = None,
+        battle_record_templates: BattleRecordTemplates | None = None,
         pet_gift_templates: PetGiftTemplates | None = None,
         web_network_error_templates: WebNetworkErrorTemplates | None = None,
         sleep: Callable[[float], None] = default_sleep,
@@ -855,6 +943,7 @@ class Epic7GlobalPopupGuard:
         self.knights_weekly_reward_templates = knights_weekly_reward_templates
         self.worldboss_support_reward_templates = worldboss_support_reward_templates
         self.arena_rank_reward_templates = arena_rank_reward_templates
+        self.battle_record_templates = battle_record_templates
         self.pet_gift_templates = pet_gift_templates
         self.web_network_error_templates = web_network_error_templates
         self.sleep = sleep
@@ -995,6 +1084,20 @@ class Epic7GlobalPopupGuard:
                     "close-arena-rank-reward",
                     "arena_rank_reward_failed",
                     f"段位升级奖励弹窗点击{_MAX_POPUP_CLICKS}次后仍未消失",
+                )
+        if self.battle_record_templates is not None:
+            match = find_battle_record_close(
+                screen,
+                self.battle_record_templates.title,
+                self.battle_record_templates.close,
+            )
+            if match is not None:
+                return (
+                    match,
+                    "battle_record",
+                    "close-battle-record",
+                    "battle_record_failed",
+                    f"战斗记录弹窗点击{_MAX_POPUP_CLICKS}次后仍未消失",
                 )
         if self.pet_gift_templates is not None:
             match = find_pet_gift_badge(screen, self.pet_gift_templates.badge)

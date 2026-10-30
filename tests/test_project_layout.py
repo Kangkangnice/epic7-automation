@@ -35,6 +35,11 @@ class ProjectLayoutTests(unittest.TestCase):
                 # 它是「标题 + 点击关闭」这对锚点的唯一正例；同一帧上「点击关闭」单独
                 # 在本页之外也有 0.9548（`imprint_result_popup.png`）⇒ 单锚点不成立。
                 "arena_rank_reward_live_20261020.png",
+                # 2026-10-30 18:27 真机：**进竞技场时就弹**的「战斗记录」（防守战绩 /
+                # 段位变动通知）。它与上面那张不是一回事（那个在打完一局之后），
+                # 但同样把底页压暗、让竞技场一条判据都认不出 ⇒ 转场只等到 129 秒。
+                # 同一句报错在此前 10-28 / 10-29 两天的早晨也各出现过一次。
+                "battle_record_live_20261030.png",
             },
             {path.name for path in fixture_dir.glob("*.png")},
         )

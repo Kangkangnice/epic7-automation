@@ -35,6 +35,7 @@ import numpy as np
 from PIL import Image
 
 from auto_game_unified import main as main_module
+from auto_game_unified.core.matcher import find_template, load_template
 from auto_game_unified.core.runtime import ManualStop, Runtime
 from auto_game_unified.games.epic7.modes import get_mode
 from auto_game_unified.games.epic7.navigation import (
@@ -89,12 +90,35 @@ def _shop_frame() -> np.ndarray:
     return image[:1132, :1982]
 
 
+def _quick_menu_over_arena_frame() -> np.ndarray:
+    """快捷菜单展开在**竞技场**底页上的真帧 —— 2026-10-30 18:31 卡死 120 秒的现场。
+
+    与 ``quick_menu_over_lobby.png`` 的差别只有「底页是谁」：菜单还是那一套，
+    但底图从大厅换成了竞技场（还带着段位变更弹窗的压暗）。那块大网格
+    ``quick_menu_grid_top`` 罩住整片菜单底图，换底页就掉分 —— 正是这次事故的成因。
+    """
+    image = np.asarray(
+        Image.open(NAVIGATION_FIXTURES / "quick_menu_over_arena_live_20261030.png").convert(
+            "RGB"
+        )
+    )
+    return image[:1132, :1982]
+
+
 LOBBY_FRAME = _lobby_frame()
 INDOOR_FRAME = _indoor_frame()
 SHOP_FRAME = _shop_frame()
+QUICK_MENU_OVER_ARENA_FRAME = _quick_menu_over_arena_frame()
 
 
-def _sequence_runtime(frames: list, *, sleeps: list | None = None, logs: list | None = None):
+def _sequence_runtime(
+    frames: list,
+    *,
+    sleeps: list | None = None,
+    logs: list | None = None,
+    clicks: list | None = None,
+    backs: list | None = None,
+):
     """真 Runtime，但截图器按给定序列回放（用完最后一张就一直回放它）。
 
     给「回家必须连续两帧稳定才返回」这类守卫测试用：回家要连吃两帧才能稳定，
@@ -116,8 +140,8 @@ def _sequence_runtime(frames: list, *, sleeps: list | None = None, logs: list | 
 
     runtime = Runtime(
         capture,
-        click=lambda *_a, **_k: None,
-        back=lambda: None,
+        click=(clicks.append if clicks is not None else lambda *_a, **_k: None),
+        back=(lambda: backs.append(1)) if backs is not None else (lambda: None),
         emit=(logs.append if logs is not None else lambda _m: None),
         monotonic=clock,
     )
@@ -301,6 +325,69 @@ class RealWiringTests(unittest.TestCase):
         )
         # 返回的必须是第 2 帧（连续两帧稳定后的那一帧），而不是第 1 帧。
         self.assertIs(lobby_b, result)
+
+    def test_the_tavern_is_clicked_when_the_page_says_the_menu_is_open(self):
+        """菜单开着、酒杯满分 ⇒ **必须点酒馆**，不许因为一块网格图而退回去按 ESC。
+
+        2026-10-30 18:31 实跑：竞技场那条 ✗，回家 8 轮「打开快捷菜单 → 按 ESC」
+        耗掉 120 秒，**后面 5 条路线（世界首领 / 骑士团 / 迷宫 / 圣域 / 社区）
+        一条都没跑**。日志里 8 轮长得一模一样，看不出它在等什么。
+
+        根因不是酒杯：那一帧上它 **0.9979**（满分）。是旧写法要求大网格
+        ``quick_menu_grid_top`` **也命中**，而这块网格在竞技场底页上只有
+        **0.7977**，离 0.82 的门槛差 0.0023 ⇒ 条件永远不成立 ⇒ 只剩 ESC 兜底，
+        而 ESC 只会关掉菜单、回到竞技场，于是原地打转。
+
+        夹具就是那一帧（``quick_menu_over_arena_live_20261030.png``）。
+
+        ⚠️ 先钉住前提：这一帧上大网格**确实**过不了 0.82。没有这条断言，
+        哪天底图变了、网格又能过了，这条测试就会「绿着但什么也没守」——
+        那正是本项目最忌讳的假绿。
+
+        变异验证：把 ``observed == "quick_menu"`` 换回 ``grid is not None``
+        （旧写法）⇒ 下面两条断言立刻红（点击 0 次、ESC 若干次）。
+        """
+        menu = QUICK_MENU_OVER_ARENA_FRAME
+        self.assertIsNone(
+            find_template(
+                menu,
+                load_template(
+                    str(TEMPLATES / "labyrinth_stone" / "quick_menu_grid_top.png")
+                ),
+                0.82,
+                region=(1500, 230, 300, 240),
+                reference_size=(1982, 1132),
+            ),
+            "夹具前提变了：大网格在这一帧上已经过阈，这条测试抓不住 2026-10-30 的回退",
+        )
+
+        templates = home_return_module.build_home_return_templates(
+            TEMPLATES, build_navigation_templates(TEMPLATES)
+        )
+        clicks: list[tuple[int, int]] = []
+        backs: list[int] = []
+        runtime, sleep = _sequence_runtime(
+            [menu, menu, LOBBY_FRAME, LOBBY_FRAME], clicks=clicks, backs=backs
+        )
+
+        def observe(screen: np.ndarray) -> str:
+            return "quick_menu" if screen is menu else "lobby"
+
+        home_return_module.return_home_v2(
+            templates=templates,
+            runtime=runtime,
+            observe=observe,
+            sleep=sleep,
+            poll_seconds=0.5,
+        )
+
+        self.assertEqual([], backs, f"菜单开着就不该按 ESC，实际按了 {len(backs)} 次")
+        self.assertEqual(1, len(clicks), f"应当点一次酒馆，实际点了 {clicks}")
+        x, y = clicks[0]
+        self.assertTrue(
+            1590 <= x <= 1820 and 860 <= y <= 1060,
+            f"点下去的位置不是酒杯图标：{clicks[0]}",
+        )
 
     def test_esc_waits_long_enough_for_the_screen_to_turn_over(self):
         """按完 ESC 之后必须**等够时间**再判下一帧，否则同一层会退两层。
