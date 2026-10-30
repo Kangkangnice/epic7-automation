@@ -79,6 +79,8 @@ class MainStoryTests(unittest.TestCase):
                 worldboss_support_reward_templates = object()
                 # 「段位升级奖励」弹窗（2026-10-20 接，第 11 个全局弹窗）。
                 arena_rank_reward_templates = object()
+                # 「战斗记录」弹窗（2026-10-30 接，第 12 个全局弹窗）。
+                battle_record_templates = object()
                 # ⚠️ 本文件三处 B023 抑制标记都是误报：events 虽然在外层循环里被重新赋值，
                 # 但这些 side_effect / on_call 都是**当轮同步调用**的（mock 在被调用的那一刻
                 # 就执行它），取不到下一轮的值。ruff 只看语法，看不出调用时机。
@@ -151,6 +153,12 @@ class MainStoryTests(unittest.TestCase):
                         "load_arena_rank_reward_templates",
                         return_value=arena_rank_reward_templates,
                     ),
+                    # 「战斗记录」弹窗：进竞技场时就弹的防守战报，2026-10-30 接。
+                    patch.object(
+                        main_module,
+                        "load_battle_record_templates",
+                        return_value=battle_record_templates,
+                    ),
                     patch.object(main_module, "Epic7Navigator") as navigator_type,
                     patch.object(main_module, "HomeReturn") as home_return_type,
                 ):
@@ -195,6 +203,7 @@ class MainStoryTests(unittest.TestCase):
                         worldboss_support_reward_templates
                     ),
                     arena_rank_reward_templates=arena_rank_reward_templates,
+                    battle_record_templates=battle_record_templates,
                 )
                 self.assertEqual(["guard", "navigation"], events)
 

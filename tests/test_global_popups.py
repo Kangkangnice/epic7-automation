@@ -8,6 +8,7 @@ from auto_game_unified.games.epic7 import global_popups as popups_module
 from auto_game_unified.games.epic7.global_popups import (
     Epic7GlobalPopupGuard,
     find_arena_rank_reward_close,
+    find_battle_record_close,
     find_friend_request_cancel,
     find_friendship_points_popup_close,
     find_gift_support_close,
@@ -19,6 +20,7 @@ from auto_game_unified.games.epic7.global_popups import (
     find_web_network_error_close,
     find_worldboss_support_reward_close,
     load_arena_rank_reward_templates,
+    load_battle_record_templates,
     load_friend_request_templates,
     load_friendship_points_templates,
     load_gift_support_templates,
@@ -1319,3 +1321,107 @@ def test_guard_dismisses_the_arena_rank_reward_popup():
     assert 900 <= clicks[0][0] <= 1020
     assert 800 <= clicks[0][1] <= 865
     assert any("动作=close-arena-rank-reward" in line for line in logs)
+
+
+# ── 第 12 个全局弹窗：竞技场「战斗记录」（2026-10-30）────────────────────────
+#
+# 与上面那层「段位升级奖励」**不是一件事**：那个是打完一局后的流程内弹窗，
+# 这个是**进竞技场时就弹**的防守战报 / 段位变动通知（「根据防御队的战斗结果和
+# 排名变动，段位变更如下。」）。
+#
+# 2026-10-30 18:27 现场：点「进入竞技场」后它盖住对手列表 ⇒ 竞技场一条判据都认不出它
+# ⇒ 导航"只等"到 129 秒报「转场失败」；随后回家又栽在快捷菜单上（另一处），
+# 整轮每日任务**只跑完竞技场一条就中止**，后面 5 条路线一条没跑。
+
+
+def test_battle_record_popup_is_recognized_from_both_anchors():
+    """标题「战斗记录」+ 底部「点击关闭」，两个锚点都命中才算。
+
+    夹具就是那次失败帧：`20261030_182911_007868_navigation_arena_mode_to_arena_ready_failed.png`。
+    """
+    popup = _global_screen("battle_record_live_20261030.png")
+    templates = load_battle_record_templates(NAVIGATION_TEMPLATES)
+
+    match = find_battle_record_close(popup, templates.title, templates.close)
+
+    assert match is not None
+    # 「点击关闭」实测中心 (961, 879)。
+    assert 900 <= match.center[0] <= 1020
+    assert 845 <= match.center[1] <= 915
+
+
+def test_battle_record_popup_requires_title_and_close_anchor():
+    """两个锚点缺一不可：标题挡乱命中，关闭点给点击位置。"""
+    popup = _global_screen("battle_record_live_20261030.png")
+    templates = load_battle_record_templates(NAVIGATION_TEMPLATES)
+    without_title = popup.copy()
+    without_title[226:306, 820:1180] = 0
+    without_close = popup.copy()
+    without_close[795:905, 860:1140] = 0
+
+    assert (
+        find_battle_record_close(without_title, templates.title, templates.close)
+        is None
+    )
+    assert (
+        find_battle_record_close(without_close, templates.title, templates.close)
+        is None
+    )
+
+
+def test_battle_record_popup_rejects_the_pages_around_it():
+    """弹窗出现前后那几页都不能命中 —— 否则守卫会反复点、把流程顶住。
+
+    最贴近现场的那张是 ``quick_menu_over_arena_live_20261030``：同一次事故里
+    弹窗消掉之后、回家卡住的那一帧（快捷菜单展开在竞技场页上）。
+    """
+    templates = load_battle_record_templates(NAVIGATION_TEMPLATES)
+
+    for frame in (
+        np.asarray(
+            Image.open(
+                ROOT
+                / "tests"
+                / "fixtures"
+                / "epic7_navigation"
+                / "quick_menu_over_arena_live_20261030.png"
+            ).convert("RGB")
+        ),
+        _arena_screen("selected.png"),
+        _arena_screen("result_defeat_live_20260925.png"),
+    ):
+        assert find_battle_record_close(frame, templates.title, templates.close) is None
+
+
+def test_guard_dismisses_the_battle_record_popup():
+    popup = _global_screen("battle_record_live_20261030.png")
+    # 弹窗消掉之后落回的「对手详情」那一页。
+    recovered = _arena_screen("selected.png")
+    screens = iter([popup, popup, recovered])
+    clicks = []
+    logs = []
+    clock = FakeClock()
+    runtime = Runtime(
+        lambda: next(screens),
+        clicks.append,
+        monotonic=clock.now,
+        emit=logs.append,
+    )
+    runtime.set_capture_guard(
+        Epic7GlobalPopupGuard(
+            load_network_reconnect_templates(TEMPLATES),
+            battle_record_templates=load_battle_record_templates(
+                NAVIGATION_TEMPLATES
+            ),
+            sleep=clock.sleep,
+            now=clock.now,
+        )
+    )
+
+    received = runtime.capture()
+
+    assert np.array_equal(received, recovered)
+    assert len(clicks) == 1
+    assert 900 <= clicks[0][0] <= 1020
+    assert 845 <= clicks[0][1] <= 915
+    assert any("动作=close-battle-record" in line for line in logs)
