@@ -13,6 +13,7 @@ from auto_game_unified.games.epic7.global_popups import (
     find_friendship_points_popup_close,
     find_gift_support_close,
     find_intimacy_level_up_dismiss,
+    find_knights_growth_rank_close,
     find_knights_signin_close,
     find_knights_weekly_reward_close,
     find_network_retry,
@@ -25,6 +26,7 @@ from auto_game_unified.games.epic7.global_popups import (
     load_friendship_points_templates,
     load_gift_support_templates,
     load_intimacy_level_up_templates,
+    load_knights_growth_rank_templates,
     load_knights_signin_templates,
     load_knights_weekly_reward_templates,
     load_network_reconnect_templates,
@@ -1425,3 +1427,98 @@ def test_guard_dismisses_the_battle_record_popup():
     assert 900 <= clicks[0][0] <= 1020
     assert 845 <= clicks[0][1] <= 915
     assert any("动作=close-battle-record" in line for line in logs)
+
+
+# ── 第 13 个全局弹窗：骑士团「成长Rank提升」（2026-10-30）────────────────────
+#
+# 骑士团那一族（签到 / 领取支援 / 每周点数奖励）的第 5 个。只在骑士团成长等级提升时出现，
+# 但撞上就必然卡住整条路线：2026-10-30 19:48 世界首领战从快捷菜单点「骑士团」之后，
+# 它盖住骑士团主页 ⇒ 导航只等到 2 分钟上限，报「导航转场 快捷菜单 → knights_home 失败」。
+# 同一层弹窗在 2026-10-08 的骑士团捐赠诊断帧里也出现过，一直没登记。
+
+
+def test_knights_growth_rank_popup_is_recognized_from_both_anchors():
+    """标题「骑士团成长Rank提升」+ 底部「点击关闭」，两个锚点都命中才算。"""
+    popup = _global_screen("knights_growth_rank_live_20261030.png")
+    templates = load_knights_growth_rank_templates(NAVIGATION_TEMPLATES)
+
+    match = find_knights_growth_rank_close(popup, templates.title, templates.close)
+
+    assert match is not None
+    # 「点击关闭」实测中心 (960, 1034)。它比段位奖励那层（y≈879）低得多 ——
+    # 这层弹窗更高，所以关闭点在更下面。
+    assert 900 <= match.center[0] <= 1020
+    assert 1000 <= match.center[1] <= 1070
+
+
+def test_knights_growth_rank_popup_requires_title_and_close_anchor():
+    """两个锚点缺一不可。"""
+    popup = _global_screen("knights_growth_rank_live_20261030.png")
+    templates = load_knights_growth_rank_templates(NAVIGATION_TEMPLATES)
+    without_title = popup.copy()
+    without_title[160:250, 720:1220] = 0
+    without_close = popup.copy()
+    without_close[995:1085, 880:1100] = 0
+
+    assert (
+        find_knights_growth_rank_close(without_title, templates.title, templates.close)
+        is None
+    )
+    assert (
+        find_knights_growth_rank_close(without_close, templates.title, templates.close)
+        is None
+    )
+
+
+def test_knights_growth_rank_popup_rejects_the_pages_around_it():
+    """弹窗背后的骑士团主页 / 快捷菜单 / 大厅都不能命中。"""
+    templates = load_knights_growth_rank_templates(NAVIGATION_TEMPLATES)
+
+    for name in ("quick_menu_over_lobby", "lobby"):
+        frame = np.asarray(
+            Image.open(
+                ROOT / "tests" / "fixtures" / "epic7_navigation" / f"{name}.png"
+            ).convert("RGB")
+        )
+        assert (
+            find_knights_growth_rank_close(frame, templates.title, templates.close)
+            is None
+        ), name
+
+
+def test_guard_dismisses_the_knights_growth_rank_popup():
+    popup = _global_screen("knights_growth_rank_live_20261030.png")
+    # 弹窗消掉之后落回的大厅那一页。
+    recovered = np.asarray(
+        Image.open(
+            ROOT / "tests" / "fixtures" / "epic7_navigation" / "lobby.png"
+        ).convert("RGB")
+    )
+    screens = iter([popup, popup, recovered])
+    clicks = []
+    logs = []
+    clock = FakeClock()
+    runtime = Runtime(
+        lambda: next(screens),
+        clicks.append,
+        monotonic=clock.now,
+        emit=logs.append,
+    )
+    runtime.set_capture_guard(
+        Epic7GlobalPopupGuard(
+            load_network_reconnect_templates(TEMPLATES),
+            knights_growth_rank_templates=load_knights_growth_rank_templates(
+                NAVIGATION_TEMPLATES
+            ),
+            sleep=clock.sleep,
+            now=clock.now,
+        )
+    )
+
+    received = runtime.capture()
+
+    assert np.array_equal(received, recovered)
+    assert len(clicks) == 1
+    assert 900 <= clicks[0][0] <= 1020
+    assert 1000 <= clicks[0][1] <= 1070
+    assert any("动作=close-knights-growth-rank" in line for line in logs)

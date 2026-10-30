@@ -40,6 +40,11 @@ class ProjectLayoutTests(unittest.TestCase):
                 # 但同样把底页压暗、让竞技场一条判据都认不出 ⇒ 转场只等到 129 秒。
                 # 同一句报错在此前 10-28 / 10-29 两天的早晨也各出现过一次。
                 "battle_record_live_20261030.png",
+                # 2026-10-30 19:48 真机：骑士团**成长 Rank 提升**时的通知窗。
+                # 从快捷菜单点「骑士团」后它盖住骑士团主页 ⇒ 世界首领战那条路线
+                # 一路"只等"到 2 分钟上限。同一层弹窗 10-08 的骑士团捐赠诊断帧里
+                # 也出现过（说明早就存在，只是当时没登记）。
+                "knights_growth_rank_live_20261030.png",
             },
             {path.name for path in fixture_dir.glob("*.png")},
         )
