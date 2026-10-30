@@ -124,6 +124,43 @@ class TowerStateMachineTests(unittest.TestCase):
 
     # ---- 判据分离度 ----
 
+    def test_the_reset_confirm_popup_is_answered_with_confirm(self):
+        """点入场后若弹出「确认重置阶段」，必须点「确认」，不能当没看见。
+
+        2026-10-30 现场：所选阶段**已经征服** ⇒ 点「入场」弹出
+        「确定要从选择的阶段开始吗？……重置阶段后，将从1层开始进行。」
+        之前没有这条判据，导航以为还停在月塔主页（弹窗压暗了页面，但
+        ``home_enter`` 在这张帧上仍有 **0.9995**），于是连点 4 次入场 ⇒
+        「动作[enter-tower]未稳定进入[楼层列表]」。
+
+        用户 2026-10-30 拍板：「就是要从头开始打的，这个没问题」⇒ 点「确认」。
+
+        ⚠️ 这条同时钉住**判定顺序**：弹窗帧上 ``home_enter`` 也是成立的，
+        所以 ``reset_confirm_title`` 必须排在 ``_required(home_enter)`` **之前**。
+        把顺序调回去 ⇒ 这条立刻红（会返回 ``enter-tower`` 而不是 ``confirm-reset``）。
+        """
+        machine = self.machine()
+        screen = screen_with((machine.templates.reset_confirm_title, (775, 523)))
+
+        action = machine.next_action(screen)
+
+        self.assertIsNotNone(action)
+        self.assertEqual(
+            "confirm-reset",
+            action.name,
+            "弹窗帧上走了别的分支 —— 判定顺序反了？",
+        )
+        self.assertEqual(
+            TowerStateMachine._POINT_RESET_CONFIRM,
+            action.point,
+            "确认按钮的点击点不对",
+        )
+        self.assertEqual(
+            (TowerState.FLOOR_LIST,),
+            action.target_states,
+            "确认之后应当等「楼层列表」",
+        )
+
     def test_every_judge_clears_its_threshold_with_a_wide_margin(self):
         """判据必须「本页最低分」与「他页最高分」之间留出余量。
 

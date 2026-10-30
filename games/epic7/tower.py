@@ -152,6 +152,9 @@ class TowerAction(RouteAction):
 class TowerTemplates:
     season_tower_title: np.ndarray
     home_enter: np.ndarray
+    # 「确定要从选择的阶段开始吗？」确认框的**固定文案**（不含阶段号）。
+    # 点入场后、所选阶段已征服时弹出；点「确认」= 重置从第 1 层开始（用户 2026-10-30 确认）。
+    reset_confirm_title: np.ndarray
     floor_select_team: np.ndarray
     team_battle_start: np.ndarray
     prepare_title: np.ndarray
@@ -171,6 +174,7 @@ def build_tower_templates(template_dir: Path) -> TowerTemplates:
     return TowerTemplates(
         season_tower_title=load("season_tower_title"),
         home_enter=load("home_enter"),
+        reset_confirm_title=load("reset_confirm_title"),
         floor_select_team=load("floor_select_team"),
         team_battle_start=load("team_battle_start"),
         prepare_title=load("prepare_title"),
@@ -214,6 +218,9 @@ class TowerStateMachine:
     # ⇒ 判据与点击点分离：模板只回答「在不在」，点在哪儿由下面的常量说了算。
     # 全部坐标来自 2026-10-08 实机测量（见 `_tower_stage/MEASUREMENTS.md`）。
     _POINT_ENTER = (1640, 1055)
+    # 「确认重置阶段」弹窗里的「确认」按钮（2026-10-30 实测：文字 x 1094~1149 / y 794）。
+    # 它就在弹窗正中偏右，位置由弹窗布局决定、不随阶段变。
+    _POINT_RESET_CONFIRM = (1122, 794)
     _POINT_SELECT_TEAM = (1698, 1044)
     _POINT_BATTLE_START = (1726, 1040)
     # 「三选一」固定选中间那张卡（用户拍板）。卡位实测 c=(958,300)（图标）/ 卡面到 y≈870。
@@ -448,6 +455,25 @@ class TowerStateMachine:
 
     def next_action(self, screen: np.ndarray) -> Optional[TowerAction]:
         if self.state == TowerState.HOME:
+            # ⚠️⚠️ **先看是不是「确认重置阶段」弹窗**（2026-10-30）。
+            #
+            # 点「入场」后，如果所选阶段**已经征服**，游戏会弹这一层：
+            # 「确定要从选择的阶段开始吗？……重置阶段后，将从1层开始进行。」
+            # 用户 2026-10-30 拍板：**就是要从头开始打，点确认没问题**。
+            #
+            # 之前没有这条判据：导航以为还停在月塔主页（弹窗把页面压暗，但
+            # ``home_enter`` 照样认得出），于是连点 4 次入场 ⇒ 报
+            # 「动作[enter-tower]未稳定进入[楼层列表]」。
+            #
+            # ⚠️ 必须排在 ``_required(home_enter)`` **之前** —— 弹窗盖住主页时
+            # 两颗锚点同时成立，先判弹窗才能走上正确的分支。
+            if self._locate(screen, "reset_confirm_title") is not None:
+                return self._action(
+                    "confirm-reset", self._POINT_RESET_CONFIRM,
+                    source_page="确认重置阶段",
+                    target_states=(TowerState.FLOOR_LIST,),
+                    reason="所选阶段已征服，确认重置后从第1层开始打",
+                )
             self._required(screen, "home_enter")
             return self._action(
                 "enter-tower", self._POINT_ENTER,
