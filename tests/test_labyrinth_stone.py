@@ -293,21 +293,25 @@ def test_walking_west_is_bounded():
 # ---- ⑤ 商店：只买「强化石」，买过的行跳过 ---------------------------------------
 
 
-def test_shop_buys_the_first_stone_row_and_leaves_the_friendship_points_alone():
-    """这一屏 5 行（OCR 逐行读过）：友情点数 / 下级装备强化石 / 传说神器强化石 /
-    下级装备强化石 / 强化拳套 ⇒ 只能点**最上面那一行强化石** ``(1792, 516)``。
+def test_shop_buys_friendship_points_first_when_they_sit_on_top():
+    """2026-10-31 需求变更：友情点数（18,000）**也买** —— 用户「这个材料我也缺了」。
 
-    ⚠️ 2026-09-25 事故：这条用例原来断言的是 ``(1792, 299)`` —— 那是**友情点数**
-    （18,000）的按钮，不是强化石。旧判据把「类别 → 按钮」的偏移写反了（+139，
-    实测应是 −82），于是每一行都拿**下一行**的类别标签来判断自己是什么 ⇒
-    友情点数被当成强化石真的买了。断言值就是事故的物证。
+    ⚠️ 这条用例的前身是 2026-09-25 那次事故的守护：当时「类别 → 按钮」的偏移写反
+    （+139，实测应是 −82），每一行都拿**下一行**的类别标签来判断自己，于是友情点数
+    被**误**当成强化石真的买了。那时的断言是「第一行是友情点数，绝不能点」。
+
+    现在友情点数**本身就是目标商品**（走图标那一路，不看类别）：这一屏 5 行里
+    它排在最上面（友情点数 / 下级装备强化石 / 传说神器强化石 / 下级装备强化石 /
+    强化拳套），所以先买它，买完再买下面那两行强化石。
+
+    保留的守护（另有用例）：**仍然不买**强化拳套那种「类别不对、名字里也没石」的行。
     """
     machine = build_machine(entered=True, teleported=True)
 
     action = machine.next_action(frame("shop"))
 
     assert action.name == "buy-stone"
-    assert action.point == (1792, 516), "第一行是友情点数，绝不能点"
+    assert action.point == (1792, 299), "最上面那行是友情点数，现在它是目标商品"
 
 
 def test_shop_refuses_the_glove_row_that_is_the_only_one_still_alive():
@@ -391,8 +395,11 @@ def test_a_clipped_sold_out_row_is_not_bought(monkeypatch):
     machine = build_machine(entered=True, teleported=True)
     action = machine.next_action(screen)
 
-    assert action.name == "scroll-shop"
-    assert machine.buy_armed is False
+    # 2026-10-31：友情点数（(1792,843) 那行，图标判据）现在是目标商品 ⇒ 会买它；
+    # 但**被裁掉的那行 (1792,1061) 仍然不能点** —— 那才是这条用例守的东西。
+    assert action.name == "buy-stone"
+    assert action.point == (1792, 843)
+    assert action.point != (cx, cy), "被裁的售罄行（3 颗白字）居然被点了"
 
 
 def test_the_white_pixel_floor_and_ceiling_leave_a_wide_gap():
@@ -436,13 +443,20 @@ def test_a_row_with_no_white_text_is_sold_out_even_at_the_old_ratio(
 
 
 def test_shop_refuses_a_row_whose_category_cannot_be_paired(monkeypatch):
-    """配不上「强化石」标签的行一律不点 —— 认不出是什么就不买（多半是强化拳套）。"""
+    """类别配不上的**强化石行**不点；但友情点数走图标那一路，不受类别偏移影响。
+
+    2026-10-31：友情点数改由商品**图标**认（它的类别标签在迷宫写「召唤」、
+    在秘密商店写「货币」，会变）。所以把 ``BUY_TO_CATEGORY_DY`` 改坏之后，
+    仍然只会买友情点数那一行 —— 强化石行反而买不到了，这正是「认不出就不买」。
+    """
     machine = build_machine(entered=True, teleported=True)
     assert machine.next_action(frame("shop")).name == "buy-stone"
 
     monkeypatch.setattr(labyrinth_stone, "BUY_TO_CATEGORY_DY", 0)
     machine = build_machine(entered=True, teleported=True)
-    assert machine.next_action(frame("shop")).name == "scroll-shop"
+    action = machine.next_action(frame("shop"))
+    assert action.name == "buy-stone"
+    assert action.point == (1792, 299), "类别坏了之后只剩图标那一路：买友情点数"
 
 
 def test_shop_scrolls_a_few_times_and_then_leaves(monkeypatch):

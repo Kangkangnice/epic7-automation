@@ -25,6 +25,8 @@ from auto_game_unified.games.epic7.evidence.shop_refresh import (
 
 COVENANT_PRICE = 184_000
 MYSTIC_PRICE = 280_000
+# 「友情点数」（绿心）—— 2026-10-31 用户要求加进购买候选，实测价 18,000。
+FRIENDSHIP_PRICE = 18_000
 REFRESH_PRICE = 3
 
 
@@ -47,10 +49,13 @@ class ShopRunStats:
     completed_refreshes: int = 0
     initial_covenant: int = 0
     initial_mystic: int = 0
+    initial_friendship: int = 0
     paid_covenant: int = 0
     paid_mystic: int = 0
+    paid_friendship: int = 0
     covenant_gold: int = 0
     mystic_gold: int = 0
+    friendship_gold: int = 0
     stop_reason: str = ""
 
     @property
@@ -59,7 +64,7 @@ class ShopRunStats:
 
     @property
     def total_gold(self) -> int:
-        return self.covenant_gold + self.mystic_gold
+        return self.covenant_gold + self.mystic_gold + self.friendship_gold
 
     @property
     def covenant_hit_rate(self) -> float:
@@ -88,6 +93,13 @@ class ShopRunStats:
                 self.paid_mystic += 1
             self.mystic_gold += MYSTIC_PRICE
             return
+        if kind is ShopItemKind.FRIENDSHIP:
+            if self.completed_refreshes == 0:
+                self.initial_friendship += 1
+            else:
+                self.paid_friendship += 1
+            self.friendship_gold += FRIENDSHIP_PRICE
+            return
         raise ValueError(f"不能提交非目标商品：{kind.value}")
 
     def commit_refresh(self) -> None:
@@ -101,11 +113,14 @@ class ShopRunStats:
             f"刷新={self.completed_refreshes}/{self.target_refreshes} "
             f"钻石={self.skystone_spent} "
             f"初始誓约={self.initial_covenant} 初始神秘={self.initial_mystic} "
+            f"初始友情={self.initial_friendship} "
             f"付费誓约={self.paid_covenant} "
             f"誓约命中={self.covenant_hit_rate * 100:.2f}% "
             f"付费神秘={self.paid_mystic} "
             f"神秘命中={self.mystic_hit_rate * 100:.2f}% "
+            f"付费友情={self.paid_friendship} "
             f"誓约金币={self.covenant_gold} 神秘金币={self.mystic_gold} "
+            f"友情金币={self.friendship_gold} "
             f"总金币={self.total_gold} 停止原因={reason}"
         )
 
@@ -122,6 +137,8 @@ class PendingPurchase:
             return COVENANT_PRICE
         if self.row.kind is ShopItemKind.MYSTIC:
             return MYSTIC_PRICE
+        if self.row.kind is ShopItemKind.FRIENDSHIP:
+            return FRIENDSHIP_PRICE
         raise ValueError(f"非目标商品不能购买：{self.row.kind.value}")
 
 
@@ -186,8 +203,12 @@ class ShopRefreshStateMachine:
 
     def begin_purchase(self, row: ShopRowObservation) -> None:
         self._require(ShopPhase.SCAN_TOP, ShopPhase.SCAN_BOTTOM)
-        if row.kind not in {ShopItemKind.COVENANT, ShopItemKind.MYSTIC}:
-            raise ValueError("只允许购买誓约书签或神秘书签")
+        if row.kind not in {
+            ShopItemKind.COVENANT,
+            ShopItemKind.MYSTIC,
+            ShopItemKind.FRIENDSHIP,
+        }:
+            raise ValueError("只允许购买誓约书签、神秘书签或友情点数")
         if row.buy_point is None:
             raise ValueError("目标商品缺少同行购买按钮")
         self.pending_purchase = PendingPurchase(row=row, resume_phase=self.phase)
@@ -944,7 +965,12 @@ class ShopRefreshRunner:
                     )
                 targets = [
                     row for row in observation.rows
-                    if row.kind in {ShopItemKind.COVENANT, ShopItemKind.MYSTIC}
+                    if row.kind
+                    in {
+                        ShopItemKind.COVENANT,
+                        ShopItemKind.MYSTIC,
+                        ShopItemKind.FRIENDSHIP,
+                    }
                     and row.buy_point is not None
                 ]
                 unavailable_targets = [
@@ -953,6 +979,7 @@ class ShopRefreshRunner:
                     if row.kind in {
                         ShopItemKind.COVENANT,
                         ShopItemKind.MYSTIC,
+                        ShopItemKind.FRIENDSHIP,
                     }
                     and row.buy_point is None
                     and not self._is_known_sold(row)

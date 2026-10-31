@@ -315,6 +315,10 @@ class LabyrinthStoneTemplates:
     shop_title: np.ndarray
     stone_category: np.ndarray
     stone_in_name: np.ndarray
+    # 「友情点数」的商品**图标**（绿心）—— 2026-10-31 用户要求加进购买候选。
+    # ⚠️ 与秘密商店**共用同一张图**（`shop_refresh/friendship_candidate.png`）：
+    # 是同一个商品、同一个图标，另存第二份迟早漂移。
+    friendship_candidate: np.ndarray
     buy_button: np.ndarray
     shop_footer: np.ndarray
     buy_dialog_title: np.ndarray
@@ -359,6 +363,11 @@ def build_labyrinth_stone_templates(template_dir: Path) -> LabyrinthStoneTemplat
         shop_title=load("shop_title"),
         stone_category=load("stone_category"),
         stone_in_name=load("stone_in_name"),
+        # 跨目录复用秘密商店那张：同一个商品图标，不另存第二份
+        # （同 ``evidence/tower.py`` 里 ``auto_off`` 借用 ``story/auto_off.png`` 的做法）。
+        friendship_candidate=load_template(
+            str(template_dir.parent / "shop_refresh" / "friendship_candidate.png")
+        ),
         buy_button=load("buy_button"),
         shop_footer=load("shop_footer"),
         buy_dialog_title=load("buy_dialog_title"),
@@ -531,8 +540,16 @@ class LabyrinthStoneStateMachine:
         """
         categories = self._locate_all(screen, "stone_category")
         stones = self._locate_all(screen, "stone_in_name")
+        # 「友情点数」走**图标**那一路（2026-10-31）：它的类别标签在迷宫写的是「召唤」、
+        # 在秘密商店写的是「货币」—— 类别会变，图标不变。
+        friendships = self._locate_all(screen, "friendship_candidate")
         buttons = self._locate_all(screen, "buy_button")
         for button in sorted(buttons, key=lambda match: match.center[1]):
+            friend_ok = any(
+                abs(friend.center[1] - button.center[1])
+                <= BUY_ROW_PAIR_TOLERANCE
+                for friend in friendships
+            )
             category_ok = any(
                 abs(category.center[1] - (button.center[1] + BUY_TO_CATEGORY_DY))
                 <= BUY_ROW_PAIR_TOLERANCE
@@ -543,7 +560,7 @@ class LabyrinthStoneStateMachine:
                 <= STONE_NAME_TOLERANCE
                 for stone in stones
             )
-            if not (category_ok and name_ok):
+            if not (friend_ok or (category_ok and name_ok)):
                 continue
             live = button_white_pixels(screen, button.center)
             if live < BUY_BUTTON_WHITE_PIXELS:

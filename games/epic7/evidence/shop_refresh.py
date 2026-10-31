@@ -18,16 +18,26 @@ REFERENCE_SIZE = (1982, 1132)
 ITEM_THRESHOLD = 0.75
 
 
-def _peaks_key(search: np.ndarray, covenant: np.ndarray, mystic: np.ndarray) -> bytes:
-    """(搜索区, 两个候选模板) 的内容指纹，只给 ``_target_peaks`` 的缓存用。
+def _peaks_key(
+    search: np.ndarray,
+    covenant: np.ndarray,
+    mystic: np.ndarray,
+    friendship: np.ndarray,
+) -> bytes:
+    """(搜索区, 三个候选模板) 的内容指纹，只给 ``_target_peaks`` 的缓存用。
 
     ⚠️ 形状必须一起进指纹：只喂 ``tobytes()`` 的话 2x3 与 3x2 会撞成同一个键。
+    ⚠️ **每个模板都要进指纹**：少喂一张，换掉那张图之后缓存不会失效 ——
+    会拿旧模板算出来的峰值当新结果用（静默用错判据）。
     """
     digest = sha1()
-    digest.update(f"{search.shape}|{covenant.shape}|{mystic.shape}".encode())
+    digest.update(
+        f"{search.shape}|{covenant.shape}|{mystic.shape}|{friendship.shape}".encode()
+    )
     digest.update(search.tobytes())
     digest.update(covenant.tobytes())
     digest.update(mystic.tobytes())
+    digest.update(friendship.tobytes())
     return digest.digest()
 ITEM_SCORE_MARGIN = 0.05
 # 列表指纹用 64x64 的 DCT 低 16x16 系数，共 256 位。原先只取 32x32 的低 8x8
@@ -52,6 +62,10 @@ LIVE_TRANSACTIONS_VERIFIED = bool(
 class ShopItemKind(Enum):
     COVENANT = "covenant"
     MYSTIC = "mystic"
+    # 「友情点数」（绿心图标）—— 2026-10-31 用户要求加进购买候选。
+    # 它同时出现在**秘密商店**和**迷宫流浪商人**两处，图标完全一样
+    # （同一张模板在两处实测 1.0000 / 0.9966）⇒ 两处共用这一张图。
+    FRIENDSHIP = "friendship"
     OTHER = "other"
     UNKNOWN = "unknown"
 
@@ -103,6 +117,7 @@ REGIONS = {
     "refresh_confirm": (900, 650, 550, 260),
     "covenant_candidate": (650, 140, 380, 992),
     "mystic_candidate": (650, 140, 380, 992),
+    "friendship_candidate": (650, 140, 380, 992),
     "mystic_price_current": (850, 720, 400, 180),
     "covenant_price_current": (850, 720, 400, 180),
     "sold_out_0_of_1_current": (1500, 140, 420, 992),
@@ -121,6 +136,7 @@ THRESHOLDS = {
     "refresh_confirm": 0.88,
     "covenant_candidate": ITEM_THRESHOLD,
     "mystic_candidate": ITEM_THRESHOLD,
+    "friendship_candidate": ITEM_THRESHOLD,
     "mystic_price_current": 0.92,
     "covenant_price_current": 0.92,
     "sold_out_0_of_1_current": 0.92,
@@ -177,20 +193,28 @@ def build_shop_refresh_evidence(template_root: Path) -> EvidenceProfile:
 def classify_item_scores(
     covenant_score: float,
     mystic_score: float,
+    friendship_score: float = 0.0,
     *,
     threshold: float = ITEM_THRESHOLD,
     margin: float = ITEM_SCORE_MARGIN,
 ) -> ShopItemKind:
-    best = max(covenant_score, mystic_score)
+    """三个候选里挑最高分那个；最高分不够、或冠军与亚军太近 ⇒ 不认。
+
+    ⚠️ ``friendship_score`` 有默认值：老调用方（测试里的两两比较）不用改。
+    但**生产路径必须传**，否则友情点数会被当成"两个都不像"的 ``OTHER``。
+    """
+    scores = {
+        ShopItemKind.COVENANT: covenant_score,
+        ShopItemKind.MYSTIC: mystic_score,
+        ShopItemKind.FRIENDSHIP: friendship_score,
+    }
+    ranked = sorted(scores.items(), key=lambda item: item[1], reverse=True)
+    (best_kind, best), (_, second) = ranked[0], ranked[1]
     if best < threshold:
         return ShopItemKind.OTHER
-    if abs(covenant_score - mystic_score) < margin:
+    if best - second < margin:
         return ShopItemKind.UNKNOWN
-    return (
-        ShopItemKind.COVENANT
-        if covenant_score > mystic_score
-        else ShopItemKind.MYSTIC
-    )
+    return best_kind
 
 
 def same_shop_row(item_y: int, buy_y: int, *, max_delta: int = 90) -> bool:
@@ -269,26 +293,38 @@ class ShopRefreshObserver:
 
     def _target_peaks(
         self, screen: np.ndarray
-    ) -> list[tuple[tuple[int, int], float, float]]:
+    ) -> list[tuple[tuple[int, int], float, float, float]]:
         x, y, width, height = self._ITEM_REGION
         search = screen[y : y + height, x : x + width]
         covenant = self.templates["covenant_candidate"]
         mystic = self.templates["mystic_candidate"]
+        # 「友情点数」（绿心）—— 2026-10-31 加的第三个候选。
+        friendship = self.templates["friendship_candidate"]
         # ⚠️ 缓存的是**峰值列表**（几个小元组），**不是** cv2.matchTemplate 的分数图 ——
         # 这一块搜索区（380x992）的分数图就是约 1.5 MB，缓存它会重演 core/matcher.py 里
         # 记着的那次事故（进程内存 961 MB -> 4.1 GB、开始换页，比不缓存还慢）。
-        # 成本对比：两次匹配约 20~40 ms，取指纹约 0.2 ms ⇒ 只要命中就是净赚。
-        cache_key = _peaks_key(search, covenant, mystic)
+        # 成本对比：三次匹配约 30~60 ms，取指纹约 0.2 ms ⇒ 只要命中就是净赚。
+        cache_key = _peaks_key(search, covenant, mystic, friendship)
         if cache_key == self._peaks_key:
             return self._peaks_value
         covenant_scores = cv2.matchTemplate(search, covenant, cv2.TM_CCOEFF_NORMED)
         mystic_scores = cv2.matchTemplate(search, mystic, cv2.TM_CCOEFF_NORMED)
-        score_height = min(covenant_scores.shape[0], mystic_scores.shape[0])
-        score_width = min(covenant_scores.shape[1], mystic_scores.shape[1])
+        friendship_scores = cv2.matchTemplate(
+            search, friendship, cv2.TM_CCOEFF_NORMED
+        )
+        score_height = min(
+            covenant_scores.shape[0], mystic_scores.shape[0], friendship_scores.shape[0]
+        )
+        score_width = min(
+            covenant_scores.shape[1], mystic_scores.shape[1], friendship_scores.shape[1]
+        )
         covenant_scores = covenant_scores[:score_height, :score_width]
         mystic_scores = mystic_scores[:score_height, :score_width]
-        combined = np.maximum(covenant_scores, mystic_scores).copy()
-        peaks: list[tuple[tuple[int, int], float, float]] = []
+        friendship_scores = friendship_scores[:score_height, :score_width]
+        combined = np.maximum(
+            np.maximum(covenant_scores, mystic_scores), friendship_scores
+        ).copy()
+        peaks: list[tuple[tuple[int, int], float, float, float]] = []
         template_height, template_width = covenant.shape[:2]
         while True:
             _, score, _, location = cv2.minMaxLoc(combined)
@@ -297,6 +333,7 @@ class ShopRefreshObserver:
             left, top = location
             covenant_score = float(covenant_scores[top, left])
             mystic_score = float(mystic_scores[top, left])
+            friendship_score = float(friendship_scores[top, left])
             peaks.append(
                 (
                     (
@@ -305,6 +342,7 @@ class ShopRefreshObserver:
                     ),
                     covenant_score,
                     mystic_score,
+                    friendship_score,
                 )
             )
             radius_x = max(20, template_width // 2)
@@ -359,19 +397,26 @@ class ShopRefreshObserver:
 
     def _rows(self, screen: np.ndarray) -> tuple[ShopRowObservation, ...]:
         rows: list[ShopRowObservation] = []
-        for center, covenant_score, mystic_score in self._target_peaks(screen):
-            kind = classify_item_scores(covenant_score, mystic_score)
+        for center, covenant_score, mystic_score, friendship_score in (
+            self._target_peaks(screen)
+        ):
+            kind = classify_item_scores(
+                covenant_score, mystic_score, friendship_score
+            )
             sold_out = self._sold_for_row(screen, center[1])
             buy_point = (
                 None if sold_out else self._buy_for_row(screen, center[1])
+            )
+            ranked = sorted(
+                (covenant_score, mystic_score, friendship_score), reverse=True
             )
             rows.append(
                 ShopRowObservation(
                     kind=kind,
                     item_center=center,
                     buy_point=buy_point,
-                    item_score=max(covenant_score, mystic_score),
-                    alternate_score=min(covenant_score, mystic_score),
+                    item_score=ranked[0],
+                    alternate_score=ranked[1],
                     row_key=self._row_key(screen, center[1]),
                     sold_out=sold_out,
                 )
@@ -392,9 +437,16 @@ class ShopRefreshObserver:
             region=region,
             reference_size=REFERENCE_SIZE,
         )
+        friendship = find_best_template(
+            screen,
+            self.templates["friendship_candidate"],
+            region=region,
+            reference_size=REFERENCE_SIZE,
+        )
         return classify_item_scores(
             covenant.score if covenant is not None else -1.0,
             mystic.score if mystic is not None else -1.0,
+            friendship.score if friendship is not None else -1.0,
         )
 
     def observe(self, screen: np.ndarray) -> ShopObservation:
