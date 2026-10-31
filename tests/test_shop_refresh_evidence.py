@@ -198,6 +198,27 @@ def test_current_client_covenant_row_is_actionable():
     assert rows[0].buy_point is not None
 
 
+def test_current_client_friendship_row_is_actionable():
+    """2026-10-31 真机帧：第一行是「货币 · 友情点数」18,000 ⇒ 认成 friendship 且可买。
+
+    用户当天要求把友情点数也加进购买候选（原话：「我发现这个材料我也缺了」）。
+    这一屏另外 4 行是英雄/装备（泰拉纳德巡逻兵、史嘉雷小恶魔、寒气碎片、
+    蜥蜴勇士的戒指）—— 它们**一个都不能**被认成三种书签之一，
+    所以顺便钉住「第三张候选没有把别的商品吸进来」。
+    """
+    observer = build_shop_refresh_observer(TEMPLATES)
+
+    result = observer.observe(_screen("friendship_row_live_20261031"))
+
+    rows = [row for row in result.rows if row.kind is ShopItemKind.FRIENDSHIP]
+    assert len(rows) == 1
+    assert rows[0].item_score >= 0.95
+    assert rows[0].buy_point is not None
+    assert not rows[0].sold_out
+    # 非目标商品不该被吸进来（这一帧上除了友情点数，其余都不是书签）
+    assert len(result.rows) == 1
+
+
 def test_current_client_covenant_popup_proves_price_184000():
     observer = build_shop_refresh_observer(TEMPLATES)
 
