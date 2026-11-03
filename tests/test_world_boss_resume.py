@@ -65,10 +65,29 @@ RESUMABLE_FIXTURES: dict[str, tuple[str, WorldBossState]] = {
     "battle_live_skip": ("战斗中", WorldBossState.BATTLE),
     "battle_result": ("战斗结算", WorldBossState.RESULT),
     "level_reward": ("战斗级别奖励", WorldBossState.LEVEL_REWARD),
+    # ── 2026-11-03 PC 客户端实跑帧 ──────────────────────────────────
+    # 接力（resume）在 PC 上必须同样能落脚：11-03 实跑就是靠它跳过回大厅与路线
+    # 导航、直接从「世界首领战主页」接着跑。这四张对应 `templates/world_boss/pc/`
+    # 补的四张图，用 PC 模板集判（见 `_machine_for`）。
+    "worldboss_home_pc_live_20261103": ("世界首领战主页", WorldBossState.HOME),
+    "team_select_pc_live_20261103": ("选择辅助队伍", WorldBossState.TEAM_SELECT),
+    "team_config_pc_live_20261103": ("配置队伍", WorldBossState.TEAM_CONFIG),
+    "battle_result_pc_live_20261103": ("战斗结算", WorldBossState.RESULT),
+    "battle_pc_live_20261103": ("战斗中", WorldBossState.BATTLE),
 }
 
 # 骑士团主页（导航链中间站）：不拨状态，只带 ``entry``。
-KNIGHTS_HOME_FIXTURES = ("knights_home", "knights_home_after_popup")
+KNIGHTS_HOME_FIXTURES = (
+    "knights_home",
+    "knights_home_after_popup",
+    # PC 实跑帧（2026-11-03）：共享图在这张上 `knights_title` 只有 0.7858，
+    # 补 `pc/knights_title.png` 后 1.0000 —— 详情见 test_world_boss_evidence.py。
+    "knights_home_pc_live_20261103",
+)
+
+# PC 实跑帧统一后缀。带这个后缀的夹具要用 **PC 模板集**判：
+# `pc/` 覆盖图只在 pc 后端起效，拿模拟器模板集去量它们必然全 None。
+PC_FIXTURE_SUFFIX = "_pc_live_20261103"
 
 # 刻意不接：理由是三类完全不同的东西（见模块 docstring）。
 REFUSED_FIXTURES = (
@@ -105,8 +124,18 @@ def _wb(name: str) -> np.ndarray:
     return _screen("epic7_world_boss", name)
 
 
-def _machine() -> WorldBossStateMachine:
-    return WorldBossStateMachine(TEMPLATES)
+def _machine(backend: str = "emulator") -> WorldBossStateMachine:
+    """按后端取状态机：``pc`` 会优先读 ``pc/`` 下的覆盖图。"""
+    from auto_game_unified.games.epic7.template_paths import resolve_template_dir
+
+    root = resolve_template_dir(TEMPLATES.parent, backend)
+    return WorldBossStateMachine(root / "world_boss")
+
+
+def _machine_for(name: str) -> WorldBossStateMachine:
+    """夹具名决定用哪套模板：PC 实跑帧走 pc 后端，其余走模拟器那套。"""
+    backend = "pc" if name.endswith(PC_FIXTURE_SUFFIX) else "emulator"
+    return _machine(backend)
 
 
 def _runner(
@@ -138,7 +167,7 @@ def _runner(
 def test_every_business_page_is_a_resume_point(
     name: str, expected_page: str, expected_state: WorldBossState
 ):
-    found = detect_resume_point(_machine(), _wb(name))
+    found = detect_resume_point(_machine_for(name), _wb(name))
 
     assert found is not None, f"{name} 认不出是哪一页"
     assert found.page == expected_page
@@ -165,14 +194,14 @@ def test_only_the_navigation_and_home_pages_carry_an_entry():
     """
 
     for name in RESUMABLE_FIXTURES:
-        found = detect_resume_point(_machine(), _wb(name))
+        found = detect_resume_point(_machine_for(name), _wb(name))
 
         assert found is not None
         expected = WORLD_BOSS_ENTRY_PAGE if found.state is WorldBossState.HOME else None
         assert found.entry == expected, f"{name} 的导航落点不对"
 
     for name in KNIGHTS_HOME_FIXTURES:
-        found = detect_resume_point(_machine(), _wb(name))
+        found = detect_resume_point(_machine_for(name), _wb(name))
 
         assert found is not None
         assert found.entry == KNIGHTS_GUILD_HOME_PAGE

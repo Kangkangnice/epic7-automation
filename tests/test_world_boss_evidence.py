@@ -21,6 +21,10 @@ from auto_game_unified.games.epic7.evidence.world_boss import (
     REGIONS,
     build_world_boss_evidence,
 )
+from auto_game_unified.games.epic7.world_boss import (
+    WorldBossState,
+    WorldBossStateMachine,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -212,3 +216,102 @@ def _atom_observation(atom, match, score):
         score=score,
         center=None if match is None else match.center,
     )
+
+
+# ---------------------------------------------------------------------------
+# PC 客户端（2026-11-03 移植）
+# ---------------------------------------------------------------------------
+#
+# PC 移植实测定案：**PC 压低的是「文字」类锚点，图形类不受影响**。同一条路线上
+# 的对照足够硬 —— ``navigation/worldboss_entry``（骷髅盾牌图形）在 PC 帧上
+# 0.9936~0.9940，分文不动；文字锚点则整片塌到 0.66~0.79，一律过不了 0.80：
+#
+# | 锚点 | 模拟器夹具 | PC 原样 | PC + ``pc/`` 覆盖图 |
+# |---|---|---|---|
+# | ``knights_title`` | 1.0000 | 0.7858 | **1.0000** |
+# | ``select_team_button`` | 1.0000 | 0.6648 | **1.0000** |
+# | ``team_select_title`` | 1.0000 | 未见（整页 unknown） | **1.0000** |
+# | ``team_config_auto`` | 1.0000 | 未见（整页 unknown） | **1.0000** |
+# | ``battle_skip`` | 1.0000 | 0.6997 | **0.88~1.00** |
+# | ``result_title`` | 1.0000 | 未见（整页 unknown） | **1.0000** |
+#
+# 所以修法**只补图、不动口径**。低通 σ=2.0 也能把分数抬到 0.86 左右，但全库审计
+# 显示它把跨页分一并抬高约 0.2（``result_title`` 在奖励弹窗上 0.7103→0.9305），
+# 等于拿判据余量换分数 —— 那是「看起来修好了、下次换个页面就串页」的做法。
+
+PC_FIXTURES = {
+    "worldboss_home_pc_live_20261103": WorldBossState.HOME,
+    "team_select_pc_live_20261103": WorldBossState.TEAM_SELECT,
+    "team_config_pc_live_20261103": WorldBossState.TEAM_CONFIG,
+    "battle_result_pc_live_20261103": WorldBossState.RESULT,
+}
+
+
+def _pc_machine(backend: str):
+    from auto_game_unified.games.epic7.template_paths import resolve_template_dir
+
+
+    root = resolve_template_dir(TEMPLATES.parent, backend)
+    return WorldBossStateMachine(root / "world_boss", initial_state=WorldBossState.HOME)
+
+
+def test_pc_overrides_make_the_whole_route_recognizable():
+    """PC 专属图就位后，PC 实跑的每一页都要判回它自己那一页。
+
+    这四张是 2026-11-03 实跑现场帧（不是按矩形裁的），分别对应挡路的那一颗锚点：
+    ``select_team_button`` / ``team_select_title`` / ``team_config_auto`` /
+    ``result_title``。路线当时就是在这四处逐一卡死的。
+    """
+
+    machine = _pc_machine("pc")
+
+    for name, expected in PC_FIXTURES.items():
+        with_subtest = f"{name}: 期望判成 {expected}"
+        assert machine.observe_page(_screen(name)) is expected, with_subtest
+
+
+def test_pc_knights_home_is_recognized_as_the_navigation_midpoint():
+    """骑士团主页不进 ``observe_page``（那页没有本路线的决策），只由 ``at_knights_home`` 判。
+
+    它必须能认出来：接力与「已在骑士团主页」的短路都挂在这条上，认不出就会把
+    已经站在门口的进度当成「还在大厅」重新导航一遍。
+    """
+
+    machine = _pc_machine("pc")
+
+    assert machine.at_knights_home(_screen("knights_home_pc_live_20261103"))
+
+
+def test_pc_battle_page_is_recognized_and_the_story_page_is_not():
+    """战斗页靠右上角「跳过」认，而**剧情播放页也有同一张图**（位置不同）。
+
+    ``BATTLE_SKIP_REGION`` 收到 x<1760 就是为了把剧情页排除在外。PC 的覆盖图必须
+    保持这条分野：战斗帧过阈、剧情帧远低于阈。反例帧 ``battle_pc_live_20261103``
+    同一目录下没有剧情帧，所以这里同时验「战斗帧=True / 非战斗帧=False」。
+    """
+
+    machine = _pc_machine("pc")
+
+    assert machine.battle_visible(_screen("battle_pc_live_20261103"))
+    for name in PC_FIXTURES:
+        assert not machine.battle_visible(_screen(name)), (
+            f"{name}: 不是战斗画面却判成战斗中，会把结算页当成战斗页反复点「跳过」"
+        )
+
+
+def test_shared_templates_cannot_recognize_the_pc_frames():
+    """反向锁定：**共享图（模拟器那一套）认不出 PC 帧**，这正是要补 PC 图的原因。
+
+    没有这一条，将来谁把 ``pc/`` 里的图删了，上面的用例会红、但没人知道为什么；
+    有了它，「删掉 PC 图 ⇒ 退回共享图 ⇒ 整条路线在 PC 上进不去」这条因果就是自证的。
+    """
+
+    machine = _pc_machine("emulator")
+
+    for name in PC_FIXTURES:
+        assert machine.observe_page(_screen(name)) is None, (
+            f"{name}: 共享图居然认出了 PC 帧 —— 说明这张 PC 图是多余的，"
+            "或者共享图被换成了 PC 图"
+        )
+    assert not machine.at_knights_home(_screen("knights_home_pc_live_20261103"))
+    assert not machine.battle_visible(_screen("battle_pc_live_20261103"))
