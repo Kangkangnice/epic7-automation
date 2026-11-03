@@ -561,3 +561,49 @@ def resolve_auto_state(controls, auto_icon_hit):
 | `test_battle_adapter_hands_control_back_on_the_failed_screen` | 监督在 FAILED 页 `result_visible=True` 收手 |
 | `test_the_failed_screen_never_fires_on_a_business_page` | 业务页上 FAILED 判据恒不响（误响 = 打断正常层） |
 | `JUDGE_OWNERS["battle_failed"]` | 夹具入库后判据分离度纳入全量扫描（本帧 1.0000 / 其余最高 0.5556） |
+
+## PC 客户端（2026-11-03 放行）
+
+平台差异**只落在图片**：`templates/tower/pc/` 下 7 张同名覆盖图，阈值与业务代码一行没改。
+
+| 覆盖图 | 为什么需要 | 共享图 → 补图后 |
+|---|---|---|
+| `home_enter` | 「入场」两字在 PC 上偏软 | 0.8157 → 1.0000 |
+| `reset_confirm_title` | 阶段重置确认框标题 | 认不出 → 1.0000 |
+| `floor_select_team` | 楼层列表「选择队伍」 | 0.5648 级 → 1.0000 |
+| `prepare_title` | 准备战斗标题 | 0.9397 差一点 → 1.0000 |
+| `team_battle_start` | 「战斗开始」 | 0.9078 差一点 → 1.0000 |
+| `card_hint` | 三选一提示语 | 0.5581 → 1.0000 |
+| **`card_decide`** | 「决定装置」按钮 | **0.8668** → **1.0000** |
+
+### ⚠️ 2026-11-03 23:44：`card_decide` 只差 0.0132，把整条每日任务拖死了
+
+**症状**：月塔打完一层 → `battle_unrecognized`（45 秒看门狗）→ 回家流程在这页连按
+ESC 无效 → `返回首页失败` → 每日任务「已中止：竞技场 之前无法回到首页」，退出码 1。
+
+**现场长什么样**：三选一装置页（`runtime_diagnostics/epic7_tower/20261103_234451_*.png`），
+底部「返回 / 打开装置背包 / 决定装置」，右侧「10/3 下一层」。
+
+**机理**：`observe_battle` 的 `result_visible` 要求「`card_decide` **且** `card_hint`」同时命中
+（月塔的「打完」不是结算页 CLEAR，而是这页三选一）。PC 上 `card_hint` 有覆盖图（0.9998），
+`card_decide` 没有 ⇒ 判据恒 False ⇒ 监督永远看不到「打完了」。
+
+**为什么一眼看不出是识别问题**：0.8668 离 0.88 只差 0.0132，日志只说「战斗画面持续
+无法识别」，看起来像战斗画面本身的问题，实际是**战斗之后那一页**认不出。
+
+**修法**：按同几何从现场帧裁 `tower/pc/card_decide.png`（340×66，中心 (1138,1041)，
+正好等于 `_POINT_DECIDE`）。补图后两张现场帧都是 1.0000；同批 20 张 PC 诊断帧里
+**最高只有 0.3965**（都是别的页），分离度干净。
+按钮「选中 / 未选中」两态不用担心：模拟器实测 1.0000 vs 0.9753，`TM_CCOEFF_NORMED`
+把整体亮度差归一化掉了。
+
+**夹具为什么不放 `tests/fixtures/epic7_tower/`**：那是**模拟器基线**目录，
+`test_every_fixture_matches_exactly_one_page` 与
+`test_every_judge_clears_its_threshold_with_a_wide_margin`（他页 < 0.88 且余量 > 0.30）
+会把「同一页的另一个平台渲染」判成噪声，混进去只能靠放宽门槛过测试。
+⇒ PC 帧单独放 `tests/fixtures/epic7_tower_pc/`，正反两向断言见 `test_tower_evidence.py`。
+
+**还没被真机走过的**：这一页之后的 `结算页（CLEAR）→ 下一层 → 准备战斗`。
+`result_clear` 在 PC 上尚无现场帧可验（两次实跑都死在三选一），下次跑通才能确认。
+间接证据偏乐观：主线的同款「CLEAR」大字母在 PC 上**没有覆盖图也能过**（`templates/story/pc/` 只有 `complete` / `friend_request_title` / `stamina_popup` 三张），
+说明 PC 压得狠的是**中文小字**，大号拉丁字母不受影响。

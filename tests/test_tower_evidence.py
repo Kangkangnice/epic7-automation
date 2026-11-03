@@ -1,8 +1,16 @@
 import dataclasses
 from pathlib import Path
 
-from auto_game_unified.games.epic7.evidence.common import validate_profile
-from auto_game_unified.games.epic7.evidence.tower import build_tower_evidence
+import cv2
+
+from auto_game_unified.core.evidence_diagnostics import inspect_profile
+from auto_game_unified.core.matcher import find_best_template, load_template
+from auto_game_unified.games.epic7.evidence.common import (
+    EvidenceState,
+    validate_profile,
+)
+from auto_game_unified.games.epic7.evidence.tower import REGIONS, build_tower_evidence
+from auto_game_unified.games.epic7.template_paths import resolve_template_dir
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -90,3 +98,70 @@ def test_tower_profile_reports_required_template_missing_from_empty_directory(tm
         assert any(
             f"{name}.png" in error and "模板不存在" in error for error in errors
         ), name
+
+
+# ── PC 客户端（2026-11-03 补 ``tower/pc/card_decide.png``）────────────────────
+#
+# ⚠️ PC 帧单独放一个目录（``tests/fixtures/epic7_tower_pc/``），**不混进**
+# ``epic7_tower/``。那套夹具是**模拟器基线**，两条护栏会把「同一页的另一个平台
+# 渲染」判成噪声：
+#   * ``test_every_fixture_matches_exactly_one_page`` 要求每张只命中自己那页；
+#   * ``test_every_judge_clears_its_threshold_with_a_wide_margin`` 要求「他页最高分
+#     < 0.88 且余量 > 0.30」—— 而共享 `card_decide` 在 PC 帧上是 0.8668，
+#     混进去必然逼人放宽门槛，那正是本项目最不许做的事。
+PC_FIXTURES = ROOT / "tests" / "fixtures" / "epic7_tower_pc"
+PC_FRAME_NAMES = ("card_pc_live_20261103", "card_pc_live_20261103_b")
+
+
+def _pc_frame(name: str):
+    path = PC_FIXTURES / f"{name}.png"
+    return cv2.cvtColor(cv2.imread(str(path)), cv2.COLOR_BGR2RGB)
+
+
+def test_pc_card_page_is_recognized_and_nothing_else_matches():
+    """正例：两张 PC 现场帧上，**只有** ``tower.card`` 是 SAFE。
+
+    这两张就是 2026-11-03 那两次实跑的故障帧（08:08 与 23:44 各一次）。当时
+    `card_decide` 只有 0.8668（阈 0.88），于是：
+    ``result_visible`` 恒为 False ⇒ 战斗监督干等 45 秒 ⇒ 报 ``battle_unrecognized``；
+    接着回家流程在这页上连按 ESC 也没反应 ⇒ 整条每日任务以「无法回到首页」中止。
+    """
+    root = resolve_template_dir(ROOT / "games" / "epic7" / "templates", "pc")
+    profile = build_tower_evidence(root / "tower")
+
+    for name in PC_FRAME_NAMES:
+        result = inspect_profile(_pc_frame(name), profile, root / "tower")
+        safe = sorted(
+            page for page, state in result.pages.items() if state is EvidenceState.SAFE
+        )
+        assert safe == ["tower.card"], f"{name} 判成了 {safe}"
+        assert result.atoms["card_decide"].score >= 0.99, name
+        assert result.atoms["card_hint"].score >= 0.99, name
+
+
+def test_the_shared_templates_cannot_recognize_the_pc_card_page():
+    """反向锁：**共享（模拟器）那套图**在这两张 PC 帧上必须认不出来。
+
+    认得出就说明 pc 覆盖图是多余的 —— 或者共享图被偷偷换成了 PC 图。
+
+    ⚠️ ``0.8668`` 这个数字要留在断言里：它是「看着像、就是过不去」那股劲的度量，
+    也是当初一眼没认出这是识别问题的原因（差了 0.0132，不是差一大截）。
+    """
+    profile = build_tower_evidence(TEMPLATES)
+    template = load_template(str(TEMPLATES / "card_decide.png"))
+
+    for name in PC_FRAME_NAMES:
+        frame = _pc_frame(name)
+        match = find_best_template(
+            frame,
+            template,
+            region=REGIONS["card_decide"],
+            reference_size=(1982, 1132),
+        )
+        assert 0.85 < match.score < 0.88, f"{name} 的共享图分数变了：{match.score:.4f}"
+
+        result = inspect_profile(frame, profile, TEMPLATES)
+        safe = [
+            page for page, state in result.pages.items() if state is EvidenceState.SAFE
+        ]
+        assert safe == [], f"{name} 用共享图仍然判出了 {safe}"
