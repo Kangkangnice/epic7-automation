@@ -23,10 +23,16 @@ class NetworkReconnectTemplates:
     判定只用文案。按钮图（``network_retry.png`` / ``network_disconnected_retry.png``）
     曾经也是判定条件，2026-10-04 整层弹窗就是栽在「文案与按钮必须配对」上。
     两张按钮图仍留在 ``templates/global/`` 下存档，但不再读进内存、也不参与判定。
+
+    ``retry_button`` 是后来（2026-11-03）加的**定位用**锚点，只回答「点哪」：
+    PC 上这层弹窗是全屏横带，屏幕中心落在文案与按钮之间的空白，点了没反应。
+    它**不参与判定** —— 认不认这层弹窗仍然只看上面两张文案图；模板缺失（模拟器）
+    时回落原来的「点屏幕中心」，行为与历史完全一致。
     """
 
     message: np.ndarray
     message_alt: np.ndarray | None = None
+    retry_button: np.ndarray | None = None
 
 
 @dataclass(frozen=True)
@@ -165,6 +171,26 @@ class WebNetworkErrorTemplates:
     close: np.ndarray
 
 
+@dataclass(frozen=True)
+class DateChangeTemplates:
+    """「日期变更，将前往大厅。」弹窗：标题排他 + 底部「点击关闭」定位。
+
+    ⚠️ 模板目前只有 PC 版（``templates/global/pc/``）—— 模拟器口径加载不到 ⇒ 两个字段
+    都是 ``None`` ⇒ 这条弹窗在模拟器上**整段跳过**，行为与历史完全一致（模拟器那条
+    从来没报过这两个弹窗，不改它反而是对的）。
+    """
+
+    title: np.ndarray | None
+    close: np.ndarray | None
+
+
+@dataclass(frozen=True)
+class LoginRewardTemplates:
+    """「获得登录奖励」弹窗：标题排他 + 底部「点击关闭」定位。字段口径同上。"""
+
+    title: np.ndarray | None
+    close: np.ndarray | None
+
 _REFERENCE_SIZE = (1982, 1132)
 
 # 同一层弹窗的**点击预算**：点满这么多次仍不消失 ⇒ 判定熔断（存诊断 + 抛错）。
@@ -183,6 +209,21 @@ _MESSAGE_REGION = (700, 450, 600, 180)
 # 断线弹窗文案的门槛：沿用原先双锚点时那个 0.88，没有重调。
 # 排他余量见 ``find_network_retry`` 的 docstring（跨页最高 0.5543，余量 0.33）。
 _NETWORK_THRESHOLD = 0.88
+# 「点击重试 ∨」按钮：**只用来定位点击点，不参与判定**。
+#
+# 判定仍然只看文案（``_NETWORK_THRESHOLD``），这里解决的是另一个问题 ——
+# 2026-11-03 PC 实测：这层弹窗在 PC 上是**全屏横带**，文案落在 y≈521，
+# 而底下的「点击重试 ∨」在 y≈702~733；旧写法「命中即点屏幕中心」正好点在
+# 文案和按钮之间的空白处 ⇒ 连点 4~8 次纹丝不动（竞技场 10:23 / 18:35、
+# 主线 15:37 都死在这）。
+#
+# ⚠️ 别把它读成「按钮参与判定」：文案与按钮的四种交叉组合历史上都出现过
+# （见 ``find_network_retry`` 的 docstring），把两者绑成一对就是 2026-10-04
+# 那次事故的老路。这里的顺序是**先认文案、再找按钮**，按钮只决定「点哪」。
+#
+# 模板是三张 PC 真机帧上交出来的同一块（中心 (960,731)，跨帧 0.9434~1.0000）；
+# 全库 364 张夹具里没有它之外的 ≥0.80 命中（唯一那张是断线页正例本身）。
+_NETWORK_RETRY_BUTTON_THRESHOLD = 0.88
 _INTIMACY_TITLE_REGION = (800, 220, 700, 180)
 _INTIMACY_DISMISS_REGION = (850, 780, 650, 250)
 _FRIENDSHIP_TITLE_REGION = (600, 150, 800, 180)
@@ -352,9 +393,15 @@ def load_network_reconnect_templates(
     template_dir: Path,
 ) -> NetworkReconnectTemplates:
     alt_message = template_dir / "network_disconnected_message.png"
+    retry_button = template_dir / "network_retry_button.png"
     return NetworkReconnectTemplates(
         message=load_template(str(template_dir / "network_message.png")),
         message_alt=(load_template(str(alt_message)) if alt_message.exists() else None),
+        # 只有 PC 侧有这张（``templates/global/pc/network_retry_button.png``）；
+        # 模拟器回落共享目录本就没有 → None → 仍然点屏幕中心。
+        retry_button=(
+            load_template(str(retry_button)) if retry_button.exists() else None
+        ),
     )
 
 
@@ -583,6 +630,13 @@ def find_network_retry(
     ``retry`` / ``retry_alt`` 两张按钮模板**保留在仓库里，但不再读进内存、不参与判定**：
     既然已经撞见过「文案乙配按钮甲」，再拿按钮去配文案，就是把两个各自独立的画法
     又硬拧成一组 —— 那是今天事故的老路。
+
+    ⚠️ **2026-11-03 PC 实测：上面那句「点哪都行」不成立**。PC 上这层弹窗是全屏横带，
+    文案在 y≈521、按钮在 y≈702~733，而屏幕中心 (991,566) 正落在两者之间的空白里 ——
+    竞技场 10:23 / 18:35、主线 15:37 都是连点 4~8 次纹丝不动。
+    所以现在多一步：文案命中之后，用 ``retry_button`` 模板去找按钮**真实位置**，
+    找到就点它，找不到才回落屏幕中心。顺序必须保持「先认文案、再找按钮」——
+    按钮只决定「点哪」，不参与「是不是这层弹窗」。
     """
     for message_template in (templates.message, templates.message_alt):
         if message_template is None:
@@ -595,6 +649,15 @@ def find_network_retry(
             reference_size=_REFERENCE_SIZE,
         )
         if message is not None:
+            if templates.retry_button is not None:
+                retry = find_template(
+                    screen,
+                    templates.retry_button,
+                    _NETWORK_RETRY_BUTTON_THRESHOLD,
+                    reference_size=_REFERENCE_SIZE,
+                )
+                if retry is not None:
+                    return Match(retry.center, message.score)
             return Match(
                 (screen.shape[1] // 2, screen.shape[0] // 2), message.score
             )
@@ -1229,6 +1292,10 @@ class Epic7GlobalPopupGuard:
         knights_growth_rank_templates: KnightsGrowthRankTemplates | None = None,
         pet_gift_templates: PetGiftTemplates | None = None,
         web_network_error_templates: WebNetworkErrorTemplates | None = None,
+        # 2026-11-03：游戏自己按时间弹的两条（变更日期 / 获得登录奖励）。
+        # 模板只有 PC 版 ⇒ 模拟器口径下 load 成 None ⇒ 整段跳过，行为不变。
+        date_change_templates: DateChangeTemplates | None = None,
+        login_reward_templates: LoginRewardTemplates | None = None,
         sleep: Callable[[float], None] = default_sleep,
         now: Callable[[], float] = monotonic,
         poll_seconds: float = 1.0,
@@ -1252,6 +1319,8 @@ class Epic7GlobalPopupGuard:
         self.knights_growth_rank_templates = knights_growth_rank_templates
         self.pet_gift_templates = pet_gift_templates
         self.web_network_error_templates = web_network_error_templates
+        self.date_change_templates = date_change_templates
+        self.login_reward_templates = login_reward_templates
         self.sleep = sleep
         self.now = now
         self.poll_seconds = poll_seconds
@@ -1282,6 +1351,28 @@ class Epic7GlobalPopupGuard:
                     "dismiss-web-network-error",
                     "web_network_error_failed",
                     f"网页「网络错误」右上角的 X 点击{_MAX_POPUP_CLICKS}次后仍未消失",
+                )
+        # 2026-11-03：游戏按时间自己弹的两条。变更日期会把页面强制切回大厅
+        # （跑任何路线都会被打断），所以排在登录奖励前面 —— 先把它点掉再谈别的。
+        if self.date_change_templates is not None:
+            match = find_date_change_close(screen, self.date_change_templates)
+            if match is not None:
+                return (
+                    match,
+                    "date_change",
+                    "dismiss-date-change",
+                    "date_change_failed",
+                    f"「日期变更」弹窗点击{_MAX_POPUP_CLICKS}次后仍未消失",
+                )
+        if self.login_reward_templates is not None:
+            match = find_login_reward_close(screen, self.login_reward_templates)
+            if match is not None:
+                return (
+                    match,
+                    "login_reward",
+                    "dismiss-login-reward",
+                    "login_reward_failed",
+                    f"「获得登录奖励」弹窗点击{_MAX_POPUP_CLICKS}次后仍未消失",
                 )
         if self.intimacy_templates is not None:
             match = find_intimacy_level_up_dismiss(screen, self.intimacy_templates)
@@ -1552,3 +1643,121 @@ class Epic7GlobalPopupGuard:
                     )
             self.sleep(self.poll_seconds)
             screen = runtime.capture_unguarded()
+
+
+# ---------------------------------------------------------------------------
+# 2026-11-03 新增两条：游戏内「变更日期」「获得登录奖励」弹窗
+#
+# 两条都是**游戏自己按时间弹**的模态通知窗，谁在跑都会撞上：
+#   * 「变更日期：日期变更，将前往大厅。」—— 会把当前页面强制切回大厅；
+#   * 「获得登录奖励」—— 每日首次登录的 6 格奖励，底部「点击关闭」。
+#
+# 死法（2026-11-03 主线实跑，两条各犯一次）：
+#   * 18:00:42 变更日期弹窗 ⇒ 主线在「等待通关」上干等 46 秒无进展 ⇒ 超时放弃；
+#   * 18:01:57 登录奖励弹窗 ⇒ 收尾连按 2 次 ESC 页面不动（这层不吃 ESC）⇒「回首页失败」。
+#   两个页面都没登记 ⇒ guard 每帧过也看不见 ⇒ 只能等到超时。
+#
+# 判据口径沿用既有约定：**标题排他 + 关闭点只负责定位**。
+# 标题跨页排他实测（全库 364 张夹具，2026-11-03）：
+#   date_change_title 最高 0.5517（阈 0.82，余量 0.27）
+#   login_reward_title 最高 0.5703（阈 0.82，余量 0.25）
+# ⚠️ 「点击关闭」这四个字**完全不排他**（游戏里通用灰字控件，reward_popup 那批 0.9），
+# 所以它绝不能单独当判据；这里只用来确定「点哪」。
+# ⚠️ 标题在、关闭点找不到 ⇒ 返回 None **不动手**：这两层都是「必须点关闭」型，
+# 屏幕中心底下就是奖励格子（点下去可能领掉东西），不许拿一个猜的坐标顶上。
+# ---------------------------------------------------------------------------
+
+# 两页的 ROI 都从 1982x1132 的 PC 真机帧上量：
+#   标题「变更日期」208x49 落在 (857,353)；「点击关闭」138x30 落在 (892,755)。
+#   标题「获得登录奖励」304x49 落在 (806,227)；「点击关闭」111x24 落在 (924,1081)。
+_DATE_CHANGE_TITLE_REGION = (800, 320, 400, 120)
+_DATE_CHANGE_CLOSE_REGION = (800, 720, 400, 110)
+_LOGIN_REWARD_TITLE_REGION = (760, 190, 480, 120)
+_LOGIN_REWARD_CLOSE_REGION = (860, 1040, 280, 90)
+# 标题门槛 0.82：与 friendship / side_story_notice 同档；跨页最高 0.5703，余量 0.25。
+_GAME_NOTICE_TITLE_THRESHOLD = 0.82
+# 关闭点门槛 0.85：它只定位、不判定，正例自匹配 1.0000，留 0.15 抗渲染差异。
+_GAME_NOTICE_CLOSE_THRESHOLD = 0.85
+
+
+def load_date_change_templates(template_dir: Path) -> DateChangeTemplates:
+    title = template_dir / "date_change_title.png"
+    close = template_dir / "date_change_close.png"
+    if not (title.exists() and close.exists()):
+        return DateChangeTemplates(title=None, close=None)
+    return DateChangeTemplates(
+        title=load_template(str(title)),
+        close=load_template(str(close)),
+    )
+
+
+def load_login_reward_templates(template_dir: Path) -> LoginRewardTemplates:
+    title = template_dir / "login_reward_title.png"
+    close = template_dir / "login_reward_close.png"
+    if not (title.exists() and close.exists()):
+        return LoginRewardTemplates(title=None, close=None)
+    return LoginRewardTemplates(
+        title=load_template(str(title)),
+        close=load_template(str(close)),
+    )
+
+
+def _find_titled_popup_close(
+    screen: np.ndarray,
+    title_template: np.ndarray,
+    close_template: np.ndarray,
+    title_region: tuple[int, int, int, int],
+    close_region: tuple[int, int, int, int],
+) -> Match | None:
+    """标题成立且关闭点定位得到 ⇒ 返回关闭点；任一不成立 ⇒ None（不动手）。"""
+    title = find_template(
+        screen,
+        title_template,
+        _GAME_NOTICE_TITLE_THRESHOLD,
+        region=title_region,
+        reference_size=_REFERENCE_SIZE,
+    )
+    if title is None:
+        return None
+    close = find_template(
+        screen,
+        close_template,
+        _GAME_NOTICE_CLOSE_THRESHOLD,
+        region=close_region,
+        reference_size=_REFERENCE_SIZE,
+    )
+    if close is None:
+        return None
+    return Match(close.center, min(title.score, close.score))
+
+
+def find_date_change_close(
+    screen: np.ndarray,
+    templates: DateChangeTemplates,
+) -> Match | None:
+    """「日期变更，将前往大厅。」弹窗的「点击关闭」。"""
+    if templates.title is None or templates.close is None:
+        return None
+    return _find_titled_popup_close(
+        screen,
+        templates.title,
+        templates.close,
+        _DATE_CHANGE_TITLE_REGION,
+        _DATE_CHANGE_CLOSE_REGION,
+    )
+
+
+def find_login_reward_close(
+    screen: np.ndarray,
+    templates: LoginRewardTemplates,
+) -> Match | None:
+    """「获得登录奖励」弹窗的「点击关闭」。"""
+    if templates.title is None or templates.close is None:
+        return None
+    return _find_titled_popup_close(
+        screen,
+        templates.title,
+        templates.close,
+        _LOGIN_REWARD_TITLE_REGION,
+        _LOGIN_REWARD_CLOSE_REGION,
+    )

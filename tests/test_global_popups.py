@@ -16,6 +16,8 @@ from auto_game_unified.games.epic7.global_popups import (
     find_knights_growth_rank_close,
     find_knights_signin_close,
     find_knights_weekly_reward_close,
+    find_date_change_close,
+    find_login_reward_close,
     find_network_retry,
     find_account_rank_up_close,
     find_gift_claim_close,
@@ -33,6 +35,8 @@ from auto_game_unified.games.epic7.global_popups import (
     load_knights_growth_rank_templates,
     load_knights_signin_templates,
     load_knights_weekly_reward_templates,
+    load_date_change_templates,
+    load_login_reward_templates,
     load_network_reconnect_templates,
     load_account_rank_up_templates,
     load_gift_claim_templates,
@@ -97,7 +101,13 @@ def test_network_retry_recognizes_the_pc_client_popup():
     （阈 0.88）⇒ 断线弹窗一直认不出、压在画面上，路线最后以「未知页」收场。
 
     修法是 `templates/global/pc/network_message.png`（425×55，与共享模板同尺寸、
-    按模板里白字的落点对齐裁）⇒ PC 上 1.0000。代码零改动。
+    按模板里白字的落点对齐裁）⇒ PC 上 1.0000。
+
+    ⚠️ 2026-11-03 追加：认出来之后**点哪**是另一个坑。PC 上这层弹窗是全屏横带，
+    文案在 y≈521、按钮在 y≈702~733，原写法「命中即点屏幕中心」正好点在两者之间
+    的空白 ⇒ 竞技场 10:23/18:35、主线 15:37 连点 4~8 次纹丝不动。
+    现在补 `templates/global/pc/network_retry_button.png` 只负责定位（中心 (960,731)），
+    判定仍然只看文案；模拟器侧没有这张图 ⇒ 仍点屏幕中心，行为不变。
     """
     screen = np.asarray(
         Image.open(FIXTURES / "network_reconnect_pc_live_20261101.png").convert("RGB")
@@ -108,11 +118,34 @@ def test_network_retry_recognizes_the_pc_client_popup():
     match = find_network_retry(screen, pc_templates)
 
     assert match is not None
-    assert match.center == _centre_of(screen)
     assert match.score >= 0.88
+    # PC 上必须点在「点击重试 ∨」本体上，不能落在文案与按钮之间的空白。
+    assert abs(match.center[0] - 960) <= 6, match.center
+    assert abs(match.center[1] - 731) <= 6, match.center
     # 这张 PC 帧在**模拟器口径**下必须仍然认不出：`pc/` 覆盖图不是"两边通用图"，
     # 谁要是把它复制成共享图，这条会立刻红。
     assert find_network_retry(screen, emulator_templates) is None
+
+
+def test_network_retry_click_point_falls_back_to_centre_without_button_template():
+    """没有 `retry_button` 图（模拟器口径）⇒ 必须保持历史行为：点屏幕中心。
+
+    护栏：谁要是把 PC 图挪成共享图、或删掉回落分支，这条立刻红。
+    """
+    from auto_game_unified.core.matcher import load_template
+
+    screen = np.asarray(
+        Image.open(FIXTURES / "network_reconnect_pc_live_20261101.png").convert("RGB")
+    )
+    message = load_template(str(TEMPLATES / "pc" / "network_message.png"))
+    templates = popups_module.NetworkReconnectTemplates(
+        message=message, message_alt=None, retry_button=None
+    )
+
+    match = find_network_retry(screen, templates)
+
+    assert match is not None
+    assert match.center == _centre_of(screen)
 
 
 def test_gift_claim_notice_is_dismissed_from_its_close_label():
@@ -1721,3 +1754,73 @@ def test_guard_dismisses_the_knights_growth_rank_popup():
     assert 900 <= clicks[0][0] <= 1020
     assert 1000 <= clicks[0][1] <= 1070
     assert any("动作=close-knights-growth-rank" in line for line in logs)
+
+
+def test_date_change_popup_is_dismissed_from_its_close_label():
+    """2026-11-03 PC 真机：游戏内「日期变更，将前往大厅。」通知。
+
+    它会把画面**强制切回大厅**：主线正在「等待通关」时撞上 ⇒ 干等 46 秒无进展
+    ⇒ 超时放弃（当天 18:00:42 那次）。页面一直没登记，guard 每帧过也看不见。
+
+    判据沿用既有口径：标题排他（「变更日期」208x49，全库 364 张最高 0.5517，阈 0.82）
+    + 底部「点击关闭」（138x30，中心 (961,770)）只负责定位。
+    ⚠️ 「点击关闭」是游戏里通用灰字控件，**不能单独当判据**。
+
+    模拟器口径没有 `pc/` 图 ⇒ 两个字段都是 None ⇒ 这条整段跳过，行为与历史一致。
+    """
+    screen = np.asarray(
+        Image.open(FIXTURES / "date_change_pc_live_20261103.png").convert("RGB")
+    )
+    pc_templates = load_date_change_templates(TemplateDir(TEMPLATES, "pc"))
+    emulator_templates = load_date_change_templates(TEMPLATES)
+
+    match = find_date_change_close(screen, pc_templates)
+
+    assert match is not None
+    assert match.score >= 0.82
+    assert abs(match.center[0] - 961) <= 8, match.center
+    assert abs(match.center[1] - 770) <= 8, match.center
+
+    # 模拟器口径：没有覆盖图 ⇒ 整条跳过（这条不该改变模拟器行为）。
+    assert emulator_templates.title is None
+    assert emulator_templates.close is None
+    assert find_date_change_close(screen, emulator_templates) is None
+
+    # 互斥：断线帧上不得命中（两种"网络/系统弹窗"不能串味）。
+    other = np.asarray(
+        Image.open(FIXTURES / "network_reconnect_pc_live_20261101.png").convert("RGB")
+    )
+    assert find_date_change_close(other, pc_templates) is None
+
+
+def test_login_reward_popup_is_dismissed_from_its_close_label():
+    """2026-11-03 PC 真机：每日「获得登录奖励」（6 格奖励）。
+
+    这层**不吃 ESC**：收尾连按 2 次 ESC 页面毫无变化 ⇒「回首页失败」
+    （当天 18:01:57 那次；同一帧上还有日期变更的收尾余波）。
+
+    判据：标题「获得登录奖励」304x49 排他（全库最高 0.5703，阈 0.82）
+    + 最底部「点击关闭」111x24（中心 (979,1093)）只负责定位。
+    """
+    screen = np.asarray(
+        Image.open(FIXTURES / "login_reward_pc_live_20261103.png").convert("RGB")
+    )
+    pc_templates = load_login_reward_templates(TemplateDir(TEMPLATES, "pc"))
+    emulator_templates = load_login_reward_templates(TEMPLATES)
+
+    match = find_login_reward_close(screen, pc_templates)
+
+    assert match is not None
+    assert match.score >= 0.82
+    assert abs(match.center[0] - 979) <= 8, match.center
+    assert abs(match.center[1] - 1093) <= 8, match.center
+
+    assert emulator_templates.title is None
+    assert emulator_templates.close is None
+    assert find_login_reward_close(screen, emulator_templates) is None
+
+    # 互斥：不得在「变更日期」帧上命中（两个标题各认各的）。
+    other = np.asarray(
+        Image.open(FIXTURES / "date_change_pc_live_20261103.png").convert("RGB")
+    )
+    assert find_login_reward_close(other, pc_templates) is None
