@@ -15,7 +15,12 @@ from auto_game_unified.core.battle_supervisor import (
     BattleSupervisor,
     valid_game_frame,
 )
-from auto_game_unified.core.matcher import Match, find_template, load_template
+from auto_game_unified.core.matcher import (
+    Match,
+    find_template,
+    load_template,
+    locate_with_fallback,
+)
 from auto_game_unified.core.recovery import RecoveryGate
 from auto_game_unified.core.runtime import Runtime, StaminaExhausted
 from auto_game_unified.core.supervisor import meaningful_change
@@ -506,14 +511,22 @@ class StoryStateMachine:
             if match is None:
                 return None
             return Match((x + match.center[0], y + match.center[1]), match.score)
-        match = find_template(
+        # 走 ``locate_with_fallback``（与导航层、视觉诊断**同一把尺子**）：原样先比，
+        # 不过阈才按 ``SMOOTH_FALLBACK_ANCHORS`` / ``SCALE_FALLBACK_ANCHORS`` 补一次。
+        # 名字不在任何名单里时，这里的判定与从前逐字节一致。
+        #
+        # ⚠️ 2026-11-04：不改这一处的话，主线那两颗登记进缩放兜底名单的锚点
+        # （``next_stage`` / ``stamina_material``）**根本走不到兜底** —— 名单是个开关，
+        # 开关装在 `matcher` 上，而电流得从路线自己的定位入口流进去。
+        # 名单里挂了名字却没人走这条路，症状就是「加了白名单还是认不出」，极难查。
+        return locate_with_fallback(
+            name,
             screen,
             getattr(self.templates, name),
             self._THRESHOLDS.get(name, self.templates.threshold),
             region=self._REGIONS[name],
             reference_size=self._REFERENCE_SIZE,
         )
-        return match
 
     def _scaled_region(self, screen: np.ndarray, name: str) -> tuple[int, int, int, int]:
         scale_x = screen.shape[1] / self._REFERENCE_SIZE[0]
