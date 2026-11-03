@@ -321,13 +321,14 @@ def test_controller_passes_selected_backend_to_worker():
 def test_the_pc_backend_refuses_routes_without_pc_acceptance():
     """PC 后端露面了，但**没验收的路线**不许在界面上跑 —— 那是一次必然失败的实跑。
 
-    样本用 ``world_boss``：它在 PC 上还没打通（点「世界首领战」徽章四次都没反应，
-    见 ``.workbuddy/memory/2026-11-02.md`` 的 10:10 一节）。挑样本时别用已经放行的
+    样本用 ``expedition``（讨伐）：它在 PC 上还没做过。挑样本时别用已经放行的
     路线（``catalog.PC_READY_ROUTES``），那会把这条断言变成永假。
-    ``tower`` 曾经是这里的样本，2026-11-03 已放行，所以换掉了。
+    换样本的历史：``tower`` 2026-11-03 放行 → 换 ``world_boss``；``world_boss``
+    同一天晚些时候也放行了（补 7 张 PC 图后导航链与前半场跑通）→ 换 ``expedition``。
+    ⚠️ 别拿 ``hero_synthesis`` / ``knights_donation`` 当样本 —— 那两条正在被并行移植。
     """
     controller = DesktopController(worker=FakeWorker())
-    controller.toggle("world_boss", True)
+    controller.toggle("expedition", True)
     controller.select_backend("pc")
     controller.apply_preflight(passed_preflight())
 

@@ -292,6 +292,20 @@ class ProjectLayoutTests(unittest.TestCase):
             # 「选择队伍」认不出来 ⇒ 导航转场等到超时。
             # 是那个新弹窗两个锚点（标题 + 点击关闭）的唯一正例。
             "worldboss_support_reward_live_20261019.png",
+            # ── 2026-11-03 PC 客户端移植：六张实跑现场帧 ────────────────────
+            # PC 压低的是**文字**类锚点（图形类不动：骷髅盾牌入口 0.9936）。
+            # 这六张是每一颗「补了 PC 覆盖图」的锚点的正例，缺一张就少一条回归依据；
+            # 同时它们是反向用例的输入 —— 共享图（模拟器那套）在这六张上必须**全部**
+            # 认不出，否则说明 PC 图多余、或共享图被换成了 PC 图。
+            "knights_home_pc_live_20261103.png",
+            "worldboss_home_pc_live_20261103.png",
+            "team_select_pc_live_20261103.png",
+            "team_config_pc_live_20261103.png",
+            # 战斗页：抓的是**跳过按钮仍在**的那一段（不是技能演出帧）。
+            "battle_pc_live_20261103.png",
+            # 结算页：分数 2,685,243、MVP 头像、右下「确认」。这张同时是
+            # result_title 的正例，以及「奖励弹窗必须靠 forbidden 排他」的对照组。
+            "battle_result_pc_live_20261103.png",
         }
         fixture_dir = ROOT / "tests" / "fixtures" / "epic7_world_boss"
         self.assertEqual(expected, {path.name for path in fixture_dir.glob("*.png")})

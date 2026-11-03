@@ -236,6 +236,36 @@ def test_real_template_root_only_has_the_reviewed_pc_overrides():
         # 2026-11-03：月光剧场「分集页」的「进行观览」按钮（模拟器原样 0.6935）。
         "moonlight_theater/pc/watch_button.png",
         "moonlight_theater/pc/guide_title.png",
+# 世界首领战（2026-11-03 PC 移植）：**PC 压低的是「文字」类锚点，不是图形类**。
+        # 同一条路线上的实测对照足以定案 —— 图形锚点 ``navigation/worldboss_entry``
+        # （骷髅盾牌）在 PC 帧上 0.9936~0.9940 分文不动，而文字锚点整片塌下来：
+        #   knights_title 0.7858 / worldboss_title 0.6674 / select_team_button 0.6648，
+        # 都过不了 0.80 门槛。所以这里**不动口径、不动阈值**（低通 σ=2.0 虽然能把
+        # 分数抬到 0.86~0.88，但全库审计显示它把跨页分也一并抬高 ~0.2，
+        # 例如 result_title 在奖励弹窗上 0.7103→0.9305，等于拿判据余量换分数）。
+        # 改为补 PC 同名图：模拟器行为一个字节不变，PC 上直接回到 1.0000。
+        #   · select_team_button —— 只截「选择队伍」四个字，**不含左侧 1/2·2/2 徽章**
+        #     （跨场次会变，且 PC 上是黄字、模拟器模板里是青字）；
+        #   · knights_title —— 只截「骑士团」三字，不含背箭头与 ? 图标；
+        #   · team_select_title —— 只截「选择辅助队伍」整行标题。
+        # 验证：四张跨两天的 PC 帧上 1.0000，非本页 PC 帧 0.19~0.47；
+        # 反向拿 PC 图打模拟器同页帧（低通）0.66~0.88，证明抓的是同一个控件。
+        "world_boss/pc/knights_title.png",
+        "world_boss/pc/select_team_button.png",
+        "world_boss/pc/team_select_title.png",
+        "world_boss/pc/team_config_auto.png",
+        # 战斗页「跳过 」：只在 ``BATTLE_SKIP_REGION``（x<1760）里找 —— 剧情播放页
+        # 也有同一张图形，但位置在 x≈1769~1886，窗口宽度本身就是判据的一部分。
+        # PC 原样 0.6997（阈 0.80）⇒ 战斗整段认不出、45 秒看门狗收场；补图后
+        # 战斗帧 0.88~1.00、剧情帧 0.25、暂停菜单下仍算战斗。
+        "world_boss/pc/battle_skip.png",
+        # 结算页右上「战斗结果」：PC 原样整页 unknown（监督靠它判「打完了」）。
+        # ⚠️ 奖励弹窗是压暗的结算页，这颗锚点在那上面也会高分 —— 排他仍由
+        # ``world_boss.result`` 的 ``forbidden=("level_reward_title",)`` 负责。
+        "world_boss/pc/result_title.png",
+        # 「战斗级别奖励」弹窗标题：点「跳过」后游戏**直接**弹它，不经过结算页。
+        # PC 原样整页 unknown ⇒ 状态机在弹窗上反复点「确认」白转。
+        "world_boss/pc/level_reward_title.png",
 
     }, actual
 

@@ -126,10 +126,21 @@
 `tower.home` `tower.floor_list` `tower.team` `tower.season` —— P0；
 `tower.card` `tower.result` —— P2；`tower.conquered` —— P1（打满才出现）。
 
-## 十三、世界首领战（6 页）
+## 十三、世界首领战（6 页）✅ 2026-11-03 已通
 
-`world_boss.knights_home` `world_boss.home` `world_boss.team_select`
-`world_boss.team_config` —— P0；`world_boss.result` `world_boss.level_reward` —— P1/P2。
+`world_boss.knights_home` ✅ `world_boss.home` ✅ `world_boss.team_select` ✅
+`world_boss.team_config` ✅ —— P0；`world_boss.result` ✅ `world_boss.level_reward` ✅ —— P1/P2。
+
+**没有走本清单设想的「口径兜底」路线**，改成了直接补七张 `templates/world_boss/pc/` 同名图。
+原因是同页存在**图形锚点**（骷髅盾牌入口 `worldboss_entry`）在 PC 上 0.9936~
+0.9940 纹丝不动，说明差异只集中在字形栅格化；而低通口径会把跨页分一并抬高约 0.2
+（`result_title` 在奖励弹窗上 0.7103→0.9305），拿余量换分数不划算。
+完整对照与决策依据见 `docs/PC_TEMPLATE_MIGRATION.md` §2.7。
+
+补的七张：`knights_title` / `select_team_button` / `team_select_title` /
+`team_config_auto` / `battle_skip` / `result_title` / `level_reward_title`。
+实跑验证：导航链一次通过（0.994 / 0.976），接力落点可用，战斗可识别并点掉「跳过」，
+结算与奖励弹窗均可判页；当日 2/2 次数用完后**干净收场回大厅**。
 
 ---
 
