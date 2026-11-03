@@ -8,7 +8,13 @@ from typing import Any, Mapping, Sequence
 import cv2
 import numpy as np
 
-from .matcher import Match, find_best_template, load_template
+from .matcher import (
+    MATCH_MODE_RAW,
+    Match,
+    best_match_with_fallback,
+    find_best_template,
+    load_template,
+)
 from auto_game_unified.games.epic7.evidence.common import (
     AtomObservation,
     EvidenceProfile,
@@ -44,15 +50,27 @@ def inspect_profile(
             )
             continue
         template = load_template(str(template_path))
-        match: Match | None = find_best_template(
-            screen,
-            template,
-            region=atom.region,
-            reference_size=atom.reference_size,
+        if atom.match_mode == MATCH_MODE_RAW:
             # ⚠️ 必须跟路线走同一个口径：诊断包里的分数要与实跑判定出自同一把尺子，
-            # 否则工具报「0.7492 未过阈」而实跑用的是白掩膜的 0.9214，等于骗人。
-            mode=atom.match_mode,
-        )
+            # 否则工具报「0.841 未过阈」而实跑已经用低通兜底过了，等于骗人。
+            match: Match | None = best_match_with_fallback(
+                key,
+                screen,
+                template,
+                atom.threshold,
+                region=atom.region,
+                reference_size=atom.reference_size,
+            )
+        else:
+            match = find_best_template(
+                screen,
+                template,
+                region=atom.region,
+                reference_size=atom.reference_size,
+                # ⚠️ 必须跟路线走同一个口径：诊断包里的分数要与实跑判定出自同一把尺子，
+                # 否则工具报「0.7492 未过阈」而实跑用的是白掩膜的 0.9214，等于骗人。
+                mode=atom.match_mode,
+            )
         observed = match is not None and match.score >= atom.threshold
         observations[key] = AtomObservation(
             key=key,

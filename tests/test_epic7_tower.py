@@ -22,6 +22,7 @@ from auto_game_unified.core.runtime import Runtime
 from auto_game_unified.games.epic7.evidence.tower import build_tower_evidence
 from auto_game_unified.games.epic7.navigation import REFERENCE_SIZE
 from auto_game_unified.games.epic7.tower import (
+    FloorTooHard,
     FloorsConquered,
     TowerRunner,
     TowerState,
@@ -46,6 +47,15 @@ FIXTURE_STATES: dict[str, TowerState] = {
     "floor_list_alt": TowerState.FLOOR_LIST,
     "team": TowerState.TEAM,
     "team_next_floor": TowerState.TEAM,
+    # 2026-10-31 第 20 层事故帧：「战斗指南」战力差警告**盖在准备战斗页上**。
+    # ⚠️ 它在状态上**仍然是 TEAM**（弹窗半透明，底下的两个锚点照样命中）——
+    # 这正是当初连点四次「战斗开始」的原因；区别只在 `next_action` 里
+    # 先认弹窗、改成点「确认」。
+    "battle_guide": TowerState.TEAM,
+    # ⚠️ `hero_restore`（「英雄恢复」页）**不在**这张表里 —— 它和 `battle_guide`
+    # 不一样：那一页把底下的准备战斗页压得更暗，`prepare_title` /
+    # `team_battle_start` 只剩 **0.78**（不过阈）⇒ `is_in_state(TEAM)` 不成立。
+    # 它靠 `hero_restore_title` 单独认，`next_action` 里按 state=TEAM 分派到子页面分支。
     "card": TowerState.CARD,
     "card_unselected": TowerState.CARD,
     "card_selected": TowerState.CARD,
@@ -62,8 +72,12 @@ JUDGE_OWNERS: dict[str, tuple[str, ...]] = {
     "season_tower_title": ("season", "season_2"),
     "home_enter": ("home", "home_2", "home_alt"),
     "floor_select_team": ("floor_list", "floor_list_2", "floor_list_alt"),
-    "team_battle_start": ("team", "team_next_floor"),
-    "prepare_title": ("team", "team_next_floor"),
+    "team_battle_start": ("team", "team_next_floor", "battle_guide"),
+    # ⚠️ `battle_guide` **也是这两枚的正样本**：那一帧是「战斗指南」战力差警告
+    # **盖在准备战斗页上**，弹窗半透明 ⇒ 底下两个锚点照样 0.95+ 命中。
+    # 这不是判据退化，正是当初连点四次「战斗开始」的成因（见 next_action 的子页面分支）。
+    # ⚠️ 但 `hero_restore` **不是**：那一页压得更暗，这两枚只有 0.78 ⇒ 它是负样本。
+    "prepare_title": ("team", "team_next_floor", "battle_guide"),
     "card_decide": ("card", "card_unselected", "card_selected"),
     "card_hint": ("card", "card_unselected", "card_selected"),
     # ⚠️ 两张结算页都算 `result_clear` 的**正样本**：25 层那张只是右下角换了字、
@@ -72,6 +86,27 @@ JUDGE_OWNERS: dict[str, tuple[str, ...]] = {
     "result_clear": ("result", "result_conquered_floor"),
     # 终点屏的判据。⚠️ 它在 `conquered.png` 上 1.0000、其余最高 0.2810。
     "conquer_title": ("conquered",),
+    # 「战斗指南」战力差警告标题（复用 story 的模板）。2026-10-31 实测：
+    # 本帧 0.9956，其余帧最高 0.38（底下的准备战斗页并不包含这行标题）。
+    "battle_guide_title": ("battle_guide",),
+    # 「英雄恢复」页标题（本路线自裁）。2026-10-31 实测：本帧 1.0000，
+    # 其余帧最高 0.5668（`conquered.png`）。
+    "hero_restore_title": ("hero_restore",),
+    # 「FAILED」大字（白掩膜口径）。夹具 = 2026-10-31 第 22 层实跑的诊断帧
+    # （当时被报成 `battle_unrecognized` 假故障，2026-11-01 接线成正常业务退出）。
+    # 实测：本帧 1.0000；其余夹具帧最高 0.5556（`floor_select_team` 帧上）。
+    "battle_failed": ("battle_failed",),
+}
+
+# 「同一页的变体」：这些帧**不是另一页**，只是在某一页上又盖了一层/压暗了一层，
+# 所以拿它们当负样本算「分离度」会得到必然很小的间隔 —— 那是同页内的变化，不是判据退化。
+#
+# 目前只有一条：`hero_restore`（「英雄恢复」页）把底下的准备战斗页压暗，
+# `prepare_title` / `team_battle_start` 掉到 **0.7778**（不过阈）。
+# ⚠️ 别把它加进 `JUDGE_OWNERS` —— 0.7778 < 0.88，会让「本页必须过阈」那条直接失败。
+_SAME_PAGE_VARIANTS: dict[str, frozenset[str]] = {
+    "team_battle_start": frozenset({"hero_restore"}),
+    "prepare_title": frozenset({"hero_restore"}),
 }
 
 
@@ -187,7 +222,7 @@ class TowerStateMachineTests(unittest.TestCase):
                     image, template, region=region, reference_size=(1982, 1132)
                 ).score
                 for name, image in images.items()
-                if name not in owners
+                if name not in owners and name not in _SAME_PAGE_VARIANTS.get(judge, ())
             ]
             with self.subTest(judge=judge):
                 self.assertGreater(min(own_scores), 0.88)
@@ -308,7 +343,92 @@ class TowerStateMachineTests(unittest.TestCase):
 
         self.assertEqual("battle-start", action.name)
         self.assertEqual(TowerState.TEAM, machine.state)
-        self.assertEqual((TowerState.BATTLE,), action.target_states)
+        # ⚠️ 目标里**也含 TEAM**：战力差警告冒出来时，这一次要按「退回准备战斗」
+        # 收掉、把控制权交回主循环（见 `action_target_state` 的弹窗分支）。
+        self.assertIn(TowerState.BATTLE, action.target_states)
+        self.assertIn(TowerState.TEAM, action.target_states)
+
+    def test_the_power_warning_interrupts_the_transition_instead_of_retrying(self):
+        """弹窗一冒出来，这次转场就该判「页面变了」，让主循环**重新决策**。
+
+        ⚠️ 2026-10-31 09:45 第二次事故：`transactional_runner_base` 的重试路径是
+        **原地重发同一个点击**、不重新问状态机 ⇒ 只把弹窗分支写在 `next_action` 里
+        根本轮不到执行，连点 4 次 `battle-start` 后判
+        `动作[battle-start]未稳定进入[战斗中]`。
+        """
+        machine = real_machine(TowerState.TEAM)
+        action = machine.next_action(recorded_screen("team"))
+        guide = recorded_screen("battle_guide")
+
+        with self.subTest("弹窗在场：来源不在 + 收到 TEAM"):
+            self.assertFalse(machine.action_source_visible(guide, action))
+            self.assertEqual(TowerState.TEAM, machine.action_target_state(guide, action))
+
+        with self.subTest("正常转场途中：不许判成 TEAM"):
+            self.assertIsNone(
+                machine.action_target_state(recorded_screen("team"), action),
+                "转场途中认 TEAM 会让主循环立刻重发一次 battle-start",
+            )
+
+    def test_the_power_warning_confirms_instead_of_re_clicking_battle_start(self):
+        """2026-10-31 第 20 层事故：敌方战力 107 万 vs 我方 80 万 ⇒ 弹「战斗指南」警告。
+
+        弹窗是**半透明**的，底下 `team_battle_start` / `prepare_title` 照样命中
+        ⇒ 旧逻辑一直以为「还在准备战斗」，连点 4 次「战斗开始」（全点在弹窗上），
+        最后报 `动作[battle-start]未稳定进入[战斗中]`（退出码 1）。
+        """
+        machine = real_machine(TowerState.TEAM)
+
+        action = machine.next_action(recorded_screen("battle_guide"))
+
+        self.assertEqual("confirm-battle-guide", action.name)
+        self.assertEqual((1122, 794), action.point, "必须点弹窗的「确认」，不是「取消」")
+        self.assertIn(TowerState.BATTLE, action.target_states)
+
+    def test_the_popup_action_judges_its_source_by_the_popup_itself(self):
+        """「来源还在不在」要按**弹窗**判：弹窗一关，底下仍是准备战斗页。
+
+        若按 TEAM 判，关掉弹窗后 `is_in_state(TEAM)` 依然成立 ⇒ 主循环会认为
+        「这一下没点动」而反复重试。
+        """
+        machine = real_machine(TowerState.TEAM)
+        action = machine.next_action(recorded_screen("battle_guide"))
+
+        self.assertTrue(
+            machine.action_source_visible(recorded_screen("battle_guide"), action)
+        )
+        self.assertFalse(machine.action_source_visible(recorded_screen("team"), action))
+
+    def test_a_dead_hero_restores_instead_of_looping_on_battle_start(self):
+        """2026-10-31 第 22 层：队伍里有**阵亡角色**。
+
+        这时点「战斗开始」既不进战斗、也不弹战力警告，而是跳到「英雄恢复」页
+        （消耗雌蕊圣叶把角色救活）。旧逻辑不认这一页 ⇒ 连点 4 次「战斗开始」
+        （全点在恢复页上）⇒ `动作[battle-start]未稳定进入[战斗中]`。
+        """
+        machine = real_machine(TowerState.TEAM)
+
+        action = machine.next_action(recorded_screen("hero_restore"))
+
+        self.assertEqual("restore-heroes", action.name)
+        self.assertEqual((1130, 888), action.point, "必须点「恢复」，不是「取消」")
+        self.assertIn(TowerState.TEAM, action.target_states)
+
+    def test_the_restore_page_must_disappear_before_this_step_counts(self):
+        """恢复页还在 = 这一下没点动（比如雌蕊圣叶不够），不能当成转场成功。"""
+        machine = real_machine(TowerState.TEAM)
+        action = machine.next_action(recorded_screen("hero_restore"))
+        restore = recorded_screen("hero_restore")
+
+        self.assertTrue(machine.action_source_visible(restore, action))
+        self.assertIsNone(machine.action_target_state(restore, action))
+
+        # 恢复页消失、回到准备战斗页 ⇒ 这一步走完，主循环接着点「战斗开始」
+        back_to_team = recorded_screen("team")
+        self.assertFalse(machine.action_source_visible(back_to_team, action))
+        self.assertEqual(
+            TowerState.TEAM, machine.action_target_state(back_to_team, action)
+        )
 
     def test_select_team_source_page_cannot_survive_the_team_page(self):
         """⚠️ 事故护栏（2026-10-09）：源页判据在两页之间必须**互斥**，否则重试会误开战斗。
@@ -582,6 +702,75 @@ class TowerStateMachineTests(unittest.TestCase):
         self.assertIsNotNone(point)
         self.assertIs(TowerState.CONQUERED, point.state)
         self.assertIsNone(point.entry)
+
+    # ---- 打不过（FAILED 结算页，2026-11-01 接线）----
+
+    def test_the_failed_screen_is_a_normal_business_stop(self):
+        """⚠️⚠️ 打不过（FAILED 结算页）⇒ **正常业务退出**，不是故障。
+
+        2026-10-31 第 22 层实跑：战斗失败落在 FAILED 结算页，监督两个判据
+        （三选一锚点、战斗场面）全 False ⇒ 干等 45 秒报 `battle_unrecognized`
+        （退出码 1 假故障）。接线后：监督收手把状态拨到 CARD，CARD 分支先判
+        FAILED ⇒ 抛 `FloorTooHard`（退出码 2，「月塔这一层打不过」）。
+        与「打满」是两件事：打满是完成、打不过是实力不够 —— 但对主循环语义一样。
+        """
+        machine = self.machine(TowerState.CARD)
+
+        with self.assertRaises(FloorTooHard) as caught:
+            machine.next_action(recorded_screen("battle_failed"))
+
+        self.assertEqual("月塔这一层打不过", caught.exception.stop_label)
+
+    def test_the_failed_screen_is_reachable_from_the_battle_state_too(self):
+        """成对的另一半：``BATTLE`` 状态也要接得住 FAILED 屏（同征服屏那对）。
+
+        否则监督收手时那一帧画面已翻到 FAILED、状态还停在 BATTLE ⇒ 报「战斗画面
+        未识别」超时，把「打不过」报成故障。
+        """
+        machine = self.machine(TowerState.BATTLE)
+
+        with self.assertRaises(FloorTooHard):
+            machine.next_action(recorded_screen("battle_failed"))
+
+    def test_the_failed_screen_wins_the_resume_order(self):
+        """接力：人停在 FAILED 屏启动月塔 ⇒ 拨到 CARD（那一支先判 FAILED），不给导航入口。
+
+        那一帧上状态循环一个状态都认不出（`battle_scene_visible` False、三选一/
+        结算锚点全 miss）⇒ 不在这里显式接，就会「回大厅 → 重进塔 → 重打同一层
+        → 再输一遍」。与 ``CONQUERED``「认出终点即收工」同一口径。
+        """
+        from auto_game_unified.games.epic7.tower import detect_resume_point
+
+        machine = self.machine()
+        point = detect_resume_point(machine, recorded_screen("battle_failed"))
+
+        self.assertIsNotNone(point)
+        self.assertEqual("战斗失败", point.page)
+        self.assertIs(TowerState.CARD, point.state)
+        self.assertIsNone(point.entry)
+
+    def test_battle_adapter_hands_control_back_on_the_failed_screen(self):
+        """监督必须在 FAILED 页收手（`result_visible`）—— 否则干等到 battle_unrecognized。
+
+        那一帧上 `battle_scene_visible` 已是 False、三选一锚点也不命中，两个判据
+        原本全 False ⇒ 监督永远等不到「打完」。2026-10-31 实跑即此死法。
+        """
+        machine = self.machine(TowerState.BATTLE)
+
+        observation = machine.observe_battle(recorded_screen("battle_failed"), None)
+
+        self.assertTrue(observation.result_visible)
+        self.assertFalse(observation.battle_visible)
+
+    def test_the_failed_screen_never_fires_on_a_business_page(self):
+        """FAILED 判据不许在任何业务页上误响 —— 它的误判代价是「正常层被打断收工」。"""
+        machine = self.machine(TowerState.CARD)
+
+        for name in ("card", "card_unselected", "card_selected", "result", "team"):
+            with self.subTest(fixture=name):
+                self.assertIsNone(
+                    machine._locate(recorded_screen(name), "battle_failed")
+                )
 
     def test_card_gate_resets_when_a_new_floor_starts(self):
         """新的一层开始点卡：「本层已选卡」的闸门必须复位，否则第二层永远不点卡。

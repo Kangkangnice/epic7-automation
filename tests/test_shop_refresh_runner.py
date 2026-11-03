@@ -14,6 +14,7 @@ from auto_game_unified.games.epic7.evidence.shop_refresh import (
 )
 from auto_game_unified.games.epic7.shop_refresh import (
     COVENANT_PRICE,
+    FRIENDSHIP_PURCHASE_LIMIT,
     MYSTIC_PRICE,
     ShopPhase,
     ShopRefreshRunner,
@@ -1142,3 +1143,87 @@ def test_resumed_run_fails_closed_when_the_list_never_settles():
 
     assert len(swipes) == 1
     assert machine.phase is ShopPhase.STOPPED
+
+
+def test_friendship_total_counts_the_initial_batch_as_well():
+    """上限按**整轮**算：开局那一批 + 刷出来的都算进 `friendship_bought`。
+
+    ⚠️ 只数 `paid_friendship` 会让开局买的那几个逃出上限 —— 它们记在
+    `initial_friendship` 上（`commit_purchase` 按「刷新过没有」分账）。
+    """
+
+    stats = ShopRunStats(target_refreshes=1)
+
+    stats.commit_purchase(ShopItemKind.FRIENDSHIP)
+    assert stats.friendship_bought == 1
+
+    stats.commit_refresh()
+    stats.commit_purchase(ShopItemKind.FRIENDSHIP)
+    assert stats.friendship_bought == 2
+
+
+def test_friendship_purchases_stop_at_the_per_run_limit():
+    """用户 2026-11-01：友情点数出现太频繁、目前不缺，一轮最多买 10 个。
+
+    同一屏反复出现友情点数：前 10 次买、第 11 次跳过；跳过之后别的目标（誓约）
+    照买，整轮还能正常收尾 —— 上限只针对友情点数，不许把路线判死。
+    """
+
+    machine = ShopRefreshStateMachine(0)
+    clock = _Clock()
+    logs: list[str] = []
+    runner = ShopRefreshRunner(
+        machine,
+        _runtime([], clock=clock, clicks=[], swipes=[], logs=logs),
+        observer=_Observer({}),
+        sleep=clock.sleep,
+    )
+
+    friendship_only = ShopObservation(
+        page=ShopPage.SHOP,
+        list_fingerprint="same-list",
+        rows=[_row(ShopItemKind.FRIENDSHIP)],
+    )
+    covenant_only = ShopObservation(
+        page=ShopPage.SHOP,
+        list_fingerprint="same-list",
+        rows=[_row(ShopItemKind.COVENANT)],
+    )
+    empty = ShopObservation(page=ShopPage.SHOP, list_fingerprint="same-list")
+    # ⚠️ 这里写死 11 而不是 ``FRIENDSHIP_PURCHASE_LIMIT + 1``：跟着常量走的话，
+    # 常量改大测试也跟着改大，就永远「买满常量个」而不是「买满 10 个」——
+    # 那是一条自己证明自己的假护栏。
+    feed = iter(
+        [friendship_only] * 11
+        + [covenant_only]
+        + [empty] * 2
+    )
+    runner._stable_shop = lambda: (_frame(10), next(feed))
+    runner._scroll_to_bottom = lambda screen, observation: machine.complete_scroll()
+
+    bought: list[ShopItemKind] = []
+
+    def purchase(row, observation, *, source_screen):
+        bought.append(row.kind)
+        machine.begin_purchase(row)
+        assert machine.mark_purchase_confirm_clicked()
+        assert machine.complete_purchase(target_row_still_visible=False)
+
+    runner._purchase_transaction = purchase
+
+    runner.run(max_cycles=0)
+
+    assert bought.count(ShopItemKind.FRIENDSHIP) == 10
+    assert bought.count(ShopItemKind.COVENANT) == 1
+    assert machine.phase is ShopPhase.COMPLETE
+    assert any("友情点数=达到上限" in log for log in logs)
+
+
+def test_the_friendship_limit_is_ten():
+    """用户 2026-11-01 的口径：一轮最多买 10 个友情点数。
+
+    常量是「改一个数字就生效」的那一处 —— 这条用例把那个数字钉住，
+    免得有人顺手把它调大又不当回事。
+    """
+
+    assert FRIENDSHIP_PURCHASE_LIMIT == 10

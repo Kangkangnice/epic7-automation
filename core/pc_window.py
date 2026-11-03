@@ -32,6 +32,21 @@ _SWP_NOZORDER = 0x0004
 _SWP_NOACTIVATE = 0x0010
 _SRCCOPY = 0x00CC0020
 _CAPTUREBLT = 0x40000000
+# 后台抓帧的重试次数与间隔（见 ``capture``：偶发失败，重试一次基本就好）。
+#
+# 原为 3 次 × 0.2 秒（最坏 0.4 秒）。2026-11-01 移植主线时实测不够：
+# 「大厅 → 主线入口」这种**带加载的转场**里，客户端有约 0.6~0.8 秒拿不到可 BitBlt
+# 的画面，两轮实跑一共失手 3 次，其中一次连试 3 次全败 ⇒ 整轮以
+# 「PC 后台截图失败」中止（不是认不出页面，纯粹是抓不到帧）。
+# 改成 6 次 × 0.3 秒 = 1.8 秒上限：仍是有界的，且只在**真的抓不到**时才等这么久。
+#
+# 2026-11-02 又加到 10 次（= 3.0 秒）：点「进入骑士团」后，骑士团主页加载期间
+# 连续 6 次抓到的都是黑帧（``capture`` 对 std<1.0 返回 None）⇒ 世界首领战直接
+# 以「PC 后台截图失败」中止。加载类转场比页面切换更久，预算必须留够。
+CAPTURE_ATTEMPTS = 10
+CAPTURE_RETRY_DELAY = 0.3
+# 置前同样有界重试（见 ``activate``）。
+ACTIVATE_ATTEMPTS = 3
 
 
 class _BitmapInfoHeader(ctypes.Structure):
@@ -223,16 +238,46 @@ class Epic7PcWindow:
         )
 
     def activate(self):
+        # ⚠️ ``SetForegroundWindow`` 也会**偶发**失败（2026-11-01 助手实跑时遇到过一次
+        # 「游戏窗口=未知 前置=失败」）：Windows 不让一个不是前台的进程随便抢前台。
+        # 与截图同理 —— 有界重试几轮，试满才报。
         hwnd = self._find_window()
         if self._user32.GetForegroundWindow() == hwnd:
             return hwnd
-        self._user32.ShowWindow(hwnd, 9)  # SW_RESTORE
-        self._user32.SetForegroundWindow(hwnd)
-        for _ in range(10):
-            if self._user32.GetForegroundWindow() == hwnd:
-                return hwnd
-            sleep(0.05)
+        for attempt in range(1, ACTIVATE_ATTEMPTS + 1):
+            self._user32.ShowWindow(hwnd, 9)  # SW_RESTORE
+            self._nudge_foreground_permission()
+            self._user32.SetForegroundWindow(hwnd)
+            for _ in range(10):
+                if self._user32.GetForegroundWindow() == hwnd:
+                    return hwnd
+                sleep(0.05)
+            if attempt < ACTIVATE_ATTEMPTS:
+                self._emit(
+                    f"模式=PC输入 事件=窗口未置前 第={attempt}/{ACTIVATE_ATTEMPTS}次 "
+                    "动作=稍后重试"
+                )
+                self._sleep(0.3)
         raise RuntimeError("PC 游戏窗口未能置前，已拒绝截图或输入")
+
+    def _nudge_foreground_permission(self) -> None:
+        """发一次「空 ALT」骗过 Windows 的前台限制。
+
+        ``SetForegroundWindow`` 只在「调用进程是前台 / 刚收到用户输入」时才允许抢前台。
+        自动化进程两条都不满足，所以只要用户把窗口切走（比如去看助手界面），
+        置前就会连续失败 —— 2026-11-03 早上一小时内撞了 3 次，整套实跑直接退出。
+
+        发一个**只有按下与抬起、不带任何其它键**的 ALT，会让系统把本进程当成
+        「刚收到用户输入」，随后的 ``SetForegroundWindow`` 就能成功。
+        这是 Win32 自动化的常规做法，不改变任何业务语义，也不留按键副作用
+        （ALT 单独按下抬起不会触发菜单或快捷键）。
+        """
+        try:
+            self._user32.keybd_event(0x12, 0, 0, 0)  # ALT down
+            self._user32.keybd_event(0x12, 0, 2, 0)  # ALT up
+        except Exception:
+            # 骗不到就算了，后面 SetForegroundWindow 照旧尝试；失败仍然按老路报错。
+            pass
 
     def _validated_rect(self, hwnd) -> WindowRect:
         rect = self._rect(hwnd)
@@ -313,15 +358,29 @@ class Epic7PcWindow:
         return canvas
 
     def capture(self) -> np.ndarray:
+        # ⚠️ 后台抓帧会**偶发**失败（2026-11-01 实测：40 拍里失败 2 次，
+        # 而且当时游戏既没最小化、甚至就在前台）。原因不是前台，是客户端正在重绘时
+        # 那一帧拿不到内容。它不是「游戏关了」，一次重试基本就能拿到。
+        #
+        # 所以这里**有界重试**，而不是把第一次失败直接抛给上层 —— 上层会当成致命错误，
+        # 整条路线就此中断（实测竞技场就是死在这一下）。试满仍然失败才照旧抛错，
+        # 该 fail-closed 的性质一点没变。
         hwnd = self._find_window()
         self._validated_rect(hwnd)
-        frame = self._capture_client_bitblt(hwnd)
-        if frame is None:
-            raise RuntimeError(
-                "PC 后台截图失败；为避免抢占前台已安全停止。"
-                "请保持游戏窗口未最小化后重试"
-            )
-        return self._legacy_canvas(frame)
+        for attempt in range(1, CAPTURE_ATTEMPTS + 1):
+            frame = self._capture_client_bitblt(hwnd)
+            if frame is not None:
+                return self._legacy_canvas(frame)
+            if attempt < CAPTURE_ATTEMPTS:
+                self._emit(
+                    f"模式=PC截图 事件=后台抓帧失败 第={attempt}/{CAPTURE_ATTEMPTS}次 "
+                    "动作=稍后重试"
+                )
+                self._sleep(CAPTURE_RETRY_DELAY)
+        raise RuntimeError(
+            "PC 后台截图失败；为避免抢占前台已安全停止。"
+            f"已重试 {CAPTURE_ATTEMPTS} 次，请保持游戏窗口未最小化后重试"
+        )
 
     def _capture_client_bitblt(self, hwnd) -> np.ndarray | None:
         """Capture the live client surface without bringing the game forward."""
@@ -398,11 +457,99 @@ class Epic7PcWindow:
             return None
         return frame
 
-    def click(self, point: tuple[int, int]) -> None:
+    def swipe(
+        self,
+        start: tuple[int, int],
+        end: tuple[int, int],
+        duration_ms: int,
+    ) -> None:
+        """用 SendInput 拖拽一次（画布坐标 → 客户区 → 桌面绝对坐标）。
+
+        ⚠️ 2026-11-02 新增。此前 PC 端**没有**滑动实现，`main.py` 给 Runtime 传的
+        ``swipe=None`` ⇒ 刷书签 / 骑士团捐赠 / 迷宫强化石 / 幸存者 这四条路线
+        一走到滑动就抛「未配置滑动动作」。滑动属窗口 I/O，本层是 PC 与模拟器
+        唯一被允许分叉的地方，所以补在这里，业务代码一行不动。
+
+        与 ``click`` 同口径：点完不把焦点还回去（2026-11-01 用户拍板，避免窗口闪）。
+        轨迹按 ``duration_ms`` 均分约 16ms 一步，中途不抬键 —— 抬手就成了点击。
+        """
         previous_foreground = self._user32.GetForegroundWindow()
         hwnd = None
         succeeded = False
-        restore_label = "无需"
+        try:
+            hwnd = self.activate()
+            self._ensure_input_allowed(hwnd)
+            rect = self._validated_rect(hwnd)
+            points = []
+            for point in (start, end):
+                render_point = point[0], point[1] - LEGACY_TOP
+                if not (
+                    0 <= render_point[0] < RENDER_SIZE[0]
+                    and 0 <= render_point[1] < RENDER_SIZE[1]
+                ):
+                    raise RuntimeError(f"拒绝在 PC 游戏渲染区外滑动：{point}")
+                points.append(
+                    (rect.left + render_point[0], rect.top + render_point[1])
+                )
+            self._send_swipe(points[0], points[1], duration_ms)
+            succeeded = True
+        finally:
+            self._emit(
+                f"模式=PC输入 类型=滑动 原前台={previous_foreground} "
+                f"游戏窗口={hwnd if hwnd is not None else '未知'} "
+                f"前置={'成功' if hwnd is not None else '失败'} "
+                f"结果={'成功' if succeeded else '失败'} "
+                f"起点={start} 终点={end} 时长={duration_ms}ms"
+            )
+
+    def _send_swipe(
+        self,
+        start: tuple[int, int],
+        end: tuple[int, int],
+        duration_ms: int,
+    ) -> None:
+        """按下 → 分步移动 → 抬起。步数与间隔照 ``duration_ms`` 均分（约 16ms 一步）。"""
+        desktop_width = self._user32.GetSystemMetrics(0)
+        desktop_height = self._user32.GetSystemMetrics(1)
+        total = max(int(duration_ms), 16)
+        steps = max(int(total / 16), 2)
+        delay = total / steps / 1000.0
+
+        def absolute(point: tuple[int, int]) -> _MouseInput:
+            x, y = point
+            return _MouseInput(
+                round(x * 65535 / (desktop_width - 1)),
+                round(y * 65535 / (desktop_height - 1)),
+                0,
+                _MOUSEEVENTF_MOVE | _MOUSEEVENTF_ABSOLUTE,
+                0,
+                0,
+            )
+
+        self._send_mouse_input(absolute(start))
+        self._send_mouse_input(_MouseInput(0, 0, 0, _MOUSEEVENTF_LEFTDOWN, 0, 0))
+        try:
+            for step in range(1, steps + 1):
+                ratio = step / steps
+                point = (
+                    round(start[0] + (end[0] - start[0]) * ratio),
+                    round(start[1] + (end[1] - start[1]) * ratio),
+                )
+                self._send_mouse_input(absolute(point))
+                self._sleep(delay)
+        finally:
+            self._send_mouse_input(_MouseInput(0, 0, 0, _MOUSEEVENTF_LEFTUP, 0, 0))
+
+    def click(self, point: tuple[int, int]) -> None:
+        # ⚠️ **点完不把焦点还回去**（2026-11-01 用户拍板）：原来每次点击都要
+        # 「前置 → 注入 → 还原原来的窗口」，窗口来回切换会**一闪一闪**，很烦。
+        # 助手被游戏盖住不影响任何事（日志照常落盘），所以就让游戏一直待在最前。
+        #
+        # 注意：这与「截图不前置」是两件事 —— 抓帧走 BitBlt，不需要窗口在最前；
+        # 只有 SendInput 需要，所以只有点击/按键这两个入口才置前。
+        previous_foreground = self._user32.GetForegroundWindow()
+        hwnd = None
+        succeeded = False
         try:
             hwnd = self.activate()
             self._ensure_input_allowed(hwnd)
@@ -416,18 +563,12 @@ class Epic7PcWindow:
             self._send_click((rect.left + render_point[0], rect.top + render_point[1]))
             succeeded = True
         finally:
-            if hwnd is not None and previous_foreground not in (0, hwnd):
-                restore_label = (
-                    "成功"
-                    if self._restore_foreground(previous_foreground, hwnd)
-                    else "失败"
-                )
             self._emit(
                 f"模式=PC输入 类型=点击 原前台={previous_foreground} "
                 f"游戏窗口={hwnd if hwnd is not None else '未知'} "
                 f"前置={'成功' if hwnd is not None else '失败'} "
                 f"结果={'成功' if succeeded else '失败'} "
-                f"恢复原窗口={restore_label}"
+                "保持在前台=是"
             )
 
     def _restore_foreground(self, previous_hwnd, game_hwnd) -> bool:
@@ -479,26 +620,20 @@ class Epic7PcWindow:
         self.click(point)
 
     def back(self) -> None:
+        # 与 ``click`` 同口径：返回键点完**不把焦点还回去**，避免窗口来回闪。
         previous_foreground = self._user32.GetForegroundWindow()
         hwnd = None
         succeeded = False
-        restore_label = "无需"
         try:
             hwnd = self.activate()
             self._ensure_input_allowed(hwnd)
             pyautogui.press("esc")
             succeeded = True
         finally:
-            if hwnd is not None and previous_foreground not in (0, hwnd):
-                restore_label = (
-                    "成功"
-                    if self._restore_foreground(previous_foreground, hwnd)
-                    else "失败"
-                )
             self._emit(
                 f"模式=PC输入 类型=返回 原前台={previous_foreground} "
                 f"游戏窗口={hwnd if hwnd is not None else '未知'} "
                 f"前置={'成功' if hwnd is not None else '失败'} "
                 f"结果={'成功' if succeeded else '失败'} "
-                f"恢复原窗口={restore_label}"
+                "保持在前台=是"
             )

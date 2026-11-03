@@ -104,6 +104,18 @@ REGIONS = {
     "team_battle_start": (1400, 950, 582, 182),
     # 准备战斗：左上「准备战斗」标题（候选证据，与上一个同一页）
     "prepare_title": (60, 55, 240, 80),
+    # 「战斗指南」战力差警告弹窗的标题（2026-10-31 第 20 层实测）。
+    # 敌方战力高于我方时，点「战斗开始」后弹的是这个**半透明**确认框：
+    # 底下的 team_battle_start / prepare_title 还看得见 ⇒ 不加这一条，
+    # 状态机永远以为自己在准备战斗，一直点「战斗开始」。
+    # ⚠️ 复用 story 的模板（同一个后端、同一套渲染），不另裁一份。
+    "battle_guide_title": (780, 250, 420, 180),
+    # 「英雄恢复」页的标题（2026-10-31 第 22 层实测）。队伍里有**阵亡角色**时，
+    # 点「战斗开始」不弹战力警告、而是直接跳到这一页（半透明盖在准备战斗页上）：
+    # 「消耗雌蕊圣叶可使选中的英雄生命值恢复到最大值」，需要点「恢复」才能继续。
+    # ⚠️ 它和 `battle_guide_title` 是同一种病：底下的准备战斗页还看得见 ⇒
+    # 不认它就会一直点「战斗开始」。
+    "hero_restore_title": (700, 200, 600, 200),
     # 三选一：右下角「决定装置」按钮
     "card_decide": (800, 950, 700, 182),
     # 三选一：底部提示文案「请选择装置后按下决定装置按钮。」
@@ -113,6 +125,9 @@ REGIONS = {
     # 打满后的「征服欧多马顿塔」叙述屏：居中标题（实测文字 bbox x[801,1117]
     # y[280,324]，区域留足四周余量）
     "conquer_title": (700, 230, 600, 150),
+    # **战斗失败**的结算页：居中的「FAILED」大字 + 上下装饰线（2026-10-31 第 22 层实测）。
+    # 白字压在紫色光效上，走白掩膜（raw 在别的帧上会到 0.54，白掩膜只有 0.22）。
+    "battle_failed": (950, 180, 700, 220),
     # 局内：右上角「自动战斗已关闭」图标（**共享模板**，见下面 auto_off 原子）
     "auto_off": (1550, 0, 300, 200),
 }
@@ -153,7 +168,12 @@ THRESHOLDS: dict[str, float] = {"auto_off": 0.85}
 # 判据 -> 比对口径。只有 `auto_off` 走背景无关口径；其余锚点仍是原样 RGB。
 # ⚠️ 本表必须与 `tower.TowerStateMachine._MATCH_MODES` 一致（同一套纪律：
 # 类常量镜像证据画像），否则带假模板的用例会和真机走两个口径。
-MATCH_MODES: dict[str, str] = {"auto_off": MATCH_MODE_WHITE_MASK}
+MATCH_MODES: dict[str, str] = {
+    "auto_off": MATCH_MODE_WHITE_MASK,
+    # 「FAILED」是白字压在**会呼吸的紫色光效**上：raw 在别的帧上到 0.54，
+    # 白掩膜只有 0.22（本帧两种口径都是 1.0000）。
+    "battle_failed": MATCH_MODE_WHITE_MASK,
+}
 
 _TEMPLATE_NAMES = (
     "season_tower_title",
@@ -162,11 +182,20 @@ _TEMPLATE_NAMES = (
     "floor_select_team",
     "team_battle_start",
     "prepare_title",
+    "battle_guide_title",
+    "hero_restore_title",
     "card_decide",
     "card_hint",
     "result_clear",
     "conquer_title",
+    "battle_failed",
 )
+
+# 跨目录复用的模板：名字 -> 相对 ``templates/epic7`` 的路径。
+# 表里没有的走默认 ``f"{name}.png"``（本路线自裁的那一批）。
+_TEMPLATE_PATHS = {
+    "battle_guide_title": "../story/battle_guide_title.png",
+}
 
 # ⚠️ 月塔**一张模板都不许缺席**：`_TEMPLATE_NAMES` 里的每张都是某页面的
 # 主判据或该判据的组合项，少一张就是配置错误，加载期 `FileNotFoundError` 直接拦。
@@ -190,7 +219,7 @@ def build_tower_evidence(template_dir: Path) -> EvidenceProfile:
     atoms = {
         name: AtomEvidence(
             key=name,
-            template_path=f"{name}.png",
+            template_path=_TEMPLATE_PATHS.get(name, f"{name}.png"),
             region=REGIONS[name],
             threshold=thresholds.get(name, 0.88),
             required=name not in _OPTIONAL_TEMPLATES,

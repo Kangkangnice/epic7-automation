@@ -94,7 +94,10 @@ def test_fixture_is_recognised_as_its_page(fixture: str, expected: LabyrinthSton
 # ⚠️ 跨帧标记是这套判据的关键：地图页 / 商人房 / 商店页的画面都和「迷宫房间」长得很像，
 # 而「传送过了没」「商店逛完没」这些**画面上看不出来**，只能靠标记。
 ACTION_CASES = [
-    ("battle_menu", {}, "open-labyrinth", ("迷宫列表",)),
+    # ⚠️ 落点必须含「迷宫详情页」：PC 客户端上点「迷宫」卡片**直接进详情页**，
+    # 中间的「迷宫列表」只在某些情况下出现（2026-11-03 08:48 实测漏写就报
+    # 「迷宫列表未识别」、干等 45 秒）。
+    ("battle_menu", {}, "open-labyrinth", ("迷宫列表", "迷宫详情页")),
     ("labyrinth_list", {}, "open-labyrinth-entry", ("迷宫详情页",)),
     ("labyrinth_detail", {}, "open-team", ("准备战斗页",)),
     (

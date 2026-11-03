@@ -18,6 +18,18 @@ class ProjectLayoutTests(unittest.TestCase):
                 "network_disconnected_live_20261004.png",
                 "network_reconnect.png",
                 "network_reconnect_navigation.png",
+                # 2026-11-01 PC 真机：同一句「网络连接异常，请重新连接。」在 PC 上
+                # 只有 0.6272（阈 0.88）⇒ 断线弹窗认不出、一直压着。
+                # 修法是 `templates/global/pc/network_message.png`（同尺寸覆盖图）。
+                "network_reconnect_pc_live_20261101.png",
+                # 2026-11-01 PC 真机：新支线解锁通知（盖在结算页上 ⇒ 等待结算 45 秒无进展）。
+                # 弹窗正文与插画随解锁的支线变化 ⇒ 只锚「支线故事通知」+「点击关闭」。
+                "side_story_notice_pc_live_20261101.png",
+                # 2026-11-01 PC 真机：点完通关提示后弹出的「获得奖励」（星星奖励发放），
+                # 盖住关卡入口 ⇒ `等待通关` 45 秒无进展；同帧 bonus_reward 只有 0.7724（阈 0.80）。
+                "reward_notice_pc_live_20261101.png",
+                # 2026-11-02 PC 真机：进骑士团时的「领取支援物品」弹窗（第 16 类）。
+                "gift_claim_pc_live_20261102.png",
                 # 2026-09-28 用户实拍：快捷菜单页「宠物小屋礼物角标」（宠物送礼时挂出，
                 # 必须点掉才更新）。它是 home_return 点「酒馆」那一页，顺带成了这条
                 # 全局弹窗的唯一正例。
@@ -45,6 +57,11 @@ class ProjectLayoutTests(unittest.TestCase):
                 # 一路"只等"到 2 分钟上限。同一层弹窗 10-08 的骑士团捐赠诊断帧里
                 # 也出现过（说明早就存在，只是当时没登记）。
                 "knights_growth_rank_live_20261030.png",
+                # 2026-11-02 15:35 PC 真机：账号**Rank 提升**（RANK UP 45）通知窗。
+                # 盖住战斗画面 ⇒「战斗画面持续无法识别超时」；回家时它又挡着，
+                # 连按 2 次 ESC 都没反应 ⇒「返回首页失败」（一条命犯两桩）。
+                # 是第 17 类全局弹窗的唯一正例。
+                "account_rank_up_pc_live_20261102.png",
             },
             {path.name for path in fixture_dir.glob("*.png")},
         )
@@ -75,6 +92,19 @@ class ProjectLayoutTests(unittest.TestCase):
             # 2026-09-25 真机票耗尽帧。它钉住了「竞技场的终点是购买旗帜弹窗」这个
             # 事实 —— 收尾的 `_dismiss_purchase_popup` 就是照它写的判据。
             "ticket_exhausted_popup.png",
+            # 2026-11-01 PC 真机：旗帜打满时弹出的「购买旗帜」弹窗（新口径画布）。
+            # 共享模板在 PC 上认不出它 ⇒ 走 templates/pc/ 覆盖图；
+            # 正例帧供 `test_pc_ticket_popup_uses_pc_override_templates` 用。
+            "ticket_purchase_popup_pc_live_20261101.png",
+            # 同日 PC 真机结算页帧：当 PC 侧锚点的**反例**用（购买弹窗三锚点
+            # 在它上面一律不得命中）。
+            "result_victory_pc_live_20261101.png",
+            # 2026-11-02 PC 真机：点完「战斗开始」后出现的「段位 VS 确认」页
+            # （PC 独有，模拟器无此页）。供 `test_pc_vs_rank_confirm_page_...` 用。
+            "arena_vs_confirm_pc_live_20261102.png",
+            # 2026-11-02 PC 真机：旗帜耗尽弹窗压在「队伍选择」页上（战斗开始变灰）。
+            # 与 1101 弹窗是同一弹窗的两种面板渲染变体；供 PC 自动买绿叶旗测试用。
+            "arena_purchase_popup_team_pc_live_20261102.png",
         }
         fixture_dir = ROOT / "tests" / "fixtures" / "epic7_arena"
         self.assertEqual(expected, {path.name for path in fixture_dir.glob("*.png")})
@@ -126,6 +156,19 @@ class ProjectLayoutTests(unittest.TestCase):
             # 是「重新进行」判据能不能泛化的唯一物证；只留一张就退化成记图。
             "retry_stage_live_20261018.png",
             "retry_stage_live_20261014.png",
+            # 2026-11-01 PC 真机「关卡入口」帧（新口径画布 1982x1132）。
+            # 主线在 PC 上**不需要**专属图：「准备战斗」是白掩膜判据，
+            # 这一帧上 1.0000 / 0.9997（阈 0.90）。留作 `test_epic7_story_pc.py` 的正例。
+            "stage_pc_live_20261101.png",
+            # 同日 PC 真机「行动力不足」弹窗帧（三按钮版本）。它是两处修复的唯一物证：
+            # 标题在 PC 上渲染得略大（0.7623 < 0.80 ⇒ 补 `templates/story/pc/
+            # stamina_popup.png` 覆盖图）、购买按钮被第三颗「礼包」挤到 x=807
+            # ⇒ 搜索框左扩到 760（0.9148）。
+            "stamina_popup_pc_live_20261101.png",
+            # 同日 PC 真机「结算页 + 给予协助的朋友弹窗」帧（超时那一刻的现场）。
+            # 它证明弹窗标题在 PC 上只有 0.6084（阈 0.82）⇒ 整个弹窗关不掉、
+            # ESC 也无效；修法是 `templates/story/pc/friend_request_title.png`。
+            "friend_request_pc_live_20261101.png",
         }
         fixture_dir = ROOT / "tests" / "fixtures" / "epic7_story"
         self.assertEqual(expected, {path.name for path in fixture_dir.glob("*.png")})

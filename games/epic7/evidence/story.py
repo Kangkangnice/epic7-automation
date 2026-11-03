@@ -40,7 +40,9 @@ REGIONS = {
     "battle_guide_dont_show": BATTLE_GUIDE_DONT_SHOW_REGION,
     "stamina_popup": (400, 200, 1200, 700),
     "stamina_material": (400, 200, 700, 700),
-    "stamina_confirm": (850, 750, 650, 250),
+    # 与 `games/epic7/stamina.py` 的 STAMINA_REGIONS 必须一致：三按钮改版后
+    # 购买按钮落到 x=807~1105，旧框 (850,...) 摆不下模板（见那里的注释）。
+    "stamina_confirm": (760, 750, 740, 250),
 }
 
 THRESHOLDS = {

@@ -644,7 +644,14 @@ class LabyrinthStoneStateMachine:
             "open-labyrinth",
             point=card.center,
             source_page=state_label(LabyrinthStoneState.BATTLE_MENU),
-            target_pages=(state_label(LabyrinthStoneState.LABYRINTH_LIST),),
+            # ⚠️ PC 客户端上点「迷宫」卡片**直接进迷宫详情页**，中间那个「迷宫列表」
+            # 只在某些情况下出现（模拟器上是列表 → 再点条目才进详情）。
+            # 落点少写一项的后果与主线那几次一模一样：主循环判「没点成功」→ 丢掉动作
+            # → 干等 45 秒 → 报「迷宫列表未识别」（2026-11-03 08:48 实测）。
+            target_pages=(
+                state_label(LabyrinthStoneState.LABYRINTH_LIST),
+                state_label(LabyrinthStoneState.LABYRINTH_DETAIL),
+            ),
             reason=f"战斗菜单「一般」页上的迷宫卡片（中心={card.center}）",
         )
 

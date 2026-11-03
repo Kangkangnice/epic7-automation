@@ -668,6 +668,222 @@ def find_friend_request_cancel(
     return Match(cancel.center, min(title.score, cancel.score))
 
 
+# ── 「领取支援物品」（骑士团支援资源领取后弹一次）─────────────────────────────
+#
+# 2026-11-02 10:06 世界首领战 PC 实跑：点「进入骑士团」后它盖住骑士团主页，
+# 页面判成「认不出的画面」，路线直接卡在入口（诊断帧 wb_knights.png）。
+#
+# 已登记的两类都对不上：``gift_support_title`` 0.4572、``worldboss_support_reward_title``
+# 0.2150（**文案不同**，不是同一层弹窗）；但两者的 close 锚点位置是对的
+# （0.6551 / 0.7082）—— 说明差的是标题这一句，不是坐标。
+_GIFT_CLAIM_TITLE_REGION = (760, 250, 460, 120)
+_GIFT_CLAIM_CLOSE_REGION = (830, 800, 320, 120)
+_GIFT_CLAIM_THRESHOLD = 0.85
+
+
+@dataclass(frozen=True)
+class GiftClaimTemplates:
+    title: np.ndarray
+    close: np.ndarray
+
+
+def load_gift_claim_templates(template_dir: Path) -> GiftClaimTemplates:
+    return GiftClaimTemplates(
+        title=load_template(str(template_dir / "gift_claim_title.png")),
+        close=load_template(str(template_dir / "gift_claim_close.png")),
+    )
+
+
+def find_gift_claim_close(
+    screen: np.ndarray,
+    templates: GiftClaimTemplates,
+) -> Match | None:
+    """Return the close control only when both 领取支援物品 anchors are present."""
+    title = find_template(
+        screen,
+        templates.title,
+        _GIFT_CLAIM_THRESHOLD,
+        region=_GIFT_CLAIM_TITLE_REGION,
+        reference_size=_REFERENCE_SIZE,
+    )
+    if title is None:
+        return None
+    close = find_template(
+        screen,
+        templates.close,
+        _GIFT_CLAIM_THRESHOLD,
+        region=_GIFT_CLAIM_CLOSE_REGION,
+        reference_size=_REFERENCE_SIZE,
+    )
+    if close is None:
+        return None
+    return Match(close.center, min(title.score, close.score))
+
+
+# ── 「账号 Rank 提升」（账号升级时弹一次）─────────────────────────────────────
+#
+# 2026-11-02 15:35 主线 PC 实跑：战斗打完弹这一层，战斗画面连续 45 秒认不出
+# ⇒「战斗画面持续无法识别超时」；接着回家它又挡着，连按 2 次 ESC 都没反应
+# ⇒「返回首页失败」，整轮以退出码 1 收场
+# （诊断帧 20261102_153533_607233_battle_unrecognized.png）。
+#
+# 锚「账号Rank提升」这半句 + 底部向下箭头，理由是**正文含会变的数字**：
+# 「已恢复176点行动力」的行动力、徽章里「RANK UP 45」的等级，每次升级都不同
+# ⇒ 模板一律只取不含数字的那一段（与「模板不含会变内容」同一条纪律）。
+#
+# ⚠️ 两张图都是**从 PC 帧裁的** —— 仓库里没有这张弹窗的模拟器样本。模拟器侧
+# 取到样本后要重裁共享图；PC 不受影响（有 ``global/pc/`` 同名图时优先用它）。
+_ACCOUNT_RANK_UP_TITLE_REGION = (600, 920, 800, 120)
+_ACCOUNT_RANK_UP_CLOSE_REGION = (760, 1000, 460, 140)
+_ACCOUNT_RANK_UP_THRESHOLD = 0.85
+
+
+@dataclass(frozen=True)
+class AccountRankUpTemplates:
+    title: np.ndarray
+    close: np.ndarray
+
+
+def load_account_rank_up_templates(template_dir: Path) -> AccountRankUpTemplates:
+    return AccountRankUpTemplates(
+        title=load_template(str(template_dir / "account_rank_up_title.png")),
+        close=load_template(str(template_dir / "account_rank_up_close.png")),
+    )
+
+
+def find_account_rank_up_close(
+    screen: np.ndarray,
+    templates: AccountRankUpTemplates,
+) -> Match | None:
+    """Return the close control only when both 账号 Rank 提升 anchors are present."""
+    title = find_template(
+        screen,
+        templates.title,
+        _ACCOUNT_RANK_UP_THRESHOLD,
+        region=_ACCOUNT_RANK_UP_TITLE_REGION,
+        reference_size=_REFERENCE_SIZE,
+    )
+    if title is None:
+        return None
+    close = find_template(
+        screen,
+        templates.close,
+        _ACCOUNT_RANK_UP_THRESHOLD,
+        region=_ACCOUNT_RANK_UP_CLOSE_REGION,
+        reference_size=_REFERENCE_SIZE,
+    )
+    if close is None:
+        return None
+    return Match(close.center, min(title.score, close.score))
+
+
+# ── 「支线故事通知」（新支线解锁时弹一次）─────────────────────────────────────
+#
+# 2026-11-01 22:05 主线 PC 实跑：战斗打完、结算页正要确认时它盖上来，
+# `等待结算` 45 秒无进展，最后整条路线以退出码 1 收场
+# （诊断帧 20261101_220554_360858_timeout_wait_results.png）。
+#
+# 为什么锚标题 + 「点击关闭」而不是锚正文：**正文与插画随解锁的支线变化**
+# （"支线故事「被选中的女巫」已解锁"），只有标题「支线故事通知」和底部
+# 「点击关闭」是固定文案。两锚点同时命中才算，避免「点击关闭」在别处撞车。
+_SIDE_STORY_NOTICE_TITLE_REGION = (760, 240, 460, 120)
+_SIDE_STORY_NOTICE_CLOSE_REGION = (830, 840, 320, 120)
+_SIDE_STORY_NOTICE_THRESHOLD = 0.85
+
+
+@dataclass(frozen=True)
+class SideStoryNoticeTemplates:
+    title: np.ndarray
+    close: np.ndarray
+
+
+def load_side_story_notice_templates(
+    template_dir: Path,
+) -> SideStoryNoticeTemplates:
+    return SideStoryNoticeTemplates(
+        title=load_template(str(template_dir / "side_story_notice_title.png")),
+        close=load_template(str(template_dir / "side_story_notice_close.png")),
+    )
+
+
+def find_side_story_notice_close(
+    screen: np.ndarray,
+    templates: SideStoryNoticeTemplates,
+) -> Match | None:
+    """Return the close control only when both 支线故事通知 anchors are present."""
+    title = find_template(
+        screen,
+        templates.title,
+        _SIDE_STORY_NOTICE_THRESHOLD,
+        region=_SIDE_STORY_NOTICE_TITLE_REGION,
+        reference_size=_REFERENCE_SIZE,
+    )
+    if title is None:
+        return None
+    close = find_template(
+        screen,
+        templates.close,
+        _SIDE_STORY_NOTICE_THRESHOLD,
+        region=_SIDE_STORY_NOTICE_CLOSE_REGION,
+        reference_size=_REFERENCE_SIZE,
+    )
+    if close is None:
+        return None
+    return Match(close.center, min(title.score, close.score))
+
+
+# ── 「获得奖励」通知（星星/任务奖励发放后弹一次）─────────────────────────────
+#
+# 2026-11-01 22:27 主线 PC 实跑：点完「通关提示」回到关卡入口，它盖上来，
+# `等待通关` 45 秒无进展（诊断帧 20261101_222757 ..._timeout_wait_complete.png）。
+# 同帧上 `bonus_reward` 只有 0.7724（阈 0.80）—— 差 0.028 就整条路线卡住。
+#
+# 正文（"获得星星奖励已正常发放。"）与奖励图标随奖励类型变化，只锚固定的
+# 标题「获得奖励」和底部「点击关闭」，两锚点同时命中才算。
+_REWARD_NOTICE_TITLE_REGION = (800, 240, 500, 120)
+_REWARD_NOTICE_CLOSE_REGION = (830, 780, 320, 120)
+_REWARD_NOTICE_THRESHOLD = 0.85
+
+
+@dataclass(frozen=True)
+class RewardNoticeTemplates:
+    title: np.ndarray
+    close: np.ndarray
+
+
+def load_reward_notice_templates(template_dir: Path) -> RewardNoticeTemplates:
+    return RewardNoticeTemplates(
+        title=load_template(str(template_dir / "reward_notice_title.png")),
+        close=load_template(str(template_dir / "reward_notice_close.png")),
+    )
+
+
+def find_reward_notice_close(
+    screen: np.ndarray,
+    templates: RewardNoticeTemplates,
+) -> Match | None:
+    """Return the close control only when both 获得奖励 anchors are present."""
+    title = find_template(
+        screen,
+        templates.title,
+        _REWARD_NOTICE_THRESHOLD,
+        region=_REWARD_NOTICE_TITLE_REGION,
+        reference_size=_REFERENCE_SIZE,
+    )
+    if title is None:
+        return None
+    close = find_template(
+        screen,
+        templates.close,
+        _REWARD_NOTICE_THRESHOLD,
+        region=_REWARD_NOTICE_CLOSE_REGION,
+        reference_size=_REFERENCE_SIZE,
+    )
+    if close is None:
+        return None
+    return Match(close.center, min(title.score, close.score))
+
+
 def find_knights_signin_close(
     screen: np.ndarray,
     title_template: np.ndarray,
@@ -999,6 +1215,10 @@ class Epic7GlobalPopupGuard:
         intimacy_templates: IntimacyLevelUpTemplates | None = None,
         friendship_templates: FriendshipPointsTemplates | None = None,
         friend_request_templates: FriendRequestTemplates | None = None,
+        side_story_notice_templates: SideStoryNoticeTemplates | None = None,
+        reward_notice_templates: RewardNoticeTemplates | None = None,
+        gift_claim_templates: GiftClaimTemplates | None = None,
+        account_rank_up_templates: AccountRankUpTemplates | None = None,
         knights_signin_templates: KnightsSigninTemplates | None = None,
         gift_support_templates: GiftSupportTemplates | None = None,
         knights_weekly_reward_templates: KnightsWeeklyRewardTemplates | None = None,
@@ -1019,6 +1239,10 @@ class Epic7GlobalPopupGuard:
         self.intimacy_templates = intimacy_templates
         self.friendship_templates = friendship_templates
         self.friend_request_templates = friend_request_templates
+        self.side_story_notice_templates = side_story_notice_templates
+        self.reward_notice_templates = reward_notice_templates
+        self.gift_claim_templates = gift_claim_templates
+        self.account_rank_up_templates = account_rank_up_templates
         self.knights_signin_templates = knights_signin_templates
         self.gift_support_templates = gift_support_templates
         self.knights_weekly_reward_templates = knights_weekly_reward_templates
@@ -1096,6 +1320,48 @@ class Epic7GlobalPopupGuard:
                     "cancel-friend-request",
                     "friend_request_failed",
                     f"好友申请弹窗点击{_MAX_POPUP_CLICKS}次后仍未消失",
+                )
+        if self.side_story_notice_templates is not None:
+            match = find_side_story_notice_close(
+                screen, self.side_story_notice_templates
+            )
+            if match is not None:
+                return (
+                    match,
+                    "side_story_notice",
+                    "dismiss-side-story-notice",
+                    "side_story_notice_failed",
+                    f"支线故事通知点击{_MAX_POPUP_CLICKS}次后仍未消失",
+                )
+        if self.reward_notice_templates is not None:
+            match = find_reward_notice_close(screen, self.reward_notice_templates)
+            if match is not None:
+                return (
+                    match,
+                    "reward_notice",
+                    "dismiss-reward-notice",
+                    "reward_notice_failed",
+                    f"获得奖励通知点击{_MAX_POPUP_CLICKS}次后仍未消失",
+                )
+        if self.gift_claim_templates is not None:
+            match = find_gift_claim_close(screen, self.gift_claim_templates)
+            if match is not None:
+                return (
+                    match,
+                    "gift_claim",
+                    "dismiss-gift-claim",
+                    "gift_claim_failed",
+                    f"领取支援物品弹窗点击{_MAX_POPUP_CLICKS}次后仍未消失",
+                )
+        if self.account_rank_up_templates is not None:
+            match = find_account_rank_up_close(screen, self.account_rank_up_templates)
+            if match is not None:
+                return (
+                    match,
+                    "account_rank_up",
+                    "dismiss-account-rank-up",
+                    "account_rank_up_failed",
+                    f"账号Rank提升弹窗点击{_MAX_POPUP_CLICKS}次后仍未消失",
                 )
         if self.knights_signin_templates is not None:
             match = find_knights_signin_close(

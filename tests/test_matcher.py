@@ -201,6 +201,48 @@ class MatchModeTests(unittest.TestCase):
             matcher.MATCH_CACHE_ENABLED = remember
             matcher._MATCH_CACHE.clear()
 
+    def test_the_smooth_mode_rescues_a_button_the_other_client_drew_softly(self):
+        """同一个按钮被另一个客户端「画得更柔」时，原样比会掉分、低通口径能救回来。
+
+        造法：把模板那块图案先轻微柔化再贴回画面 —— 模拟 PC 与模拟器在抗锯齿上的
+        差别（实测差异就集中在笔画那一圈薄边上）。
+        """
+        template = self._template()
+        scene = self._scene(1, self.LIGHT)
+        sharp = self._draw_cross(scene, self.SIZE, self.SIZE)
+
+        height, width = template.shape[:2]
+        soft_template = cv2.GaussianBlur(template, (0, 0), 0.6)
+        scene2 = self._scene(1, self.LIGHT)
+        center_y, center_x = scene2.shape[0] // 2, scene2.shape[1] // 2
+        scene2[
+            center_y - height // 2 : center_y - height // 2 + height,
+            center_x - width // 2 : center_x - width // 2 + width,
+        ] = soft_template
+        # 让「柔化」这一处成为画面上唯一的差异来源
+        scene2 = cv2.GaussianBlur(scene2, (0, 0), 0.35)
+
+        raw = matcher.find_best_template(scene2, template, mode="raw")
+        smooth = matcher.find_best_template(scene2, template, mode="smooth")
+
+        self.assertIsNotNone(raw)
+        self.assertIsNotNone(smooth)
+        self.assertGreater(
+            smooth.score,
+            raw.score,
+            "低通口径没能把「换了画法」的同一块 UI 救回来",
+        )
+        # 原样那一侧必须一个字节不变
+        self.assertEqual(
+            matcher.find_best_template(sharp, template, mode="raw"),
+            matcher.find_best_template(sharp, template),
+        )
+
+    def test_the_smooth_mode_is_registered_so_the_guard_rails_see_it(self):
+        """登记进 ``MATCH_MODES`` ⇒ 证据层会自动校验它，写错也会出声。"""
+        self.assertIn(matcher.MATCH_MODE_SMOOTH, matcher.MATCH_MODES)
+        self.assertEqual("smooth", matcher.MATCH_MODE_SMOOTH)
+
     def test_white_mask_is_a_single_channel_zero_or_255_image(self):
         image = np.array(
             [

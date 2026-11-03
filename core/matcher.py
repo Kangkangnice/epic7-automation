@@ -44,8 +44,29 @@ class Match:
 # 变成永假或永真。
 MATCH_MODE_RAW = "raw"
 MATCH_MODE_WHITE_MASK = "white_mask"
-MATCH_MODES = (MATCH_MODE_RAW, MATCH_MODE_WHITE_MASK)
+# ── 「同一块 UI 被另一个客户端换个画法」的兜底口径 ─────────────────────────────
+#
+# PC 客户端与模拟器里的画面**位置一致、尺寸一致**（实测落点差 1~2 像素），
+# 但同一颗按钮的**像素级刻画方式**不同（抗锯齿 / 栅格化取整），差异全部挤在
+# 文字笔画那一圈薄边上 —— 那圈边只占 1%~13% 的像素，其中约一半差得很大。
+# 于是同一张模板在 PC 上会从 1.000 掉到 0.58~0.84（2026-11-01 实测）。
+#
+# 两端同时轻微低通（高斯）能把这些高频差别抹平，分数显著回升，
+# 这也是自动化圈里成熟的做法（「给模板做 0.5~1 像素模糊以模拟抗锯齿」）。
+#
+# ⚠️ **不要把它当成默认口径**：模糊会同时抬高「冒牌货」的分数
+# （实测「退出确认弹窗」被抬到 0.843，比 PC 真机的 0.839 还高）。
+# 所以它只能**逐锚点、且以「原样不过阈才补一次」的方式**启用，
+# 启用前必须跑全库夹具扫描确认「漏掉真页 / 放进冒牌」都是 0。
+MATCH_MODE_SMOOTH = "smooth"
+MATCH_MODES = (MATCH_MODE_RAW, MATCH_MODE_WHITE_MASK, MATCH_MODE_SMOOTH)
 WHITE_PIXEL_THRESHOLD = 200
+# 为什么是 **2.0**（2026-11-01 逐档实测，真值 = 308 张夹具上原样口径的结论）：
+#   * 1.3 时「开始战斗」只有 0.879（阈 0.90）—— 救不动；
+#   * 2.0 时它到 **0.939**，且**翻转数 0**；
+#   * **2.5 起就有翻转**（「选择队伍」那两张会被误放进来），3.0 更是放到 14 张。
+# ⇒ 2.0 是唯一「既够用又零翻转」的档位，**别再往上调**。
+SMOOTH_SIGMA = 2.0
 
 
 def white_mask(
@@ -67,6 +88,101 @@ def white_mask(
     return bright.astype(np.uint8) * 255
 
 
+# ── 「原样不过阈，才用低通补一次」的锚点名单（**分层共用同一把尺子**）──────────
+#
+# 名单里的名字是**锚点名**，不是模板名：导航层叫 ``arena_ready``、竞技场路线叫
+# ``list_ready``，指的都是同一张图，所以两个名字都要在（差一个就会长出
+# 「导航认得出、跑起来认不出」的第二种说法 —— 2026-11-01 真踩过）。
+#
+# ⚠️ 想加名字进来，必须先用全库夹具证明「漏掉真页 = 0、放进冒牌 = 0」，
+#   并把护栏测试里的名单一起改掉（见 ``tests/test_navigation.py``）。
+#
+# 现有五颗的实测依据（308 张夹具，真值 = 原样口径的判定结果，**σ=2.0**）：
+#   ``lobby_arena`` 0.794→0.872（阈 0.82）· ``arena_ready``/``list_ready`` 0.841→0.977（阈 0.88）
+#   ``challenge``  0.877→0.939（阈 0.90）· ``battle_start`` 0.711→0.939（阈 0.90）
+#   —— 五颗**翻转数都是 0**；``lobby_battle`` 仍是反例，不许加。
+#
+# ``confirm``（2026-11-01 补入，PC 实跑两次都卡在它）：
+#   PC 结算帧原样 0.864 / 0.871（阈 0.90）→ σ=2.0 下 0.970 / 0.976。
+#   全库审计（12 条路线里 confirm 原子仅此一颗；308 张夹具，find_best_template
+#   权威口径）：漏掉真页 0；唯一升过阈的是 ``epic7_fodder/results.png``
+#   （0.8955→0.9073），它是粮坑路线**自己的战斗结算页**、右下角是同一个
+#   「确认」按钮 —— 与**原样口径下本来就过阈**的 ``epic7_side_story/results.png``
+#   （0.9138）同类，且 ``arena.py`` 头注早有先例（「远征结算页也会命中这一条，
+#   但不影响运行」）。故这 1 次数值翻转是**同类页面并入**，不是放进冒牌。
+SMOOTH_FALLBACK_ANCHORS: frozenset[str] = frozenset(
+    {
+        "lobby_arena",   # 判大厅
+        "arena_ready",   # 导航层对「对手列表」的叫法
+        "list_ready",    # 竞技场路线对同一张图的叫法
+        "challenge",     # 已选中对手（阈 0.90，PC 原样 0.877）
+        "battle_start",  # 队伍选择页的「开始战斗」（阈 0.90，PC 原样 0.711）
+        "confirm",       # 结算页「确认」（阈 0.90，PC 原样 0.864/0.871，σ=2.0 → 0.97+）
+    }
+)
+
+
+def best_match_with_fallback(
+    name: str,
+    screen: np.ndarray,
+    template: np.ndarray,
+    threshold: float,
+    region: tuple[int, int, int, int] | None = None,
+    reference_size: tuple[int, int] | None = None,
+) -> Optional[Match]:
+    """按上面的口径取**最高分**（不按阈值过滤）—— 诊断要看真实分数时用这个。
+
+    ⚠️ 诊断包里若把「没过阈」写成 ``score=None``，会被误读成「模板文件不见了」
+    （本项目里 ``score=None`` 就是这个含义），所以诊断必须拿得到分数。
+    """
+    match = find_best_template(
+        screen,
+        template,
+        region=region,
+        reference_size=reference_size,
+    )
+    if name in SMOOTH_FALLBACK_ANCHORS and (
+        match is None or match.score < threshold
+    ):
+        smooth = find_best_template(
+            screen,
+            template,
+            region=region,
+            reference_size=reference_size,
+            mode=MATCH_MODE_SMOOTH,
+        )
+        if smooth is not None and (match is None or smooth.score > match.score):
+            match = smooth
+    return match
+
+
+def locate_with_fallback(
+    name: str,
+    screen: np.ndarray,
+    template: np.ndarray,
+    threshold: float,
+    region: tuple[int, int, int, int] | None = None,
+    reference_size: tuple[int, int] | None = None,
+) -> Optional[Match]:
+    """定位一个锚点：**先按原样比，没过阈才用低通口径补一次，取较高者**。
+
+    为什么必须是「原样优先」而不是直接换口径：原样能认出来的那些画面，
+    判定结果要与从前一字不差 —— 这是「模拟器零改动」的结构性保证。
+    低通只是给「另一台客户端把同一块 UI 换了个画法」留的活口。
+
+    ⚠️ 三个打分入口（导航 / 路线 / 诊断）**必须都走这里**：只改一处就会出现
+    「诊断报未命中、实跑却过了」或反之，日志自己跟自己打架。
+    """
+    match = best_match_with_fallback(
+        name, screen, template, threshold, region=region, reference_size=reference_size
+    )
+    # ⚠️ 与 ``find_template`` 同语义：**不过阈就是没有**，不许返回一个低分匹配回去
+    # （否则 `_visible()` 这类只看「是不是 None」的调用会全部变成 True）。
+    if match is None or match.score < threshold:
+        return None
+    return match
+
+
 def _prepare(image: np.ndarray, mode: str) -> np.ndarray:
     """按 ``mode`` 把图像变成可比对的形态。
 
@@ -77,6 +193,8 @@ def _prepare(image: np.ndarray, mode: str) -> np.ndarray:
         return image
     if mode == MATCH_MODE_WHITE_MASK:
         return white_mask(image)
+    if mode == MATCH_MODE_SMOOTH:
+        return cv2.GaussianBlur(image, (0, 0), SMOOTH_SIGMA)
     raise ValueError(
         f"未知的匹配模式: {mode!r}；可用: {', '.join(MATCH_MODES)}"
     )

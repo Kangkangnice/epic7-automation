@@ -702,17 +702,23 @@ class StoryStateMachine:
             (
                 "reward",
                 "奖励结算",
-                ("通关结算", "结算确认"),
+                # ⚠️「剧情播放」是 2026-11-01 22:55 实跑撞出来的落点：点完领奖，
+                # 剧情关卡会接着放**战后过场**（不是直接进战果），原名单没有它 ⇒
+                # 主循环判「没点成功」→ 丢掉动作 → 干等 45 秒 → 整轮失败。
+                # 同一类的「通关结算 / 结算确认」也补了它：这三下都在战果链上，
+                # 点完接一段过场是同一个游戏行为（日志里那次 skip-confirm 超时也是这套）。
+                #
+                ("剧情播放", "通关结算", "结算确认"),
                 StoryState.WAIT_RESULTS,
-                (StoryState.WAIT_RESULTS,),
+                (StoryState.WAIT_RESULTS, StoryState.ACTIVE),
                 "奖励按钮位于结算页",
             ),
             (
                 "clear",
                 "通关结算",
-                ("结算确认", "通关提示"),
+                ("剧情播放", "结算确认", "通关提示"),
                 StoryState.WAIT_RESULTS,
-                (StoryState.WAIT_RESULTS, StoryState.WAIT_COMPLETE),
+                (StoryState.WAIT_RESULTS, StoryState.WAIT_COMPLETE, StoryState.ACTIVE),
                 "通关结算主体已识别",
             ),
             (
@@ -727,9 +733,9 @@ class StoryStateMachine:
                 # 那个 `action = last_transition_action if confirmed_page == source_page else None`），
                 # 干等 45 秒后报「转场超时」。日志表现完全像「点了没反应」，
                 # 但根因是**契约漏了一个落点**。
-                ("通关提示", "额外奖励", "下一关入口", "无法前往下一关"),
+                ("剧情播放", "通关提示", "额外奖励", "下一关入口", "无法前往下一关"),
                 StoryState.WAIT_RESULTS,
-                (StoryState.WAIT_COMPLETE, StoryState.WAIT_NEXT_STAGE),
+                (StoryState.WAIT_COMPLETE, StoryState.WAIT_NEXT_STAGE, StoryState.ACTIVE),
                 "结算确认按钮位于底部确认区",
             ),
             (
@@ -753,12 +759,30 @@ class StoryStateMachine:
             # 于是转场契约永远不成立、干等 45 秒后整条路线以退出码 1 收场
             # （证据包 complete=0.996 / next_stage=0.954，其余模板全部未命中）。
             # 通关提示本来就是正牌前进页（`complete` 动作专门处理它），补进契约。
+            #
+            # 2026-11-01 一晚两次，同一个动作、不同落点：21:21 落到「结算确认」、
+            # 22:02 落到「通关结算」。两次都是主循环判「没点成功」→ 丢掉动作 →
+            # 干等 45 秒 → 收尾回首页在结算页按 ESC 无效 → 退出码 1。
+            # 这不是判据问题，是**落点名单漏了**（与 09-18 漏「通关提示」同一类）。
             (
                 "skip_confirm",
                 "跳过确认",
-                ("剧情播放", "战斗中", "关卡入口", "剧情关卡入口", "通关提示"),
+                (
+                    "剧情播放",
+                    "战斗中",
+                    "关卡入口",
+                    "剧情关卡入口",
+                    "通关提示",
+                    "通关结算",
+                    "结算确认",
+                ),
                 StoryState.WAIT_SKIP_CONFIRM,
-                (StoryState.ACTIVE, StoryState.STAGE, StoryState.WAIT_COMPLETE),
+                (
+                    StoryState.ACTIVE,
+                    StoryState.STAGE,
+                    StoryState.WAIT_COMPLETE,
+                    StoryState.WAIT_RESULTS,
+                ),
                 "跳过确认按钮已识别",
             ),
             (

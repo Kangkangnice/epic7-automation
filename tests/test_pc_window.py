@@ -218,7 +218,11 @@ class PcWindowSafetyTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "PC 后台截图失败"):
                 self.game.capture()
 
-        bitblt.assert_called_once_with(123)
+        # 有界重试：拿不到就再试几次，但**绝不**退化成「前置截图」或桌面截图
+        # （2026-11-01：偶发失败实测存在，所以从「只试一次」改成 3 次）。
+        self.assertEqual(pc_window.CAPTURE_ATTEMPTS, bitblt.call_count)
+        activate.assert_not_called()
+        screenshot.assert_not_called()
         activate.assert_not_called()
         screenshot.assert_not_called()
 
@@ -240,7 +244,11 @@ class PcWindowSafetyTests(unittest.TestCase):
 
         click.assert_called_once_with((1001, 534))
 
-    def test_click_restores_the_previous_foreground_window_after_input(self):
+    def test_click_never_hands_focus_back_after_input(self):
+        """点完就完事，**不碰**原来的前台窗口（2026-11-01 用户拍板：来回切会闪）。
+
+        这条钉的是「不许再偷偷加回还原逻辑」：一旦有人加回去，画面又开始闪。
+        """
         calls = []
         self.game._user32 = MagicMock()
         self.game._user32.GetForegroundWindow.return_value = 999
@@ -264,9 +272,9 @@ class PcWindowSafetyTests(unittest.TestCase):
         ):
             self.game.click((991, 566))
 
-        self.assertEqual([("click", (1001, 534)), ("restore", 999)], calls)
+        self.assertEqual([("click", (1001, 534))], calls)
 
-    def test_click_logs_successful_focus_restore(self):
+    def test_click_reports_the_game_staying_in_front(self):
         events = []
         game = Epic7PcWindow(event_sink=events.append)
         game._user32 = MagicMock()
@@ -287,9 +295,13 @@ class PcWindowSafetyTests(unittest.TestCase):
 
         self.assertIn("类型=点击", events[-1])
         self.assertIn("前置=成功", events[-1])
-        self.assertIn("恢复原窗口=成功", events[-1])
+        self.assertIn("保持在前台=是", events[-1])
 
-    def test_click_logs_failed_focus_restore(self):
+    def test_click_keeps_the_game_in_front_instead_of_flipping_windows(self):
+        """点完**不还原**原来的窗口：来回切会让画面一闪一闪（2026-11-01 用户拍板）。
+
+        助手被游戏盖住不影响任何事 —— 日志照常落盘。
+        """
         events = []
         game = Epic7PcWindow(event_sink=events.append)
         game._user32 = MagicMock()
@@ -304,12 +316,13 @@ class PcWindowSafetyTests(unittest.TestCase):
                 return_value=WindowRect(10, 20, 1920, 1080),
             ),
             patch.object(game, "_send_click"),
-            patch.object(game, "_restore_foreground", return_value=False),
+            patch.object(game, "_restore_foreground") as restore,
         ):
             game.click((991, 566))
 
         self.assertIn("类型=点击", events[-1])
-        self.assertIn("恢复原窗口=失败", events[-1])
+        self.assertIn("保持在前台=是", events[-1])
+        restore.assert_not_called()
 
     def test_restore_foreground_reports_failure_when_focus_does_not_return(self):
         delays = []
@@ -401,7 +414,8 @@ class PcWindowSafetyTests(unittest.TestCase):
 
         press.assert_not_called()
 
-    def test_back_restores_the_previous_foreground_window_after_escape(self):
+    def test_back_never_hands_focus_back_after_escape(self):
+        """与点击同口径：返回键按完也不还原前台窗口。"""
         calls = []
         self.game._user32 = MagicMock()
         self.game._user32.GetForegroundWindow.return_value = 999
@@ -419,9 +433,9 @@ class PcWindowSafetyTests(unittest.TestCase):
         ):
             self.game.back()
 
-        self.assertEqual([("press", "esc"), ("restore", 999)], calls)
+        self.assertEqual([("press", "esc")], calls)
 
-    def test_back_logs_successful_focus_restore(self):
+    def test_back_reports_the_game_staying_in_front(self):
         events = []
         game = Epic7PcWindow(event_sink=events.append)
         game._user32 = MagicMock()
@@ -436,7 +450,7 @@ class PcWindowSafetyTests(unittest.TestCase):
             game.back()
 
         self.assertIn("类型=返回", events[-1])
-        self.assertIn("恢复原窗口=成功", events[-1])
+        self.assertIn("保持在前台=是", events[-1])
 
     def test_capture_rejects_a_client_that_is_not_exact_render_size(self):
         with (
@@ -493,5 +507,132 @@ class PcSharedNavigationContractTests(unittest.TestCase):
         self.assertEqual(navigator.observe(screen).name, "invalid")
 
 
+class PcCaptureRetryTests(unittest.TestCase):
+    """后台抓帧会**偶发**失败：2026-11-01 实测 40 拍挂 2 次，且当时游戏就在前台。
+
+    一次 hiccup 不该把整条路线掐断（那天竞技场就是死在这一下），
+    但试满仍然拿不到就必须照旧抛错 —— 该 fail-closed 的性质一点都不能松。
+    """
+
+    def setUp(self):
+        self.game = Epic7PcWindow()
+        self.frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
+        self.frame[100:300, 100:300] = 255
+
+    def _patch(self, bitblt):
+        return (
+            patch.object(self.game, "_find_window", return_value=1),
+            patch.object(self.game, "_validated_rect"),
+            patch.object(self.game, "_capture_client_bitblt", side_effect=bitblt),
+            patch.object(self.game, "_sleep"),
+        )
+
+    def test_one_hiccup_is_retried_instead_of_killing_the_route(self):
+        calls = {"count": 0}
+
+        def flaky(_hwnd):
+            calls["count"] += 1
+            return None if calls["count"] == 1 else self.frame
+
+        find, rect, bitblt, sleep = self._patch(flaky)
+        with find, rect, bitblt, sleep:
+            result = self.game.capture()
+
+        self.assertEqual(2, calls["count"])
+        self.assertEqual((1132, 1982, 3), result.shape)
+
+    def test_it_still_fails_closed_when_every_attempt_misses(self):
+        calls = {"count": 0}
+
+        def always_miss(_hwnd):
+            calls["count"] += 1
+            return None
+
+        find, rect, bitblt, sleep = self._patch(always_miss)
+        with find, rect, bitblt, sleep:
+            # 断言里引用常量而不是写死「3 次」：重试预算随实测调过（3→6），
+            # 这条测的是「试满就报错」，不是「试几次」。
+            with self.assertRaisesRegex(
+                RuntimeError, f"已重试 {pc_window.CAPTURE_ATTEMPTS} 次"
+            ):
+                self.game.capture()
+
+        self.assertEqual(pc_window.CAPTURE_ATTEMPTS, calls["count"])
+
+
 if __name__ == "__main__":
     unittest.main()
+
+
+class Epic7PcWindowSwipeTests(unittest.TestCase):
+    """PC 端滑动的窗口层契约（2026-11-02 新增：此前 swipe 传 None，四条路线卡在这）。"""
+
+    def setUp(self):
+        self.game = Epic7PcWindow()
+
+    def test_swipe_translates_both_endpoints_into_client_coordinates(self):
+        """画布坐标 → 客户区要减 LEGACY_TOP(52)，再叠加窗口左上角。"""
+        with (
+            patch.object(self.game, "activate", return_value=123),
+            patch.object(self.game, "_ensure_input_allowed"),
+            patch.object(
+                self.game,
+                "_validated_rect",
+                return_value=WindowRect(10, 20, 1920, 1080),
+            ),
+            patch.object(self.game, "_send_swipe", create=True) as send,
+        ):
+            self.game.swipe((400, 800), (400, 200), 300)
+
+        send.assert_called_once_with((410, 768), (410, 168), 300)
+
+    def test_swipe_rejects_a_point_in_the_top_padding(self):
+        """落在顶部黑边（0..51）的坐标一律拒绝 —— 那是补边，不是游戏渲染区。"""
+        with (
+            patch.object(self.game, "activate", return_value=123),
+            patch.object(self.game, "_ensure_input_allowed"),
+            patch.object(
+                self.game,
+                "_validated_rect",
+                return_value=WindowRect(10, 20, 1920, 1080),
+            ),
+            patch.object(self.game, "_send_swipe", create=True) as send,
+        ):
+            with self.assertRaises(RuntimeError):
+                self.game.swipe((400, 800), (400, 10), 300)
+
+        send.assert_not_called()
+
+    def test_send_swipe_holds_the_button_until_the_end(self):
+        """轨迹必须是「按下 → 多次移动 → 抬起」，中途不抬键（抬手就成点击了）。"""
+        delays = []
+        game = Epic7PcWindow(sleep_fn=delays.append)
+        game._user32 = MagicMock()
+        game._user32.GetSystemMetrics.side_effect = lambda metric: {
+            0: 3200,
+            1: 2000,
+        }[metric]
+        batches = []
+
+        def send_input(count, inputs, _size):
+            batches.append(
+                [inputs[index].data.mouse.flags for index in range(count)]
+            )
+            return count
+
+        game._user32.SendInput.side_effect = send_input
+
+        game._send_swipe((100, 900), (100, 300), 160)
+
+        flags = [batch[0] for batch in batches]
+        self.assertEqual(pc_window._MOUSEEVENTF_LEFTDOWN, flags[1])
+        self.assertEqual(pc_window._MOUSEEVENTF_LEFTUP, flags[-1])
+        self.assertNotIn(pc_window._MOUSEEVENTF_LEFTUP, flags[1:-1])
+        self.assertTrue(
+            all(
+                flag == pc_window._MOUSEEVENTF_MOVE | pc_window._MOUSEEVENTF_ABSOLUTE
+                for flag in [flags[0], *flags[2:-1]]
+            )
+        )
+        # 160ms 按 16ms 一步 ⇒ 10 步，每步一次 sleep
+        self.assertEqual(10, len(delays))

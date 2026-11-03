@@ -464,3 +464,100 @@ def resolve_auto_state(controls, auto_icon_hit):
 同场扫描发现 `battle_general_tab` 实际认的是**赛季高亮条**而非「一般」标签，
 是 2026-10-04 迷宫卡死 92 秒的真根因。**本轮按用户要求未动**，
 详见 `docs/maintenance/expedition.md` 末节。
+
+## ⚠️ 事故二：战力差警告（「战斗指南」）盖在准备战斗页上（2026-10-31）
+
+### 现象
+
+第 20 层，`业务完成 cycles=2` 之后停在「准备战斗」页，点 `battle-start` **连续 4 次**
+都没进战斗（日志 `来源=准备战斗仍在`），最后报
+`动作[battle-start]未稳定进入[战斗中]`，退出码 1。收尾也回不了大厅（剧情/弹窗上 ESC 无效）。
+
+### 现场
+
+诊断帧（已存夹具 `battle_guide.png`）上根本不是战斗页，而是 **「战斗指南」弹窗**：
+
+> 登场的敌方战斗力比我方队伍高出许多。要继续进行吗？
+> [取消] [确认]
+
+敌方战力 **1,071,000** vs 我方 **799,626** —— 战力差到一定倍数，游戏就弹这个警告，
+**点「确认」才开打**。月塔越往上越容易撞上。
+
+### 为什么旧逻辑一定失败
+
+弹窗是**半透明**的，底下那一页原样可见：
+
+| 判据 | 在这一帧上 |
+|---|---|
+| `team_battle_start`（右下「战斗开始」） | 命中 |
+| `prepare_title`（左上「准备战斗」） | 命中 |
+| `battle_guide_title`（弹窗标题） | **0.9956** |
+
+⇒ `is_in_state(TEAM)` 成立 ⇒ 状态永远是 TEAM ⇒ 每帧都发 `battle-start`，
+而点的是弹窗压住的位置，**一次都不会生效**。这跟「判据不够灵敏」是两回事：
+判据全都对，是**少了一个页面**。
+
+### 修法
+
+1. 新增原子 `battle_guide_title`（**复用 `story/battle_guide_title.png`** —— 同一后端、
+   同一套渲染；实测本帧 0.9956、其余帧最高 0.38）。为此 `evidence/tower.py` 增加了
+   `_TEMPLATE_PATHS` 覆盖表，支持 `../story/...` 这样的跨目录复用。
+2. `next_action` 的 `TEAM` 分支**先认弹窗**：命中就发 `confirm-battle-guide`，
+   点 `(1122, 794)`（弹窗「确认」，与「确认重置阶段」同一个弹窗布局、同一位置，
+   但**常量分开写**：两个业务，将来挪一个不该连带另一个）。
+3. `action_source_visible` 对这条动作**按弹窗判**，不按 `TEAM` 判 ——
+   弹窗关掉后底下仍是准备战斗页，按 TEAM 判会被当成「没点动」而反复重试。
+4. `target_states = (BATTLE, TEAM)`：确认后正常直接进战斗；若游戏退回准备战斗页，
+   下一帧重新判，不会空等 60 秒超时。
+
+### 为什么不用主线那套 `find_battle_guide_dont_show`
+
+主线要求**两个锚点**（标题 + 「不再显示」勾选项）。月塔这个弹窗**没有「不再显示」**
+（实测该模板在这一帧只有 **0.3791**），套上去整条判据恒假。⇒ 只能自己按「标题」判。
+
+## ⚠️ 接线补全：打不过（FAILED 结算页）= 正常业务退出 + 开局接力（2026-11-01）
+
+### 现象（2026-10-31 第 22 层实跑，`battle_unrecognized` 假故障）
+
+战斗失败落在 **FAILED 结算页**（居中「FAILED」大字 + 左下「大厅」按钮）：
+那一帧上 `battle_scene_visible` 为 **False**、三选一锚点不命中 ⇒ 监督的
+「打完」两判据全 False ⇒ 干等 45 秒报 `battle_unrecognized`（**退出码 1 假故障**）。
+诊断帧已存 `tests/fixtures/epic7_tower/battle_failed.png`
+（源：`runtime_diagnostics/epic7_tower/20261031_154715_049198_battle_unrecognized.png`）。
+
+判据本体（`battle_failed`，白掩膜，2026-10-31 就已入库：本帧 **1.0000**、
+其余夹具帧最高 0.5556）**一直没人消费** —— 模板在、`FloorTooHard` 异常类也在
+（`_POINT_HOME_AFTER_DEFEAT` 都量好了），就是没接线。
+
+### 接线（四处）
+
+1. **`observe_battle`**：FAILED 页并入 `result_visible` ⇒ 监督在失败页**收手**
+   （否则永远等不到「打完」）；
+2. **`CARD` 分支先判 FAILED**：监督把「打完」的落点一律拨到 `_RESULT_STATE=CARD`，
+   而失败的那层**没有三选一页** —— 不先判就会撞 `_required(card_decide)` 报「认不出」。
+   命中 ⇒ `_required` 复核 ⇒ 抛 `FloorTooHard`（退出码 2，「月塔这一层打不过」）；
+3. **`BATTLE` 分支同样接住**（监督收手瞬间画面已翻页的边缘路径，与征服屏同一对）；
+4. **开局接力**（`detect_resume_point` 状态循环**之前**显式判）：人停在 FAILED 屏
+   启动月塔 ⇒ 拨到 CARD ⇒ 下一拍立刻正常收工。那一帧上状态循环一个状态都认不出，
+   不显式接就会「回大厅 → 重进塔 → 重打同一层 → 再输一遍」。
+
+### 语义（用户 2026-11-01 口径）
+
+- **打不过 ≠ 打满**：打满是完成；打不过是队伍强度不够 —— 但对主循环**都是正常
+  业务退出**（退出码 2），不许报成故障。
+- **不点「大厅」、不重打**：重打只会再输一遍；收尾由基类 `_close_out` 统一回家。
+- 月塔每个小环节（主页/楼层列表/准备战斗/战斗中/三选一两态/结算/征服屏/FAILED 屏）
+  现在全部可开局接力；**唯一还缺的是「阶段选择」屏**（每月首次进场弹一次，
+  判据素材没拍到，用户拍板「按游戏默认选中的阶段直接确认」—— 等下一次弹这一屏
+  时取帧补上）。
+
+### 护栏（`tests/test_epic7_tower.py`，5 条）
+
+| 用例 | 判据 |
+| --- | --- |
+| `test_the_failed_screen_is_a_normal_business_stop` | CARD 落点 + FAILED 帧 ⇒ `FloorTooHard`，`stop_label=月塔这一层打不过` |
+| `test_the_failed_screen_is_reachable_from_the_battle_state_too` | 成对：`BATTLE` 状态也接得住（同征服屏那对） |
+| `test_the_failed_screen_wins_the_resume_order` | 接力：FAILED 帧 ⇒ 落点 `战斗失败`/`CARD`/无 entry |
+| `test_battle_adapter_hands_control_back_on_the_failed_screen` | 监督在 FAILED 页 `result_visible=True` 收手 |
+| `test_the_failed_screen_never_fires_on_a_business_page` | 业务页上 FAILED 判据恒不响（误响 = 打断正常层） |
+| `JUDGE_OWNERS["battle_failed"]` | 夹具入库后判据分离度纳入全量扫描（本帧 1.0000 / 其余最高 0.5556） |

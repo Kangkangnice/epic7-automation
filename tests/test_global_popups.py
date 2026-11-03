@@ -17,7 +17,11 @@ from auto_game_unified.games.epic7.global_popups import (
     find_knights_signin_close,
     find_knights_weekly_reward_close,
     find_network_retry,
+    find_account_rank_up_close,
+    find_gift_claim_close,
     find_pet_gift_badge,
+    find_reward_notice_close,
+    find_side_story_notice_close,
     find_web_network_error_close,
     find_worldboss_support_reward_close,
     load_arena_rank_reward_templates,
@@ -30,11 +34,16 @@ from auto_game_unified.games.epic7.global_popups import (
     load_knights_signin_templates,
     load_knights_weekly_reward_templates,
     load_network_reconnect_templates,
+    load_account_rank_up_templates,
+    load_gift_claim_templates,
     load_pet_gift_templates,
+    load_reward_notice_templates,
+    load_side_story_notice_templates,
     load_web_network_error_templates,
     load_worldboss_support_reward_templates,
 )
 from auto_game_unified.core.runtime import ManualStop, Runtime
+from auto_game_unified.games.epic7.template_paths import TemplateDir
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -81,6 +90,196 @@ def test_network_retry_points_at_the_screen_centre(fixture_name):
     assert match is not None
     assert match.center == _centre_of(screen)
     assert match.score >= 0.88
+
+
+def test_network_retry_recognizes_the_pc_client_popup():
+    """2026-11-01 PC 真机：同一句「网络连接异常，请重新连接。」在 PC 上只有 0.6272
+    （阈 0.88）⇒ 断线弹窗一直认不出、压在画面上，路线最后以「未知页」收场。
+
+    修法是 `templates/global/pc/network_message.png`（425×55，与共享模板同尺寸、
+    按模板里白字的落点对齐裁）⇒ PC 上 1.0000。代码零改动。
+    """
+    screen = np.asarray(
+        Image.open(FIXTURES / "network_reconnect_pc_live_20261101.png").convert("RGB")
+    )
+    pc_templates = load_network_reconnect_templates(TemplateDir(TEMPLATES, "pc"))
+    emulator_templates = load_network_reconnect_templates(TEMPLATES)
+
+    match = find_network_retry(screen, pc_templates)
+
+    assert match is not None
+    assert match.center == _centre_of(screen)
+    assert match.score >= 0.88
+    # 这张 PC 帧在**模拟器口径**下必须仍然认不出：`pc/` 覆盖图不是"两边通用图"，
+    # 谁要是把它复制成共享图，这条会立刻红。
+    assert find_network_retry(screen, emulator_templates) is None
+
+
+def test_gift_claim_notice_is_dismissed_from_its_close_label():
+    """骑士团「领取支援物品」弹窗：盖住骑士团主页 ⇒ 世界首领战卡在入口。
+
+    2026-11-02 10:06 PC 实跑。已登记的两类都对不上（``gift_support_title`` 0.4572、
+    ``worldboss_support_reward_title`` 0.2150）—— 文案不同，是新的一层。
+    """
+    screen = np.asarray(
+        Image.open(FIXTURES / "gift_claim_pc_live_20261102.png").convert("RGB")
+    )
+    templates = load_gift_claim_templates(TEMPLATES)
+
+    match = find_gift_claim_close(screen, templates)
+
+    assert match is not None
+    assert match.score >= 0.85
+    assert 900 <= match.center[0] <= 1030, match.center
+    assert 820 <= match.center[1] <= 890, match.center
+
+
+def test_account_rank_up_is_dismissed_from_its_arrow():
+    """「账号 Rank 提升」弹窗：盖住战斗画面 ⇒ 战斗判不出、回家按 ESC 也没用。
+
+    2026-11-02 15:35 主线 PC 实跑，一条命犯了两桩：「战斗画面持续无法识别超时」
+    +「返回首页失败：连按 2 次 ESC 页面都没有变化」。
+
+    锚「账号Rank提升」半句 + 底部向下箭头：正文「已恢复176点行动力」与徽章
+    「RANK UP 45」的**数字每次升级都变**，模板一律不含。
+    """
+    screen = np.asarray(
+        Image.open(FIXTURES / "account_rank_up_pc_live_20261102.png").convert("RGB")
+    )
+    templates = load_account_rank_up_templates(TEMPLATES)
+
+    match = find_account_rank_up_close(screen, templates)
+
+    assert match is not None
+    assert match.score >= 0.85
+    assert 900 <= match.center[0] <= 1020, match.center
+    assert 1020 <= match.center[1] <= 1110, match.center
+
+
+def test_account_rank_up_requires_both_anchors():
+    screen = np.asarray(
+        Image.open(FIXTURES / "account_rank_up_pc_live_20261102.png").convert("RGB")
+    )
+    templates = load_account_rank_up_templates(TEMPLATES)
+    without_title = screen.copy()
+    without_title[920:1040, 600:1400] = 0
+    without_close = screen.copy()
+    without_close[1000:1140, 760:1220] = 0
+
+    assert find_account_rank_up_close(without_title, templates) is None
+    assert find_account_rank_up_close(without_close, templates) is None
+
+
+def test_gift_claim_requires_both_anchors():
+    screen = np.asarray(
+        Image.open(FIXTURES / "gift_claim_pc_live_20261102.png").convert("RGB")
+    )
+    templates = load_gift_claim_templates(TEMPLATES)
+    without_title = screen.copy()
+    without_title[250:370, 760:1220] = 0
+    without_close = screen.copy()
+    without_close[800:920, 830:1150] = 0
+
+    assert find_gift_claim_close(without_title, templates) is None
+    assert find_gift_claim_close(without_close, templates) is None
+
+
+def test_reward_notice_is_dismissed_from_its_close_label():
+    """「获得奖励」通知：点完通关提示后盖住关卡入口，不点掉就「等待通关」45 秒无进展。
+
+    2026-11-01 22:27 主线 PC 实跑（诊断帧 20261101_222757...）。
+    同帧上路线自己的 ``bonus_reward`` 只有 0.7724（阈 0.80）—— 差 0.028 就整条卡住。
+
+    只锚标题 + 点击关闭：正文（"获得星星奖励已正常发放。"）与奖励图标随奖励类型变化。
+    """
+    screen = np.asarray(
+        Image.open(FIXTURES / "reward_notice_pc_live_20261101.png").convert("RGB")
+    )
+    templates = load_reward_notice_templates(TEMPLATES)
+
+    match = find_reward_notice_close(screen, templates)
+
+    assert match is not None
+    assert match.score >= 0.85
+    assert 900 <= match.center[0] <= 1030, match.center
+    assert 800 <= match.center[1] <= 880, match.center
+
+
+def test_reward_notice_requires_both_anchors():
+    screen = np.asarray(
+        Image.open(FIXTURES / "reward_notice_pc_live_20261101.png").convert("RGB")
+    )
+    templates = load_reward_notice_templates(TEMPLATES)
+    without_title = screen.copy()
+    without_title[240:360, 800:1300] = 0
+    without_close = screen.copy()
+    without_close[780:900, 830:1150] = 0
+
+    assert find_reward_notice_close(without_title, templates) is None
+    assert find_reward_notice_close(without_close, templates) is None
+
+
+def test_the_two_notice_popups_do_not_recognize_each_other():
+    """支线故事通知与获得奖励都是「标题 + 点击关闭」，但标题不同 ⇒ 互不串味。"""
+    story_notice = np.asarray(
+        Image.open(FIXTURES / "side_story_notice_pc_live_20261101.png").convert("RGB")
+    )
+    reward_notice = np.asarray(
+        Image.open(FIXTURES / "reward_notice_pc_live_20261101.png").convert("RGB")
+    )
+    story_templates = load_side_story_notice_templates(TEMPLATES)
+    reward_templates = load_reward_notice_templates(TEMPLATES)
+
+    assert find_side_story_notice_close(story_notice, story_templates) is not None
+    assert find_reward_notice_close(story_notice, reward_templates) is None
+    assert find_reward_notice_close(reward_notice, reward_templates) is not None
+    assert find_side_story_notice_close(reward_notice, story_templates) is None
+
+
+def test_side_story_notice_is_dismissed_from_its_close_label():
+    """新支线解锁通知：盖在结算页上，不点掉就「等待结算」45 秒无进展。
+
+    2026-11-01 22:05 主线 PC 实跑就是这么挂的（诊断帧
+    `20261101_220554_360858_timeout_wait_results.png`）。
+
+    判据只认**标题 + 点击关闭**两颗：正文与插画随解锁的支线变化
+    （"支线故事「被选中的女巫」已解锁"），不能拿它当锚点。
+    """
+    screen = np.asarray(
+        Image.open(FIXTURES / "side_story_notice_pc_live_20261101.png").convert("RGB")
+    )
+    templates = load_side_story_notice_templates(TEMPLATES)
+
+    match = find_side_story_notice_close(screen, templates)
+
+    assert match is not None
+    assert match.score >= 0.85
+    # 点在「点击关闭」上（不是标题、也不是插画）
+    assert 900 <= match.center[0] <= 1030, match.center
+    assert 850 <= match.center[1] <= 920, match.center
+
+
+def test_side_story_notice_requires_both_anchors():
+    """缺标题或缺关闭标签都不算 —— 「点击关闭」这四个字在好几个弹窗上都有。"""
+    screen = np.asarray(
+        Image.open(FIXTURES / "side_story_notice_pc_live_20261101.png").convert("RGB")
+    )
+    templates = load_side_story_notice_templates(TEMPLATES)
+    without_title = screen.copy()
+    without_title[240:360, 760:1220] = 0
+    without_close = screen.copy()
+    without_close[840:960, 830:1150] = 0
+
+    assert find_side_story_notice_close(without_title, templates) is None
+    assert find_side_story_notice_close(without_close, templates) is None
+
+
+def test_side_story_notice_rejects_normal_game_frames():
+    """别的页面上一律不得命中（关卡入口、结算页+好友弹窗两张 PC 真机帧当反例）。"""
+    templates = load_side_story_notice_templates(TEMPLATES)
+    for name in ("stage_pc_live_20261101.png", "friend_request_pc_live_20261101.png"):
+        screen = np.asarray(Image.open(STORY_FIXTURES / name).convert("RGB"))
+        assert find_side_story_notice_close(screen, templates) is None, name
 
 
 def test_network_retry_only_needs_the_message_anchor():

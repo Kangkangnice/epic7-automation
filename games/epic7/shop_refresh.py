@@ -14,6 +14,7 @@ from auto_game_unified.core.supervisor import StableObservation
 from auto_game_unified.games.epic7.resume_probe import ResumePoint
 from auto_game_unified.games.epic7.evidence.shop_refresh import (
     LIST_FINGERPRINT_CHANGE_BITS,
+    PURCHASE_PRICES,
     ShopItemKind,
     ShopObservation,
     ShopPage,
@@ -23,11 +24,20 @@ from auto_game_unified.games.epic7.evidence.shop_refresh import (
 )
 
 
-COVENANT_PRICE = 184_000
-MYSTIC_PRICE = 280_000
-# 「友情点数」（绿心）—— 2026-10-31 用户要求加进购买候选，实测价 18,000。
-FRIENDSHIP_PRICE = 18_000
+# 与观察器共用 ``PURCHASE_PRICES``：记账的单价和「弹窗价格条」证明的单价必须一致。
+COVENANT_PRICE = PURCHASE_PRICES[ShopItemKind.COVENANT]
+MYSTIC_PRICE = PURCHASE_PRICES[ShopItemKind.MYSTIC]
+FRIENDSHIP_PRICE = PURCHASE_PRICES[ShopItemKind.FRIENDSHIP]
 REFRESH_PRICE = 3
+
+# 一轮最多买多少个友情点数（用户 2026-11-01 要求）。
+#
+# 原话：「友情点数一次最多买 10 个，它出现得比较频繁，目前不是很缺。我刷 100 次
+# 它会出现很多次，但我不需要那么多 ⇒ 无论刷多少次，友情点数最多买 10 个」。
+#
+# ⚠️ 上限按**整轮**算（初始那一批 + 后面刷出来的都计入），不是「每次刷新最多 10 个」。
+# 计数口径见 `ShopRunStats.friendship_bought`。
+FRIENDSHIP_PURCHASE_LIMIT = 10
 
 
 class ShopPhase(Enum):
@@ -77,6 +87,15 @@ class ShopRunStats:
         if self.completed_refreshes == 0:
             return 0.0
         return self.paid_mystic / self.completed_refreshes
+
+    @property
+    def friendship_bought(self) -> int:
+        """本轮已买的友情点数总数：初始那一批 + 刷出来的都算。
+
+        ⚠️ 不能只看 ``paid_friendship``：开局第一次扫描（还没刷新过）买的那几个
+        记在 ``initial_friendship`` 上，漏了它上限就会多出开局那几个。
+        """
+        return self.initial_friendship + self.paid_friendship
 
     def commit_purchase(self, kind: ShopItemKind) -> None:
         if kind is ShopItemKind.COVENANT:
@@ -939,6 +958,7 @@ class ShopRefreshRunner:
                 )
             if self.machine.resumed_at_shop:
                 self._reset_list_to_top_after_resume()
+            friendship_cap_logged = False
             while self.machine.phase not in {
                 ShopPhase.COMPLETE,
                 ShopPhase.STOPPED,
@@ -963,6 +983,19 @@ class ShopRefreshRunner:
                         f"备选={row.alternate_score:.3f}",
                         screen,
                     )
+                # 友情点数买到上限之后，**两种名单都不再收它**：
+                # 收进 targets 会继续买；收进 unavailable_targets 会因为「目标商品
+                # 缺少同行购买按钮」把整轮判死 —— 可我们已经不打算买它了。
+                friendship_full = (
+                    self.machine.stats.friendship_bought
+                    >= FRIENDSHIP_PURCHASE_LIMIT
+                )
+                if friendship_full and not friendship_cap_logged:
+                    self.runtime.log(
+                        f"模式=刷书签 友情点数=达到上限"
+                        f"（{FRIENDSHIP_PURCHASE_LIMIT} 个）本轮不再购买"
+                    )
+                    friendship_cap_logged = True
                 targets = [
                     row for row in observation.rows
                     if row.kind
@@ -972,6 +1005,9 @@ class ShopRefreshRunner:
                         ShopItemKind.FRIENDSHIP,
                     }
                     and row.buy_point is not None
+                    and not (
+                        friendship_full and row.kind is ShopItemKind.FRIENDSHIP
+                    )
                 ]
                 unavailable_targets = [
                     row
@@ -983,6 +1019,9 @@ class ShopRefreshRunner:
                     }
                     and row.buy_point is None
                     and not self._is_known_sold(row)
+                    and not (
+                        friendship_full and row.kind is ShopItemKind.FRIENDSHIP
+                    )
                 ]
                 if unavailable_targets:
                     row = unavailable_targets[0]

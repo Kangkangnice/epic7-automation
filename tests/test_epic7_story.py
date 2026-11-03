@@ -1,5 +1,6 @@
 from pathlib import Path
 import unittest
+from unittest import mock
 
 import cv2
 import numpy as np
@@ -7,7 +8,12 @@ from PIL import Image
 
 from auto_game_unified.core.battle_supervisor import AutoBattleState
 from auto_game_unified.games.epic7 import story as story_module
-from auto_game_unified.games.epic7.story import StoryState, StoryStateMachine, build_story_templates
+from auto_game_unified.games.epic7.story import (
+    StoryRunner,
+    StoryState,
+    StoryStateMachine,
+    build_story_templates,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -775,6 +781,57 @@ class Epic7StoryStateMachineTests(unittest.TestCase):
         self.assertEqual("complete", endpoint.name)
         self.assertEqual("通关提示", machine._confirmed_page)
         self.assertEqual(StoryState.WAIT_COMPLETE, machine.state)
+
+    def test_skip_confirmation_may_end_the_story_on_the_results_page(self):
+        """跳过**战后最后一段**剧情后，游戏直接给「结算确认」，不经过战斗中。
+
+        2026-11-01 21:20 PC 实跑死在这（同一类契约漏落点的第五种形态）：
+        点击 → 页面变「结算确认」→ 不在 ``target_pages`` 里 → 主循环判"没点成功"
+        → 丢掉动作 → 干等 45 秒报 ``timeout_transition_skip_confirm`` → 收尾"回首页"
+        在结算页连按 ESC 无效 → 退出码 1。
+        证据包：``results_confirm=0.8600 observed=True``，其余锚点全部低于阈值。
+
+        ⚠️ 症状（点了没反应 / 等 45 秒）看起来像判据问题，实际是契约少一个落点。
+        分诊口诀：日志里 ``转场超时`` + ``当前已确认页面=X``，先去查上一个动作的
+        ``target_pages`` 有没有 X。
+        """
+        machine = StoryStateMachine(
+            build_story_templates(TEMPLATES),
+            initial_state=StoryState.WAIT_SKIP_CONFIRM,
+        )
+
+        action = machine.next_action(load_fixture("skip_confirm"))
+
+        self.assertEqual("skip_confirm", action.name)
+        self.assertIn("结算确认", action.target_pages)
+        self.assertIn(StoryState.WAIT_RESULTS, action.target_states)
+
+        # 落点真的能接着往下跑：结算确认页给出的下一动作是"确认"
+        on_results = machine.next_action(load_fixture("results"))
+        self.assertEqual("results_confirm", on_results.name)
+
+
+    def test_results_actions_allow_a_post_battle_cutscene(self):
+        """战果链上的三下点击都可能接一段**战后过场**，不是直接进战果。
+
+        2026-11-01 22:55 实跑：点完「奖励结算」落到「剧情播放」，落点名单里没有它
+        ⇒ 主循环判「没点成功」→ 丢掉动作 → 干等 45 秒 → 整轮失败。
+        （同一类还撞过：跳过确认落到结算确认 / 通关结算，见上一条测试。）
+        """
+        for fixture, name in (
+            ("reward", "reward"),
+            ("clear", "clear"),
+            ("results", "results_confirm"),
+        ):
+            with self.subTest(action=name):
+                machine = StoryStateMachine(
+                    build_story_templates(TEMPLATES),
+                    initial_state=StoryState.WAIT_RESULTS,
+                )
+                action = machine.next_action(load_fixture(fixture))
+                self.assertIsNotNone(action)
+                self.assertEqual(name, action.name)
+                self.assertIn("剧情播放", action.target_pages)
 
 
 if __name__ == "__main__":

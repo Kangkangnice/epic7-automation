@@ -16,6 +16,8 @@ import json
 import re
 
 import pytest
+
+pytest.importorskip("tkinter")
 import tkinter as tk
 
 from auto_game_unified.desktop import onboarding
