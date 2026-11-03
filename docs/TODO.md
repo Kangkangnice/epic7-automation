@@ -79,7 +79,7 @@
 | knights_donation 骑士团捐赠 | 12 | ✅ 一天额度跑完（11-02） | 已放行；两处颜色/字形判据降级 |
 | shop_refresh 刷书签 | 5 | ✅ 正常完成（11-02） | 已放行 |
 | labyrinth_stone 迷宫强化石 | 12 | ✅ 买 3 块 + 正常收尾（11-03） | 已放行 |
-| tower 月塔 | 6 | ✅ 打通一层（11-03） | 已放行；⚠️ 收尾 ESC 无效 |
+| tower 月塔 | 7 | ✅ 打通一层（11-03）；三选一装置页 11-03 补 `card_decide` | 已放行；⚠️ 收尾 ESC 无效、`result_clear` 在 PC 上无现场帧 |
 | moonlight_theater 月光剧场 | 2 | ✅ 完成第 1 幕（11-03） | 已放行 |
 | hero_synthesis 英雄合成 | 4 | ✗ 卡「刻印加材料」 | 未通：槽位/费用是 HSV 颜色判据 |
 | side_story 支线故事 | 2 | ✗ 卡「关卡入口」 | 未通：这一页的判据还缺锚点 |
@@ -87,7 +87,7 @@
 | expedition / fodder / survivor / activity_story / community | 0 | 未在 PC 上做过 | 未开工 |
 
 另有 5 张 `templates/navigation/pc/`、1 张 `templates/global/pc/` 为多路线共用；
-全部 PC 专属图合计 **75 张**（`git ls-files ... | grep /pc/ | wc -l` 口径）。
+全部 PC 专属图合计 **76 张**（`git ls-files ... | grep /pc/ | wc -l` 口径）。
 
 ### 三条 PC 侧的待办
 

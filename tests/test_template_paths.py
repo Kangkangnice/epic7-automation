@@ -214,6 +214,15 @@ def test_real_template_root_only_has_the_reviewed_pc_overrides():
         # 准备战斗页的两个主判据（2026-11-03 补，模拟器原样 0.9397 / 0.9078 都差一点）。
         "tower/pc/prepare_title.png",
         "tower/pc/team_battle_start.png",
+# 三选一装置页的「决定装置」按钮（2026-11-03 23:44 实跑卡死后补）。
+        # 共享图在 PC 上 **0.8668**（阈 0.88）—— 差 0.0132，看着像就是过不去，
+        # 后果不是报错而是**静默判不出页**：``observe_battle`` 的 ``result_visible``
+        # 要求「决定装置 + 提示文案」同时命中，于是监督干等 45 秒报
+        # ``battle_unrecognized``；接着回家流程在这一页按 ESC 也无效（这页不响应它们），
+        # 整条每日任务以「无法回到首页」中止。补图后两张现场帧都是 **1.0000**。
+        # ⚠️ 几何与共享图一致（340x66，中心 (1138,1041) = ``_POINT_DECIDE``），
+        # 所以按钮选中/未选中两态都能命中（模拟器实测 1.0000 vs 0.9753）。
+        "tower/pc/card_decide.png",
         # 支线故事主页：左下「快速入场」+ 右下「冒险」。
         "side_story/pc/quick_entry.png",
         "side_story/pc/adventure.png",

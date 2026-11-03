@@ -212,8 +212,9 @@ _OPTIONAL_TEMPLATES: frozenset[str] = frozenset()
 def build_tower_evidence(template_dir: Path) -> EvidenceProfile:
     """月塔证据画像。阈值只有模拟器基线一套；平台差异收敛到图片。
 
-    ⚠️ 月塔**只面向模拟器后端**（PC 端这条路线不可用，理由见
-    `docs/PC_TEMPLATE_MIGRATION.md` 的月塔条目），所以不需要 PC 阈值覆盖。
+    ⚠️ 这条路线 2026-11-03 已放到 PC 客户端（`desktop/catalog.PC_READY_ROUTES`），
+    但**阈值仍只有一套**：PC 侧的差异全部靠 ``templates/tower/pc/`` 下的覆盖图吸收
+    （入场 / 阶段确认 / 选择队伍 / 准备战斗两枚 / 三选一提示语 / 决定装置，共 7 张）。
     """
     thresholds = THRESHOLDS
     atoms = {
