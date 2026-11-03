@@ -70,6 +70,25 @@ class ShopItemKind(Enum):
     UNKNOWN = "unknown"
 
 
+# 秘密商店里三种书签的标价。游戏里这些是**固定价**（不随刷新浮动），所以常量成立。
+# ⚠️ 单一来源：runner 层（``shop_refresh.py``）的 ``*_PRICE`` 从这里取，别再抄第二份 ——
+# 观察器用它把「弹窗上那个价格条」翻译成数字，runner 用它记账，两边必须同一个值，
+# 否则会复演 2026-10-31 那次事故（商品认对了、价格取不到 ⇒ 判定 UNKNOWN、拒绝购买）。
+PURCHASE_PRICES: dict[ShopItemKind, int] = {
+    ShopItemKind.COVENANT: 184_000,
+    ShopItemKind.MYSTIC: 280_000,
+    ShopItemKind.FRIENDSHIP: 18_000,
+}
+
+# 每个商品种类对应的「价格条」证据原子：弹窗上先认出商品图标，再用价格条确认一次，
+# 两个都对得上才敢点确认（真实花钱，不许只凭图标）。
+_PRICE_ATOM_BY_KIND: dict[ShopItemKind, str] = {
+    ShopItemKind.COVENANT: "covenant_price_current",
+    ShopItemKind.MYSTIC: "mystic_price_current",
+    ShopItemKind.FRIENDSHIP: "friendship_price_current",
+}
+
+
 class ShopPage(Enum):
     SHOP = "shop"
     PURCHASE_CONFIRM = "purchase_confirm"
@@ -120,6 +139,9 @@ REGIONS = {
     "friendship_candidate": (650, 140, 380, 992),
     "mystic_price_current": (850, 720, 400, 180),
     "covenant_price_current": (850, 720, 400, 180),
+    # 「友情点数」的价格条（2026-10-31 加）：与另外两种共用同一个金币图标、位置一样，
+    # 差别只在数字（18,000 比 184,000 少一位）⇒ 搜索区与它们对齐。
+    "friendship_price_current": (850, 720, 400, 180),
     "sold_out_0_of_1_current": (1500, 140, 420, 992),
 }
 
@@ -139,6 +161,7 @@ THRESHOLDS = {
     "friendship_candidate": ITEM_THRESHOLD,
     "mystic_price_current": 0.92,
     "covenant_price_current": 0.92,
+    "friendship_price_current": 0.92,
     "sold_out_0_of_1_current": 0.92,
 }
 
@@ -461,6 +484,7 @@ class ShopRefreshObserver:
             "purchase_action",
             "mystic_price_current",
             "covenant_price_current",
+            "friendship_price_current",
             "shop_title",
             "refresh_button_3",
             "buy_button",
@@ -485,13 +509,12 @@ class ShopRefreshObserver:
             )
         if seen("purchase_title") and seen("purchase_cancel") and seen("purchase_action"):
             purchase_kind = self._popup_kind(screen)
+            # 价格条要对得上才认：认出「友情点数」图标、但价格条不是那一条 ⇒ 仍然是
+            # ``None``（fail-closed），runner 会拒绝购买而不是硬着头皮确认。
+            price_atom = _PRICE_ATOM_BY_KIND.get(purchase_kind)
             purchase_price = (
-                280_000
-                if purchase_kind is ShopItemKind.MYSTIC
-                and seen("mystic_price_current")
-                else 184_000
-                if purchase_kind is ShopItemKind.COVENANT
-                and seen("covenant_price_current")
+                PURCHASE_PRICES[purchase_kind]
+                if price_atom is not None and seen(price_atom)
                 else None
             )
             return ShopObservation(

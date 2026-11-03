@@ -12,6 +12,8 @@ import os
 
 import numpy as np
 import pytest
+
+pytest.importorskip("tkinter")
 import tkinter as tk
 
 from auto_game_unified.core import elevation

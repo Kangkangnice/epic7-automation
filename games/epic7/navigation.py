@@ -9,8 +9,8 @@ import numpy as np
 
 from auto_game_unified.core.matcher import (
     Match,
-    find_best_template,
     load_template,
+    locate_with_fallback,
 )
 from auto_game_unified.core.runtime import Runtime
 from auto_game_unified.core.supervisor import (
@@ -624,6 +624,17 @@ _ACTIVITY_ROW_STATE = {
     "activity_more": "activity_menu",
     "activity_more_selected": "activity_web_promo",
 }
+# ⚠️ 「原样不过阈 → 再用两端低通补一次」的锚点名单**只有一份**，放在
+# ``core/matcher.SMOOTH_FALLBACK_ANCHORS``（导航 / 路线 / 诊断三层共用同一把尺子）。
+#
+# 为什么是名单制而不是全开：低通会连带抬高冒牌货的分数，开在哪一颗上，
+# 就必须用全库夹具证明那一颗「不漏真页、不放冒牌」。
+#
+# 2026-11-01 实测（308 张夹具，真值 = 现行原样口径的判定结果）：
+#   * ``lobby_arena``：原样 0.794（阈 0.82 不过）→ 低通 0.858；翻转数 0
+#   * ``arena_ready``：原样 0.841（阈 0.88 不过）→ 低通 0.949；翻转数 0
+#   * ``lobby_battle``：**不开** —— 低通把它抬到 0.839，可「退出确认弹窗」被抬到
+#     0.843，比真机还高 ⇒ 开了等于放宽判定。它也不是必需品（判大厅是「或」的关系）。
 
 
 class Epic7Navigator:
@@ -702,7 +713,11 @@ class Epic7Navigator:
         # ``NavigationStep(..., anchor="expedition_entry")``。
         "expedition_entry": (400, 240, 1580, 260),
         "expedition_home": (1400, 880, 582, 252),
-        "lobby_side_story": (1700, 380, 215, 120),
+        # ⚠️ 搜索框必须比模板**宽**，否则匹配退化成"逐像素对齐"（2026-11-03 实测）。
+        # 这里模板正好 215x120、原搜索框也是 215x120 ⇒ 只能贴在左上角比一次，
+        # 拿到 0.8001（阈 0.82）差一点点；而同一个模板全屏能拿到 0.9805 @(1805,440)。
+        # 放宽到 400x220 让它在框内能滑到最佳位置，两端（模拟器/PC）都覆盖。
+        "lobby_side_story": (1600, 350, 400, 220),
         "side_story_special_book": (1520, 900, 385, 110),
         "special_book_episode": (790, 995, 500, 110),
         "episode_adventure": (1595, 945, 338, 187),
@@ -869,9 +884,13 @@ class Epic7Navigator:
             candidates = (candidates,)
         best: Optional[Match] = None
         for template in candidates:
-            match = find_best_template(
+            # 走 ``locate_with_fallback``：原样优先，不过阈才用低通补一次。
+            # 与竞技场路线、视觉诊断**同一把尺子**，别在这里另写一套。
+            match = locate_with_fallback(
+                name,
                 screen,
                 template,
+                threshold,
                 region=self._REGIONS[name],
                 reference_size=REFERENCE_SIZE,
             )

@@ -37,10 +37,16 @@ from auto_game_unified.games.epic7.fodder import (
     FodderStateMachine,
     build_fodder_templates,
 )
+from auto_game_unified.games.epic7.activity_story import (
+    ActivityStoryRunner,
+    ActivityStoryStateMachine,
+    build_activity_story_machine,
+)
 from auto_game_unified.games.epic7.side_story import (
     SideStoryRunner,
     SideStoryStateMachine,
     build_side_story_machine,
+    detect_resume_point as detect_side_story_resume_point,
 )
 # 以「模块对象」形式再导一次：``_preflight_community`` 要在调用时读
 # ``LIVE_RUN_READY``（理由见该函数，与刷书签那条同源）。
@@ -249,6 +255,12 @@ def _build_side_story(template_root: Path, state: str) -> SideStoryStateMachine:
     # 主线那一整套（队伍/战斗/剧情/结算）由 build_side_story_machine 从兄弟目录
     # templates/story 复用，不重新加载一遍。
     return build_side_story_machine(template_root / "side_story", state)
+
+
+def _build_activity_story(template_root: Path, state: str) -> ActivityStoryStateMachine:
+    # 同 _build_side_story：目录里只放本路线独有的三张图（标题 / 票券徽章 /
+    # 免费的标记），主线那一整套从兄弟目录 templates/story 复用。
+    return build_activity_story_machine(template_root / "activity_story", state)
 
 
 def _build_hero_synthesis(template_root: Path, state: str) -> HeroSynthStateMachine:
@@ -472,19 +484,6 @@ RESUME_EXEMPT = {
         "⇒ 要争取力，得先把「起步时若模拟器是竖屏，就先退出社区」这一步放到 "
         "`_enter_mode` **之前**；那是 `main.py` 的活，属于另一件事。"
         "在那之前挂探针等于给用户一个「看起来能接力、实际一起步就炸」的假承诺。"
-    ),
-    "side_story": (
-        "2026-10-15 把那条前置事实测了（`runtime_logs/_probe_side_story_consumers.py`）："
-        "**关卡地图页 `battle_scene_visible=False`，但打完一关的场景页是 `True`**"
-        "（`scene.png` / `scene_without_arrow.png` 都是），与狗粮 `replay.png` 同因 ——"
-        "那两个页面「左侧竖列 + 右上角按钮」的白色结构撞上了战斗画面的判据。"
-        "这条路线继承 `StoryRunner`，它那支「接力落在局内」会**跳过状态机、直接把"
-        "这一局交给战斗监督**：停在场景页启动会被当成「已承诺战斗」去监督，"
-        "而监督在那一页上认作「还在战斗中」（`battle_visible=True`）⇒ 一路磨到绝对"
-        "超时，不是自愈。"
-        "⇒ 结论由「缺一条实测」升级为「**实测确认不能接力**」；要接必须先修 "
-        "`battle_controls.battle_scene_visible` 对场景页的误判 —— 那会影响全部 14 条"
-        "路线，不在本路线的改动范围里（狗粮也是用「先不接力」处理同一个坑）。"
     ),
     "moonlight_theater": (
         "用户 2026-10-17 明确「不做」。这条路线**一轮自己就能跑完**（从入口扫到最右端），"
@@ -771,6 +770,12 @@ MODE_SPECS = {
         # 但没得干了，基类会顺手把游戏带回首页）。
         default_cycles=99,
         cycles_editable=False,
+        # 开局接力（2026-10-31 用户要求）：有活动的时候大厅那颗入口会被活动顶替，
+        # 导航进不去 ⇒ 用户会自己把故事点进去、停在准备战斗/地图/场景页再启动。
+        # 判据全部复用本路线运行期那六条（与导航器同源的那一套，不另定阈值），
+        # 顺序上**场景页排在 `battle_scene_visible` 之前**——那一页会被判成局内，
+        # 排在后面就会被当成「已承诺战斗」交给监督、一路磨到超时（见路线模块头）。
+        resume_probe=_resume_probe(detect_side_story_resume_point),
         navigation_plan=NavigationPlan(
             mode="side_story",
             steps=(
@@ -890,6 +895,24 @@ MODE_SPECS = {
         default_cycles=3,
         # 起点是用户人工推进到的活动小游戏内部页面，不需要从大厅导航过来，
         # 出问题时也不做任何「回大厅」动作（Back 会退回活动主页那个未知状态）。
+        needs_navigation=False,
+    ),
+    "activity_story": ModeSpec(
+        name="activity_story",
+        label="活动剧情",
+        default_state=StoryState.STAGE.value,
+        # 复用主线的状态集：本路线的状态机就是 `StoryStateMachine` 的子类，
+        # 独有页面（观看故事页）不占新状态 —— 它每帧靠画面现判。
+        states=frozenset(state.value for state in StoryState),
+        build_machine=_build_activity_story,
+        runner_type=ActivityStoryRunner,
+        # 「一次把本期看完」⇒ 没有「看几遍」的概念，次数不给用户选。
+        # 99 只是兜底上限；真实终点是右下角按钮**不再消耗票**，那一步抛
+        # `ActivityStoryCleared` 提前收工（退出码 2 = 干完了但没得干了）。
+        default_cycles=99,
+        cycles_editable=False,
+        # 起点是用户人工停在「观看故事」页再启动：活动入口每期都会变，写死一条
+        # 导航链反而是负担（与活动小游戏同一种用法）⇒ 只能单独跑，跑完也不回家。
         needs_navigation=False,
     ),
     "world_boss": ModeSpec(

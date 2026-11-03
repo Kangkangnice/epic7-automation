@@ -2,6 +2,8 @@ from pathlib import Path
 import sys
 
 import pytest
+
+pytest.importorskip("tkinter")
 import tkinter as tk
 from tkinter import ttk
 from unittest.mock import patch
@@ -307,7 +309,7 @@ def test_switching_backend_invalidates_previous_preflight():
 def test_controller_passes_selected_backend_to_worker():
     worker = FakeWorker()
     controller = DesktopController(worker=worker)
-    controller.toggle("story", True)
+    controller.toggle("arena", True)
     controller.select_backend("pc")
     controller.apply_preflight(passed_preflight())
 
@@ -316,24 +318,50 @@ def test_controller_passes_selected_backend_to_worker():
     assert worker.request.backend == "pc"
 
 
-def test_the_ui_hides_the_pc_backend_by_default(tk_window, tmp_path):
-    """界面上只该有雷电模拟器一个后端按钮（理由见 catalog.visible_backends）。"""
-    app = DesktopApp(
-        tk_window,
-        controller=DesktopController(worker=FakeWorker()),
-        project_root=tmp_path,
-    )
+def test_the_pc_backend_refuses_routes_without_pc_acceptance():
+    """PC 后端露面了，但**没验收的路线**不许在界面上跑 —— 那是一次必然失败的实跑。
 
-    assert len(app._backend_buttons) == 1
-    assert app.backend_var.get() == "emulator"
+    样本用 ``world_boss``：它在 PC 上还没打通（点「世界首领战」徽章四次都没反应，
+    见 ``.workbuddy/memory/2026-11-02.md`` 的 10:10 一节）。挑样本时别用已经放行的
+    路线（``catalog.PC_READY_ROUTES``），那会把这条断言变成永假。
+    ``tower`` 曾经是这里的样本，2026-11-03 已放行，所以换掉了。
+    """
+    controller = DesktopController(worker=FakeWorker())
+    controller.toggle("world_boss", True)
+    controller.select_backend("pc")
+    controller.apply_preflight(passed_preflight())
+
+    with pytest.raises(RuntimeError) as caught:
+        controller.start()
+
+    assert "还没有在 PC 客户端上通过验收" in str(caught.value)
 
 
-def test_the_ui_shows_the_pc_backend_under_the_dev_switch(
-    tk_window, tmp_path, monkeypatch
-):
-    """开发开关打开时，按钮要真的多出来一个 —— 否则「收起来」会变成「够不着」。"""
-    monkeypatch.setenv("EPIC7_SHOW_PC_BACKEND", "1")
+def test_the_pc_backend_allows_the_verified_arena_route():
+    controller = DesktopController(worker=FakeWorker())
+    controller.toggle("arena", True)
+    controller.select_backend("pc")
+    controller.apply_preflight(passed_preflight())
 
+    controller.start()
+
+    assert controller.worker.request.modes == ("arena",)
+
+
+def test_the_pc_backend_allows_the_verified_story_route():
+    """主线 2026-11-01 放行：一轮完整实跑通过，第二轮由用户在界面自测。"""
+    controller = DesktopController(worker=FakeWorker())
+    controller.toggle("story", True)
+    controller.select_backend("pc")
+    controller.apply_preflight(passed_preflight())
+
+    controller.start()
+
+    assert controller.worker.request.modes == ("story",)
+
+
+def test_the_ui_shows_the_pc_backend_button(tk_window, tmp_path):
+    """PC 按钮要真的画出来 —— 否则「支持 PC」只是命令行里的一句空话。"""
     app = DesktopApp(
         tk_window,
         controller=DesktopController(worker=FakeWorker()),
@@ -343,6 +371,7 @@ def test_the_ui_shows_the_pc_backend_under_the_dev_switch(
     assert len(app._backend_buttons) == 2
     labels = [button.cget("text") for button in app._backend_buttons]
     assert labels == ["模拟器（雷电）", "PC 客户端"]
+    assert app.backend_var.get() == "emulator"
 
 
 def test_controller_rejects_unknown_backend():
@@ -1295,7 +1324,11 @@ def test_group_selection_appends_after_what_is_already_ticked(tmp_path, tk_windo
 
 
 def test_the_event_group_replaces_other_selections(tmp_path, tk_window):
-    """「活动」只能单独跑 ⇒ 勾上它就是**只剩它**，其余全灭。"""
+    """「活动」只能单独跑 ⇒ 勾上它就是**只剩活动组的一条**，其余全灭。
+
+    活动组现在有两条（活动小游戏 + 活动剧情），两条都要求人先把游戏停在各自的
+    页面 ⇒ **组内也只能留一条**，组勾选勾的是该组第一条；要跑另一条就单独点它。
+    """
     controller = DesktopController(worker=FakeWorker())
     app = DesktopApp(tk_window, controller=controller, project_root=tmp_path)
     tk_window.update_idletasks()
@@ -1309,7 +1342,16 @@ def test_the_event_group_replaces_other_selections(tmp_path, tk_window):
 
     assert controller.selection == ["survivor"]
     assert app.route_vars["survivor"].get() is True
+    assert app.route_vars["activity_story"].get() is False
     assert app.route_vars["arena"].get() is False
+
+    # 单独勾「活动剧情」⇒ 反过来把「活动小游戏」清掉（`toggle` 那一支）。
+    app.route_vars["activity_story"].set(True)
+    app._on_toggle("activity_story")
+    tk_window.update_idletasks()
+
+    assert controller.selection == ["activity_story"]
+    assert app.route_vars["survivor"].get() is False
     # 整组被清掉之后，那些组的勾选框也得跟着灭。
     assert app._group_vars["每日"].get() is False
 

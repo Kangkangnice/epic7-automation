@@ -202,3 +202,30 @@
 ⚠️ 这类弹窗**一次性**，改完没法用实跑复现 ⇒ 回归全靠夹具
 `tests/fixtures/epic7_global/arena_rank_reward_live_20261020.png`。
 别因为「跑一遍没再出现」就以为修好了或没问题了。
+
+## 「购买旗帜」弹窗的 PC 覆盖图（2026-11-01）
+
+PC 实跑打到第 5 轮旗帜耗尽，点「开始战斗」弹出「购买旗帜」弹窗（100 心力→5 面 /
+30 天空石→5 面）。共享模板在 PC 上认不出它：`no_ticket` 0.7671、
+`arena_purchase_title` 0.7341、`arena_purchase_cancel` 0.7750（阈全是 0.90）——
+于是监督循环收不到「交还业务处理」信号（`BattleOutcome.PRE_BATTLE_BUSINESS`），
+一直重按「开始战斗」到 4 次熔断（`allowed_action_battle-start_failed`）。
+
+**为什么不走低通/白掩膜（实测数据，别再试一遍）**：
+低通 σ=2.0 能把 PC 帧拉到 0.914，但会把迷宫「购买确认」和商店四张「购买确认」
+弹窗一起抬过阈（0.91+）——标题同为"购买"字样、语义不同，是**真冒牌**，否掉；
+白掩膜全库零翻转但 PC 帧只有 0.684，救不动。
+
+**落法**（PC 迁移文档 §3 的设计内动作，代码零改动）：
+`templates/pc/{no_ticket,arena_purchase_title,arena_purchase_cancel}.png`，
+均从 PC 现场帧（`ticket_purchase_popup_pc_live_20261101`）裁剪。
+弹窗帧上三颗 1.0；手头 5 张 PC 反例帧最高 0.497，零误命中。
+
+**修好后的完整链路**（与模拟器一字不差）：
+`no_ticket` 命中 → 监督循环冻结背景点击、交还业务 → 正文用友情点买 5 面旗
+（`purchase-friendship-ticket`，左侧报价）→ 继续打；若走收尾，则双锚点点「取消」回家。
+
+**回归全靠夹具**：正例 `tests/fixtures/epic7_arena/ticket_purchase_popup_pc_live_20261101.png`、
+反例 `result_victory_pc_live_20261101.png`；测试在 `tests/test_arena_evidence.py`
+（`test_pc_ticket_popup_uses_pc_override_templates`）。这类弹窗只在旗帜打满时出现，
+实跑没法随复现，别因为"跑一遍没再出现"就以为没事。

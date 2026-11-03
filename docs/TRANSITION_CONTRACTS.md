@@ -372,6 +372,7 @@
 
 | 路线 | 界面名 | 判据载体 | 进入判据 | 出去验收 | 缺口 |
 |---|---|---|---|---|---|
+| `activity_story` | 活动剧情 | `source_page` + `target_pages`（**第九条打开机器强制**，2026-10-31 新路线自带） | 有 | 有 | 无（复用主线的 `StoryAction`，`source_page` / `target_pages` 在 `_action()` 里是**无默认值的必填参数**；本路线自己的动作只有一个 `start_activity_story`，也带全了。⚠️ **四个坑**：① 主线的 `_locate` **没有** threshold 形参，覆写时非本路线的名字必须原样 `super()._locate(screen, name)` 转发；② ⚠️⚠️ **「点完回到观看故事页」不在主线任何动作的 `target_pages` 里** —— 主线的 `clear` / `results_confirm` / `complete` 白名单只写「结算确认 / 通关提示 / 下一关入口 / 额外奖励」，漏了这个落点，主循环会判「转场没完成」并把刚认出来的动作整个丢掉，一路干等到状态超时（与支线故事「完成故事弹窗」同一个机制）。修法是 `next_action` 里给这三个动作 `replace(target_pages=...)` 补一项，不改点击点也不改来源页；③ **票券徽章不排他** —— 支线场景页的「重新进行」按钮左边是同一个马头图标（raw 0.9778 / 白掩膜 0.8801），所以它只在「标题已命中」之后或作为「认得出按钮但标题没认出来」的辅助信号使用，绝不能单独定义页面；④ **终点有两条判据**：主判据是按钮变成「不耗票」那一态（`ticket_free`，待实机采集），兜底是「点完回到本页、按钮区连票数都没变」——后者只在 `_awaiting_return` 为真的那一帧比较一次，逐帧比会把这个静止页面第一秒就判成收工） |
 | `arena` | 竞技场 | `Action.source_state` / `target_states`；缺任一直接报错 | 有 | 有 | 无（本项目最严） |
 | `expedition` | 远征 | `ExpeditionAction.source_page` / `target_pages` ＋ 基类 `_execute_transition`（缺任一直接 raise） | 有 | 有 | 无 |
 | `tower` | 月塔 | `TowerAction.source_page` / `target_pages` ＋ 基类 `_execute_transition`（**同远征口径**，进 `TRANSITION_EXEMPT` 并写明「用与远征逐字相同的事务验收」） | 有 | 有 | 无（2026-10-08 首版即对齐远征。三选一装置页与结算页的**分流**是这条路线特有的坑：两者都在打完一层之后出现，`next_action` 必须先把它们岔开，否则三选一页会撞 `UnrecognizedScreen` 打断整条路线） |

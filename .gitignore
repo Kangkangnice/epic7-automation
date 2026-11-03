@@ -21,8 +21,11 @@ games/epic7/templates_pc/tools/
 # （它随工作区现状变、还老是过期，2026-09-27 从仓库删除 ⇒ 要看时重跑脚本即可）
 /docs/WORKSPACE_TIDY.md
 # 打包产物：源码与配置入库，dist/build 每次重建（体积上百兆，不进历史）
-packaging/build/
-packaging/dist/
+# 带日期后缀的 build_1102 / dist_1103b 那批同样要挡（2026-11-03 之前漏掉，差点一次塞进 160MB）
+packaging/build*/
+packaging/dist*/
+# 测试临时落地目录（`_tmpcheck` 里只有跑测试时抓的 `_now.png`）
+tests/fixtures/_tmpcheck/
 # 源码运行时的用户状态：data_root() 在源码模式下就是包目录，跑一次界面就会在这里
 # 留下「已同意须知」和「上次查版本的时间」。它们因人而异、不进版本库，
 # 否则每个从源码跑的人 `git status` 立刻变脏。

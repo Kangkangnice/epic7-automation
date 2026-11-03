@@ -21,6 +21,7 @@ from auto_game_unified.desktop.catalog import (
     PRODUCT_VERSION,
     ROUTES,
     RouteInfo,
+    PC_READY_ROUTES,
     group_description,
     grouped_routes,
     route_by_name,
@@ -58,7 +59,11 @@ STARTUP_ORDER_HINT = (
 )
 STARTUP_HINTS = {
     "emulator": STARTUP_ORDER_HINT,
-    "pc": "请先启动《第七史诗》PC 客户端，再以管理员身份启动本助手并检测环境。",
+    "pc": (
+        "请先启动《第七史诗》PC 客户端，再以管理员身份启动本助手并检测环境。"
+        "竞技场、主线、圣域收菜已在 PC 上验过；骑士团捐赠、刷书签、迷宫强化石"
+        "已放行但还没实机验过，跑起来出问题请留日志。其余路线请切回模拟器。"
+    ),
 }
 BACKEND_LABELS = {
     "emulator": "模拟器（雷电）",
@@ -288,8 +293,12 @@ class DesktopController:
         的语义是「勾选先后就是执行顺序」。用户点某一组的勾选框，等于**现在才开始勾
         这一组** ⇒ 它们排到已勾的后面。整体替换会把用户先前手挑的顺序抹掉。
 
-        ⚠️ ``standalone_only``（目前只有「活动」）互斥仍然成立，且是**双向**的：
-        - 这一组里只要有一条只能单独跑 ⇒ 结果**就只剩这一组**（组内其他路线照常勾）；
+        ⚠️ ``standalone_only``（活动组）互斥仍然成立，且是**双向**的：
+        - 这一组里只要有一条只能单独跑 ⇒ 结果**就只剩这一组**，组外的全清；
+          但组内**也只能留一条** —— 活动组现在有「活动小游戏」和「活动剧情」，
+          两条都要求人先把游戏停在各自那一页，串着跑时第二条的起点早被第一条
+          破坏了 ⇒ 组勾选只勾**该组的第一条**（要跑另一条就单独点它的勾选框，
+          那条走 ``toggle``，会把这一条清掉）。
         - 这一组没有这种路线 ⇒ 先把 selection 里那条「只能单独跑」的踢掉，再追加。
         """
         if self.worker.running:
@@ -298,7 +307,9 @@ class DesktopController:
         if not routes:
             return
         if any(route.standalone_only for route in routes):
-            self.selection = [route.mode for route in routes]
+            self.selection = [
+                route.mode for route in routes if route.standalone_only
+            ][:1]
             return
         self.selection = [
             name for name in self.selection if not route_by_name(name).standalone_only
@@ -345,6 +356,19 @@ class DesktopController:
         plan = self.plan()
         if not plan:
             raise RuntimeError("至少要勾选一条路线")
+        if self.selected_backend == "pc":
+            # PC 后端已露面，但只有**通过 PC 验收**的路线才让在界面上跑：
+            # 没验收的路线在 PC 上是必然失败，而失败原因看起来像程序坏了。
+            # （命令行 --window-backend pc 不受此限，开发验证走命令行。）
+            not_ready = [
+                mode for mode, _ in plan if mode not in PC_READY_ROUTES
+            ]
+            if not_ready:
+                names = "、".join(route_by_name(mode).label for mode in not_ready)
+                raise RuntimeError(
+                    f"「{names}」还没有在 PC 客户端上通过验收，界面暂不支持；"
+                    "请先切回模拟器，或用命令行做开发验证。"
+                )
         self.worker.start(
             RunRequest(
                 modes=tuple(mode for mode, _ in plan),

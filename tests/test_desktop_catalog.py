@@ -2,8 +2,9 @@ import pytest
 
 from auto_game_unified.desktop import catalog
 from auto_game_unified.desktop.catalog import (
-    DEV_BACKEND_ENV,
+    BACKENDS,
     GROUPS,
+    PC_READY_ROUTES,
     PRODUCT_NAME,
     ROUTES,
     group_description,
@@ -12,24 +13,20 @@ from auto_game_unified.desktop.catalog import (
 )
 
 
-def test_pc_backend_is_hidden_from_the_ui_by_default():
-    """PC 客户端默认不在界面上露面。
+def test_the_pc_backend_is_back_on_the_ui():
+    """PC 客户端 2026-11-01 重新露面：竞技场已通过 PC 真机验收。"""
+    assert visible_backends() == ("emulator", "pc")
+    assert BACKENDS == ("emulator", "pc")
 
-    露出来的代价是：用户能一键选中一次**必然失败**的实跑 —— 截止 2026-09-30，十一条路线
-    没有一条通过 PC 验收，其中四条还会直接报「未配置滑动动作」，而失败原因看起来像程序坏了。
+
+def test_pc_ready_routes_only_names_verified_ones():
+    """界面只放行**已验收**的路线 ⇒ 这条名单必须写真凭实据，不许写「估计能跑」。
+
+    加一条进来的唯一依据：按 `docs/PC_TEMPLATE_MIGRATION.md` 第 3 节走完五步验收。
     """
-    assert visible_backends({}) == ("emulator",)
-
-
-def test_the_dev_switch_reveals_the_pc_backend():
-    """采模板 / 开发验证仍然要用它 —— 所以是「收起来」而不是「删掉」。"""
-    assert visible_backends({DEV_BACKEND_ENV: "1"}) == ("emulator", "pc")
-
-
-def test_only_the_exact_switch_value_reveals_it():
-    """只有 "1" 算数：写成 "true" / "yes" 不该悄悄把未验收的后端露出来。"""
-    for value in ("", "0", "true", "yes", "2", "on"):
-        assert visible_backends({DEV_BACKEND_ENV: value}) == ("emulator",)
+    assert "arena" in PC_READY_ROUTES
+    for mode in PC_READY_ROUTES:
+        assert route_by_name(mode) is not None
 
 
 def test_catalog_lists_every_route_in_menu_order():
@@ -44,6 +41,7 @@ def test_catalog_lists_every_route_in_menu_order():
         "side_story",
         "shop_refresh",
         "survivor",
+        "activity_story",
         "world_boss",
         "knights_donation",
         "labyrinth_stone",
@@ -275,7 +273,8 @@ def test_group_membership_is_what_the_user_asked_for():
     依据用户 2026-10-18 的口述：
       - 「英雄合成、主线、狗粮、支线故事、月光剧场，这几个都是按需」；
       - 「剩下的就是每日」；
-      - 赛季（会轮换的远征 + 月塔）与活动（survivor）沿用 2026-10-08 的结论。
+      - 赛季（会轮换的远征 + 月塔）与活动（survivor）沿用 2026-10-08 的结论；
+      - 活动剧情（2026-10-31 新增）与活动小游戏同属**限时活动** ⇒ 活动组。
     """
     expected = {
         catalog.GROUP_DAILY: [
@@ -295,7 +294,7 @@ def test_group_membership_is_what_the_user_asked_for():
             "moonlight_theater",
         ],
         catalog.GROUP_SEASON: ["expedition", "tower"],
-        catalog.GROUP_EVENT: ["survivor"],
+        catalog.GROUP_EVENT: ["survivor", "activity_story"],
     }
     for group, modes in expected.items():
         assert [route.mode for route in catalog.routes_in_group(group)] == modes

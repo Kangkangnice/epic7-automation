@@ -9,6 +9,10 @@
 - **不允许补充体力**：体力不够时**只识别、不购买**（`StaminaExhausted`，
   退出码 2，正常业务退出）。月塔没有「叶子不够就买」这条路 —— 补充不值。
 - **三选一固定选中间那张**（用户拍板）。
+- **这一层打不过（FAILED 结算页）= 正常业务退出**（`FloorTooHard`，退出码 2，
+  文案「月塔这一层打不过」）：监督在 FAILED 页收手，状态机认出即收工，
+  **不点「大厅」也不重打**（重打只会再输一遍）。开局停在 FAILED 屏同样接力认出、
+  立刻收工（2026-11-01 接线；判据模板与实测帧 2026-10-31 第 22 层就已入库）。
 - **阶段选择弹窗**（首次进场、一赛季只出现一次）**暂不实装**：遇到这一屏会走
   「认不出画面」的安全路径，不误点。等哪个赛季再遇到时补。
 
@@ -136,6 +140,18 @@ class FloorsConquered(StaminaExhausted):
     stop_label = "月塔层数已打满"
 
 
+class FloorTooHard(StaminaExhausted):
+    """这一层**打不过**（战斗 FAILED）。
+
+    ⚠️ 和「打满」是两件事，别混：打满是任务完成；打不过是**队伍强度不够**，
+    得用户自己去练。但两者对主循环的语义一样 —— **正常业务退出**（退出码 2），
+    不是故障。所以继承 ``StaminaExhausted`` 借它的退出码，
+    只把 ``stop_label`` 换成实情（否则用户看到「生命之叶耗尽」会去买叶子）。
+    """
+
+    stop_label = "月塔这一层打不过"
+
+
 @dataclass(frozen=True)
 class TowerAction(RouteAction):
     """月塔的一个动作。
@@ -158,10 +174,16 @@ class TowerTemplates:
     floor_select_team: np.ndarray
     team_battle_start: np.ndarray
     prepare_title: np.ndarray
+    # 「战斗指南」战力差警告的标题 —— 复用 story 的那张，不另裁（见 evidence 注释）。
+    battle_guide_title: np.ndarray
+    # 「英雄恢复」页的标题 —— 队伍有阵亡角色时，点「战斗开始」会跳到这一页。
+    hero_restore_title: np.ndarray
     card_decide: np.ndarray
     card_hint: np.ndarray
     result_clear: np.ndarray
     conquer_title: np.ndarray
+    # 战斗失败结算页的「FAILED」大字（白掩膜口径）。
+    battle_failed: np.ndarray
     # 战斗里「自动战斗关着」的图标 —— 复用 story 的那一张，不另做。
     auto_off: np.ndarray
     evidence: EvidenceProfile | None = None
@@ -178,10 +200,16 @@ def build_tower_templates(template_dir: Path) -> TowerTemplates:
         floor_select_team=load("floor_select_team"),
         team_battle_start=load("team_battle_start"),
         prepare_title=load("prepare_title"),
+        # 与 auto_off 同一条口径：**同一个后端**（都是模拟器）才复用别人的模板。
+        battle_guide_title=load_template(
+            str(template_dir.parent / "story" / "battle_guide_title.png")
+        ),
+        hero_restore_title=load("hero_restore_title"),
         card_decide=load("card_decide"),
         card_hint=load("card_hint"),
         result_clear=load("result_clear"),
         conquer_title=load("conquer_title"),
+        battle_failed=load("battle_failed"),
         # ⚠️ 复用 story 的自动战斗关闭图标（与远征/主线同一个控件、同一套渲染），
         # 不另裁一份 —— 同内容跨路线复用的前提是**同一个后端**（都是模拟器）。
         auto_off=load_template(str(template_dir.parent / "story" / "auto_off.png")),
@@ -223,6 +251,19 @@ class TowerStateMachine:
     _POINT_RESET_CONFIRM = (1122, 794)
     _POINT_SELECT_TEAM = (1698, 1044)
     _POINT_BATTLE_START = (1726, 1040)
+    # 「战斗指南」战力差警告弹窗里的「确认」按钮。
+    # 实测（2026-10-31 第 20 层诊断帧）按钮文字 y≈794、中心 x≈1119；
+    # 与 `_POINT_RESET_CONFIRM` 同一套弹窗布局、同一位置，但**刻意分开写**：
+    # 两个弹窗是不同业务，将来任何一个挪位都不该连带另一个。
+    _POINT_BATTLE_GUIDE_CONFIRM = (1122, 794)
+    # 「英雄恢复」页的「恢复」按钮。实测（2026-10-31 第 22 层诊断帧）绿色胶囊
+    # 中心约 (1130, 888)；按钮上那个蓝色光点是粒子特效，不影响点击。
+    # ⚠️ 点它会**消耗雌蕊圣叶**（本次实测 200），日志里必须记一笔。
+    _POINT_HERO_RESTORE_CONFIRM = (1130, 888)
+    # 战斗失败结算页（FAILED）上的「大厅」按钮。实测中心 (395, 1055)；
+    # 左边那个「离开」是回楼层列表，(158, 1055) —— 这里选「大厅」：
+    # 这一层打不过就说明卡住了，回列表还会被重新选中，不如一步退出。
+    _POINT_HOME_AFTER_DEFEAT = (395, 1055)
     # 「三选一」固定选中间那张卡（用户拍板）。卡位实测 c=(958,300)（图标）/ 卡面到 y≈870。
     _POINT_MIDDLE_CARD = (958, 500)
     _POINT_DECIDE = (1138, 1040)
@@ -375,9 +416,36 @@ class TowerStateMachine:
         if target is TowerState.CARD:
             self.card_picked = False
 
+    def _overlay_kind(self, screen: np.ndarray) -> Optional[str]:
+        """准备战斗页上是不是**盖了一层子页面**（目前两种，都是半透明的）。
+
+        ⚠️ 这两种子页面底下那一页原样可见 ⇒ 只按 TEAM 的两个锚点判，就会永远
+        以为「还在准备战斗」，然后一次次点「战斗开始」（点在子页面上，无效）：
+        连点 4 次后报 `动作[battle-start]未稳定进入[战斗中]`。
+
+        - ``battle-guide``：敌方战力远高于我方时的战力差警告 → 点「确认」继续
+        - ``hero-restore``：队伍里有**阵亡角色** → 点「恢复」（**消耗雌蕊圣叶**）
+        """
+        if self._locate(screen, "battle_guide_title") is not None:
+            return "battle-guide"
+        if self._locate(screen, "hero_restore_title") is not None:
+            return "hero-restore"
+        return None
+
     def action_source_visible(self, screen: np.ndarray, action: TowerAction) -> bool:
         if action.name == "enable-auto-battle":
             return self._locate(screen, "auto_off") is not None
+        if action.name in ("confirm-battle-guide", "restore-heroes"):
+            # 「来源还在不在」要按**那层子页面**判，不能按 TEAM 判：子页面关掉之后
+            # 底下仍然是准备战斗页，`is_in_state(TEAM)` 照样成立 ⇒ 会被当成没点动。
+            return self._overlay_kind(screen) is not None
+        if action.name == "battle-start":
+            # ⚠️ 子页面一冒出来，「准备战斗页」就被它顶掉了（半透明但算换了页）。
+            # 若仍判「来源在」，主循环只会**原地重发同一次点击**
+            # （`transactional_runner_base` 的重试路径不重新问状态机）⇒ `next_action`
+            # 里那两条子页面分支永远轮不到执行。⇒ 子页面在场就报「来源不在」。
+            if self._overlay_kind(screen) is not None:
+                return False
         return (
             action.source_state is not None
             and self.is_in_state(screen, action.source_state)
@@ -394,7 +462,18 @@ class TowerStateMachine:
             ):
                 return TowerState.BATTLE
             return None
+        if action.name in ("battle-start", "confirm-battle-guide", "restore-heroes"):
+            overlay = self._overlay_kind(screen)
+            if overlay is not None:
+                # 子页面还在：`battle-start` 是被它顶掉了 ⇒ 按「退回 TEAM」收掉这次
+                # 转场、把控制权交回主循环重新决策（下一帧就会发那两条子页面动作）；
+                # 另外两条则是「这一下还没点动」，两种都不算转场成功。
+                return TowerState.TEAM if action.name == "battle-start" else None
         for target in action.target_states:
+            if target is TowerState.TEAM and action.name == "battle-start":
+                # 只有**子页面在场**时才认 TEAM（上面那个分支已经处理）。
+                # 正常转场途中 TEAM 也短暂成立，认了就会立刻重发一次 `battle-start`。
+                continue
             if self.is_in_state(screen, target):
                 return target
         return None
@@ -435,9 +514,19 @@ class TowerStateMachine:
             ),
             # ⚠️ 月塔的「打完」不是结算页 CLEAR —— 打完先进**三选一装置页**！
             # 把三选一页当作「结果页」交给监督收手，状态才拨得对（见 _RESULT_STATE）。
+            #
+            # ⚠️⚠️ **战斗失败（FAILED 结算页）同样是「打完了」**（2026-11-01 接线）：
+            # 那一页上 `battle_scene_visible` 为 False、三选一锚点也不命中 ⇒ 两个
+            # 判据都是 False，监督会干等到 `battle_unrecognized` 超时——把「这一层
+            # 打不过」（正常业务退出）报成故障（2026-10-31 第 22 层实跑即此死法，
+            # 诊断帧已存 `fixtures/epic7_tower/battle_failed.png`）。接进 result_visible
+            # 让监督在 FAILED 页收手，控制权交回状态机后由 CARD 分支抛 `FloorTooHard`。
             result_visible=(
-                self._locate(screen, "card_decide") is not None
-                and self._locate(screen, "card_hint") is not None
+                (
+                    self._locate(screen, "card_decide") is not None
+                    and self._locate(screen, "card_hint") is not None
+                )
+                or self._locate(screen, "battle_failed") is not None
             ),
             frame_valid=valid_game_frame(screen),
             auto_state=auto_state,
@@ -492,12 +581,31 @@ class TowerStateMachine:
             )
 
         if self.state == TowerState.TEAM:
+            overlay = self._overlay_kind(screen)
+            if overlay == "battle-guide":
+                return self._action(
+                    "confirm-battle-guide", self._POINT_BATTLE_GUIDE_CONFIRM,
+                    source_page="准备战斗",
+                    target_states=(TowerState.BATTLE, TowerState.TEAM),
+                    reason="识别到「战斗指南」战力差警告，点确认继续",
+                )
+            if overlay == "hero-restore":
+                return self._action(
+                    "restore-heroes", self._POINT_HERO_RESTORE_CONFIRM,
+                    source_page="准备战斗",
+                    target_states=(TowerState.TEAM, TowerState.BATTLE),
+                    reason="识别到「英雄恢复」页（队伍有阵亡角色），点恢复",
+                )
             self._required(screen, "team_battle_start")
             self._required(screen, "prepare_title")
             return self._action(
                 "battle-start", self._POINT_BATTLE_START,
                 source_page="准备战斗",
-                target_states=(TowerState.BATTLE,),
+                # ⚠️ **TEAM 也在合同里**：点下去如果冒出「战斗指南」战力差警告，
+                # 这一下既没进战斗、也不是「什么都没发生」—— 页面被弹窗顶掉了。
+                # `action_target_state` 只在这种时候返回 TEAM（见那里），把控制权
+                # 交回主循环重新决策；正常转场途中它**不会**返回 TEAM。
+                target_states=(TowerState.BATTLE, TowerState.TEAM),
                 reason="识别到准备战斗，点击战斗开始",
             )
 
@@ -518,6 +626,12 @@ class TowerStateMachine:
             # （实测：状态还停在 BATTLE、画面已经是三选一的那一帧）。
             if self.is_in_state(screen, TowerState.CARD):
                 return None
+            # ⚠️ 失败结算页也可能在这里撞上（监督收手的那一帧画面已翻到 FAILED，
+            # 与上面的征服屏同一形态）：**立刻按「打不过」正常收工**，别掉进下面的
+            # `UnrecognizedScreen` 把「打不过」报成故障。
+            if self._locate(screen, "battle_failed") is not None:
+                self._required(screen, "battle_failed")
+                raise FloorTooHard("月塔这一层打不过（战斗 FAILED 结算页）")
             auto_off = self._locate(screen, "auto_off")
             if auto_off is not None:
                 if self.auto_click_attempted:
@@ -534,6 +648,15 @@ class TowerStateMachine:
             raise UnrecognizedScreen("月塔战斗画面未识别")
 
         if self.state == TowerState.CARD:
+            # ⚠️⚠️ **先看是不是「打不过」（FAILED 结算页）**（2026-11-01 接线）：
+            # 监督把「打完」的落点一律拨到 CARD（``_RESULT_STATE``），而失败的那
+            # 一层**没有三选一页**。不先判它就会撞上 `_required(card_decide)` 报
+            # 「认不出」——把「打不过」这个正常业务退出（退出码 2）报成故障。
+            # 2026-10-31 第 22 层实跑即此死法（`battle_unrecognized` 超时）。
+            # 顺序与 HOME 分支的「先判重置弹窗」同一纪律：孤儿页排在业务页前面。
+            if self._locate(screen, "battle_failed") is not None:
+                self._required(screen, "battle_failed")
+                raise FloorTooHard("月塔这一层打不过（战斗 FAILED 结算页）")
             self._required(screen, "card_decide")
             self._required(screen, "card_hint")
             if self.card_picked:
@@ -688,6 +811,15 @@ def detect_resume_point(
             None,
             observed_page,
         )
+    # ⚠️ **战斗失败结算页（FAILED）必须排在状态循环之前**：那一帧上状态机的
+    # 任何页面判据都不成立（`battle_scene_visible` False、三选一/结算锚点皆 miss），
+    # 状态循环永远轮不到它 —— 不在这里接，人停在 FAILED 屏启动月塔就会一路
+    # 「回大厅重导航 → 再进塔 → 重打同一层 → 再输一遍」。
+    # 落点拨到 CARD：那一支**先判 FAILED**（见 `next_action`），下一拍立刻按
+    # ``FloorTooHard`` 正常收工 —— 与 ``CONQUERED``「认出终点即收工」同一口径，
+    # 不给 ``entry``（失败页上没有任何可以接着导航的东西）。
+    if machine._locate(screen, "battle_failed") is not None:
+        return ResumePoint("战斗失败", TowerState.CARD, None)
     for state in _TOWER_RESUME_ORDER:
         if not machine.is_in_state(screen, state):
             continue

@@ -16,7 +16,12 @@ from auto_game_unified.core.battle_supervisor import (
     BattleSupervisor,
     valid_game_frame,
 )
-from auto_game_unified.core.matcher import Match, find_template, load_template
+from auto_game_unified.core.matcher import (
+    Match,
+    find_template,
+    load_template,
+    locate_with_fallback,
+)
 from auto_game_unified.core.recovery import RecoveryGate
 from auto_game_unified.core.runtime import ManualStop, Runtime
 from auto_game_unified.core.supervisor import (
@@ -247,6 +252,13 @@ OUTCOME_LABELS = {
 OUTCOME_FRAME_KEEP = 10
 
 
+# VS 段位确认页（PC 独有）的搜索区与阈值。
+# 区取底部居中（x[700,1480] y[930,1132]），与结算页右下角的「确认」(x[1500,1920]) 不重叠；
+# 只裁绿色「确认」按钮本身，段位（铜牌/银牌…）文字一律不进模板，保证普适。
+_VS_CONFIRM_REGION = (700, 930, 780, 202)
+_VS_CONFIRM_THRESHOLD = 0.90
+
+
 class TicketExhausted(RuntimeError):
     """The game presented its ticket-purchase popup instead of entering battle."""
 
@@ -291,6 +303,9 @@ class ArenaTemplates:
     result_rating: np.ndarray
     result_victory: np.ndarray
     result_defeat: np.ndarray
+    # VS 段位确认页（PC 独有）：点完「战斗开始」后、真正进战斗前的一道拦截页。
+    # 只裁绿色「确认」按钮本身（段位无关，满足"公共部分"要求）；模拟器无此页 → None。
+    vs_confirm: "np.ndarray | None" = None
     threshold: float = 0.98
     quick_battle: QuickBattleDetector | None = None
     evidence: EvidenceProfile | None = None
@@ -304,6 +319,9 @@ def build_templates(template_dir: Path) -> ArenaTemplates:
     图片本身（``templates/pc/*.png``），门槛只剩模拟器基线这一套。
     """
     evidence = build_arena_evidence(template_dir)
+    # ``template_dir`` 是 TemplateDir：``/ "arena_vs_confirm.png"`` 在 PC 下会自动挑
+    # ``pc/`` 同名图，模拟器回落共享目录（无此图）。
+    vs_confirm_path = template_dir / "arena_vs_confirm.png"
     return ArenaTemplates(
         rank_promotion_arrow=load_template(
             str(template_dir / "global" / "arena_rank_promotion_arrow.png")
@@ -325,6 +343,13 @@ def build_templates(template_dir: Path) -> ArenaTemplates:
         result_rating=load_template(str(template_dir / "arena_result_rating.png")),
         result_victory=load_template(str(template_dir / "arena_result_victory.png")),
         result_defeat=load_template(str(template_dir / "arena_result_defeat.png")),
+        # VS 段位确认页：PC 独有。``template_dir`` 已按平台挑图（pc/ 优先），
+        # 模拟器回落共享目录本就没有这张图 → 加载成 None，业务上整段跳过，零影响。
+        vs_confirm=(
+            load_template(str(vs_confirm_path))
+            if vs_confirm_path.is_file()
+            else None
+        ),
         quick_battle=load_simulator_quick_battle_detector(template_dir),
         threshold=0.98,
         evidence=evidence,
@@ -447,7 +472,11 @@ class ArenaStateMachine:
 
     def _locate(self, screen: np.ndarray, template_name: str) -> Optional[Match]:
         threshold = self._THRESHOLDS.get(template_name, self.templates.threshold)
-        return find_template(
+        # 与导航层、视觉诊断共用 ``locate_with_fallback``（同一把尺子）：
+        # 原样优先，原样不过阈才用低通补一次。2026-11-01：PC 上对手列表页
+        # 原样只有 0.841（阈 0.88）⇒ 导航认得出、路线认不出，就是因为少走这一步。
+        return locate_with_fallback(
+            template_name,
             screen,
             getattr(self.templates, template_name),
             threshold,
@@ -685,6 +714,22 @@ class ArenaStateMachine:
             auto_evidence += " 来源=右上角自动关闭图标"
         result = self._locate(screen, "confirm")
         no_ticket = self._locate(screen, "no_ticket")
+        # 「购买旗帜」弹窗的兜底指示：「取消」按钮是 UI 控件，与段位/报价无关，
+        # 在 PC 多版弹窗渲染下比标题文字更稳（两版「购买旗帜」字形渲染差，单一
+        # no_ticket 图覆盖不全）。标题或取消按钮任一命中即算弹窗在场。
+        purchase_cancel = self._locate(screen, "purchase_cancel")
+        ticket_popup_visible = no_ticket is not None or purchase_cancel is not None
+        # VS 段位确认页（PC 独有）：点完「战斗开始」后、真正进战斗前的一道拦截页。
+        # 与购买弹窗同类，都是"战前拦截"，交给监督点掉即可；模拟器无此模板 → 整段跳过。
+        vs_confirm = None
+        if self.templates.vs_confirm is not None:
+            vs_confirm = find_template(
+                screen,
+                self.templates.vs_confirm,
+                _VS_CONFIRM_THRESHOLD,
+                region=_VS_CONFIRM_REGION,
+                reference_size=self._REFERENCE_SIZE,
+            )
         progressing = (
             auto_state is AutoBattleState.AUTO
             and valid_game_frame(screen)
@@ -716,8 +761,10 @@ class ArenaStateMachine:
             ),
             business_progress=progressing,
             allowed_action=(
-                None
-                if no_ticket is not None
+                ("confirm-vs", vs_confirm.center)
+                if vs_confirm is not None
+                else None
+                if ticket_popup_visible
                 else ("switch-to-normal-battle", pre_battle.switch_point)
                 if pre_battle.mode is PreBattleMode.QUICK
                 and pre_battle.switch_point is not None
@@ -725,12 +772,20 @@ class ArenaStateMachine:
                 if pre_battle.mode is PreBattleMode.NORMAL and start is not None
                 else None
             ),
-            pre_battle_business_visible=no_ticket is not None,
+            pre_battle_business_visible=ticket_popup_visible,
             auto_evidence=auto_evidence,
         )
 
     def next_action(self, screen: np.ndarray) -> Action:
-        if self.state == ArenaState.BATTLE and self._visible(screen, "no_ticket"):
+        # 购买旗帜弹窗：旗帜耗尽时由游戏弹出，压在「队伍选择」(TEAM) 或战斗前 (BATTLE)
+        # 之上。必须优先于状态分派处理，否则会去点被弹窗遮住、变灰不可用的「战斗开始」
+        # 而卡死。弹窗在场 = 标题(no_ticket) 或「取消」按钮(purchase_cancel) 任一命中
+        # （PC 多版渲染下后者更稳）。能确认廉价（友情点/绿叶）报价才买；否则按资源耗尽
+        # 优雅停止（落到 _close_out 用「取消」关掉弹窗再回家），避免误扣钻石。
+        if self.state in (ArenaState.TEAM, ArenaState.BATTLE) and (
+            self._visible(screen, "no_ticket")
+            or self._visible(screen, "purchase_cancel")
+        ):
             offer = self._locate(screen, "friendship_ticket_offer")
             purchase = self._locate(screen, "ticket_purchase_button")
             if offer is None or purchase is None:
@@ -741,7 +796,7 @@ class ArenaStateMachine:
             return Action(
                 name="purchase-friendship-ticket",
                 point=purchase.center,
-                source_state=ArenaState.BATTLE,
+                source_state=self.state,
                 target_states=(ArenaState.TEAM,),
                 reason="资源=友情点 报价=100 获得旗帜=5 选择=左侧已确认 "
                 f"报价匹配={offer.score:.3f} 购买按钮匹配={purchase.score:.3f}",

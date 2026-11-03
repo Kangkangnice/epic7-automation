@@ -12,6 +12,8 @@ from datetime import datetime, timedelta
 import json
 
 import pytest
+
+pytest.importorskip("tkinter")
 import tkinter as tk
 
 from auto_game_unified.desktop import app as app_module

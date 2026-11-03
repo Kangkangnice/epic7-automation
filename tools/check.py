@@ -151,6 +151,9 @@ ROUTE_KEYWORDS = {
     # 支线故事：主模块 `side_story.py`，模板在 `templates/side_story/`。
     # `route_of()` 按**文件名**查表，所以这里一条就够；测试文件名也带 `side_story`。
     "side_story": "side_story",
+    # 活动剧情：主模块 `activity_story.py` + 模板 `templates/activity_story/`
+    # + 测试 `test_epic7_activity_story.py`，文件名都带这个词 ⇒ 一条就够。
+    "activity_story": "activity_story",
     "hero": "hero",
     "hero_synthesis": "hero",
     "shop_refresh": "shop_refresh",

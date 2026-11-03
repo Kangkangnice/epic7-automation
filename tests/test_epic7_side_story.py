@@ -26,13 +26,12 @@ from auto_game_unified.core.matcher import (
     find_best_template,
     find_template,
 )
-from auto_game_unified.core.runtime import StaminaExhausted
 from auto_game_unified.games.epic7.modes import MODE_SPECS
 from auto_game_unified.games.epic7.side_story import (
     _ARROW_MISS_LIMIT,
     _ARROW_PIXELS_MIN,
+    _SEG_BOSS,
     _SIDE_MATCH_MODES,
-    SideStoryCleared,
     SideStoryRunner,
     SideStoryStateMachine,
     build_side_story_machine,
@@ -643,17 +642,27 @@ class SideStoryTerminalTests(unittest.TestCase):
 
         self.assertEqual(0, machine.completed_cycles)
 
-    def test_consecutive_arrowless_frames_raise_the_cleared_conclusion(self):
+    def test_consecutive_arrowless_frames_chain_into_boss_segment(self):
+        """① 打完（连续无箭头）⇒ **不再收工**（2026-11-01 语义更改）：点「离开」接力去 ②。
+
+        旧断言是「抛 SideStoryCleared 收工」；连打链路下（用户明确要求 ①→②→③
+        一条龙）改为点「离开」回地图、段落切到 `_SEG_BOSS`。新的收工点只剩
+        「最后一个据点点完离开回地图」与「③ 段次数用尽」。
+        """
+
         machine = SideStoryStateMachine(templates())
         frame = self.terminal_frame()
 
-        with self.assertRaises(SideStoryCleared) as raised:
-            for _ in range(_ARROW_MISS_LIMIT + 1):
-                machine.next_action(frame)
+        # 第 `_ARROW_MISS_LIMIT` 次调用产出「离开」；之后的帧进入「等回地图」返回 None
+        # （与旧语义「抛异常终止循环」不同，现在是「动作发出后原地等待」）。
+        action = None
+        for _ in range(_ARROW_MISS_LIMIT):
+            action = machine.next_action(frame)
 
-        # 与月塔打满同族：退出码 2「干完了但没得干了」，基类顺手带回首页。
-        self.assertIsInstance(raised.exception, StaminaExhausted)
-        self.assertIn("蓝色三箭头", str(raised.exception))
+        self.assertIsNotNone(action)
+        self.assertEqual("scene_leave", action.name)
+        self.assertEqual(_SEG_BOSS, machine._segment)
+        self.assertTrue(machine._leaving)
 
     def test_the_arrowless_scene_page_is_not_reported_as_an_unknown_screen(self):
         """这一页是**认出过的**场景页 ⇒ 不能掉进「认不出画面」那条路。

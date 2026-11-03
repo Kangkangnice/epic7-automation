@@ -39,10 +39,12 @@ from auto_game_unified.games.epic7.modes import (
 from auto_game_unified.games.epic7.navigation import Epic7Navigator, build_navigation_templates
 from auto_game_unified.games.epic7.global_popups import (
     Epic7GlobalPopupGuard,
+    load_account_rank_up_templates,
     load_arena_rank_reward_templates,
     load_battle_record_templates,
     load_friend_request_templates,
     load_friendship_points_templates,
+    load_gift_claim_templates,
     load_gift_support_templates,
     load_intimacy_level_up_templates,
     load_knights_growth_rank_templates,
@@ -50,6 +52,8 @@ from auto_game_unified.games.epic7.global_popups import (
     load_knights_weekly_reward_templates,
     load_network_reconnect_templates,
     load_pet_gift_templates,
+    load_reward_notice_templates,
+    load_side_story_notice_templates,
     load_web_network_error_templates,
     load_worldboss_support_reward_templates,
 )
@@ -144,7 +148,13 @@ def _build_runtime(
     runtime = Runtime(
         capture=game_window.capture,
         click=game_window.click,
-        swipe=(game_window.swipe if window_backend == "emulator" else None),
+        # 滑动：模拟器走 adb 注入；PC 端 2026-11-02 起也实现了（SendInput 拖拽），
+        # 刷书签 / 骑士团捐赠 / 迷宫强化石 / 幸存者 四条路线因此才可能移植。
+        swipe=(
+            game_window.swipe
+            if getattr(game_window, "swipe", None) is not None
+            else None
+        ),
         wake=game_window.wake,
         back=game_window.back,
         dry_run=dry_run,
@@ -445,6 +455,22 @@ def run_mode(
                 ),
                 friend_request_templates=load_friend_request_templates(
                     template_root / "story"
+                ),
+                # 「支线故事通知」（新支线解锁时弹一次，盖在结算页上 ⇒ 等待结算 45 秒无进展）。
+                side_story_notice_templates=load_side_story_notice_templates(
+                    template_root / "global"
+                ),
+                # 「获得奖励」通知（星星/任务奖励发放时弹一次，盖住关卡入口）。
+                reward_notice_templates=load_reward_notice_templates(
+                    template_root / "global"
+                ),
+                # 「领取支援物品」（骑士团支援资源领取后弹一次，盖住骑士团主页）。
+                gift_claim_templates=load_gift_claim_templates(
+                    template_root / "global"
+                ),
+                # 「账号 Rank 提升」（账号升级时弹一次，盖住战斗画面与回家路径）。
+                account_rank_up_templates=load_account_rank_up_templates(
+                    template_root / "global"
                 ),
                 # 骑士团签到弹窗（每天第一次进骑士团出现），模板放在 navigation 下，
                 # 与骑士团/世界首领战那两个导航锚点同目录。

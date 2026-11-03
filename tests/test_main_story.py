@@ -83,6 +83,14 @@ class MainStoryTests(unittest.TestCase):
                 battle_record_templates = object()
                 # 「骑士团成长Rank提升」弹窗（2026-10-30 接，第 13 个）。
                 knights_growth_rank_templates = object()
+                # 「支线故事通知」弹窗（2026-11-01 接，第 14 个）。
+                side_story_notice_templates = object()
+                # 「获得奖励」通知（2026-11-01 接，第 15 个）。
+                reward_notice_templates = object()
+                # 「领取支援物品」（2026-11-02 接，第 16 类）。
+                gift_claim_templates = object()
+                # 「账号 Rank 提升」（2026-11-02 接，第 17 类）。
+                account_rank_up_templates = object()
                 # ⚠️ 本文件三处 B023 抑制标记都是误报：events 虽然在外层循环里被重新赋值，
                 # 但这些 side_effect / on_call 都是**当轮同步调用**的（mock 在被调用的那一刻
                 # 就执行它），取不到下一轮的值。ruff 只看语法，看不出调用时机。
@@ -162,10 +170,26 @@ class MainStoryTests(unittest.TestCase):
                         return_value=battle_record_templates,
                     ),
                     # 「骑士团成长Rank提升」弹窗：只在骑士团成长等级提升时出现。
-                    patch.object(
+                    # ⚠️ 这里用 patch.multiple 把三个 loader 合成**一个**上下文管理器：
+                    # CPython 对静态嵌套块数有上限（20），这个 with 里已经排了 16 个
+                    # patch，再加两个就会 SyntaxError: too many statically nested blocks。
+                    patch.multiple(
                         main_module,
-                        "load_knights_growth_rank_templates",
-                        return_value=knights_growth_rank_templates,
+                        load_knights_growth_rank_templates=unittest.mock.MagicMock(
+                            return_value=knights_growth_rank_templates
+                        ),
+                        load_side_story_notice_templates=unittest.mock.MagicMock(
+                            return_value=side_story_notice_templates
+                        ),
+                        load_reward_notice_templates=unittest.mock.MagicMock(
+                            return_value=reward_notice_templates
+                        ),
+                        load_gift_claim_templates=unittest.mock.MagicMock(
+                            return_value=gift_claim_templates
+                        ),
+                        load_account_rank_up_templates=unittest.mock.MagicMock(
+                            return_value=account_rank_up_templates
+                        ),
                     ),
                     patch.object(main_module, "Epic7Navigator") as navigator_type,
                     patch.object(main_module, "HomeReturn") as home_return_type,
@@ -213,6 +237,10 @@ class MainStoryTests(unittest.TestCase):
                     arena_rank_reward_templates=arena_rank_reward_templates,
                     battle_record_templates=battle_record_templates,
                     knights_growth_rank_templates=knights_growth_rank_templates,
+                    side_story_notice_templates=side_story_notice_templates,
+                    reward_notice_templates=reward_notice_templates,
+                    gift_claim_templates=gift_claim_templates,
+                    account_rank_up_templates=account_rank_up_templates,
                 )
                 self.assertEqual(["guard", "navigation"], events)
 

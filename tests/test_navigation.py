@@ -5,8 +5,10 @@ import unittest
 import cv2
 import numpy as np
 
+from auto_game_unified.core import matcher
 from auto_game_unified.core.matcher import find_best_template, find_template
 from auto_game_unified.core.runtime import Runtime
+from auto_game_unified.games.epic7.evidence.arena import build_arena_evidence
 from auto_game_unified.games.epic7 import story as story_module
 from auto_game_unified.games.epic7.activity_column import ACTIVITY_SCROLL_STEP
 from auto_game_unified.games.epic7.navigation import (
@@ -2273,6 +2275,54 @@ class NavigationTests(unittest.TestCase):
         navigator.navigate("story", lobby_screen=fixture("lobby_animated_updated"))
 
         self.assertEqual(1, len(clicks))
+
+    def test_the_smooth_fallback_stays_an_audited_allowlist(self):
+        """低通兜底**只能按名单开**，且名单里的锚点必须事先登记过搜索区域。
+
+        名单写死在这条测试里 ⇒ 以后想给别的锚点开，必须回来改这里，也就逼着自己
+        先跑一遍全库扫描证明「不漏真页、不放冒牌」（2026-11-01：``lobby_battle``
+        就是因为「退出确认弹窗」被抬到 0.843 而被拒之门外的）。
+        """
+        self.assertEqual(
+            frozenset(
+                {
+                    "lobby_arena",
+                    "arena_ready",
+                    "list_ready",
+                    "challenge",
+                    "battle_start",
+                    "confirm",
+                }
+            ),
+            matcher.SMOOTH_FALLBACK_ANCHORS,
+        )
+        for anchor in matcher.SMOOTH_FALLBACK_ANCHORS:
+            if anchor in Epic7Navigator._REGIONS:
+                continue
+            # 其余名字属于路线层的判据（与导航共用同一张图、同一套名单），
+            # 必须能在竞技场证据里找得到，否则就是写错了名字。
+            self.assertIn(
+                anchor,
+                build_arena_evidence(TEMPLATES).atoms,
+                f"名单里的 {anchor} 在导航与竞技场证据里都不存在",
+            )
+
+    def test_the_smooth_fallback_never_rescues_a_page_where_the_button_is_absent(self):
+        """兜底是「换把尺子」，不是「放宽判定」：按钮不在的页面照样认不出来。"""
+        navigator = self.navigator([])
+
+        self.assertIsNotNone(
+            navigator._locate(fixture("lobby"), "lobby_arena"),
+            "模拟器大厅：原样就认得出，兜底不该改变这个结论",
+        )
+        self.assertIsNotNone(
+            navigator._locate(fixture("arena_list"), "arena_ready"),
+            "模拟器对手列表：原样就认得出，兜底不该改变这个结论",
+        )
+        self.assertIsNone(
+            navigator._locate(fixture("arena_list"), "lobby_arena"),
+            "大厅那颗按钮不在对手列表页上 —— 兜底把它救回来就是放进冒牌货",
+        )
 
     def test_arena_navigation_uses_mode_selection_page(self):
         clicks: list[tuple[int, int]] = []

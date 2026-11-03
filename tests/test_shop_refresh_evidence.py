@@ -7,6 +7,7 @@ from auto_game_unified.games.epic7.evidence.common import validate_profile
 from auto_game_unified.games.epic7.evidence.shop_refresh import (
     LIST_FINGERPRINT_CHANGE_BITS,
     LIVE_TRANSACTIONS_VERIFIED,
+    PURCHASE_PRICES,
     ShopItemKind,
     ShopPage,
     build_shop_refresh_evidence,
@@ -217,6 +218,47 @@ def test_current_client_friendship_row_is_actionable():
     assert not rows[0].sold_out
     # 非目标商品不该被吸进来（这一帧上除了友情点数，其余都不是书签）
     assert len(result.rows) == 1
+
+
+def test_current_client_friendship_popup_proves_price_18000():
+    """2026-10-31 真机事故帧：友情点数购买确认弹窗必须能证明单价 18,000。
+
+    事故经过：当天先给秘密商店和迷宫加了「友情点数」这个**商品**候选，但漏了
+    **价格条**那一维 ⇒ 弹窗上商品认对了（kind=friendship）、价格取不到
+    （price=None）⇒ 与待买记录的 18,000 对不上 ⇒ 判 UNKNOWN 并拒绝购买。
+    （程序拒绝是对的，真实花钱的地方必须 fail-closed。）
+
+    本用例钉住：认出友情图标之后，价格条也要对得上，且数值来自
+    ``PURCHASE_PRICES`` 这个**单一来源**（与 runner 记账用同一个常量）。
+    """
+    observer = build_shop_refresh_observer(TEMPLATES)
+
+    result = observer.observe(
+        _screen("friendship_purchase_confirm_live_20261031")
+    )
+
+    assert result.page is ShopPage.PURCHASE_CONFIRM
+    assert result.purchase_kind is ShopItemKind.FRIENDSHIP
+    assert result.purchase_price == PURCHASE_PRICES[ShopItemKind.FRIENDSHIP]
+    assert result.purchase_price == 18_000
+    assert result.confirm_point is not None
+    assert result.cancel_point is not None
+
+
+def test_other_purchase_popup_is_not_priced_as_friendship():
+    """别的商品的价格条跟友情点数很像（0.9519，单独看会过阈）⇒ 不许给它定成 18,000。
+
+    两者共用同一个金币图标，差别只在数字位数。所以价格条**不能单独当判据** ——
+    必须商品图标（``_popup_kind``）先认出来，价格条只作第二道确认。
+    这一帧上三种书签图标都不过阈 ⇒ 必须判 ``OTHER`` 且 ``price is None``。
+    """
+    observer = build_shop_refresh_observer(TEMPLATES)
+
+    result = observer.observe(_screen("purchase_confirm_other_live"))
+
+    assert result.page is ShopPage.PURCHASE_CONFIRM
+    assert result.purchase_kind is ShopItemKind.OTHER
+    assert result.purchase_price is None
 
 
 def test_current_client_covenant_popup_proves_price_184000():
