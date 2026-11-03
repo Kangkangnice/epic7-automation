@@ -607,3 +607,32 @@ ESC 无效 → `返回首页失败` → 每日任务「已中止：竞技场 之
 `result_clear` 在 PC 上尚无现场帧可验（两次实跑都死在三选一），下次跑通才能确认。
 间接证据偏乐观：主线的同款「CLEAR」大字母在 PC 上**没有覆盖图也能过**（`templates/story/pc/` 只有 `complete` / `friend_request_title` / `stamina_popup` 三张），
 说明 PC 压得狠的是**中文小字**，大号拉丁字母不受影响。
+
+## UI 尺寸漂移：这一条路线最先踩到（2026-11-04）
+
+**症状**：`动作[select-team]未稳定进入[准备战斗]`。诊断帧看着明明就是准备战斗页。
+
+**机理**：PC 客户端两次启动之间会把同一套 UI 画小一点。实测「战斗开始」按钮
+**476×69 → 461×67**（×0.9685）。`TM_CCOEFF_NORMED` 不归一化尺度 ⇒
+`team_battle_start` 在 08:06 帧是 1.0000、在 00:05 帧只有 **0.8643**（阈 0.88）。
+
+**为什么补图救不了**：同一颗 `card_hint` 在 23:44 帧要 ×1.00（0.9998）、
+在 00:12 帧要 ×0.98（0.9404）—— **没有任何单一尺寸能同时服务两档**
+（×0.99 是 0.8576 / 0.7738，两边都不过阈）。
+
+**修法**：`core/matcher.py` 的 `SCALE_FALLBACK_ANCHORS`（模板缩放兜底），
+月塔登记了 6 颗：`team_battle_start` / `prepare_title` / `card_hint` / `card_decide` /
+`battle_failed` / `conquer_title` / `season_tower_title`（见 §2.4b 的
+`docs/PC_TEMPLATE_MIGRATION.md`）。
+
+**已实测的四帧**（`tests/fixtures/epic7_tower_pc/` 里都有）：
+
+| 帧 | 页面 | 关键锚点 | 原样 | 兜底后 |
+| --- | --- | --- | --- | --- |
+| `prepare_pc_live_20261103`（08:06） | `tower.team` | `team_battle_start` | 0.9601 | —（过阈，不扫） |
+| `prepare_pc_live_small_20261104`（00:05） | `tower.team` | `team_battle_start` | 0.9373 | —（过阈，不扫） |
+| `card_pc_live_20261103`（23:44） | `tower.card` | `card_hint` | 0.9998 | —（过阈，不扫） |
+| `card_pc_live_small_20261104`（00:12） | `tower.card` | `card_hint` | **0.6448** | ×0.98 **0.9404** |
+
+⚠️ 同页 `prepare_title` / `team_battle_start` 现在两档都能过阈值，但余量只有 0.06~0.08。
+只要客户端再漂 1%，靠的就是兜底而不是余量 —— 别因为「现在过了」把它们从名单里删掉。

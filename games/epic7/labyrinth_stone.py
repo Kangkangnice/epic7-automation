@@ -105,8 +105,8 @@ from auto_game_unified.core.matcher import (
     Match,
     find_all_templates,
     find_best_template,
-    find_template,
     load_template,
+    locate_with_fallback,
 )
 from auto_game_unified.core.recovery import RecoveryGate
 from auto_game_unified.core.runtime import Runtime
@@ -448,12 +448,16 @@ class LabyrinthStoneStateMachine:
 
     def _locate(self, screen: np.ndarray, name: str) -> Optional[Match]:
         atom = self.templates.evidence.atom(name)
-        return find_template(
+        # 走 ``locate_with_fallback``（与导航层、视觉诊断**同一把尺子**）：原样先比，
+        # 不过阈才按 ``SMOOTH_FALLBACK_ANCHORS`` / ``SCALE_FALLBACK_ANCHORS`` 补一次。
+        return locate_with_fallback(
+            name,
             screen,
             getattr(self.templates, name),
             atom.threshold,
             region=atom.region,
             reference_size=atom.reference_size,
+            mode=atom.match_mode,
         )
 
     def _best(self, screen: np.ndarray, name: str) -> Optional[Match]:

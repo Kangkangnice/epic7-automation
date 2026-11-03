@@ -4,12 +4,28 @@ from pathlib import Path
 import cv2
 
 from auto_game_unified.core.evidence_diagnostics import inspect_profile
-from auto_game_unified.core.matcher import find_best_template, load_template
+from auto_game_unified.core.matcher import (
+    SCALE_FALLBACK_ANCHORS,
+    find_best_template,
+    find_template,
+    load_template,
+    locate_with_fallback,
+)
 from auto_game_unified.games.epic7.evidence.common import (
     EvidenceState,
     validate_profile,
 )
+from auto_game_unified.games.epic7.evidence.arena import build_arena_evidence
+from auto_game_unified.games.epic7.evidence.labyrinth_stone import (
+    build_labyrinth_stone_evidence,
+)
+from auto_game_unified.games.epic7.evidence.moonlight_theater import (
+    build_moonlight_evidence,
+)
+from auto_game_unified.games.epic7.evidence.story import build_story_evidence
 from auto_game_unified.games.epic7.evidence.tower import REGIONS, build_tower_evidence
+from auto_game_unified.games.epic7.evidence.world_boss import build_world_boss_evidence
+from auto_game_unified.games.epic7.navigation import Epic7Navigator
 from auto_game_unified.games.epic7.template_paths import resolve_template_dir
 
 
@@ -165,3 +181,112 @@ def test_the_shared_templates_cannot_recognize_the_pc_card_page():
             page for page, state in result.pages.items() if state is EvidenceState.SAFE
         ]
         assert safe == [], f"{name} 用共享图仍然判出了 {safe}"
+
+
+# ── UI 尺寸漂移（2026-11-04 彻夜实跑踩到）────────────────────────────────────
+#
+# 同一个 PC 客户端，**两次启动之间**会把自己那套 UI 画得不一样大：
+# `战斗开始` 实测 476x69 → 461x67（×0.9685）。`TM_CCOEFF_NORMED` 只归一化亮度、
+# **不归一化尺度**，2% 的偏差就足以把 1.0000 打到 0.6448。
+#
+# 所以 ``core.matcher.SCALE_FALLBACK_ANCHORS`` 里的锚点在「原样不过阈」时会按
+# ``SCALE_FALLBACK_STEPS`` 扫一遍模板尺寸。下面三条把这件事钉死：
+#   1. 名单里的名字必须真的存在于月塔证据里（写错名字 = 兜底悄悄不生效）；
+#   2. 小尺寸那档 PC 帧必须认得出来，且**原样口径确实认不出**（否则兜底是摆设）；
+#   3. 兜底是「换把尺子」而不是「放宽判定」：不该命中的页面照样不许命中。
+SCALE_PC_FRAMES = (
+    "card_pc_live_small_20261104",
+    "prepare_pc_live_20261103",
+    "prepare_pc_live_small_20261104",
+)
+
+
+def test_the_scale_whitelist_only_names_anchors_that_exist():
+    """名单里每个名字都得在**某一条**路线的证据画像里找得到。
+
+    ⚠️ 名字是**锚点名**不是模板名，而且兜底按名字开关 —— 名字写错一个字母，
+    兜底就静默不生效，症状是「明明加过白名单还是认不出」，极难查。
+    名单是**跨路线共用**的（`auto_off` 就在月塔 / 竞技场 / 主线三处出现），
+    所以这里逐个路线收集再比，不能只看月塔。
+    """
+    known = set(Epic7Navigator._REGIONS)
+    for builder in (
+        build_tower_evidence,
+        build_arena_evidence,
+        build_story_evidence,
+        build_labyrinth_stone_evidence,
+        build_moonlight_evidence,
+        build_world_boss_evidence,
+    ):
+        known |= set(builder(TEMPLATES).atoms)
+    for anchor in SCALE_FALLBACK_ANCHORS:
+        assert anchor in known, f"缩放兜底名单里的 {anchor} 在任何路线证据里都不存在"
+
+
+def test_the_small_scale_pc_card_frame_needs_the_sweep_and_gets_it():
+    """00:12 那帧：原样 0.6448 认不出，扫到 ×0.98 是 0.9404。
+
+    这是「同一页、两档尺寸」最硬的一组证据 —— 23:44 那帧在 ×1.00 才是 0.9998、
+    在 ×0.98 只有 0.6661。**没有任何单一缩放能同时服务两档**，只能逐帧试。
+    """
+    root = resolve_template_dir(TEMPLATES.parent, "pc")
+    profile = build_tower_evidence(root / "tower")
+    frame = _pc_frame("card_pc_live_small_20261104")
+
+    raw = find_best_template(
+        frame,
+        load_template(str(TEMPLATES / "pc" / "card_hint.png")),
+        region=REGIONS["card_hint"],
+        reference_size=(1982, 1132),
+    )
+    assert 0.60 < raw.score < 0.70, f"原样口径的分数变了：{raw.score:.4f}"
+
+    result = inspect_profile(frame, profile, root / "tower")
+    safe = sorted(
+        page for page, state in result.pages.items() if state is EvidenceState.SAFE
+    )
+    assert safe == ["tower.card"], f"小尺寸卡页判成了 {safe}"
+    assert result.atoms["card_hint"].score >= 0.94
+
+
+def test_both_ui_scales_of_the_prepare_page_are_recognized():
+    """准备战斗页两档尺寸（11-03 08:06 / 11-04 00:05）都要认出且**只**认出这一页。
+
+    这两帧是同一条路线、同一台机器、同一个客户端，UI 却画得不一样大 —— 不是
+    「用户换了分辨率」，所以不能靠「让用户把客户端调回来」来收场。
+    """
+    root = resolve_template_dir(TEMPLATES.parent, "pc")
+    profile = build_tower_evidence(root / "tower")
+
+    for name in ("prepare_pc_live_20261103", "prepare_pc_live_small_20261104"):
+        result = inspect_profile(_pc_frame(name), profile, root / "tower")
+        safe = sorted(
+            page for page, state in result.pages.items() if state is EvidenceState.SAFE
+        )
+        assert safe == ["tower.team"], f"{name} 判成了 {safe}"
+
+
+def test_the_scale_sweep_is_off_for_anchors_that_are_not_on_the_whitelist():
+    """没登记在册的锚点：``locate_with_fallback`` 必须与 ``find_template`` 等价。
+
+    这条守的是「模拟器零改动」：兜底只对名单里那几颗生效，别的判据一个像素都别动。
+    """
+    assert "result_clear" not in SCALE_FALLBACK_ANCHORS
+    frame = _pc_frame("card_pc_live_small_20261104")
+    template = load_template(str(TEMPLATES / "result_clear.png"))
+    plain = find_template(
+        frame,
+        template,
+        0.88,
+        region=REGIONS["result_clear"],
+        reference_size=(1982, 1132),
+    )
+    wrapped = locate_with_fallback(
+        "result_clear",
+        frame,
+        template,
+        0.88,
+        region=REGIONS["result_clear"],
+        reference_size=(1982, 1132),
+    )
+    assert plain is None and wrapped is None
