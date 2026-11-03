@@ -168,7 +168,11 @@ from typing import Callable, Optional
 import numpy as np
 
 from auto_game_unified.core.battle_supervisor import valid_game_frame
-from auto_game_unified.core.matcher import Match, find_template, load_template
+from auto_game_unified.core.matcher import (
+    Match,
+    load_template,
+    locate_with_fallback,
+)
 from auto_game_unified.core.runtime import Runtime
 from auto_game_unified.core.supervisor import StableObservation
 from auto_game_unified.games.epic7.evidence.labyrinth_stone import (
@@ -824,7 +828,15 @@ def _at_lobby(screen: np.ndarray, templates: HomeReturnTemplates) -> bool:
 def _locate(
     screen: np.ndarray, template: np.ndarray, name: str
 ) -> Optional[Match]:
-    return find_template(
+    # 走 ``locate_with_fallback``（与导航层、视觉诊断**同一把尺子**）：原样先比，
+    # 不过阈才按 ``SMOOTH_FALLBACK_ANCHORS`` / ``SCALE_FALLBACK_ANCHORS`` 补一次。
+    # 名字不在任何名单里时，这里的判定与从前逐字节一致。
+    #
+    # ⚠️ 2026-11-04 00:09 那场事故就是在这里漏的：`lobby_story` 在 PC 上只有
+    # 0.7937（阈 0.80），直连 `find_template` 时兜底对它不生效 ⇒ 认不出「已经到家」
+    # ⇒ 点四格 → 判快捷菜单 → 找不到酒馆 → ESC → 又 `unknown`，死循环 120 秒。
+    return locate_with_fallback(
+        name,
         screen,
         template,
         _THRESHOLDS[name],

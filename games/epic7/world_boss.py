@@ -191,6 +191,7 @@ from auto_game_unified.core.matcher import (
     find_best_template,
     find_template,
     load_template,
+    locate_with_fallback,
 )
 from auto_game_unified.core.recovery import RecoveryGate
 from auto_game_unified.core.runtime import (
@@ -776,7 +777,11 @@ class WorldBossStateMachine:
         template = getattr(self.templates, name, None)
         if template is None:
             return None
-        return find_template(
+        # 走 ``locate_with_fallback``（与导航层、视觉诊断**同一把尺子**）：原样先比，
+        # 不过阈才按 ``SMOOTH_FALLBACK_ANCHORS`` / ``SCALE_FALLBACK_ANCHORS`` 补一次。
+        # 名字不在任何名单里时，这里的判定与从前逐字节一致。
+        return locate_with_fallback(
+            name,
             screen,
             template,
             self._THRESHOLD,

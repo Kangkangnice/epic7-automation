@@ -51,6 +51,10 @@ class AtomObservation:
     observed: bool
     score: float | None
     center: tuple[int, int] | None
+    # 命中所用的模板缩放比例（1.0 = 原尺寸；见 `core.matcher.SCALE_FALLBACK_ANCHORS`）。
+    # ⚠️ 必须记进诊断包：只报 ``score`` 的话，「0.94 分」到底是「画面变了」
+    # 还是「换了一把尺子」事后完全分不出来 —— 而这两种情况要做的处置恰好相反。
+    scale: float | None = None
 
 
 @dataclass(frozen=True)

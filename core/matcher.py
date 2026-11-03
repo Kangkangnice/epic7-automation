@@ -12,6 +12,10 @@ import numpy as np
 class Match:
     center: tuple[int, int]
     score: float
+    # 命中所用的模板缩放比例（1.0 = 原尺寸）。诊断要能说清「是在哪一档尺子上
+    # 认出来的」—— 只报分数的话，「分数=0.94」到底是画面变了还是尺子换了，
+    # 事后完全看不出来。
+    scale: float = 1.0
 
 
 # ── 匹配模式：把「控件」从「背景」里抠出来 ──────────────────────────────────────
@@ -122,6 +126,84 @@ SMOOTH_FALLBACK_ANCHORS: frozenset[str] = frozenset(
 )
 
 
+# ── 「同一块 UI 画小了一点点」的兜底：模板缩放扫描 ─────────────────────────────
+#
+# 与上面的低通口径**是两回事**，别混：低通修的是「同一尺寸、像素刻画不同」；
+# 这里修的是「整块 UI 的物理尺寸就不一样」。
+#
+# 2026-11-04 彻夜实跑踩到：PC 客户端**两次启动之间**，同一颗按钮的像素尺寸会变
+# （`战斗开始` 476x69 → 461x67，即 ×0.9685）。`TM_CCOEFF_NORMED` 归一化的是
+# 亮度均值，**不归一化尺度** —— 差 2% 就能把 1.0000 打到 0.6448。
+# 实测（模板按下面每一步重采样，同一帧同一区域）：
+#
+#   锚点                真值档  ×1.00    ×0.99    ×0.98    备注
+#   ----------------    ------   ------   ------   ------
+#   ``card_hint``       1.00     0.9998   0.8576   0.6661   23:44 帧
+#   ``card_hint``       0.98     0.6448   0.7738   0.9404   00:12 帧 ← 同一锚点两档真值
+#   ``card_decide``     1.00     1.0000   0.9618   0.9391
+#   ``card_decide``     0.98     0.8974   0.9563   0.9808
+#
+# ⇒ **没有任何单一缩放能同时服务两档**（`card_hint` 在 0.99 上是 0.8576/0.7738，
+# 两边都不过阈）。所以只能「原样先比，不过阈才扫一遍尺寸，取最高分」。
+#
+# ⚠️ 与低通一样，扫尺寸也会抬高**冒牌货**的分数（多试几个假设，总有蒙对一点的）。
+# 因此名单**必须逐锚点登记**，加名字前必须先用全库夹具证明
+# 「漏掉真页 = 0、放进冒牌 = 0」，并把护栏测试（``tests/test_navigation.py``）
+# 里的名单一起改掉。
+SCALE_FALLBACK_ANCHORS: frozenset[str] = frozenset(
+    {
+        # ── 月塔 ────────────────────────────────────────────────────────────
+        # 「准备战斗」页。2026-11-04 00:05 实跑卡在这两颗上。
+        "team_battle_start",
+        "prepare_title",
+        # 「三选一装置」页。2026-11-03 23:44 / 11-04 00:12 两档真值。
+        "card_hint",
+        "card_decide",
+        # 战斗失败页 / 打满 25 层的终点屏 / 赛季入口标题：三颗都是纯文字模板，
+        # 平台半宽只有 ±0.00~0.01（`tools/report_scale_margin.py`）。
+        "battle_failed",
+        "conquer_title",
+        "season_tower_title",
+        # ── 主线 ────────────────────────────────────────────────────────────
+        "stamina_material",  # ±0.01
+        "next_stage",        # ±0.02
+        # ── 迷宫 ────────────────────────────────────────────────────────────
+        "battle_turn_bar",     # ±0.01
+        "lobby_episode_menu",  # ±0.02
+        # ── 月光剧场 ────────────────────────────────────────────────────────
+        "battle_clear",        # ±0.01
+        "entry_card",          # ±0.02
+        "reward_popup_close",  # ±0.02
+        # ── 世界首领战 ──────────────────────────────────────────────────────
+        "result_title",       # ±0.02
+        "team_select_title",  # ±0.02
+        "worldboss_title",    # ±0.02
+        # ── 跨路线共用 ──────────────────────────────────────────────────────
+        # 右上角「自动战斗已关闭」：月塔 / 竞技场 / 主线三处共用同一张图、同一套
+        # 判据。它只有 0.9214 对阈 0.85（余量 0.07），平台半宽 ±0.02 —— 三处里
+        # 任何一处漂移都会让「自动战斗没开」判不出来，进而**整场战斗不点自动**。
+        "auto_off",
+        # ── 导航层：大厅主锚点（「Episode / 支线故事」那条横幅）──────────────
+        #
+        # ⚠️ 这颗不是「可选优化」，它是 **2026-11-04 00:09 那场 120 秒超时的正主**。
+        # 真实事故链：PC 上这颗只有 **0.7937**（阈 0.80，差 **0.0063**）⇒
+        # `navigator.observe()` 报 `unknown` 而不是 `lobby` ⇒ 回家流程认不出到家了
+        # ⇒ 去点右上蓝四格 ⇒ 菜单打开后判 `quick_menu`、但找不到酒馆 ⇒ 按 ESC 关菜单
+        # ⇒ 又是 `unknown` ⇒ 再点四格 …… 死循环烧完 120 秒预算，报
+        # 「返回首页失败」，**整条每日任务从这里中止，后面 8 条路线一条都没跑**。
+        # 扫尺寸后同一帧 ×0.97 = **0.8718**，`observe` 直接报 `lobby`。
+        # 全库审计（335 张夹具）：原样过阈 13 张，被扫尺寸抬过阈 **0 张**。
+        "lobby_story",
+    }
+)
+# 扫描档位（**不含 1.00** —— 原尺寸由常规路径先比掉了）。
+# 步长取 0.01 而不是 0.02：上面那张表已经证明 0.02 的偏差足以把分数打到阈下，
+# 粗一档就等于扫了个寂寞。范围取 **±3%**：实测漂移最大的一处是 476x69 → 461x67，
+# 即 ×0.9685（−3.15%）—— 只扫 ±2% 会在最坏那一档上刚好扫不到。
+SCALE_FALLBACK_STEPS: tuple[float, ...] = (0.97, 0.98, 0.99, 1.01, 1.02, 1.03)
+
+
+
 def best_match_with_fallback(
     name: str,
     screen: np.ndarray,
@@ -129,31 +211,53 @@ def best_match_with_fallback(
     threshold: float,
     region: tuple[int, int, int, int] | None = None,
     reference_size: tuple[int, int] | None = None,
+    *,
+    mode: str = MATCH_MODE_RAW,
 ) -> Optional[Match]:
     """按上面的口径取**最高分**（不按阈值过滤）—— 诊断要看真实分数时用这个。
 
     ⚠️ 诊断包里若把「没过阈」写成 ``score=None``，会被误读成「模板文件不见了」
     （本项目里 ``score=None`` 就是这个含义），所以诊断必须拿得到分数。
+
+    ``mode`` 是**首选**口径（默认原样）。兜底只在这条首选口径不过阈时才追加：
+    先按 `SMOOTH_FALLBACK_ANCHORS` 换口径，再按 `SCALE_FALLBACK_ANCHORS` 扫尺寸。
+    两个名单都不含的锚点 ⇒ 这里退化成「一次原样匹配」，与从前逐字节一致。
     """
-    match = find_best_template(
+    best = find_best_template(
         screen,
         template,
         region=region,
         reference_size=reference_size,
+        mode=mode,
     )
-    if name in SMOOTH_FALLBACK_ANCHORS and (
-        match is None or match.score < threshold
-    ):
-        smooth = find_best_template(
+    # 过了阈就收工：热路径（绝大多数帧）仍然只有一次匹配，兜底不付钱。
+    if best is not None and best.score >= threshold:
+        return best
+
+    smooth = name in SMOOTH_FALLBACK_ANCHORS
+    scales = SCALE_FALLBACK_STEPS if name in SCALE_FALLBACK_ANCHORS else ()
+    retries: list[tuple[str, float]] = []
+    if smooth:
+        retries.append((MATCH_MODE_SMOOTH, 1.0))
+    if scales:
+        # 尺寸与口径是**两个正交维度**：同一个口径下换个尺子，和换个口径量同一把尺子，
+        # 都要试。两维同时登记时把组合补齐，别只试一半。
+        for scale in scales:
+            retries.append((mode, scale))
+            if smooth:
+                retries.append((MATCH_MODE_SMOOTH, scale))
+    for retry_mode, scale in retries:
+        candidate = find_best_template(
             screen,
             template,
             region=region,
             reference_size=reference_size,
-            mode=MATCH_MODE_SMOOTH,
+            mode=retry_mode,
+            template_scale=scale,
         )
-        if smooth is not None and (match is None or smooth.score > match.score):
-            match = smooth
-    return match
+        if candidate is not None and (best is None or candidate.score > best.score):
+            best = candidate
+    return best
 
 
 def locate_with_fallback(
@@ -163,18 +267,27 @@ def locate_with_fallback(
     threshold: float,
     region: tuple[int, int, int, int] | None = None,
     reference_size: tuple[int, int] | None = None,
+    *,
+    mode: str = MATCH_MODE_RAW,
 ) -> Optional[Match]:
-    """定位一个锚点：**先按原样比，没过阈才用低通口径补一次，取较高者**。
+    """定位一个锚点：**先按原样比，没过阈才用低通 / 扫尺寸补，取较高者**。
 
     为什么必须是「原样优先」而不是直接换口径：原样能认出来的那些画面，
     判定结果要与从前一字不差 —— 这是「模拟器零改动」的结构性保证。
-    低通只是给「另一台客户端把同一块 UI 换了个画法」留的活口。
+    低通只是给「另一台客户端把同一块 UI 换了个画法」留的活口，
+    扫尺寸是给「另一台客户端把同一块 UI 画小了一点点」留的活口。
 
     ⚠️ 三个打分入口（导航 / 路线 / 诊断）**必须都走这里**：只改一处就会出现
     「诊断报未命中、实跑却过了」或反之，日志自己跟自己打架。
     """
     match = best_match_with_fallback(
-        name, screen, template, threshold, region=region, reference_size=reference_size
+        name,
+        screen,
+        template,
+        threshold,
+        region=region,
+        reference_size=reference_size,
+        mode=mode,
     )
     # ⚠️ 与 ``find_template`` 同语义：**不过阈就是没有**，不许返回一个低分匹配回去
     # （否则 `_visible()` 这类只看「是不是 None」的调用会全部变成 True）。
@@ -316,6 +429,7 @@ def find_best_template(
     reference_size: tuple[int, int] | None = None,
     *,
     mode: str = MATCH_MODE_RAW,
+    template_scale: float = 1.0,
 ) -> Optional[Match]:
     """Return the highest-scoring template position without applying a threshold.
 
@@ -323,25 +437,40 @@ def find_best_template(
     emulator window is displayed at another uniform scale, both its templates
     and search region are scaled to the live capture before matching.
 
+    ``template_scale`` is an **extra** resampling of the
+    template on top of that — it exists because the PC client draws the same
+    widget at a slightly different physical size between sessions (see
+    ``SCALE_FALLBACK_ANCHORS``).  Only the template is rescaled; ``region``
+    is in canvas coordinates and must **not** follow it.
+
     ``mode`` selects the comparison domain (see ``MATCH_MODE_*``); it is applied
     to the already-cropped, already-resized pair.
     """
+    scale_x = scale_y = float(template_scale)
     if reference_size is not None:
-        scale_x = screen.shape[1] / reference_size[0]
-        scale_y = screen.shape[0] / reference_size[1]
-        if abs(scale_x - scale_y) > 0.02:
+        canvas_x = screen.shape[1] / reference_size[0]
+        canvas_y = screen.shape[0] / reference_size[1]
+        if abs(canvas_x - canvas_y) > 0.02:
             raise RuntimeError("画面宽高比与模板基准不一致")
+        scale_x *= canvas_x
+        scale_y *= canvas_y
+        if region is not None:
+            region = (
+                round(region[0] * canvas_x),
+                round(region[1] * canvas_y),
+                round(region[2] * canvas_x),
+                round(region[3] * canvas_y),
+            )
+    # 一次重采样完成「基准换算 × 尺寸扫描」两个因子。
+    # 分两步 resize 会把同一层插值糊两遍 —— 这几颗锚点全是细笔画文字，
+    # 糊两遍正是它们最脆的地方。
+    if reference_size is not None or scale_x != 1.0 or scale_y != 1.0:
         target_width = max(1, round(template.shape[1] * scale_x))
         target_height = max(1, round(template.shape[0] * scale_y))
         interpolation = cv2.INTER_AREA if scale_x < 1 else cv2.INTER_CUBIC
-        template = cv2.resize(template, (target_width, target_height), interpolation=interpolation)
-        if region is not None:
-            region = (
-                round(region[0] * scale_x),
-                round(region[1] * scale_y),
-                round(region[2] * scale_x),
-                round(region[3] * scale_y),
-            )
+        template = cv2.resize(
+            template, (target_width, target_height), interpolation=interpolation
+        )
     offset_x = offset_y = 0
     search = screen
     if region is not None:
@@ -356,6 +485,7 @@ def find_best_template(
     return Match(
         center=(offset_x + location[0] + width // 2, offset_y + location[1] + height // 2),
         score=score,
+        scale=float(template_scale),
     )
 
 

@@ -479,5 +479,94 @@ class MatchCacheTests(unittest.TestCase):
         )
 
 
+class ScaleFallbackTests(unittest.TestCase):
+    """``SCALE_FALLBACK_*`` 的护栏。
+
+    为什么要有这一组：扫尺寸是「多试几个假设取最高分」，**一定会**把某些画面的
+    分数往上抬；抬多了就是误点。所以名单必须逐字钉住、档位必须覆盖实测漂移。
+    """
+
+    def test_the_anchor_whitelist_is_pinned(self):
+        """名单逐字钉住 —— 加一颗锚点进来必须先跑 ``tools/audit_scale_fallback``。"""
+        self.assertEqual(
+            matcher.SCALE_FALLBACK_ANCHORS,
+            frozenset(
+                {
+                    "team_battle_start",
+                    "prepare_title",
+                    "card_hint",
+                    "card_decide",
+                    "battle_failed",
+                    "conquer_title",
+                    "season_tower_title",
+                    "stamina_material",
+                    "next_stage",
+                    "battle_turn_bar",
+                    "lobby_episode_menu",
+                    "battle_clear",
+                    "entry_card",
+                    "reward_popup_close",
+                    "result_title",
+                    "team_select_title",
+                    "worldboss_title",
+                    "auto_off",
+                    "lobby_story",
+                }
+            ),
+        )
+
+    def test_the_steps_cover_the_measured_drift(self):
+        """档位必须覆盖实测漂移（×0.9685 = −3.15%），且步长不许粗于 1%。
+
+        这条钉的是「扫了等于没扫」：范围不够时最坏那一档刚好落在两个候选之间，
+        分数照样过不了阈，而日志会显示「已经扫过了」，比不扫更难查。
+        """
+        steps = matcher.SCALE_FALLBACK_STEPS
+        self.assertNotIn(1.0, steps, "原尺寸由常规路径先比掉，名单里不该有 1.00")
+        self.assertLessEqual(min(steps), 0.97, f"下界不够：{min(steps)}")
+        self.assertGreaterEqual(max(steps), 1.03, f"上界不够：{max(steps)}")
+        # 1.00 那一档由常规路径覆盖，所以相邻两档隔着 1.00 时间隔是 0.02 属正常；
+        # 其余相邻档必须紧到 0.01，否则「最坏那一档刚好落在两个候选中间」。
+        ordered = sorted(steps)
+        for left, right in zip(ordered, ordered[1:]):
+            spans_one = left < 1.0 < right
+            limit = 0.0200001 if spans_one else 0.0100001
+            self.assertLessEqual(
+                right - left, limit, f"档位 {left}->{right} 太粗，会漏掉中间那档"
+            )
+
+    def test_an_anchor_off_the_whitelist_behaves_exactly_like_before(self):
+        """不在任何名单里的锚点：``locate_with_fallback`` 必须与 ``find_template`` 等价。"""
+        screen = self._screen()
+        template = self._strip()
+        plain = find_template(screen, template, 0.9)
+        wrapped = matcher.locate_with_fallback(
+            "某个没登记的锚点", screen, template, 0.9
+        )
+        self.assertEqual(plain, wrapped)
+
+    def test_the_sweep_only_fires_on_a_miss(self):
+        """原样口径已经过阈时，**不许**再扫尺寸（否则热路径白付 6 次匹配）。"""
+        screen = self._screen()
+        template = self._strip()
+        with mock.patch.object(
+            matcher, "find_best_template", wraps=matcher.find_best_template
+        ) as spy:
+            found = matcher.locate_with_fallback(
+                "prepare_title", screen, template, 0.9
+            )
+        self.assertIsNotNone(found)
+        self.assertEqual(spy.call_count, 1, "过阈了还在扫尺寸")
+
+    def _screen(self) -> np.ndarray:
+        screen = np.zeros((240, 320, 3), dtype=np.uint8)
+        screen[40:90, 60:220] = (240, 240, 240)
+        screen[52:78, 72:208] = (20, 20, 120)
+        return screen
+
+    def _strip(self) -> np.ndarray:
+        return self._screen()[40:90, 60:220].copy()
+
+
 if __name__ == "__main__":
     unittest.main()

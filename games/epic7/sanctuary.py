@@ -99,7 +99,7 @@ from typing import Callable, Optional
 
 import numpy as np
 
-from auto_game_unified.core.matcher import Match, find_template, load_template
+from auto_game_unified.core.matcher import Match, load_template, locate_with_fallback
 from auto_game_unified.core.recovery import RecoveryGate
 from auto_game_unified.core.runtime import Runtime
 from auto_game_unified.games.epic7.evidence.common import EvidenceState
@@ -241,12 +241,17 @@ class SanctuaryStateMachine:
 
     def _locate(self, screen: np.ndarray, name: str) -> Optional[Match]:
         atom = self.templates.evidence.atom(name)
-        return find_template(
+        # 走 ``locate_with_fallback``（与导航层、视觉诊断**同一把尺子**）：原样先比，
+        # 不过阈才按 ``SMOOTH_FALLBACK_ANCHORS`` / ``SCALE_FALLBACK_ANCHORS`` 补一次。
+        # 名字不在任何名单里时，这里的判定与从前逐字节一致。
+        return locate_with_fallback(
+            name,
             screen,
             getattr(self.templates, name),
             atom.threshold,
             region=atom.region,
             reference_size=atom.reference_size,
+            mode=atom.match_mode,
         )
 
     def _required(self, screen: np.ndarray, name: str) -> Match:

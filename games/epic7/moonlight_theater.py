@@ -62,7 +62,7 @@ from auto_game_unified.core.battle_supervisor import (
     BattleSupervisor,
     valid_game_frame,
 )
-from auto_game_unified.core.matcher import Match, find_template, load_template
+from auto_game_unified.core.matcher import Match, load_template, locate_with_fallback
 from auto_game_unified.core.recovery import RecoveryGate
 from auto_game_unified.core.runtime import ResourceExhausted, Runtime
 from auto_game_unified.core.supervisor import meaningful_change
@@ -289,7 +289,10 @@ class MoonlightStateMachine:
 
     def _locate(self, screen: np.ndarray, name: str) -> Optional[Match]:
         atom = self.templates.evidence.atom(name)
-        return find_template(
+        # 走 ``locate_with_fallback``（与导航层、视觉诊断**同一把尺子**）：原样先比，
+        # 不过阈才按 ``SMOOTH_FALLBACK_ANCHORS`` / ``SCALE_FALLBACK_ANCHORS`` 补一次。
+        return locate_with_fallback(
+            name,
             screen,
             getattr(self.templates, name),
             atom.threshold,

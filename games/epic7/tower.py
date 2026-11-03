@@ -70,8 +70,8 @@ from auto_game_unified.core.battle_supervisor import (
 from auto_game_unified.core.matcher import (
     MATCH_MODE_RAW,
     Match,
-    find_template,
     load_template,
+    locate_with_fallback,
 )
 from auto_game_unified.core.runtime import StaminaExhausted
 from auto_game_unified.core.supervisor import meaningful_change
@@ -330,7 +330,13 @@ class TowerStateMachine:
                     f"{type(self).__name__}._OPTIONAL_TEMPLATES 并说明理由"
                 )
             return None
-        return find_template(
+        # 走 ``locate_with_fallback``（与导航层、竞技场、视觉诊断**同一把尺子**）：
+        # 原样口径先比，不过阈才按 ``SMOOTH_FALLBACK_ANCHORS`` 换口径 /
+        # 按 ``SCALE_FALLBACK_ANCHORS`` 扫尺寸。从前这里直连 ``find_template``，
+        # 两个兜底都对月塔不生效 —— 2026-11-04 00:05 就是因为「PC 客户端把
+        # 同一块 UI 画小了」而卡死在「准备战斗」页。
+        return locate_with_fallback(
+            name,
             screen,
             template,
             self._THRESHOLDS.get(name, self._THRESHOLD),
