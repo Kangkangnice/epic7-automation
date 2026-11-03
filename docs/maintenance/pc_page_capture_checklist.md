@@ -60,8 +60,8 @@
 | `arena.team` 队伍选择（战斗开始） | `battle_start` | P0 | ✅ 已有 |
 | `arena.battle` 战斗中（自动开着） | `auto_off` | P2 | ❌ 缺 |
 | `arena.result` 结算页 | `confirm` | P2 | ❌ 缺 |
-| `arena.rank_promotion` 段位晋升弹窗 | `rank_confirm` / 箭头 | P1 | ❌ 缺 |
-| `arena.friendship_ticket_offer` 友情门票弹窗 | 双锚点 | P1 | ❌ 缺 |
+| `arena.rank_promotion` 段位晋升弹窗 | `rank_confirm` / 箭头 | P1 | ✅ 已有（2026-11-03 从 PC 实拍帧裁 `templates/pc/rank_confirm.png`） |
+| `arena.friendship_ticket_offer` 友情门票弹窗 | 双锚点 | P1 | ✅ 已有（2026-11-02 采，`templates/pc/` 两张） |
 | `arena.refresh_confirmation` 刷新确认 | 三锚点 | P1 | ❌ 缺 |
 
 ## 三、主线（9 页）

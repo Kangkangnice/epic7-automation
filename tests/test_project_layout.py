@@ -62,6 +62,14 @@ class ProjectLayoutTests(unittest.TestCase):
                 # 连按 2 次 ESC 都没反应 ⇒「返回首页失败」（一条命犯两桩）。
                 # 是第 17 类全局弹窗的唯一正例。
                 "account_rank_up_pc_live_20261102.png",
+                # 2026-11-03 PC 真机：游戏内**日期变更**通知（「日期变更，将前往大厅。」）。
+                # 它把画面强制切回大厅 ⇒ 主线在「等待通关」上干等 46 秒无进展 ⇒ 超时放弃。
+                # 第 18 类全局弹窗的唯一正例（标题 208x49 排他，全库最高 0.5517）。
+                "date_change_pc_live_20261103.png",
+                # 2026-11-03 PC 真机：每日**获得登录奖励**（6 格奖励）。
+                # 这层不吃 ESC ⇒ 收尾「连按 2 次 ESC 页面不动」⇒「回首页失败」。
+                # 第 19 类全局弹窗的唯一正例（标题 304x49 排他，全库最高 0.5703）。
+                "login_reward_pc_live_20261103.png",
             },
             {path.name for path in fixture_dir.glob("*.png")},
         )
@@ -105,6 +113,11 @@ class ProjectLayoutTests(unittest.TestCase):
             # 2026-11-02 PC 真机：旗帜耗尽弹窗压在「队伍选择」页上（战斗开始变灰）。
             # 与 1101 弹窗是同一弹窗的两种面板渲染变体；供 PC 自动买绿叶旗测试用。
             "arena_purchase_popup_team_pc_live_20261102.png",
+            # 2026-11-03 PC 真机：结算后的「段位提升」弹窗（金牌V > 金牌IV）。
+            # 共享 rank_confirm 图在 PC 上只有 0.7536（阈 0.90）⇒ 双锚点整页判 unknown
+            # ⇒ confirm-result 转场失败、收尾 ESC 又无效（一条命犯两桩）。
+            # 正例帧供 `test_pc_rank_promotion_popup_is_recognized` 用。
+            "rank_promotion_pc_live_20261103.png",
         }
         fixture_dir = ROOT / "tests" / "fixtures" / "epic7_arena"
         self.assertEqual(expected, {path.name for path in fixture_dir.glob("*.png")})

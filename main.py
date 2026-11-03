@@ -50,6 +50,8 @@ from auto_game_unified.games.epic7.global_popups import (
     load_knights_growth_rank_templates,
     load_knights_signin_templates,
     load_knights_weekly_reward_templates,
+    load_date_change_templates,
+    load_login_reward_templates,
     load_network_reconnect_templates,
     load_pet_gift_templates,
     load_reward_notice_templates,
@@ -522,6 +524,16 @@ def run_mode(
                 # 它们说的是同一个 WebView 上的事，模板别散到两处去。
                 web_network_error_templates=load_web_network_error_templates(
                     template_root / "navigation"
+                ),
+                # 2026-11-03：游戏按时间自己弹的两条，谁跑都会撞上。
+                #   变更日期：把页面强制切回大厅 ⇒ 主线在「等待通关」干等 46 秒超时；
+                #   登录奖励：不吃 ESC ⇒ 收尾「连按 2 次 ESC 页面不动」回首页失败。
+                # 模板只有 PC 版，模拟器口径下 load 成 None ⇒ 该条整段跳过（行为不变）。
+                date_change_templates=load_date_change_templates(
+                    template_root / "global"
+                ),
+                login_reward_templates=load_login_reward_templates(
+                    template_root / "global"
                 ),
             )
         )

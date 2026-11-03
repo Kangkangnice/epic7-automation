@@ -91,6 +91,11 @@ class MainStoryTests(unittest.TestCase):
                 gift_claim_templates = object()
                 # 「账号 Rank 提升」（2026-11-02 接，第 17 类）。
                 account_rank_up_templates = object()
+                # 「变更日期」「获得登录奖励」（2026-11-03 接，第 18/19 类）：
+                # 游戏按时间自己弹的两条，主线 18:00 那次超时与 18:01 那次回首页失败
+                # 分别是它们。
+                date_change_templates = object()
+                login_reward_templates = object()
                 # ⚠️ 本文件三处 B023 抑制标记都是误报：events 虽然在外层循环里被重新赋值，
                 # 但这些 side_effect / on_call 都是**当轮同步调用**的（mock 在被调用的那一刻
                 # 就执行它），取不到下一轮的值。ruff 只看语法，看不出调用时机。
@@ -148,6 +153,18 @@ class MainStoryTests(unittest.TestCase):
                         main_module,
                         "load_web_network_error_templates",
                         return_value=web_network_error_templates,
+                    ),
+                    # 「变更日期」「获得登录奖励」（2026-11-03 接，第 18/19 类）。
+                    # 同一条规矩：patch 与写死的 kwargs 断言必须同进同出。
+                    patch.object(
+                        main_module,
+                        "load_date_change_templates",
+                        return_value=date_change_templates,
+                    ),
+                    patch.object(
+                        main_module,
+                        "load_login_reward_templates",
+                        return_value=login_reward_templates,
                     ),
                     # 「世界首领辅助队伍奖励」弹窗（2026-10-19 接，第 10 个全局弹窗）。
                     # 同一条规矩：这个 patch 与被写死的 kwargs 断言必须同进同出。
@@ -231,6 +248,8 @@ class MainStoryTests(unittest.TestCase):
                     knights_weekly_reward_templates=knights_weekly_reward_templates,
                     pet_gift_templates=pet_gift_templates,
                     web_network_error_templates=web_network_error_templates,
+                    date_change_templates=date_change_templates,
+                    login_reward_templates=login_reward_templates,
                     worldboss_support_reward_templates=(
                         worldboss_support_reward_templates
                     ),

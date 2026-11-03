@@ -137,6 +137,11 @@ def test_real_template_root_only_has_the_reviewed_pc_overrides():
         # 竞技场（2026-11-02）：点完「战斗开始」后的 VS 段位确认页（PC 独有），
         # 只裁绿色「确认」按钮本身（段位无关），模拟器无此页。
         "pc/arena_vs_confirm.png",
+        # 竞技场（2026-11-03）：结算后的「段位提升」弹窗（金牌V > 金牌IV）。
+        # 该锚点走 HSV 白掩膜，而 PC 上按钮是暗绿底（V≈93 < 掩膜下界 140）⇒
+        # 本体被整片切掉，共享图只剩 0.7536（阈 0.90），整页判 unknown。
+        # 补 PC 同名覆盖图后 1.0000；模拟器仍加载共享图，实测 1.0000 不变。
+        "pc/rank_confirm.png",
         # 竞技场（2026-11-02）：购买旗帜弹窗的「100 绿叶→5 旗帜」报价格 + 绿色
         # 「购买」药丸，PC 上两种面板渲染变体都要能自动买绿叶旗继续刷。
         "pc/friendship_ticket_offer.png",
@@ -165,6 +170,19 @@ def test_real_template_root_only_has_the_reviewed_pc_overrides():
         "knights_donation/pc/popup_confirm.png",
         # 全局（2026-11-01）：同一类，断线弹窗的文案。
         "global/pc/network_message.png",
+        # 全局（2026-11-03）：断线弹窗的「点击重试 ∨」按钮。**只用来定位点击点**
+        # （判定仍只看文案）：PC 上这层是全屏横带，屏幕中心落在文案与按钮之间的空白，
+        # 连点 4~8 次纹丝不动。跨三帧 0.9434~1.0000，中心恒为 (960,731)。
+        "global/pc/network_retry_button.png",
+        # 全局（2026-11-03）：游戏按时间自己弹的两条 —— 「日期变更，将前往大厅。」
+        # 与每日「获得登录奖励」。都是**必须点底部「点击关闭」**的层，不吃 ESC：
+        #   变更日期 ⇒ 画面被强制切回大厅 ⇒ 主线「等待通关」46 秒无进展超时；
+        #   登录奖励 ⇒ 收尾连按 2 次 ESC 页面不动 ⇒「回首页失败」。
+        # 标题排他实测（全库 364 张）：0.5517 / 0.5703，阈值 0.82。
+        "global/pc/date_change_title.png",
+        "global/pc/date_change_close.png",
+        "global/pc/login_reward_title.png",
+        "global/pc/login_reward_close.png",
         # 导航（2026-11-02）：大厅左侧「圣域」入口标签，PC 原样 0.7457（阈 0.82）。
         "navigation/pc/lobby_sanctuary.png",
         # 圣域收菜（2026-11-02）：全是小号中文文字锚点，PC 上原样 0.62~0.83。

@@ -7,6 +7,7 @@ import cv2
 from auto_game_unified.core.evidence_diagnostics import inspect_profile
 from auto_game_unified.core.matcher import find_template, load_template
 from auto_game_unified.games.epic7.arena import (
+    Action,
     ArenaState,
     ArenaStateMachine,
     TicketExhausted,
@@ -276,3 +277,47 @@ def test_pc_ticket_popup_auto_buys_on_both_popup_variants():
     emu_action = machine_emu.next_action(emu_popup)
     assert emu_action.name == "purchase-friendship-ticket"
     assert "资源=友情点" in emu_action.reason
+
+
+def test_pc_rank_promotion_popup_is_recognized():
+    """PC 实跑新截图（2026-11-03）：结算后的「段位提升」弹窗（金牌V > 金牌IV）。
+
+    这一页的双锚点（晋级箭头 + 绿色「确认」）本来就登记过，模拟器实测两处都是 1.0000；
+    在 PC 上却是死的 —— 按钮一路走 HSV 白掩膜，而 PC 上按钮是暗绿底（V≈93，低于掩膜
+    下界 140）⇒ 按钮本体被整片切掉，共享图只剩 0.7536（阈 0.90）⇒ 双锚点 AND 失败
+    ⇒ `confirm-result` 转场等不到「结果确认中」而报转场失败，收尾 ESC 又被这一页吃掉。
+
+    修法是补同名覆盖图 `templates/pc/rank_confirm.png`（判据/区域/阈值/业务逻辑一字未改，
+    符合"平台差异收敛到图片本身"）。
+
+    模拟器侧零影响：emulator 口径仍加载共享图，模拟器自己的夹具仍成立。
+    """
+    screen = _screen("rank_promotion_pc_live_20261103.png")
+    pc_dir = resolve_template_dir(TEMPLATES, "pc")
+    emu_dir = resolve_template_dir(TEMPLATES, "emulator")
+    machine_pc = ArenaStateMachine(build_templates(pc_dir), initial_state=ArenaState.RESULT)
+    machine_emu = ArenaStateMachine(build_templates(emu_dir), initial_state=ArenaState.RESULT)
+
+    # confirm-result 点下去之后，这一页必须能被认成「结果确认中」（修之前是 None）。
+    confirm_result = Action(
+        name="confirm-result",
+        point=(1749, 1048),
+        source_state=ArenaState.RESULT,
+        target_states=(ArenaState.CONFIRMING, ArenaState.LIST),
+        reason="回归测试构造",
+    )
+    assert machine_pc.action_target_state(screen, confirm_result) == ArenaState.CONFIRMING
+    # 平台分流：模拟器口径用共享图，同一张 PC 帧不成立（不会误判成段位页）。
+    assert machine_emu.action_target_state(screen, confirm_result) is None
+
+    # 到了「结果确认中」，下一步必须是点掉段位弹窗的确认按钮，而不是报错。
+    machine_confirm = ArenaStateMachine(build_templates(pc_dir), initial_state=ArenaState.CONFIRMING)
+    action = machine_confirm.next_action(screen)
+    assert action.name == "confirm-rank"
+    assert abs(action.point[0] - 961) <= 20
+    assert abs(action.point[1] - 1045) <= 12
+    assert machine_confirm.action_source_visible(screen, action) is True
+
+    # 零翻转：模拟器自己的段位提升夹具在模拟器口径下依然成立。
+    emu_screen = _screen("rank_promotion_master.png")
+    assert machine_emu.action_target_state(emu_screen, confirm_result) == ArenaState.CONFIRMING
