@@ -1,4 +1,4 @@
-"""支线故事开局接力：落点判定 + **顺序陷阱** + 接线。
+"""支线故事开局接力：落点判定 + **顺序陷阱** + 接线 + PC 期次主页中间层。
 
 用户 2026-10-31 的要求：有活动的时候大厅那颗入口会被活动顶替，导航进不去 ⇒
 他会自己把故事点进去、停在准备战斗之类的地方再启动，路线要能从那里接着跑。
@@ -6,6 +6,11 @@
 这条路线原先在 `RESUME_EXEMPT` 里，理由是「场景页会被 `battle_scene_visible` 判成局内，
 接力会跳过状态机、直接把这一局交给战斗监督」。解法不是改那个判据（会影响 14 条路线），
 而是**把场景页排在局内判据之前** —— 本文件第二条用例专门钉这件事。
+
+2026-11-06 补「期次主页」：PC 的「快速入场」比模拟器多一层中间页，12:59 真机
+在这一页 `UnrecognizedScreen` 干等 60 秒超时，而且它也不在接力落点里。
+下面 `SideStoryEventHomeResumeTests` 用 **PC 模板根**造状态机（`pc_machine()`），
+因为这两颗判据图只放 `templates/side_story/pc/`，模拟器侧必须是空元组。
 """
 
 from pathlib import Path
@@ -18,6 +23,8 @@ from auto_game_unified.games.epic7.battle_controls import battle_scene_visible
 from auto_game_unified.games.epic7.modes import MODE_SPECS, RESUME_EXEMPT
 from auto_game_unified.games.epic7.side_story import detect_resume_point
 from auto_game_unified.games.epic7.story import StoryState
+from auto_game_unified.games.epic7.template_paths import resolve_template_dir
+from auto_game_unified.games.epic7.unknown_screen import UnrecognizedScreen
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -49,8 +56,21 @@ def other_route_frame(group: str, name: str) -> np.ndarray:
 
 
 def machine():
+    """模拟器：普通 `Path` 就是模拟器口径（`template_paths.is_pc` 明确认这一条）。"""
     spec = MODE_SPECS["side_story"]
     return spec.build_machine(TEMPLATE_ROOT, spec.default_state)
+
+
+def pc_machine():
+    """PC 模板根：只有它才会把 `templates/side_story/pc/*.png` 解析进来。
+
+    ⚠️ 光调 `matcher.set_active_backend("pc")` 没用 —— 决定「去哪个目录取图」的是
+    `TemplateDir` 上的 backend，不是匹配器那个全局量。
+    """
+    spec = MODE_SPECS["side_story"]
+    return spec.build_machine(
+        resolve_template_dir(TEMPLATE_ROOT, "pc"), spec.default_state
+    )
 
 
 class SideStoryResumePointTests(unittest.TestCase):
@@ -137,6 +157,95 @@ class SideStoryResumePointTests(unittest.TestCase):
         self.assertIsNone(
             detect_resume_point(machine(), other_route_frame("navigation", "arena_list"))
         )
+
+
+class SideStoryEventHomeResumeTests(unittest.TestCase):
+    """PC 独有的一层中间页：期次主页（「故事 / 奖励 / PV」）。
+
+    2026-11-06 12:58 真机日志：`enter_quick_entry` 点完预期落
+    `Episode详情/关卡地图`，实际落到这里，14 个旧原子全 `None` ⇒
+    12:59 干等 60 秒 `timeout_stage`。补齐后它既是接力落点、也要有运行期动作。
+    """
+
+    def test_the_event_home_is_a_resume_point_on_pc(self):
+        point = detect_resume_point(pc_machine(), frame("event_home"))
+
+        self.assertIsNotNone(point)
+        self.assertEqual("期次主页", point.page)
+        self.assertEqual(StoryState.STAGE, point.state)
+        self.assertIsNone(point.entry, "期次主页不在导航链上，不许假装已经到过某一级")
+
+    def test_both_tabs_are_independent_anchors_for_the_same_page(self):
+        """两颗标签各自都能独立把这一页认出来（跨期换皮时的冗余）。"""
+        screen = frame("event_home")
+        probe = pc_machine()
+
+        for name in ("event_home_reward", "event_home_pv"):
+            with self.subTest(anchor=name):
+                match = probe._locate(screen, name)
+                self.assertIsNotNone(match, name)
+                self.assertGreaterEqual(match.score, 0.99)
+
+        self.assertEqual("期次主页", detect_resume_point(probe, screen).page)
+
+    def test_the_same_period_hub_page_is_not_mistaken_for_the_event_home(self):
+        """⚠️ 最硬的负例：同一期美术、同一套立绘，右侧却是「支线故事」菜单。
+
+        如果判据是靠本期背景/角色命中的，这张会一起翻车 —— 那正是
+        「模板不许含会变内容」要拦的东西。实测两颗锚点在 hub 页都 < 0.41。
+        """
+        screen = frame("event_home_hub")
+        probe = pc_machine()
+
+        for name in ("event_home_reward", "event_home_pv"):
+            with self.subTest(anchor=name):
+                self.assertIsNone(probe._locate(screen, name))
+
+        point = detect_resume_point(probe, screen)
+        self.assertIsNotNone(point)
+        self.assertEqual("支线故事", point.page, "hub 页该落回「支线故事」，不是「期次主页」")
+
+    def test_the_anchors_are_pc_only_and_the_emulator_behaves_as_before(self):
+        """模拟器侧两张图都缺席 ⇒ 原子空元组 ⇒ 判据与动作整体不启用。
+
+        这是 PC/模拟器隔离铁律的直接检验：不是「模拟器上分数低一点」，
+        而是压根没有这个原子。
+        """
+        screen = frame("event_home")
+        probe = machine()
+
+        self.assertEqual((), probe.side.event_home_reward)
+        self.assertEqual((), probe.side.event_home_pv)
+        self.assertIsNone(probe._locate(screen, "event_home_reward"))
+        self.assertIsNone(probe._locate(screen, "event_home_pv"))
+        self.assertIsNone(detect_resume_point(probe, screen))
+        with self.assertRaises(UnrecognizedScreen):
+            probe.next_action(screen)
+
+    def test_the_runner_leaves_the_event_home_instead_of_timing_out(self):
+        """光认出还不够：状态机必须给出「点故事」这个前进动作。"""
+        action = pc_machine().next_action(frame("event_home"))
+
+        self.assertIsNotNone(action)
+        self.assertEqual("enter_event_story", action.name)
+        self.assertEqual((1710, 440), action.point)
+        self.assertEqual("期次主页", action.source_page)
+        self.assertIn("Episode详情", action.target_pages)
+        self.assertIn("关卡地图", action.target_pages)
+        # 含这两项会分别造成「静默降级」与「期次主页↔hub 无限来回点」。
+        self.assertNotIn("期次主页", action.target_pages)
+        self.assertNotIn("支线故事", action.target_pages)
+
+    def test_quick_entry_accepts_the_event_home_as_a_landing_page(self):
+        """另一半契约：`快速入场` 点完**本来就会**落到这一页。
+
+        少了这个落点，页面认得再准也会被转场验收判成「目标页面未出现」。
+        """
+        action = pc_machine().next_action(frame("event_home_hub"))
+
+        self.assertIsNotNone(action)
+        self.assertEqual("enter_quick_entry", action.name)
+        self.assertIn("期次主页", action.target_pages)
 
 
 class SideStoryResumeWiringTests(unittest.TestCase):
