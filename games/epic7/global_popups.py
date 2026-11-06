@@ -201,6 +201,28 @@ class UncontrollableTemplates:
 
 
 @dataclass(frozen=True)
+class TutorialUnlockTemplates:
+    """「轻触后解锁【XX】」教学遮罩（2026-11-06 主线 Episode 4 第 11 关）。
+
+    这层不是普通提示框：它是**全屏模态教学层**，把底下「准备战斗」和 ESC 一起吞掉。
+    12:29 真机连点 4 次「准备战斗」不转场、收尾连按 2 次 ESC 页面不动 ⇒ 主线 ✗
+    + 每日任务「已中止：月光剧场 之前无法回到首页」，后面 8 条路线一条都没跑。
+
+    判据只裁黑框**左半**（蓝色左框角 +「轻触后解锁」），刻意不含角色名 —— 那是会变
+    的内容。4 张正例 0.9999~1.0000，全库 360 张反例最高 0.4323（阈 0.82）。
+    点击点两候选：右上角「跳过教学 ✕」（明确退出教学、不触发角色解锁）；找不到
+    再点黑框箭头指向的高亮图标（教学本身要求轻触的目标）。两者都定位不到就
+    **不动手**，不猜坐标（见 ``web_network_error`` 那颗 ✕ 的教训）。
+
+    ⚠️ 三张图都只在 ``templates/global/pc/`` 下 ⇒ 模拟器加载成 None ⇒ 整段跳过。
+    """
+
+    title: np.ndarray | None
+    skip: np.ndarray | None
+    highlight: np.ndarray | None
+
+
+@dataclass(frozen=True)
 class KnightsActivityTemplates:
     """「骑士团活动」页：左上标题 + 底部「✕ 点击关闭」。
 
@@ -1371,6 +1393,7 @@ class Epic7GlobalPopupGuard:
         date_change_templates: DateChangeTemplates | None = None,
         knights_activity_templates: KnightsActivityTemplates | None = None,
         uncontrollable_templates: UncontrollableTemplates | None = None,
+        tutorial_unlock_templates: TutorialUnlockTemplates | None = None,
         login_reward_templates: LoginRewardTemplates | None = None,
         sleep: Callable[[float], None] = default_sleep,
         now: Callable[[], float] = monotonic,
@@ -1398,6 +1421,7 @@ class Epic7GlobalPopupGuard:
         self.date_change_templates = date_change_templates
         self.knights_activity_templates = knights_activity_templates
         self.uncontrollable_templates = uncontrollable_templates
+        self.tutorial_unlock_templates = tutorial_unlock_templates
         self.login_reward_templates = login_reward_templates
         self.sleep = sleep
         self.now = now
@@ -1444,6 +1468,21 @@ class Epic7GlobalPopupGuard:
                     "dismiss-uncontrollable",
                     "uncontrollable_failed",
                     f"「无法控制」弹窗底部「点击关闭」点了{_MAX_POPUP_CLICKS}次仍未关掉",
+                )
+        # 2026-11-06 12:29 真机：主线打到 Episode 4 第 11 关，弹「轻触后解锁
+        # 【觉醒者艾庭】」教学遮罩。它把「准备战斗」和 ESC 一起吞掉 ⇒
+        # prepare_battle 点 4 次不转场、收尾 ESC 2 次无效 ⇒ 主线 ✗ 且每日任务
+        # 「已中止」，后面 8 条路线全没跑。判据排他（全库 360 张反例最高 0.4323），
+        # 三张图只在 pc/ 里 ⇒ 模拟器整段跳过，放守卫安全。
+        if self.tutorial_unlock_templates is not None:
+            match = find_tutorial_unlock_skip(screen, self.tutorial_unlock_templates)
+            if match is not None:
+                return (
+                    match,
+                    "tutorial_unlock",
+                    "dismiss-tutorial-unlock",
+                    "tutorial_unlock_failed",
+                    f"「轻触后解锁」教学遮罩点了{_MAX_POPUP_CLICKS}次仍未消失",
                 )
         # ⚠️「骑士团活动」页**不能**放在这里：骑士团捐赠路线正常流程就会切到
         # 「每周任务」标签（实测 22:33:42 `open-weekly-tab` 之后就在那一页），
@@ -1774,6 +1813,15 @@ _KNIGHTS_ACTIVITY_CLOSE_REGION = (820, 1040, 400, 80)
 # —— 与「骑士团活动」那颗「点击关闭」是同一个控件（实测都命中 (933,1082) 92x21）。
 _UNCONTROLLABLE_TITLE_REGION = (820, 150, 340, 110)
 _UNCONTROLLABLE_CLOSE_REGION = (820, 1040, 400, 80)
+# 「轻触后解锁」教学遮罩（2026-11-06 主线 Episode 4 第 11 关）：
+#   黑框左半实测 bbox 880,810 260x170；右上「跳过教学」按钮 1605,50 315x100；
+#   底部被高亮的图标 1050,975 160x140。三块区域都留了一圈余量。
+_TUTORIAL_TITLE_REGION = (850, 780, 620, 230)
+_TUTORIAL_SKIP_REGION = (1580, 30, 400, 150)
+_TUTORIAL_HIGHLIGHT_REGION = (1020, 950, 240, 182)
+# 高亮框有呼吸动画：4 张正例 0.7894~1.0000，全库反例最高 0.6148。
+# 它**只定位点击点、不参与判据**，所以给 0.70；判据仍是 title 的 0.82。
+_TUTORIAL_HIGHLIGHT_THRESHOLD = 0.70
 _DATE_CHANGE_CLOSE_REGION = (800, 720, 400, 110)
 _LOGIN_REWARD_TITLE_REGION = (760, 190, 480, 120)
 _LOGIN_REWARD_CLOSE_REGION = (860, 1040, 280, 90)
@@ -1859,6 +1907,64 @@ def find_uncontrollable_close(
         _UNCONTROLLABLE_TITLE_REGION,
         _UNCONTROLLABLE_CLOSE_REGION,
     )
+
+
+def load_tutorial_unlock_templates(template_dir: Path) -> TutorialUnlockTemplates:
+    """三张图都在 ``global/pc/``；模拟器口径下一张都找不到 ⇒ 整段跳过。"""
+    title = template_dir / "tutorial_unlock_title.png"
+    skip = template_dir / "tutorial_skip_button.png"
+    highlight = template_dir / "tutorial_highlight_icon.png"
+    if not title.exists():
+        return TutorialUnlockTemplates(title=None, skip=None, highlight=None)
+    return TutorialUnlockTemplates(
+        title=load_template(str(title)),
+        skip=load_template(str(skip)) if skip.exists() else None,
+        highlight=load_template(str(highlight)) if highlight.exists() else None,
+    )
+
+
+def find_tutorial_unlock_skip(
+    screen: np.ndarray,
+    templates: TutorialUnlockTemplates,
+) -> Match | None:
+    """认出「轻触后解锁」遮罩 ⇒ 返回可点的关闭点；认不出 / 定位不到 ⇒ None。
+
+    判据只有 ``title`` 一颗（黑框左半，排他）。``skip`` / ``highlight`` **只决定点哪**：
+    优先点右上角「跳过教学 ✕」，找不到再点黑框箭头指向的高亮图标。两个都定位
+    不到就保守不动手 —— 绝不退回猜出来的坐标。
+    """
+    if templates.title is None:
+        return None
+    title = find_template(
+        screen,
+        templates.title,
+        _GAME_NOTICE_TITLE_THRESHOLD,
+        region=_TUTORIAL_TITLE_REGION,
+        reference_size=_REFERENCE_SIZE,
+    )
+    if title is None:
+        return None
+    if templates.skip is not None:
+        skip = find_template(
+            screen,
+            templates.skip,
+            _GAME_NOTICE_CLOSE_THRESHOLD,
+            region=_TUTORIAL_SKIP_REGION,
+            reference_size=_REFERENCE_SIZE,
+        )
+        if skip is not None:
+            return Match(skip.center, min(title.score, skip.score))
+    if templates.highlight is not None:
+        highlight = find_template(
+            screen,
+            templates.highlight,
+            _TUTORIAL_HIGHLIGHT_THRESHOLD,
+            region=_TUTORIAL_HIGHLIGHT_REGION,
+            reference_size=_REFERENCE_SIZE,
+        )
+        if highlight is not None:
+            return Match(highlight.center, min(title.score, highlight.score))
+    return None
 
 
 def load_knights_activity_templates(template_dir: Path) -> KnightsActivityTemplates:

@@ -79,6 +79,13 @@ class ProjectLayoutTests(unittest.TestCase):
                 # 旧 PC 模板打这一帧只有 0.6882（阈 0.88），缩到 0.97 才 0.9335
                 # ⇒ 判定为「同一句、不同尺寸」，补了 global/pc/ 的第二种尺寸图。
                 "network_reconnect_pc_story_20261105.png",
+                # 2026-11-06 12:29 PC 真机：主线打到 Episode 4 第 11 关时弹出的
+                # 「轻触后解锁【觉醒者艾庭】」**全屏教学遮罩**。它把「准备战斗」
+                # 和 ESC 一起吞掉 ⇒ prepare_battle 点 4 次不转场、收尾 ESC 2 次
+                # 无效 ⇒ 主线 ✗ 且每日任务「已中止」，后面 8 条路线全没跑。
+                # 判据只裁黑框左半（不含会变的角色名），4 帧 0.9999~1.0000，
+                # 全库 360 张反例最高 0.4323。
+                "tutorial_unlock_pc_live_20261106.png",
             },
             {path.name for path in fixture_dir.glob("*.png")},
         )

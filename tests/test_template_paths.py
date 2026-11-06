@@ -409,8 +409,14 @@ def test_real_template_root_only_has_the_reviewed_pc_overrides():
         "global/pc/account_rank_up_close.png",
         "global/pc/side_story_notice_title.png",
         "global/pc/side_story_notice_close.png",
-        "global/pc/reward_notice_title.png",
-        "global/pc/reward_notice_close.png",
+            "global/pc/reward_notice_title.png",
+            "global/pc/reward_notice_close.png",
+            # 2026-11-06：「轻触后解锁」教学遮罩（主线 Episode 4 第 11 关）。
+            # 三张都是 PC-only：title 是排他判据（黑框左半，不含角色名），
+            # skip / highlight 只定位点击点，不参与判据。模拟器加载成 None。
+            "global/pc/tutorial_unlock_title.png",
+            "global/pc/tutorial_skip_button.png",
+            "global/pc/tutorial_highlight_icon.png",
 
     }, actual
 

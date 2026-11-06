@@ -24,6 +24,7 @@ from auto_game_unified.games.epic7.global_popups import (
     find_pet_gift_badge,
     find_reward_notice_close,
     find_side_story_notice_close,
+    find_tutorial_unlock_skip,
     find_web_network_error_close,
     find_worldboss_support_reward_close,
     load_arena_rank_reward_templates,
@@ -43,6 +44,7 @@ from auto_game_unified.games.epic7.global_popups import (
     load_pet_gift_templates,
     load_reward_notice_templates,
     load_side_story_notice_templates,
+    load_tutorial_unlock_templates,
     load_web_network_error_templates,
     load_worldboss_support_reward_templates,
 )
@@ -1886,3 +1888,87 @@ def test_network_retry_recognizes_the_pc_rendering_of_the_disconnected_message()
     assert abs(match.center[1] - 731) <= 8, match.center
     # 模拟器口径必须仍认不出：新图只存在于 pc/，不许被复制成共享图。
     assert find_network_retry(screen, emulator_templates) is None
+
+
+# ---- 「轻触后解锁」教学遮罩（2026-11-06 主线 Episode 4 第 11 关） ------------
+
+
+def test_tutorial_unlock_is_recognised_on_pc_and_points_at_the_skip_button():
+    """12:29 真机：主线第 10 关通关后，第 11 关一进「关卡入口」就盖上这层教学
+    遮罩。它把「准备战斗」和 ESC 一起吞掉 ⇒ prepare_battle 点 4 次不转场、
+    收尾连按 2 次 ESC 页面不动 ⇒ 主线 ✗ + 每日任务「已中止」，后面 8 条全没跑。
+
+    判据只裁黑框**左半**（蓝色左框角 +「轻触后解锁」），不含会变的角色名：
+    4 张真机帧 0.9999~1.0000，全库 360 张反例最高 0.4323（阈 0.82）。
+    点击点是右上角「跳过教学 ✕」中心 (1762,100) —— 明确退出教学、不触发解锁。
+    """
+    screen = load_screen("tutorial_unlock_pc_live_20261106.png")
+    pc_templates = load_tutorial_unlock_templates(TemplateDir(TEMPLATES, "pc"))
+    emulator_templates = load_tutorial_unlock_templates(TEMPLATES)
+
+    match = find_tutorial_unlock_skip(screen, pc_templates)
+
+    assert match is not None
+    assert match.score >= 0.99
+    assert abs(match.center[0] - 1762) <= 8, match.center
+    assert abs(match.center[1] - 100) <= 8, match.center
+    # 模拟器口径：三张图都只在 pc/，一张都加载不到 ⇒ 整段跳过、行为零改动。
+    assert (
+        emulator_templates.title is None
+        and emulator_templates.skip is None
+        and emulator_templates.highlight is None
+    )
+    assert find_tutorial_unlock_skip(screen, emulator_templates) is None
+
+
+def test_tutorial_unlock_does_not_fire_on_other_global_popups():
+    """排他回归：别的全局弹窗 / 正常页面不许被认成这层教学遮罩。"""
+    pc_templates = load_tutorial_unlock_templates(TemplateDir(TEMPLATES, "pc"))
+    for name in (
+        "arena_rank_reward_live_20261020.png",
+        "date_change_pc_live_20261103.png",
+        "login_reward_pc_live_20261103.png",
+        "network_reconnect.png",
+        "friendship_points_pc_20260830.png",
+    ):
+        assert find_tutorial_unlock_skip(load_screen(name), pc_templates) is None, name
+
+
+def test_global_guard_dismisses_the_tutorial_unlock_overlay():
+    """守卫复演：这层遮罩在 ``runtime.capture`` 上被点掉，返回恢复后的正常帧。
+
+    钉住的不只是「finder 认得出」，而是**守卫真的会出手** —— 少接一个 kwarg、
+    少一条 ``_find_popup`` 分支，这里就会原样返回教学层帧。
+    """
+    popup = load_screen("tutorial_unlock_pc_live_20261106.png")
+    normal = np.asarray(
+        Image.open(STORY_FIXTURES / "stage.png").convert("RGB")
+    )[:1132, :1982]
+    screens = iter([popup, popup, normal])
+    clicks: list[tuple[int, int]] = []
+    logs: list[str] = []
+    clock = FakeClock()
+    runtime = Runtime(
+        lambda: next(screens),
+        clicks.append,
+        monotonic=clock.now,
+        emit=logs.append,
+    )
+    runtime.set_capture_guard(
+        Epic7GlobalPopupGuard(
+            load_network_reconnect_templates(TEMPLATES),
+            tutorial_unlock_templates=load_tutorial_unlock_templates(
+                TemplateDir(TEMPLATES, "pc")
+            ),
+            sleep=clock.sleep,
+            now=clock.now,
+        )
+    )
+
+    received = runtime.capture()
+
+    assert np.array_equal(received, normal)
+    assert len(clicks) == 1
+    assert abs(clicks[0][0] - 1762) <= 8, clicks
+    assert abs(clicks[0][1] - 100) <= 8, clicks
+    assert any("动作=dismiss-tutorial-unlock" in line for line in logs)
