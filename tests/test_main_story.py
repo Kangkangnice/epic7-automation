@@ -104,6 +104,8 @@ class MainStoryTests(unittest.TestCase):
                 #   「无法控制」剧情弹窗 —— 标准居中模态框，放守卫里安全。
                 knights_activity_templates = object()
                 uncontrollable_templates = object()
+                # 2026-11-06 第 22 类：「轻触后解锁」教学遮罩（吞点击也吞 ESC）。
+                tutorial_unlock_templates = object()
                 # ⚠️ 本文件三处 B023 抑制标记都是误报：events 虽然在外层循环里被重新赋值，
                 # 但这些 side_effect / on_call 都是**当轮同步调用**的（mock 在被调用的那一刻
                 # 就执行它），取不到下一轮的值。ruff 只看语法，看不出调用时机。
@@ -223,6 +225,11 @@ class MainStoryTests(unittest.TestCase):
                         load_uncontrollable_templates=unittest.mock.MagicMock(
                             return_value=uncontrollable_templates
                         ),
+                        # 2026-11-06 第 22 类。同样塞进 patch.multiple，
+                        # 别再往那个贴着 20 层上限的 with 里加 patch.object。
+                        load_tutorial_unlock_templates=unittest.mock.MagicMock(
+                            return_value=tutorial_unlock_templates
+                        ),
                     ),
                     patch.object(main_module, "Epic7Navigator") as navigator_type,
                     patch.object(main_module, "HomeReturn") as home_return_type,
@@ -279,6 +286,7 @@ class MainStoryTests(unittest.TestCase):
                     # 2026-11-05/06 第 20/21 类，与上面 patch.multiple 同进同出。
                     knights_activity_templates=knights_activity_templates,
                     uncontrollable_templates=uncontrollable_templates,
+                    tutorial_unlock_templates=tutorial_unlock_templates,
                 )
                 self.assertEqual(["guard", "navigation"], events)
 

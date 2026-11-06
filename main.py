@@ -52,6 +52,7 @@ from auto_game_unified.games.epic7.global_popups import (
     load_knights_signin_templates,
     load_knights_weekly_reward_templates,
     load_uncontrollable_templates,
+    load_tutorial_unlock_templates,
     load_date_change_templates,
     load_knights_activity_templates,
     load_login_reward_templates,
@@ -544,6 +545,11 @@ def run_mode(
                 # 「无法控制」剧情弹窗（主线关卡入口页会弹出，整页盖住）。
                 # 图只在 pc/ 里 ⇒ 模拟器加载成 None ⇒ 整段跳过。
                 uncontrollable_templates=load_uncontrollable_templates(
+                    template_root / "global"
+                ),
+                # 「轻触后解锁」教学遮罩（主线 Episode 4 第 11 关；吞点击也吞 ESC）。
+                # 图只在 pc/ 里 ⇒ 模拟器加载成 None ⇒ 整段跳过。
+                tutorial_unlock_templates=load_tutorial_unlock_templates(
                     template_root / "global"
                 ),
                 login_reward_templates=load_login_reward_templates(
