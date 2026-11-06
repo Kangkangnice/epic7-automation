@@ -324,9 +324,8 @@ def test_real_template_root_only_has_the_reviewed_pc_overrides():
         # ⚠️ 几何与共享图一致（340x66，中心 (1138,1041) = ``_POINT_DECIDE``），
         # 所以按钮选中/未选中两态都能命中（模拟器实测 1.0000 vs 0.9753）。
         "tower/pc/card_decide.png",
-        # 支线故事主页：左下「快速入场」+ 右下「冒险」。
+        # 支线故事主页：左下「快速入场」（右下「冒险」已在上方 adventure.png 条目登记）。
         "side_story/pc/quick_entry.png",
-        "side_story/pc/adventure.png",
         # 2026-11-03：迷宫强化石整条打通（买了 3 块强化石）。
         # ⚠️ region_row1_label 配套放宽了 region（990,400,400,360）——PC 上「1 区域」
         # 在 y≈467，原 region 从 555 起 ⇒ 锚点只能乱匹配到 621，导致误判"1 区域已选中"、
