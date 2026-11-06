@@ -426,6 +426,19 @@ def test_real_template_root_only_has_the_reviewed_pc_overrides():
             "global/pc/tutorial_unlock_title.png",
             "global/pc/tutorial_skip_button.png",
             "global/pc/tutorial_highlight_icon.png",
+            # 2026-11-06 17:29 批量四条独立 ✗ 的 PC 覆盖图（代码零改动那两条）。
+            # ① 英雄合成「自动选择」：PC 把这四个字渲染成另一套字形，共享图
+            #    全屏最高只有 0.6953（阈 0.85）⇒ 传送选择页判据缺一角，
+            #    ``_transmit_page_ready`` 恒 False、open_transmit 目标页超时。
+            # PC 图在两轮真机的传送选择页都是 1.0000；2360 张 PC 诊断帧
+            # 只有那两张正例过 0.85，负例最高 0.2866。
+            "hero/pc/auto_select_label.png",
+            # ② 竞技场「升级奖励」弹窗：这颗全局弹窗 2026-10-20 就接好了
+            #    （标题 + 点击关闭双锚点），但两张图是模拟器字形，在 PC 帧上
+            #    只有 0.6604 / 0.6861（阈 0.88）⇒ 守卫不出手、干等 45 秒。
+            #    补 PC 图后两锚点各 1.0000，点击点 (962,832)。
+            "navigation/pc/arena_rank_reward_title.png",
+            "navigation/pc/arena_rank_reward_close.png",
 
     }, actual
 

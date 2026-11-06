@@ -86,6 +86,10 @@ class ProjectLayoutTests(unittest.TestCase):
                 # 判据只裁黑框左半（不含会变的角色名），4 帧 0.9999~1.0000，
                 # 全库 360 张反例最高 0.4323。
                 "tutorial_unlock_pc_live_20261106.png",
+                # 2026-11-06 17:23 批量：竞技场「升级奖励」弹窗的 PC 字形版。
+                # 这颗全局弹窗 10-20 就接好了，但两张锚点图是模拟器字形，
+                # PC 帧上只有 0.6604 / 0.6861（阈 0.88）⇒ 守卫不出手。
+                "arena_rank_reward_pc_live_20261106.png",
             },
             {path.name for path in fixture_dir.glob("*.png")},
         )

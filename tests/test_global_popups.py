@@ -1437,6 +1437,114 @@ def _hero_screen(name: str) -> np.ndarray:
     return np.asarray(Image.open(HERO_FIXTURES / name).convert("RGB"))
 
 
+# ---- 2026-11-06 17:29 批量：这颗弹窗的 **PC 字形** ----------------------------
+#
+# 这颗全局弹窗 2026-10-20 就接好了（标题 + 点击关闭双锚点 / 守卫 / 装配齐全），
+# 但两张锚点图是模拟器字形。PC 帧上只有 0.6604 / 0.6861（阈 0.88）⇒ 守卫
+# 返回 None、不出手，竞技场点掉「段位提升」后紧跟的第二层没人关，
+# 底页被压暗（list_ready 0.8240 < 0.88）⇒ 转场干等 40 秒报 ✗。
+# 11-03 起每一次升新段位都会复现（诊断帧 11-03/11-04/11-05x2/11-06x2 共 6 组）。
+# 修法只补两张 PC 覆盖图，代码一行不改；模拟器继续读共享图。
+PC_NAVIGATION_TEMPLATES = TemplateDir(NAVIGATION_TEMPLATES, "pc")
+
+
+def test_pc_arena_rank_reward_popup_is_recognised_with_pc_glyphs():
+    popup = _global_screen("arena_rank_reward_pc_live_20261106.png")
+    templates = load_arena_rank_reward_templates(PC_NAVIGATION_TEMPLATES)
+
+    match = find_arena_rank_reward_close(popup, templates.title, templates.close)
+
+    assert match is not None
+    assert match.score >= 0.88
+    # 「点击关闭」真机中心 (962,832)；绝不是被弹窗盖住的底部「确认」(961,1045)。
+    assert 900 <= match.center[0] <= 1020
+    assert 800 <= match.center[1] <= 865
+
+
+def test_shared_arena_rank_reward_templates_do_not_fire_on_the_pc_frame():
+    """隔离铁律：模拟器口径仍解析到共享图，这颗 PC 帧上判据原样不成立。"""
+    popup = _global_screen("arena_rank_reward_pc_live_20261106.png")
+    templates = load_arena_rank_reward_templates(NAVIGATION_TEMPLATES)
+
+    assert (
+        find_arena_rank_reward_close(popup, templates.title, templates.close)
+        is None
+    )
+
+
+def test_pc_arena_rank_reward_still_requires_both_anchors():
+    """换图不许把「双锚点」这层保护一起换掉。"""
+    popup = _global_screen("arena_rank_reward_pc_live_20261106.png")
+    templates = load_arena_rank_reward_templates(PC_NAVIGATION_TEMPLATES)
+    without_title = popup.copy()
+    without_title[285:365, 820:1180] = 0
+    without_close = popup.copy()
+    without_close[795:905, 860:1140] = 0
+
+    assert (
+        find_arena_rank_reward_close(
+            without_title, templates.title, templates.close
+        )
+        is None
+    )
+    assert (
+        find_arena_rank_reward_close(
+            without_close, templates.title, templates.close
+        )
+        is None
+    )
+
+
+def test_pc_arena_rank_reward_popup_rejects_neighbour_pages():
+    templates = load_arena_rank_reward_templates(PC_NAVIGATION_TEMPLATES)
+
+    for name in (
+        "rank_promotion_master.png",
+        "selected.png",
+        "result_defeat_live_20260925.png",
+    ):
+        assert (
+            find_arena_rank_reward_close(
+                _arena_screen(name), templates.title, templates.close
+            )
+            is None
+        ), name
+
+
+def test_guard_dismisses_the_pc_arena_rank_reward_popup():
+    """守卫挂在 capture 层，转场等待循环里的抓帧也能自愈。"""
+    popup = _global_screen("arena_rank_reward_pc_live_20261106.png")
+    recovered = _arena_screen("selected.png")
+    screens = iter([popup, popup, recovered])
+    clicks = []
+    logs = []
+    clock = FakeClock()
+    runtime = Runtime(
+        lambda: next(screens),
+        clicks.append,
+        monotonic=clock.now,
+        emit=logs.append,
+    )
+    runtime.set_capture_guard(
+        Epic7GlobalPopupGuard(
+            load_network_reconnect_templates(TEMPLATES),
+            arena_rank_reward_templates=load_arena_rank_reward_templates(
+                PC_NAVIGATION_TEMPLATES
+            ),
+            sleep=clock.sleep,
+            now=clock.now,
+        )
+    )
+
+    received = runtime.capture()
+
+    assert np.array_equal(received, recovered)
+    assert len(clicks) == 1
+    assert 900 <= clicks[0][0] <= 1020
+    assert 800 <= clicks[0][1] <= 865
+    assert any("动作=close-arena-rank-reward" in line for line in logs)
+
+
 def test_arena_rank_reward_popup_is_recognized_from_both_anchors():
     """标题「升级奖励」+ 底部「点击关闭」，两个锚点都命中才算。
 

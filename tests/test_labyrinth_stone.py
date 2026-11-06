@@ -1076,3 +1076,41 @@ def test_the_list_page_fix_is_pc_only():
             ), name
     finally:
         matcher.set_active_backend(previous)
+
+
+def test_pc_live_list_page_clicks_the_alt_anchor():
+    """2026-11-06 17:28 真机：页面认得出、入口找不到。
+
+    ``observe_page`` 已经用 ``any_of(labyrinth_entry, labyrinth_entry_alt)``
+    判成「迷宫列表」（备选图 1.0000），可 ``_at_labyrinth_list`` 仍写死
+    ``_required("labyrinth_entry")``（主图那一帧为 None）⇒ 抛 UnrecognizedScreen，
+    60 秒后报「页面无进展」，整条迷宫 ✗。
+
+    判据与点击点用两把尺子 = 把已认出的页面又判成认不出。改成同组候选。
+    两张现场帧（17:28 失败瞬间 / 17:29 超时）都必须点在 (1690,479)。
+    """
+    machine = pc_lab_machine()
+
+    for name in (
+        "labyrinth_list_pc_20261106_live",
+        "labyrinth_list_pc_20261106_timeout",
+    ):
+        screen = pc_lab_frame(name)
+        assert machine.observe_page(screen) is (
+            LabyrinthStoneState.LABYRINTH_LIST
+        ), name
+        action = machine.next_action(screen)
+        assert action is not None, name
+        assert action.name == "open-labyrinth-entry", name
+        assert tuple(action.point) == (1690, 479), (name, action.point)
+        assert "labyrinth_entry_alt" in action.reason, name
+
+
+def test_emulator_never_registers_the_pc_alt_anchor():
+    """模拟器候选链退化成原来的单图：模板为 None、证据画像也不登记该原子。"""
+    machine = labyrinth_stone.LabyrinthStoneStateMachine(
+        resolve_template_dir(TEMPLATE_ROOT, "emulator") / "labyrinth_stone"
+    )
+
+    assert machine.templates.labyrinth_entry_alt is None
+    assert "labyrinth_entry_alt" not in machine.templates.evidence.atoms

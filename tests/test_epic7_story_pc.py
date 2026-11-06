@@ -18,10 +18,13 @@ from auto_game_unified.games.epic7.global_popups import (
     load_friend_request_templates,
 )
 from auto_game_unified.games.epic7.story import (
+    StageTooHard,
     StoryState,
     StoryStateMachine,
     build_story_templates,
+    detect_resume_point,
 )
+from auto_game_unified.games.epic7.unknown_screen import UnrecognizedScreen
 from auto_game_unified.games.epic7.template_paths import TemplateDir
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -267,6 +270,86 @@ class Epic7StoryPcTests(unittest.TestCase):
                 self.assertIsNone(action, name)
                 self.assertEqual(1, machine.completed_cycles, name)
                 self.assertEqual(StoryState.STAGE, machine.state, name)
+
+
+class StoryBattleFailedTests(unittest.TestCase):
+    """2026-11-06 17:15 主线第 13 轮打输：把「打不过」报成 ``battle_unrecognized``。
+
+    现场帧是 FAILED 战败结算页（欧勒毕斯指南 / 离开 / 大厅 / 继续战斗 / 重新进行）。
+    ``battle_scene_visible`` 为 False、``reward/clear/results_confirm`` 三选一全 None
+    ⇒ 战斗监督五项观察全假 ⇒ 干等 45 秒安全停止，主线记 ✗。
+
+    修法抄月塔 2026-11-01 的 ``FloorTooHard``：**复用** ``tower/battle_failed.png``
+    （同一套 FAILED UI，白掩膜），不另存第二份图、不碰共享模板。四处接线：
+    监督 ``result_visible``、状态机 ``next_action``、开局接力 ``detect_resume_point``、
+    以及 PC-only 的模板加载。模拟器载不到图 ⇒ 四处全部原样。
+
+    ⚠️ 真机证据：17:15:51 那轮 ``battle_unrecognized`` 之后收尾 ESC → 快捷菜单 →
+    酒馆 → 大厅成功（17:16:08「异常收尾=已回到首页」），所以改成正常收工不会
+    中断整条每日任务链。
+    """
+
+    def setUp(self):
+        self.pc_machine = StoryStateMachine(
+            build_story_templates(TemplateDir(TEMPLATES, "pc"))
+        )
+        self.emulator_machine = StoryStateMachine(
+            build_story_templates(TemplateDir(TEMPLATES, "emulator"))
+        )
+        self.frame = load_pc_fixture("story_failed_pc_live_20261106")
+
+    def test_the_failed_page_is_visible_to_the_battle_supervisor_on_pc(self):
+        hit = self.pc_machine._battle_failed(self.frame)
+        self.assertIsNotNone(hit)
+        self.assertGreaterEqual(hit.score, 0.88)
+        observation = self.pc_machine.observe_battle(self.frame, None)
+        self.assertTrue(observation.result_visible)
+        self.assertFalse(observation.battle_visible)
+
+    def test_the_failed_page_stops_cleanly_instead_of_timing_out(self):
+        with self.assertRaises(StageTooHard) as caught:
+            self.pc_machine.next_action(self.frame)
+        self.assertIn("打不过", str(caught.exception))
+        self.assertEqual("主线这一关打不过", StageTooHard.stop_label)
+
+    def test_the_failed_page_is_an_opening_resume_point(self):
+        point = detect_resume_point(self.pc_machine, self.frame)
+        self.assertIsNotNone(point)
+        self.assertEqual("战斗失败结算", point.page)
+        self.assertEqual(StoryState.WAIT_RESULTS, point.state)
+
+    def test_the_emulator_behaviour_is_byte_for_byte_unchanged(self):
+        self.assertIsNone(self.emulator_machine.templates.battle_failed)
+        self.assertIsNone(self.emulator_machine._battle_failed(self.frame))
+        observation = self.emulator_machine.observe_battle(self.frame, None)
+        self.assertFalse(observation.result_visible)
+        with self.assertRaises(UnrecognizedScreen):
+            self.emulator_machine.next_action(self.frame)
+        self.assertIsNone(
+            detect_resume_point(self.emulator_machine, self.frame)
+        )
+
+    def test_real_battle_frames_never_trigger_the_failed_conclusion(self):
+        """反向：真战斗 / 技能演出帧上一律不许宣布「打不过」。
+
+        误收手的代价是战斗中途被切走，比漏判严重得多。全库 386 张夹具
+        反例最高 0.2748、主线 38 张战斗/诊断帧除正例外最高 0.1888（阈 0.88）。
+        """
+        for name in (
+            "battle",
+            "battle_auto_off_live_20260809",
+            "battle_auto_on_live_20260809",
+            "battle_auto_skill_cooldown_live_20260818",
+            "battle_guide_warning_live_20260815",
+            "battle_manual_skill_variant_live_20260815",
+            "battle_variant",
+            "skill_animation_live_20260813",
+            "stage_battle_ready_updated",
+        ):
+            with self.subTest(frame=name):
+                self.assertIsNone(
+                    self.pc_machine._battle_failed(load_fixture(name)), name
+                )
 
 
 if __name__ == "__main__":

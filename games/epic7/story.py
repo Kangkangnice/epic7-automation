@@ -16,6 +16,7 @@ from auto_game_unified.core.battle_supervisor import (
     valid_game_frame,
 )
 from auto_game_unified.core.matcher import (
+    MATCH_MODE_WHITE_MASK,
     Match,
     find_template,
     load_template,
@@ -280,6 +281,18 @@ class StoryState(Enum):
     WAIT_NEXT_STAGE = "wait_next_stage"
 
 
+class StageTooHard(StaminaExhausted):
+    """这一关打不过（战斗 FAILED 结算页）= **正常业务退出**，不是故障。
+
+    与月塔 ``FloorTooHard`` 同一口径：继承 ``StaminaExhausted`` 借退出码 2，
+    不点「重新进行 / 继续战斗」重打、不点大厅，收尾照常回首页衔接下一条路线。
+    2026-11-06 17:15 主线实跑把这个页面报成 ``battle_unrecognized`` 故障，
+    根因是战斗监督的 ``result_visible`` 三选一里没有战败结算页。
+    """
+
+    stop_label = "主线这一关打不过"
+
+
 # 日志用画面名：state.value -> 中文画面描述
 STATE_LABELS = {
     StoryState.STAGE: "关卡入口",
@@ -345,6 +358,10 @@ class StoryTemplates:
     # ⚠️ 可选：模拟器没有这枚 PC 覆盖图 ⇒ 载入为 ``None``，``_action_point`` 原样回落
     # ``match.center``（模拟器零改动）。
     complete_close: Optional[np.ndarray] = None
+    # 战斗 FAILED 结算页判据。**PC-only，且复用月塔那张图**（同一套战败 UI，
+    # 不另存第二份）。模拟器为 None ⇒ 整条 FAILED 分支不启用，行为零改动。
+    # 只用于「打不过就正常收工」，不参与任何点击点。
+    battle_failed: Optional[np.ndarray] = None
     threshold: float = 0.80
     stamina_popup: Optional[np.ndarray] = None
     stamina_material: Optional[np.ndarray] = None
@@ -379,6 +396,28 @@ def _load_complete_close(template_dir) -> Optional[np.ndarray]:
     return load_template(str(candidate))
 
 
+def _load_battle_failed(template_dir) -> Optional[np.ndarray]:
+    """PC 主线的战败结算页判据：**复用月塔那张 ``tower/battle_failed.png``**。
+
+    月塔 2026-10-31 就为同一套「FAILED 大字 + 上下装饰线」建了这张图，
+    白掩膜口径在别处最高 0.22。主线 2026-11-06 17:15 的 FAILED 帧上实测
+    0.9811，全库 386 张夹具反例最高 0.2748、主线 38 张战斗/诊断帧除正例外
+    最高 0.1888 —— 这是**同一个游戏 UI**，没必要再存一份需要同步的副本。
+
+    ⚠️ 只在 PC 后端加载：模拟器拿普通 ``Path`` / ``backend=emulator``，
+    ``is_pc`` 为假 ⇒ 返回 None ⇒ ``_battle_failed()`` 恒为 None ⇒
+    ``observe_battle`` / ``next_action`` / 接力三处全部原样，零改动。
+    """
+    from auto_game_unified.games.epic7.template_paths import is_pc
+
+    if not is_pc(template_dir):
+        return None
+    candidate = template_dir.parent / "tower" / "battle_failed.png"
+    if not Path(candidate).is_file():
+        return None
+    return load_template(str(candidate))
+
+
 def build_story_templates(template_dir: Path) -> StoryTemplates:
     """主线模板。阈值只有模拟器基线一套；平台差异收敛到图片。"""
     evidence = build_story_evidence(template_dir)
@@ -408,6 +447,8 @@ def build_story_templates(template_dir: Path) -> StoryTemplates:
         retry_stage=load_template(str(template_dir / "retry_stage.png")),
         # 「点击关闭」标签：PC 覆盖图存在才载入，否则 ``None``（模拟器回落旧点）。
         complete_close=_load_complete_close(template_dir),
+        # 战败结算页：PC 复用月塔的 FAILED 图；模拟器为 None，整条分支不启用。
+        battle_failed=_load_battle_failed(template_dir),
         **asdict(load_stamina_templates(template_dir)),
         quick_battle=load_simulator_quick_battle_detector(template_dir),
         threshold=evidence.atom("start_mission").threshold,
@@ -426,6 +467,11 @@ class StoryStateMachine:
     # PC「完成故事」弹窗底部「点击关闭」标签的搜索区。模板 150×50，区域留足
     # 余量让它在 (965,770) 附近滑到真中心；实测该帧 1.0000 @ (965,770)。
     _COMPLETE_CLOSE_REGION = (820, 700, 270, 140)
+    # 战斗 FAILED 结算页：居中的「FAILED」大字 + 上下装饰线，与月塔是同一套 UI。
+    # region / 阈值 / 白掩膜口径三项必须与 evidence/tower.py::battle_failed 一致，
+    # 否则「同一张图在两条路线上两个结论」。
+    _BATTLE_FAILED_REGION = (950, 180, 700, 220)
+    _BATTLE_FAILED_THRESHOLD = 0.88
 
     def __init__(
         self,
@@ -607,6 +653,25 @@ class StoryStateMachine:
     def observe_battle_controls(self, screen: np.ndarray) -> BattleControls:
         return observe_battle_controls(screen)
 
+    def _battle_failed(self, screen: np.ndarray) -> Optional[Match]:
+        """战败结算页判据。**只有一份实现**，监督 / 状态机 / 接力三处共用。
+
+        PC 才载到模板；模拟器 ``battle_failed is None`` ⇒ 恒返回 None，
+        三处消费方逐字节保持改动前的行为。
+        """
+        template = self.templates.battle_failed
+        if template is None:
+            return None
+        return locate_with_fallback(
+            "battle_failed",
+            screen,
+            template,
+            self._BATTLE_FAILED_THRESHOLD,
+            region=self._BATTLE_FAILED_REGION,
+            reference_size=self._REFERENCE_SIZE,
+            mode=MATCH_MODE_WHITE_MASK,
+        )
+
     def observe_battle(
         self,
         screen: np.ndarray,
@@ -670,13 +735,21 @@ class StoryStateMachine:
             auto_state is AutoBattleState.AUTO
             and meaningful_change(previous_screen, screen)
         )
+        battle_visible = battle_scene_visible(screen)
+        result_visible = any(
+            self._locate(screen, name) is not None
+            for name in ("reward", "clear", "results_confirm")
+        )
+        if not result_visible and not battle_visible:
+            # 战败结算页（FAILED）：画面已不是战斗场景，三选一结算锚点也全不命中
+            # ⇒ 五项观察全假 ⇒ 监督干等 45 秒报 battle_unrecognized，把「打不过」
+            # 这个正常业务退出写成故障（2026-11-06 17:15 主线实跑即此死法）。
+            # 只在两项都假时补判：真战斗画面上一帧额外判据都不跑。
+            result_visible = self._battle_failed(screen) is not None
         return BattleObservation(
             pre_battle_visible=pre_battle.mode is not PreBattleMode.UNKNOWN,
-            battle_visible=battle_scene_visible(screen),
-            result_visible=any(
-                self._locate(screen, name) is not None
-                for name in ("reward", "clear", "results_confirm")
-            ),
+            battle_visible=battle_visible,
+            result_visible=result_visible,
             frame_valid=valid_game_frame(screen),
             auto_state=auto_state,
             auto_point=(
@@ -757,6 +830,13 @@ class StoryStateMachine:
         )
 
     def next_action(self, screen: np.ndarray) -> Optional[StoryAction]:
+        # 战败结算页**优先于一切状态分派**（2026-11-06 接线）：它既不是任何一关的
+        # 前进页，也没有可以安全点的按钮 —— 右下「重新进行 / 继续战斗」都会重打
+        # 这一关，点了就是无限循环白耗体力。监督收手把状态拨到 WAIT_RESULTS 后，
+        # 这里直接按「打不过」正常收工（退出码 2、不重打、收尾照常回首页）。
+        # 与月塔 CARD 分支先判 FAILED 同一纪律：孤儿页排在业务页前面。
+        if self._battle_failed(screen) is not None:
+            raise StageTooHard("主线这一关打不过（战斗 FAILED 结算页）")
         stamina_action = self._handle_stamina(screen)
         if stamina_action is not None:
             return stamina_action
@@ -1164,6 +1244,11 @@ def detect_resume_point(
     """
     if battle_scene_visible(screen):
         return ResumePoint("战斗中", StoryState.WAIT_BATTLE)
+    # 战败结算页：这一帧 ``_STORY_RESUME_ORDER`` 的 12 颗锚点**一颗都不命中**
+    # （2026-11-06 17:15 真机帧实测），必须在状态循环之前显式判，否则开局
+    # 停在 FAILED 页会被当成「认不出」→ 回大厅重走一遍 → 又打一遍同一关。
+    if machine._battle_failed(screen) is not None:
+        return ResumePoint("战斗失败结算", StoryState.WAIT_RESULTS)
     if observed_page is not None and observed_page == STORY_ENTRY_PAGE:
         # 导航器认出来就直接落 STAGE + 导航接力点，不再重复跑锚点。
         return ResumePoint("关卡入口", StoryState.STAGE, STORY_ENTRY_PAGE)

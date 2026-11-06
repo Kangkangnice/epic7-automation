@@ -476,6 +476,8 @@ class LabyrinthStoneStateMachine:
         # 一条不会谎报「买了几块石头」的收工理由。
         self.already_explored = False
         self._confirmed_page = ""
+        # 迷宫列表点的是哪一颗候选（主图 / PC 备选），写进动作依据便于复盘。
+        self._last_entry_candidate = ""
 
     # ---- 视觉判据 ----
 
@@ -523,6 +525,33 @@ class LabyrinthStoneStateMachine:
                 "为避免点到不知名的位置，已安全停止"
             )
         return match
+
+    def _required_any(self, screen: np.ndarray, names: tuple[str, ...]) -> Match:
+        """页面判据走 ``any_of`` 认出来了，点击点就必须走**同一组候选**。
+
+        2026-11-06 17:28 实跑：``observe_page`` 已判成「迷宫列表」
+        （``labyrinth_entry_alt`` 1.0000），可 ``_at_labyrinth_list`` 还写死
+        ``_required("labyrinth_entry")``（那一帧主图为 None）⇒ 报「找不到锚点」。
+        判据与点击点用两把尺子，等于把已认出的页面又判成认不出。
+
+        模拟器下 ``labyrinth_entry_alt`` 是 None，且证据画像根本不登记这个原子，
+        所以这里先按模板字段跳过它，**整条候选链退化成原来的单图**，行为零改动。
+        """
+        best: Optional[Match] = None
+        best_name = ""
+        for name in names:
+            if getattr(self.templates, name, None) is None:
+                continue
+            match = self._locate(screen, name)
+            if match is not None and (best is None or match.score > best.score):
+                best, best_name = match, name
+        if best is None:
+            raise UnrecognizedScreen(
+                f"迷宫强化石画面[{state_label(self.state)}]里找不到锚点 "
+                f"{'/'.join(names)}；为避免点到不知名的位置，已安全停止"
+            )
+        self._last_entry_candidate = best_name
+        return best
 
     def observe_page(self, screen: np.ndarray) -> Optional[LabyrinthStoneState]:
         profile = self.templates.evidence
@@ -723,13 +752,18 @@ class LabyrinthStoneStateMachine:
         )
 
     def _at_labyrinth_list(self, screen: np.ndarray):
-        entry = self._required(screen, "labyrinth_entry")
+        # 页面判据是 any_of(labyrinth_entry, labyrinth_entry_alt)，点击点必须同组：
+        # 只认主图时，PC 那一帧「页面认得出、入口找不到」，白等 60 秒后报故障。
+        entry = self._required_any(
+            screen, ("labyrinth_entry", "labyrinth_entry_alt")
+        )
         return self._action(
             "open-labyrinth-entry",
             point=entry.center,
             source_page=state_label(LabyrinthStoneState.LABYRINTH_LIST),
             target_pages=(state_label(LabyrinthStoneState.LABYRINTH_DETAIL),),
-            reason=f"迷宫列表里的「混乱的提雷尔城」（中心={entry.center}）",
+            reason=f"迷宫列表里的「混乱的提雷尔城」（候选={self._last_entry_candidate} "
+            f"分数={entry.score:.4f} 中心={entry.center}）",
         )
 
     def _at_labyrinth_detail(self, screen: np.ndarray):
