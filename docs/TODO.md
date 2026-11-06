@@ -90,16 +90,17 @@
 | tower 月塔 | 9 | ✅ 打通一层（11-03）+ 25 层终点取证 | 已放行；⚠️ `result_clear` 在 PC 上无现场帧 |
 | moonlight_theater 月光剧场 | 3 | ✅ 完成第 1 幕（11-03） | 已放行 |
 | world_boss 世界首领战 | 7 | ✅ 导航链 + 前半场（11-03 20:58 打通） | 已放行；⚠️ 结算后领奖段未真机走过 |
-| hero_synthesis 英雄合成 | 7 | ⚠️ 合成本身跑通；关掉结果弹窗后停在英雄信息页、等列表超时；17:18 传送选择页「自动选择」补 PC 字形图（共享图 0.6953 < 0.85） | 已放行（用户自测）；收尾未通 |
+| hero_synthesis 英雄合成 | 9 | ⚠️ 17:18 传送选择页「自动选择」补 PC 字形图（共享图 0.6953 < 0.85）；19:06 传送奖励层被「获得奖励」全局守卫抢关（同 UI），新增 `reward_notice_guard=False` + `hero/pc/transmit_reward_{title,close}.png` 让状态机自己认 | 已放行（用户自测）；待 19:06 真机复验 |
 | side_story 支线故事 | 5 | ⚠️ 单关连打已通（`replay` 已重裁）；11-06 补 PC 期次主页两颗接力/运行期判据；三期特殊链路从没真机走到 | 已放行（**部分完成**，用户 11-05 同意暂停） |
 | activity_story 活动剧情 | 1 | ✅ 连看多段故事 + 战斗关（11-05/06） | 已放行；⚠️ `ticket_free` 未采到样本 |
 | expedition / fodder / survivor / community | 0 | 未在 PC 上做过 | 未开工 |
 
 另有 `templates/global/pc/` 23 张 + `templates/navigation/pc/` 9 张为多路线共用（合计 32）；
-全部 PC 专属图合计 **117 张**（`find games/epic7/templates -path '*/pc/*.png' | wc -l` 口径；
+全部 PC 专属图合计 **119 张**（`find games/epic7/templates -path '*/pc/*.png' | wc -l` 口径；
 2026-11-06 12:29 教学遮罩新增 3 张 `global/pc/tutorial_*.png`，同日支线故事期次主页
-新增 2 张 `side_story/pc/event_home_*.png`；17:29 批量四条 ✗ 再新增 3 张：
-`hero/pc/auto_select_label.png` 与 `navigation/pc/arena_rank_reward_{title,close}.png`）。
+新增 2 张 `side_story/pc/event_home_*.png`；17:29 批量四条 ✗ 新增 3 张：
+`hero/pc/auto_select_label.png` 与 `navigation/pc/arena_rank_reward_{title,close}.png`；
+19:06/19:07 两轮再新增 2 张：`hero/pc/transmit_reward_{title,close}.png`。
 ⚠️ 主线 FAILED 判据**没有新图** —— 直接复用月塔那张共享 `tower/battle_failed.png`
 （同一个 FAILED UI，白掩膜 0.9811），靠 `is_pc(template_dir)` 限定只在 PC 加载。
 ⚠️ 竞技场那 8 张在 `templates/pc/` 根、刷书签 7 张在 `templates/pc/shop_refresh/`、
