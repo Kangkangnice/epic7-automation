@@ -178,7 +178,7 @@ from auto_game_unified.games.epic7.resume_probe import ResumePoint, observe_page
 from auto_game_unified.games.epic7.route_action import RouteAction
 from auto_game_unified.games.epic7.runner_base import ModeRunnerBase
 from auto_game_unified.games.epic7.unknown_screen import UnrecognizedScreen
-from auto_game_unified.games.epic7.template_paths import is_template_root
+from auto_game_unified.games.epic7.template_paths import is_pc, is_template_root
 
 
 class KnightsDonationState(Enum):
@@ -407,6 +407,7 @@ class KnightsDonationTemplates:
     # 属本项目最怕的「判据没接上」那类。要动它就得显式改这里。
     digit_glyphs: dict[int, np.ndarray]
     evidence: object = None
+    pc: bool = False
 
 
 def build_knights_donation_templates(template_dir: Path) -> KnightsDonationTemplates:
@@ -434,6 +435,7 @@ def build_knights_donation_templates(template_dir: Path) -> KnightsDonationTempl
         # 退回「点完没反应就重试」那条老路。
         digit_glyphs=load_digit_glyphs(template_dir),
         evidence=build_knights_donation_evidence(template_dir),
+        pc=is_pc(template_dir),
     )
 
 
@@ -697,30 +699,78 @@ class KnightsDonationStateMachine:
         #    什么都不发生，主循环会当成「没点到」重试 4 次然后把整条路线收工
         #    （2026-09-25 实跑现场）。所以这一格**连点都不点**，直接记进跳过表。
         #    ⚠️ 读不出（``verdict is None``）就照旧点 —— 退回下面那道兜底判据。
-        short_rows: list[str] = []
-        for candidate in self._support_candidates(screen):
-            if self._is_skipped(candidate.center[1]):
-                continue
-            numbers = self._row_numbers(screen, candidate.center)
-            if numbers.verdict is True:
-                self.skipped_rows.add(candidate.center[1])
-                short_rows.append(numbers.describe())
-                continue
-            self.pending_support_y = candidate.center[1]
-            return self._action(
-                "support-one",
-                point=candidate.center,
-                source_page=state_label(KnightsDonationState.RESOURCE_SUPPORT),
-                # 两种落点都合法：有的行直接弹「获得奖励」，有的行先弹确认框。
-                target_pages=(
-                    state_label(KnightsDonationState.SUPPORT_CONFIRM),
-                    state_label(KnightsDonationState.REWARD_POPUP),
-                ),
-                reason=(
-                    f"列表里有可支援的成员（绿色按钮@{candidate.center}，"
-                    f"{numbers.describe()}）{self._skipped_note(short_rows)}{request_note}"
-                ),
+        if self.templates.pc:
+            # ⚠️ PC 实测（2026-11-03）：读不出分两种，必须区别对待。
+            # 现场帧 `runtime_diagnostics/_probe_knights/resource_support2.png` 显示，
+            # 列表第一行是**自己的行**（`kangkangnice Rank.50`），按钮写着「本人」——
+            # 它和「支援 N 个」是同一个绿色药丸形状，`support_one_button` 模板在 PC 上
+            # 以 1.0000 命中它 ⇒ 程序挑中「本人」、点 4 次毫无反应 ⇒ 判定「连点 4 次没能
+            # 推进」⇒ **整节支援收工**，排在它后面的、真正能支援的团员永远轮不到。
+            # 「本人」行的特征是**只有持有、没有「支援 M 个」** ⇒ 读不出。
+            # 但「读不出」也可能是字模整个失效（那时候瞎跳会把能支援的人全跳掉）。
+            # 所以：**只要这一屏里还有别的行读得出**，读不出的那行就当作「本人/超范围」
+            # 跳过；**整屏都读不出** ⇒ 退回旧行为照旧点（护栏口径不变）。
+            candidates = [
+                candidate
+                for candidate in self._support_candidates(screen)
+                if not self._is_skipped(candidate.center[1])
+            ]
+            readings = [
+                (candidate, self._row_numbers(screen, candidate.center))
+                for candidate in candidates
+            ]
+            any_readable = any(
+                numbers.verdict is not None for _, numbers in readings
             )
+            short_rows: list[str] = []
+            for candidate, numbers in readings:
+                if numbers.verdict is True or (
+                    numbers.verdict is None and any_readable
+                ):
+                    # True = 材料不足；None 且同屏有别的行读得出 = 本人行 / 超出字模范围
+                    self.skipped_rows.add(candidate.center[1])
+                    short_rows.append(numbers.describe())
+                    continue
+                self.pending_support_y = candidate.center[1]
+                return self._action(
+                    "support-one",
+                    point=candidate.center,
+                    source_page=state_label(KnightsDonationState.RESOURCE_SUPPORT),
+                    # 两种落点都合法：有的行直接弹「获得奖励」，有的行先弹确认框。
+                    target_pages=(
+                        state_label(KnightsDonationState.SUPPORT_CONFIRM),
+                        state_label(KnightsDonationState.REWARD_POPUP),
+                    ),
+                    reason=(
+                        f"列表里有可支援的成员（绿色按钮@{candidate.center}，"
+                        f"{numbers.describe()}）{self._skipped_note(short_rows)}{request_note}"
+                    ),
+                )
+        else:
+            short_rows: list[str] = []
+            for candidate in self._support_candidates(screen):
+                if self._is_skipped(candidate.center[1]):
+                    continue
+                numbers = self._row_numbers(screen, candidate.center)
+                if numbers.verdict is True:
+                    self.skipped_rows.add(candidate.center[1])
+                    short_rows.append(numbers.describe())
+                    continue
+                self.pending_support_y = candidate.center[1]
+                return self._action(
+                    "support-one",
+                    point=candidate.center,
+                    source_page=state_label(KnightsDonationState.RESOURCE_SUPPORT),
+                    # 两种落点都合法：有的行直接弹「获得奖励」，有的行先弹确认框。
+                    target_pages=(
+                        state_label(KnightsDonationState.SUPPORT_CONFIRM),
+                        state_label(KnightsDonationState.REWARD_POPUP),
+                    ),
+                    reason=(
+                        f"列表里有可支援的成员（绿色按钮@{candidate.center}，"
+                        f"{numbers.describe()}）{self._skipped_note(short_rows)}{request_note}"
+                    ),
+                )
         # 3) 视口内没有可点的 ⇒ 可能一屏放不下，下滑再看（有界）。
         if self.support_scrolls < MAX_SUPPORT_SCROLLS:
             self.support_scrolls += 1
@@ -757,7 +807,13 @@ class KnightsDonationStateMachine:
         if not glyphs:
             # 字模没接上：**不要猜**，一律当「不知道」⇒ 调用方照旧点。
             return RowNumbers(None, None)
-        return read_row_numbers(screen, button_center, glyphs, reference_size=REFERENCE_SIZE)
+        return read_row_numbers(
+            screen,
+            button_center,
+            glyphs,
+            reference_size=REFERENCE_SIZE,
+            pc=getattr(self.templates, "pc", False),
+        )
 
     @staticmethod
     def _skipped_note(short_rows: list[str]) -> str:

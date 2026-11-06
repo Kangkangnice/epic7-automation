@@ -16,6 +16,10 @@ class ProjectLayoutTests(unittest.TestCase):
                 # 2026-10-04 真机：竞技场掉线那一帧是「文案乙 + 按钮甲」的交叉
                 # 搭配 —— 老的两两配对判定两组各缺一半，整层弹窗被漏掉。
                 "network_disconnected_live_20261004.png",
+                # 2026-11-03 PC 真机：英雄详情里弹出的**断线**重连帧，与 10-04 那张
+                # 竞技场帧是同一句文案的又一种渲染；它钉住 global/pc 断线图不会
+                # 把「断线」误判成「重连成功」（两类弹窗按钮不同、不能串味）。
+                "network_disconnected_pc_hero_20261103.png",
                 "network_reconnect.png",
                 "network_reconnect_navigation.png",
                 # 2026-11-01 PC 真机：同一句「网络连接异常，请重新连接。」在 PC 上
@@ -70,6 +74,11 @@ class ProjectLayoutTests(unittest.TestCase):
                 # 这层不吃 ESC ⇒ 收尾「连按 2 次 ESC 页面不动」⇒「回首页失败」。
                 # 第 19 类全局弹窗的唯一正例（标题 304x49 排他，全库最高 0.5703）。
                 "login_reward_pc_live_20261103.png",
+                # 2026-11-05 PC 真机：主线战斗里弹出的**断线重连**弹窗（同一句话的
+                # **小一号**渲染：字高 26 vs 25、字宽 361 vs 346）。
+                # 旧 PC 模板打这一帧只有 0.6882（阈 0.88），缩到 0.97 才 0.9335
+                # ⇒ 判定为「同一句、不同尺寸」，补了 global/pc/ 的第二种尺寸图。
+                "network_reconnect_pc_story_20261105.png",
             },
             {path.name for path in fixture_dir.glob("*.png")},
         )

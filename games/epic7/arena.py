@@ -50,6 +50,7 @@ from auto_game_unified.games.epic7.unknown_screen import (
     UnrecognizedScreen,
     UnknownWakeResult,
 )
+from auto_game_unified.games.epic7.template_paths import is_pc
 from auto_game_unified.games.epic7.evidence.arena import (
     FREE_REFRESH_CONFIRM_REGION,
     FREE_REFRESH_OFFER_REGION,
@@ -68,6 +69,8 @@ from auto_game_unified.games.epic7.evidence.common import EvidenceProfile, Evide
 _RANK_PROMOTION_REFERENCE_SIZE = ARENA_REFERENCE_SIZE
 _RANK_PROMOTION_ARROW_REGION = RANK_PROMOTION_ARROW_REGION
 _RANK_PROMOTION_CONFIRM_REGION = RANK_PROMOTION_CONFIRM_REGION
+# PC「升级奖励」弹窗里「点击关闭 ∨」的搜索区：真机帧实测 bbox (903,819) 114x27。
+_RANK_CLOSE_HINT_REGION = (850, 770, 320, 150)
 _FREE_REFRESH_TITLE_REGION = FREE_REFRESH_TITLE_REGION
 _FREE_REFRESH_OFFER_REGION = FREE_REFRESH_OFFER_REGION
 _FREE_REFRESH_CONFIRM_REGION = FREE_REFRESH_CONFIRM_REGION
@@ -78,8 +81,16 @@ def find_rank_promotion_confirm(
     arrow_template: np.ndarray,
     confirm_template: np.ndarray,
     threshold: float = 0.90,
+    close_hint: "np.ndarray | None" = None,
 ) -> Optional[Match]:
-    """Return Confirm only when the promotion arrow and button are both visible."""
+    """Return Confirm only when the promotion arrow and button are both visible.
+
+    ``close_hint`` 是 PC 专属的「点击关闭 ∨」。给了且命中就用它当点击点：
+    PC 的「升级奖励」弹窗**最底部还有一颗半透明「确认」**（属于被弹窗盖住的底层
+    页面），``confirm_template`` 会命中它 ⇒ 点在盖住的按钮上纹丝不动 ——
+    2026-11-05 22:28 实测就是这么卡满 42 秒转场超时的。
+    模拟器没有这张图 ⇒ ``close_hint`` 是 None ⇒ 走原逻辑，行为一字不变。
+    """
 
     def locate(
         template: np.ndarray,
@@ -109,6 +120,16 @@ def find_rank_promotion_confirm(
         if match is None:
             return None
         return Match((x + match.center[0], y + match.center[1]), match.score)
+
+    if close_hint is not None:
+        hint = locate(
+            close_hint,
+            _RANK_CLOSE_HINT_REGION,
+            np.array([0, 0, 170]),
+            np.array([179, 80, 255]),
+        )
+        if hint is not None:
+            return Match(hint.center, hint.score)
 
     arrow = locate(
         arrow_template,
@@ -306,9 +327,15 @@ class ArenaTemplates:
     # VS 段位确认页（PC 独有）：点完「战斗开始」后、真正进战斗前的一道拦截页。
     # 只裁绿色「确认」按钮本身（段位无关，满足"公共部分"要求）；模拟器无此页 → None。
     vs_confirm: "np.ndarray | None" = None
+    # 2026-11-05「升级奖励」弹窗：弹窗里真正的关闭点是中间那行「点击关闭 ∨」。
+    # PC 上弹窗**最底部还有一颗半透明「确认」**（属于被盖住的底层页面），
+    # `rank_confirm` 会命中它 ⇒ 点在盖住的按钮上纹丝不动 ⇒ 42 秒转场超时。
+    # 只有 pc/ 有图 ⇒ 模拟器为 None ⇒ 仍走老的 `rank_confirm`，行为一字不变。
+    rank_close_hint: "np.ndarray | None" = None
     threshold: float = 0.98
     quick_battle: QuickBattleDetector | None = None
     evidence: EvidenceProfile | None = None
+    pc: bool = False
 
 
 def build_templates(template_dir: Path) -> ArenaTemplates:
@@ -322,7 +349,13 @@ def build_templates(template_dir: Path) -> ArenaTemplates:
     # ``template_dir`` 是 TemplateDir：``/ "arena_vs_confirm.png"`` 在 PC 下会自动挑
     # ``pc/`` 同名图，模拟器回落共享目录（无此图）。
     vs_confirm_path = template_dir / "arena_vs_confirm.png"
+    rank_close_hint_path = template_dir / "rank_close_hint.png"
     return ArenaTemplates(
+        rank_close_hint=(
+            load_template(str(rank_close_hint_path))
+            if rank_close_hint_path.is_file()
+            else None
+        ),
         rank_promotion_arrow=load_template(
             str(template_dir / "global" / "arena_rank_promotion_arrow.png")
         ),
@@ -353,6 +386,7 @@ def build_templates(template_dir: Path) -> ArenaTemplates:
         quick_battle=load_simulator_quick_battle_detector(template_dir),
         threshold=0.98,
         evidence=evidence,
+        pc=is_pc(template_dir),
     )
 
 
@@ -717,7 +751,9 @@ class ArenaStateMachine:
         # 「购买旗帜」弹窗的兜底指示：「取消」按钮是 UI 控件，与段位/报价无关，
         # 在 PC 多版弹窗渲染下比标题文字更稳（两版「购买旗帜」字形渲染差，单一
         # no_ticket 图覆盖不全）。标题或取消按钮任一命中即算弹窗在场。
-        purchase_cancel = self._locate(screen, "purchase_cancel")
+        purchase_cancel = (
+            self._locate(screen, "purchase_cancel") if self.templates.pc else None
+        )
         ticket_popup_visible = no_ticket is not None or purchase_cancel is not None
         # VS 段位确认页（PC 独有）：点完「战斗开始」后、真正进战斗前的一道拦截页。
         # 与购买弹窗同类，都是"战前拦截"，交给监督点掉即可；模拟器无此模板 → 整段跳过。
@@ -782,10 +818,14 @@ class ArenaStateMachine:
         # 而卡死。弹窗在场 = 标题(no_ticket) 或「取消」按钮(purchase_cancel) 任一命中
         # （PC 多版渲染下后者更稳）。能确认廉价（友情点/绿叶）报价才买；否则按资源耗尽
         # 优雅停止（落到 _close_out 用「取消」关掉弹窗再回家），避免误扣钻石。
-        if self.state in (ArenaState.TEAM, ArenaState.BATTLE) and (
+        ticket_popup = self.state in (ArenaState.TEAM, ArenaState.BATTLE) and (
             self._visible(screen, "no_ticket")
-            or self._visible(screen, "purchase_cancel")
-        ):
+            or (
+                self.templates.pc
+                and self._visible(screen, "purchase_cancel")
+            )
+        )
+        if ticket_popup:
             offer = self._locate(screen, "friendship_ticket_offer")
             purchase = self._locate(screen, "ticket_purchase_button")
             if offer is None or purchase is None:
@@ -823,6 +863,7 @@ class ArenaStateMachine:
                 self.templates.rank_promotion_arrow,
                 self.templates.rank_confirm,
                 self._THRESHOLDS["rank_promotion_arrow"],
+                close_hint=self.templates.rank_close_hint,
             )
             if rank_confirm is not None:
                 return Action(

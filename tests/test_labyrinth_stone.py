@@ -15,6 +15,7 @@
 分数凭空掉一大截（蓝菱形实测 1.0000 → 0.2528）。
 """
 
+import dataclasses
 from pathlib import Path
 
 import cv2
@@ -22,6 +23,7 @@ import numpy as np
 import pytest
 
 from auto_game_unified.games.epic7 import labyrinth_stone
+from auto_game_unified.games.epic7.template_paths import resolve_template_dir
 from auto_game_unified.games.epic7.labyrinth_stone import (
     LabyrinthStoneRunner,
     LabyrinthStoneState,
@@ -874,3 +876,203 @@ def test_resume_refuses_to_take_over_a_purchase_dialog():
     """
     machine = build_machine()
     assert detect_resume_point(machine, frame("buy_confirm")) is None
+
+
+# ---- ⑧ 1 区域「完成探险」：今天这趟已经打过（2026-11-04 14:18 真机）---------------
+
+PC_LAB_FIXTURES = ROOT / "tests" / "fixtures" / "epic7_labyrinth_stone_pc"
+
+
+def pc_lab_frame(name: str) -> np.ndarray:
+    raw = cv2.imread(str(PC_LAB_FIXTURES / f"{name}.png"), cv2.IMREAD_COLOR)
+    assert raw is not None, f"缺 PC 夹具 {name}.png"
+    return cv2.cvtColor(raw, cv2.COLOR_BGR2RGB)[:1132, :1982]
+
+
+def pc_lab_machine(**flags):
+    machine = labyrinth_stone.LabyrinthStoneStateMachine(
+        resolve_template_dir(TEMPLATE_ROOT, "pc") / "labyrinth_stone"
+    )
+    for key, value in flags.items():
+        setattr(machine, key, value)
+    return machine
+
+
+def test_pc_region1_completed_skips_the_dead_click_and_goes_home():
+    """14:18 真机：1 区域写着「完成探险」，金框停在 2 区域。
+
+    旧行为：``select-region-1`` 对 (1080,467) 连点 4 次毫无变化 → 四次点击未转场
+    → 整条每日任务记 ✗。这一行**不是没认出来，是它本来就不能点**，所以补
+    「1 区域」模板、调阈值、放宽点击次数全都治不了；必须把它认成正常收工。
+    """
+    machine = pc_lab_machine()
+    screen = pc_lab_frame("region1_completed_pc_20261104")
+
+    assert machine.observe_page(screen) is LabyrinthStoneState.LABYRINTH_DETAIL
+    assert machine._region1_completed(screen) is True
+
+    action = machine.next_action(screen)
+
+    assert action is not None
+    assert action.name == "open-quick-menu"
+    assert action.name != "select-region-1"
+    assert action.source_page == "迷宫详情页"
+    assert action.target_pages == ("右上角快捷菜单",)
+    # 右上角蓝色四格网格实测 0.8971 @ (1858,103)，不是屏幕中心、也不是返回箭头
+    assert abs(action.point[0] - 1858) <= 12
+    assert abs(action.point[1] - 103) <= 12
+    # 是「今天不用打了」，不是「中途做不下去」；后者会让 Runner 回家后报错
+    assert machine.already_explored is True
+    assert machine.blocked_reason == ""
+    assert machine.entered is False
+
+
+def test_region1_completed_label_must_sit_under_row1(monkeypatch):
+    """证伪的第二维：光有绿字不够，必须贴在「1 区域」标签正下方。
+
+    真机 dx=+20 / dy=+36；第二行的状态文字在 dy≈224。哪天「2 区域」也写了
+    「完成探险」，这颗模板照样会命中，只有位置配对能把它挡回去。
+    """
+    machine = pc_lab_machine()
+    screen = pc_lab_frame("region1_completed_pc_20261104")
+    real_locate = machine._locate
+
+    def shifted(screen_arg, name):
+        hit = real_locate(screen_arg, name)
+        if name == "region1_completed" and hit is not None:
+            return dataclasses.replace(
+                hit, center=(hit.center[0], hit.center[1] + 224)
+            )
+        return hit
+
+    monkeypatch.setattr(machine, "_locate", shifted)
+
+    assert machine._region1_completed(screen) is False
+    assert machine.next_action(screen).name == "select-region-1"
+
+
+def test_region1_completed_does_not_fire_when_row1_is_still_selectable():
+    """反例方向：同一页、1 区域还可选（状态是「0%探险」）时，绝不能提前收工。
+
+    这张是模拟器基线夹具，所以走 emulator 口径建机器；PC 图在这批旧帧上
+    本来就对不上（见 11-03 的 12 张 PC 覆盖图），不能用它来做阴性对照。
+    """
+    machine = build_machine()
+    screen = frame("labyrinth_detail")
+
+    assert machine._region1_completed(screen) is False
+    action = machine.next_action(screen)
+    assert action is not None
+    assert action.name == "open-team"
+    assert machine.already_explored is False
+
+
+def test_region1_completed_does_not_fire_on_another_page_with_green_text():
+    """跨页反例：骑士团「每周任务」页也有绿色文字，全库扫描最高才 0.2995。"""
+    machine = build_machine()
+    raw = cv2.imread(
+        str(ROOT / "tests" / "fixtures" / "epic7_knights_donation"
+            / "weekly_tasks_claimable.png"),
+        cv2.IMREAD_COLOR,
+    )
+    assert raw is not None
+    screen = cv2.cvtColor(raw, cv2.COLOR_BGR2RGB)[:1132, :1982]
+
+    assert machine._region1_completed(screen) is False
+
+
+def test_already_explored_reports_an_honest_finish_reason():
+    """回到家后不许套用「商店里没有可买的强化石」——今天压根没进过迷宫。"""
+    machine = pc_lab_machine(already_explored=True)
+    screen = frame("lobby")
+
+    assert machine.next_action(screen) is None
+
+    assert machine.state is LabyrinthStoneState.FINISHED
+    assert machine.completed_cycles == 1
+    assert "完成探险" in machine.finish_reason
+    assert "强化石" not in machine.finish_reason
+    assert machine.blocked_reason == ""
+
+    # 对称：没拨这个标记时，仍是原来那条「买了几块」的收工口径
+    ordinary = pc_lab_machine()
+    assert ordinary.next_action(screen) is None
+    assert "强化石" in ordinary.finish_reason
+
+
+def test_preview_does_not_leak_the_already_explored_flag():
+    """主循环每帧先 ``preview`` 做两帧稳定确认；新增跨帧进度必须一并还原。
+
+    漏了就会在「还没采信」的那一帧把「今天不用打了」记成事实。
+    """
+    machine = pc_lab_machine()
+    screen = pc_lab_frame("region1_completed_pc_20261104")
+
+    action, _ = machine.preview(screen)
+
+    assert action is not None
+    assert action.name == "open-quick-menu"
+    assert machine.already_explored is False
+    assert machine.completed_cycles == 0
+
+
+# ---- ⑨ 迷宫列表页（2026-11-04 23:53 真机整链卡死）------------------------------
+
+PC_LIST_FIXTURES = {
+    # 同一轮的两次现场帧：一张干净、一张右上角叠了「玩家林下老屋召唤了…」Toast。
+    "labyrinth_list_pc_20261104": "干净列表页",
+    "labyrinth_list_pc_20261104_toast": "列表页 + Toast",
+}
+
+
+def test_pc_list_page_is_recognised_with_and_without_a_toast():
+    """跑完一趟回到列表页，``observe_page`` 必须认得出来。
+
+    事故：``labyrinth_entry`` 的旧 PC 覆盖图在 PC 上**原样只有 0.7767**
+    （阈 0.85，共享图 0.7657），于是 ``observe_page`` 返回 None ⇒ 主循环报
+    ``unknown_screen_unresolved``，44 秒后第二张帧仍是同一页 ⇒ 整条每日任务
+    「页面无进展：迷宫强化石画面[战斗菜单·一般页]未识别」✗。
+
+    修法：按 PC 帧里**完整**的标题包围盒重裁（242x39，旧图 232x44 把最后一个
+    字切掉了）。重裁后本帧 1.0000；全库 2186 张 PC 帧里只有这两张真·列表页
+    过 0.85，392 张模拟器夹具最高 0.7147（隔离成立，PC 图不去顶模拟器页）。
+
+    Toast 那张是**必须留**的反例：提示条压在右栏上方，正是「同一页两种外观」
+    最容易把判据做脆的地方。
+    """
+    machine = pc_lab_machine()
+
+    for name, label in PC_LIST_FIXTURES.items():
+        page = machine.observe_page(pc_lab_frame(name))
+        assert page is LabyrinthStoneState.LABYRINTH_LIST, (label, page)
+
+
+def test_pc_list_page_anchor_does_not_leak_onto_the_battle_menu():
+    """跨页反例：赛季菜单 / 详情页不能被认成列表页。"""
+    machine = pc_lab_machine()
+
+    for name in ("season_menu_pc_20261104", "region1_completed_pc_20261104"):
+        page = machine.observe_page(pc_lab_frame(name))
+        assert page is not LabyrinthStoneState.LABYRINTH_LIST, name
+
+
+def test_the_list_page_fix_is_pc_only():
+    """隔离铁律：模拟器模板跑同一张 PC 帧，不许被认成列表页。
+
+    PC 覆盖图只在 ``templates/labyrinth_stone/pc/`` 里，模拟器后端根本读不到它；
+    这条钉住「别哪天为了省事把 PC 图挪回共享目录」。
+    """
+    from auto_game_unified.core import matcher
+
+    machine = labyrinth_stone.LabyrinthStoneStateMachine(
+        resolve_template_dir(TEMPLATE_ROOT, "emulator") / "labyrinth_stone"
+    )
+    previous = matcher.ACTIVE_BACKEND
+    matcher.set_active_backend("emulator")
+    try:
+        for name in PC_LIST_FIXTURES:
+            assert machine.observe_page(pc_lab_frame(name)) is not (
+                LabyrinthStoneState.LABYRINTH_LIST
+            ), name
+    finally:
+        matcher.set_active_backend(previous)

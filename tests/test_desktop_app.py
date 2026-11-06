@@ -325,7 +325,10 @@ def test_the_pc_backend_refuses_routes_without_pc_acceptance():
     路线（``catalog.PC_READY_ROUTES``），那会把这条断言变成永假。
     换样本的历史：``tower`` 2026-11-03 放行 → 换 ``world_boss``；``world_boss``
     同一天晚些时候也放行了（补 7 张 PC 图后导航链与前半场跑通）→ 换 ``expedition``。
-    ⚠️ 别拿 ``hero_synthesis`` / ``knights_donation`` 当样本 —— 那两条正在被并行移植。
+    ⚠️ 别拿已经放行的路线当样本 —— 那会把断言变成永假。``hero_synthesis`` 也在
+    2026-11-05 放行了（用户要自己在界面上测）。当前还没放行、可以当样本的是：
+    ``expedition`` / ``fodder`` / ``survivor`` / ``activity_story`` / ``community``
+    / ``side_story``。
     """
     controller = DesktopController(worker=FakeWorker())
     controller.toggle("expedition", True)

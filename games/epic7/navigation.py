@@ -29,7 +29,7 @@ from auto_game_unified.games.epic7.activity_column import (
 )
 from auto_game_unified.games.epic7.evidence.arena import THRESHOLDS as ARENA_THRESHOLDS
 from auto_game_unified.games.epic7.evidence.story import THRESHOLDS as STORY_THRESHOLDS
-from auto_game_unified.games.epic7.template_paths import resolve_template_dir
+from auto_game_unified.games.epic7.template_paths import is_pc, resolve_template_dir
 from auto_game_unified.games.epic7.global_popups import (
     find_arena_rank_reward_close,
     find_friendship_points_popup_close,
@@ -251,7 +251,8 @@ class NavigationTemplates:
     story_skip: np.ndarray
     story_skip_confirm: np.ndarray
     story_ready: np.ndarray
-    story_ready_updated: np.ndarray
+    # 「准备战斗」按钮换皮版；PC 还有第二套渲染，见 _load_navigation_candidates。
+    story_ready_updated: tuple[np.ndarray, ...]
     arena_ready: np.ndarray
     expedition_battle_title: np.ndarray
     expedition_season_tab: np.ndarray
@@ -316,7 +317,8 @@ class NavigationTemplates:
     expedition_home: np.ndarray
     lobby_story_click_offset: tuple[int, int]
     lobby_side_story: np.ndarray
-    side_story_special_book: np.ndarray
+    # 「特别的时间之书」按钮；PC 两套渲染互为候选，见 _load_navigation_candidates。
+    side_story_special_book: tuple[np.ndarray, ...]
     special_book_episode: np.ndarray
     episode_adventure: np.ndarray
     fodder_stage_title: np.ndarray
@@ -346,6 +348,17 @@ class NavigationTemplates:
     # 与 ``sanctuary_forest_row`` / ``lobby_worldboss_select_team`` 同一个道理：
     # 同一个控件维护两份模板迟早漂移。
     tower_home: np.ndarray
+    # 月塔主页左上角的「欧多马顿塔」标题（仅文字）。2026-11-04 加：月光剧场主页
+    # 右下角也有一枚**同款的绿色「入场」按钮**，会把 ``tower_home`` 的 ``home_enter``
+    # 锚点高分吃下（月光剧场主页帧 0.9266 @ (1693,1008) 落在 region 内）⇒
+    # 月光剧场主页被误判成月塔主页，导航转场合同彻底走偏。
+    # 这枚标题是月塔主页**专有**的（月光剧场主页只有「月光剧场」标题），用作
+    # ``tower_home`` 的**证伪第二维**：两枚锚点同时过阈才认月塔主页，缺一不可。
+    # ⚠️ 不与 ``evidence/tower.py`` 的 ``home_title`` 共用：那条因为「月塔主页 / 楼层列表
+    # 两页都命中」被刻意排除出塔路线判据；本枚只服务导航层的「月塔主页 vs 非月塔页」
+    # 区分，互不干扰。
+    # PC 专属：图只放在 ``tower/pc/``，模拟器载入为 None，判页仍走原来的单维。
+    tower_home_title: Optional[np.ndarray]
     knights_signin_title: np.ndarray
     knights_signin_close: np.ndarray
     gift_support_title: np.ndarray
@@ -363,7 +376,17 @@ class NavigationTemplates:
     # 大厅左侧竖排最后一个「活动」入口（记事本+星+时钟图标 与「活动」二字）。
     # ⚠️ 与 ``lobby_knights`` 同理：实测 220 张同尺寸夹具里过阈 12 张、**全是大厅类帧**
     # ⇒ 它是**大厅常驻控件**，只作**点击目标**，**不能判页**（判页看下面三张）。
-    lobby_activity: np.ndarray
+    #
+    # ⚠️ 2026-11-05 起改成两张候选：游戏给这颗入口挂了橙色「N」角标，还把整列
+    # 上移约 24 像素 ⇒ 原图在当天真机帧上只剩 0.7956~0.8049（门槛 0.82），
+    # 社区签到 19:09 / 19:41 / 19:42 连着三次停在「大厅缺少导航锚点 lobby_activity」。
+    # 第二张只裁「活动」二字（不含会变的角标与图标上半）：当天两帧 1.0000 / 0.9972、
+    # 旧版大厅帧 0.8902；原图在旧帧仍是 1.0000，``_locate`` 取高分者 ⇒ 旧画面的
+    # 判定与点击点一字不改。
+    # 全库 2471 张 1982x1132 帧复扫：第二张新覆盖 22 张，全是原本差一点的大厅类帧
+    # （原图 0.7648~0.8105），没有把别的页面认成入口；PC 抓帧上第二张 ≤0.8199
+    # 不过阈，仍由原图命中。
+    lobby_activity: tuple[np.ndarray, ...]
     # 游戏内「活动」页左列表里的「更多精彩活动」那一行（**未选中态**）。
     #
     # ⚠️⚠️ **2026-10-18 起它不再是 ``activity_menu`` 的判据**，只当点击目标。
@@ -435,6 +458,28 @@ class NavigationTemplates:
     # 横屏「网页活动列表」页右侧的「游戏社区」按钮 —— **竖屏社区就从这里进**。
     web_community: np.ndarray
     shop_refresh_observer: ShopRefreshObserver
+    # 本套模板服务哪个后端。PC 专属的新增判据只在它为真时启用；
+    # 普通 ``Path`` / 模拟器构造出来的模板一律是 False，走原来的判定路径。
+    pc: bool = False
+
+
+def _load_optional_template(path) -> Optional[np.ndarray]:
+    """PC 专属图：文件存在才加载，模拟器回落路径上没有这张图时为 None。"""
+    return load_template(str(path)) if Path(path).is_file() else None
+
+
+def _load_navigation_candidates(directory, basename: str) -> tuple[np.ndarray, ...]:
+    """主图必载；``<basename>_alt.png`` 只放在 ``pc/`` 里，存在才追加为第二候选。
+
+    PC 客户端把同一颗控件画成过两套外观，单图必在其中一批帧上掉到阈值以下
+    （2026-11-04 实测「特别的时间之书」两套互比 0.7720、「准备战斗」0.8515）。
+    模拟器解析到的是共享目录下不存在的同名文件 ⇒ 只有一张主图，行为零改动。
+    """
+    primary = load_template(str(directory / f"{basename}.png"))
+    alt = directory / f"{basename}_alt.png"
+    if not Path(alt).is_file():
+        return (primary,)
+    return (primary, load_template(str(alt)))
 
 
 def build_navigation_templates(template_root: Path) -> NavigationTemplates:
@@ -496,8 +541,8 @@ def build_navigation_templates(template_root: Path) -> NavigationTemplates:
             str(template_root / "story" / "skip_confirm.png")
         ),
         story_ready=load_template(str(template_root / "story" / "prepare_battle.png")),
-        story_ready_updated=load_template(
-            str(template_root / "story" / "prepare_battle_updated.png")
+        story_ready_updated=_load_navigation_candidates(
+            template_root / "story", "prepare_battle_updated"
         ),
         arena_ready=load_template(str(template_root / "list_ready.png")),
         expedition_battle_title=load_template(
@@ -532,8 +577,8 @@ def build_navigation_templates(template_root: Path) -> NavigationTemplates:
         # 使**点击点保持原来的 (1790,326) 不动**，改动对真机点击零影响。
         lobby_story_click_offset=(45, -14),
         lobby_side_story=load_template(str(navigation / "lobby_side_story.png")),
-        side_story_special_book=load_template(
-            str(navigation / "side_story_special_book.png")
+        side_story_special_book=_load_navigation_candidates(
+            navigation, "side_story_special_book"
         ),
         special_book_episode=load_template(
             str(navigation / "special_book_episode.png")
@@ -558,6 +603,9 @@ def build_navigation_templates(template_root: Path) -> NavigationTemplates:
         ),
         tower_home=load_template(
             str(template_root / "tower" / tower_home.template_path)
+        ),
+        tower_home_title=_load_optional_template(
+            template_root / "tower" / "tower_home_title.png"
         ),
         knights_signin_title=load_template(
             str(navigation / "knights_signin_title.png")
@@ -591,7 +639,10 @@ def build_navigation_templates(template_root: Path) -> NavigationTemplates:
         ),
         # 社区签到路线（2026-10-06）。全部直接 ``load_template``：缺文件就抛
         # ``FileNotFoundError``（fail closed），不写 ``exists() else None``。
-        lobby_activity=load_template(str(navigation / "lobby_activity.png")),
+        lobby_activity=(
+            load_template(str(navigation / "lobby_activity.png")),
+            load_template(str(navigation / "lobby_activity_label.png")),
+        ),
         activity_more=load_template(str(navigation / "activity_more.png")),
         # 两版活动页骨架（旧版米黄横幅 / 新版蓝底标题栏），任一过阈即命中。
         # ⚠️ 缺文件照旧抛 ``FileNotFoundError``（fail closed）—— 删掉任何一个候选
@@ -606,6 +657,7 @@ def build_navigation_templates(template_root: Path) -> NavigationTemplates:
         web_activity_gate=load_template(str(navigation / "web_activity_gate.png")),
         web_community=load_template(str(navigation / "web_community.png")),
         shop_refresh_observer=build_shop_refresh_observer(template_root),
+        pc=is_pc(template_root),
     )
 
 
@@ -717,7 +769,7 @@ class Epic7Navigator:
         # 这里模板正好 215x120、原搜索框也是 215x120 ⇒ 只能贴在左上角比一次，
         # 拿到 0.8001（阈 0.82）差一点点；而同一个模板全屏能拿到 0.9805 @(1805,440)。
         # 放宽到 400x220 让它在框内能滑到最佳位置，两端（模拟器/PC）都覆盖。
-        "lobby_side_story": (1600, 350, 400, 220),
+        "lobby_side_story": (1700, 380, 215, 120),
         "side_story_special_book": (1520, 900, 385, 110),
         "special_book_episode": (790, 995, 500, 110),
         "episode_adventure": (1595, 945, 338, 187),
@@ -753,6 +805,9 @@ class Epic7Navigator:
         # （点它是 ``sanctuary.py`` 状态机的事）。复用 evidence 那边的区域定义。
         "sanctuary_forest_row": SANCTUARY_REGIONS["forest_row"],
         "tower_home": TOWER_REGIONS["home_enter"],
+        # 月塔主页左上角「欧多马顿塔」标题（见 ``NavigationTemplates.tower_home_title``
+        # 字段说明）。区域只罩左上角那一格文字，比控件大一圈给抗锯齿留余量。
+        "tower_home_title": (15, 130, 200, 80),
         # ---- 社区签到路线（2026-10-06）----
         # 大厅左侧竖排最后一个「活动」入口。区域留得比控件大一圈（图标 y 754~812、
         # 「活动」二字 y 826~838 ⇒ 控件占 ~75..845），给大厅动画/节日装饰留余量。
@@ -825,6 +880,9 @@ class Epic7Navigator:
         """
         missing = []
         for anchor in cls._REGIONS:
+            # PC 专属的第二维：模拟器不加载这张图，别让它触发 fail-closed。
+            if anchor == "tower_home_title" and not templates.pc:
+                continue
             value = getattr(templates, anchor, None)
             # None = 没加载；空元组 = 候选图一张都没有。两者都是「判据不存在」。
             if value is None or (isinstance(value, tuple) and not value):
@@ -845,6 +903,12 @@ class Epic7Navigator:
         template_root: Path | None = None,
     ) -> None:
         self.templates = templates
+        # 「支线故事」入口的搜索框在 PC 上要放宽；模拟器保持原来的范围。
+        if templates.pc:
+            self._REGIONS = {
+                **self._REGIONS,
+                "lobby_side_story": (1600, 350, 400, 220),
+            }
         # 开跑前先确认判据锚点都在。放在构造期而不是 ``observe()`` 里，
         # 是因为「判据缺失」是配置故障，应该在启动时立刻暴露。
         self._assert_anchor_templates(templates)
@@ -1104,11 +1168,17 @@ class Epic7Navigator:
         if expedition_home:
             return PageObservation("expedition_home", expedition_home.score)
 
-        # 月塔主页：右下角「入场」按钮。与远征主页**互斥**（不同页面的不同按钮），
-        # 实测月塔主页上 `expedition_home` 只有 0.28、远征主页上 `tower_home`
-        # 也不到阈（全库扫描见 tests/test_tower_resume.py）。
+        # 月塔主页：右下角「入场」按钮 + 左上角「欧多马顿塔」标题**两维同时满足**。
+        # 与远征主页**互斥**（不同页面的不同按钮）；而月光剧场主页右下角也有一枚
+        # 同款绿色「入场」按钮（会把 ``home_enter`` 高分吃下），必须用专有标题证伪，
+        # 否则月光剧场主页会被误判成月塔主页（2026-11-04 实跑踩到，见
+        # ``NavigationTemplates.tower_home_title`` 字段说明）。全库扫描见
+        # tests/test_tower_resume.py 与 tests/test_navigation.py。
         tower_home = self._locate(screen, "tower_home")
-        if tower_home:
+        if tower_home and (
+            not self.templates.pc
+            or self._locate(screen, "tower_home_title") is not None
+        ):
             return PageObservation("tower_home", tower_home.score)
 
         # ---- 社区签到路线的活动页三态（2026-10-06 立，2026-10-07 改判据）----

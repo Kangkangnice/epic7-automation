@@ -568,5 +568,36 @@ class ScaleFallbackTests(unittest.TestCase):
         return self._screen()[40:90, 60:220].copy()
 
 
+class BackendIsolationTests(unittest.TestCase):
+    def test_emulator_never_runs_pc_only_fallbacks(self):
+        """模拟器实跑时，PC 专属的低通 / 扫尺寸兜底一次都不许跑。
+
+        PC 移植的红线：模拟器原来判对 / 判错都要保持原样，不能因为
+        「多试一种口径」把原本不过阈的帧抬过阈。
+        """
+        rng = np.random.default_rng(0)
+        screen = rng.integers(0, 256, (80, 100, 3), dtype=np.uint8)
+        template = rng.integers(0, 256, (12, 12, 3), dtype=np.uint8)
+        try:
+            with mock.patch.object(
+                matcher, "find_best_template", wraps=matcher.find_best_template
+            ) as spy:
+                matcher.set_active_backend("emulator")
+                matcher.best_match_with_fallback(
+                    "arena_ready", screen, template, 0.99, region=(0, 0, 100, 80)
+                )
+                self.assertEqual(spy.call_count, 1, "模拟器不该跑 PC 兜底")
+            with mock.patch.object(
+                matcher, "find_best_template", wraps=matcher.find_best_template
+            ) as spy:
+                matcher.set_active_backend("pc")
+                matcher.best_match_with_fallback(
+                    "arena_ready", screen, template, 0.99, region=(0, 0, 100, 80)
+                )
+                self.assertGreater(spy.call_count, 1, "PC 下低通兜底应仍生效")
+        finally:
+            matcher.set_active_backend("pc")
+
+
 if __name__ == "__main__":
     unittest.main()

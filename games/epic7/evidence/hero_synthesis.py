@@ -6,6 +6,7 @@ template paths, search regions and thresholds that are likely to change with UI.
 
 from pathlib import Path
 
+from ..template_paths import is_pc
 from .common import AtomEvidence, EvidenceProfile, PageEvidence
 
 
@@ -75,6 +76,23 @@ _REGION_FOR_TEMPLATE = {
     "imprint_grey": "imprint_button",
 }
 
+# PC 客户端专属覆盖：这些原子只在 PC 画像里注册，模拟器画像里完全没有。
+# 图放在 ``templates/hero/pc/`` 下，模拟器不加载、不判（见 build_hero_evidence）。
+# 「满 SSS」印记区。2026-11-03 PC 实测放宽：PC 上这块在 x=45 起（模拟器模板的
+# 最佳落点是 x≈261），原 (130,435,180,130) 把左边 85 px 裁掉了 ⇒ 满 SSS 的英雄
+# 只量到 0.216（阈 0.90）⇒ 判成「非 SSS」⇒ 进去加材料、加不动、死循环
+# （16:51 的穆卡察就是这么卡住的）。放宽后两端的落点都在框内。
+# 列表页：SSS 在 (196,500,72,42) 附近，右侧卡片列会遮住一部分，框留够余量。
+_PC_REGIONS = {
+    "rating_sss": (30, 380, 400, 250),
+    "rating_sss_list": (60, 420, 360, 220),
+}
+# 列表页的「满 SSS」印记：字形与刻印页相同，但**位置和配色不同**（菱形是蓝的、
+# SSS 在下方偏右），刻印页那张模板在列表页只有 0.5593。实测 (196,500,72,42) 这块
+# 在 PC 真机和模拟器夹具 `list_grey_3s_reddot` 上**位置完全一致** ⇒ 一张共享图两平台通用。
+_PC_THRESHOLDS = {"rating_sss_list": 0.90}
+_PC_TEMPLATE_PATHS = {"rating_sss_list": "hero/pc/rating_sss_list.png"}
+
 # 「SSS 材料」徽记在材料页有**两种画法**，同屏可能同时出现：
 #   - 前排那张展开的大卡：徽记按 100% 画  → ``hero/sss_material.png``
 #   - 排在它后面、被压暗的小卡：整张卡连同徽记被缩到约 **90%**
@@ -104,15 +122,22 @@ def build_hero_evidence(template_root: Path) -> EvidenceProfile:
 
     ⚠️ 阈值只有模拟器基线一套；平台差异收敛到图片（``templates/hero/pc/*.png``）。
     """
-    thresholds = THRESHOLDS
+    pc = is_pc(template_root)
+    regions = dict(REGIONS)
+    thresholds = dict(THRESHOLDS)
+    template_paths = dict(_TEMPLATE_PATHS)
+    if pc:
+        regions.update(_PC_REGIONS)
+        thresholds.update(_PC_THRESHOLDS)
+        template_paths.update(_PC_TEMPLATE_PATHS)
     default_threshold = DEFAULT_THRESHOLD
     atoms: dict[str, AtomEvidence] = {}
-    for key, relative_path in _TEMPLATE_PATHS.items():
+    for key, relative_path in template_paths.items():
         region_key = _REGION_FOR_TEMPLATE.get(key, key)
         atoms[key] = AtomEvidence(
             key=key,
             template_path=relative_path,
-            region=REGIONS[region_key],
+            region=regions[region_key],
             threshold=thresholds.get(key, default_threshold),
             # 全部必需：判据型模板缺一张就不该悄悄跑（见上面那段说明）。
             required=True,

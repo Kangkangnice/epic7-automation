@@ -16,11 +16,13 @@ from auto_game_unified.games.epic7.evidence.shop_refresh import (
     same_shop_row,
     shop_fingerprint_distance,
 )
+from auto_game_unified.games.epic7.template_paths import resolve_template_dir
 
 
 ROOT = Path(__file__).resolve().parents[1]
 TEMPLATES = ROOT / "games" / "epic7" / "templates"
 FIXTURES = ROOT / "tests" / "fixtures" / "epic7_shop_refresh"
+PC_FIXTURES = ROOT / "tests" / "fixtures" / "epic7_shop_refresh_pc"
 
 
 def _screen(name: str) -> np.ndarray:
@@ -51,6 +53,39 @@ def test_current_shop_top_and_bottom_are_safe_shop_pages():
 
     assert observer.observe(_screen("shop_top_live")).page is ShopPage.SHOP
     assert observer.observe(_screen("shop_bottom_live")).page is ShopPage.SHOP
+
+
+def test_pc_secret_shop_page_is_recognized_with_pc_templates():
+    """P1 修复回归（2026-11-04）。
+
+    PC 端秘密商店商品页此前三颗判据图全认不出：shop_title 0.8709（阈 0.88，差 0.01）、
+    buy_button 0.7886（阈 0.86）、refresh_button_3 0.7505（阈 0.82）。导航器要求三颗
+    同时过阈才报 SHOP，于是「点了进入商店、目标页其实已到」被当成「仍在转场」，
+    整条刷书签 ✗。补 PC 覆盖图（只含稳定文字/按钮，剔除会变的数量字）后三颗应同时过阈。
+
+    用 PC 模板根构建观察器（与 PC 实跑同一套模板解析），喂三张 PC 现场帧。
+    """
+    observer = build_shop_refresh_observer(resolve_template_dir(TEMPLATES, "pc"))
+
+    for name in (
+        "secret_shop_page_pc_20261104_072013",
+        "secret_shop_page_pc_20261104_072146",
+        "secret_shop_page_pc_20261104_072304",
+    ):
+        bgr = cv2.imread(str(PC_FIXTURES / f"{name}.png"), cv2.IMREAD_COLOR)
+        assert bgr is not None, name
+        screen = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+        result = observer.observe(screen)
+
+        assert result.page is ShopPage.SHOP, (
+            f"{name}: 期望 SHOP，实际 {result.page.value}；"
+            f"分数 shop_title={result.scores['shop_title']:.4f} "
+            f"refresh_button_3={result.scores['refresh_button_3']:.4f} "
+            f"buy_button={result.scores['buy_button']:.4f}"
+        )
+        assert result.scores["shop_title"] >= 0.88
+        assert result.scores["refresh_button_3"] >= 0.82
+        assert result.scores["buy_button"] >= 0.86
 
 
 def test_shop_fingerprint_ignores_small_animation_but_separates_scroll_position():

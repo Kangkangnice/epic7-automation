@@ -268,6 +268,15 @@ class ShopRefreshObserver:
             key: load_template(str(template_root / atom.template_path))
             for key, atom in profile.atoms.items()
         }
+        # 2026-11-06：PC 上同一颗「购买」按钮在**不同行**的长相有细微差别 ——
+        # 实测同一帧里 y=626 那行独占 0.9013，而最底那行只有 0.6718（阈 0.86）；
+        # 用最底那行重裁一张则反过来（最底 1.0000、y=399 那行只有 0.5227）。
+        # 单张盖不住，所以加一张备选，**两取最高**。
+        # ⚠️ 只有 pc/ 里有这张图 ⇒ 模拟器 `_buy_alt` 是 None ⇒ 退回单模板，行为不变。
+        buy_alt_path = template_root / "buy_button_alt.png"
+        self._buy_alt = (
+            load_template(str(buy_alt_path)) if buy_alt_path.is_file() else None
+        )
         # 同一帧会被反复扫描（观察器等待时按轮询重看同一张画面），而 `_target_peaks`
         # 是本模块最重的一步。缓存只留**最近一帧**的派生结果，理由见 `_target_peaks`。
         self._peaks_key: bytes | None = None
@@ -388,15 +397,26 @@ class ShopRefreshObserver:
             atom.region[2],
             190,
         )
-        match = find_best_template(
-            screen,
-            self.templates["buy_button"],
-            region=row_region,
-            reference_size=REFERENCE_SIZE,
-        )
-        if match is None or match.score < atom.threshold:
+        best = None
+        for template in self._buy_candidates():
+            match = find_best_template(
+                screen,
+                template,
+                region=row_region,
+                reference_size=REFERENCE_SIZE,
+            )
+            if match is not None and (best is None or match.score > best.score):
+                best = match
+        if best is None or best.score < atom.threshold:
             return None
-        return match.center if same_shop_row(item_y, match.center[1]) else None
+        return best.center if same_shop_row(item_y, best.center[1]) else None
+
+    def _buy_candidates(self) -> tuple[np.ndarray, ...]:
+        """「购买」按钮的候选图：主图 + PC 备选（模拟器没有备选，就只有主图）。"""
+        primary = self.templates["buy_button"]
+        if self._buy_alt is None:
+            return (primary,)
+        return (primary, self._buy_alt)
 
     def _sold_for_row(self, screen: np.ndarray, item_y: int) -> bool:
         atom = self.profile.atom("sold_out_0_of_1_current")

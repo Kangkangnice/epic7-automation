@@ -96,6 +96,14 @@ class MainStoryTests(unittest.TestCase):
                 # 分别是它们。
                 date_change_templates = object()
                 login_reward_templates = object()
+                # 2026-11-05/06 接的两类（第 20/21 类）：
+                #   「骑士团活动」整屏页 —— PC 上 ESC 关不掉 ⇒ 回首页失败 ⇒ 整链中止。
+                #     注意它虽然挂在守卫的 kwargs 里，但 `_find_popup` 里**不注册**
+                #     （骑士团捐赠正常流程会进那页，注册会被踢出去）；实际用它的是
+                #     `home_return` 的 ⑦.5。这里只是构造参数，别以为它在这里生效。
+                #   「无法控制」剧情弹窗 —— 标准居中模态框，放守卫里安全。
+                knights_activity_templates = object()
+                uncontrollable_templates = object()
                 # ⚠️ 本文件三处 B023 抑制标记都是误报：events 虽然在外层循环里被重新赋值，
                 # 但这些 side_effect / on_call 都是**当轮同步调用**的（mock 在被调用的那一刻
                 # 就执行它），取不到下一轮的值。ruff 只看语法，看不出调用时机。
@@ -207,6 +215,14 @@ class MainStoryTests(unittest.TestCase):
                         load_account_rank_up_templates=unittest.mock.MagicMock(
                             return_value=account_rank_up_templates
                         ),
+                        # 2026-11-05/06 第 20/21 类。塞进这个 patch.multiple 而不是
+                        # 再加两个 patch.object —— 那个 with 已经贴着 20 层上限。
+                        load_knights_activity_templates=unittest.mock.MagicMock(
+                            return_value=knights_activity_templates
+                        ),
+                        load_uncontrollable_templates=unittest.mock.MagicMock(
+                            return_value=uncontrollable_templates
+                        ),
                     ),
                     patch.object(main_module, "Epic7Navigator") as navigator_type,
                     patch.object(main_module, "HomeReturn") as home_return_type,
@@ -260,6 +276,9 @@ class MainStoryTests(unittest.TestCase):
                     reward_notice_templates=reward_notice_templates,
                     gift_claim_templates=gift_claim_templates,
                     account_rank_up_templates=account_rank_up_templates,
+                    # 2026-11-05/06 第 20/21 类，与上面 patch.multiple 同进同出。
+                    knights_activity_templates=knights_activity_templates,
+                    uncontrollable_templates=uncontrollable_templates,
                 )
                 self.assertEqual(["guard", "navigation"], events)
 

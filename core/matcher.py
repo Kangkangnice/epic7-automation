@@ -8,6 +8,18 @@ import cv2
 import numpy as np
 
 
+# 本进程服务的窗口后端。生产由 ``main.py`` 在启动时按 ``--window-backend``
+# 声明一次；未经声明时保持 "pc"，让既有离线工具与测试沿用原来的兜底行为。
+# PC 专属的识别兜底（低通 / 扫尺寸）只在 PC 下启用，模拟器一律走原样口径。
+ACTIVE_BACKEND = "pc"
+
+
+def set_active_backend(backend: str) -> None:
+    """声明本进程服务哪个后端；模拟器下关闭全部 PC 专属识别兜底。"""
+    global ACTIVE_BACKEND
+    ACTIVE_BACKEND = backend
+
+
 @dataclass(frozen=True)
 class Match:
     center: tuple[int, int]
@@ -234,8 +246,13 @@ def best_match_with_fallback(
     if best is not None and best.score >= threshold:
         return best
 
-    smooth = name in SMOOTH_FALLBACK_ANCHORS
-    scales = SCALE_FALLBACK_STEPS if name in SCALE_FALLBACK_ANCHORS else ()
+    pc = ACTIVE_BACKEND == "pc"
+    smooth = pc and name in SMOOTH_FALLBACK_ANCHORS
+    scales = (
+        SCALE_FALLBACK_STEPS
+        if pc and name in SCALE_FALLBACK_ANCHORS
+        else ()
+    )
     retries: list[tuple[str, float]] = []
     if smooth:
         retries.append((MATCH_MODE_SMOOTH, 1.0))

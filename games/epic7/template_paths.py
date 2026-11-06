@@ -140,6 +140,15 @@ def is_template_root(value) -> bool:
     return isinstance(value, (Path, TemplateDir))
 
 
+def is_pc(template_dir) -> bool:
+    """模板目录是不是 PC 后端。普通 ``Path`` 一律按模拟器处理。
+
+    PC 移植新增的判据 / 状态分支只在这一项为真时启用；模拟器传进来的
+    要么是 ``TemplateDir(..., "emulator")``、要么是普通 ``Path``，都会走原路径。
+    """
+    return getattr(template_dir, "backend", "emulator") == "pc"
+
+
 def resolve_template_dir(base, backend: str = "emulator") -> TemplateDir:
     """把一个模板目录包成「会按平台挑图」的目录。
 

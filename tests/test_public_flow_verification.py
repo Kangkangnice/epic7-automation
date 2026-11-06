@@ -257,11 +257,14 @@ class StanceContentTests(unittest.TestCase):
             and isinstance(node.func.value, ast.Name)
             and node.func.value.id == "verifier"
         )
-        # 4 处点击：点酒馆 / 打开快捷菜单 / 放弃战斗 / 结束
+        # 5 处点击：点酒馆 / 打开快捷菜单 / 放弃战斗 / 结束 / 关闭骑士团活动
+        # （最后一条是 2026-11-06 加的：骑士团活动整屏页 PC 上 ESC 关不掉。
+        #  ⚠️ 它只在 pc/ 有图时才会命中，但**调用点是静态存在的**，所以这里数 5。
+        #  模拟器行为不受影响 —— 模板为 None 时 `_activity_close_point` 直接返回 None。）
         self.assertEqual(
-            4,
+            5,
             calls["act"],
-            f"应当有 4 处点击经过验收，实际 {calls['act']} 处（少一处就是丢了眼睛）",
+            f"应当有 5 处点击经过验收，实际 {calls['act']} 处（少一处就是丢了眼睛）",
         )
         # 2 处 ESC：局内 / 兜底
         self.assertEqual(
@@ -269,12 +272,12 @@ class StanceContentTests(unittest.TestCase):
             calls["press_esc"],
             f"应当有 2 处 ESC 经过验收，实际 {calls['press_esc']} 处",
         )
-        # 4 道「这一招在这个页面上还有没有用」的闸门，与 4 处点击一一对应：
+        # 5 道「这一招在这个页面上还有没有用」的闸门，与 5 处点击一一对应：
         # 只要有分支能点，它就得能被停用（见上面的第 4 条）。
         self.assertEqual(
-            4,
+            5,
             calls["is_retired"],
-            f"4 个点击分支都该先查停用表，实际 {calls['is_retired']} 处",
+            f"5 个点击分支都该先查停用表，实际 {calls['is_retired']} 处",
         )
         self.assertEqual(
             {"act", "press_esc", "is_retired"},

@@ -246,10 +246,20 @@ class HeroVisionMixin:
 
         只判这一档：红色菱形+SSS 字符模板匹配高分即认定满级，
         其他非满级评级（无评级/C/B/A/S/SS）均允许合成。
+
+        ⚠️ 两张模板**不是冗余**（2026-11-03 PC 实测）：刻印页和列表页的印记画法不同 ——
+        刻印页是「6 个红菱形 + 下方 SSS」，列表页是「蓝菱形 + 下方 SSS」，同一张图在另一个
+        页面只有 0.5593（阈 0.90）。只留一张的后果不是报错：满 SSS 的英雄判成 UNKNOWN
+        ⇒ 在列表页原地干等 63 秒到「等待画面超时」，整条路线收工。
         """
         if self.templates.assume_non_max_rating:
             return False
-        return self._locate(screen, "rating_sss") is not None
+        if self._locate(screen, "rating_sss") is not None:
+            return True
+        rating_sss_list = getattr(self.templates, "rating_sss_list", None)
+        if getattr(self.templates, "pc", False) and rating_sss_list is not None:
+            return self._locate(screen, "rating_sss_list") is not None
+        return False
 
     def _is_max_rating_safe(self) -> bool:
         """给 runner 层日志用的安全包装：无画面返回 False。"""

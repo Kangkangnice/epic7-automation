@@ -70,9 +70,11 @@ from auto_game_unified.core.battle_supervisor import (
 from auto_game_unified.core.matcher import (
     MATCH_MODE_RAW,
     Match,
+    find_template,
     load_template,
     locate_with_fallback,
 )
+from auto_game_unified.games.epic7.stamina import STAMINA_REGIONS
 from auto_game_unified.core.runtime import StaminaExhausted
 from auto_game_unified.core.supervisor import meaningful_change
 from auto_game_unified.games.epic7.battle_controls import (
@@ -91,7 +93,7 @@ from auto_game_unified.games.epic7.evidence.tower import (
 )
 from auto_game_unified.games.epic7.resume_probe import ResumePoint
 from auto_game_unified.games.epic7.route_action import RouteAction
-from auto_game_unified.games.epic7.template_paths import is_template_root
+from auto_game_unified.games.epic7.template_paths import is_pc, is_template_root
 from auto_game_unified.games.epic7.transactional_runner_base import (
     TransactionalRunnerBase,
 )
@@ -152,6 +154,23 @@ class FloorTooHard(StaminaExhausted):
     stop_label = "月塔这一层打不过"
 
 
+class StaminaShortage(StaminaExhausted):
+    """弹出了「行动力不足」（2026-11-04 14:05 真机）。
+
+    点「战斗开始」时行动力不够，游戏会弹这层模态框把准备战斗页盖住；旧代码里
+    ``_overlay_kind`` 只认「战斗指南 / 英雄恢复」两种子页面 ⇒ 主循环仍按
+    「来源=准备战斗仍在」对 ``(1726,1040)`` 连点 4 次，点在弹窗上全被吞掉，
+    干等 45 秒后报 ``动作[battle-start]未稳定进入[...]``，整条每日任务记 ✗；
+    收尾回家时又因为这层框不认页面、ESC 连按无效，多烧 70 秒。
+
+    ⚠️ 月塔**明令不补充体力**（见模块 docstring）：这里只识别、**绝不点购买**。
+    「没本钱了」是正常业务结论，走 ``StaminaExhausted`` 的退出码 2，不是故障。
+    ``stop_label`` 必须写实情，否则日志会写「生命之叶耗尽」把人带去买叶子。
+    """
+
+    stop_label = "行动力不足（月塔不补充体力）"
+
+
 @dataclass(frozen=True)
 class TowerAction(RouteAction):
     """月塔的一个动作。
@@ -186,7 +205,38 @@ class TowerTemplates:
     battle_failed: np.ndarray
     # 战斗里「自动战斗关着」的图标 —— 复用 story 的那一张，不另做。
     auto_off: np.ndarray
+    # 「行动力不足」弹窗三件套：复用主线那三张（同一个弹窗、同一套渲染），
+    # 与 ``battle_guide_title`` / ``auto_off`` 同一条跨目录复用规矩。
+    # ⚠️ 只用来**认出这层模态框**，不用来点「购买」—— 月塔不补充体力。
+    stamina_popup: np.ndarray
+    stamina_material: np.ndarray
+    stamina_confirm: np.ndarray
+    # PC 端「楼层列表右下角按钮变成『编队』」的覆盖图：**存在才载入**。
+    #
+    # 语义：月塔一层的按钮平时是「选择队伍」，本阶段 25 层全部占领后同一槽位
+    # 换成「编队」（不能再挑战，只能改队伍）。⇒ 它是一个**终态判据**，
+    # 不是普通业务锚点。
+    #
+    # ⚠️ 为什么允许它是 ``None``（本路线 ``_OPTIONAL_TEMPLATES`` 是空集）：
+    # 这枚图只存在于 ``templates/tower/pc/``，模拟器根本不该有它 —— ``None``
+    # 表达的是「当前平台没有这枚图」，不是「文件配错了」。与 ``story.complete_close``
+    # 同一条口径：模拟器侧 ``is None`` ⇒ 两个判断点全部短路，行为逐字节不变。
+    floor_team_edit: Optional[np.ndarray] = None
     evidence: EvidenceProfile | None = None
+    # PC 专属新增判据只在这项为真时启用；模拟器走改动前的判定路径。
+    pc: bool = False
+
+
+def _load_floor_team_edit(template_dir) -> Optional[np.ndarray]:
+    """PC 端「编队」按钮：覆盖图存在才载入，否则返回 ``None``（模拟器零改动）。
+
+    ``template_dir`` 可能是 ``TemplateDir``（PC 后端会指到 ``tower/pc/``），
+    ``Path(...) / name`` 与 ``.is_file()`` 两种都适用。
+    """
+    candidate = template_dir / "floor_team_edit.png"
+    if not Path(candidate).is_file():
+        return None
+    return load_template(str(candidate))
 
 
 def build_tower_templates(template_dir: Path) -> TowerTemplates:
@@ -213,7 +263,18 @@ def build_tower_templates(template_dir: Path) -> TowerTemplates:
         # ⚠️ 复用 story 的自动战斗关闭图标（与远征/主线同一个控件、同一套渲染），
         # 不另裁一份 —— 同内容跨路线复用的前提是**同一个后端**（都是模拟器）。
         auto_off=load_template(str(template_dir.parent / "story" / "auto_off.png")),
+        stamina_popup=load_template(
+            str(template_dir.parent / "story" / "stamina_popup.png")
+        ),
+        stamina_material=load_template(
+            str(template_dir.parent / "story" / "stamina_material.png")
+        ),
+        stamina_confirm=load_template(
+            str(template_dir.parent / "story" / "stamina_confirm.png")
+        ),
+        floor_team_edit=_load_floor_team_edit(template_dir),
         evidence=build_tower_evidence(template_dir),
+        pc=is_pc(template_dir),
     )
 
 
@@ -224,6 +285,10 @@ class TowerStateMachine:
     _THRESHOLD = 0.88
     _THRESHOLDS = TOWER_THRESHOLDS
     _REGIONS = TOWER_REGIONS
+    # 「编队」按钮与「选择队伍」是**同一个槽位**（PC 真机两帧实测：模板落点中心
+    # 都在 (1744,1040)、右边缘一致），所以直接沿用 `floor_select_team` 的搜索区。
+    # 这不是「两个控件挤在一起」，而是同一枚按钮换了文字 ⇒ 判据天然互斥。
+    _FLOOR_TEAM_EDIT_REGION = (1400, 950, 582, 182)
     # 判据 -> 比对口径。与 `_THRESHOLDS` / `_REGIONS` 同一套纪律：类常量
     # **镜像证据画像**，再由 `__init__` 用真实画像覆盖（见那里）。
     _MATCH_MODES = TOWER_MATCH_MODES
@@ -293,6 +358,12 @@ class TowerStateMachine:
                 key: atom.match_mode
                 for key, atom in self.templates.evidence.atoms.items()
             }
+        # 「编队」这枚图**不进证据画像**（模拟器没有它，画像必须两端都能构建），
+        # 所以区域在这里补登记。⚠️ 必须 copy 再改：`_REGIONS` 是类属性，
+        # 就地写会把改动漏给下一个实例（`story.complete_close` 那里就是这么缝的）。
+        if self.templates.floor_team_edit is not None:
+            self._REGIONS = dict(self._REGIONS)
+            self._REGIONS["floor_team_edit"] = self._FLOOR_TEAM_EDIT_REGION
         self.completed_cycles = 0
         # 本层「中间卡是否已点过」—— CARD -> CARD_CONFIRM 的一次性闸门。
         self.card_picked = False
@@ -357,7 +428,15 @@ class TowerStateMachine:
         if state == TowerState.HOME:
             return self._locate(screen, "home_enter") is not None
         if state == TowerState.FLOOR_LIST:
-            return self._locate(screen, "floor_select_team") is not None
+            # 正常形态：「选择队伍」。本阶段全部占领后同一槽位变成「编队」
+            # （2026-11-05 00:26 真机：25 层全 ✓完成占领，按钮是「编队」）。
+            # 两种都是楼层列表；**只有第一种能往下打**，见 `next_action`。
+            if self._locate(screen, "floor_select_team") is not None:
+                return True
+            return (
+                self.templates.floor_team_edit is not None
+                and self._locate(screen, "floor_team_edit") is not None
+            )
         if state == TowerState.TEAM:
             return (
                 self._locate(screen, "team_battle_start") is not None
@@ -422,8 +501,35 @@ class TowerStateMachine:
         if target is TowerState.CARD:
             self.card_picked = False
 
+    # 「行动力不足」三件套共用主线口径：区域 / 阈值都在 ``stamina.py`` 里，
+    # 这里只做「三颗同时过阈」这一道 AND。全库 521 帧扫描：只有 3 张真·体力
+    # 弹窗帧三颗全过（最低 0.9148），其余 518 帧至少缺一颗 ⇒ 零冒牌。
+    _STAMINA_POPUP_THRESHOLD = 0.80
+
+    def _stamina_shortage(self, screen: np.ndarray) -> bool:
+        """「行动力不足」模态框在不在屏上（三颗判据 AND，缺一不可）。
+
+        这三颗不走 ``_locate``：它们是**另一条路线（主线）的判据模板**，
+        搜索区域/阈值写在 ``games/epic7/stamina.py``，不属于月塔的证据画像。
+        走独立入口可以避免为了「复用一张图」就往月塔画像里塞三个假原子。
+        """
+        # PC 上才观察到的新情形；模拟器不进这条分支，保持改动前的判定路径。
+        if not self.templates.pc:
+            return False
+        for name in ("stamina_popup", "stamina_material", "stamina_confirm"):
+            hit = find_template(
+                screen,
+                getattr(self.templates, name),
+                self._STAMINA_POPUP_THRESHOLD,
+                region=STAMINA_REGIONS[name],
+                reference_size=self._REFERENCE_SIZE,
+            )
+            if hit is None:
+                return False
+        return True
+
     def _overlay_kind(self, screen: np.ndarray) -> Optional[str]:
-        """准备战斗页上是不是**盖了一层子页面**（目前两种，都是半透明的）。
+        """准备战斗页上是不是**盖了一层子页面**（目前三种，都是半透明的）。
 
         ⚠️ 这两种子页面底下那一页原样可见 ⇒ 只按 TEAM 的两个锚点判，就会永远
         以为「还在准备战斗」，然后一次次点「战斗开始」（点在子页面上，无效）：
@@ -431,11 +537,19 @@ class TowerStateMachine:
 
         - ``battle-guide``：敌方战力远高于我方时的战力差警告 → 点「确认」继续
         - ``hero-restore``：队伍里有**阵亡角色** → 点「恢复」（**消耗雌蕊圣叶**）
+        - ``stamina-shortage``：行动力不足 → **什么都不点**，按资源耗尽收工
+
+        ⚠️ 第三种必须在这一层认出来：``_execute_transition`` 等待期间**不会**
+        重新问 ``next_action``，只问 ``action_source_visible`` / ``action_target_state``；
+        这两处都靠 ``_overlay_kind`` 判。漏了它，主循环会照旧把「来源=准备战斗仍在」
+        当成「这一下没点动」，对已被弹窗盖住的按钮补点 4 次。
         """
         if self._locate(screen, "battle_guide_title") is not None:
             return "battle-guide"
         if self._locate(screen, "hero_restore_title") is not None:
             return "hero-restore"
+        if self._stamina_shortage(screen):
+            return "stamina-shortage"
         return None
 
     def action_source_visible(self, screen: np.ndarray, action: TowerAction) -> bool:
@@ -533,6 +647,17 @@ class TowerStateMachine:
                     and self._locate(screen, "card_hint") is not None
                 )
                 or self._locate(screen, "battle_failed") is not None
+                # 2026-11-04 23:52 PC 真机：第 25 层打完**直接进 CLEAR 结算页**
+                # （`result_clear` 0.8913），没有三选一装置页 ⇒ 上面两条都不成立，
+                # 监督干等 216 秒后报「战斗画面持续无法识别」，把正常通关记成故障。
+                # CLEAR 页语义上就是「打完了」：接进 `result_visible` 让监督收手，
+                # 控制权交回状态机，由 RESULT / CONQUERED 分支收尾。
+                # ⚠️ 只对 PC 生效：模拟器侧的收尾路径是另一套（先三选一），
+                # 没有真机证据前不动它（PC / 模拟器严格隔离，见 docs 铁律）。
+                or (
+                    self.templates.pc
+                    and self._locate(screen, "result_clear") is not None
+                )
             ),
             frame_valid=valid_game_frame(screen),
             auto_state=auto_state,
@@ -549,6 +674,15 @@ class TowerStateMachine:
     # ---- 动作分派 ----
 
     def next_action(self, screen: np.ndarray) -> Optional[TowerAction]:
+        # ⚠️ 模态框优先于一切状态分派：它压在哪一页上，那一页的按钮都点不动。
+        # 2026-11-04 14:05 真机：点「战斗开始」弹出「行动力不足」，主循环连点
+        # 4 次 (1726,1040) 全被弹窗吞掉，45 秒后报转场失败、每日任务记 ✗。
+        # 月塔不补充体力（模块 docstring 的红线）⇒ 不点购买、不点礼包，直接按
+        # 「还能干但没本钱了」正常收工：退出码 2、汇总记 ✓(资源耗尽)。
+        # 弹窗本身由收尾回家流程的 ESC 关掉（同一次真机 14:06:11 的现场帧
+        # 已经证明 ESC 能关掉它、落回月塔结算页），不需要在这里乱点。
+        if self._stamina_shortage(screen):
+            raise StaminaShortage("月塔准备战斗时弹出「行动力不足」；不购买体力，本轮收工")
         if self.state == TowerState.HOME:
             # ⚠️⚠️ **先看是不是「确认重置阶段」弹窗**（2026-10-30）。
             #
@@ -578,6 +712,24 @@ class TowerStateMachine:
             )
 
         if self.state == TowerState.FLOOR_LIST:
+            # ⚠️ **先判「编队」这条终态**（2026-11-05 00:26 真机）：
+            # 本阶段 25 层全部占领后，右下角按钮从「选择队伍」变成「编队」。
+            # 不接它的话：`_required(floor_select_team)` 只有 0.5897（阈 0.88）⇒
+            # 抛「未识别」，而**转场验收那一步更早就会失败** —— `enter-tower`
+            # 的目标页判据也是 FLOOR_LIST，于是干等 60 秒报
+            # `no_transition_enter-tower`，把「今天已经打满了」报成故障。
+            #
+            # 判据是**同槽位换文字**：两枚模板的落点中心都是 (1744,1040)、
+            # 尺寸都是 280x76，只差文字 ⇒ 不存在「认错地方」这种解释。
+            # 语义与 `CONQUERED` 一致（打满即终点）⇒ 走同一条 `FloorsConquered`
+            # 收工通道（退出码 2、文案「月塔层数已打满」）。
+            if (
+                self.templates.floor_team_edit is not None
+                and self._locate(screen, "floor_team_edit") is not None
+            ):
+                raise FloorsConquered(
+                    "月塔本阶段 25 层已全部占领（楼层列表按钮为「编队」，无可打的层）"
+                )
             self._required(screen, "floor_select_team")
             return self._action(
                 "select-team", self._POINT_SELECT_TEAM,
@@ -611,7 +763,32 @@ class TowerStateMachine:
                 # 这一下既没进战斗、也不是「什么都没发生」—— 页面被弹窗顶掉了。
                 # `action_target_state` 只在这种时候返回 TEAM（见那里），把控制权
                 # 交回主循环重新决策；正常转场途中它**不会**返回 TEAM。
-                target_states=(TowerState.BATTLE, TowerState.TEAM),
+                #
+                # ⚠️⚠️ **CARD 必须在合同里**（2026-11-04 01:40 真机实测补上）：
+                # 这一队是**秒杀**，点下「战斗开始」后战斗只存在 1~2 秒，紧接着
+                # 就弹出三选一装置页并**稳定停在那里**。而转场要「目标连续=2」
+                # （`transactional_runner_base`），轮询间隔 1~2 秒 ⇒ **永远抓不到
+                # 那一两帧战斗画面**，只能看着装置页干等，57 秒后报
+                # `动作[battle-start]未稳定进入[战斗中/准备战斗]`。
+                #
+                # 现场证据（`runtime_diagnostics/epic7_tower/20261104_014149_*`）：
+                # 超时那一帧 `card_hint`=0.9404 / `card_decide`=0.8973，**两枚都过阈**
+                # （`is_in_state(CARD)` 要求的正是这两枚），页面认得清清楚楚 ——
+                # 所以这里缺的是「合同」，不是识别能力，**不许靠调阈值来凑**。
+                #
+                # 落点判据本身是可证伪的：CARD 要求 `card_decide` 与 `card_hint`
+                # **同时**过阈；同一帧上 `result_clear`=0.3557、`conquer_title`=0.2347、
+                # `battle_failed`=0.0000，与「准备战斗」页的两枚（0.3414/0.3771）
+                # 全都不在一个量级 ⇒ 不会把别的页认成装置页。
+                #
+                # 这一条边是**闭环的一半**：`TEAM --战斗开始--> CARD --> CARD_CONFIRM
+                # --> RESULT(第 N 层占领奖励) --下一层--> TEAM`，实测这条路走得通
+                # （2026-11-04 02:0x 手动点「决定装置」，9 秒后落到「第6层 占领奖励」）。
+                target_states=(
+                    (TowerState.BATTLE, TowerState.CARD, TowerState.TEAM)
+                    if self.templates.pc
+                    else (TowerState.BATTLE, TowerState.TEAM)
+                ),
                 reason="识别到准备战斗，点击战斗开始",
             )
 
@@ -663,6 +840,26 @@ class TowerStateMachine:
             if self._locate(screen, "battle_failed") is not None:
                 self._required(screen, "battle_failed")
                 raise FloorTooHard("月塔这一层打不过（战斗 FAILED 结算页）")
+            # ⚠️⚠️ **PC 的最后一层没有三选一装置页**（2026-11-04 23:52 真机）：
+            # 打满时游戏直接从战斗翻到「CLEAR / 占领奖励」结算页。而监督的收手落点
+            # 是写死的 ``_RESULT_STATE = TowerState.CARD``（月塔常态确实是「先三选一」），
+            # 于是收了手却落到 CARD ⇒ 下一拍 ``_required(card_decide)`` 必然失败
+            # （现场帧实测 0.31），把「正常通关」报成「月塔锚点 card_decide 未识别」。
+            #
+            # 判据为什么用 ``result_clear`` 而不是「卡面认不出」：CLEAR 页上
+            # ``card_decide`` 0.31 / ``card_hint`` 0.27 / ``conquer_title`` 0.23，
+            # 只有 ``result_clear`` 0.8913 过阈 —— 一维正证据，**不是靠缺省推断**。
+            # 拨到 RESULT 后把这一拍重新分派一次：RESULT 分支点右下角「下一层／征服」，
+            # 打满那一层就落到 CONQUERED 正常收工。
+            #
+            # ⚠️ 只对 PC 生效：模拟器侧的收尾是「先三选一 → 决定装置 → 结算」那一套，
+            # 没有真机证据前一个字不动（PC / 模拟器严格隔离）。
+            if (
+                self.templates.pc
+                and self._locate(screen, "result_clear") is not None
+            ):
+                self.state = TowerState.RESULT
+                return self.next_action(screen)
             self._required(screen, "card_decide")
             self._required(screen, "card_hint")
             if self.card_picked:

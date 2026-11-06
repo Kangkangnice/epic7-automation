@@ -157,7 +157,7 @@ def test_gift_claim_notice_is_dismissed_from_its_close_label():
     screen = np.asarray(
         Image.open(FIXTURES / "gift_claim_pc_live_20261102.png").convert("RGB")
     )
-    templates = load_gift_claim_templates(TEMPLATES)
+    templates = load_gift_claim_templates(TemplateDir(TEMPLATES, "pc"))
 
     match = find_gift_claim_close(screen, templates)
 
@@ -179,7 +179,7 @@ def test_account_rank_up_is_dismissed_from_its_arrow():
     screen = np.asarray(
         Image.open(FIXTURES / "account_rank_up_pc_live_20261102.png").convert("RGB")
     )
-    templates = load_account_rank_up_templates(TEMPLATES)
+    templates = load_account_rank_up_templates(TemplateDir(TEMPLATES, "pc"))
 
     match = find_account_rank_up_close(screen, templates)
 
@@ -193,7 +193,7 @@ def test_account_rank_up_requires_both_anchors():
     screen = np.asarray(
         Image.open(FIXTURES / "account_rank_up_pc_live_20261102.png").convert("RGB")
     )
-    templates = load_account_rank_up_templates(TEMPLATES)
+    templates = load_account_rank_up_templates(TemplateDir(TEMPLATES, "pc"))
     without_title = screen.copy()
     without_title[920:1040, 600:1400] = 0
     without_close = screen.copy()
@@ -207,7 +207,7 @@ def test_gift_claim_requires_both_anchors():
     screen = np.asarray(
         Image.open(FIXTURES / "gift_claim_pc_live_20261102.png").convert("RGB")
     )
-    templates = load_gift_claim_templates(TEMPLATES)
+    templates = load_gift_claim_templates(TemplateDir(TEMPLATES, "pc"))
     without_title = screen.copy()
     without_title[250:370, 760:1220] = 0
     without_close = screen.copy()
@@ -228,7 +228,7 @@ def test_reward_notice_is_dismissed_from_its_close_label():
     screen = np.asarray(
         Image.open(FIXTURES / "reward_notice_pc_live_20261101.png").convert("RGB")
     )
-    templates = load_reward_notice_templates(TEMPLATES)
+    templates = load_reward_notice_templates(TemplateDir(TEMPLATES, "pc"))
 
     match = find_reward_notice_close(screen, templates)
 
@@ -242,7 +242,7 @@ def test_reward_notice_requires_both_anchors():
     screen = np.asarray(
         Image.open(FIXTURES / "reward_notice_pc_live_20261101.png").convert("RGB")
     )
-    templates = load_reward_notice_templates(TEMPLATES)
+    templates = load_reward_notice_templates(TemplateDir(TEMPLATES, "pc"))
     without_title = screen.copy()
     without_title[240:360, 800:1300] = 0
     without_close = screen.copy()
@@ -260,8 +260,8 @@ def test_the_two_notice_popups_do_not_recognize_each_other():
     reward_notice = np.asarray(
         Image.open(FIXTURES / "reward_notice_pc_live_20261101.png").convert("RGB")
     )
-    story_templates = load_side_story_notice_templates(TEMPLATES)
-    reward_templates = load_reward_notice_templates(TEMPLATES)
+    story_templates = load_side_story_notice_templates(TemplateDir(TEMPLATES, "pc"))
+    reward_templates = load_reward_notice_templates(TemplateDir(TEMPLATES, "pc"))
 
     assert find_side_story_notice_close(story_notice, story_templates) is not None
     assert find_reward_notice_close(story_notice, reward_templates) is None
@@ -281,7 +281,7 @@ def test_side_story_notice_is_dismissed_from_its_close_label():
     screen = np.asarray(
         Image.open(FIXTURES / "side_story_notice_pc_live_20261101.png").convert("RGB")
     )
-    templates = load_side_story_notice_templates(TEMPLATES)
+    templates = load_side_story_notice_templates(TemplateDir(TEMPLATES, "pc"))
 
     match = find_side_story_notice_close(screen, templates)
 
@@ -297,7 +297,7 @@ def test_side_story_notice_requires_both_anchors():
     screen = np.asarray(
         Image.open(FIXTURES / "side_story_notice_pc_live_20261101.png").convert("RGB")
     )
-    templates = load_side_story_notice_templates(TEMPLATES)
+    templates = load_side_story_notice_templates(TemplateDir(TEMPLATES, "pc"))
     without_title = screen.copy()
     without_title[240:360, 760:1220] = 0
     without_close = screen.copy()
@@ -309,7 +309,7 @@ def test_side_story_notice_requires_both_anchors():
 
 def test_side_story_notice_rejects_normal_game_frames():
     """别的页面上一律不得命中（关卡入口、结算页+好友弹窗两张 PC 真机帧当反例）。"""
-    templates = load_side_story_notice_templates(TEMPLATES)
+    templates = load_side_story_notice_templates(TemplateDir(TEMPLATES, "pc"))
     for name in ("stage_pc_live_20261101.png", "friend_request_pc_live_20261101.png"):
         screen = np.asarray(Image.open(STORY_FIXTURES / name).convert("RGB"))
         assert find_side_story_notice_close(screen, templates) is None, name
@@ -1824,3 +1824,65 @@ def test_login_reward_popup_is_dismissed_from_its_close_label():
         Image.open(FIXTURES / "date_change_pc_live_20261103.png").convert("RGB")
     )
     assert find_login_reward_close(other, pc_templates) is None
+
+
+def test_network_retry_recognizes_the_smaller_rendering_of_the_same_message():
+    """同一句「网络连接异常，请重新连接。」在 PC 上还有**小一号**的画法。
+
+    2026-11-05 00:37 真机主线：战斗中掉线，弹窗盖住战场 43 秒，战斗监督报
+    ``battle_unrecognized``。11-01 那张 PC 模板打这一帧只有 **0.6882**（阈 0.88）。
+
+    证伪「是不是换了句话」：把 11-01 模板缩到 0.97 再打同一帧 ⇒ **0.9335**
+    ⇒ 差异是纯缩放（字高 26 vs 25、字宽 361 vs 346），不是新文案。
+
+    所以补的是 `global/pc/network_reconnect_message.png`（同句、小一号），
+    **不动阈值、不动共享模板**：0.6882 离 0.88 差的是 0.19，压阈值就是拿判据换分数。
+    """
+    screen = np.asarray(
+        Image.open(FIXTURES / "network_reconnect_pc_story_20261105.png").convert("RGB")
+    )
+    pc_templates = load_network_reconnect_templates(TemplateDir(TEMPLATES, "pc"))
+    emulator_templates = load_network_reconnect_templates(TEMPLATES)
+
+    match = find_network_retry(screen, pc_templates)
+
+    assert match is not None
+    assert match.score >= 0.88
+    # 点的是「点击重试 ∨」本体（实测按钮中心 (937,728)），不是文案与按钮之间的空白。
+    assert abs(match.center[0] - 937) <= 8, match.center
+    assert abs(match.center[1] - 728) <= 8, match.center
+    # 模拟器口径必须仍认不出：小号模板只存在于 pc/，不许被复制成共享图。
+    assert find_network_retry(screen, emulator_templates) is None
+
+
+def test_network_retry_recognizes_the_pc_rendering_of_the_disconnected_message():
+    """另一句文案「与服务器的连接已中断。」在 PC 上被**横向拉宽**，不是等比缩放。
+
+    2026-11-03 21:37 英雄合成：点完「确认合成」掉线。共享模板打这一帧只有 0.6300
+    （阈 0.88）；把模板按 1.04 倍重采样峰值也只到 **0.8629**，仍不过阈 ——
+    因为 PC 上这句是**字形变宽**（文字宽 303、高 26，共享模板 291 x 27），
+    高度几乎没变，等比缩放救不了它。
+
+    后果：守卫看不见这层半透明横带 ⇒ 状态机把遮罩下的返回箭头当成
+    「合成结果覆盖层未完整识别」⇒ 整条路线失败；同一晚另外几帧「回首页连按 ESC
+    无反应」也是同一形状。
+
+    所以补的是 `global/pc/network_disconnected_message.png`（同句、PC 版），
+    **不动阈值、不动共享模板**：0.6300 离 0.88 差 0.25，压阈值就是拿判据换分数。
+    """
+    screen = np.asarray(
+        Image.open(FIXTURES / "network_disconnected_pc_hero_20261103.png").convert("RGB")
+    )
+    pc_templates = load_network_reconnect_templates(TemplateDir(TEMPLATES, "pc"))
+    emulator_templates = load_network_reconnect_templates(TEMPLATES)
+
+    match = find_network_retry(screen, pc_templates)
+
+    assert match is not None
+    assert match.score >= 0.88
+    # 点的是「点击重试 ∨」本体（实测按钮中心 (960,731)）；这层是横带，
+    # 屏幕中心落在文案与按钮之间的空白，点了没反应。
+    assert abs(match.center[0] - 960) <= 8, match.center
+    assert abs(match.center[1] - 731) <= 8, match.center
+    # 模拟器口径必须仍认不出：新图只存在于 pc/，不许被复制成共享图。
+    assert find_network_retry(screen, emulator_templates) is None

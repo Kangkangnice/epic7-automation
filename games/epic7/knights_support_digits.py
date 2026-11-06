@@ -266,6 +266,55 @@ def _read_digits(mask: np.ndarray, glyphs: dict[int, np.ndarray]) -> Optional[in
     return int(text)
 
 
+def _read_digits_pc(mask: np.ndarray, glyphs: dict[int, np.ndarray]) -> Optional[int]:
+    """PC 客户端专用：把掩膜里的数字读成整数；读不出返回 None。
+
+    ## 从**最右边**往左取一段连续的通过项（2026-11-03 PC 实测改）
+
+    原来从左往右读、**任何一个字形认不出就整侧返回 None**。PC 上实测（11-02 23:01 现场帧）：
+    「持有：1」的绿字掩膜被切成 3 个过筛连通域 —— 宽 8、宽 15 是「持有」两个字的碎片
+    （宽 8/15 都 ≤ ``GLYPH_MAX_WIDTH``，混进了数字筛子），最右那个宽 8 高 21 才是数字「1」。
+    匹配分：碎片 0.324 / 0.324，数字 **0.980**。
+    ⇒ 一个碎片认不出就把整侧拖成 None，白丢「材料不足就跳过」这道前置判据。
+
+    改成**从右往左、遇到第一个认不出的就停**：
+    - 「持有：1」⇒ 数字 1 通过、再往左是碎片 0.32 失败 ⇒ 读 `1` ✅
+    - 「持有：5,133」⇒ 3/3/1/5 都通过，再往左是标签 ⇒ 读 `5133` ✅
+    - 中间某一位真认不出 ⇒ 截断成偏小的数 ⇒ 调用方判「不足」而跳过该格，
+      属于 fail-safe 方向（少支援一次，不会点错人）。
+
+    ## 字模按「原版 / 加粗 / 细化」三个变体取最高分（同一次实测）
+
+    需求侧「支援2个」的「2」在 PC 上原样只有 **0.698**（阈 0.70，差 0.002）。
+    把字模做一次 2x2 膨胀/腐蚀后再比，最高到 **0.738** ⇒ 过阈。
+    这是**吸收渲染粗细差异**，不是放宽阈值 —— ``GLYPH_MATCH_MIN_SCORE`` 一个字没动。
+    """
+    boxes = glyph_boxes(mask)
+    if not boxes or len(boxes) > GLYPH_MAX_COUNT:
+        return None
+    kernel = np.ones((2, 2), np.uint8)
+    text = ""
+    for box in reversed(boxes):
+        glyph = normalize_glyph(mask, box)
+        best_score = -1.0
+        best_digit: Optional[int] = None
+        for digit, template in glyphs.items():
+            for variant in (
+                template,
+                cv2.dilate(template, kernel, iterations=1),
+                cv2.erode(template, kernel, iterations=1),
+            ):
+                score = glyph_score(glyph, variant)
+                if score > best_score:
+                    best_digit, best_score = digit, score
+        if best_digit is None or best_score < GLYPH_MATCH_MIN_SCORE:
+            break
+        text = str(best_digit) + text
+    if not text:
+        return None
+    return int(text)
+
+
 def _patches(
     screen: np.ndarray,
     button_center: tuple[int, int],
@@ -285,6 +334,7 @@ def read_row_numbers(
     glyphs: dict[int, np.ndarray],
     *,
     reference_size: tuple[int, int] = REFERENCE_SIZE,
+    pc: bool = False,
 ) -> RowNumbers:
     """读一行「持有：N」与按钮「支援 M 个」。
 
@@ -301,7 +351,8 @@ def read_row_numbers(
     holdings_patch, required_patch = _patches(screen, button_center)
     if holdings_patch.size == 0 or required_patch.size == 0:
         return RowNumbers(None, None)
+    reader = _read_digits_pc if pc else _read_digits
     return RowNumbers(
-        _read_digits(green_mask(holdings_patch), glyphs),
-        _read_digits(white_mask(required_patch), glyphs),
+        reader(green_mask(holdings_patch), glyphs),
+        reader(white_mask(required_patch), glyphs),
     )

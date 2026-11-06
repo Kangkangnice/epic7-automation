@@ -31,6 +31,7 @@ import os
 from functools import lru_cache
 
 import cv2
+import pytest
 from PIL import Image
 
 # ⚠️ 这里要 import 项目模块：匹配结果缓存的核心开关在 core/matcher.py（见文件末尾）。
@@ -91,3 +92,27 @@ if os.environ.get("EPIC7_TEST_FIXTURE_CACHE", "1") != "0":
 # 匹配结果缓存：只影响测试进程，生产实跑不经过这里（见 core/matcher.py 的注释）。
 if os.environ.get("EPIC7_MATCH_CACHE", "1") != "0":
     matcher.MATCH_CACHE_ENABLED = True
+
+
+@pytest.fixture(autouse=True)
+def _isolate_matcher_backend():
+    """每个用例都从「未经声明」的干净状态开始，把后端开关污染锁在用例内部。
+
+    ``core/matcher.py::ACTIVE_BACKEND`` 是**进程级**开关：生产由
+    ``main.py::run_mode()`` 在启动时按 ``window_backend`` 声明一次，单进程只服务
+    一个后端。但集成用例（``test_main_story.py`` 等）会直接调 ``run_mode()``，
+    默认 ``window_backend="emulator"`` 就把这个全局量留在 ``"emulator"`` 上；
+    排在后面的 PC 专属用例（月塔扫尺寸兜底那两条）依赖默认 ``"pc"``，于是
+    **单跑全绿、全量挂两条**。实测复现：``test_main_story.py +
+    test_tower_evidence.py`` ⇒ 2 failed；中间夹一个会把开关重置回 ``"pc"`` 的
+    ``test_matcher.py`` ⇒ 全绿 —— 典型的顺序依赖。
+
+    所以每个用例前后都拨回默认 ``"pc"``（用例内部仍然可以随意调
+    ``set_active_backend()`` 验证两种后端）。生产代码不受影响：本文件只在
+    pytest 进程里加载。
+    """
+    matcher.set_active_backend("pc")
+    try:
+        yield
+    finally:
+        matcher.set_active_backend("pc")
