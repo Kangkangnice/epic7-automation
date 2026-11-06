@@ -110,6 +110,8 @@ from typing import Optional
 import cv2
 import numpy as np
 
+from auto_game_unified.games.epic7.template_paths import is_pc
+
 from .common import AtomEvidence, EvidenceProfile, PageEvidence
 
 
@@ -127,6 +129,12 @@ REGIONS = {
     "labyrinth_card": (150, 290, 1780, 140),
     # 迷宫列表右栏的「混乱的提雷尔城」条目文字。
     "labyrinth_entry": (1400, 190, 582, 940),
+    # 2026-11-06：同一行的**第二种外观**。PC 上这张卡片有「进行中/已完成」等不同画法，
+    # 实测 11-06 那帧旧图只有 0.7138（阈 0.85），而新裁的这张 1.0000；
+    # 但旧图在测试夹具「干净列表页」上是对的（换掉会让那条测试挂）。
+    # ⇒ 两张并存，页面判据走 `any_of`，谁像用谁。
+    # ⚠️ 只在 pc/ 有图，模拟器画像里不出现这颗原子（见下面的 pc 过滤）。
+    "labyrinth_entry_alt": (1400, 190, 582, 940),
     # 迷宫详情页右下角绿色「选择队伍」。这一页的排他锚点。
     "select_team_button": (1350, 960, 632, 172),
     # 区域列表里「1区域」那一行的标签。**只是点击目标**，不进 ``_PAGES``。
@@ -144,6 +152,16 @@ REGIONS = {
     # ⚠️ 区域必须**卡在区域列表这一栏**（x 990~1390 / y 555~1120）：
     # 写满全屏时它会在跳过剧情的帧上、暂停菜单帧上命中 0.8368~0.8618。
     "region_selected_box": (990, 555, 400, 565),
+    # 「1 区域」那一行下方的绿色「✓完成探险」（2026-11-04 14:18 真机）。
+    # ⚠️ **不是页面判据**（不进 ``_PAGES``），只回答一个业务问题：今天这一区
+    # 是不是已经通关了。此时该行不可点，``select-region-1`` 会连点 4 次毫无变化，
+    # 最后报「四次点击未转场」把整条每日任务记 ✗。状态机还要再拿它和
+    # ``region_row1_label`` 做纵向配对（只允许贴在「1 区域」正下方），
+    # 否则「2 区域」以后哪天也写着完成探险时就会被认错行。
+    # 区域只罩**第一行的状态文字**那一格（y 470~570），不含第二行 y≈691 的状态；
+    # 全库 520 帧扫描：3 张真·完成探险帧 1.0000，非目标页最高 0.2995，
+    # 「1 区域可选」的模拟器详情页 0.2321 ⇒ 0.80 的阈值余量足够。
+    "region1_completed": (990, 470, 400, 100),
     # 准备战斗页右下角绿色「战斗开始」。这一页的排他锚点。
     "battle_start_button": (1350, 960, 632, 172),
     # 开场剧情右上角「跳过」。
@@ -230,6 +248,7 @@ THRESHOLDS = {key: DEFAULT_THRESHOLD for key in REGIONS}
 # 「混乱的提雷尔城」这串字在迷宫详情页右上角也有（那页已被 select_team_button 先认走），
 # 抬到 0.85 让两页这层更干净。
 THRESHOLDS["labyrinth_entry"] = 0.85
+THRESHOLDS["labyrinth_entry_alt"] = 0.85
 
 _TEMPLATE_PATHS = {key: f"{key}.png" for key in REGIONS}
 
@@ -268,7 +287,11 @@ _PAGES = (
     PageEvidence("labyrinth_stone.story", required=("skip_button",)),
     PageEvidence("labyrinth_stone.team", required=("battle_start_button",)),
     PageEvidence("labyrinth_stone.labyrinth_detail", required=("select_team_button",)),
-    PageEvidence("labyrinth_stone.labyrinth_list", required=("labyrinth_entry",)),
+    PageEvidence(
+        "labyrinth_stone.labyrinth_list",
+        # 两张「混乱的提雷尔城」条目图任一命中即可（PC 上这张卡片有两种画法）。
+        any_of=(("labyrinth_entry", "labyrinth_entry_alt"),),
+    ),
     PageEvidence("labyrinth_stone.battle_menu", required=("labyrinth_card",)),
     PageEvidence("labyrinth_stone.lobby", required=("lobby_episode_menu",)),
 )
@@ -280,7 +303,17 @@ _PAGES = (
 # 一旦漂移就是「转场永远验收不通过」而不是报错。
 
 
+# 「只在 PC 上才有的原子」：图只放在 ``pc/`` 子目录，模拟器画像里不许出现，
+# 否则它会去加载一张不存在的共享图。
+#   region1_completed  —— PC 上才观察到的「1 区域完成探险」提示
+#   labyrinth_entry_alt —— 迷宫列表卡片「混乱的提雷尔城」的第二种画法
+_PC_ONLY_KEYS = frozenset({"region1_completed", "labyrinth_entry_alt"})
+
+
 def build_labyrinth_stone_evidence(template_dir: Path) -> EvidenceProfile:
+    # 「1 区域完成探险」是 PC 上才观察到的新状态：图只放在 ``pc/`` 子目录，
+    # 模拟器画像里不许出现这颗原子，否则它会去加载一张不存在的共享图。
+    pc = is_pc(template_dir)
     atoms = {
         key: AtomEvidence(
             key=key,
@@ -290,6 +323,7 @@ def build_labyrinth_stone_evidence(template_dir: Path) -> EvidenceProfile:
             reference_size=REFERENCE_SIZE,
         )
         for key, relative_path in _TEMPLATE_PATHS.items()
+        if pc or key not in _PC_ONLY_KEYS
     }
     return EvidenceProfile(
         atoms=atoms,

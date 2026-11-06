@@ -6,6 +6,7 @@
 用别的入口量出来的分数不能作数。
 """
 
+import dataclasses
 from pathlib import Path
 import unittest
 
@@ -17,6 +18,7 @@ from auto_game_unified.games.epic7.global_popups import (
     load_friend_request_templates,
 )
 from auto_game_unified.games.epic7.story import (
+    StoryState,
     StoryStateMachine,
     build_story_templates,
 )
@@ -24,11 +26,19 @@ from auto_game_unified.games.epic7.template_paths import TemplateDir
 
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURES = ROOT / "tests" / "fixtures" / "epic7_story"
+# PC 帧单独放 ``*_pc`` 目录（2026-11-04 P4 起）：``FIXTURES`` 是模拟器基线，
+# 混进 PC 帧会撞「全库排他性」那类护栏，只能靠放宽门槛过测试。
+PC_FIXTURES = ROOT / "tests" / "fixtures" / "epic7_story_pc"
 TEMPLATES = ROOT / "games" / "epic7" / "templates" / "story"
 
 
 def load_fixture(name: str) -> np.ndarray:
     image = np.asarray(Image.open(FIXTURES / f"{name}.png").convert("RGB"))
+    return image[:1132, :1982]
+
+
+def load_pc_fixture(name: str) -> np.ndarray:
+    image = np.asarray(Image.open(PC_FIXTURES / f"{name}.png").convert("RGB"))
     return image[:1132, :1982]
 
 
@@ -43,10 +53,19 @@ class Epic7StoryPcTests(unittest.TestCase):
 
         这条是本路线**不需要补 PC 专属图**的证据：按钮判据是白掩膜找形状，
         与背景无关，所以同一个客户端换了渲染方式也照认。
+
+        ⚠️ 这条测的是**共享（模拟器）模板**能不能认 PC 帧（名字就写着 shared），
+        所以必须用 emulator 后端建模板，不能跟 ``setUp`` 那台 PC 机器混用：
+        2026-11-04 另一次真机修复给 ``prepare_battle_updated`` 补了 PC 覆盖图
+        （针对**更新后的 PC 客户端**渲染），它在这张 11-01 的旧 PC 帧上反而不过阈
+        （共享图 1.0000 / PC 覆盖图 None）。夹具比客户端旧，不是判据退化。
         """
         frame = load_fixture("stage_pc_live_20261101")
+        shared_machine = StoryStateMachine(
+            build_story_templates(TemplateDir(TEMPLATES, "emulator"))
+        )
 
-        match = self.machine._locate(frame, "prepare_battle")
+        match = shared_machine._locate(frame, "prepare_battle")
 
         self.assertIsNotNone(match)
         self.assertGreaterEqual(match.score, 0.90)
@@ -137,20 +156,117 @@ class Epic7StoryPcTests(unittest.TestCase):
         )
 
     def test_pc_overrides_are_only_what_the_pc_really_needs(self):
-        """PC 覆盖图只允许放**真的认不出**的那几张，加一张就得回来改这条。
+        """PC 覆盖图只允许放**真的认不出 / 真的点不动**的那几张，加一张就得回来改这条。
 
-        现有的两张都是「PC 把同一句中文标题渲染得略大」这一类：
-        `stamina_popup`（行动力不足）、`friend_request_title`（给予协助的朋友）、
-        `complete`（打完一关的「完成故事」弹窗 —— PC 上 0.7996 / 阈 0.80，差 0.0004
-        ⇒ 主线 5 次卡在「等待结算」45 秒超时）。
+        判据类（都是「PC 把同一句中文渲染得略大 / 按钮换了皮」）：
+        - `stamina_popup`（行动力不足）；
+        - `friend_request_title`（给予协助的朋友）；
+        - `complete`（「完成故事」弹窗 —— PC 上 0.7996 / 阈 0.80，差 0.0004
+          ⇒ 主线 5 次卡在「等待结算」45 秒超时）；
+        - `prepare_battle_updated`（2026-11-04 另一次真机修复，针对更新后的 PC
+          客户端按钮渲染；共享图在 11-01 旧帧上仍 1.0000，见上面的用例说明）。
+        - `prepare_battle`（2026-11-06 活动剧情的战斗关进的是**另一种**「准备战斗」
+          版面：主线 `select_team` / `prepare_battle` / `prepare_battle_updated`
+          三套判据全不认，整条路线在「等待结算」上超时。共用图不能动（模拟器
+          行为零改动），所以只给 PC 补一张同尺寸覆盖图，走
+          ``find_prepare_battle_button`` 的双候选 + 白掩膜，实跑帧 1.0000；
+          主线仍由 `prepare_battle_updated` 兜底，两条路互不干扰）。
+
+        点击目标类（不参与判据，只决定点哪）：
+        - `complete_close`（2026-11-04 P4：「完成故事」弹窗底部「点击关闭」标签，
+          PC 上 ``complete`` 模板中心落在奖励图标、点了没反应，连点 4 次不推进）。
 
         主线其余判据全是白掩膜 / 几何，PC 上本来就过阈 —— 不许顺手加图。
         """
         overrides = {path.name for path in (TEMPLATES / "pc").glob("*.png")}
         self.assertEqual(
-            {"stamina_popup.png", "friend_request_title.png", "complete.png"},
+            {
+                "stamina_popup.png",
+                "friend_request_title.png",
+                "complete.png",
+                "prepare_battle_updated.png",
+                "prepare_battle_updated_alt.png",
+                "prepare_battle.png",
+                "complete_close.png",
+            },
             overrides,
         )
+
+    def test_pc_complete_popup_clicks_the_close_label_not_the_title(self):
+        """P4 回归（2026-11-04 每日任务实跑）：主线走到通关提示，``complete`` 判据
+        **过了**（证据包 0.8236 > 0.80），但 ``操作=complete 坐标=(1001,395)`` 连点 4 次
+        「来源页面=通关提示仍在」，最后 ``四次点击未转场``，整条路线 ✗。
+
+        定性：**不是识别问题，是点击点问题**。``complete`` 模板裁的是弹窗标题+奖励区
+        （537×254），中心 (1001,395) 落在奖励图标上；PC 客户端的「完成故事」弹窗要
+        点底部「点击关闭」才关得掉（实测中心 (965,770)）。
+
+        修法：新增 ``templates/story/pc/complete_close.png``（只裁「点击关闭」4 个字，
+        150×50），``_action_point`` 在 ``complete`` 且命中该标签时返回标签中心；
+        标签**只决定点哪，不参与判据**，判据仍只看 ``complete`` 文案。
+        该 PC 帧上标签实测 1.0000 @ (965,770)。不许调阈值、不许改目标连续次数。
+        """
+        frame = load_pc_fixture("complete_popup_live_20261104")
+
+        action = self.machine.next_action(frame)
+
+        self.assertIsNotNone(action)
+        self.assertEqual("complete", action.name)
+        # 「点击关闭」实测中心 (965, 770)；给 ±12 余量，别把一次重采样写死。
+        self.assertAlmostEqual(965, action.point[0], delta=12)
+        self.assertAlmostEqual(770, action.point[1], delta=12)
+        # 反向：绝不能还是标题中心 —— 那就是这次报错的原样行为。
+        self.assertNotEqual((1001, 395), tuple(action.point))
+
+    def test_without_the_pc_close_template_the_old_point_is_kept(self):
+        """对称回归：拿掉 ``complete_close``（模拟器口径 / 找不到按钮）时**原样回落**
+        ``match.center`` = (1001,395)，模拟器行为一个字都不改。
+
+        这条钉住 P4 最容易犯的错：把点击点改动做成无条件覆盖，把模拟器也带偏。
+        """
+        frame = load_pc_fixture("complete_popup_live_20261104")
+        templates = dataclasses.replace(self.machine.templates, complete_close=None)
+        machine = StoryStateMachine(templates)
+
+        action = machine.next_action(frame)
+
+        self.assertIsNotNone(action)
+        self.assertEqual("complete", action.name)
+        self.assertEqual((1001, 395), tuple(action.point))
+
+    def test_wait_complete_recognizes_stage_entry_on_both_pc_renderings(self):
+        """P4 续（2026-11-04 14:53 实跑）：点掉「完成故事」弹窗后回到关卡详情页，
+        程序在「等待通关」状态下连续 45 秒认不出这一页，最后安全停止、主线记 ✗。
+
+        定性：`_locate("prepare_battle")` 走白掩膜，PC 的两套按钮渲染都只有
+        **0.8515**（阈 0.90）⇒ 状态机 WAIT_COMPLETE 分支的三个前进判据全落空。
+        补第二张 PC 候选图后同一把尺子量出 **1.0000**，直接落回「关卡入口」。
+        这里用真状态机跑 WAIT_COMPLETE：按既有设计，通关后回到关卡入口是
+        **记一轮收工、不发动作**（`next_action` 返回 None、`completed_cycles` +1、
+        状态拨回 STAGE），所以断言的是这三者，而不是「返回一个动作」。
+        """
+        cases = (
+            ("story_ready_pc_20261104_142538", load_pc_fixture),
+            ("story_ready_pc_20261104_015956", load_pc_fixture),
+            # 14:53:49 真机超时那一帧（点掉「完成故事」弹窗后回到关卡详情页）。
+            # 当时 evidence.json 里 ``prepare_battle_updated`` 只有 0.8926，
+            # 45 秒后报「主线画面[等待通关]未识别」；补的第二套渲染候选在
+            # 这一帧上是 1.0000，而旧图仍是 None。
+            ("wait_complete_after_close_pc_20261104", load_pc_fixture),
+            ("stage_pc_live_20261101", load_fixture),
+        )
+        for name, loader in cases:
+            with self.subTest(frame=name):
+                machine = StoryStateMachine(
+                    build_story_templates(TemplateDir(TEMPLATES, "pc"))
+                )
+                machine.state = StoryState.WAIT_COMPLETE
+
+                action = machine.next_action(loader(name))
+
+                self.assertIsNone(action, name)
+                self.assertEqual(1, machine.completed_cycles, name)
+                self.assertEqual(StoryState.STAGE, machine.state, name)
 
 
 if __name__ == "__main__":

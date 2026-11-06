@@ -278,6 +278,13 @@ class HomeReturnTemplates:
     pause_title: np.ndarray
     giveup_button: np.ndarray
     giveup_dialog_finish: np.ndarray
+    # 2026-11-05：「骑士团活动」整屏页（左上标题 + 底部「✕ 点击关闭」）。
+    # 骑士团捐赠跑完停在「每周任务」标签，**PC 上 ESC 关不掉这一页**（它不是弹窗），
+    # 收尾连按 2 次 ESC 纹丝不动 ⇒「回首页失败」⇒ 整条每日任务链中止。
+    # ⚠️ 只在 pc/ 里有图 ⇒ 模拟器加载成 None ⇒ 这一条整段跳过，行为不变。
+    # ⚠️ **不能**放进全局弹窗守卫：骑士团捐赠正常流程就会进这页，会被踢出去。
+    knights_activity_title: np.ndarray | None = None
+    knights_activity_close: np.ndarray | None = None
 
 
 def build_home_return_templates(
@@ -299,6 +306,11 @@ def build_home_return_templates(
     def labyrinth_template(key: str) -> np.ndarray:
         return load_template(str(labyrinth / f"{key}.png"))
 
+    def global_optional(key: str):
+        """``templates/global`` 下的可选图：只有 pc/ 里有 ⇒ 模拟器取到 None。"""
+        path = template_root / "global" / f"{key}.png"
+        return load_template(str(path)) if path.is_file() else None
+
     return HomeReturnTemplates(
         lobby_story=navigator_templates.lobby_story,
         lobby_arena=navigator_templates.lobby_arena,
@@ -309,6 +321,8 @@ def build_home_return_templates(
         pause_title=labyrinth_template("pause_title"),
         giveup_button=labyrinth_template("giveup_button"),
         giveup_dialog_finish=labyrinth_template("giveup_dialog_finish"),
+        knights_activity_title=global_optional("knights_activity_title"),
+        knights_activity_close=global_optional("knights_activity_close"),
     )
 
 
@@ -559,6 +573,25 @@ def return_home_v2(
             stable.reset()
             sleep(poll_seconds)
             continue
+
+        # ⑦.5 「骑士团活动」整屏页 ⇒ 点底部「✕ 点击关闭」（PC 专属，模拟器整段跳过）。
+        if not verifier.is_retired("关闭骑士团活动", observed):
+            activity_close = _activity_close_point(screen, templates)
+            if activity_close is not None:
+                runtime.log(
+                    f"模式=导航 流程=v2 页面=骑士团活动 动作=点击关闭 "
+                    f"置信度={activity_close.score:.3f} 坐标={activity_close.center}"
+                )
+                verifier.act(
+                    "关闭骑士团活动",
+                    lambda: runtime.click(  # noqa: B023
+                        activity_close.center, "close-knights-activity"
+                    ),
+                    screen,
+                )
+                stable.reset()
+                sleep(poll_seconds)
+                continue
 
         # ⑧ 都不是 ⇒ 按 ESC 退一层。
         back_count = verifier.press_esc(back_count, observed, screen, "兜底")
@@ -823,6 +856,47 @@ def _at_lobby(screen: np.ndarray, templates: HomeReturnTemplates) -> bool:
         if secondary is not None:
             return True
     return False
+
+
+# 「骑士团活动」整屏页（PC 专属）。区域照那两张图的实测包围盒留余量：
+# 标题 bbox (103,152) 215x42；「点击关闭」bbox (933,1082) 92x21。
+_ACTIVITY_TITLE_REGION = (60, 120, 340, 110)
+_ACTIVITY_CLOSE_REGION = (820, 1040, 400, 80)
+_ACTIVITY_TITLE_THRESHOLD = 0.82
+_ACTIVITY_CLOSE_THRESHOLD = 0.85
+
+
+def _activity_close_point(
+    screen: np.ndarray, templates: "HomeReturnTemplates"
+) -> Optional[Match]:
+    """「骑士团活动」页底部「点击关闭」。
+
+    两张图任一缺失（模拟器就是这样）⇒ 直接 None，整段跳过，行为与历史一致。
+    标题不成立 ⇒ 也返回 None —— **不许**只凭「有个关闭按钮」就点。
+    """
+    if (
+        templates.knights_activity_title is None
+        or templates.knights_activity_close is None
+    ):
+        return None
+    title = locate_with_fallback(
+        "knights_activity_title",
+        screen,
+        templates.knights_activity_title,
+        _ACTIVITY_TITLE_THRESHOLD,
+        region=_ACTIVITY_TITLE_REGION,
+        reference_size=REFERENCE_SIZE,
+    )
+    if title is None:
+        return None
+    return locate_with_fallback(
+        "knights_activity_close",
+        screen,
+        templates.knights_activity_close,
+        _ACTIVITY_CLOSE_THRESHOLD,
+        region=_ACTIVITY_CLOSE_REGION,
+        reference_size=REFERENCE_SIZE,
+    )
 
 
 def _locate(

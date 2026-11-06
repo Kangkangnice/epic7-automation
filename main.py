@@ -9,6 +9,7 @@ from typing import Any, Callable, Mapping, Optional
 import numpy as np
 
 from auto_game_unified.core.data_paths import data_root
+from auto_game_unified.core.matcher import set_active_backend
 from auto_game_unified.core.hotkey import WindowsPStopHotkey
 from auto_game_unified.core.qqbot import send_qqbot_c2c
 from auto_game_unified.core.recovery import RecoveryGate
@@ -50,7 +51,9 @@ from auto_game_unified.games.epic7.global_popups import (
     load_knights_growth_rank_templates,
     load_knights_signin_templates,
     load_knights_weekly_reward_templates,
+    load_uncontrollable_templates,
     load_date_change_templates,
+    load_knights_activity_templates,
     load_login_reward_templates,
     load_network_reconnect_templates,
     load_pet_gift_templates,
@@ -438,6 +441,7 @@ def run_mode(
     )
     # ⚠️ 平台差异只在最上游注入一次：往下所有 ``template_root / "story"`` 之类
     # 得到的都是同一个「会按平台挑图」的目录，业务代码不需要知道平台的存在。
+    set_active_backend(window_backend)
     template_root = resolve_template_dir(
         ROOT / "games" / "epic7" / "templates", window_backend
     )
@@ -530,6 +534,16 @@ def run_mode(
                 #   登录奖励：不吃 ESC ⇒ 收尾「连按 2 次 ESC 页面不动」回首页失败。
                 # 模板只有 PC 版，模拟器口径下 load 成 None ⇒ 该条整段跳过（行为不变）。
                 date_change_templates=load_date_change_templates(
+                    template_root / "global"
+                ),
+                # 「骑士团活动」整屏页（PC 上 ESC 关不掉，会导致回首页失败、整链中止）。
+                # 图只在 pc/ 里 ⇒ 模拟器加载成 None ⇒ 整段跳过，行为不变。
+                knights_activity_templates=load_knights_activity_templates(
+                    template_root / "global"
+                ),
+                # 「无法控制」剧情弹窗（主线关卡入口页会弹出，整页盖住）。
+                # 图只在 pc/ 里 ⇒ 模拟器加载成 None ⇒ 整段跳过。
+                uncontrollable_templates=load_uncontrollable_templates(
                     template_root / "global"
                 ),
                 login_reward_templates=load_login_reward_templates(
@@ -710,6 +724,7 @@ def _build_daily_probe(
         window_backend=window_backend,
         stop_file=stop_file,
     )
+    set_active_backend(window_backend)
     template_root = resolve_template_dir(
         ROOT / "games" / "epic7" / "templates", window_backend
     )

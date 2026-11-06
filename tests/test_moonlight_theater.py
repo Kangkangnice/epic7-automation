@@ -227,7 +227,15 @@ class EpisodeTests(unittest.TestCase):
 
     def test_after_claiming_the_only_allowed_move_is_leaving(self) -> None:
         """「刚入场」和「领完奖励」两种分集页长得一样 ⇒ 靠业务标记走「返回」，
-        绝不再点「进行观览」（那会弹购买门票）。"""
+        绝不再点「进行观览」（那会弹购买门票）。
+
+        ⚠️ 2026-11-05 真机改口径：**「看过这一幕」的记账在离开时不清**，只在
+        ``_at_list`` 进新剧场时清。原因是离开动作可能被主循环的转场重放吞掉，
+        边决定边清账会让机器「忘了自己看过」，自救重决策时对同一集又点
+        「进行观览」⇒ 花掉一张剧场门票把同一幕看第二遍（真机 01:01:12 复现）。
+        所以这里断言的是**新契约**：离开＝返回选择页＋完成一幕计数，但记账仍在；
+        记账只在进新剧场时清（见 ``test_watched_flag_survives_until_next_theater``）。
+        """
         clock = FakeClock()
         probe = machine(MoonlightState.EPISODE, clock=clock)
         probe.watched_current = True
@@ -242,7 +250,16 @@ class EpisodeTests(unittest.TestCase):
         self.assertEqual(action.name, "leave-theater")
         self.assertEqual(action.target_pages, ("剧场选择页",))
         self.assertEqual(probe.completed_cycles, 1)
-        self.assertFalse(probe.watched_current)
+        self.assertTrue(
+            probe.watched_current,
+            "离开时不许清「看过」的记账：清早了会在离开动作被吞掉时白烧一张门票",
+        )
+        # 同一个剧场再被问一次，仍然只许「返回」——绝不许回到「进行观览」。
+        again = probe.next_action(load("episode_claimed"))
+        self.assertEqual(again.name, "leave-theater")
+        self.assertEqual(
+            probe.completed_cycles, 1, "同一个剧场只记一次「完成一幕」"
+        )
 
 
 class GuideAndStoryTests(unittest.TestCase):
@@ -452,6 +469,80 @@ class WatchedBookkeepingTests(unittest.TestCase):
         self.assertEqual(probe.completed_cycles, 1)
 
 
+class WatchedFlagLifetimeTests(unittest.TestCase):
+    """「看过这一幕」的记账生命周期（2026-11-05 真机：清早了白烧一张门票）。
+
+    真机 01:01:12 复现的链路：
+    1. 领奖点击把橙点点没了 ⇒ 机器正确决定「离开剧场」；
+    2. 但这一步**被主循环的转场重放吞掉**（claim-reward 还在等那个被守卫吃掉的
+       「获得奖励弹窗」），于是机器留在分集页；
+    3. 那时的写法是「一决定离开就清账」⇒ 机器已经忘了自己看过这一幕；
+    4. 自救重决策落到「这一集还没进去过」⇒ 又点「进行观览」⇒ 弹「使用剧场门票」
+       ⇒ 白花一张门票把同一幕看第二遍。
+
+    ⇒ 契约改成：记账活到**进下一个剧场**为止（``_at_list`` 里清）。
+    """
+
+    def test_leaving_does_not_forget_the_episode(self) -> None:
+        probe = machine(MoonlightState.EPISODE)
+        probe._current_poster = "poster-x"
+        probe.watched_current = True
+        probe.claimed_current = True  # 已经领过 ⇒ 不落进 8 秒宽限
+        action = probe.next_action(load("episode_claimed"))
+        self.assertEqual(action.name, "leave-theater")
+        self.assertTrue(
+            probe.watched_current,
+            "离开动作还没真的生效就清账；一旦被重放吞掉就会白烧门票",
+        )
+        # 再被问一次也仍然只许「返回」，绝不许回到「进行观览」
+        self.assertEqual(probe.next_action(load("episode_claimed")).name, "leave-theater")
+        self.assertEqual(probe.completed_cycles, 1, "同一个剧场只记一次完成")
+
+    def test_entering_the_next_theater_clears_the_bookkeeping(self) -> None:
+        probe = machine(MoonlightState.LIST)
+        probe._current_poster = "poster-old"
+        probe.watched_current = True
+        probe.claimed_current = True
+        action = probe.next_action(load("list_free"))
+        self.assertEqual(action.name, "enter-theater")
+        self.assertFalse(probe.watched_current, "换了一集才该重新记账")
+        self.assertFalse(probe.claimed_current)
+
+
+class RewardClaimTransitionTests(unittest.TestCase):
+    """点完下载图标后，「成功」必须能用**画面自身**证明。
+
+    真机 2026-11-05 00:58 实测：点完下载图标，游戏弹的「获得奖励」被**全局弹窗
+    守卫**在 capture 层就点掉了（日志 `动作=dismiss-reward-notice 坐标=(960,837)`，
+    落在点击后 3 秒内），状态机**一帧都看不到**它。此时若只写
+    「目标页面=获得奖励弹窗」，这条转场契约在真机上永远不成立 ⇒ 主循环按
+    「原页面仍存在且目标页面未出现」把 claim-reward 原地重放 4 次（每次都重新
+    打分、重新点击），再走自救分支。
+    """
+
+    def test_the_episode_page_is_also_a_landing_for_claim_reward(self) -> None:
+        probe = machine(MoonlightState.EPISODE)
+        action = probe.next_action(load("episode_reward"))
+        self.assertEqual(action.name, "claim-reward")
+        self.assertEqual(
+            action.target_pages,
+            (),
+            "领奖不换页（橙点点灭后人还在分集页），不许写 target_pages；"
+            "写「来源页=目标页」会让「点了没反应」也判成转场完成",
+        )
+        self.assertTrue(
+            action.in_page_evidence,
+            "页内验收依据不能为空：这条动作的成败全靠「橙点还在不在」证明",
+        )
+
+    def test_a_still_lit_dot_keeps_asking_for_the_same_click(self) -> None:
+        """**不许静默降级**：橙点还在 ⇒ 下一帧仍是同名动作 ⇒ 重试链路照常生效。"""
+        probe = machine(MoonlightState.EPISODE)
+        first = probe.next_action(load("episode_reward"))
+        second = probe.next_action(load("episode_reward"))
+        self.assertEqual((first.name, second.name), ("claim-reward", "claim-reward"))
+
+
 class TransitionExitTests(unittest.TestCase):
     """每个点击动作的 ``target_pages`` 必须**写得下所有可能落点**。
 
@@ -478,7 +569,8 @@ class TransitionExitTests(unittest.TestCase):
         },
         "confirm-guide": {"剧情页", "战斗中", "CLEAR 过场", "分集页"},
         "advance-clear": {"剧情页", "分集页", "战斗中"},
-        "claim-reward": {"获得奖励弹窗"},
+        # ⚠️ `claim-reward` 刻意不在这里：它是**页内变化**动作（橙点灭掉），
+        # 走 `in_page_evidence` 而不是 target_pages（2026-11-05 真机）。
         "close-reward": {"分集页", "剧场选择页"},
         "leave-theater": {"剧场选择页"},
         "abandon-theater": {"剧场选择页"},
@@ -556,12 +648,15 @@ class TransitionExitTests(unittest.TestCase):
             )
 
     def test_left_to_right_moves_are_in_page_evidence(self) -> None:
-        """不换页的两条（换海报 / 点字幕）必须走 `in_page_evidence`，不能有 target_pages。"""
+        """不换页的动作必须走 `in_page_evidence`，不能有 target_pages。"""
         episode = machine()
         episode._current_poster = "poster-x"
         next_theater = episode.next_action(load("list_no_free"))
         story = machine(MoonlightState.STORY).next_action(load("story"))
-        for action in (next_theater, story):
+        # 领奖同样是页内变化（橙点灭掉）：弹窗会被全局弹窗守卫在 capture 层点掉，
+        # 写「目标页面=获得奖励弹窗」等于写一条永远不成立的契约（2026-11-05 真机）。
+        claim = machine(MoonlightState.EPISODE).next_action(load("episode_reward"))
+        for action in (next_theater, story, claim):
             self.assertEqual(action.target_pages, (), f"{action.name} 不该有目标页")
             self.assertTrue(action.in_page_evidence, f"{action.name} 缺同页证据")
 
@@ -592,7 +687,11 @@ class RewardClosedLoopTests(unittest.TestCase):
             "claim-reward",
             "等到了却不领 = 这一集的奖励白看",
         )
-        self.assertEqual(action.target_pages, ("获得奖励弹窗",))
+        # 2026-11-05 真机改口径：领奖是**页内变化**（橙点灭掉），不是换页 ⇒ 走
+        # `in_page_evidence`，不带 target_pages（弹窗会被全局弹窗守卫在 capture
+        # 层点掉，`目标页面=获得奖励弹窗` 那条契约在真机上永远不成立）。
+        self.assertEqual(action.target_pages, ())
+        self.assertTrue(action.in_page_evidence)
 
     def test_the_dot_is_seen_even_when_the_template_misses(self) -> None:
         """橙点脉动到模板认不出时，**颜色判据**要顶上（否则就是实机那次漏领）。"""
@@ -729,7 +828,10 @@ class PurchaseSafetyTests(unittest.TestCase):
         self.assertEqual(action.name, "claim-reward")
         # 「进行观览」按钮在 y≈1050..1125；领奖图标在它左边、更靠上。
         self.assertLess(action.point[1], 1000, "领奖点不能落到「进行观览」那一行")
-        self.assertEqual(action.target_pages, ("获得奖励弹窗",))
+        # 2026-11-05 真机：这条动作**不换页**（橙点点灭、人还在分集页），
+        # 所以只能靠 `in_page_evidence` 验收，不能拿 target_pages 假装换了页。
+        self.assertEqual(action.target_pages, ())
+        self.assertTrue(action.in_page_evidence)
 
 
 class RewardPopupTests(unittest.TestCase):
@@ -1141,6 +1243,152 @@ class CloseOutStoryTests(unittest.TestCase):
         runtime = FakeRuntime([load("episode_fresh")])
         self._runner_at(MoonlightState.EPISODE, runtime)._close_out()
         self.assertEqual(runtime.clicks, [])
+
+
+
+# ---- PC 分集页（2026-11-04 23:59 真机整链卡死）--------------------------------
+
+PC_FIXTURES = FIXTURES.parent / "epic7_moonlight_theater_pc"
+
+
+def pc_load(name: str) -> np.ndarray:
+    import cv2
+
+    path = PC_FIXTURES / f"{name}.png"
+    image = cv2.imread(str(path), cv2.IMREAD_COLOR)
+    if image is None:
+        raise FileNotFoundError(path)
+    return cv2.cvtColor(image, cv2.COLOR_BGR2RGB)[:1132, :1982]
+
+
+def pc_machine(state: MoonlightState = MoonlightState.ENTRY) -> MoonlightStateMachine:
+    """PC 后端专用：真模板 + PC 覆盖图。"""
+    return MoonlightStateMachine(
+        build_moonlight_templates(resolve_template_dir(TEMPLATES, "pc")),
+        initial_state=state,
+    )
+
+
+class PcEpisodePageTests(unittest.TestCase):
+    """入场成功后落在「分集页」，但 PC 上判不出来 → 整条每日任务 ✗。
+
+    事故（2026-11-04 23:59）：`enter-theater` 点成功后进的是**分集页**，
+    而状态机要的是「集数列表 + 进行观览按钮」。PC 上 `watch_button` 共享模板
+    原样只有 0.6935（阈 0.80）⇒ `observe_page` 返回 None ⇒ 主循环报
+    「等待画面[剧场选择页]超时无进展」。
+
+    修法：补 ``templates/moonlight_theater/pc/watch_button.png``（150x40，
+    只截白字「进行观览」，不含绿色按钮底与左右图标）。本帧白掩膜 1.0000，
+    PC 反例 ≤0.1922，模拟器 guide / purchase / ticket / reward_popup /
+    episode_* 全 0.0。
+
+    ⚠️ 为什么不走低通白名单：全库审计显示低通后 ``guide.png`` / ``purchase.png``
+    / ``ticket.png`` / ``reward_popup.png`` / ``episode_*.png`` 共 9 张也会过阈
+    —— 那是拿判据余量换分数，冒牌分能反超真页。
+    """
+
+    def test_entering_the_theater_lands_on_the_episode_page(self) -> None:
+        page = pc_machine().observe_page(pc_load("episode_list_pc_20261104"))
+
+        self.assertIs(MoonlightState.EPISODE, page)
+
+    def test_the_watch_button_does_not_leak_onto_the_other_pc_pages(self) -> None:
+        """跨页反例：剧场选择页 / 支线故事页都不能被认成分集页。"""
+        machine = pc_machine()
+
+        for name in (
+            "theater_home_pc_20261104_073014",
+            "theater_home_pc_20261104_142220",
+            "side_story_page_pc_20261104_072717",
+            "side_story_page_pc_20261104_141910",
+        ):
+            page = machine.observe_page(pc_load(name))
+            self.assertIsNot(MoonlightState.EPISODE, page, name)
+
+    def test_the_episode_fix_is_pc_only(self) -> None:
+        """隔离铁律：模拟器模板跑同一张 PC 帧，不许被认成分集页。"""
+        from auto_game_unified.core import matcher
+
+        machine = MoonlightStateMachine(
+            build_moonlight_templates(resolve_template_dir(TEMPLATES, "emulator")),
+            initial_state=MoonlightState.ENTRY,
+        )
+        previous = matcher.ACTIVE_BACKEND
+        matcher.set_active_backend("emulator")
+        try:
+            page = machine.observe_page(pc_load("episode_list_pc_20261104"))
+        finally:
+            matcher.set_active_backend(previous)
+
+        self.assertIsNot(MoonlightState.EPISODE, page)
+
+# ---- PC 分集页左上返回箭头（2026-11-05 00:35 真机 timeout_episode）------------
+
+
+class PcBackButtonRegionTests(unittest.TestCase):
+    """模板没错，搜索区错了：PC 上返回箭头往右下挪了十几像素，被 region 切掉下沿。
+
+    事故：看完整场剧、领完奖、点掉奖励弹窗后，状态机停在同一页要「返回剧场选择页」，
+    而 ``_at_episode`` 里 ``_required(screen, "back_button")`` 抛 UnrecognizedScreen
+    ⇒ 45 秒后 ``timeout_episode``。诊断帧上箭头**清清楚楚就在左上角**。
+
+    量化（同一枚共享模板、只改搜索区）：
+
+    ==================  ==========  ==============================
+    搜索区              模拟器帧      PC 帧
+    ==================  ==========  ==============================
+    (0,20,180,110)       0.9198      **0.2035**
+    (0,40,240,160)       0.9198      0.8867（共享图）/ 1.0000（PC 覆盖图）
+    ==================  ==========  ==============================
+
+    根因不是阈值：箭头 bbox 在模拟器是 x35/y75/43x52，在 PC 是 x57/y88/42x50，
+    region 的 y 上限 130 把 PC 箭头**下沿 8px 切在外面** —— 模板永远拿不到完整控件。
+    """
+
+    def test_the_back_arrow_is_found_on_the_pc_episode_page(self) -> None:
+        machine = pc_machine()
+        frame = pc_load("episode_page_pc_20261105")
+
+        back = machine._locate(frame, "back_button")
+
+        self.assertIsNotNone(back)
+        # 落点必须压在箭头本体上（bbox x57~98 / y88~137，中心 (78,113)）。
+        self.assertLessEqual(abs(back.center[0] - 78), 12)
+        self.assertLessEqual(abs(back.center[1] - 113), 12)
+
+    def test_the_pc_search_region_is_actually_the_fix(self) -> None:
+        """证伪：把 PC 开关关掉，同一帧必须**又认不出** —— 证明修的是 region 不是别的。"""
+        import dataclasses
+
+        machine = pc_machine()
+        frame = pc_load("episode_page_pc_20261105")
+
+        demoted = MoonlightStateMachine(dataclasses.replace(machine.templates, pc=False))
+
+        self.assertIsNone(demoted._locate(frame, "back_button"))
+
+    def test_the_emulator_region_is_untouched(self) -> None:
+        """隔离铁律：模拟器仍用证据画像里那份 region，夹具分数一分不动。"""
+        machine = MoonlightStateMachine(
+            build_moonlight_templates(resolve_template_dir(TEMPLATES, "emulator"))
+        )
+
+        self.assertFalse(machine.templates.pc)
+        back = machine._locate(load("episode_fresh"), "back_button")
+        self.assertIsNotNone(back)
+        self.assertGreaterEqual(back.score, 0.88)
+
+    def test_the_pc_template_is_a_different_crop(self) -> None:
+        """PC 用了自己那张（50x58），不是共享那张（47x57）—— 否则「谁在生效」说不清。"""
+        machine = pc_machine()
+        shared = MoonlightStateMachine(
+            build_moonlight_templates(resolve_template_dir(TEMPLATES, "emulator"))
+        )
+
+        self.assertNotEqual(
+            machine.templates.back_button.shape,
+            shared.templates.back_button.shape,
+        )
 
 
 if __name__ == "__main__":

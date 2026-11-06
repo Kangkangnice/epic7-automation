@@ -149,10 +149,16 @@ def find_watch_story_button(
 def find_prepare_battle_button(
     screen: np.ndarray,
     primary_template: np.ndarray,
-    updated_template: np.ndarray,
+    updated_template: np.ndarray | tuple[np.ndarray, ...],
     threshold: float = 0.90,
 ) -> Optional[Match]:
-    """Find the stable white button glyph without depending on stage artwork."""
+    """Find the stable white button glyph without depending on stage artwork.
+
+    ``updated_template`` 允许是一组候选：PC 客户端把同一颗「准备战斗」按钮画成过
+    两套外观（2026-11-04 实测同一帧上甲图 1.0000 / 乙图 0.8515，换一批帧反过来），
+    单一模板必然在其中一批帧上掉到 0.90 以下。任一候选过阈即命中，取最高分；
+    阈值与「白掩膜口径」都不变。
+    """
     scale_x = screen.shape[1] / _WATCH_STORY_REFERENCE_SIZE[0]
     scale_y = screen.shape[0] / _WATCH_STORY_REFERENCE_SIZE[1]
     x, y, width, height = _WATCH_STORY_REGION
@@ -168,8 +174,13 @@ def find_prepare_battle_button(
     lower = np.array([0, 0, 150])
     upper = np.array([179, 90, 255])
     search_mask = cv2.inRange(search_hsv, lower, upper)
+    updated = (
+        (updated_template,)
+        if isinstance(updated_template, np.ndarray)
+        else tuple(updated_template)
+    )
     matches = []
-    for template in (primary_template, updated_template):
+    for template in (primary_template, *updated):
         template_hsv = cv2.cvtColor(template, cv2.COLOR_RGB2HSV)
         match = find_template(
             search_mask,
@@ -305,7 +316,12 @@ class StoryTemplates:
     battle_guide_dont_show: np.ndarray
     watch_story: np.ndarray
     prepare_battle: np.ndarray
-    prepare_battle_updated: np.ndarray
+    # 「准备战斗」按钮的换皮版。PC 客户端还有第二套渲染（2026-11-04 下午那批帧），
+    # 两张互为候选：甲图在上午帧 1.0000 / 下午帧 0.8515，乙图正好反过来。
+    # 阈值与白掩膜口径一律不变，只是让任一套外观都能过阈。
+    # ⚠️ 第一张永远存在（模拟器和 PC 都有），第二张只在 PC 放图时才追加，
+    # 所以这不是「可选判据」，判据不会静默降级。
+    prepare_battle_updated: tuple[np.ndarray, ...]
     select_team: np.ndarray
     start_mission: np.ndarray
     # 2026-09-17 游戏把这颗按钮换了皮（橙「进行任务」→ 绿「战斗开始」），
@@ -323,12 +339,44 @@ class StoryTemplates:
     next_stage: np.ndarray
     # 「重复打同一关」那页的右下角按钮（「无法前往下一个关卡，请选择下方按钮」）。
     retry_stage: np.ndarray
+    # 2026-11-04 加：PC 端「完成故事」弹窗的底部「点击关闭」标签。**只作点击目标、
+    # 不参与判据**（判据只看 ``complete`` 文案）。PC 端弹窗布局与模拟器不同，``complete``
+    # 模板中心落在奖励图标上、点了没反应；改用这枚标签的真实位置才点得动。
+    # ⚠️ 可选：模拟器没有这枚 PC 覆盖图 ⇒ 载入为 ``None``，``_action_point`` 原样回落
+    # ``match.center``（模拟器零改动）。
+    complete_close: Optional[np.ndarray] = None
     threshold: float = 0.80
     stamina_popup: Optional[np.ndarray] = None
     stamina_material: Optional[np.ndarray] = None
     stamina_confirm: Optional[np.ndarray] = None
     quick_battle: QuickBattleDetector | None = None
     evidence: EvidenceProfile | None = None
+
+
+def _load_prepare_battle_updated(template_dir) -> tuple[np.ndarray, ...]:
+    """「准备战斗」按钮：主图必载，PC 的第二套渲染图存在才追加为候选。
+
+    放在 ``pc/`` 子目录里，模拟器解析到的是共享路径下不存在的同名文件，
+    ``is_file()`` 为假 ⇒ 只有主图一张，行为与改动前逐字节一致。
+    """
+    primary = load_template(str(template_dir / "prepare_battle_updated.png"))
+    alt = template_dir / "prepare_battle_updated_alt.png"
+    if not Path(alt).is_file():
+        return (primary,)
+    return (primary, load_template(str(alt)))
+
+
+def _load_complete_close(template_dir) -> Optional[np.ndarray]:
+    """PC 端「点击关闭」标签：覆盖图存在才载入，否则返回 ``None``。
+
+    模拟器没有这枚 PC 覆盖图，于是 ``complete`` 动作的点击点原样回落
+    ``match.center``（模拟器零改动）。``template_dir`` 可能是 ``TemplateDir``
+    （PC 后端会指到 ``story/pc/complete_close.png``），``.is_file()`` 两种都适用。
+    """
+    candidate = template_dir / "complete_close.png"
+    if not Path(candidate).is_file():
+        return None
+    return load_template(str(candidate))
 
 
 def build_story_templates(template_dir: Path) -> StoryTemplates:
@@ -341,9 +389,7 @@ def build_story_templates(template_dir: Path) -> StoryTemplates:
         ),
         watch_story=load_template(str(template_dir / "watch_story.png")),
         prepare_battle=load_template(str(template_dir / "prepare_battle.png")),
-        prepare_battle_updated=load_template(
-            str(template_dir / "prepare_battle_updated.png")
-        ),
+        prepare_battle_updated=_load_prepare_battle_updated(template_dir),
         select_team=load_template(str(template_dir / "select_team.png")),
         start_mission=load_template(str(template_dir / "start_mission.png")),
         start_mission_updated=load_template(
@@ -360,6 +406,8 @@ def build_story_templates(template_dir: Path) -> StoryTemplates:
         bonus_reward=load_template(str(template_dir / "bonus_reward.png")),
         next_stage=load_template(str(template_dir / "next_stage.png")),
         retry_stage=load_template(str(template_dir / "retry_stage.png")),
+        # 「点击关闭」标签：PC 覆盖图存在才载入，否则 ``None``（模拟器回落旧点）。
+        complete_close=_load_complete_close(template_dir),
         **asdict(load_stamina_templates(template_dir)),
         quick_battle=load_simulator_quick_battle_detector(template_dir),
         threshold=evidence.atom("start_mission").threshold,
@@ -375,6 +423,9 @@ class StoryStateMachine:
     _REGIONS = STORY_REGIONS
     _BONUS_REWARD_CLOSE_OFFSET = (0, 312)
     _AUTO_CLICK_POINT = (1690, 96)
+    # PC「完成故事」弹窗底部「点击关闭」标签的搜索区。模板 150×50，区域留足
+    # 余量让它在 (965,770) 附近滑到真中心；实测该帧 1.0000 @ (965,770)。
+    _COMPLETE_CLOSE_REGION = (820, 700, 270, 140)
 
     def __init__(
         self,
@@ -390,6 +441,14 @@ class StoryStateMachine:
             self._THRESHOLDS = {
                 key: atom.threshold for key, atom in templates.evidence.atoms.items()
             }
+        # 「点击关闭」是**纯点击目标**，不是证据原子（不参与判据），所以不能从
+        # evidence 里取它的搜索区，要单独登记。
+        # ⚠️ 只有 PC 真的载到这枚覆盖图时才动 ``self._REGIONS``：模拟器保持改动前
+        # 的字典（类属性 STORY_REGIONS / evidence 生成的那份）一个字节不变，
+        # 连多一个 key 都不行 —— 这是「完全不碰模拟器」的口径。
+        if templates.complete_close is not None:
+            self._REGIONS = dict(self._REGIONS)
+            self._REGIONS["complete_close"] = self._COMPLETE_CLOSE_REGION
         self.auto_enabled = False
         self.auto_click_attempted = False
         self.battle_controls = BattleControls.TRANSITION
@@ -634,6 +693,16 @@ class StoryStateMachine:
         )
 
     def _action_point(self, screen: np.ndarray, name: str, match: Match) -> tuple[int, int]:
+        # 2026-11-04 PC 主线修复：``complete`` 判据（通关提示文案）过了，但点在
+        # ``complete`` 模板中心（奖励图标）上，PC 客户端不认这一下，连点 4 次不推进。
+        # 改为优先点弹窗底部「点击关闭」标签的真实位置；这枚标签**只决定点哪，
+        # 不参与判据**（判据仍只看 ``complete``），与 global_popups 的既有模式一致。
+        # 找不到标签（或模拟器没有 PC 覆盖图）就原样回落 ``match.center`` ——
+        # 模拟器行为零改动。
+        if name == "complete" and self.templates.complete_close is not None:
+            close = self._locate(screen, "complete_close")
+            if close is not None:
+                return close.center
         if name != "bonus_reward":
             return match.center
         scale_y = screen.shape[0] / self._REFERENCE_SIZE[1]
@@ -870,7 +939,7 @@ class StoryStateMachine:
                 "prepare_battle",
                 match.center,
                 source_page="关卡入口",
-                target_pages=("助手选择", "队伍准备", "快速战斗"),
+                target_pages=("助手选择", "队伍准备", "快速战斗", "剧情播放", "战斗中"),
                 reason="关卡入口的准备战斗按钮已识别",
                 target_states=(StoryState.TEAM,),
             )
@@ -950,7 +1019,7 @@ class StoryStateMachine:
                     "prepare_battle",
                     match.center,
                     source_page="关卡入口",
-                    target_pages=("助手选择", "队伍准备", "快速战斗"),
+                    target_pages=("助手选择", "队伍准备", "快速战斗", "剧情播放", "战斗中"),
                     reason="通关后已回到下一关入口",
                     target_states=(StoryState.TEAM,),
                 )

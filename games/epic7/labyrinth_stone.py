@@ -68,7 +68,7 @@
 |---|---|---|
 | ``open-labyrinth`` | 战斗菜单·一般页 | 迷宫列表 |
 | ``open-labyrinth-entry`` | 迷宫列表 | 迷宫详情页 |
-| ``select-region-1`` | 迷宫详情页 | 页内：1 区域那一行出现金色选中框 |
+| ``select-region-1`` | 迷宫详情页（1 区域**还能选**） | 页内：1 区域那一行出现金色选中框 |
 | ``open-team`` | 迷宫详情页 | 准备战斗页 |
 | ``start-battle`` | 准备战斗页 | 迷宫房间 / 开场剧情 / 迷宫内战斗 |
 | ``skip-story`` | 开场剧情 | 迷宫房间 |
@@ -89,8 +89,13 @@
 | ``open-pause`` | 迷宫房间 / 迷宫内战斗 / 商人房 | 暂停菜单 |
 | ``give-up`` | 暂停菜单 | 放弃战斗确认框 |
 | ``confirm-give-up`` | 放弃战斗确认框 | 迷宫详情页 |
-| ``open-quick-menu`` | 迷宫详情页 | 右上角快捷菜单 |
+| ``open-quick-menu`` | 迷宫详情页（**已进过迷宫**，或 1 区域已「✓完成探险」） | 右上角快捷菜单 |
 | ``go-tavern`` | 右上角快捷菜单 | 大厅 |
+
+⚠️ 后一种 ``open-quick-menu`` 是 2026-11-04 加的**正常收工门**：1 区域写着
+「✓完成探险」时那一行不可点，四次 ``select-region-1`` 全是无效点击（14:18 真机）。
+判据是「绿字状态 + 必须贴在 1 区域标签下方」两维，回家后 ``_at_lobby`` 写一条
+专门的收工理由，不谎报「商店里没有可买的强化石」。
 """
 
 from dataclasses import dataclass
@@ -130,7 +135,7 @@ from auto_game_unified.games.epic7.resume_probe import ResumePoint
 from auto_game_unified.games.epic7.route_action import RouteAction
 from auto_game_unified.games.epic7.runner_base import ModeRunnerBase
 from auto_game_unified.games.epic7.unknown_screen import UnrecognizedScreen
-from auto_game_unified.games.epic7.template_paths import is_template_root
+from auto_game_unified.games.epic7.template_paths import is_pc, is_template_root
 
 
 class LabyrinthStoneState(Enum):
@@ -245,6 +250,13 @@ _AFTER_ENTRY_STATES = frozenset(
 # 实测选中时落差 69，而一行本身就有 141 高 ⇒ 选中别的区时落差必然 ≥210。
 REGION_ROW_TOLERANCE = 90
 
+# 「✓完成探险」相对「1 区域」标签的位置容差（2026-11-04 14:18 真机实测）：
+# 标签中心 (1080,467)，状态文字中心 (1100,503) ⇒ dx=+20 / dy=+36。
+# 第二行的状态文字在 y≈691（dy≈224），所以 dy 上限 70 能把「2 区域也完成了」
+# 这种情况挡在外面 —— 这一维是判据**能证伪**的关键，光靠文字模板不够。
+REGION1_COMPLETED_MAX_DX = 120
+REGION1_COMPLETED_MAX_DY = 70
+
 # ---- 有界重试的上限 -----------------------------------------------------------
 #
 # ⚠️ 一律 **不超过 3**：主循环对「同名动作连点」的账本上限是 4 次（``action_attempts > 4``
@@ -296,9 +308,15 @@ class LabyrinthStoneAction(RouteAction):
 class LabyrinthStoneTemplates:
     labyrinth_card: np.ndarray
     labyrinth_entry: np.ndarray
+    # 2026-11-06：迷宫列表卡片「混乱的提雷尔城」的**第二种画法**。
+    # PC 专属（图只在 `pc/`），模拟器载入为 None。
+    labyrinth_entry_alt: np.ndarray | None
     select_team_button: np.ndarray
     region_row1_label: np.ndarray
     region_selected_box: np.ndarray
+    # 「1 区域」下方那行绿色「✓完成探险」。**只是业务状态判据**，不进页面判据表。
+    # PC 专属：图只放在 ``labyrinth_stone/pc/``，模拟器载入为 None。
+    region1_completed: np.ndarray | None
     battle_start_button: np.ndarray
     skip_button: np.ndarray
     morale_smiley: np.ndarray
@@ -335,18 +353,27 @@ class LabyrinthStoneTemplates:
     pause_icon: np.ndarray
     quick_menu_button: np.ndarray
     evidence: object = None
+    # PC 专属新增判据只在这项为真时启用；模拟器走改动前的判定路径。
+    pc: bool = False
 
 
 def build_labyrinth_stone_templates(template_dir: Path) -> LabyrinthStoneTemplates:
     def load(name: str) -> np.ndarray:
         return load_template(str(template_dir / f"{name}.png"))
 
+    def load_optional(name: str) -> np.ndarray | None:
+        path = template_dir / f"{name}.png"
+        return load_template(str(path)) if Path(path).is_file() else None
+
     return LabyrinthStoneTemplates(
         labyrinth_card=load("labyrinth_card"),
         labyrinth_entry=load("labyrinth_entry"),
+        # 备选画法：用 `load_optional` —— 模拟器没有这张图，必须拿到 None 而不是抛错。
+        labyrinth_entry_alt=load_optional("labyrinth_entry_alt"),
         select_team_button=load("select_team_button"),
         region_row1_label=load("region_row1_label"),
         region_selected_box=load("region_selected_box"),
+        region1_completed=load_optional("region1_completed"),
         battle_start_button=load("battle_start_button"),
         skip_button=load("skip_button"),
         morale_smiley=load("morale_smiley"),
@@ -384,6 +411,7 @@ def build_labyrinth_stone_templates(template_dir: Path) -> LabyrinthStoneTemplat
         pause_icon=load("pause_icon"),
         quick_menu_button=load("quick_menu_button"),
         evidence=build_labyrinth_stone_evidence(template_dir),
+        pc=is_pc(template_dir),
     )
 
 
@@ -442,6 +470,11 @@ class LabyrinthStoneStateMachine:
         # 「中途做不下去了」的**真实原因**。非空 = 这一趟不算完成，回家后 Runner 报错。
         # ⚠️ 它与 ``finish_reason`` 是两回事：后者是「正常走完一遍」的结论。
         self.blocked_reason = ""
+        # 「进详情页就看到 1 区域写着『✓完成探险』」= 今天这趟已经打过，不用再进。
+        # 与 ``blocked_reason`` 不同：这是**正常收工**（每日任务记 ✓），不是故障。
+        # 它只在详情页被拨一次，之后一路走快捷菜单回大厅，``_at_lobby`` 用它写
+        # 一条不会谎报「买了几块石头」的收工理由。
+        self.already_explored = False
         self._confirmed_page = ""
 
     # ---- 视觉判据 ----
@@ -512,6 +545,36 @@ class LabyrinthStoneStateMachine:
         if box is None or label is None:
             return False
         return abs(box.center[1] - label.center[1]) <= REGION_ROW_TOLERANCE
+
+    def _region1_completed(self, screen: np.ndarray) -> bool:
+        """1 区域是不是已经「✓完成探险」（今天这一区打过了、这一行点不动了）。
+
+        2026-11-04 14:18 真机：详情页上 1 区域写着绿字「✓完成探险」，金色选中框
+        停在 2 区域，``select-region-1`` 连点 4 次 ``(1080,467)`` 画面纹丝不动，
+        最后报「四次点击未转场」把整条每日任务记 ✗。**这一行不是没认出来，是它
+        本来就不能点**，再去补「1 区域」模板或调阈值只会重复这一轮。
+
+        判据两维缺一不可（第二维负责证伪）：
+        1. 第一行状态文字区里命中 ``region1_completed``（只裁绿勾 +「完成探险」）；
+        2. 它必须紧贴在 ``region_row1_label`` 下方 -- 真机 dx=+20 / dy=+36；
+           第二行状态在 dy≈224，超出 ``REGION1_COMPLETED_MAX_DY`` 一律不认。
+
+        全库 520 帧扫描：3 张真·完成探险帧 1.0000，非目标页最高 0.2995
+        （阈值 0.80），「1 区域还可选」的模拟器详情页 0.2321。
+        """
+        # PC 上才观察到的新状态；模拟器不进这条分支，保持改动前的判定路径。
+        if not self.templates.pc or self.templates.region1_completed is None:
+            return False
+        done = self._locate(screen, "region1_completed")
+        label = self._locate(screen, "region_row1_label")
+        if done is None or label is None:
+            return False
+        dx = done.center[0] - label.center[0]
+        dy = done.center[1] - label.center[1]
+        return (
+            abs(dx) <= REGION1_COMPLETED_MAX_DX
+            and 0 <= dy <= REGION1_COMPLETED_MAX_DY
+        )
 
     # ---- 商店：哪一行还能买 -----------------------------------------------------
 
@@ -672,6 +735,21 @@ class LabyrinthStoneStateMachine:
     def _at_labyrinth_detail(self, screen: np.ndarray):
         page = state_label(LabyrinthStoneState.LABYRINTH_DETAIL)
         if not self.entered:
+            # 1 区域今天已经「完成探险」：这一行不可点，再点 4 次也不会把选中框
+            # 挪过去（2026-11-04 14:18 真机四连点全无效）。**不许把它当故障**，
+            # 也不许为了「完成」硬去打 2 区域（地图出口布局是按 1 区域量的）。
+            # ⇒ 记一个正常收工标记，走跟「放弃战斗之后」同一条快捷菜单回大厅。
+            if self._region1_completed(screen):
+                self.already_explored = True
+                menu = self._required(screen, "quick_menu_button")
+                return self._action(
+                    "open-quick-menu",
+                    point=menu.center,
+                    source_page=page,
+                    target_pages=(state_label(LabyrinthStoneState.QUICK_MENU),),
+                    reason="1 区域已显示「完成探险」，今天这趟不用再进迷宫；"
+                    f"从右上角快捷菜单回大厅（中心={menu.center}）",
+                )
             if not self._region1_selected(screen):
                 label = self._required(screen, "region_row1_label")
                 return self._action(
@@ -1061,6 +1139,11 @@ class LabyrinthStoneStateMachine:
             # 报错（退出码 1），绝不写「已完成一遍」。
             self._finish(f"已回到大厅，但这一趟没做成：{self.blocked_reason}")
             return None
+        if self.already_explored:
+            # 正常收工，但**不许**套用 ``_purchase_tally()`` 那句「一块没买」——
+            # 那会让人误以为今天进过商店、只是石头卖光了。真实情况是压根没进场。
+            self._finish("已回到大厅：1 区域已完成探险，今天这趟无需再进迷宫")
+            return None
         tally = self._purchase_tally()
         self._finish(f"已回到大厅，本轮结束{tally}")
         return None
@@ -1139,6 +1222,7 @@ class LabyrinthStoneStateMachine:
             self.teleport_armed,
             self.finish_reason,
             self.blocked_reason,
+            self.already_explored,
             self._confirmed_page,
             list(self.purchase_rows),
             self.pending_row,
@@ -1163,6 +1247,7 @@ class LabyrinthStoneStateMachine:
                 self.teleport_armed,
                 self.finish_reason,
                 self.blocked_reason,
+                self.already_explored,
                 self._confirmed_page,
                 self.purchase_rows,
                 self.pending_row,

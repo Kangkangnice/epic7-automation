@@ -87,7 +87,7 @@ from auto_game_unified.games.epic7.evidence.moonlight_theater import (
 )
 from auto_game_unified.games.epic7.route_action import RouteAction
 from auto_game_unified.games.epic7.runner_base import ModeRunnerBase
-from auto_game_unified.games.epic7.template_paths import is_template_root
+from auto_game_unified.games.epic7.template_paths import is_pc, is_template_root
 from auto_game_unified.games.epic7.unknown_screen import UnrecognizedScreen
 
 
@@ -186,6 +186,8 @@ class MoonlightTemplates:
     battle_clear: np.ndarray
     reward_popup_close: np.ndarray
     evidence: object = None
+    # PC 专属判据只在这项为真时启用；模拟器走改动前的判定路径。
+    pc: bool = False
 
 
 def build_moonlight_templates(template_dir: Path) -> MoonlightTemplates:
@@ -205,6 +207,7 @@ def build_moonlight_templates(template_dir: Path) -> MoonlightTemplates:
             "battle_clear", "reward_popup_close",
         )},
         evidence=evidence,
+        pc=is_pc(template_dir),
     )
 
 
@@ -228,6 +231,21 @@ class MoonlightStateMachine:
     """
 
     _REFERENCE_SIZE = REFERENCE_SIZE
+
+    # PC 专属的搜索区覆盖：**只放宽、不挪语义**。
+    #
+    # ``back_button``（左上返回箭头）在 PC 上整体往右下挪：模拟器箭头 bbox
+    # x 35 / y 75 / 43×52，PC 是 x 57 / y 88 / 42×50（两张 PC 帧逐像素一致）。
+    # 而证据画像里的 region 是 ``(0, 20, 180, 110)``（y 20~130）—— **切掉箭头下沿 8px**，
+    # 白掩膜分数从 0.92 掉到 **0.2035**（2026-11-05 00:35 真机 `timeout_episode`）。
+    #
+    # 这不是「认不出控件」，是「没把控件给全」：同一枚模板在放宽后的区域里
+    # 拿 0.8867（共享图）/ 1.0000（PC 覆盖图）。
+    # ⚠️ 只对 PC 生效：模拟器侧那份 region 是按模拟器布局量出来的，2026-10-24 的
+    # 事故（0.6046）是另一回事，已由「只截箭头本体 + 白掩膜」修好，别在这里连带改动。
+    _PC_REGION_OVERRIDES: dict[str, tuple[int, int, int, int]] = {
+        "back_button": (0, 40, 240, 160),
+    }
 
     # 存样用：由 ``MoonlightRunner`` 在构造时注入。单元测试直接构造状态机时是
     # ``None`` ⇒ 存样安静跳过（存样只是附带动作，判据不许靠它）。
@@ -289,6 +307,12 @@ class MoonlightStateMachine:
 
     def _locate(self, screen: np.ndarray, name: str) -> Optional[Match]:
         atom = self.templates.evidence.atom(name)
+        # PC 的搜索区覆盖（见 ``_PC_REGION_OVERRIDES``）：证据画像里那套 region 是
+        # 按模拟器布局量的，PC 上同一枚控件会整体往右下挪十几像素 —— 区域不跟着挪，
+        # 模板就被**切掉一截**，分数从 0.92 掉到 0.20（不是「认不出控件」，是「没给全」）。
+        region = atom.region
+        if self.templates.pc:
+            region = self._PC_REGION_OVERRIDES.get(name, region)
         # 走 ``locate_with_fallback``（与导航层、视觉诊断**同一把尺子**）：原样先比，
         # 不过阈才按 ``SMOOTH_FALLBACK_ANCHORS`` / ``SCALE_FALLBACK_ANCHORS`` 补一次。
         return locate_with_fallback(
@@ -296,7 +320,7 @@ class MoonlightStateMachine:
             screen,
             getattr(self.templates, name),
             atom.threshold,
-            region=atom.region,
+            region=region,
             reference_size=atom.reference_size,
             mode=atom.match_mode,
         )
@@ -526,6 +550,12 @@ class MoonlightStateMachine:
         if fingerprint not in self._skip_posters and self._probe_free(screen):
             self._current_poster = fingerprint
             self._poster_signature = None
+            # ⚠️ 「看过这一幕」的记账**只在这里清**（进新剧场 = 换了一集）。
+            # 以前是「决定离开分集页时」就清 —— 2026-11-05 00:58 真机证明那样会**漏记账**：
+            # 那次离开动作被主循环的转场重放吞掉（见 ``_at_episode`` 里 claim-reward
+            # 的注释），机器已经把自己记成「没看过」，自救重决策时又对同一集点了
+            # 「进行观览」⇒ 弹「使用剧场门票」⇒ **白花一张门票把同一幕又看了一遍**。
+            self.watched_current = False
             self.claimed_current = False
             self._reward_wait_since = None
             button = self._required(screen, "enter_button")
@@ -585,7 +615,24 @@ class MoonlightStateMachine:
                 "claim-reward",
                 point=self._scaled_point(screen, REWARD_BUTTON_POINT),
                 source_page=state_label(MoonlightState.EPISODE),
-                target_pages=(state_label(MoonlightState.REWARD),),
+                # ⚠️⚠️ **不写 target_pages，改走页内证据**。2026-11-05 00:58 真机实测：
+                # 点完下载图标，游戏弹的那个「获得奖励」被**全局弹窗守卫**在 capture
+                # 层就点掉了（日志 `动作=dismiss-reward-notice 坐标=(960,837)`，落在
+                # 点击后 3 秒内），状态机**一帧都看不到**它 ⇒ 「目标页面=获得奖励弹窗」
+                # 这条契约在真机上永远不可能成立。
+                # 更糟的是它并非「安静地等」：主循环把带 target_pages 的动作记成
+                # `last_transition_action`，契约不成立就按「原页面仍存在且目标页面
+                # 未出现」把 claim-reward **原地重放** 4 次（每帧重算分、重新点击），
+                # 期间状态机给出的**下一步正确决策（离开剧场）被整个丢弃** ——
+                # 于是 3 分钟后走自救，落到「这一集还没进去过」那条路，白花一张门票。
+                #
+                # 这条动作的成功本来就是**页内变化**（橙点灭掉），不是换页，
+                # 与 `next-theater` / `advance-story` 同类 ⇒ 按它们的写法用
+                # `in_page_evidence`，不带 target_pages（没带契约的动作不会被重放，
+                # 也不会吞掉下一帧的新决策）。
+                # 不会因此静默降级：橙点还在 ⇒ 下一帧仍是同名 claim-reward ⇒
+                # 主循环那本「同名动作 4 次不推进」的账照常生效，最后报错收尾。
+                in_page_evidence="橙点仍在（这一集的观览奖励还没领掉）",
                 reason="这一幕看完了，点下载图标领取观览奖励",
             )
 
@@ -611,12 +658,24 @@ class MoonlightStateMachine:
             # 只有前者算「完成一幕」，后者是「这个剧场要花门票，不干」。
             completed = self.watched_current
             back = self._required(screen, "back_button")
-            self.watched_current = False
+            # ⚠️⚠️ ``watched_current`` **不在这里清**（2026-11-05 00:58 真机）：
+            # 这条「离开」动作有可能被主循环的转场重放吞掉（claim-reward 那条注释
+            # 说的是同一个根因）。以前边决定边清账 ⇒ 吞掉之后机器已经忘了自己看过
+            # 这一幕，自救重决策落到「这一集还没进去过」那条路 ⇒ 又点「进行观览」
+            # ⇒ 弹「使用剧场门票」⇒ **白花一张门票看第二遍同一幕**。
+            # 现在只在 ``_at_list`` 进新剧场时清（换了一集才算重新记账）。
             self.must_leave = False
-            self.claimed_current = False
-            self._reward_wait_since = None
+            # ``claimed_current`` 同理**不在这里清**：清了会让下一帧又落进
+            # 「看过了但还没领到，先等 8 秒橙点」的宽限分支，白等一轮；
+            # 它同样只在 ``_at_list`` 进新剧场时清。
+            #
+            # ``_reward_wait_since`` 也**不清**：宽限的语义是「等够 8 秒还没橙点
+            # 就撤」，等过一次就不该再等第二次 —— 清零等于每被重问一次就白等 8 秒。
+            # 计数也要幂等：同一个剧场只可能「完成一幕」一次。``_skip_posters``
+            # 在下面这行加进去，所以「已经加过」＝「这一幕已经记过一次账」。
+            first_time = self._current_poster not in self._skip_posters
             self._skip_posters.add(self._current_poster)
-            if completed:
+            if completed and first_time:
                 self.completed_cycles += 1
             return self._action(
                 "leave-theater" if completed else "abandon-theater",

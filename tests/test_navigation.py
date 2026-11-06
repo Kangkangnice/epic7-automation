@@ -62,6 +62,16 @@ def labyrinth_fixture(name: str):
     return cv2.cvtColor(cv2.imread(str(path)), cv2.COLOR_BGR2RGB)
 
 
+def labyrinth_pc_fixture(name: str):
+    path = ROOT / "tests" / "fixtures" / "epic7_labyrinth_stone_pc" / f"{name}.png"
+    return cv2.cvtColor(cv2.imread(str(path)), cv2.COLOR_BGR2RGB)
+
+
+def moonlight_pc_fixture(name: str):
+    path = ROOT / "tests" / "fixtures" / "epic7_moonlight_theater_pc" / f"{name}.png"
+    return cv2.cvtColor(cv2.imread(str(path)), cv2.COLOR_BGR2RGB)
+
+
 def global_fixture(name: str):
     path = ROOT / "tests" / "fixtures" / "epic7_global" / f"{name}.png"
     return cv2.cvtColor(cv2.imread(str(path)), cv2.COLOR_BGR2RGB)
@@ -1093,6 +1103,10 @@ class NavigationTests(unittest.TestCase):
         )
         expected_owner = {
             "lobby_activity_entry_live_20261006": "lobby_activity",
+            # 2026-11-05 真机：入口挂了 N 角标、整列上移，改由第二张候选认出。
+            # 这两帧仍是**大厅**，活动页那三颗锚点照样不许命中。
+            "lobby_activity_updated_live_20261105_1909": "lobby_activity",
+            "lobby_activity_updated_live_20261105_1942": "lobby_activity",
             "activity_menu_live_20261006": "activity_more",
             "activity_menu_shifted_live_20261007": "activity_more",
             # 2026-10-18：这一行往上漂到 y=258 的那一帧，判页仍必须归 ``activity_more``。
@@ -1115,6 +1129,51 @@ class NavigationTests(unittest.TestCase):
                         match,
                         f"{name} 上 {anchor} 不该命中（页面会互相串味）",
                     )
+
+    def test_updated_lobby_activity_entry_keeps_the_old_frame_unchanged(self):
+        """2026-11-05 真机：大厅「活动」入口挂角标后，社区签到连着三次进不去。
+
+        原图在这两帧上只有 0.7956 / 0.8049（门槛 0.82），日志报
+        「页面[大厅]缺少导航锚点 lobby_activity」。补的第二张只裁「活动」二字，
+        两帧 1.0000 / 0.9972；旧版大厅帧仍由原图拿 1.0000、落点还是 (85,797)。
+
+        先钉住「只留原图时这两帧确实认不出」，免得夹具过期后这条用例绿着
+        却什么也没守住（2026-10-30 的教训）。
+        """
+        navigator = self.navigator([])
+        templates = build_navigation_templates(TEMPLATES)
+        self.assertEqual(2, len(templates.lobby_activity))
+        region = navigator._REGIONS["lobby_activity"]
+
+        for name in (
+            "lobby_activity_updated_live_20261105_1909",
+            "lobby_activity_updated_live_20261105_1942",
+        ):
+            screen = fixture(name)
+            with self.subTest(frame=name):
+                old_only = matcher.locate_with_fallback(
+                    "lobby_activity",
+                    screen,
+                    templates.lobby_activity[0],
+                    0.0,
+                    region=region,
+                    reference_size=REFERENCE_SIZE,
+                )
+                self.assertIsNotNone(old_only)
+                self.assertLess(old_only.score, 0.82)
+
+                match = navigator._locate(screen, "lobby_activity")
+                self.assertIsNotNone(match)
+                self.assertGreaterEqual(match.score, 0.90)
+                # 点击点取命中框中心，必须还落在这一格入口里。
+                self.assertLess(abs(match.center[0] - 85), 6)
+                self.assertLess(abs(match.center[1] - 796), 6)
+
+        old = fixture("lobby_activity_entry_live_20261006")
+        match = navigator._locate(old, "lobby_activity")
+        self.assertIsNotNone(match)
+        self.assertAlmostEqual(match.score, 1.0, places=4)
+        self.assertEqual(match.center, (85, 797))
 
     def test_the_raised_row_is_invisible_to_the_old_band(self):
         """上界收回 300 时，2026-10-18 那帧**判不出来** —— 这是那次失败的复现。
@@ -2544,6 +2603,169 @@ class NavigationTests(unittest.TestCase):
             self.assertLessEqual(abs(match.center[1] - 220), 3)
         # 一般页上它不该乱命中（这一步在一般页本来就该被 skip_if_observed 跳过）。
         self.assertIsNone(navigator._locate(general_page, "battle_general_tab"))
+
+    def test_pc_battle_general_tab_locates_on_pc_season_menu_and_rejects_selected_tab(self):
+        """PC 移植回归（2026-11-04 每日任务实跑）：PC 客户端的「一般」标签底纹与模拟器不同，
+        原模拟器模板在 PC 赛季页帧上只有 **0.4643** < 0.82 ⇒ 迷宫「切回一般页」那一步在
+        PC 上点不下去，强化石一根都买不到。
+
+        修复：新增 ``templates/navigation/pc/battle_general_tab.png``（96×54，只截未选中的
+        灰色「一般」标签，避开「赛季」蓝标与橙点），并把搜索区 (100,165,250,105) 留足余量
+        （比模板大 154×51）让模板能滑到真中心。该 PC 帧上实测 1.0000 @ (208,241)。
+
+        这条测试钉住两件事（与 ``test_general_tab_candidates_cover_both_source_pages`` 口径一致）：
+        ① PC 赛季页帧必须能 ``_locate`` 过 0.82；
+        ② 在「一般」标签**被选中**的页（模拟器 ``battle_menu`` 帧）上不得过阈 ——
+           否则会误点已经停在那里的标签、把状态机带偏（排他性）。
+        """
+        from auto_game_unified.games.epic7.template_paths import resolve_template_dir
+
+        navigator = Epic7Navigator(
+            build_navigation_templates(resolve_template_dir(TEMPLATES, "pc")),
+            Runtime(lambda: None, lambda *_: None, back=lambda: None, emit=lambda *_: None),
+            sleep=lambda _: None,
+        )
+        pc_season = labyrinth_pc_fixture("season_menu_pc_20261104")
+        general_selected = labyrinth_fixture("battle_menu")
+
+        match = navigator._locate(pc_season, "battle_general_tab")
+        self.assertIsNotNone(match, "PC 赛季页帧必须能认出未选中的「一般」标签")
+        self.assertGreaterEqual(match.score, 0.82)
+        # 排他性：选中的「一般」标签（蓝/橙高亮）不该被未选中灰标模板命中。
+        self.assertIsNone(
+            navigator._locate(general_selected, "battle_general_tab"),
+            "选中的「一般」标签页上，未选中灰标模板不得乱命中",
+        )
+
+    def test_pc_fodder_side_story_is_recognized_on_pc_side_story_page(self):
+        """PC 移植回归（2026-11-04 每日任务实跑）：导航 大厅 → fodder_side_story 失败，
+        根因是 ``side_story_special_book`` 的 PC 覆盖图 385×110 与搜索区 (1520,900,385,110)
+        **等大**，模板只能摆一次、中心被锁死在 (1712,955)，而真机按钮中心在 (1694,946)，
+        偏 (-18,-9) ⇒ 分数从 0.7176 塌到 0.1781（阈 0.82）⇒ 导航永远以为还在转场。
+
+        修复：把 PC 覆盖图重裁成只含「特别的时间之书」文字的 196×68（远小于区域），
+        能在区域里滑到真中心，该 PC 帧上实测 1.0000。全库 476 张夹具扫描**仅**两张
+        支线故事真机帧命中、零误报（含月光剧场主页）。
+
+        这条测试钉住：PC 支线故事真机帧必须 ``observe() == "fodder_side_story"``。
+        """
+        from auto_game_unified.games.epic7.template_paths import resolve_template_dir
+
+        navigator = Epic7Navigator(
+            build_navigation_templates(resolve_template_dir(TEMPLATES, "pc")),
+            Runtime(lambda: None, lambda *_: None, back=lambda: None, emit=lambda *_: None),
+            sleep=lambda _: None,
+        )
+        pc_side_story = moonlight_pc_fixture("side_story_page_pc_20261104_072717")
+
+        observation = navigator.observe(pc_side_story)
+        self.assertEqual("fodder_side_story", observation.name)
+
+    def test_pc_side_story_special_book_covers_both_renderings(self):
+        """P3 续（2026-11-04 14:19 实跑）：早上重裁的 PC 图只认 07:27 那批帧。
+        下午同一颗「特别的时间之书」按钮换了另一套渲染，互比只有 **0.7720**
+        （阈 0.82）⇒ 第一跳判 unknown ⇒ 重试再点，落进月光剧场主页。
+
+        两张图互为候选（任一张过阈即命中、取最高分），阈值与区域都不变。
+        全库 517 帧扫描：除支线故事页外最高 0.6024，零冒牌。
+        """
+        from auto_game_unified.games.epic7.template_paths import resolve_template_dir
+
+        navigator = Epic7Navigator(
+            build_navigation_templates(resolve_template_dir(TEMPLATES, "pc")),
+            Runtime(lambda: None, lambda *_: None, back=lambda: None, emit=lambda *_: None),
+            sleep=lambda _: None,
+        )
+        for name in (
+            "side_story_page_pc_20261104_072717",
+            "side_story_page_pc_20261104_141910",
+        ):
+            with self.subTest(frame=name):
+                observation = navigator.observe(moonlight_pc_fixture(name))
+                self.assertEqual("fodder_side_story", observation.name)
+
+    def test_pc_story_ready_covers_both_button_renderings(self):
+        """P4 续（2026-11-04 14:25 / 14:44 实跑）：导航 大厅 → story_ready 失败，
+        日志写「画面已静止但仍认不出是哪一页」。白掩膜口径下两张旧模板在下午帧
+        分别只有 0.7378 / 0.8515（阈 0.90）；而 01:59 那批帧用旧图是 1.0000。
+        ⇒ 两套渲染都得留着，补第三张候选、阈值不动。
+        """
+        from auto_game_unified.games.epic7.template_paths import resolve_template_dir
+
+        navigator = Epic7Navigator(
+            build_navigation_templates(resolve_template_dir(TEMPLATES, "pc")),
+            Runtime(lambda: None, lambda *_: None, back=lambda: None, emit=lambda *_: None),
+            sleep=lambda _: None,
+        )
+        for name in (
+            "story_ready_pc_20261104_015956",
+            "story_ready_pc_20261104_142538",
+            # 14:53 主线「等待通关」超时那一帧：点掉完成弹窗后回到关卡详情页，
+            # 导航层必须同样认出 story_ready（实测 1.0000），否则回家/衔接会歪。
+            "wait_complete_after_close_pc_20261104",
+        ):
+            path = ROOT / "tests" / "fixtures" / "epic7_story_pc" / f"{name}.png"
+            frame = cv2.cvtColor(cv2.imread(str(path)), cv2.COLOR_BGR2RGB)
+            with self.subTest(frame=name):
+                self.assertEqual("story_ready", navigator.observe(frame).name)
+
+    def test_pc_moonlight_theater_home_is_not_fodder_side_story(self):
+        """排他性回归（2026-11-04）：月光剧场**主页**上没有「特别的时间之书」按钮，
+        所以绝不能被 ``side_story_special_book`` 认成支线故事页。全库扫描已确认该主页帧
+        对 ``side_story_special_book`` 不过阈。
+        """
+        from auto_game_unified.games.epic7.template_paths import resolve_template_dir
+
+        navigator = Epic7Navigator(
+            build_navigation_templates(resolve_template_dir(TEMPLATES, "pc")),
+            Runtime(lambda: None, lambda *_: None, back=lambda: None, emit=lambda *_: None),
+            sleep=lambda _: None,
+        )
+        theater_home = moonlight_pc_fixture("theater_home_pc_20261104_073014")
+
+        observation = navigator.observe(theater_home)
+        self.assertNotEqual("fodder_side_story", observation.name)
+
+    def test_pc_moonlight_theater_home_is_not_tower_home(self):
+        """PC 移植回归（2026-11-04 每日任务实跑）：月光剧场主页右下角也有一枚**同款绿色
+        「入场」按钮**，把 ``tower_home`` 的 ``home_enter`` 锚点高分吃下
+        （月光剧场主页帧 0.9266 @ (1693,1008) 落在 region 内）⇒ 月光剧场主页被误判成月塔主页，
+        导航转场合同彻底走偏。
+
+        修复：给 ``tower_home`` 判定加第二维证伪 —— 月塔主页**专有**的左上角标题
+        「欧多马顿塔」(``tower_home_title``)。两枚锚点同时过阈才认月塔主页。全库扫描确认
+        真实月塔主页帧仍过阈、月光剧场主页帧（无此标题）不过阈。
+
+        这条测试钉住：月光剧场主页帧 ``observe()`` 绝不能是 ``"tower_home"``。
+        """
+        from auto_game_unified.games.epic7.template_paths import resolve_template_dir
+
+        navigator = Epic7Navigator(
+            build_navigation_templates(resolve_template_dir(TEMPLATES, "pc")),
+            Runtime(lambda: None, lambda *_: None, back=lambda: None, emit=lambda *_: None),
+            sleep=lambda _: None,
+        )
+        theater_home = moonlight_pc_fixture("theater_home_pc_20261104_073014")
+
+        observation = navigator.observe(theater_home)
+        self.assertNotEqual("tower_home", observation.name)
+
+    def test_pc_tower_home_requires_both_enter_and_title_on_real_tower_home(self):
+        """对称回归：真实月塔主页帧，``home_enter`` + ``tower_home_title`` 两维都过阈，
+        ``observe()`` 必须是 ``"tower_home"`` —— 证明这枚证伪第二维没有把真月塔主页一起误杀
+        （修复 tower_home 冒牌时最容易犯的错就是「调阈值把真月塔页也弄丢」）。
+        """
+        from auto_game_unified.games.epic7.template_paths import resolve_template_dir
+
+        navigator = Epic7Navigator(
+            build_navigation_templates(resolve_template_dir(TEMPLATES, "pc")),
+            Runtime(lambda: None, lambda *_: None, back=lambda: None, emit=lambda *_: None),
+            sleep=lambda _: None,
+        )
+        tower_home = tower_fixture("home")
+
+        observation = navigator.observe(tower_home)
+        self.assertEqual("tower_home", observation.name)
 
     def test_battle_menu_identity_is_decided_by_which_tab_is_selected(self):
         """同一屏按「哪个标签被选中」分成三页，五张真机帧各归各的。

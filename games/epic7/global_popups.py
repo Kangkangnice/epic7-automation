@@ -33,6 +33,20 @@ class NetworkReconnectTemplates:
     message: np.ndarray
     message_alt: np.ndarray | None = None
     retry_button: np.ndarray | None = None
+    # 同一句文案的**第二种尺寸**（「网络连接异常，请重新连接。」，2026-11-05 00:37 真机，
+    # PC 主线战斗中掉线）。**不是第三种文案** —— 逐字一样，只是画得小一号。
+    #
+    # 量化（拿 2026-11-01 那张 PC 模板打这一帧）：原尺寸 0.6882（阈 0.88）；
+    # 把它缩到 **0.97** 再打 ⇒ **0.9335** ⇒ 差异是纯缩放，不是换了句话。
+    # 字高 26px vs 25px、字宽 361 vs 346（≈96%）：模板是逐像素比的，
+    # 差 4% 累积到 12 个字上就有 15px 位移，细笔画直接被拖垮。
+    #
+    # 为什么不走 `SCALE_FALLBACK_ANCHORS` 扫尺寸：那份白名单有护栏要求锚点必须
+    # 出现在「导航与竞技场证据」里（`test_navigation.py`），全局弹窗锚点进不去
+    # —— 2026-11-04 迷宫 `labyrinth_entry` 已经在这条护栏上撞过两次，别再撞。
+    # 补一张同句、小一号的 PC 图最省事：模拟器侧文件不存在 ⇒ `None` ⇒
+    # 判定集合与改动前**逐字节一致**。
+    message_reconnect: np.ndarray | None = None
 
 
 @dataclass(frozen=True)
@@ -169,6 +183,37 @@ class WebNetworkErrorTemplates:
 
     message: np.ndarray
     close: np.ndarray
+
+
+@dataclass(frozen=True)
+class UncontrollableTemplates:
+    """「无法控制」剧情提示弹窗（标题居中 + 底部「✕ 点击关闭」）。
+
+    2026-11-06 主线真机：Episode 3 第 10 章关卡入口页弹出这个剧情说明，**整页被盖住**
+    ⇒ 认不出「关卡入口」⇒ 45 秒超时 ⇒ 主线整条失败。
+    它是标准的**居中模态弹窗**（不像「骑士团活动」是整屏页面），放全局守卫是安全的。
+
+    ⚠️ 模板只有 PC 版 ⇒ 模拟器加载成 None ⇒ 整段跳过，行为不变。
+    """
+
+    title: np.ndarray | None
+    close: np.ndarray | None
+
+
+@dataclass(frozen=True)
+class KnightsActivityTemplates:
+    """「骑士团活动」页：左上标题 + 底部「✕ 点击关闭」。
+
+    2026-11-05 批量真机：骑士团捐赠跑完后页面停在**每周任务**标签，收尾连按 2 次 ESC
+    毫无反应（这一页是整屏页面，不是弹窗，PC 客户端不响应 ESC）⇒ 报「回首页失败」⇒
+    **整条每日任务链中止，后面四条一条都没跑**。
+
+    ⚠️ 模板只有 PC 版（``templates/global/pc/``）—— 模拟器加载不到 ⇒ 两个字段都是
+    None ⇒ 这条整段跳过，模拟器行为一键不变。模拟器上 ESC 本来就能退这一页。
+    """
+
+    title: np.ndarray | None
+    close: np.ndarray | None
 
 
 @dataclass(frozen=True)
@@ -394,6 +439,7 @@ def load_network_reconnect_templates(
 ) -> NetworkReconnectTemplates:
     alt_message = template_dir / "network_disconnected_message.png"
     retry_button = template_dir / "network_retry_button.png"
+    reconnect_message = template_dir / "network_reconnect_message.png"
     return NetworkReconnectTemplates(
         message=load_template(str(template_dir / "network_message.png")),
         message_alt=(load_template(str(alt_message)) if alt_message.exists() else None),
@@ -401,6 +447,12 @@ def load_network_reconnect_templates(
         # 模拟器回落共享目录本就没有 → None → 仍然点屏幕中心。
         retry_button=(
             load_template(str(retry_button)) if retry_button.exists() else None
+        ),
+        # 同上：只有 PC 侧有这张（``templates/global/pc/network_reconnect_message.png``）。
+        message_reconnect=(
+            load_template(str(reconnect_message))
+            if reconnect_message.exists()
+            else None
         ),
     )
 
@@ -638,7 +690,11 @@ def find_network_retry(
     找到就点它，找不到才回落屏幕中心。顺序必须保持「先认文案、再找按钮」——
     按钮只决定「点哪」，不参与「是不是这层弹窗」。
     """
-    for message_template in (templates.message, templates.message_alt):
+    for message_template in (
+        templates.message,
+        templates.message_alt,
+        templates.message_reconnect,
+    ):
         if message_template is None:
             continue
         message = find_template(
@@ -750,10 +806,14 @@ class GiftClaimTemplates:
     close: np.ndarray
 
 
-def load_gift_claim_templates(template_dir: Path) -> GiftClaimTemplates:
+def load_gift_claim_templates(template_dir: Path) -> GiftClaimTemplates | None:
+    title = template_dir / "gift_claim_title.png"
+    close = template_dir / "gift_claim_close.png"
+    if not (title.exists() and close.exists()):
+        return None
     return GiftClaimTemplates(
-        title=load_template(str(template_dir / "gift_claim_title.png")),
-        close=load_template(str(template_dir / "gift_claim_close.png")),
+        title=load_template(str(title)),
+        close=load_template(str(close)),
     )
 
 
@@ -807,10 +867,16 @@ class AccountRankUpTemplates:
     close: np.ndarray
 
 
-def load_account_rank_up_templates(template_dir: Path) -> AccountRankUpTemplates:
+def load_account_rank_up_templates(
+    template_dir: Path,
+) -> AccountRankUpTemplates | None:
+    title = template_dir / "account_rank_up_title.png"
+    close = template_dir / "account_rank_up_close.png"
+    if not (title.exists() and close.exists()):
+        return None
     return AccountRankUpTemplates(
-        title=load_template(str(template_dir / "account_rank_up_title.png")),
-        close=load_template(str(template_dir / "account_rank_up_close.png")),
+        title=load_template(str(title)),
+        close=load_template(str(close)),
     )
 
 
@@ -862,10 +928,14 @@ class SideStoryNoticeTemplates:
 
 def load_side_story_notice_templates(
     template_dir: Path,
-) -> SideStoryNoticeTemplates:
+) -> SideStoryNoticeTemplates | None:
+    title = template_dir / "side_story_notice_title.png"
+    close = template_dir / "side_story_notice_close.png"
+    if not (title.exists() and close.exists()):
+        return None
     return SideStoryNoticeTemplates(
-        title=load_template(str(template_dir / "side_story_notice_title.png")),
-        close=load_template(str(template_dir / "side_story_notice_close.png")),
+        title=load_template(str(title)),
+        close=load_template(str(close)),
     )
 
 
@@ -914,10 +984,14 @@ class RewardNoticeTemplates:
     close: np.ndarray
 
 
-def load_reward_notice_templates(template_dir: Path) -> RewardNoticeTemplates:
+def load_reward_notice_templates(template_dir: Path) -> RewardNoticeTemplates | None:
+    title = template_dir / "reward_notice_title.png"
+    close = template_dir / "reward_notice_close.png"
+    if not (title.exists() and close.exists()):
+        return None
     return RewardNoticeTemplates(
-        title=load_template(str(template_dir / "reward_notice_title.png")),
-        close=load_template(str(template_dir / "reward_notice_close.png")),
+        title=load_template(str(title)),
+        close=load_template(str(close)),
     )
 
 
@@ -1295,6 +1369,8 @@ class Epic7GlobalPopupGuard:
         # 2026-11-03：游戏自己按时间弹的两条（变更日期 / 获得登录奖励）。
         # 模板只有 PC 版 ⇒ 模拟器口径下 load 成 None ⇒ 整段跳过，行为不变。
         date_change_templates: DateChangeTemplates | None = None,
+        knights_activity_templates: KnightsActivityTemplates | None = None,
+        uncontrollable_templates: UncontrollableTemplates | None = None,
         login_reward_templates: LoginRewardTemplates | None = None,
         sleep: Callable[[float], None] = default_sleep,
         now: Callable[[], float] = monotonic,
@@ -1320,6 +1396,8 @@ class Epic7GlobalPopupGuard:
         self.pet_gift_templates = pet_gift_templates
         self.web_network_error_templates = web_network_error_templates
         self.date_change_templates = date_change_templates
+        self.knights_activity_templates = knights_activity_templates
+        self.uncontrollable_templates = uncontrollable_templates
         self.login_reward_templates = login_reward_templates
         self.sleep = sleep
         self.now = now
@@ -1354,6 +1432,23 @@ class Epic7GlobalPopupGuard:
                 )
         # 2026-11-03：游戏按时间自己弹的两条。变更日期会把页面强制切回大厅
         # （跑任何路线都会被打断），所以排在登录奖励前面 —— 先把它点掉再谈别的。
+        # 2026-11-06：主线在关卡入口页会被这个**居中模态**剧情弹窗整页盖住
+        # （Episode 3 第 10 章「无法控制」）⇒ 认不出关卡入口 ⇒ 45 秒超时整条失败。
+        # 它是标准弹窗（不是整屏页面），放这里安全。
+        if self.uncontrollable_templates is not None:
+            match = find_uncontrollable_close(screen, self.uncontrollable_templates)
+            if match is not None:
+                return (
+                    match,
+                    "uncontrollable",
+                    "dismiss-uncontrollable",
+                    "uncontrollable_failed",
+                    f"「无法控制」弹窗底部「点击关闭」点了{_MAX_POPUP_CLICKS}次仍未关掉",
+                )
+        # ⚠️「骑士团活动」页**不能**放在这里：骑士团捐赠路线正常流程就会切到
+        # 「每周任务」标签（实测 22:33:42 `open-weekly-tab` 之后就在那一页），
+        # 守卫每帧都点在 capture 层跑 ⇒ 一进那页就被踢出去，路线直接失败。
+        # 它只在「回首页」这个场景需要 —— 见 `home_return.find_knights_activity_close`。
         if self.date_change_templates is not None:
             match = find_date_change_close(screen, self.date_change_templates)
             if match is not None:
@@ -1671,6 +1766,14 @@ class Epic7GlobalPopupGuard:
 #   标题「变更日期」208x49 落在 (857,353)；「点击关闭」138x30 落在 (892,755)。
 #   标题「获得登录奖励」304x49 落在 (806,227)；「点击关闭」111x24 落在 (924,1081)。
 _DATE_CHANGE_TITLE_REGION = (800, 320, 400, 120)
+# 「骑士团活动」页：标题在左上角（实测 bbox 103,152 215x42），关闭在底部中间偏右
+# （实测 bbox 933,1082 92x21）。两个区域都留了一圈余量。
+_KNIGHTS_ACTIVITY_TITLE_REGION = (60, 120, 340, 110)
+_KNIGHTS_ACTIVITY_CLOSE_REGION = (820, 1040, 400, 80)
+# 「无法控制」剧情弹窗：标题居中（实测 bbox 872,175 约 190x48），关闭在弹窗底部
+# —— 与「骑士团活动」那颗「点击关闭」是同一个控件（实测都命中 (933,1082) 92x21）。
+_UNCONTROLLABLE_TITLE_REGION = (820, 150, 340, 110)
+_UNCONTROLLABLE_CLOSE_REGION = (820, 1040, 400, 80)
 _DATE_CHANGE_CLOSE_REGION = (800, 720, 400, 110)
 _LOGIN_REWARD_TITLE_REGION = (760, 190, 480, 120)
 _LOGIN_REWARD_CLOSE_REGION = (860, 1040, 280, 90)
@@ -1729,6 +1832,60 @@ def _find_titled_popup_close(
     if close is None:
         return None
     return Match(close.center, min(title.score, close.score))
+
+
+def load_uncontrollable_templates(template_dir: Path) -> UncontrollableTemplates:
+    title = template_dir / "uncontrollable_title.png"
+    close = template_dir / "uncontrollable_close.png"
+    if not (title.exists() and close.exists()):
+        return UncontrollableTemplates(title=None, close=None)
+    return UncontrollableTemplates(
+        title=load_template(str(title)),
+        close=load_template(str(close)),
+    )
+
+
+def find_uncontrollable_close(
+    screen: np.ndarray,
+    templates: UncontrollableTemplates,
+) -> Match | None:
+    """「无法控制」弹窗底部「✕ 点击关闭」；标题不成立就不动手。"""
+    if templates.title is None or templates.close is None:
+        return None
+    return _find_titled_popup_close(
+        screen,
+        templates.title,
+        templates.close,
+        _UNCONTROLLABLE_TITLE_REGION,
+        _UNCONTROLLABLE_CLOSE_REGION,
+    )
+
+
+def load_knights_activity_templates(template_dir: Path) -> KnightsActivityTemplates:
+    title = template_dir / "knights_activity_title.png"
+    close = template_dir / "knights_activity_close.png"
+    if not (title.exists() and close.exists()):
+        return KnightsActivityTemplates(title=None, close=None)
+    return KnightsActivityTemplates(
+        title=load_template(str(title)),
+        close=load_template(str(close)),
+    )
+
+
+def find_knights_activity_close(
+    screen: np.ndarray,
+    templates: KnightsActivityTemplates,
+) -> Match | None:
+    """「骑士团活动」页底部的「✕ 点击关闭」；标题不成立就不动手。"""
+    if templates.title is None or templates.close is None:
+        return None
+    return _find_titled_popup_close(
+        screen,
+        templates.title,
+        templates.close,
+        _KNIGHTS_ACTIVITY_TITLE_REGION,
+        _KNIGHTS_ACTIVITY_CLOSE_REGION,
+    )
 
 
 def find_date_change_close(

@@ -25,9 +25,14 @@ from auto_game_unified.games.epic7.evidence.moonlight_theater import (
 from auto_game_unified.games.epic7.evidence.story import build_story_evidence
 from auto_game_unified.games.epic7.evidence.tower import REGIONS, build_tower_evidence
 from auto_game_unified.games.epic7.evidence.world_boss import build_world_boss_evidence
+from auto_game_unified.games.epic7.battle_controls import battle_scene_visible
 from auto_game_unified.games.epic7.navigation import Epic7Navigator
 from auto_game_unified.games.epic7.template_paths import resolve_template_dir
-
+from auto_game_unified.games.epic7.tower import (
+    TowerState,
+    TowerStateMachine,
+    build_tower_templates,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 TEMPLATES = ROOT / "games" / "epic7" / "templates" / "tower"
@@ -290,3 +295,64 @@ def test_the_scale_sweep_is_off_for_anchors_that_are_not_on_the_whitelist():
         reference_size=(1982, 1132),
     )
     assert plain is None and wrapped is None
+
+
+# ── `TEAM --战斗开始--> CARD`：2026-11-04 01:40 真机事故（秒杀型战斗）────────────
+#
+# 这一队是**秒杀**：点下「战斗开始」后战斗画面只存在 1~2 秒，紧接着弹出三选一
+# 装置页并**稳定停在那里**。而转场要「目标连续=2」，轮询间隔 1~2 秒 ⇒ 永远抓不到
+# 那一两帧战斗 ⇒ 57 秒后报
+# ``动作[battle-start]未稳定进入[战斗中/准备战斗]``，整条每日任务接着中止。
+#
+# ⚠️ 判定这**不是识别问题**：超时那一帧的 ``evidence.json`` 里
+# ``card_hint``=0.9404（×0.98）、``card_decide``=0.8973，**两枚都过阈**；
+# 而同帧 ``result_clear``=0.3557 / ``conquer_title``=0.2347 / ``battle_failed``=0.0000
+# / ``team_battle_start``=0.3414 / ``prepare_title``=0.3771。
+# ⇒ 缺的是「这一下可以落到 CARD」这句**合同**，不是阈值、不是『目标连续』。
+# 那两条都是全项目判据的根，为了一个落点去动它们不划算。
+
+
+def _pc_tower_machine(state):
+    """用 **PC 那套模板** 起状态机（夹具是 PC 帧 ⇒ 必须走同一个分辨率来源）。"""
+    root = resolve_template_dir(TEMPLATES.parent, "pc")
+    machine = TowerStateMachine(build_tower_templates(root / "tower"))
+    machine.state = state
+    return machine
+
+
+def test_the_instant_clear_lands_on_the_device_page_which_is_a_legal_target():
+    """`TEAM --战斗开始--> CARD` 必须成立，且**只**成立这一条。
+
+    两条一起断言才叫判据：
+    - 正方向：``action_target_state`` 必须返回 ``CARD``（否则 57 秒超时）；
+    - 反方向：同一帧必须**不是** TEAM / BATTLE / RESULT（否则这条边等于
+      「什么页都收」，等于没有判据）。
+    """
+    machine = _pc_tower_machine(TowerState.TEAM)
+    frame = _pc_frame("card_after_instant_battle_pc")
+    action = machine.next_action(_pc_frame("prepare_pc_live_20261103"))
+    assert action.name == "battle-start"
+    assert TowerState.CARD in action.target_states
+
+    assert not machine.is_in_state(frame, TowerState.TEAM)
+    assert not machine.is_in_state(frame, TowerState.BATTLE)
+    assert not machine.is_in_state(frame, TowerState.RESULT)
+    assert machine.is_in_state(frame, TowerState.CARD)
+
+    assert machine.action_target_state(frame, action) is TowerState.CARD
+
+    # 落进 CARD 之后必须**立刻有活可干**：先选中间卡，不许干等。
+    machine.commit(action, TowerState.CARD)
+    assert machine.next_action(frame).name == "pick-middle-card"
+
+
+def test_the_instant_clear_frame_is_never_mistaken_for_a_battle_scene():
+    """反向锁：这一帧**不许**被 ``battle_scene_visible`` 认成战斗画面。
+
+    真机探针（60 秒 × 1.5 秒采样）里它整段都是 False，而 1.5 秒那一帧确实是
+    ``AUTO_CONTROLS`` —— 说明「战斗发生了、但快得抓不住」，不是「没打」。
+    ⇒ 想靠「战斗中」这一页来接住秒杀，方向就是错的。
+    """
+    frame = _pc_frame("card_after_instant_battle_pc")
+
+    assert battle_scene_visible(frame) is False

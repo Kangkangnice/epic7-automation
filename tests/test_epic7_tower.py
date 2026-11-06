@@ -21,9 +21,11 @@ from auto_game_unified.core.matcher import find_best_template, load_template
 from auto_game_unified.core.runtime import Runtime
 from auto_game_unified.games.epic7.evidence.tower import build_tower_evidence
 from auto_game_unified.games.epic7.navigation import REFERENCE_SIZE
+from auto_game_unified.games.epic7.template_paths import resolve_template_dir
 from auto_game_unified.games.epic7.tower import (
     FloorTooHard,
     FloorsConquered,
+    StaminaShortage,
     TowerRunner,
     TowerState,
     TowerStateMachine,
@@ -142,14 +144,30 @@ def screen_with(*items: tuple[np.ndarray, tuple[int, int]]) -> np.ndarray:
     return screen
 
 
+PC_FIXTURES = ROOT / "tests" / "fixtures" / "epic7_tower_pc"
+
+
 def recorded_screen(name: str) -> np.ndarray:
     path = FIXTURES / f"{name}.png"
+    return cv2.cvtColor(cv2.imread(str(path)), cv2.COLOR_BGR2RGB)
+
+
+def recorded_pc_screen(name: str) -> np.ndarray:
+    path = PC_FIXTURES / f"{name}.png"
     return cv2.cvtColor(cv2.imread(str(path)), cv2.COLOR_BGR2RGB)
 
 
 def real_machine(state: TowerState = TowerState.HOME) -> TowerStateMachine:
     """**所有跟真机夹具打交道**的用例都必须用这个 —— 真模板 + 真区域。"""
     return TowerStateMachine(build_tower_templates(TEMPLATES_DIR), initial_state=state)
+
+
+def pc_machine_at(state: TowerState = TowerState.HOME) -> TowerStateMachine:
+    """PC 后端专用：真模板 + PC 覆盖图，PC 专属的新增分支从这里才生效。"""
+    return TowerStateMachine(
+        build_tower_templates(resolve_template_dir(TEMPLATES_DIR, "pc")),
+        initial_state=state,
+    )
 
 
 class TowerStateMachineTests(unittest.TestCase):
@@ -347,6 +365,42 @@ class TowerStateMachineTests(unittest.TestCase):
         # 收掉、把控制权交回主循环（见 `action_target_state` 的弹窗分支）。
         self.assertIn(TowerState.BATTLE, action.target_states)
         self.assertIn(TowerState.TEAM, action.target_states)
+        # ⚠️ CARD 落点是 **PC 专属**（2026-11-04 01:40 真机补的那条边）：
+        # 秒杀型战斗只存在 1~2 秒，转场要「目标连续=2」根本抓不到，
+        # 落点是稳定停住的三选一装置页 —— 见下面那条专门用例。
+        # 模拟器保持改动前的两态，不许被这次 PC 移植带着变。
+        self.assertNotIn(TowerState.CARD, action.target_states)
+        pc_action = pc_machine_at(TowerState.TEAM).next_action(
+            recorded_pc_screen("prepare_pc_live_20261103")
+        )
+        self.assertIn(TowerState.CARD, pc_action.target_states)
+
+    def test_the_battle_scene_is_not_where_a_strong_team_ever_lands(self):
+        """反向：**别指望靠「战斗中」这一页来接住秒杀**。
+
+        真机逐帧探针（2026-11-04 02:1x，60 秒 × 1.5 秒采样，PC 客户端）显示这一队
+        点完「战斗开始」后：
+
+        - 1.5 秒那一帧 ``observe_battle_controls`` = ``AUTO_CONTROLS``（战斗确实发生了）；
+        - 3 秒起整整 57 秒全是 ``TRANSITION``，画面停在三选一装置页；
+        - ``battle_scene_visible`` **整段都是 False**。
+
+        ⇒ 「秒杀 + 三选一页」是这条路线在 PC 上的**常态**，不是偶发。
+        落点合同拿 PC 现场帧 ``prepare_pc_live_20261103`` 核对：PC 覆盖图认不出
+        模拟器夹具，模拟器那条路径由 ``test_team_starts_the_battle`` 钉住。
+        逐帧采样的结论仍旧成立 —— 别急着改 ``battle_scene_visible`` 去「修」
+        一个不是它的问题。
+
+        真正的落点证据在 ``tests/fixtures/epic7_tower_pc/card_after_instant_battle_pc.png``
+        （PC 帧必须留在那个目录里，原因见 ``test_tower_evidence.py`` 的 ``PC_FIXTURES`` 注释）。
+        """
+        machine = pc_machine_at(TowerState.TEAM)
+        action = machine.next_action(
+            recorded_pc_screen("prepare_pc_live_20261103")
+        )
+
+        # 合同里必须有 CARD —— 否则秒杀落点无人接收，只能等 57 秒超时。
+        self.assertIn(TowerState.CARD, action.target_states)
 
     def test_the_power_warning_interrupts_the_transition_instead_of_retrying(self):
         """弹窗一冒出来，这次转场就该判「页面变了」，让主循环**重新决策**。
@@ -1378,3 +1432,297 @@ class RetrySuppressionTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class StaminaShortageTests(unittest.TestCase):
+    """「行动力不足」= 正常收工，不是转场失败（2026-11-04 14:05 真机）。
+
+    点「战斗开始」时行动力不够，游戏弹一层模态框盖住准备战斗页。旧代码
+    ``_overlay_kind`` 只认「战斗指南 / 英雄恢复」⇒ 主循环把「来源=准备战斗仍在」
+    当成「没点动」，对 (1726,1040) 补点 4 次（全被弹窗吞掉），45 秒后报
+    ``动作[battle-start]未稳定进入[...]``，每日任务记 ✗。
+    """
+
+    PC_FIXTURES = ROOT / "tests" / "fixtures" / "epic7_tower_pc"
+
+    def pc_frame(self, name: str) -> np.ndarray:
+        path = self.PC_FIXTURES / f"{name}.png"
+        return cv2.cvtColor(cv2.imread(str(path)), cv2.COLOR_BGR2RGB)[:1132, :1982]
+
+    def pc_machine(self, state=TowerState.TEAM) -> TowerStateMachine:
+        root = resolve_template_dir(TEMPLATES_DIR.parent, "pc")
+        return TowerStateMachine(
+            build_tower_templates(root / "tower"), initial_state=state
+        )
+
+    def test_shortage_is_a_resource_exhaustion_with_its_own_label(self):
+        from auto_game_unified.core.runtime import StaminaExhausted
+
+        self.assertTrue(issubclass(StaminaShortage, StaminaExhausted))
+        self.assertEqual("行动力不足（月塔不补充体力）", StaminaShortage.stop_label)
+        self.assertNotEqual(StaminaExhausted.stop_label, StaminaShortage.stop_label)
+
+    def test_pc_popup_stops_the_route_and_blocks_the_retry_path(self):
+        machine = self.pc_machine()
+        screen = self.pc_frame("stamina_shortage_pc_20261104")
+
+        self.assertTrue(machine._stamina_shortage(screen))
+        self.assertEqual("stamina-shortage", machine._overlay_kind(screen))
+        with self.assertRaises(StaminaShortage) as caught:
+            machine.next_action(screen)
+        self.assertIn("不购买体力", str(caught.exception))
+
+        action = machine._action(
+            "battle-start",
+            machine._POINT_BATTLE_START,
+            source_page="准备战斗",
+            target_states=(TowerState.BATTLE, TowerState.CARD, TowerState.TEAM),
+            reason="test",
+        )
+        # 转场等待期间不会重新问 next_action，只问这两处；必须靠 overlay 把
+        # 「来源还在」挡掉、把落点收成 TEAM，下一拍才轮得到 StaminaShortage。
+        self.assertFalse(machine.action_source_visible(screen, action))
+        self.assertIs(TowerState.TEAM, machine.action_target_state(screen, action))
+
+    def test_shortage_requires_all_three_stamina_atoms(self):
+        """证伪：三颗缺一就不认 —— 不许拿「弹窗标题像」当判据。"""
+        machine = self.pc_machine()
+        screen = self.pc_frame("stamina_shortage_pc_20261104")
+        templates = machine.templates
+
+        for name in ("stamina_popup", "stamina_material", "stamina_confirm"):
+            with self.subTest(missing=name):
+                broken = dataclasses.replace(
+                    templates, **{name: templates.stamina_popup if name != "stamina_popup" else templates.stamina_confirm}
+                )
+                probe = TowerStateMachine(broken, initial_state=TowerState.TEAM)
+                self.assertFalse(probe._stamina_shortage(screen))
+                self.assertIsNone(probe._overlay_kind(screen))
+
+    def test_normal_prepare_page_is_not_a_stamina_shortage(self):
+        machine = self.pc_machine()
+        screen = self.pc_frame("prepare_pc_live_20261103")
+
+        self.assertFalse(machine._stamina_shortage(screen))
+        self.assertIsNone(machine._overlay_kind(screen))
+        action = machine.next_action(screen)
+        self.assertIsNotNone(action)
+        self.assertEqual("battle-start", action.name)
+
+    def test_another_modal_popup_is_not_a_stamina_shortage(self):
+        """跨页反例：战后「给予协助的朋友」弹窗也是模态框，不该被认成体力不足。"""
+        machine = self.pc_machine()
+        path = ROOT / "tests" / "fixtures" / "epic7_story" / "friend_request_pc_live_20261101.png"
+        screen = cv2.cvtColor(cv2.imread(str(path)), cv2.COLOR_BGR2RGB)[:1132, :1982]
+
+        self.assertFalse(machine._stamina_shortage(screen))
+
+    def test_runner_exits_cleanly_without_clicking_anything(self):
+        """真 Runner 级：退出码 2 那条通道接通，且**一次都没点**（不许买体力）。"""
+        frame = self.pc_frame("stamina_shortage_pc_20261104")
+        runtime = RetrySuppressionTests._FakeRuntime((frame,))
+        runner = TowerRunner(
+            self.pc_machine(),
+            runtime,  # type: ignore[arg-type]
+            sleep=lambda _seconds: None,
+            poll_seconds=0.0,
+        )
+
+        runner.run(max_cycles=1)
+
+        self.assertTrue(runner.resource_exhausted)
+        self.assertEqual([], runtime.clicks)
+        self.assertTrue(
+            any("行动力不足" in message for message in runtime.messages),
+            runtime.messages,
+        )
+
+
+class ClearPageEndsTheBattleOnPcOnlyTests(unittest.TestCase):
+    """第 25 层打完**直接进 CLEAR 结算页**，没有三选一装置页（2026-11-04 23:52 真机）。
+
+    事故链：PC 客户端打满 25 层后落在「CLEAR / 占领奖励 / 征服」屏上 ⇒
+    ``card_decide``+``card_hint`` 不成立、``battle_failed`` 也不成立 ⇒
+    ``observe_battle.result_visible`` 全 False，监督干等 216 秒后报
+    「战斗画面持续无法识别」，把正常通关记成故障，每日任务 ✗。
+
+    修法是把 ``result_clear`` 接进 ``result_visible``，**但只挂 PC 开关**：
+    模拟器侧的收尾是「先三选一装置页」那一套，没有真机证据前一个字不动。
+
+    反例证据（同一批真机帧扫描）：CLEAR 页的 ``card_decide`` 0.31 / ``card_hint``
+    0.27，三选一判据确实不成立；而 ``battle_failed`` 在三选一页才是主判据，
+    两组互不覆盖 ⇒ 加这一条不会把「打不过」误判成「打完了」。
+    """
+
+    PC_FIXTURES = ROOT / "tests" / "fixtures" / "epic7_tower_pc"
+    CLEAR_FRAME = "battle_clear_pc_20261104"
+
+    def frame(self, name: str) -> np.ndarray:
+        path = self.PC_FIXTURES / f"{name}.png"
+        image = cv2.imread(str(path))
+        self.assertIsNotNone(image, path)
+        return cv2.cvtColor(image, cv2.COLOR_BGR2RGB)[:1132, :1982]
+
+    def pc_machine(self) -> TowerStateMachine:
+        root = resolve_template_dir(TEMPLATES_DIR.parent, "pc")
+        return TowerStateMachine(
+            build_tower_templates(root / "tower"), initial_state=TowerState.BATTLE
+        )
+
+    def emulator_machine(self) -> TowerStateMachine:
+        return TowerStateMachine(
+            build_tower_templates(TEMPLATES_DIR), initial_state=TowerState.BATTLE
+        )
+
+    def test_pc_clear_page_is_a_finished_battle(self):
+        machine = self.pc_machine()
+        screen = self.frame(self.CLEAR_FRAME)
+
+        observation = machine.observe_battle(screen, None)
+
+        self.assertTrue(observation.result_visible)
+        # 语义要对：这是「打完了」，不是「还在打」。
+        self.assertFalse(observation.battle_visible)
+
+    def test_the_clear_page_is_recognised_as_result_and_conquered(self):
+        """状态机侧也不能瞎：CLEAR 屏必须能被 RESULT / CONQUERED 接到。"""
+        machine = self.pc_machine()
+        screen = self.frame(self.CLEAR_FRAME)
+
+        # BATTLE 的判据本来就含 ``result_clear``（「最后一下打完了」）。
+        self.assertTrue(machine.is_in_state(screen, TowerState.BATTLE))
+        # RESULT 也是 ``result_clear``。
+        self.assertTrue(machine.is_in_state(screen, TowerState.RESULT))
+
+    def test_the_emulator_path_is_untouched(self):
+        """隔离铁律：模拟器模板跑同一张 PC 帧，``result_visible`` 必须仍是 False。
+
+        这条不是说「模拟器该认不出 CLEAR 页」，而是钉住「新增的那一条只在
+        PC 后端生效」—— 万一哪天有人把 ``self.templates.pc`` 去掉，这里立刻红。
+        """
+        machine = self.emulator_machine()
+        screen = self.frame(self.CLEAR_FRAME)
+
+        observation = machine.observe_battle(screen, None)
+
+        self.assertFalse(machine.templates.pc)
+        self.assertFalse(observation.result_visible)
+
+    def test_the_runner_landing_on_card_reroutes_to_the_result_page(self):
+        """监督的收手落点是写死的 ``_RESULT_STATE = CARD``，PC 最后一层却直接给 CLEAR。
+
+        不补这条出路：``_required(card_decide)`` 在 CLEAR 页上必然失败（实测 0.31），
+        「正常通关」会被报成「月塔锚点 card_decide 未识别」—— 和 repair 前一样是 ✗，
+        只是错误信息换了一句。所以 ``result_visible`` 与这条出路**必须成对存在**。
+        """
+        machine = self.pc_machine()
+        machine.state = TowerState.CARD
+        screen = self.frame(self.CLEAR_FRAME)
+
+        action = machine.next_action(screen)
+
+        self.assertIs(TowerState.RESULT, machine.state)
+        self.assertIsNotNone(action)
+        self.assertEqual("next-floor", action.name)
+        # 打满那一层点的是「征服」⇒ 终点必须在合同里，否则收了手无处可去。
+        self.assertIn(TowerState.CONQUERED, action.target_states)
+
+    def test_the_emulator_keeps_failing_loudly_when_it_lands_on_card(self):
+        """隔离铁律：模拟器后端落到 CARD + CLEAR 帧，仍是原来的「认不出」路径。
+
+        这不是在给模拟器写理想行为，而是钉住「新出路只在 PC 生效」。
+        """
+        machine = self.emulator_machine()
+        machine.state = TowerState.CARD
+
+        with self.assertRaises(RuntimeError):
+            machine.next_action(self.frame(self.CLEAR_FRAME))
+
+    def test_the_three_choice_page_still_ends_the_battle_on_both_backends(self):
+        """回归：三选一装置页那条老路不能被新判据挤掉（模拟器与 PC 都成立）。"""
+        # PC 用 PC 帧、模拟器用模拟器帧：两套覆盖图互不通用，混用只会测出噪声。
+        for label, machine, screen in (
+            ("pc", self.pc_machine(), self.frame("card_pc_live_20261103")),
+            (
+                "emulator",
+                self.emulator_machine(),
+                cv2.cvtColor(
+                    cv2.imread(str(FIXTURES / "card.png")), cv2.COLOR_BGR2RGB
+                ),
+            ),
+        ):
+            with self.subTest(backend=label):
+                observation = machine.observe_battle(screen, None)
+                self.assertTrue(observation.result_visible)
+
+
+class ConqueredFloorListTests(unittest.TestCase):
+    """本阶段 25 层全部占领后，楼层列表的按钮从「选择队伍」变成「编队」。
+
+    事故（2026-11-05 00:26 真机）：上一轮把第 25 层打完并领取后，再跑月塔
+    ``enter-tower`` **转场验收就失败** —— 目标页判据 `FLOOR_LIST` 只认
+    `floor_select_team`，而这一页上是「编队」，原样只有 **0.5897**（阈 0.88）。
+    于是干等 60 秒报 `no_transition_enter-tower`，把「今天已经打满」报成故障。
+    这条 ✗ 会**每天重复**，直到阶段重置为止。
+
+    判据的可证伪性：`floor_select_team` 与 `floor_team_edit` 是**同一枚按钮**
+    （落点中心同为 (1744,1040)、尺寸同为 280x76，只差文字）⇒ 不存在
+    「模型认错了地方」这一层怀疑，只能解释为「按钮换字了」。
+    """
+
+    PC_FIXTURES = ROOT / "tests" / "fixtures" / "epic7_tower_pc"
+    CONQUERED_FRAME = "floor_list_conquered_pc_20261105"
+
+    def frame(self, name: str) -> np.ndarray:
+        path = self.PC_FIXTURES / f"{name}.png"
+        image = cv2.imread(str(path))
+        self.assertIsNotNone(image, path)
+        return cv2.cvtColor(image, cv2.COLOR_BGR2RGB)[:1132, :1982]
+
+    def pc_machine(self, state: TowerState = TowerState.FLOOR_LIST):
+        root = resolve_template_dir(TEMPLATES_DIR.parent, "pc")
+        return TowerStateMachine(
+            build_tower_templates(root / "tower"), initial_state=state
+        )
+
+    def emulator_machine(self, state: TowerState = TowerState.FLOOR_LIST):
+        return TowerStateMachine(
+            build_tower_templates(TEMPLATES_DIR), initial_state=state
+        )
+
+    def test_the_page_is_a_floor_list(self):
+        """转场验收得先过：`enter-tower` 的目标页判据必须认这一页。"""
+        machine = self.pc_machine()
+
+        self.assertTrue(machine.is_in_state(self.frame(self.CONQUERED_FRAME), TowerState.FLOOR_LIST))
+
+    def test_it_stops_as_a_normal_conquest_instead_of_a_timeout(self):
+        from auto_game_unified.games.epic7.tower import FloorsConquered
+
+        machine = self.pc_machine()
+
+        with self.assertRaises(FloorsConquered) as caught:
+            machine.next_action(self.frame(self.CONQUERED_FRAME))
+
+        self.assertIn("全部占领", str(caught.exception))
+        # 必须走「资源耗尽」那条通道（退出码 2），不是普通 RuntimeError。
+        self.assertEqual("月塔层数已打满", FloorsConquered.stop_label)
+
+    def test_the_clear_page_is_not_mistaken_for_a_floor_list(self):
+        """跨页反例：CLEAR 结算页（右下「征服」）不能被认成楼层列表。"""
+        machine = self.pc_machine()
+
+        self.assertFalse(
+            machine.is_in_state(self.frame("battle_clear_pc_20261104"), TowerState.FLOOR_LIST)
+        )
+
+    def test_the_fix_is_pc_only(self):
+        """隔离铁律：模拟器没有这枚图 ⇒ 两个判断点全部短路，行为与改动前一致。"""
+        machine = self.emulator_machine()
+        frame = self.frame(self.CONQUERED_FRAME)
+
+        self.assertIsNone(machine.templates.floor_team_edit)
+        self.assertFalse(machine.is_in_state(frame, TowerState.FLOOR_LIST))
+        with self.assertRaises(RuntimeError) as caught:
+            machine.next_action(frame)
+        self.assertNotIn("全部占领", str(caught.exception))

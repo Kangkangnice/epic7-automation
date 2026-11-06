@@ -18,6 +18,7 @@ import cv2
 import numpy as np
 
 from auto_game_unified.core.matcher import load_template
+from auto_game_unified.games.epic7.template_paths import is_pc
 from auto_game_unified.core.recovery import RecoveryGate
 from auto_game_unified.core.runtime import Runtime
 from auto_game_unified.games.epic7.route_action import RouteAction
@@ -123,6 +124,7 @@ class HeroTemplates:
     auto_select_label: np.ndarray
     story_back: np.ndarray
     rating_sss: np.ndarray
+    rating_sss_list: Optional[np.ndarray]
     # ⚠️ 下面 9 张**曾经是 `Optional[...] = None`**，缺文件就静默跳过。后果分三档：
     #   - `sss_material`：缺失 → 判 UNKNOWN → 不点任何材料卡（fail-closed，还有救）
     #   - `filter_attribute_label` / `filter_star3_unselected`：筛选面板认不出 →
@@ -155,6 +157,7 @@ class HeroTemplates:
     evidence: EvidenceProfile
     threshold: float = 0.80
     assume_non_max_rating: bool = False
+    pc: bool = False
 
 
 def build_hero_templates(template_root: Path) -> HeroTemplates:
@@ -171,6 +174,12 @@ def build_hero_templates(template_root: Path) -> HeroTemplates:
     # 「SSS 材料」徽记的候选模板从证据画像里取，不再手写路径 —— 路径只留一个来源，
     # 免得「画像说有两张、加载器只读一张」这种口径漂移（本路线踩过同类坑）。
     sss_material = evidence.atom("sss_material")
+    rating_sss_list_path = hero / "rating_sss_list.png"
+    rating_sss_list = (
+        load_template(str(rating_sss_list_path))
+        if Path(rating_sss_list_path).is_file()
+        else None
+    )
     return HeroTemplates(
         filter_button=load_template(str(hero / "filter_button.png")),
         filter_level_label=load_template(str(hero / "filter_level_label.png")),
@@ -180,6 +189,7 @@ def build_hero_templates(template_root: Path) -> HeroTemplates:
         auto_select_label=load_template(str(hero / "auto_select_label.png")),
         story_back=load_template(str(navigation / "story_back.png")),
         rating_sss=load_template(str(hero / "rating_sss.png")),
+        rating_sss_list=rating_sss_list,
         filter_attribute_label=load_template(
             str(hero / "filter_attribute_label.png")
         ),
@@ -214,6 +224,7 @@ def build_hero_templates(template_root: Path) -> HeroTemplates:
         evidence=evidence,
         threshold=evidence.atom("filter_button").threshold,
         assume_non_max_rating=False,
+        pc=is_pc(template_root),
     )
 
 
@@ -309,6 +320,13 @@ class HeroSynthStateMachine(HeroVisionMixin):
     _NONZERO_COST_YELLOW_MIN = 300
     _TRANSMIT_HIGHLIGHT_ZONE = (1600, 200, 380, 800)
     _READINESS_OBSERVATIONS = 2
+    # 连续多少次「点了加材料、槽位数却没变」就判定这个英雄加不进材料、换下一个。
+    # 2026-11-03 PC 实测：英雄刻印已满时游戏提示「已达最高献身技能级别，
+    # 无法继续刻印记忆。」，点了之后右侧材料列表与绿色按钮会**短暂消失**，
+    # 但**槽位数始终不变** ⇒ 只认 Up 卡会一直空点下去。
+    _IMPRINT_ADD_NO_PROGRESS_LIMIT = 3
+    # 刻印页「既不能加料也不能合成」连续确认多少次就返回英雄列表换下一个。
+    _IMPRINT_ESCAPE_OBSERVATIONS = 3
 
     @staticmethod
     def _assert_anchor_templates(templates: HeroTemplates) -> None:
@@ -380,6 +398,13 @@ class HeroSynthStateMachine(HeroVisionMixin):
         self._active_card_observation: Optional[str] = None
         self._transmit_reward_confirmed = False
         self._imprint_empty_observations = 0
+        if templates.pc:
+            # 「加材料」的进展跟踪：上一次动作时的已填槽位数，以及连续无进展的次数。
+            # 槽位数始终不增加 ⇒ 这个英雄加不进材料（多半是刻印已满），换下一个。
+            self._imprint_add_last_slots = -1
+            self._imprint_add_no_progress = 0
+            # 刻印页「既不能加料也不能合成」的连续确认次数（逃生门用）。
+            self._imprint_escape_observations = 0
         self._list_end_observations = 0
         self._list_end_fingerprint: Optional[str] = None
         self._current_card_observation: Optional[str] = None
@@ -821,6 +846,7 @@ class HeroSynthStateMachine(HeroVisionMixin):
             raise UnrecognizedScreen("合成结果覆盖层未完整识别，禁止点击底层返回")
 
         # 6. 刻印界面（绿色刻印按钮与完整材料槽共同作为页面证据）
+        pc = getattr(self.templates, "pc", False)
         green_button_present = self._green_button_present(screen)
         complete_imprint_page = (
             green_button_present and self._imprint_slots_present(screen)
@@ -915,6 +941,42 @@ class HeroSynthStateMachine(HeroVisionMixin):
                 reason="SSS材料页仍存在，继续请求返回英雄列表",
             )
         if self.state is HeroSynthState.IMPRINT_ADD and not complete_imprint_page:
+            if pc:
+                # ⚠️ 逃生门（2026-11-03 PC 实测补）：绿按钮不在（**不能合成**）+ 右侧既没有
+                # Up 卡也没有可见材料卡（**不能加料**）⇒ 这一页代码处理不了，原来只会
+                # ``return None`` 干等到转场超时（实测 55 秒），最后连 ESC 回家都失败。
+                # 实测落到这儿的有两类：
+                #   ① 英雄详情里的「刻印记忆材料」页（1 个圆形槽 + 专属材料如
+                #      「伊利欧斯之力 3/1」，**不是**代码支持的 6 槽刻印页）；
+                #   ② 刻印已满时点材料，右侧列表与绿按钮会**短暂消失**。
+                # 连续确认若干次后就返回英雄列表换下一个 —— 这一页有返回箭头（实测 (30,92)）。
+                if (
+                    not green_button_present
+                    and self._find_up_card(screen) is None
+                    and self._find_visible_material_card(screen) is None
+                ):
+                    self._imprint_escape_observations += 1
+                    if (
+                        self._imprint_escape_observations
+                        >= self._IMPRINT_ESCAPE_OBSERVATIONS
+                    ):
+                        back = self._back_point(screen)
+                        if back is not None:
+                            self._imprint_escape_observations = 0
+                            return self._simulator_transition_action(
+                                "back_to_list",
+                                back,
+                                source_page="刻印加材料",
+                                target_pages=("英雄列表",),
+                                reason=(
+                                    "刻印页既不能加料也不能合成"
+                                    "（连续确认 "
+                                    f"{self._IMPRINT_ESCAPE_OBSERVATIONS} 次），"
+                                    "返回英雄列表换下一个"
+                                ),
+                            )
+                else:
+                    self._imprint_escape_observations = 0
             self._imprint_empty_observations = 0
             return None
         if (
@@ -927,76 +989,220 @@ class HeroSynthStateMachine(HeroVisionMixin):
             complete_imprint_page
         ):
             filled_slots = self._imprint_filled_slot_count(screen)
-            if up is not None:
-                self._imprint_empty_observations = 0
-                self.state = HeroSynthState.IMPRINT_ADD
-                x, y, tag = up
-                material_observation = self._material_observation(
-                    filled_slots, self._ordinary_up_rows(screen)
-                )
-                return self._simulator_transition_action(
-                    f"add_material_{filled_slots}_{tag}",
-                    self._scaled_point(screen, (x, y)),
-                    source_page="刻印加材料",
-                    target_pages=("刻印加材料", "刻印SSS材料"),
-                    reason=(
-                        f"发现普通Up材料，已填槽位={filled_slots}，目标={tag}"
-                    ),
-                    in_page_evidence=material_observation,
-                    transition_kind="material_change",
-                )
-            if self.state is HeroSynthState.IMPRINT_ADD:
-                # “没看到 Up”只表示识别结果为空，不表示材料已加完。必须看到
-                # 中间槽内已有材料，且费用从 0 变为非 0，才允许进入合成。
-                cost_nonzero = self._imprint_cost_nonzero(screen)
-                if filled_slots == 0 and not cost_nonzero:
+            if pc:
+                # ⚠️ 槽位满了就**不再加材料**（2026-11-03 PC 实测补的守卫）：
+                # 这一页在材料加满时会显示「无法继续额外增加」，但右侧材料列表里的
+                # Up 卡**照样能识别到** ⇒ 原逻辑只要 ``up is not None`` 就一直发
+                # ``add_material``，槽满之后每一下都加不进去 ⇒ 转场超时
+                # （现场：``add_material_6_1`` 反复超时，六个槽实测全为已填）。
+                # 槽位计数本身是准的（PC 上已填槽橙色像素 2.2 万~2.7 万，阈值 5000），
+                # 所以「槽满」可以直接作为停止加料、转入合成的依据。
+                slots_full = filled_slots >= len(self._IMPRINT_SLOT_ZONES)
+                if up is not None and not slots_full:
+                    # ⚠️ 进展跟踪（2026-11-03 PC 实测补的守卫）：英雄**刻印已满**时，
+                    # 游戏会提示「已达最高献身技能级别，无法继续刻印记忆。」，点了之后
+                    # 右侧材料列表与绿色按钮会**短暂消失**，但**槽位数始终不变**；
+                    # 而 Up 卡/材料卡照样能识别到 ⇒ 只靠 ``up is not None`` 会一直空点，
+                    # 四次点完转场验收失败、整条路线报错收场。
+                    # ⇒ 槽位数连续多次不增加，就判定这个英雄加不进材料，换下一个。
+                    # 只在**已经加进过材料**（槽位非空）时才做无进展判定：槽位还是空的
+                    # 说明连一个都没加进去，更可能是点击还没生效/页面在动，先让它重试，
+                    # 别急着换英雄（否则游戏响应慢一点就会白白跳过一个本来能刻印的英雄）。
+                    if filled_slots > 0:
+                        if filled_slots == self._imprint_add_last_slots:
+                            self._imprint_add_no_progress += 1
+                        else:
+                            self._imprint_add_no_progress = 0
+                            self._imprint_add_last_slots = filled_slots
+                        if (
+                            self._imprint_add_no_progress
+                            >= self._IMPRINT_ADD_NO_PROGRESS_LIMIT
+                        ):
+                            # ⚠️ 2026-11-03 PC 实测修正：**加不动 ≠ 不能刻印**。
+                            # 一个三星英雄往往只有 1 张同名卡，加进槽之后右侧那张卡的
+                            # Up 角标**还在**（对应槽位已使用），于是每轮都挑回它、每下
+                            # 都加不进去。而此刻绿按钮还在、**费用非零**（= 游戏认为槽里的
+                            # 材料够合成一次）⇒ 正确动作是**去合成**，不是换英雄。
+                            # 现场（21:13 那轮）：`已填槽位=1 费用非零=1 Up材料=1`，
+                            # 判成「无法继续刻印」直接返回列表，一整个英雄白跳过。
+                            # 费用为 0 才是真的不能再刻印（已 SSS / 材料不成立）⇒ 换下一个。
+                            if self._imprint_cost_nonzero(screen):
+                                self._imprint_add_no_progress = 0
+                                self._imprint_add_last_slots = -1
+                                return self._simulator_transition_action(
+                                    "start_synthesis",
+                                    self._scaled_point(
+                                        screen, self._GREEN_BTN_POINT
+                                    ),
+                                    source_page="刻印加材料",
+                                    target_pages=("合成确认", "合成结果"),
+                                    reason=(
+                                        "材料加不动但费用非零 ⇒ 材料已够，"
+                                        f"直接合成（已填槽位={filled_slots}）"
+                                    ),
+                                    in_page_evidence=self._material_observation(
+                                        filled_slots, []
+                                    ),
+                                )
+                            back = self._back_point(screen)
+                            if back is not None:
+                                self._imprint_add_no_progress = 0
+                                self._imprint_add_last_slots = -1
+                                return self._simulator_transition_action(
+                                    "back_to_list",
+                                    back,
+                                    source_page="刻印加材料",
+                                    target_pages=("英雄列表",),
+                                    reason=(
+                                        f"连续 {self._IMPRINT_ADD_NO_PROGRESS_LIMIT} 次"
+                                        f"加材料后槽位仍为 {filled_slots} 且费用为 0，"
+                                        "判定该英雄无法继续刻印，换下一个"
+                                    ),
+                                )
                     self._imprint_empty_observations = 0
-                    visible_card = self._find_visible_material_card(screen)
-                    if (
-                        visible_card is None
-                        or material_page_class is not SafetyClass.NON_SSS
-                    ):
-                        return None
-                    x, y, tag = visible_card
+                    self.state = HeroSynthState.IMPRINT_ADD
+                    x, y, tag = up
+                    material_observation = self._material_observation(
+                        filled_slots, self._ordinary_up_rows(screen)
+                    )
                     return self._simulator_transition_action(
                         f"add_material_{filled_slots}_{tag}",
                         self._scaled_point(screen, (x, y)),
                         source_page="刻印加材料",
                         target_pages=("刻印加材料", "刻印SSS材料"),
                         reason=(
-                            "SSS评级已明确排除且检测到普通材料卡，"
-                            "Up标记未识别，使用材料卡轮廓定位"
+                            f"发现普通Up材料，已填槽位={filled_slots}，目标={tag}"
+                        ),
+                        in_page_evidence=material_observation,
+                        transition_kind="material_change",
+                    )
+                if self.state is HeroSynthState.IMPRINT_ADD:
+                    # “没看到 Up”只表示识别结果为空，不表示材料已加完。必须看到
+                    # 中间槽内已有材料，且费用从 0 变为非 0，才允许进入合成。
+                    cost_nonzero = self._imprint_cost_nonzero(screen)
+                    if filled_slots == 0 and not cost_nonzero:
+                        self._imprint_empty_observations = 0
+                        visible_card = self._find_visible_material_card(screen)
+                        if (
+                            visible_card is None
+                            or material_page_class is not SafetyClass.NON_SSS
+                        ):
+                            return None
+                        x, y, tag = visible_card
+                        return self._simulator_transition_action(
+                            f"add_material_{filled_slots}_{tag}",
+                            self._scaled_point(screen, (x, y)),
+                            source_page="刻印加材料",
+                            target_pages=("刻印加材料", "刻印SSS材料"),
+                            reason=(
+                                "SSS评级已明确排除且检测到普通材料卡，"
+                                "Up标记未识别，使用材料卡轮廓定位"
+                            ),
+                            in_page_evidence=self._material_observation(
+                                filled_slots, []
+                            ),
+                            transition_kind="material_change",
+                        )
+                    # 槽满即视为材料齐备，**不再要求费用判据**（2026-11-03 PC 实测）：
+                    # PC 上费用数字被半透明遮罩盖住，费用区实测黄色像素 **0**（阈值 300）
+                    # ⇒ ``_imprint_cost_nonzero`` 恒为假 ⇒ 卡在这里永远合成不了。
+                    # 槽满（六个槽全部已填）+ 绿按钮存在 + 连续确认，才是合成的依据。
+                    if filled_slots == 0 or (not slots_full and not cost_nonzero):
+                        self._imprint_empty_observations = 0
+                        return None
+                    self._imprint_empty_observations += 1
+                    if (
+                        self._imprint_empty_observations
+                        < self._READINESS_OBSERVATIONS
+                    ):
+                        return None
+                    self._imprint_empty_observations = self._READINESS_OBSERVATIONS
+                    return self._simulator_transition_action(
+                        "start_synthesis",
+                        self._scaled_point(
+                            screen, self._GREEN_BTN_POINT
+                        ),
+                        source_page="刻印加材料",
+                        target_pages=("合成确认", "合成结果"),
+                        reason=(
+                            "Up材料已清空，"
+                            f"已填槽位={filled_slots}，费用非零，连续确认=2"
                         ),
                         in_page_evidence=self._material_observation(
                             filled_slots, []
                         ),
+                    )
+            else:
+                if up is not None:
+                    self._imprint_empty_observations = 0
+                    self.state = HeroSynthState.IMPRINT_ADD
+                    x, y, tag = up
+                    material_observation = self._material_observation(
+                        filled_slots, self._ordinary_up_rows(screen)
+                    )
+                    return self._simulator_transition_action(
+                        f"add_material_{filled_slots}_{tag}",
+                        self._scaled_point(screen, (x, y)),
+                        source_page="刻印加材料",
+                        target_pages=("刻印加材料", "刻印SSS材料"),
+                        reason=(
+                            f"发现普通Up材料，已填槽位={filled_slots}，目标={tag}"
+                        ),
+                        in_page_evidence=material_observation,
                         transition_kind="material_change",
                     )
-                if filled_slots == 0 or not cost_nonzero:
-                    self._imprint_empty_observations = 0
-                    return None
-                self._imprint_empty_observations += 1
-                if (
-                    self._imprint_empty_observations
-                    < self._READINESS_OBSERVATIONS
-                ):
-                    return None
-                self._imprint_empty_observations = self._READINESS_OBSERVATIONS
-                return self._simulator_transition_action(
-                    "start_synthesis",
-                    self._scaled_point(
-                        screen, self._GREEN_BTN_POINT
-                    ),
-                    source_page="刻印加材料",
-                    target_pages=("合成确认", "合成结果"),
-                    reason=(
-                        "Up材料已清空，"
-                        f"已填槽位={filled_slots}，费用非零，连续确认=2"
-                    ),
-                    in_page_evidence=self._material_observation(
-                        filled_slots, []
-                    ),
-                )
+                if self.state is HeroSynthState.IMPRINT_ADD:
+                    # “没看到 Up”只表示识别结果为空，不表示材料已加完。必须看到
+                    # 中间槽内已有材料，且费用从 0 变为非 0，才允许进入合成。
+                    cost_nonzero = self._imprint_cost_nonzero(screen)
+                    if filled_slots == 0 and not cost_nonzero:
+                        self._imprint_empty_observations = 0
+                        visible_card = self._find_visible_material_card(screen)
+                        if (
+                            visible_card is None
+                            or material_page_class is not SafetyClass.NON_SSS
+                        ):
+                            return None
+                        x, y, tag = visible_card
+                        return self._simulator_transition_action(
+                            f"add_material_{filled_slots}_{tag}",
+                            self._scaled_point(screen, (x, y)),
+                            source_page="刻印加材料",
+                            target_pages=("刻印加材料", "刻印SSS材料"),
+                            reason=(
+                                "SSS评级已明确排除且检测到普通材料卡，"
+                                "Up标记未识别，使用材料卡轮廓定位"
+                            ),
+                            in_page_evidence=self._material_observation(
+                                filled_slots, []
+                            ),
+                            transition_kind="material_change",
+                        )
+                    if filled_slots == 0 or not cost_nonzero:
+                        self._imprint_empty_observations = 0
+                        return None
+                    self._imprint_empty_observations += 1
+                    if (
+                        self._imprint_empty_observations
+                        < self._READINESS_OBSERVATIONS
+                    ):
+                        return None
+                    self._imprint_empty_observations = self._READINESS_OBSERVATIONS
+                    return self._simulator_transition_action(
+                        "start_synthesis",
+                        self._scaled_point(
+                            screen, self._GREEN_BTN_POINT
+                        ),
+                        source_page="刻印加材料",
+                        target_pages=("合成确认", "合成结果"),
+                        reason=(
+                            "Up材料已清空，"
+                            f"已填槽位={filled_slots}，费用非零，连续确认=2"
+                        ),
+                        in_page_evidence=self._material_observation(
+                            filled_slots, []
+                        ),
+                    )
             back = self._back_point(screen)
             if back is None:
                 raise UnrecognizedScreen("刻印画面缺少返回箭头")
