@@ -123,8 +123,8 @@
 （含 `replay` 场景页）**全部排在 `battle_scene_visible` 之前**。场景页先被 `replay` 认走，
 就永远走不到「局内」那一条。2026-10-31 实测复核：
 `scene.png` / `scene_without_arrow.png` 上 `battle_scene_visible=True` 依旧成立（陷阱还在），
-而 `replay` 两张都命中；四张真实战斗帧（`epic7_story/battle*.png`）上**十二个锚点全不命中**
-⇒ 两条路互不遮蔽。
+而 `replay` 两张都命中；四张真实战斗帧（`epic7_story/battle*.png`）上**当时十二个接力锚点全不命中**
+（如今是十四个，新增两颗是 PC-only，模拟器下恒不命中）⇒ 两条路互不遮蔽。
 
 ### 落点与状态
 
@@ -139,6 +139,30 @@
 落点白名单写的是**主线**的下一页。本路线在结算之后落到的是场景页 —— 接上去只会把
 「落点对不上」这个坑搬进接力。这几页认不出就返回 `None`，回退到
 「一路 Back 回大厅再重新导航」，与加接力之前完全一致（失败关闭）。
+
+### 2026-11-06 补：PC 的「期次主页」中间层
+
+12:45 那轮批量里支线故事独立 ✗，12:58:21 日志是
+`操作=enter_quick_entry 目标页面=Episode详情/关卡地图` → 12:59:23
+`页面=关卡入口 状态=超时无进展`。诊断帧不是这两页中的任何一页，而是
+「秘密校兔篇」**期次主页**（左侧本期徽章、右侧「故事 / 奖励 / PV」三颗标签）——
+PC 客户端从「快速入场」进来比模拟器多一层中间页。旧代码里：
+
+1. **运行期**：本路线各判据在这页全 `None` ⇒ `UnrecognizedScreen` ⇒ 干等 60 秒超时；
+2. **接力**：`detect_resume_point` 的十二个锚点同样全 `None` ⇒ 人手动停在这页启动会退回大厅重走。
+
+两者是**同一个洞**（少认一页），一次补齐：新增两颗 PC-only 可选判据
+（`event_home_reward` / `event_home_pv`），既进 `_side_decision` 点「故事」继续前进，
+也进 `_SIDE_RESUME_ORDER` 作为接力落点；同时把 `enter_quick_entry` 的 `target_pages`
+补上「期次主页」，否则点完「快速入场」明明落对了页，转场契约却判「目标页面未出现」。
+
+⚠️ **PC-only 隔离**：两张图只放 `templates/side_story/pc/`，共享目录里没有同名图。
+模拟器下 builder 得到空元组 ⇒ 原子恒 `None` ⇒ 运行期分支与接力落点都不启用，
+模拟器行为零改动。这是「平台差异只落在图片上」那条总原则的又一次应用。
+
+⚠️ **未真机复验的两件事**：①点「故事」之后究竟落到哪一页（白名单按前进页列了
+4 个，落错会在 4 次重试后带诊断包失败关闭）；②这一页目前只有一张真机帧，
+下一期换皮后两颗图还认不认得出。两条都写进 `docs/PC_TEMPLATE_MIGRATION.md` 欠账。
 """
 
 from __future__ import annotations
@@ -262,6 +286,14 @@ _SIDE_TEMPLATE_NAMES = (
     "helper_change",
     "diff_mid",
     "boss_select_team",
+    # ── 期次主页「故事/奖励/PV」（2026-11-06，PC 专属、可选）──
+    # 点了「快速入场」后**先**落到这一页，右侧是三颗标签，不是关卡地图也不是
+    # Episode 详情。两张图都是「只放 pc/」的可选模板：模拟器解析不到 ⇒ 空元组
+    # ⇒ `_locate` 恒 None，运行期与接力都完全走改动前的路径。
+    # 用**两颗**而不是一颗：它们是两枚不同形状的功能标签，本期美术换皮时
+    # 只要还有一颗长得一样就能接上；单颗一旦换皮就整页认不出。
+    "event_home_reward",
+    "event_home_pv",
 )
 
 # 判据（模板 + 区域 + 阈值）**整个复用主线那一份**的别名 → 主线锚点名。
@@ -295,7 +327,24 @@ _CLEAR_TARGET_PAGES = ("完成故事", "结算确认", "通关提示")
 # 弹窗是模态遮罩，点它身上任何地方都会关掉，取这一行只是为了让日志里的坐标有出处。
 _POPUP_CLOSE_POINT = (990, 790)
 
-# 本路线独有的六条区域 / 阈值。提成模块常量而不是直接写在类体里，是因为
+# 期次主页「故事」金色相框的**文字中心**（2026-11-06 12:59 真机帧实测）。
+# 相框本体约 x 1580~1920 / y 250~700，点文字中心一定落在按钮里；不用 `_locate`
+# 的命中点，是因为两张判据图裁的是「奖励」「PV」，不是这颗「故事」按钮。
+_EVENT_HOME_STORY_POINT = (1710, 440)
+
+# 「故事」点下去的落点白名单。**刻意不含「期次主页」与「支线故事」**：
+# 含前者会让「点了没反应」被当成转场成功（静默降级）；含后者会在
+# 期次主页 ↔ hub 页之间来回点，直到 99 轮耗尽。真落在没登记的前进页上，
+# 转场契约会在 4 次重试后带诊断包失败关闭 —— 比 60 秒无声超时好排查。
+_EVENT_HOME_TARGET_PAGES = (
+    "Episode详情",
+    "关卡地图",
+    "关卡入口",
+    "剧情关卡入口",
+)
+
+# 本路线独有的区域 / 阈值（早期六条自有页 + 连打链路 + PC 期次主页）。
+# 提成模块常量而不是直接写在类体里，是因为
 # ``__init__`` 还要再用一次（理由见那里）。
 _SIDE_REGIONS = {
     "quick_entry": (100, 950, 520, 182),
@@ -333,6 +382,12 @@ _SIDE_REGIONS = {
     "diff_mid": (40, 250, 320, 860),
     # 难度列表/helper 页右下「选择队伍」绿按钮，实测命中中心 (1695,1070)。
     "boss_select_team": (1400, 1000, 560, 132),
+    # ── 期次主页右侧标签栏（2026-11-06 12:59 真机帧）──
+    # 两颗各自罩住自己那一枚标签的**常驻位置**，刻意不共用一大片搜索区：
+    # 共用 (1380,640,602,400) 时「奖励」纸带能滑到别页的白色横条上，
+    # 全库负例天花板从 0.4285 抬到 0.5808（outpost_scene.png），余量白白丢掉 0.15。
+    "event_home_reward": (1380, 640, 602, 220),
+    "event_home_pv": (1380, 780, 602, 220),
 }
 _SIDE_THRESHOLDS = {
     "quick_entry": 0.82,
@@ -397,6 +452,19 @@ _SIDE_THRESHOLDS = {
     "diff_mid": 0.90,
     # boss_select_team（500x90）：列表页 0.970~1.000、helper 页 0.948；team 页/地图 no-match。
     "boss_select_team": 0.85,
+    # ── 期次主页两颗标签（2026-11-06，原样 RGB）──
+    # 全库负例扫描 `runtime_logs/_probe_event_home_anchor.py`（366 张可判帧，
+    # 含 **5 张同期美术的支线故事 hub 页** —— 同一套立绘/背景、右侧却是菜单，
+    # 是这套判据最硬的负例）：
+    #   event_home_reward（420x105 白色「奖励」纸带）…… 正例 1.0000 / 负例 Top1 0.4285
+    #   event_home_pv（220x130 黑色「PV」胶片条）……… 正例 1.0000 / 负例 Top1 0.5288
+    #   同期 hub 页天花板：0.3668 / 0.3629（证明靠的是标签控件，不是本期背景）
+    # 0.80 离负例天花板 0.27、离正例 0.20，两边都留得下。
+    # ⚠️ 这一页目前**只有一张真机帧**（12:59 timeout_stage），单帧的自匹配 1.0000
+    # 不等于跨帧稳健；两张图来自同一帧，能否扛住下一期换皮尚未验证。认不出是
+    # **失败关闭**（返回 None ⇒ 回大厅重新导航），不会瞎点。
+    "event_home_reward": 0.80,
+    "event_home_pv": 0.80,
 }
 
 # 判据 → 比对口径。只有 `battle_clear` 走背景无关口径；其余锚点仍是原样 RGB。
@@ -526,6 +594,14 @@ class SideStoryTemplates:
     helper_change: np.ndarray
     diff_mid: np.ndarray
     boss_select_team: np.ndarray
+    # ── 期次主页（2026-11-06，PC 专属可选）──
+    # 空元组 = 模拟器（共享目录里没有这两张图）⇒ `_locate` 直接返回 None，
+    # 运行期动作与接力落点都自动不启用，模拟器行为一个字节不变。
+    # 两张都是**固定功能标签**：白色「奖励」纸带（420x105）、黑色「PV」胶片条
+    # （220x130）。不裁「秘密校兔篇」徽章 / 期间日期 / 玩家上电视的跑马灯 ——
+    # 那些每期、每时每刻都变，装进模板等于把会变的内容写进判据。
+    event_home_reward: tuple[np.ndarray, ...]
+    event_home_pv: tuple[np.ndarray, ...]
 
 
 def build_side_story_templates(template_dir: Path) -> SideStoryTemplates:
@@ -536,6 +612,17 @@ def build_side_story_templates(template_dir: Path) -> SideStoryTemplates:
     """
 
     root = template_dir.parent
+
+    def load_optional(name: str) -> tuple[np.ndarray, ...]:
+        """PC 专属可选图：文件不在就返回空元组，不抛 FileNotFoundError。
+
+        与 `labyrinth_stone.build_labyrinth_stone_templates` 同一套写法 ——
+        模拟器传的是普通 `Path`（或 `TemplateDir(..., "emulator")`），
+        `pc/` 里的图解析不到，这一族判据必须整个缺席而不是崩在加载期。
+        """
+        path = template_dir / f"{name}.png"
+        return (load_template(str(path)),) if Path(path).is_file() else ()
+
     return SideStoryTemplates(
         story=build_story_templates(root / "story"),
         quick_entry=load_template(str(template_dir / "quick_entry.png")),
@@ -560,6 +647,8 @@ def build_side_story_templates(template_dir: Path) -> SideStoryTemplates:
         helper_change=load_template(str(template_dir / "helper_change.png")),
         diff_mid=load_template(str(template_dir / "diff_mid.png")),
         boss_select_team=load_template(str(template_dir / "boss_select_team.png")),
+        event_home_reward=load_optional("event_home_reward"),
+        event_home_pv=load_optional("event_home_pv"),
     )
 
 
@@ -814,11 +903,12 @@ class SideStoryStateMachine(StoryStateMachine):
     def _side_decision(
         self, screen: np.ndarray
     ) -> tuple[bool, Optional[StoryAction]]:
-        """本路线六条判据，按优先级排。返回 ``(是否归我管, 动作)``。
+        """本路线判据，按优先级排。返回 ``(是否归我管, 动作)``。
 
         顺序**不能改**（后一条都会压在前一条上）：
         「完成故事」弹窗是模态遮罩 → 场景页 → 战斗关 CLEAR → 剧情关 CLEAR →
-        关卡地图 → Episode 详情页 → 支线故事页。都不命中才返回 ``(False, None)``。
+        关卡地图 → Episode 详情页 → 期次主页（PC）→ 支线故事页。
+        都不命中才返回 ``(False, None)``。
         """
 
         # ③ 据点模式探活（**副作用，不返回**）：据点队伍页有「可完成1次。」白气泡，
@@ -1013,19 +1103,37 @@ class SideStoryStateMachine(StoryStateMachine):
                 target_states=(StoryState.STAGE,),
             )
 
-        # ⑤ 支线故事页。
+        # ⑤ 期次主页（PC 专属，2026-11-06）：点了「快速入场」后先落在这里。
+        # 右侧「故事 / 奖励 / PV」三颗标签，不是 Episode 详情也不是关卡地图 ——
+        # 12:59 那轮真机就是在这页 `UnrecognizedScreen` 干等 60 秒超时。
+        # 判据两颗任一命中即可（模拟器都是空元组 ⇒ 两支都 False，行为零改动）。
+        event_home = self._locate(screen, "event_home_reward")
+        if event_home is None:
+            event_home = self._locate(screen, "event_home_pv")
+        if event_home is not None:
+            return True, self._action(
+                "enter_event_story",
+                self._scaled_point(screen, _EVENT_HOME_STORY_POINT),
+                source_page="期次主页",
+                target_pages=_EVENT_HOME_TARGET_PAGES,
+                reason="期次主页的「故事」入口已识别",
+                target_states=(StoryState.STAGE,),
+            )
+
+        # ⑥ 支线故事页。⚠️ 它的落点白名单必须含「期次主页」：PC 上「快速入场」
+        # 点下去先到的是上面那一页，不是 Episode 详情（2026-11-06 12:58 真机日志）。
         entry = self._locate(screen, "quick_entry")
         if entry is not None:
             return True, self._action(
                 "enter_quick_entry",
                 entry.center,
                 source_page="支线故事",
-                target_pages=("Episode详情", "关卡地图"),
+                target_pages=("Episode详情", "关卡地图", "期次主页"),
                 reason="支线故事页的快速入场按钮已识别",
                 target_states=(StoryState.STAGE,),
             )
 
-        # 六条判据都不命中 ⇒ 这一页不归我管，交给主线状态机。
+        # 七条判据都不命中 ⇒ 这一页不归我管，交给主线状态机。
         return False, None
 
     def _scene_action(self, screen: np.ndarray, replay: Match) -> Optional[StoryAction]:
@@ -1338,6 +1446,11 @@ class SideStoryStateMachine(StoryStateMachine):
 #
 # 不放进来的：`通关提示` / `奖励结算` / `额外奖励` / `下一关入口` —— 它们由主线动作
 # 处理，而主线动作的落点白名单写的是主线的下一页，接上去只会把「落点对不上」搬进接力。
+#
+# 2026-11-06 补「期次主页」：PC 上「快速入场」多出这一层中间页。两颗标签是**两个
+# 独立的原子**，都落在同一页/同一状态 —— 任一命中都能接上（跨期换皮时的冗余）。
+# 排在本来就该在它前面的弹窗/场景/地图/Episode详情之后、支线故事 hub 之前：
+# 这页与那 12 个锚点互斥（12:59 真机帧上全 None），顺序只为读起来跟导航链一致。
 _SIDE_RESUME_ORDER: tuple[tuple[str, StoryState, str], ...] = (
     ("complete_popup", StoryState.WAIT_RESULTS, "完成故事"),
     ("replay", StoryState.STAGE, "场景页"),
@@ -1345,6 +1458,8 @@ _SIDE_RESUME_ORDER: tuple[tuple[str, StoryState, str], ...] = (
     ("story_clear", StoryState.WAIT_RESULTS, "通关结算"),
     ("map_panel", StoryState.STAGE, "关卡地图"),
     ("adventure", StoryState.STAGE, "Episode详情"),
+    ("event_home_reward", StoryState.STAGE, "期次主页"),
+    ("event_home_pv", StoryState.STAGE, "期次主页"),
     ("quick_entry", StoryState.STAGE, "支线故事"),
     ("start_mission", StoryState.TEAM, "队伍准备"),
     ("select_team", StoryState.TEAM, "助手选择"),
@@ -1370,7 +1485,7 @@ def detect_resume_point(
         if machine._locate(screen, name) is not None:
             return ResumePoint(label, state)
     # ⚠️ 局内**排在最后**：本路线有页面会被这条判成局内（见模块头），
-    # 前面十二个锚点先认完，剩下还像战斗的才当「用户停在战斗里」交给战斗监督。
+    # 前面十四个锚点先认完，剩下还像战斗的才当「用户停在战斗里」交给战斗监督。
     if battle_scene_visible(screen):
         return ResumePoint("战斗中", StoryState.WAIT_BATTLE)
     return None

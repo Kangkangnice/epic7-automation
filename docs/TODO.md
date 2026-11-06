@@ -91,13 +91,14 @@
 | moonlight_theater 月光剧场 | 3 | ✅ 完成第 1 幕（11-03） | 已放行 |
 | world_boss 世界首领战 | 7 | ✅ 导航链 + 前半场（11-03 20:58 打通） | 已放行；⚠️ 结算后领奖段未真机走过 |
 | hero_synthesis 英雄合成 | 6 | ⚠️ 合成本身跑通；关掉结果弹窗后停在英雄信息页、等列表超时 | 已放行（用户自测）；收尾未通 |
-| side_story 支线故事 | 3 | ⚠️ 单关连打已通（`replay` 已重裁）；三期特殊链路从没真机走到 | 已放行（**部分完成**，用户 11-05 同意暂停） |
+| side_story 支线故事 | 5 | ⚠️ 单关连打已通（`replay` 已重裁）；11-06 补 PC 期次主页两颗接力/运行期判据；三期特殊链路从没真机走到 | 已放行（**部分完成**，用户 11-05 同意暂停） |
 | activity_story 活动剧情 | 1 | ✅ 连看多段故事 + 战斗关（11-05/06） | 已放行；⚠️ `ticket_free` 未采到样本 |
 | expedition / fodder / survivor / community | 0 | 未在 PC 上做过 | 未开工 |
 
 另有 `templates/global/pc/` 20 张 + `templates/navigation/pc/` 7 张为多路线共用（合计 27）；
-全部 PC 专属图合计 **112 张**（`find games/epic7/templates -path '*/pc/*.png' | wc -l` 口径；
-2026-11-06 12:29 教学遮罩新增 3 张 `global/pc/tutorial_*.png`）。
+全部 PC 专属图合计 **114 张**（`find games/epic7/templates -path '*/pc/*.png' | wc -l` 口径；
+2026-11-06 12:29 教学遮罩新增 3 张 `global/pc/tutorial_*.png`，同日支线故事期次主页
+新增 2 张 `side_story/pc/event_home_*.png`）。
 ⚠️ 竞技场那 8 张在 `templates/pc/` 根、刷书签 7 张在 `templates/pc/shop_refresh/`、
 英雄合成 2 张在 `templates/pc/hero/` —— **模板根不统一**，补图前先查 `template_paths.py`，
 别凭「同名目录」猜位置。
