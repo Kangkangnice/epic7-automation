@@ -1,7 +1,5 @@
 from pathlib import Path
 
-import pytest
-
 import cv2
 
 from auto_game_unified.core.evidence_diagnostics import inspect_profile
@@ -10,7 +8,6 @@ from auto_game_unified.games.epic7.arena import (
     Action,
     ArenaState,
     ArenaStateMachine,
-    TicketExhausted,
     build_templates,
     _VS_CONFIRM_REGION,
     _VS_CONFIRM_THRESHOLD,

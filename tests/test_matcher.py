@@ -528,7 +528,7 @@ class ScaleFallbackTests(unittest.TestCase):
         # 1.00 那一档由常规路径覆盖，所以相邻两档隔着 1.00 时间隔是 0.02 属正常；
         # 其余相邻档必须紧到 0.01，否则「最坏那一档刚好落在两个候选中间」。
         ordered = sorted(steps)
-        for left, right in zip(ordered, ordered[1:]):
+        for left, right in zip(ordered, ordered[1:]):  # noqa: B905
             spans_one = left < 1.0 < right
             limit = 0.0200001 if spans_one else 0.0100001
             self.assertLessEqual(

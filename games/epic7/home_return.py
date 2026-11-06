@@ -584,8 +584,8 @@ def return_home_v2(
                 )
                 verifier.act(
                     "关闭骑士团活动",
-                    lambda: runtime.click(  # noqa: B023
-                        activity_close.center, "close-knights-activity"
+                    lambda center=activity_close.center: runtime.click(
+                        center, "close-knights-activity"
                     ),
                     screen,
                 )

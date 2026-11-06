@@ -1,6 +1,5 @@
 from pathlib import Path
 import unittest
-from unittest import mock
 
 import cv2
 import numpy as np
@@ -9,7 +8,6 @@ from PIL import Image
 from auto_game_unified.core.battle_supervisor import AutoBattleState
 from auto_game_unified.games.epic7 import story as story_module
 from auto_game_unified.games.epic7.story import (
-    StoryRunner,
     StoryState,
     StoryStateMachine,
     build_story_templates,

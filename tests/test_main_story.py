@@ -1,6 +1,6 @@
 import os
 import io
-from contextlib import redirect_stdout
+from contextlib import ExitStack, redirect_stdout
 from pathlib import Path
 import tempfile
 import unittest
@@ -113,127 +113,167 @@ class MainStoryTests(unittest.TestCase):
                     events.append("guard")  # noqa: B023
                 )
 
-                with (
-                    patch.object(main_module, "_build_runtime", return_value=runtime),
-                    patch.object(main_module, "Epic7GlobalPopupGuard") as guard_type,
-                    patch.object(
-                        main_module,
-                        "load_network_reconnect_templates",
-                        return_value=network_templates,
-                    ),
-                    patch.object(
-                        main_module,
-                        "load_intimacy_level_up_templates",
-                        return_value=intimacy_templates,
-                    ),
-                    patch.object(
-                        main_module,
-                        "load_friendship_points_templates",
-                        return_value=friendship_templates,
-                    ),
-                    patch.object(
-                        main_module,
-                        "load_friend_request_templates",
-                        return_value=friend_request_templates,
-                    ),
-                    patch.object(
-                        main_module,
-                        "load_knights_signin_templates",
-                        return_value=knights_signin_templates,
-                    ),
-                    patch.object(
-                        main_module,
-                        "load_knights_weekly_reward_templates",
-                        return_value=knights_weekly_reward_templates,
-                    ),
-                    patch.object(
-                        main_module,
-                        "load_gift_support_templates",
-                        return_value=gift_support_templates,
-                    ),
-                    patch.object(
-                        main_module,
-                        "load_pet_gift_templates",
-                        return_value=pet_gift_templates,
-                    ),
-                    # 网页「网络错误」长条（2026-10-07 接，第 9 个全局弹窗）。
-                    # ⚠️ 这个 patch 与被写死的 kwargs 断言**必须同进同出** ——
-                    # 少一个，加载期就会真的去读模板目录，在没模板的环境里直接报错。
-                    patch.object(
-                        main_module,
-                        "load_web_network_error_templates",
-                        return_value=web_network_error_templates,
-                    ),
-                    # 「变更日期」「获得登录奖励」（2026-11-03 接，第 18/19 类）。
-                    # 同一条规矩：patch 与写死的 kwargs 断言必须同进同出。
-                    patch.object(
-                        main_module,
-                        "load_date_change_templates",
-                        return_value=date_change_templates,
-                    ),
-                    patch.object(
-                        main_module,
-                        "load_login_reward_templates",
-                        return_value=login_reward_templates,
-                    ),
-                    # 「世界首领辅助队伍奖励」弹窗（2026-10-19 接，第 10 个全局弹窗）。
-                    # 同一条规矩：这个 patch 与被写死的 kwargs 断言必须同进同出。
-                    patch.object(
-                        main_module,
-                        "load_worldboss_support_reward_templates",
-                        return_value=worldboss_support_reward_templates,
-                    ),
-                    # 「段位升级奖励」弹窗：只在首次升至某段位时出现一次，
-                    # 2026-10-20 08:02 那次竞技场 ✗ 就是它（上面那条规矩同样适用）。
-                    patch.object(
-                        main_module,
-                        "load_arena_rank_reward_templates",
-                        return_value=arena_rank_reward_templates,
-                    ),
-                    # 「战斗记录」弹窗：进竞技场时就弹的防守战报，2026-10-30 接。
-                    patch.object(
-                        main_module,
-                        "load_battle_record_templates",
-                        return_value=battle_record_templates,
-                    ),
-                    # 「骑士团成长Rank提升」弹窗：只在骑士团成长等级提升时出现。
-                    # ⚠️ 这里用 patch.multiple 把三个 loader 合成**一个**上下文管理器：
-                    # CPython 对静态嵌套块数有上限（20），这个 with 里已经排了 16 个
-                    # patch，再加两个就会 SyntaxError: too many statically nested blocks。
-                    patch.multiple(
-                        main_module,
-                        load_knights_growth_rank_templates=unittest.mock.MagicMock(
-                            return_value=knights_growth_rank_templates
-                        ),
-                        load_side_story_notice_templates=unittest.mock.MagicMock(
-                            return_value=side_story_notice_templates
-                        ),
-                        load_reward_notice_templates=unittest.mock.MagicMock(
-                            return_value=reward_notice_templates
-                        ),
-                        load_gift_claim_templates=unittest.mock.MagicMock(
-                            return_value=gift_claim_templates
-                        ),
-                        load_account_rank_up_templates=unittest.mock.MagicMock(
-                            return_value=account_rank_up_templates
-                        ),
-                        # 2026-11-05/06 第 20/21 类。塞进这个 patch.multiple 而不是
-                        # 再加两个 patch.object —— 那个 with 已经贴着 20 层上限。
-                        load_knights_activity_templates=unittest.mock.MagicMock(
-                            return_value=knights_activity_templates
-                        ),
-                        load_uncontrollable_templates=unittest.mock.MagicMock(
-                            return_value=uncontrollable_templates
-                        ),
-                        # 2026-11-06 第 22 类。同样塞进 patch.multiple，
-                        # 别再往那个贴着 20 层上限的 with 里加 patch.object。
-                        load_tutorial_unlock_templates=unittest.mock.MagicMock(
-                            return_value=tutorial_unlock_templates
-                        ),
-                    ),
-                    patch.object(main_module, "Epic7Navigator") as navigator_type,
-                    patch.object(main_module, "HomeReturn") as home_return_type,
-                ):
+                # ⚠️ 用 ExitStack 拍平：CPython 对静态嵌套块有 20 层上限，
+                # `with a, b, c...` 的每个 item 都会编译成一层嵌套；弹窗 loader
+                # 加满后整个文件连 py_compile 都过不了（2026-11-06）。
+                # 以后每接一类弹窗只需加一条 enter_context，不必再数层数。
+                # ⚠️ 每个 patch 与下面写死的 kwargs 断言必须同进同出：少一个，
+                # 加载期就会真的去读模板目录，在没模板的环境里直接报错。
+                with ExitStack() as stack:
+                    stack.enter_context(
+                        patch.object(main_module, "_build_runtime", return_value=runtime)
+                    )
+                    guard_type = stack.enter_context(
+                        patch.object(main_module, "Epic7GlobalPopupGuard")
+                    )
+                    stack.enter_context(
+                        patch.object(
+                            main_module,
+                            "load_network_reconnect_templates",
+                            return_value=network_templates,
+                        )
+                    )
+                    stack.enter_context(
+                        patch.object(
+                            main_module,
+                            "load_intimacy_level_up_templates",
+                            return_value=intimacy_templates,
+                        )
+                    )
+                    stack.enter_context(
+                        patch.object(
+                            main_module,
+                            "load_friendship_points_templates",
+                            return_value=friendship_templates,
+                        )
+                    )
+                    stack.enter_context(
+                        patch.object(
+                            main_module,
+                            "load_friend_request_templates",
+                            return_value=friend_request_templates,
+                        )
+                    )
+                    stack.enter_context(
+                        patch.object(
+                            main_module,
+                            "load_knights_signin_templates",
+                            return_value=knights_signin_templates,
+                        )
+                    )
+                    stack.enter_context(
+                        patch.object(
+                            main_module,
+                            "load_knights_weekly_reward_templates",
+                            return_value=knights_weekly_reward_templates,
+                        )
+                    )
+                    stack.enter_context(
+                        patch.object(
+                            main_module,
+                            "load_gift_support_templates",
+                            return_value=gift_support_templates,
+                        )
+                    )
+                    stack.enter_context(
+                        patch.object(
+                            main_module,
+                            "load_pet_gift_templates",
+                            return_value=pet_gift_templates,
+                        )
+                    )
+                    stack.enter_context(
+                        # 网页「网络错误」长条（2026-10-07 接，第 9 个全局弹窗）。
+                        # ⚠️ 这个 patch 与被写死的 kwargs 断言**必须同进同出** ——
+                        # 少一个，加载期就会真的去读模板目录，在没模板的环境里直接报错。
+                        patch.object(
+                            main_module,
+                            "load_web_network_error_templates",
+                            return_value=web_network_error_templates,
+                        )
+                    )
+                    stack.enter_context(
+                        # 「变更日期」「获得登录奖励」（2026-11-03 接，第 18/19 类）。
+                        # 同一条规矩：patch 与写死的 kwargs 断言必须同进同出。
+                        patch.object(
+                            main_module,
+                            "load_date_change_templates",
+                            return_value=date_change_templates,
+                        )
+                    )
+                    stack.enter_context(
+                        patch.object(
+                            main_module,
+                            "load_login_reward_templates",
+                            return_value=login_reward_templates,
+                        )
+                    )
+                    stack.enter_context(
+                        # 「世界首领辅助队伍奖励」弹窗（2026-10-19 接，第 10 个全局弹窗）。
+                        # 同一条规矩：这个 patch 与被写死的 kwargs 断言必须同进同出。
+                        patch.object(
+                            main_module,
+                            "load_worldboss_support_reward_templates",
+                            return_value=worldboss_support_reward_templates,
+                        )
+                    )
+                    stack.enter_context(
+                        # 「段位升级奖励」弹窗：只在首次升至某段位时出现一次，
+                        # 2026-10-20 08:02 那次竞技场 ✗ 就是它（上面那条规矩同样适用）。
+                        patch.object(
+                            main_module,
+                            "load_arena_rank_reward_templates",
+                            return_value=arena_rank_reward_templates,
+                        )
+                    )
+                    stack.enter_context(
+                        # 「战斗记录」弹窗：进竞技场时就弹的防守战报，2026-10-30 接。
+                        patch.object(
+                            main_module,
+                            "load_battle_record_templates",
+                            return_value=battle_record_templates,
+                        )
+                    )
+                    stack.enter_context(
+                        # 「骑士团成长Rank提升」弹窗：只在骑士团成长等级提升时出现。
+                        # 这一组沿用历史的 patch.multiple（合成一个上下文管理器）；
+                        # 外层已用 ExitStack 拍平，不必再靠合并来省嵌套层数。
+                        patch.multiple(
+                            main_module,
+                            load_knights_growth_rank_templates=unittest.mock.MagicMock(
+                                return_value=knights_growth_rank_templates
+                            ),
+                            load_side_story_notice_templates=unittest.mock.MagicMock(
+                                return_value=side_story_notice_templates
+                            ),
+                            load_reward_notice_templates=unittest.mock.MagicMock(
+                                return_value=reward_notice_templates
+                            ),
+                            load_gift_claim_templates=unittest.mock.MagicMock(
+                                return_value=gift_claim_templates
+                            ),
+                            load_account_rank_up_templates=unittest.mock.MagicMock(
+                                return_value=account_rank_up_templates
+                            ),
+                            # 2026-11-05/06 第 20/21 类。
+                            load_knights_activity_templates=unittest.mock.MagicMock(
+                                return_value=knights_activity_templates
+                            ),
+                            load_uncontrollable_templates=unittest.mock.MagicMock(
+                                return_value=uncontrollable_templates
+                            ),
+                            # 2026-11-06 第 22 类。
+                            load_tutorial_unlock_templates=unittest.mock.MagicMock(
+                                return_value=tutorial_unlock_templates
+                            ),
+                        )
+                    )
+                    navigator_type = stack.enter_context(
+                        patch.object(main_module, "Epic7Navigator")
+                    )
+                    home_return_type = stack.enter_context(
+                        patch.object(main_module, "HomeReturn")
+                    )
                     # 竞技场/主线/远征会带 stop_probe（接力观察窗）进来，狗粮不带；
                     # 两条路径都必须发生在弹窗守卫装好之后，所以这里二者都接受。
                     # 带 stop_probe 时替身必须转发它，否则 `_enter_mode` 会判定接线断了。

@@ -30,6 +30,7 @@ from auto_game_unified.games.epic7.hero_transition import (
     SafetyClass,
 )
 from auto_game_unified.games.epic7.evidence.hero_synthesis import build_hero_evidence
+from auto_game_unified.games.epic7.template_paths import TemplateDir
 from auto_game_unified.games.epic7.modes import get_mode
 from auto_game_unified.games.epic7.navigation import (
     Epic7Navigator,
@@ -3563,3 +3564,60 @@ class BlackScreenTests(unittest.TestCase):
             "\n".join(logs),
         )
         self.assertIn("黑屏已恢复", "\n".join(logs))
+
+
+class PcTransmitSelectLabelTests(unittest.TestCase):
+    """2026-11-06 17:18：传送选择页已到，却判成「目标画面[传送选择]超时」。
+
+    真探针：``_transmit_target_card`` / ``_transmit_grid_present`` /
+    ``_transmit_green_present`` 三项全 True，只差 ``auto_select_label``。
+    共享模板（119x30「自动选择」）在 PC 帧上**全屏最高只有 0.6953**（阈 0.85），
+    放大 region 也没用 ⇒ 位置对、字形不对，是典型 PC 文字类锚点被压低。
+
+    修法只补 ``templates/hero/pc/auto_select_label.png``（同尺寸同位置重裁），
+    代码一行不改；``TemplateDir`` 自动让 PC 优先读覆盖图，模拟器仍读共享图。
+    正例：两轮真机（13:10 / 17:18）传送选择页都是 1.0000 @ (888,1038)；
+    反例：2360 张 PC 诊断帧只有那四张正例过 0.85，其余最高 0.2866。
+    """
+
+    @staticmethod
+    def pc_frame():
+        path = (
+            ROOT
+            / "tests/fixtures/epic7_hero_pc/transmit_select_pc_live_20261106.png"
+        )
+        raw = cv2.imread(str(path), cv2.IMREAD_COLOR)
+        assert raw is not None, path
+        return cv2.cvtColor(raw[:1132, :1982], cv2.COLOR_BGR2RGB)
+
+    @staticmethod
+    def pc_machine() -> HeroSynthStateMachine:
+        return HeroSynthStateMachine(
+            build_hero_templates(TemplateDir(TEMPLATES, "pc"))
+        )
+
+    def test_pc_transmit_select_page_is_ready(self):
+        state = self.pc_machine()
+        screen = self.pc_frame()
+
+        hit = state._locate(screen, "auto_select_label")
+
+        self.assertIsNotNone(hit)
+        self.assertGreaterEqual(hit.score, 0.85)
+        self.assertEqual((888, 1038), tuple(hit.center))
+        self.assertTrue(state._transmit_page_ready(screen))
+
+    def test_emulator_still_uses_the_shared_glyph(self):
+        """隔离铁律：模拟器口径下这颗判据一个字都不变。"""
+        state = machine()
+
+        hit = state._locate(fixture("transmit_select"), "auto_select_label")
+
+        self.assertIsNotNone(hit)
+        self.assertGreaterEqual(hit.score, 0.85)
+
+    def test_shared_glyph_does_not_fire_on_the_pc_frame(self):
+        """反向：补 PC 图是因为共享图确实不行，不是顺手加的。"""
+        self.assertIsNone(
+            machine()._locate(self.pc_frame(), "auto_select_label")
+        )
