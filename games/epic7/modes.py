@@ -207,6 +207,12 @@ class ModeSpec:
     # 不要再回去 ``main.py`` 里加 ``if spec.name == ...``。
     preflight: Optional[Preflight] = None
     runner_options: Optional[RunnerOptions] = None
+    # 是否装配「获得奖励」全局弹窗守卫。默认装配；只有**自己会弹出同一种
+    # 「获得奖励」层、且状态机必须亲眼看到它**的路线才关掉（目前只有英雄合成）。
+    # 守卫挂在 capture 层，每帧先于状态机出手；若路线自己的奖励层和通知共用
+    # 标题与「点击关闭」，守卫会把状态机等的那一页直接点掉 ⇒ 转场契约永远不成立。
+    # ⚠️ 模拟器下这组模板本来就只有 pc/ 图、loader 返回 None，本字段对模拟器零影响。
+    reward_notice_guard: bool = True
 
     def resolve_state(self, requested: str | None) -> str:
         state = requested or self.default_state
@@ -831,6 +837,13 @@ MODE_SPECS = {
         states=frozenset(state.value for state in HeroSynthState),
         build_machine=_build_hero_synthesis,
         runner_type=HeroSynthRunner,
+        # 传送完成后游戏弹的「获得奖励」层与全局「获得奖励」通知是同一套 UI：
+        # 同标题、同「点击关闭」(960,843)。2026-11-06 19:06 真机里守卫在
+        # confirm_transmit 后 3 秒就把这层点掉（日志 动作=dismiss-reward-notice），
+        # 状态机一帧都看不到「传送奖励」⇒ target_pages 永远不成立 ⇒ 47 秒超时，
+        # 画面停在空的传送选择页 = 用户看到的「传送完退不出来」。
+        # 模拟器没有这组 PC 专属模板，本来就不存在这个守卫 ⇒ 这里关掉是恢复模拟器语义。
+        reward_notice_guard=False,
         # 英雄合成跑完一遍列表就结束，没有「跑几遍」这件事 ⇒ 不给用户选。
         cycles_editable=False,
         navigation_plan=NavigationPlan(

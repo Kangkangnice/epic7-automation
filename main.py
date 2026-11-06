@@ -468,8 +468,13 @@ def run_mode(
                     template_root / "global"
                 ),
                 # 「获得奖励」通知（星星/任务奖励发放时弹一次，盖住关卡入口）。
-                reward_notice_templates=load_reward_notice_templates(
-                    template_root / "global"
+                # ⚠️ 路线可声明关闭：英雄合成自己的「传送奖励」层与它是同一套 UI，
+                # 守卫抢在状态机之前点掉会让 confirm_transmit 永远等不到目标页。
+                # 走 spec 字段而不是 ``if spec.name == ...``，新路线只改自己的声明。
+                reward_notice_templates=(
+                    load_reward_notice_templates(template_root / "global")
+                    if spec.reward_notice_guard
+                    else None
                 ),
                 # 「领取支援物品」（骑士团支援资源领取后弹一次，盖住骑士团主页）。
                 gift_claim_templates=load_gift_claim_templates(

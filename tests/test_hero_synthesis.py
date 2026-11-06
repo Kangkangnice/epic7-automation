@@ -85,6 +85,42 @@ def sss_only_material_page():
     return screen
 
 
+class PcTransmitRewardLayerTests(unittest.TestCase):
+    """2026-11-06 19:06 修复回归：传送完成后的「获得奖励」层不再被全局守卫抢关。
+
+    根因：PC 专属的「获得奖励」全局守卫（模拟器没有这套模板）认的是同一种 UI，
+    把路线自己的传送奖励层抢先点掉（日志 动作=dismiss-reward-notice），
+    ``confirm_transmit`` 的 ``target_pages=传送奖励`` 永远不成立 ⇒ 47 秒超时，
+    画面停在空的传送选择页 = 用户看到的「传送完退不出来」。
+
+    修法：① ModeSpec 新增 ``reward_notice_guard`` 字段，英雄合成置 False（模拟器下
+    这组模板本来就不存在，对模拟器零影响）；② 补 ``hero/pc/transmit_reward_{title,close}.png``，
+    让状态机自己认得出这层（PC 文字锚点掉分，主图只有 0.8272 / 0.7744）。
+    """
+
+    @staticmethod
+    def reward_frame():
+        path = ROOT / "tests/fixtures/epic7_global/reward_notice_pc_live_20261101.png"
+        raw = cv2.imread(str(path), cv2.IMREAD_COLOR)
+        assert raw is not None, path
+        return cv2.cvtColor(raw[:1132, :1982], cv2.COLOR_BGR2RGB)
+
+    def test_reward_notice_guard_disabled_for_hero_synthesis(self):
+        self.assertFalse(get_mode("hero_synthesis").reward_notice_guard)
+
+    def test_pc_transmit_reward_layer_is_recognized(self):
+        state = HeroSynthStateMachine(
+            build_hero_templates(TemplateDir(TEMPLATES, "pc"))
+        )
+        self.assertTrue(state._transmit_reward_present(self.reward_frame()))
+
+    def test_emulator_transmit_reward_layer_still_unrecognized_on_pc_frame(self):
+        """隔离：模拟器口径下 PC 文字锚点掉分，这层认不出（符合预期，
+        模拟器根本不会弹这层、也不存在 PC 覆盖图）。"""
+        state = machine()
+        self.assertFalse(state._transmit_reward_present(self.reward_frame()))
+
+
 def shifted_list(screen, pixels):
     shifted = screen.copy()
     x, y, w, h = HeroSynthStateMachine._LIST_FP_ZONE

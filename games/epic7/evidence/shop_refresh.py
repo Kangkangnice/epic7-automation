@@ -273,7 +273,14 @@ class ShopRefreshObserver:
         # 用最底那行重裁一张则反过来（最底 1.0000、y=399 那行只有 0.5227）。
         # 单张盖不住，所以加一张备选，**两取最高**。
         # ⚠️ 只有 pc/ 里有这张图 ⇒ 模拟器 `_buy_alt` 是 None ⇒ 退回单模板，行为不变。
-        buy_alt_path = template_root / "buy_button_alt.png"
+        # ⚠️ 必须带上 ``shop_refresh/`` 前缀：生产传进来的 template_root 是
+        # ``templates/`` 根（TemplateDir），atom 路径同样是 ``shop_refresh/xxx.png``。
+        # 早先写成 ``template_root / "buy_button_alt.png"``，PC 下解析成
+        # ``templates/pc/buy_button_alt.png`` —— 文件其实在
+        # ``templates/shop_refresh/pc/``，于是备选图**从未被加载**（双候选形同虚设）。
+        # 2026-11-06 19:07 实跑再次报「目标商品缺少同行购买按钮」：主图在圣约书签行
+        # 只有 0.4195（阈 0.86），而这张备选图是 0.9715 @ (1729,842)。
+        buy_alt_path = template_root / "shop_refresh" / "buy_button_alt.png"
         self._buy_alt = (
             load_template(str(buy_alt_path)) if buy_alt_path.is_file() else None
         )

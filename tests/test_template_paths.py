@@ -296,6 +296,10 @@ def test_real_template_root_only_has_the_reviewed_pc_overrides():
         # ``templates/pc/hero/`` 那份同样必须存在，但不在本测试的收集口径里。
         "hero/pc/imprint_result_title.png",
         "hero/pc/imprint_result_close.png",
+        # 英雄合成：传送完成后的「获得奖励」层与全局「获得奖励」通知是同一套 UI，
+        # 守卫被关掉后改由状态机自己认（PC 文字锚点掉分 ⇒ 必须补 PC 覆盖图）。
+        "hero/pc/transmit_reward_title.png",
+        "hero/pc/transmit_reward_close.png",
         # 月塔：入场按钮 / 阶段确认弹窗 / 楼层列表的「选择队伍」。
         "tower/pc/home_enter.png",
         "tower/pc/reset_confirm_title.png",

@@ -88,6 +88,44 @@ def test_pc_secret_shop_page_is_recognized_with_pc_templates():
         assert result.scores["buy_button"] >= 0.86
 
 
+def test_pc_secret_shop_covenant_row_uses_double_buy_candidate():
+    """2026-11-06 19:07 修复回归：购买按钮双候选终于被真正加载。
+
+    之前 ``buy_alt_path`` 写成 ``template_root / "buy_button_alt.png"``，PC 下解析成
+    ``templates/pc/buy_button_alt.png``，但文件实际在 ``templates/shop_refresh/pc/``，
+    备选图**从未被加载**（生产 candidates=1）。圣约书签行主图只有 0.4195（阈 0.86），
+    于是整行被判「缺少同行购买按钮」终止。
+
+    修正后 PC 观察器用 ``resolve_template_dir(TEMPLATES, "pc")`` 构造，双候选应真正
+    加载（candidates=2），并在 19:07 失败帧上把圣约书签行的购买按钮定位到
+    (1729, 842)（历史成功坐标）。
+    """
+    observer = build_shop_refresh_observer(resolve_template_dir(TEMPLATES, "pc"))
+
+    assert len(observer._buy_candidates()) == 2
+
+    bgr = cv2.imread(
+        str(PC_FIXTURES / "shop_refresh_unknown_pc_live_20261106.png"),
+        cv2.IMREAD_COLOR,
+    )
+    assert bgr is not None
+    screen = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+    observation = observer.observe(screen)
+
+    assert observation.page is ShopPage.SHOP
+    covenant_rows = [
+        row for row in observation.rows if row.kind is ShopItemKind.COVENANT
+    ]
+    assert covenant_rows, "圣约书签行必须被识别"
+    assert covenant_rows[0].buy_point == (1729, 842), covenant_rows[0].buy_point
+
+
+def test_emulator_secret_shop_still_uses_single_buy_candidate():
+    """隔离铁律：模拟器下备选图不存在 ⇒ 退回单模板，行为不变。"""
+    observer = build_shop_refresh_observer(TEMPLATES)
+    assert len(observer._buy_candidates()) == 1
+
+
 def test_shop_fingerprint_ignores_small_animation_but_separates_scroll_position():
     observer = build_shop_refresh_observer(TEMPLATES)
     top = _screen("shop_top_live")
