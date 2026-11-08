@@ -8,6 +8,7 @@
 
 ### 新增
 
+- **文档治理：现状页由代码生成，索引即白名单**（2026-11-08）。起因是清点时发现 `docs/` 下 144 份 Markdown 里有 108 份是过期的一次性产物，而且文档里写着「十六条路线」而代码已是十七条 —— 这类漂移不会让任何测试变红，却会让读文档的人（尤其是 AI agent）照着过期的事实干活。现在：①`docs/STATUS.md` 由 `python -m auto_game_unified.tools.gen_status` 从 `catalog.py` / `modes.py` / 素材目录算出，**不许手改**，与代码不一致时 `tests/test_status_doc.py` 直接报红并给出重生成命令；②`docs/README.md` 是索引也是白名单，`docs/` 下每个文档必须能在索引里点到（`tests/test_docs_index.py`），新冒出来一份没人知道的文档会被点名拦下；③同一处门禁还查断链、查决策记录的元数据、并禁止首页抄写路线条数；④新增 `docs/decisions/` 记录「为什么当初这么定」，一决策一文件、只增不改。**「交接说明 / 施工计划 / 设计稿」自此不进仓库**，信息当场拆进提交信息、本文件或决策记录。
 - **PC 端「不占用前台」输入通道（实验）**：`core/pc_window.py` 增加 `foreground` / `background` 两条通道，**默认仍是抢前台**。后台通道走 `SetCursorPos` + `WM_ACTIVATE` + `PostMessage` —— 本客户端是 GLFW（导入表里有 `GetCursorPos` / `RegisterRawInputDevices`），UI 每帧读真实系统光标，只发消息一定点不动。命令行 `--pc-input-mode background`；桌面界面在 PC 后端下多一颗「不占用前台」开关，选择会记进会话存档。⚠️ 拖拽/滑动与 Esc 返回在后台通道下**安全中止**而不是静默降级；启用前必须先用 `tools/probe_background_input.py` 在本机实测生效。
 - **后台输入探针**：`tools/probe_background_input.py` 支持 hover / click / activate 三种变体、多点扫描、用户空闲与画面静止护栏、有界等待空闲（`--wait-idle`）。无人值守时只允许 hover，绝不自动点击；探针不抢前台、结束时还原系统光标、发送前后各存一帧。
 - **Qt / Fluent 预览界面（可选入口）**：`python -m auto_game_unified.desktop_qt`，依赖在 `requirements-qt.txt`。用 PySide6 + PySide6-Fluent-Widgets 重画了侧边导航、状态卡、四分组路线清单、说明区与实时日志；**业务逻辑一行没改**（见下条解耦）。默认入口、默认打包产物都仍是原 Tk 界面。

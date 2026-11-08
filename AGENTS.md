@@ -1,5 +1,20 @@
 # 仓库开发硬约束
 
+## 文档与现状（先看这两页，别靠数代码猜）
+
+- **现状**：`docs/STATUS.md` —— 路线名单、PC 放行情况、每日任务顺序全在这一页，
+  **由代码生成**。想知道「现在支持哪些」，看它，不要数 `catalog.py`、也不要信旧文档里的数字。
+- **索引**：`docs/README.md` —— 「我要做 X 该看哪份」+ 文档四通道 + 写文档的规矩。
+
+三条会被门禁拦下的硬规矩（不是建议，是测试）：
+
+1. **不许手改 `docs/STATUS.md`**。它与代码不一致时 `tests/test_status_doc.py` 直接报红，
+   报错里写着该跑哪条命令（`python -m auto_game_unified.tools.gen_status`）。
+2. **新增任何 `.md` 必须登记在 `docs/README.md`**。`tests/test_docs_index.py` 检查
+   `docs/` 下每个文档都能从索引点到 —— 没登记的文档等于不存在。
+3. **「交接说明」「施工计划」「设计稿」不进仓库**。信息当场拆进提交信息 /
+   `CHANGELOG.md` / `docs/decisions/`。理由见 `docs/decisions/0004-four-channels-for-docs.md`。
+
 ## 修改前必须阅读
 
 修改任何视觉识别、点击、导航、重试、事务或路线前，必须阅读：
