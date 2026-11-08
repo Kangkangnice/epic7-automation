@@ -22,7 +22,6 @@ import io
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
-from tempfile import TemporaryDirectory
 from unittest import mock
 
 import numpy as np
@@ -35,7 +34,6 @@ from auto_game_unified.games.epic7.arena import (
     ArenaRunner,
     ArenaState,
     ArenaStateMachine,
-    OUTCOME_FRAME_KEEP,
     build_templates,
 )
 from auto_game_unified.games.epic7.evidence.arena import ARENA_RESULT_VICTORY_REGION
@@ -90,7 +88,6 @@ def erase_victory_banner(screen: np.ndarray) -> np.ndarray:
 
 def make_runner(
     frames: list[np.ndarray] | None = None,
-    frame_dir: Path | None = None,
 ) -> tuple[ArenaRunner, mock.MagicMock, ArenaStateMachine]:
     """搭一个「战斗监督直接宣布到结算页」的 Runner。
 
@@ -106,7 +103,6 @@ def make_runner(
         runtime,
         sleep=lambda _seconds: None,
         battle_supervisor=supervisor,
-        outcome_frame_dir=frame_dir,
     )
     return runner, runtime, machine
 
@@ -216,97 +212,6 @@ class OutcomeRecordingTests(unittest.TestCase):
         self.assertEqual(0, runner.outcome_tally[ArenaOutcome.WIN])
         self.assertEqual(0, runner.outcome_tally[ArenaOutcome.LOSE])
         self.assertEqual(1, runner.outcome_tally[ArenaOutcome.UNKNOWN])
-
-    def test_each_finished_game_leaves_a_frame_for_review(self):
-        win = arena_fixture("result")
-        with TemporaryDirectory() as directory:
-            runner, _runtime, _machine = make_runner([win, win], Path(directory))
-
-            runner._run_committed_battle(cycle=1)
-            runner._run_committed_battle(cycle=2)
-
-            saved = sorted(Path(directory).glob("*.png"))
-
-        self.assertEqual(2, len(saved))
-        # 文件名保持 ASCII（cv2 读写不了中文路径），且带判定结果与轮次。
-        fields = [path.stem.split("_") for path in saved]
-        self.assertEqual([["win", "r1"], ["win", "r2"]], [f[-2:] for f in fields])
-
-    def test_only_the_latest_frames_are_kept(self):
-        """落盘目录在**仓库里**、会被 git 跟踪 —— 只留最近 10 张，别把仓库撑大。"""
-        with TemporaryDirectory() as directory:
-            target = Path(directory)
-            # 伪造一批：命名与真实落盘一致（时间戳开头）⇒ 字典序就是新旧序。
-            for index in range(OUTCOME_FRAME_KEEP + 3):
-                (target / f"20260925_0000{index:02d}_win_r1.png").touch()
-
-            runner, _runtime, _machine = make_runner([], target)
-            runner._prune_outcome_frames()
-
-            kept = sorted(path.name for path in target.glob("*.png"))
-
-        self.assertEqual(OUTCOME_FRAME_KEEP, len(kept))
-        # 删的必须是最旧那几张，最新的要留着。
-        self.assertNotIn("20260925_000000_win_r1.png", kept)
-        self.assertNotIn("20260925_000002_win_r1.png", kept)
-        self.assertIn("20260925_000003_win_r1.png", kept)
-        self.assertIn("20260925_000012_win_r1.png", kept)
-
-    def test_saving_a_new_frame_throws_away_the_oldest(self):
-        win = arena_fixture("result")
-        with TemporaryDirectory() as directory:
-            target = Path(directory)
-            for index in range(OUTCOME_FRAME_KEEP):
-                (target / f"20260925_0000{index:02d}_win_r1.png").touch()
-
-            runner, _runtime, _machine = make_runner([win], target)
-            runner._run_committed_battle(cycle=99)
-
-            kept = sorted(path.name for path in target.glob("*.png"))
-
-        self.assertEqual(OUTCOME_FRAME_KEEP, len(kept))
-        self.assertNotIn("20260925_000000_win_r1.png", kept)
-
-    def test_a_frame_that_cannot_be_deleted_does_not_break_the_run(self):
-        """目录是给人看的：用户正开着某张图时删不掉，不该把这一局搞崩。"""
-        with TemporaryDirectory() as directory:
-            target = Path(directory)
-            for index in range(OUTCOME_FRAME_KEEP + 2):
-                (target / f"20260925_0000{index:02d}_win_r1.png").touch()
-            runner, _runtime, _machine = make_runner([], target)
-
-            with mock.patch.object(Path, "unlink", side_effect=OSError("被占用")):
-                runner._prune_outcome_frames()
-
-            self.assertEqual(
-                OUTCOME_FRAME_KEEP + 2, len(list(target.glob("*.png")))
-            )
-
-    def test_nothing_is_written_when_no_directory_is_injected(self):
-        """默认不落盘：测试里绝不能顺手往仓库写图。"""
-        win = arena_fixture("result")
-        runner, _runtime, _machine = make_runner([win])
-
-        runner._run_committed_battle(cycle=1)
-
-        self.assertEqual(1, runner.outcome_tally[ArenaOutcome.WIN])
-        self.assertIsNone(
-            runner._save_outcome_frame(win, ArenaOutcome.WIN, cycle=1)
-        )
-
-    def test_the_record_is_logged_with_the_frame_path(self):
-        win = arena_fixture("result")
-        with TemporaryDirectory() as directory:
-            runner, runtime, _machine = make_runner([win], Path(directory))
-
-            runner._run_committed_battle(cycle=1)
-
-        logged = [str(call) for call in runtime.log.call_args_list]
-        self.assertTrue(
-            any("轮次=1 战绩=胜" in line for line in logged),
-            logged,
-        )
-
 
 class OutcomeSummaryTests(unittest.TestCase):
     """给通知/控制台用的那一行文案。"""

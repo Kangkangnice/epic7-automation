@@ -16,6 +16,7 @@ from auto_game_unified.games.epic7.arena import (
     ArenaStateMachine,
     build_templates,
 )
+from auto_game_unified.games.epic7.template_paths import TemplateDir
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -312,6 +313,37 @@ class ArenaRunnerTests(unittest.TestCase):
         self.assertEqual(1, len(clicks))
         self.assertTrue(1160 <= clicks[0][0] <= 1300)
         self.assertTrue(770 <= clicks[0][1] <= 830)
+
+    def test_safe_list_waiter_rejects_list_hidden_under_free_refresh_popup(self):
+        """弹窗在场时不许判「刷新成功」—— 半透明遮罩会让红色状态判据反转。
+
+        2026-11-07 07:55 的事故链：点刷新 → 弹「更新交战对手」→ 遮罩把三名
+        「不可挑战」对手的红色压掉（实测占比 0.0000/0.0000/0.0387，阈值 ≤0.05
+        即判可挑战）→ ``has_safe_opponent`` 返回 True → 3 秒内判「含安全对手的
+        列表」→ 去点对手（点在弹窗上无效）→ 重试 4 次后记 ✗。
+        """
+        machine = ArenaStateMachine(
+            build_templates(TemplateDir(TEMPLATES, "pc")), pc_rules=True
+        )
+        frame = fixture("free_refresh_confirm_pc_live_20261107")
+
+        # 前提：这一帧上「裸判」会成立 —— 正是事故根因，不是测试假设错了。
+        self.assertTrue(machine.has_safe_opponent(frame))
+        self.assertIsNotNone(machine.free_refresh_confirm(frame))
+
+        clicks: list[tuple[int, int]] = []
+        runner = ArenaRunner(
+            machine,
+            Runtime(lambda: frame, clicks.append, emit=lambda line: None),
+            sleep=lambda seconds: None,
+        )
+
+        self.assertFalse(runner._wait_until_safe_list())
+        # 点的是弹窗「确认」，不是对手行；最多 4 次后放弃（与既有预算一致）。
+        self.assertEqual(4, len(clicks))
+        for point in clicks:
+            self.assertTrue(1150 <= point[0] <= 1310)
+            self.assertTrue(760 <= point[1] <= 840)
 
     def test_safe_list_waiter_clicks_persisted_free_confirmation_at_most_four_times(self):
         machine = ArenaStateMachine(build_templates(TEMPLATES))

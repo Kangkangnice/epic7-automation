@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from datetime import date, datetime
+from datetime import date
 import random
 from time import sleep as default_sleep
 from typing import Any, Callable, Optional, Sequence
@@ -268,11 +268,6 @@ OUTCOME_LABELS = {
     ArenaOutcome.UNKNOWN: "未知",
 }
 
-# 结算画面只留最近这么多张。落盘目录是**仓库内**的 ``docs/manual_review/arena/``
-# （会被 git 跟踪），一张全屏 PNG 1~3 MB，无限攒会把仓库撑大；留 10 张足够回看最近一轮。
-OUTCOME_FRAME_KEEP = 10
-
-
 # VS 段位确认页（PC 独有）的搜索区与阈值。
 # 区取底部居中（x[700,1480] y[930,1132]），与结算页右下角的「确认」(x[1500,1920]) 不重叠；
 # 只裁绿色「确认」按钮本身，段位（铜牌/银牌…）文字一律不进模板，保证普适。
@@ -446,11 +441,17 @@ class ArenaStateMachine:
         *,
         initial_state: ArenaState = ArenaState.LIST,
         choose_opponent: Callable[[Sequence[int]], int] = random.choice,
+        pc_rules: bool = False,
     ) -> None:
         self.templates = templates
         self.state = initial_state
         self.completed_cycles = 0
         self.choose_opponent = choose_opponent
+        # PC 专属规则开关：由装配点（``modes.py::_build_arena``）按模板目录注入。
+        # 默认 **False** ⇒ 模拟器走 2026-11-07 之前的原代码路径，行为一个字节不变。
+        # 目前只有一处消费：``_wait_until_safe_list`` 里「刷新确认弹窗在场时
+        # 一票否决『列表可用』」。理由见那里的注释。
+        self._pc_rules = pc_rules
         if templates.evidence is not None:
             self._REGIONS = {
                 key: atom.region for key, atom in templates.evidence.atoms.items()
@@ -583,6 +584,11 @@ class ArenaStateMachine:
 
     def has_safe_opponent(self, screen: np.ndarray) -> bool:
         return any(value is True for value in self.opponent_availability(screen))
+
+    @property
+    def pc_rules(self) -> bool:
+        """是否启用 PC 专属规则（装配点注入；模拟器恒为 False）。"""
+        return self._pc_rules
 
     def free_refresh_confirm(self, screen: np.ndarray) -> Optional[Match]:
         return find_free_refresh_confirm(
@@ -1165,7 +1171,6 @@ class ArenaRunner(TransactionalRunnerBase):
         recovery_gate: RecoveryGate | None = None,
         battle_supervisor: BattleSupervisor | None = None,
         purchase_stamp_path: Path | None = None,
-        outcome_frame_dir: Path | None = None,
     ) -> None:
         # ⚠️ ``now`` / ``recovery_gate`` / ``unknown_screen_wake`` /
         # ``battle_supervisor`` / ``resource_exhausted`` / ``finish_home`` 全部由基类
@@ -1179,9 +1184,6 @@ class ArenaRunner(TransactionalRunnerBase):
             battle_supervisor=battle_supervisor,
         )
         self.purchase_stamp_path = purchase_stamp_path
-        # 每局结算画面的落盘目录（实跑由 main.py 注入 docs/manual_review/arena/）。
-        # **默认 None = 不落盘**：测试里绝不能顺手往仓库里写图。
-        self.outcome_frame_dir = outcome_frame_dir
         # 本进程的战绩：胜 / 负 / 认不出。「认不出」单列，不并入负（见 ArenaOutcome）。
         self.outcome_tally = {outcome: 0 for outcome in ArenaOutcome}
 
@@ -1385,55 +1387,7 @@ class ArenaRunner(TransactionalRunnerBase):
         screen = self.runtime.capture()
         result = self.machine.observe_outcome(screen)
         self.outcome_tally[result] += 1
-        frame = self._save_outcome_frame(screen, result, cycle=cycle)
-        self.runtime.log(
-            f"模式=竞技场 轮次={cycle} 战绩={OUTCOME_LABELS[result]} "
-            f"结算图={frame if frame is not None else '未落盘'}"
-        )
-
-    def _save_outcome_frame(
-        self,
-        screen: np.ndarray,
-        result: ArenaOutcome,
-        *,
-        cycle: int,
-    ) -> Path | None:
-        """把这一局的结算画面留一张盘，作为「胜负判得对不对」的第一手证据。
-
-        「胜」的判据已经实测过，但「负」这一侧至今**没有真帧**（全库唯一那张结算图
-        是赢的）—— 这张图就是补给它的素材：打完回看一眼就知道判得对不对。
-
-        ⚠️ 文件名**保持 ASCII**（``win`` / ``lose`` / ``unknown``）：``cv2.imwrite`` /
-        ``imread`` 走不了中文路径，写「胜/负」会变成一张读不回来的图。
-        """
-        if self.outcome_frame_dir is None:
-            return None
-        self.outcome_frame_dir.mkdir(parents=True, exist_ok=True)
-        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        path = self.outcome_frame_dir / f"{stamp}_{result.value}_r{cycle}.png"
-        image = cv2.cvtColor(screen, cv2.COLOR_RGB2BGR)
-        if not cv2.imwrite(str(path), image):
-            raise RuntimeError(f"结算画面保存失败：{path}")
-        self._prune_outcome_frames()
-        return path
-
-    def _prune_outcome_frames(self) -> None:
-        """只留最近 ``OUTCOME_FRAME_KEEP`` 张结算图，多出来的从**最旧**开始删。
-
-        ⚠️ 排序靠**文件名**，不靠文件时间：命名以 ``%Y%m%d_%H%M%S`` 开头 ⇒ 字典序就是
-        时间序，而 mtime 会被复制/同步改掉、名字不会。改文件名格式时这里要一起看。
-
-        删不掉（用户在看图、文件被占用）就跳过：**留一张旧图不值得中断跑图**，
-        下一次结算再收。
-        """
-        if self.outcome_frame_dir is None:
-            return
-        frames = sorted(self.outcome_frame_dir.glob("*.png"), key=lambda path: path.name)
-        for stale in frames[: -OUTCOME_FRAME_KEEP]:
-            try:
-                stale.unlink()
-            except OSError:
-                continue
+        self.runtime.log(f"模式=竞技场 轮次={cycle} 战绩={OUTCOME_LABELS[result]}")
 
     def outcome_summary(self) -> str:
         """给通知与控制台用的一行战绩：``胜 2 / 负 1``（认不出时补 ``（未知 1）``）。"""
@@ -1647,8 +1601,26 @@ class ArenaRunner(TransactionalRunnerBase):
             screen = self.runtime.capture()
             if self.runtime.diagnostic_dir is not None:
                 self.runtime.save_current_frame(screen)
+            # 「更新交战对手」确认窗先认出来；**PC 上它一票否决下面的 safe 判定**。
+            #
+            # 这层是半透明模态框：底下的对手行被压暗 ⇒ ``opponent_availability`` 靠的
+            # 红色像素掉到 V 门槛以下 ⇒ 三名「均不可挑战」的对手被判成「可挑战」。
+            # 2026-11-07 07:56 那张帧实测红色占比 0.0000/0.0000/0.0387（阈值 ≤0.05
+            # 即判可挑战）⇒ ``has_safe_opponent=True``，而刷新前的日志明写
+            # 「三名对手均不可挑战」。两帧一致 ⇒ 下面直接 return True ⇒ 弹窗永远
+            # 轮不到点 ⇒ 去点对手（点在弹窗上无效）⇒ 重试 4 次后整条记 ✗。
+            #
+            # ⚠️ 这一维只在 PC 上生效（``pc_rules``）。模拟器保持原判定：
+            # ``pc_rules=False`` 时 ``(refresh_confirm is None or True)`` 恒真，
+            # ``safe_list`` 化简回改动前的 ``A and B``，**判定结果一字不差**。
+            # （唯一差别是这一帧多调了一次 ``free_refresh_confirm`` —— 纯匹配计算、
+            #  无副作用；它本来在下面也会被调，属提前而非新增。）
+            refresh_confirm = self.machine.free_refresh_confirm(screen)
+            signature = "free-refresh" if refresh_confirm is not None else "other"
+            confirm_is_stable = refresh_confirm_stable.update(signature)
             safe_list = (
-                self.machine.is_in_state(screen, ArenaState.LIST)
+                (refresh_confirm is None or not self.machine.pc_rules)
+                and self.machine.is_in_state(screen, ArenaState.LIST)
                 and self.machine.has_safe_opponent(screen)
             )
             if safe_list_stable.update("safe" if safe_list else "other") and safe_list:
@@ -1685,9 +1657,7 @@ class ArenaRunner(TransactionalRunnerBase):
                 failed_list_stable.reset()
                 self.sleep(self._SETTLE_SECONDS)
                 continue
-            refresh_confirm = self.machine.free_refresh_confirm(screen)
-            signature = "free-refresh" if refresh_confirm is not None else "other"
-            if refresh_confirm_stable.update(signature) and refresh_confirm is not None:
+            if confirm_is_stable and refresh_confirm is not None:
                 if refresh_confirm_clicks >= 4:
                     return False
                 refresh_confirm_clicks += 1

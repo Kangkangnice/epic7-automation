@@ -17,6 +17,7 @@ from auto_game_unified.games.epic7.arena import (
     build_templates,
 )
 from auto_game_unified.games.epic7 import arena as arena_module
+from auto_game_unified.games.epic7.template_paths import TemplateDir
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -99,6 +100,30 @@ class Epic7ArenaStateMachineTests(unittest.TestCase):
 
         self.assertIsNotNone(match)
         self.assertTrue(1160 <= match.center[0] <= 1300)
+
+    def test_pc_backend_picks_up_free_refresh_pc_templates(self):
+        """PC 真机上「更新交战对手」必须认得出（2026-11-07 竞技场卡在这一页）。
+
+        共享模板在 PC 帧上三个锚点全塌（0.6374 / 0.7967 / 0.7273，阈 0.90）⇒
+        ``free_refresh_confirm`` 恒为 None ⇒ 刷新等待器一直等新列表、直到超时。
+        修法是 ``templates/pc/arena_refresh_{title,free,confirm}.png`` 三张覆盖图。
+        """
+        popup = load_fixture("free_refresh_confirm_pc_live_20261107")
+        machine = ArenaStateMachine(build_templates(TemplateDir(TEMPLATES, "pc")))
+
+        match = machine.free_refresh_confirm(popup)
+        self.assertIsNotNone(match)
+        # 点击点必须落在「确认」上，而不是「取消」
+        self.assertTrue(1150 <= match.center[0] <= 1310)
+        self.assertTrue(760 <= match.center[1] <= 840)
+
+        # 三锚点缺一不可 —— 与模拟器那套同一条纪律，删掉任一区域都必须拒绝识别。
+        for region in ((700, 300, 550, 160), (850, 700, 350, 180), (1050, 700, 400, 180)):
+            without_anchor = popup.copy()
+            x, y, width, height = region
+            without_anchor[y : y + height, x : x + width] = 0
+            with self.subTest(region=region):
+                self.assertIsNone(machine.free_refresh_confirm(without_anchor))
 
     def test_failed_row_classifier_uses_background_color_only(self):
         machine = ArenaStateMachine(build_templates(TEMPLATES))

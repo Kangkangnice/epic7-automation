@@ -130,14 +130,17 @@
 认不出时仍然**单列「未知」，绝不并入「负」** —— 宁可显示「未知 1」，
 也不报一个没把握的比分（远征结算页、空白帧都走这条路）。
 
-实跑时每局结算画面会落一张盘：`docs/manual_review/arena/<时间戳>_<win|lose|unknown>_r<轮次>.png`
-（文件名保持 ASCII —— `cv2.imwrite` 写不了中文路径）。判定和画面对不上的时候，
-这就是第一手证据。
+**每局的结算画面不再落盘**（2026-11-08 用户要求取消）：旧做法是每局存一张全屏 PNG 到
+`docs/manual_review/arena/`、只留最近 10 张。问题是文件名带时间戳、永不重复，**每跑一轮
+就在 git 历史里加约 10 张 / 21 MB**，累积到 103 张 / 211 MB —— 那是仓库变胖的主要来源之一。
 
-**只留最近 `OUTCOME_FRAME_KEEP`（10）张**，多出来的从最旧开始删（`ArenaRunner._prune_outcome_frames`）——
-落盘目录在仓库里、会被 git 跟踪，一张全屏 PNG 1~3 MB，不裁会把仓库撑大。裁剪按**文件名**
-排序（命名以时间戳开头 ⇒ 字典序即新旧序），所以改命名格式时要一起看；删不掉（用户正在看图）
-只跳过、不中断跑图。
+现在只在**认不出 / 超时 / 手动停止**这类真故障时，由 `Runtime.save_diagnostic` 存诊断帧到
+`runtime_diagnostics/epic7_arena/`（带原因标签，`_prune_diagnostics` 会自动轮转）。
+战绩本身照旧记进汇总与通知；需要复盘某一局时看诊断帧。
+
+⚠️ `result_defeat` 的素材来源就是当年那批落盘图（`..._unknown_r4.png`）。删功能不影响
+已入库的模板，但**以后想重裁「负」的判据图，只能靠实跑撞到输局时的诊断帧**——
+撞到了就把帧留下。
 
 换 `arena_result_victory.png` / `arena_result_defeat.png` / `arena_result_rating.png` 时，
 除了跑既有回归，**还要跑 `tests/test_arena_outcome.py`** —— 它是唯一守住
@@ -229,3 +232,40 @@ PC 实跑打到第 5 轮旗帜耗尽，点「开始战斗」弹出「购买旗�
 反例 `result_victory_pc_live_20261101.png`；测试在 `tests/test_arena_evidence.py`
 （`test_pc_ticket_popup_uses_pc_override_templates`）。这类弹窗只在旗帜打满时出现，
 实跑没法随复现，别因为"跑一遍没再出现"就以为没事。
+
+## 「更新交战对手」确认窗：认不出 + 被遮罩骗（2026-11-07）
+
+**现象**：点「刷新对手」后连点 4 次 `select-opponent` 全是「来源=仍在」，
+`点击 select-opponent 后画面未稳定进入[对手详情]`，整条竞技场记 ✗。
+诊断帧 `20261107_075618_707374_no_transition_list_to_selected.png`（已存夹具
+`free_refresh_confirm_pc_live_20261107.png`）就是这层弹窗本身。
+
+**两层根因，必须一起修**：
+
+1. **认不出**。三个锚点都是模拟器字形，PC 帧上 `refresh_title` 0.6374 /
+   `refresh_free` 0.7967 / `refresh_confirm` 0.7273，阈全是 0.90 ⇒ 三锚点缺一不可
+   所以 `free_refresh_confirm` 恒返回 None、确认永远不点。
+   按口径决策树先试了两步都救不动：掩膜阈值放宽（V≥140→80、S≤110→220）最高 0.7126；
+   掩膜 + 扫尺寸 ±4% 最高 0.84 —— **换了字形，不是参数问题**。
+2. **遮罩把判据反转**（这一条才是重点）。它是**半透明**模态框，底下的对手行被压暗，
+   而 `opponent_availability` 判「这个对手能不能打」靠的是行内**红色**像素占比：
+   压暗后红色掉到 0.0000 / 0.0000 / 0.0387（阈值 ≤0.05 即判「可挑战」）⇒
+   三名**均不可挑战**的对手全被判成可打（刷新前的日志明写「三名对手均不可挑战」）。
+   而 `_wait_until_safe_list` 的 safe 判定排在弹窗处理**之前** ⇒ 两帧一致即
+   `return True` ⇒ 弹窗永远轮不到点。
+
+**修法**：
+
+- 三张 PC 覆盖图 `templates/pc/arena_refresh_{title,free,confirm}.png`（自诊断帧裁剪，
+  237×82 / 122×61 / 146×62），本帧各 **1.0000**、点击点 (1231,800) 落在「确认」上；
+  反例集最高 0.7536（`skip_confirm.png`），余量 0.146。
+- `_wait_until_safe_list` 加一维否证：**`refresh_confirm is None` 才算 safe_list**，
+  弹窗在场时不论底下列表长什么样都不作数。
+
+⚠️ **这是新的失败形态，别归到「补图」那一类**：不是「认不出」，是「认出了一个错的
+结论」。通用化的一条：凡是判据依赖**会被遮罩盖住的那块画面**（红/绿状态色、血条、
+数量角标），都要问一句「这层遮罩压上来它会变成什么」。补图只能解决 1，解决不了 2。
+
+**回归**：`test_pc_backend_picks_up_free_refresh_pc_templates`（三锚点缺一不认）+
+`test_safe_list_waiter_rejects_list_hidden_under_free_refresh_popup`
+（先断言这一帧上「裸判」确实会误判成有安全对手，再断言等待器不再采信）。
