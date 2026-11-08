@@ -30,6 +30,9 @@ _MOUSEEVENTF_LEFTUP = 0x0004
 _MOUSEEVENTF_ABSOLUTE = 0x8000
 _SWP_NOZORDER = 0x0004
 _SWP_NOACTIVATE = 0x0010
+# 最小化还原用的两个 ShowWindow 档位（照 core/window.py 的口径）。
+_SW_SHOWNOACTIVATE = 0x0004
+_SW_RESTORE = 0x0009
 _SRCCOPY = 0x00CC0020
 _CAPTUREBLT = 0x40000000
 # 后台抓帧的重试次数与间隔（见 ``capture``：偶发失败，重试一次基本就好）。
@@ -71,6 +74,10 @@ ACTIVATE_ATTEMPTS = 3
 #
 # ⚠️ 键盘没有后台方案（游戏走 GetAsyncKeyState / Raw Input），``back()`` 在后台通道下
 # 会自动改走前台并记一行日志，不做静默降级。
+#
+# ⚠️ **滑动也没有后台方案**（2026-11-08 实跑定案）：鼠标走 Raw Input，而 Raw Input
+# 只喂前台窗口 ⇒ 后台拖拽 / 后台滚轮全过不去。``swipe()`` 在任何通道下都抢前台，
+# 理由与实测对照写在那个方法的 docstring 里。点击不受影响，仍可留在后台。
 PC_INPUT_FOREGROUND = "foreground"
 PC_INPUT_BACKGROUND = "background"
 PC_INPUT_MODES = (PC_INPUT_FOREGROUND, PC_INPUT_BACKGROUND)
@@ -337,7 +344,32 @@ class Epic7PcWindow:
             # 骗不到就算了，后面 SetForegroundWindow 照旧尝试；失败仍然按老路报错。
             pass
 
+    def _restore_if_minimized(self, hwnd) -> None:
+        """最小化就还原。**这是唯一真正取不到画面的情况**。
+
+        遮挡不影响抓帧（2026-11-08 实测：拿一块纯色窗口把游戏整个盖住，
+        BitBlt 仍返回完整的大厅画面，std 62.2 与未遮挡时的 63.7 几乎一致）——
+        因为 BitBlt 要的是窗口自己那份绘制内容，不是拍屏幕。
+        但最小化时客户区直接变成 0×0，那份画布被系统收走了，除了还原没有别的解法。
+
+        与 ``core/window.py::WindowManager._restore_if_minimized`` 同口径：
+        先 ``SW_SHOWNOACTIVATE``（还原但不抢焦点，用户正在干别的就别打断他），
+        不生效才 ``SW_RESTORE``。有界，试满照旧抛错。
+        """
+        if not self._user32.IsIconic(hwnd):
+            return
+        self._emit("模式=PC窗口 事件=已最小化 动作=自动还原")
+        for flags in (_SW_SHOWNOACTIVATE, _SW_RESTORE):
+            self._user32.ShowWindow(hwnd, flags)
+            for _ in range(20):
+                if not self._user32.IsIconic(hwnd):
+                    return
+                self._sleep(0.05)
+        raise RuntimeError("PC 游戏窗口处于最小化状态，且自动还原未生效")
+
     def _validated_rect(self, hwnd) -> WindowRect:
+        # 所有抓帧与输入都会经过这里 ⇒ 还原只写一处就够。
+        self._restore_if_minimized(hwnd)
         rect = self._rect(hwnd)
         if rect.width <= 0 or rect.height <= 0:
             raise RuntimeError(f"PC 游戏窗口客户区无效：{rect.width}x{rect.height}")
@@ -527,20 +559,35 @@ class Epic7PcWindow:
     ) -> None:
         """用 SendInput 拖拽一次（画布坐标 → 客户区 → 桌面绝对坐标）。
 
-        ⚠️ 2026-11-02 新增。此前 PC 端**没有**滑动实现，`main.py` 给 Runtime 传的
-        ``swipe=None`` ⇒ 刷书签 / 骑士团捐赠 / 迷宫强化石 / 幸存者 这四条路线
-        一走到滑动就抛「未配置滑动动作」。滑动属窗口 I/O，本层是 PC 与模拟器
-        唯一被允许分叉的地方，所以补在这里，业务代码一行不动。
+        ⚠️ **滑动没有后台方案**，``background`` 通道下也必须抢前台
+        （2026-11-08 实跑定案，别再试后台拖拽 / 后台滚轮）：
 
-        与 ``click`` 同口径：点完不把焦点还回去（2026-11-01 用户拍板，避免窗口闪）。
-        轨迹按 ``duration_ms`` 均分约 16ms 一步，中途不抬键 —— 抬手就成了点击。
+        本客户端导入表里有 ``RegisterRawInputDevices`` / ``GetRawInputData`` ——
+        鼠标是走 **Raw Input** 读的，而 Raw Input 只喂**前台**窗口。
+        所以「按住 + 连续移动」这套轨迹，发窗口消息（``PostMessage``）过不去、
+        发滚轮（``WM_MOUSEWHEEL``）同样过不去：它们都要经过系统那条
+        只对前台开放的输入通道。
+
+        实测对照（同一天、同一客户端、同一条路线）：
+        - 21:08 后台拖拽：消息全部发出去了，列表**一个像素没动**。
+          诊断图 ``scroll_source.png`` 与 ``scroll_peak.png`` 的商品行完全相同，
+          那 25.8 的「画面差」全是商人对话气泡弹出又消失；
+        - 13:31 前台真鼠标拖拽：连续 5 次全部滚动成功，画面差 30~33，
+          刷书签一路跑到 96/100。
+
+        **参考项目的做法也抄过了、同样无效**（2026-11-08 23:05 实测）：
+        `similar_auto_project/_reference/zzz-od/.../pc_controller_base.py` 的
+        ``_background_drag`` 与我们的实现只有两处差异 —— ``WM_LBUTTONDOWN/UP`` 的
+        lParam 传 0、拖动过程**不发** ``WM_MOUSEMOVE``（只靠 ``SetCursorPos``）。
+        照抄这两点后重测：商品栏差 **0.319**，仍然没动。
+        差别在客户端：绝区零的 UI 读真实光标，epic7 走 Raw Input。
+        参考项目的滚轮 ``win_scroll`` 本身也是 ``pyautogui.scroll``（前台），
+        它的后台能力只有「点击 + 拖拽」，没有可借的后台滚动方案。
+
+        点击能留在后台，是因为点击只要「一个真实位置 + 一对按下/抬起消息」；
+        拖拽还多一个「按住不放」的**系统全局状态**，消息伪造不了。
+        所以这里不再按通道分支 —— 一律走前台，**滑完立刻把前台还回去**。
         """
-        if self._input_mode == PC_INPUT_BACKGROUND:
-            # 参考项目 PcControllerBase._background_drag 同源的序列；
-            # 2026-11-08 用户实测前这里是 fail-closed 抛错（拖拽序列当时没验过），
-            # 结果刷书签等含滑动路线在后台通道下直接收工，现已补齐。
-            self._background_swipe(start, end, duration_ms)
-            return
         previous_foreground = self._user32.GetForegroundWindow()
         hwnd = None
         succeeded = False
@@ -562,12 +609,18 @@ class Epic7PcWindow:
             self._send_swipe(points[0], points[1], duration_ms)
             succeeded = True
         finally:
+            # 滑动会把游戏窗口顶到最前。**滑完立刻把用户原来的窗口还回去**。
+            # 点击不还原（2026-11-01 用户拍板，避免窗口来回闪）；滑动不一样：
+            # 刷书签一轮滑 2 次、300 轮就是 600 次，不还原等于整轮都把屏幕占住。
+            # 还原之后每次占用前台的时长 ≈ 滑动本身（0.5 秒 + 一次切换）。
+            restored = self._restore_foreground(previous_foreground, hwnd)
             self._emit(
                 f"模式=PC输入 类型=滑动 原前台={previous_foreground} "
                 f"游戏窗口={hwnd if hwnd is not None else '未知'} "
                 f"前置={'成功' if hwnd is not None else '失败'} "
                 f"结果={'成功' if succeeded else '失败'} "
-                f"起点={start} 终点={end} 时长={duration_ms}ms"
+                f"起点={start} 终点={end} 时长={duration_ms}ms "
+                f"前台已还原={'是' if restored else '否'}"
             )
 
     def _send_swipe(
@@ -724,72 +777,6 @@ class Epic7PcWindow:
                 f"模式=PC输入 类型=后台点击 画布={point} "
                 f"客户区=({render_x},{render_y}) 屏幕={screen_point} "
                 f"游戏窗口={hwnd} 原前台={previous_foreground} "
-                f"结果={'成功' if succeeded else '失败'} "
-                f"光标已还原={'是' if restored else '否(用户未动鼠标)'}"
-            )
-
-    def _background_swipe(
-        self,
-        start: tuple[int, int],
-        end: tuple[int, int],
-        duration_ms: int,
-    ) -> None:
-        """后台滑动：照参考项目 ``PcControllerBase._background_drag`` 的序列。
-
-        WM_ACTIVATE → SetCursorPos(起点) + LBUTTONDOWN → 分步 SetCursorPos 并送
-        WM_MOUSEMOVE(MK_LBUTTON) → 终点定住消除惯性 → LBUTTONUP。
-        参考项目只靠 SetCursorPos（GLFW 每帧读真实光标，不读消息参数），
-        我们额外送 WM_MOUSEMOVE，让消息驱动的 UI 也能收到整段拖动轨迹。
-        全程不抢系统前台；光标沿用 _background_cursor_begin/end 的智能还原。
-        """
-        hwnd = self._find_window()
-        self._ensure_input_allowed(hwnd)
-        rect = self._validated_rect(hwnd)
-        points: list[tuple[int, int]] = []
-        for point in (start, end):
-            render_x, render_y = point[0], point[1] - LEGACY_TOP
-            if not (
-                0 <= render_x < RENDER_SIZE[0] and 0 <= render_y < RENDER_SIZE[1]
-            ):
-                raise RuntimeError(f"拒绝在 PC 游戏渲染区外滑动：{point}")
-            points.append((rect.left + render_x, rect.top + render_y))
-        (sx, sy), (ex, ey) = points
-
-        def lparam(x: int, y: int) -> int:
-            return ((y - rect.top) << 16) | ((x - rect.left) & 0xFFFF)
-
-        previous_foreground = self._user32.GetForegroundWindow()
-        restore_to = self._background_cursor_begin()
-        succeeded = False
-        try:
-            self._user32.SendMessageW(hwnd, _WM_ACTIVATE, _WA_ACTIVE, 0)
-            self._sleep(0.01)
-            self._user32.SetCursorPos(sx, sy)
-            self._sleep(0.01)
-            self._user32.PostMessageW(
-                hwnd, _WM_LBUTTONDOWN, _MK_LBUTTON, lparam(sx, sy)
-            )
-            self._sleep(0.02)
-            steps = max(int(duration_ms / 16), 5)
-            delay = max(duration_ms / 1000.0 / steps, 0.01)
-            for index in range(1, steps + 1):
-                x = int(sx + (ex - sx) * index / steps)
-                y = int(sy + (ey - sy) * index / steps)
-                self._user32.SetCursorPos(x, y)
-                self._user32.PostMessageW(
-                    hwnd, _WM_MOUSEMOVE, _MK_LBUTTON, lparam(x, y)
-                )
-                self._sleep(delay)
-            self._sleep(0.05)  # 抬起前定住，消除滑动惯性（参考项目同款）
-            self._user32.PostMessageW(hwnd, _WM_LBUTTONUP, 0, lparam(ex, ey))
-            succeeded = True
-        finally:
-            restored = restore_to is not None
-            self._background_cursor_end(restore_to, (ex, ey))
-            self._emit(
-                f"模式=PC输入 类型=后台滑动 起点={start} 终点={end} "
-                f"时长={duration_ms}ms 游戏窗口={hwnd} "
-                f"原前台={previous_foreground} "
                 f"结果={'成功' if succeeded else '失败'} "
                 f"光标已还原={'是' if restored else '否(用户未动鼠标)'}"
             )

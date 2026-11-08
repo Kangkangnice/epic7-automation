@@ -719,15 +719,28 @@ class KnightsDonationStateMachine:
                 (candidate, self._row_numbers(screen, candidate.center))
                 for candidate in candidates
             ]
-            any_readable = any(
-                numbers.verdict is not None for _, numbers in readings
+            # 「本人行」只能靠**按钮上没有「支援 N 个」**（``required is None``）认，
+            # 不能拿「持有读不出」当代理。
+            #
+            # ⚠️ 2026-11-08 21:12 实跑就是拿错了代理：那一帧把「持有 1321」这样的
+            # 别人行也跳过了（字模只有 0~5，6~9 一进数字就读不出 ⇒ 持有侧 None）。
+            # 结果是**别人要的材料一个都没给**，日志却写「没有可支援的成员」。
+            # 真正该跳过的是「本人」那一行：按钮写「本人」、没有「支援 N 个」，
+            # 所以需求侧读不出；而别人行的需求永远读得出（支援 1~4 个，全在字模里）。
+            any_required = any(
+                numbers.required is not None for _, numbers in readings
             )
             short_rows: list[str] = []
             for candidate, numbers in readings:
-                if numbers.verdict is True or (
-                    numbers.verdict is None and any_readable
-                ):
-                    # True = 材料不足；None 且同屏有别的行读得出 = 本人行 / 超出字模范围
+                if numbers.verdict is True:
+                    # 持有与需求两边都读得出，且持有 < 需求 ⇒ 真的吃不下
+                    self.skipped_rows.add(candidate.center[1])
+                    short_rows.append(numbers.describe())
+                    continue
+                if numbers.required is None and any_required:
+                    # 需求读不出且同屏有别人读得出 ⇒ 本人行 / 已支援过，点了没意义。
+                    # 整屏需求都读不出（any_required=False）时不走这条 —— 那说明字模
+                    # 整体失效，退回「照旧点」，免得把能支援的人全跳掉。
                     self.skipped_rows.add(candidate.center[1])
                     short_rows.append(numbers.describe())
                     continue

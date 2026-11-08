@@ -31,6 +31,7 @@
 """
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
@@ -147,6 +148,32 @@ class AchievementStateMachine:
         self._switches = 0
         self._claims = 0
         self._effects = 0
+        # ---- 收工判据（2026-11-08 改）------------------------------------
+        #
+        # 原来只看「4 个分类的图标上都没有角标红点」就收工。实测那样会**提前收工**：
+        # 红点只表示「这个分类有新达成的成就」，**不代表「没有奖励可领」**。
+        # 现场帧 `page_alive_pc_live_20261108` 就是反例 —— 当前分类图标上**没有红点**，
+        # 但右下「全部领取」是亮的、列表里四条成就都写着「领取」。
+        # 而另外 3 个分类程序只数红点、从不走进去看它们的按钮，所以只要红点先消失，
+        # 那里剩多少都跟程序无关（用户 2026-11-08 亲眼看到有一个分类还剩 10 个没领）。
+        #
+        # 现在的口径：**每个分类都点进去一次**，进去就把能领的领到按钮变灰，
+        # 再切下一个；4 个都进去过才收工。角标只决定**先进哪个**，不决定**去不去**。
+        #
+        # ⚠️ 只记「点进去过」，**不记「确认过没东西可领」**（2026-11-08 23:12 实跑教训）：
+        # 试过「连续 N 帧灰才记完成」，但主循环在等转场失败后会再问一次决策，
+        # 那一帧看到的还是**旧分类**的灰，于是把没走到的分类也记成完成，
+        # 四个凑满就收工、后面全跳。改成「点进去过」以后，每次切换必然改变
+        # `_current_class`，不会再出现「一帧记满 4 个」。
+        # 同一帧重复问决策时，原样返回上次答案、不推进任何计数。
+        # ⚠️ 主循环在「等点击转场」期间会**重复调用 next_action**（2026-11-08 23:14 实测：
+        # 切到第 2 个分类后它又问了两次，每次都会把 `_visited` 往上推一格，
+        # 三次就把 4 个分类凑满、直接收工）。决策必须对同一帧幂等。
+        self._last_frame_key = ""
+        self._last_action: Optional[RouteAction] = None
+        self._visited: set[int] = {0}
+        # 当前停在哪个分类。进成就页默认选中的是第 1 个（左列第 1 格高亮）。
+        self._current_class = 0
 
     # -- 判据 ---------------------------------------------------------------
     def _locate(self, screen: np.ndarray, name: str) -> Optional[Match]:
@@ -191,6 +218,10 @@ class AchievementStateMachine:
             self._switches,
             self._claims,
             self._effects,
+            set(self._visited),
+            self._current_class,
+            self._last_frame_key,
+            self._last_action,
         )
         try:
             action = self.next_action(screen)
@@ -205,9 +236,25 @@ class AchievementStateMachine:
                 self._switches,
                 self._claims,
                 self._effects,
+                self._visited,
+                self._current_class,
+                self._last_frame_key,
+                self._last_action,
             ) = snapshot
 
+    @staticmethod
+    def _frame_key(screen: np.ndarray) -> str:
+        """画面指纹：只用来回答「这一帧和上一帧是不是同一帧」。
+
+        下采样 8 倍再算，6.7 MB 的全屏降到 105 KB，几毫秒完成 ——
+        它不参与任何判据，只服务于「同一帧重复问决策」这条去重。
+        """
+        return hashlib.md5(screen[::8, ::8].tobytes()).hexdigest()
+
     def next_action(self, screen: np.ndarray) -> Optional[RouteAction]:
+        key = self._frame_key(screen)
+        if key == self._last_frame_key:
+            return self._last_action
         page = self.observe_page(screen)
         if page is None:
             raise UnrecognizedScreen(
@@ -215,7 +262,14 @@ class AchievementStateMachine:
             )
         self.state = page
         self._confirmed_page = STATE_LABELS[page]
+        action = self._decide(screen, page)
+        self._last_frame_key = key
+        self._last_action = action
+        return action
 
+    def _decide(
+        self, screen: np.ndarray, page: "AchievementState"
+    ) -> Optional[RouteAction]:
         if page is AchievementState.REWARD_POPUP:
             match = self._locate(screen, "popup_close_reward")
             if match is None:  # pragma: no cover - observe_page 已经保证命中
@@ -295,36 +349,63 @@ class AchievementStateMachine:
                 reason="成就点数跨档，有一个效果升级没领",
             )
 
-        # ③ 都做完就切分类；全都没有红点就是收工
-        dots = class_dots(screen)
-        if not dots or self._switches >= self._MAX_SWITCHES:
+        # ③ 这一帧「全部领取灰 + 没有升级按钮」⇒ 这个分类暂时没可领的了，去下一个。
+        #    只看**有没有点进去过**，不判「是否确认完成」—— 理由见字段定义处。
+        self._visited.add(self._current_class)
+
+        # ④ 4 个分类都进去过才收工（不再看角标）。
+        if len(self._visited) >= CLASS_COUNT or self._switches >= self._MAX_SWITCHES:
             self.state = AchievementState.DONE
             if not self._finished:
                 self._finished = True
                 self.completed_cycles += 1
             return None
 
+        # ⑤ 还有没进去过的分类 ⇒ 切过去
+        #
+        # ⚠️ **不要「留在原地复核」**（2026-11-08 23:10 实跑教训）：点同一个分类图标
+        # 不产生任何画面变化，主循环等「动作名变了」会一直等到 42 秒超时，
+        # 然后把整条路线判成完成。这里必须每次都切到一个**不同的、还没进去过的**分类。
+        dots = class_dots(screen)
         index = self._pick_class(dots)
         self._last_class = index
+        self._current_class = index
         self._switches += 1
         return RouteAction(
             "switch-class",
             CLASS_ICON_POINTS[index],
             source_page="成就页",
-            in_page_evidence=f"第 {index + 1} 个分类仍有角标 {dots}",
-            reason=f"切到第 {index + 1} 个分类（还有角标）",
+            in_page_evidence=(
+                f"第 {index + 1} 个分类待进入（角标 {sorted(dots)} / "
+                f"已进入 {sorted(self._visited)}）"
+            ),
+            reason=(
+                f"切到第 {index + 1} 个分类（已进入 {sorted(self._visited)}，"
+                f"还有 {CLASS_COUNT - len(self._visited)} 个没进去）"
+            ),
         )
 
     def _pick_class(self, dots: dict[int, tuple[int, int]]) -> int:
-        """优先挑「不是刚点过的那一个」，避免在原地反复点。
+        """挑下一个要去的分类：**一定是还没进去过的**。
 
-        ⚠️ 领完成就会让**别的**分类冒出红点（实测：领完分类 2 后四个分类全有角标），
-        所以「优先换一个」比「从小到大」收敛得快。
+        优先「有角标且不是刚点过的那一个」，否则按序号取第一个还没进去的。
+        ⚠️ 角标只影响**顺序**，不影响**去不去** —— 这正是 2026-11-08 那次
+        提前收工的根因：原来没角标就不去，于是没红点但还有奖励的分类永远漏掉。
         """
-        candidates = [index for index in sorted(dots) if index != self._last_class]
-        if candidates:
-            return candidates[0]
-        return sorted(dots)[0]
+        pending = [
+            index for index in range(CLASS_COUNT) if index not in self._visited
+        ]
+        if not pending:  # pragma: no cover - 调用方已经先判过 len(_visited)
+            return self._current_class
+        flagged = [
+            index for index in pending if index in dots and index != self._last_class
+        ]
+        if flagged:
+            return flagged[0]
+        others = [index for index in pending if index != self._last_class]
+        if others:
+            return others[0]
+        return pending[0]
 
 
 def state_label(state: AchievementState) -> str:
@@ -388,11 +469,35 @@ class AchievementRunner(ModeRunnerBase):
     _SETTLED_BATTLE_STATE = None
     # 「全部领取」「关闭弹窗」点完一两秒就能看出生效（按钮转灰 / 弹窗消失），
     # 不给 45 秒白等。
+    #
+    # ⚠️ `switch-class` 必须在这张表里（2026-11-08 23:18 实测）：它是**页内动作**，
+    # 点完只是左列高亮换一格，而主循环只按「动作名」判是否生效 ——
+    # 连续两次 `switch-class` 会被当成「上一次还没生效」，干等满 42 秒才重新决策。
+    # 4 个分类就是 3 分钟（实测每步 46 秒）。加进来之后一步几秒。
     _SHORT_RETRY_ACTIONS = frozenset(
-        {"claim-all", "close-reward-popup", "close-effect-popup", "skip-story", "confirm-skip-story"}
+        {
+            "claim-all",
+            "close-reward-popup",
+            "close-effect-popup",
+            "skip-story",
+            "confirm-skip-story",
+            "switch-class",
+        }
     )
     _SHORT_RETRY_SECONDS = 8.0
 
     def _state_label(self, state: AchievementState) -> str:
         """日志/诊断里的页面名用中文（基类默认会输出 ``state.value`` 那种英文）。"""
         return STATE_LABELS.get(state, str(state))
+
+    def _action_retry_seconds(self, action_name: str) -> float:
+        """把 ``_SHORT_RETRY_ACTIONS`` 真正接上。
+
+        ⚠️ 2026-11-08 23:20 实测发现这张表**从来没生效过**：基类
+        ``ModeRunnerBase._action_retry_seconds`` 直接返回 ``_ACTION_RETRY_SECONDS``
+        （45 秒），根本不读子类声明的 ``_SHORT_RETRY_ACTIONS`` ——
+        配置写了、注释也写了，但没人接线。表现就是「切个分类干等 46 秒」。
+        """
+        if action_name in self._SHORT_RETRY_ACTIONS:
+            return self._SHORT_RETRY_SECONDS
+        return super()._action_retry_seconds(action_name)
