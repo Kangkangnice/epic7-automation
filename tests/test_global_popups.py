@@ -24,6 +24,7 @@ from auto_game_unified.games.epic7.global_popups import (
     find_pet_gift_badge,
     find_reward_notice_close,
     find_side_story_notice_close,
+    find_tutorial_skip_point,
     find_tutorial_unlock_skip,
     find_web_network_error_close,
     find_worldboss_support_reward_close,
@@ -44,6 +45,7 @@ from auto_game_unified.games.epic7.global_popups import (
     load_pet_gift_templates,
     load_reward_notice_templates,
     load_side_story_notice_templates,
+    load_tutorial_skip_templates,
     load_tutorial_unlock_templates,
     load_web_network_error_templates,
     load_worldboss_support_reward_templates,
@@ -588,6 +590,31 @@ def test_landscape_frame_still_goes_through_the_guard():
 
 def _world_boss_screen(name: str) -> np.ndarray:
     return np.asarray(Image.open(WORLD_BOSS_FIXTURES / name).convert("RGB"))
+
+
+def test_pc_knights_signin_popup_needs_pc_cover_templates():
+    """11-08 真机：共享层中文标题在 PC 帧只有 0.3796（阈 0.80）⇒ 认不出。
+
+    反向验证两头都要在：PC 覆盖图必须命中，共享层模板必须在同一帧上落空。
+    """
+    from auto_game_unified.games.epic7.template_paths import resolve_template_dir
+
+    popup = _world_boss_screen("knights_signin_popup_pc_live_20261108.png")
+    pc_templates = load_knights_signin_templates(
+        resolve_template_dir(NAVIGATION_TEMPLATES, "pc")
+    )
+    match = find_knights_signin_close(
+        popup, pc_templates.title, pc_templates.close
+    )
+
+    assert match is not None
+    assert 900 <= match.center[0] <= 1020
+    assert 820 <= match.center[1] <= 875
+
+    shared = load_knights_signin_templates(NAVIGATION_TEMPLATES)
+    assert find_knights_signin_close(
+        popup, shared.title, shared.close
+    ) is None
 
 
 def test_knights_signin_popup_is_recognized_from_both_anchors():
@@ -2018,8 +2045,9 @@ def test_tutorial_unlock_is_recognised_on_pc_and_points_at_the_skip_button():
 
     assert match is not None
     assert match.score >= 0.99
-    assert abs(match.center[0] - 1762) <= 8, match.center
-    assert abs(match.center[1] - 100) <= 8, match.center
+    # 点击点是那块按钮里的 **✕**，不是按钮中心（中心落在「跳过教学」四个字上）。
+    assert abs(match.center[0] - 1877) <= 8, match.center
+    assert abs(match.center[1] - 96) <= 8, match.center
     # 模拟器口径：三张图都只在 pc/，一张都加载不到 ⇒ 整段跳过、行为零改动。
     assert (
         emulator_templates.title is None
@@ -2077,6 +2105,86 @@ def test_global_guard_dismisses_the_tutorial_unlock_overlay():
 
     assert np.array_equal(received, normal)
     assert len(clicks) == 1
-    assert abs(clicks[0][0] - 1762) <= 8, clicks
-    assert abs(clicks[0][1] - 100) <= 8, clicks
+    assert abs(clicks[0][0] - 1877) <= 8, clicks
+    assert abs(clicks[0][1] - 96) <= 8, clicks
     assert any("动作=dismiss-tutorial-unlock" in line for line in logs)
+
+
+# ---- 大厅右上角常驻的「跳过教学 ✕」（2026-11-06 22:27 真机，新手账号）--------
+
+
+def test_tutorial_skip_button_is_recognised_on_pc_and_points_at_the_cross():
+    """新手账号大厅右上角常驻一块「跳过教学 ✕」，把**快捷菜单蓝四格顶掉了**
+    ⇒ 导航层「打开快捷菜单」锚点找不到，多条路线在这台机器上反复失败。
+    老账号（模拟器那台）从来没有这个东西，所以这是换新账号后才暴露的一类。
+
+    ⚠️ 点击点必须是文字右边那个 **✕**（用户 2026-11-06 明确要求）：
+    点「跳过教学」四个字只是展开/收起说明，点 ✕ 才真正结束教学。
+    真机实测：判据整块 0.9861（阈 0.85），✕ 中心 (1877, 96)。
+    """
+    screen = load_screen("tutorial_skip_pc_live_20261106.png")
+    pc_templates = load_tutorial_skip_templates(TemplateDir(TEMPLATES, "pc"))
+    emulator_templates = load_tutorial_skip_templates(TEMPLATES)
+
+    match = find_tutorial_skip_point(screen, pc_templates)
+
+    assert match is not None
+    assert match.score >= 0.95
+    assert abs(match.center[0] - 1877) <= 8, match.center
+    assert abs(match.center[1] - 96) <= 8, match.center
+    # 点的是 ✕，不是「跳过教学」四个字（文字中心约在 x=1700）
+    assert match.center[0] > 1800, match.center
+    # 模拟器口径：两张图都只在 pc/ ⇒ 整段跳过、行为零改动。
+    assert emulator_templates.button is None and emulator_templates.confirm is None
+    assert find_tutorial_skip_point(screen, emulator_templates) is None
+
+
+def test_tutorial_skip_does_not_fire_on_other_pages():
+    """排他回归：别的弹窗 / 普通页面不许被认成「跳过教学」。"""
+    pc_templates = load_tutorial_skip_templates(TemplateDir(TEMPLATES, "pc"))
+    for name in (
+        # ⚠️「轻触后解锁」那层遮罩**自己也带着同一个 ✕**（上面那条 `tutorial_unlock`
+        #    守卫点的就是它），所以它不算这条判据的误判，不放进排他列表。
+        "arena_rank_reward_live_20261020.png",
+        "date_change_pc_live_20261103.png",
+        "login_reward_pc_live_20261103.png",
+        "network_reconnect.png",
+        "friendship_points_pc_20260830.png",
+    ):
+        assert find_tutorial_skip_point(load_screen(name), pc_templates) is None, name
+
+
+def test_global_guard_dismisses_the_tutorial_skip_button():
+    """守卫复演：这一块在 ``runtime.capture`` 上被点掉，返回恢复后的正常帧。"""
+    popup = load_screen("tutorial_skip_pc_live_20261106.png")
+    normal = np.asarray(
+        Image.open(STORY_FIXTURES / "stage.png").convert("RGB")
+    )[:1132, :1982]
+    screens = iter([popup, popup, normal])
+    clicks: list[tuple[int, int]] = []
+    logs: list[str] = []
+    clock = FakeClock()
+    runtime = Runtime(
+        lambda: next(screens),
+        clicks.append,
+        monotonic=clock.now,
+        emit=logs.append,
+    )
+    runtime.set_capture_guard(
+        Epic7GlobalPopupGuard(
+            load_network_reconnect_templates(TEMPLATES),
+            tutorial_skip_templates=load_tutorial_skip_templates(
+                TemplateDir(TEMPLATES, "pc")
+            ),
+            sleep=clock.sleep,
+            now=clock.now,
+        )
+    )
+
+    received = runtime.capture()
+
+    assert np.array_equal(received, normal)
+    assert len(clicks) == 1
+    assert abs(clicks[0][0] - 1877) <= 8, clicks
+    assert abs(clicks[0][1] - 96) <= 8, clicks
+    assert any("动作=dismiss-tutorial-skip" in line for line in logs)

@@ -220,6 +220,29 @@ class TutorialUnlockTemplates:
     title: np.ndarray | None
     skip: np.ndarray | None
     highlight: np.ndarray | None
+    # 「跳过教学」那一整块里的 **✕**：点击点以它为准（用户 2026-11-06 明确
+    # 「要点那个叉叉才行」，点文字只是展开/收起说明）。缺失时退回 skip 中心。
+    confirm: np.ndarray | None = None
+
+
+@dataclass(frozen=True)
+class TutorialSkipTemplates:
+    """大厅右上角常驻的「跳过教学 ✕」（新手账号才有，老账号没有）。
+
+    2026-11-06 22:27 真机：这台 PC 客户端是**新手账号**，大厅右上角多了一整块
+    「跳过教学 ✕」，把原来的**快捷菜单蓝四格顶掉了** ⇒ 导航层「打开快捷菜单」
+    的锚点找不到，多条路线在这台机器上反复失败。模拟器老账号从来没有这个东西，
+    所以这是移植到新账号后才暴露的一类。
+
+    ⚠️ 点击点必须是文字右边那个 **✕**，不是「跳过教学」四个字（用户 2026-11-06
+    明确要求：「你要点击跳过教学那个字的旁边有一个叉叉，要点那个叉叉才行」）——
+    点文字只是展开/收起说明，点 ✕ 才真正结束教学、这一整块才消失。
+
+    ⚠️ 两张图都只在 ``templates/global/pc/`` 下 ⇒ 模拟器加载成 None ⇒ 整段跳过。
+    """
+
+    button: np.ndarray | None
+    confirm: np.ndarray | None
 
 
 @dataclass(frozen=True)
@@ -1394,6 +1417,8 @@ class Epic7GlobalPopupGuard:
         knights_activity_templates: KnightsActivityTemplates | None = None,
         uncontrollable_templates: UncontrollableTemplates | None = None,
         tutorial_unlock_templates: TutorialUnlockTemplates | None = None,
+        # 2026-11-06：新手账号大厅右上角的「跳过教学 ✕」（顶掉快捷菜单的那块）。
+        tutorial_skip_templates: TutorialSkipTemplates | None = None,
         login_reward_templates: LoginRewardTemplates | None = None,
         sleep: Callable[[float], None] = default_sleep,
         now: Callable[[], float] = monotonic,
@@ -1422,6 +1447,7 @@ class Epic7GlobalPopupGuard:
         self.knights_activity_templates = knights_activity_templates
         self.uncontrollable_templates = uncontrollable_templates
         self.tutorial_unlock_templates = tutorial_unlock_templates
+        self.tutorial_skip_templates = tutorial_skip_templates
         self.login_reward_templates = login_reward_templates
         self.sleep = sleep
         self.now = now
@@ -1483,6 +1509,20 @@ class Epic7GlobalPopupGuard:
                     "dismiss-tutorial-unlock",
                     "tutorial_unlock_failed",
                     f"「轻触后解锁」教学遮罩点了{_MAX_POPUP_CLICKS}次仍未消失",
+                )
+        # 2026-11-06 22:27 真机：新手账号大厅右上角常驻一块「跳过教学 ✕」——
+        # 它把原来的**快捷菜单蓝四格顶掉**，导航层「打开快捷菜单」锚点找不到，
+        # 多条路线在这台机器上反复失败（老账号的模拟器从来没这个东西）。
+        # 点掉 ✕ 之后这一整块才消失、右上角才恢复成快捷菜单。
+        if self.tutorial_skip_templates is not None:
+            point = find_tutorial_skip_point(screen, self.tutorial_skip_templates)
+            if point is not None:
+                return (
+                    point,
+                    "tutorial_skip",
+                    "dismiss-tutorial-skip",
+                    "tutorial_skip_failed",
+                    f"「跳过教学」按钮点了{_MAX_POPUP_CLICKS}次仍未消失",
                 )
         # ⚠️「骑士团活动」页**不能**放在这里：骑士团捐赠路线正常流程就会切到
         # 「每周任务」标签（实测 22:33:42 `open-weekly-tab` 之后就在那一页），
@@ -1916,11 +1956,58 @@ def load_tutorial_unlock_templates(template_dir: Path) -> TutorialUnlockTemplate
     highlight = template_dir / "tutorial_highlight_icon.png"
     if not title.exists():
         return TutorialUnlockTemplates(title=None, skip=None, highlight=None)
+    confirm = template_dir / "tutorial_skip_confirm.png"
     return TutorialUnlockTemplates(
         title=load_template(str(title)),
         skip=load_template(str(skip)) if skip.exists() else None,
         highlight=load_template(str(highlight)) if highlight.exists() else None,
+        confirm=load_template(str(confirm)) if confirm.exists() else None,
     )
+
+
+def load_tutorial_skip_templates(template_dir: Path) -> TutorialSkipTemplates:
+    """大厅右上角「跳过教学 ✕」。两张图都在 ``global/pc/`` ⇒ 模拟器整段跳过。"""
+    button = template_dir / "tutorial_skip_button.png"
+    confirm = template_dir / "tutorial_skip_confirm.png"
+    if not button.exists() or not confirm.exists():
+        return TutorialSkipTemplates(button=None, confirm=None)
+    return TutorialSkipTemplates(
+        button=load_template(str(button)),
+        confirm=load_template(str(confirm)),
+    )
+
+
+def find_tutorial_skip_point(
+    screen: np.ndarray,
+    templates: TutorialSkipTemplates,
+) -> Match | None:
+    """认「跳过教学」按钮 ⇒ 返回**那个 ✕** 的点击点；认不出 / 找不到 ✕ ⇒ None。
+
+    判据是 ``button``（整块「跳过教学 ✕」，2026-11-06 真机 0.9861 / 阈 0.85），
+    ``confirm`` 只负责「点哪儿」—— 用户明确要求点 ✕、不能点文字。
+    **找不到 ✕ 就一个动作都不发**：宁可留证停住，也不点一个可能只是收起说明的位置。
+    """
+    if templates.button is None or templates.confirm is None:
+        return None
+    button = find_template(
+        screen,
+        templates.button,
+        _GAME_NOTICE_CLOSE_THRESHOLD,
+        region=_TUTORIAL_SKIP_REGION,
+        reference_size=_REFERENCE_SIZE,
+    )
+    if button is None:
+        return None
+    confirm = find_template(
+        screen,
+        templates.confirm,
+        _GAME_NOTICE_CLOSE_THRESHOLD,
+        region=_TUTORIAL_SKIP_REGION,
+        reference_size=_REFERENCE_SIZE,
+    )
+    if confirm is None:
+        return None
+    return Match(confirm.center, min(button.score, confirm.score))
 
 
 def find_tutorial_unlock_skip(
@@ -1953,6 +2040,22 @@ def find_tutorial_unlock_skip(
             reference_size=_REFERENCE_SIZE,
         )
         if skip is not None:
+            # 点击点以那块按钮里的 **✕** 为准（用户 2026-11-06 明确「要点那个叉叉
+            # 才行」）。整块按钮 315 宽、中心落在「跳过教学」四个字上 —— 点文字只是
+            # 展开/收起说明，结束不了教学。✕ 定位不到时才退回中心（旧的保守行为）。
+            if templates.confirm is not None:
+                confirm = find_template(
+                    screen,
+                    templates.confirm,
+                    _GAME_NOTICE_CLOSE_THRESHOLD,
+                    region=_TUTORIAL_SKIP_REGION,
+                    reference_size=_REFERENCE_SIZE,
+                )
+                if confirm is not None:
+                    return Match(
+                        confirm.center,
+                        min(title.score, skip.score, confirm.score),
+                    )
             return Match(skip.center, min(title.score, skip.score))
     if templates.highlight is not None:
         highlight = find_template(

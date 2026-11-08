@@ -101,6 +101,11 @@ REFUSED_FIXTURES = (
     # 「世界首领辅助队伍奖励」弹窗。它认得出页名（``worldboss_support_reward_popup``）
     # 但**不落脚** —— 弹窗要先被全局弹窗守卫点掉，接力从主页开始，不是从弹窗开始。
     "worldboss_support_reward_live_20261019",
+    # 2026-11-08：骑士团签到的「达成度奖励」弹窗（PC 帧），与 ``knights_signin_popup``
+    # 同类 —— 盖在骑士团主页上、要先被点掉，不是落脚点。
+    # 它放进本目录是为了给 ``navigation/pc/knights_signin_*.png`` 当正例
+    # （共享图在这帧只有 0.3796 / 0.6435），用例见 ``test_global_popups.py``。
+    "knights_signin_popup_pc_live_20261108",
 )
 
 ALL_FIXTURES = tuple(RESUMABLE_FIXTURES) + KNIGHTS_HOME_FIXTURES + REFUSED_FIXTURES
