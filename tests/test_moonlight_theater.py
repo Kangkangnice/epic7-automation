@@ -12,7 +12,9 @@ from auto_game_unified.games.epic7 import moonlight_theater as mt
 import numpy as np
 
 from auto_game_unified.games.epic7.evidence.moonlight_theater import (
+    MAX_SWEEP_LEFT_STEPS,
     STORY_ARROW_EXCLUDE,
+    THEATER_POSTER_REGION,
 )
 from auto_game_unified.games.epic7.moonlight_theater import (
     MoonlightAction,
@@ -122,30 +124,24 @@ class EntryTests(unittest.TestCase):
         self.assertEqual(action.name, "open-theater")
         self.assertEqual(action.target_pages, ("剧场选择页",))
 
-    def test_entry_without_free_badge_stops_the_route_without_clicking(self) -> None:
-        """没有 F 角标 = 本周免费已领完 ⇒ 正常收工，一个动作都不发。"""
+    def test_entry_without_free_badge_still_enters_to_look_for_tickets(self) -> None:
+        """没有 F 角标也照点进去（2026-11-06 用户拍板改的口径）。
+
+        原来这里是「没有 F 就收工」。改口径之后，入口的 F 只说明**免费额度没了**，
+        不再等于「没得打」—— 免费打完了还要接着用剧场门票打，而门票够不够只有
+        进了剧场、点到「进行观览」才知道。所以这里必须仍然发出 ``open-theater``，
+        只把「这一趟没有免费额度」如实记进日志（``has_free`` / ``free_reason``）。
+        """
         probe = machine()
         # 把角标模板换成随机噪声 ⇒ 模拟「这一帧没有 F 角标」，但入口卡片仍在。
         # ⚠️ 不能换成全 0 / 纯色：常值模板方差为 0，``TM_CCOEFF_NORMED`` 会退化成
         # 除以 0 的分支，分数反而接近 1（实测第一次就踩了这个坑）。
-        noise = np.random.default_rng(20261017).integers(
-            0, 256, probe.templates.entry_free.shape, dtype=np.uint8
-        )
-        probe.templates = type(probe.templates)(
-            **{
-                **{
-                    field: getattr(probe.templates, field)
-                    for field in probe.templates.__dataclass_fields__
-                    if field != "evidence"
-                },
-                "entry_free": noise,
-                "evidence": probe.templates.evidence,
-            }
-        )
-        with self.assertRaises(MoonlightCleared) as caught:
-            probe.next_action(load("entry_side_story"))
-        self.assertIn("免费", str(caught.exception))
-        self.assertIs(probe.state, MoonlightState.FINISHED)
+        probe.templates = _without_free_badge(probe.templates)
+        action = probe.next_action(load("entry_side_story"))
+        self.assertIsInstance(action, MoonlightAction)
+        self.assertEqual(action.name, "open-theater")
+        self.assertFalse(probe.has_free)
+        self.assertIn("无 F 角标", probe.free_reason)
 
 
 class TheaterListTests(unittest.TestCase):
@@ -159,11 +155,71 @@ class TheaterListTests(unittest.TestCase):
             set(action.target_pages),
         )
 
-    def test_current_theater_without_free_moves_right(self) -> None:
+    def test_current_theater_without_free_probes_for_a_ticket(self) -> None:
+        """没有 Free 角标 ⇒ 也入场，进去看看手上有没有剧场门票（2026-11-06 用户拍板）。
+
+        这一步是整个改动的入口：原来「没有 Free 就往右」，现在多一次「探券」。
+        入场这个动作的三个出口（分集页 / 购买弹窗 / 使用门票弹窗）必须写全 ——
+        没券时这一步就会直接弹出 500,000 金币的购买框。
+        """
         probe = machine(MoonlightState.LIST)
+        action = probe.next_action(load("list_no_free"))
+        self.assertEqual(action.name, "enter-theater")
+        self.assertLessEqual(
+            {"分集页", "购买门票弹窗", "使用剧场门票弹窗"},
+            set(action.target_pages),
+        )
+        self.assertIn("门票", action.reason)
+
+    def test_current_theater_without_free_moves_right_when_tickets_are_gone(self) -> None:
+        """券也确认用光了 ⇒ 没有 Free 的剧场不必再进去，直接往右。
+
+        这道标记只拦「无 Free 的剧场」：确认没券之后再一个个进去，只会每个剧场
+        都弹一次 500,000 金币的购买框。
+        """
+        probe = machine(MoonlightState.LIST)
+        probe._tickets_exhausted = True
         action = probe.next_action(load("list_no_free"))
         self.assertTrue(action.name.startswith("next-theater"), action.name)
         self.assertEqual(action.point, (1450, 550))
+
+    def test_sweeping_left_keeps_going_while_the_poster_changes(self) -> None:
+        """往左归位：海报换了一张就继续推，推不动了**当帧**接着处理当前剧场。
+
+        为什么要先归位：游戏记住的是「上次看的那个剧场」，它左边的剧场一样可能有
+        免费额度，只往右扫会把左边的免费整个漏掉（用户 2026-11-06 要求免费优先）。
+
+        ⚠️ 「推不动了就接着处理」不能写成「推不动了返回空帧」——``preview()`` 会把
+        ``_sweep_left_done`` 一起回滚，空帧会让归位每帧重复一次、整条路线停在列表页。
+        """
+        probe = machine()
+        probe._sweep_left_done = False
+        first = probe.next_action(load("list_no_free"))
+        self.assertTrue(first.name.startswith("prev-theater"), first.name)
+
+        # 造一帧「换了一张海报」：把中间那张的区域整块抹掉（真机上换图时这块全变，
+        # 实测画面差 64~100；夹具里 ``list_free`` / ``list_no_free`` 是同一个剧场，
+        # 只有角标不同 ⇒ 拿它们互比是 0.000，反而验不到「换了」这一侧）。
+        moved = load("list_no_free").copy()
+        x, y, width, height = THEATER_POSTER_REGION
+        moved[y:y + height, x:x + width] = 0
+        second = probe.next_action(moved)
+        self.assertTrue(second.name.startswith("prev-theater"), second.name)
+        self.assertEqual(second.point, (532, 550))
+        self.assertFalse(probe._sweep_left_done, "画面变了就说明左边还有，不许提前归位")
+
+        # 同一张再推一次 ⇒ 推不动了 ⇒ 当帧就处理当前剧场（不再空转一帧）
+        third = probe.next_action(moved)
+        self.assertEqual(third.name, "enter-theater")
+
+    def test_sweeping_left_is_bounded(self) -> None:
+        """归位有次数上界：万一「点左边有效、但海报区域判不出变化」来回打转，
+        不能一直往左点下去 —— 到上界就直接干活。"""
+        probe = machine()
+        probe._sweep_left_done = False
+        probe._sweep_left_steps = MAX_SWEEP_LEFT_STEPS
+        action = probe.next_action(load("list_no_free"))
+        self.assertEqual(action.name, "enter-theater")
 
     def test_the_poster_fingerprint_tells_theaters_apart(self) -> None:
         """动作名带的是「现在这张海报」的指纹 ⇒ 换了一张就得换名字。
@@ -171,18 +227,26 @@ class TheaterListTests(unittest.TestCase):
         指纹必须进名字：主循环那本「同名动作点了几次」的账靠它判定推进，
         名字不换就会被当成「点了四次都没反应」当场判死。
         """
-        left = machine(MoonlightState.LIST).next_action(load("list_no_free"))
-        right = machine(MoonlightState.LIST).next_action(load("list_free"))
-        self.assertNotEqual(left.name, right.name)
+        left = machine(MoonlightState.LIST)
+        right = machine(MoonlightState.LIST)
+        # 券已确认用光 ⇒ 两张海报都走「往右」这条路，比的才是指纹本身
+        # （否则两边都会先走「探券」的入场动作，名字必然一样）。
+        left._tickets_exhausted = True
+        right._tickets_exhausted = True
+        self.assertNotEqual(
+            left.next_action(load("list_no_free")).name,
+            right.next_action(load("list_free")).name,
+        )
 
     def test_the_same_frame_twice_means_the_right_edge_was_reached(self) -> None:
         """连点两次右边画面都没变 ⇒ 右边没有海报了 ⇒ 收工（而不是无限点）。"""
         probe = machine(MoonlightState.LIST)
+        probe._tickets_exhausted = True
         frame = load("list_no_free")
         probe.next_action(frame)
         with self.assertRaises(MoonlightCleared):
             probe.next_action(frame)
-        self.assertIn("本周已结束", probe.finish_reason)
+        self.assertIn("本周结束", probe.finish_reason)
 
     def test_a_new_theater_is_snapshotted_once(self) -> None:
         """遇到没见过的剧场存一张样张，同一张海报只存一次。
@@ -209,6 +273,7 @@ class TheaterListTests(unittest.TestCase):
     def test_snapshotting_never_raises_without_a_runtime(self) -> None:
         """状态机在单元测试里是裸构造的（没有 runtime）⇒ 存样必须安静跳过。"""
         probe = machine(MoonlightState.LIST)
+        probe._tickets_exhausted = True
         action = probe.next_action(load("list_no_free"))
         self.assertTrue(action.name.startswith("next-theater"), action.name)
 
@@ -648,15 +713,24 @@ class TransitionExitTests(unittest.TestCase):
             )
 
     def test_left_to_right_moves_are_in_page_evidence(self) -> None:
-        """不换页的动作必须走 `in_page_evidence`，不能有 target_pages。"""
+        """不换页的动作必须走 `in_page_evidence`，不能有 target_pages。
+
+        「换一张海报」两个方向都算：判它成没成看的是**中间那张海报变没变**，
+        不是「换了哪一页」—— 点哪张选哪张，选中的那一张留在同一页上。
+        """
         episode = machine()
         episode._current_poster = "poster-x"
+        episode._tickets_exhausted = True
         next_theater = episode.next_action(load("list_no_free"))
+        # 往左归位那一格：从入口进来时 ``_sweep_left_done`` 是 False（见 ``_at_entry``）
+        left_sweep = machine()
+        left_sweep._sweep_left_done = False
+        prev_theater = left_sweep.next_action(load("list_free"))
         story = machine(MoonlightState.STORY).next_action(load("story"))
         # 领奖同样是页内变化（橙点灭掉）：弹窗会被全局弹窗守卫在 capture 层点掉，
         # 写「目标页面=获得奖励弹窗」等于写一条永远不成立的契约（2026-11-05 真机）。
         claim = machine(MoonlightState.EPISODE).next_action(load("episode_reward"))
-        for action in (next_theater, story, claim):
+        for action in (next_theater, prev_theater, story, claim):
             self.assertEqual(action.target_pages, (), f"{action.name} 不该有目标页")
             self.assertTrue(action.in_page_evidence, f"{action.name} 缺同页证据")
 
@@ -943,21 +1017,35 @@ class FakeRuntime:
         return _Path(label)
 
 
-def _script(*fixtures: str, repeat: int = 2) -> list[np.ndarray]:
-    """每一帧重复 ``repeat`` 次：主循环要**两帧稳定**才肯发动作。"""
+def _script(*fixtures, repeat: int = 2) -> list[np.ndarray]:
+    """每一帧重复 ``repeat`` 次：主循环要**两帧稳定**才肯发动作。
+
+    某一项写成 ``("list_free", 3)`` 就是「这条帧给 3 倍时长」。从入口进剧场选择页
+    要先做一次「往左归位」（推一次左边 + 判一次到最左，共吃两帧），测试桩里
+    「点左边」不会真的换海报，所以归位只花这么点时间 —— 需要额外帧时就靠这个写法，
+    不必把同一张图抄两遍。
+    """
     frames: list[np.ndarray] = []
-    for name in fixtures:
-        frames.extend([load(name)] * repeat)
+    for item in fixtures:
+        name, times = item if isinstance(item, tuple) else (item, 1)
+        frames.extend([load(name)] * (repeat * times))
     return frames
 
 
-def _runner(runtime: FakeRuntime) -> MoonlightRunner:
-    return MoonlightRunner(
+def _runner(
+    runtime: FakeRuntime, *, tickets_exhausted: bool = False
+) -> MoonlightRunner:
+    runner = MoonlightRunner(
         MoonlightStateMachine(machine().templates, initial_state=MoonlightState.ENTRY),
         runtime,
         sleep=lambda _: None,
         poll_seconds=0.0,
     )
+    if tickets_exhausted:
+        # 「券已经确认用光」是运行期从「购买门票弹窗」学到的事实，测试里直接预置 ——
+        # 只想验「免费流程/往右扫」那些用例不必每次都先演一遍探券。
+        runner.machine._tickets_exhausted = True
+    return runner
 
 
 def test_runner_walks_a_whole_theater_and_stops_at_the_right_edge():
@@ -970,7 +1058,7 @@ def test_runner_walks_a_whole_theater_and_stops_at_the_right_edge():
     runtime = FakeRuntime(
         _script(
             "entry_side_story",
-            "list_free",
+            ("list_free", 2),   # 归位吃 2 帧
             "episode_fresh",
             "guide",
             "story",
@@ -994,12 +1082,14 @@ def test_runner_walks_a_whole_theater_and_stops_at_the_right_edge():
         )
     )
 
-    completed = _runner(runtime).run(max_cycles=None)
+    completed = _runner(runtime, tickets_exhausted=True).run(max_cycles=None)
 
     names = [name.split("#", 1)[0] for _, name in runtime.clicks]
     assert completed == 1
     assert names == [
         "open-theater",
+        # 进列表页先归位：测试桩里「点左边」不会真的换海报 ⇒ 推一次就判到最左
+        "prev-theater",
         "enter-theater",
         "watch-episode",
         "confirm-guide",
@@ -1013,7 +1103,7 @@ def test_runner_walks_a_whole_theater_and_stops_at_the_right_edge():
         "next-theater",
     ]
     assert "cancel-purchase" not in names
-    assert any("本周已结束" in message for message in runtime.messages)
+    assert any("本周结束" in message for message in runtime.messages)
 
 
 def test_runner_never_watches_the_same_episode_twice():
@@ -1042,7 +1132,7 @@ def test_runner_never_watches_the_same_episode_twice():
         )
     )
 
-    completed = _runner(runtime).run(max_cycles=None)
+    completed = _runner(runtime, tickets_exhausted=True).run(max_cycles=None)
 
     names = [name.split("#", 1)[0] for _, name in runtime.clicks]
     assert names.count("watch-episode") == 1, names
@@ -1073,7 +1163,7 @@ def test_runner_spends_the_ticket_when_the_free_quota_is_gone():
         )
     )
 
-    completed = _runner(runtime).run(max_cycles=None)
+    completed = _runner(runtime, tickets_exhausted=True).run(max_cycles=None)
 
     names = [name.split("#", 1)[0] for _, name in runtime.clicks]
     assert "accept-ticket" in names, names
@@ -1093,7 +1183,7 @@ def test_cancelling_a_popup_opened_from_the_list_goes_back_to_the_list():
     runtime = FakeRuntime(
         _script(
             "entry_side_story",
-            "list_free",
+            ("list_free", 2),   # 归位吃 2 帧
             "purchase",   # 点「入场」弹出了花金币的购买确认
             "list_free",  # 取消 ⇒ 回到选择页（同一个剧场，已进跳过集）
             "list_no_free",  # 往右换一个
@@ -1102,7 +1192,7 @@ def test_cancelling_a_popup_opened_from_the_list_goes_back_to_the_list():
         )
     )
 
-    completed = _runner(runtime).run(max_cycles=None)
+    completed = _runner(runtime, tickets_exhausted=True).run(max_cycles=None)
 
     names = [name.split("#", 1)[0] for _, name in runtime.clicks]
     # ⚠️ **必须是四步**。只断言前三个「取消」是抓不到这个坑的（实测两种写法都能过）：
@@ -1110,6 +1200,7 @@ def test_cancelling_a_popup_opened_from_the_list_goes_back_to_the_list():
     # 少掉的正是这一下 `next-theater`（换下个剧场），也就是后面那些剧场的奖励。
     assert names == [
         "open-theater",
+        "prev-theater",   # 进列表页先归位（测试桩里一次点击就判到最左）
         "enter-theater",
         "cancel-purchase",
         "next-theater",
@@ -1127,7 +1218,7 @@ def test_cancelling_the_ticket_dialog_from_the_list_goes_back_to_the_list():
     runtime = FakeRuntime(
         _script(
             "entry_side_story",
-            "list_free",
+            ("list_free", 2),   # 归位吃 2 帧
             "ticket",     # 点「入场」弹出了花券确认
             "list_no_free",
             "list_no_free",
@@ -1137,6 +1228,8 @@ def test_cancelling_the_ticket_dialog_from_the_list_goes_back_to_the_list():
 
     probe = machine()
     probe.templates = _swap_template(probe.templates, "ticket_confirm")
+    # 券已确认用光（这条测的是「取消之后能不能回列表」，不是探券流程）
+    probe._tickets_exhausted = True
     runner = MoonlightRunner(
         probe, runtime, sleep=lambda _: None, poll_seconds=0.0
     )
@@ -1146,6 +1239,7 @@ def test_cancelling_the_ticket_dialog_from_the_list_goes_back_to_the_list():
     # 同 `cancel-purchase`：少掉末尾的 `next-theater` 就说明取消之后被吞了一帧
     assert names == [
         "open-theater",
+        "prev-theater",   # 进列表页先归位（测试桩里一次点击就判到最左）
         "enter-theater",
         "cancel-ticket",
         "next-theater",
@@ -1171,16 +1265,40 @@ def test_clear_retry_window_is_short_but_not_a_wild_tap():
     assert runner._action_retry_seconds("advance-story#0a1b2c") == 0.5
 
 
-def test_runner_stops_immediately_when_the_entry_has_no_free_badge():
-    """入口没有绿 F ⇒ 一个点击都不发，直接以「本周已领完」收工。"""
-    runtime = FakeRuntime(_script("entry_side_story", repeat=4))
+def test_runner_probes_a_theater_without_free_and_gives_up_when_there_is_no_ticket():
+    """入口没有绿 F 也照进去；没免费的剧场进去探一次券，没券就记住、往右、收工。
+
+    老行为是「入口没有 F ⇒ 一个点击都不发、直接收工」。2026-11-06 改口径之后，
+    入口的 F 只说明免费额度没了，唯一的分流点在剧场选择页：
+    ① 有 Free 打免费；② 没 Free 也入场**探一次券**；③ 弹出 500,000 金币的购买框
+    ⇒ 只点取消，并记住「券没了」，之后没有免费的剧场直接跳过（否则每个剧场弹一次）。
+    """
+    runtime = FakeRuntime(
+        _script(
+            "entry_side_story",
+            ("list_no_free", 2),   # 归位 2 帧 + 探券入场
+            "episode_fresh",       # 探券入场后落在分集页
+            "purchase",            # 点「进行观览」弹出的是 500,000 金币的购买框
+            ("list_no_free", 2),   # 取消回列表 ⇒ 券已确认用光 ⇒ 直接往右 ⇒ 到最右收工
+        )
+    )
     runner = _runner(runtime)
     runner.machine.templates = _without_free_badge(runner.machine.templates)
 
     completed = runner.run(max_cycles=None)
 
-    assert completed == 0
-    assert runtime.clicks == []
+    names = [name.split("#", 1)[0] for _, name in runtime.clicks]
+    assert completed == 0, "这一幕根本没看成，不许记成完成"
+    assert names == [
+        "open-theater",
+        "prev-theater",     # 进列表页先把选中项推到最左
+        "enter-theater",    # 没有 Free ⇒ 也入场，看看有没有门票
+        "watch-episode",    # 分集页点观览，出口是购买弹窗
+        "cancel-purchase",  # 只点取消，永不花金币
+        "next-theater",     # 券已确认用光 ⇒ 后面没有免费的剧场直接跳过
+    ], names
+    assert "accept-ticket" not in names
+    assert "claim-reward" not in names
 
 
 def _swap_template(templates, field: str):
@@ -1322,6 +1440,119 @@ class PcEpisodePageTests(unittest.TestCase):
 
         self.assertIsNot(MoonlightState.EPISODE, page)
 
+    def test_a_page_drawn_three_percent_larger_still_reads(self) -> None:
+        """2026-11-06 21:42 真机：同一张分集页被**画大 3.5%** ⇒ 原样 white_mask 0.7658。
+
+        分集页只有 ``watch_button`` 一颗判据，它一掉到阈下，整条路线就卡在
+        「点了入场、转场永不成立」，重试 4 次后停手 —— 当天
+        `runtime_logs/epic7_moonlight_theater.log` 的 21:38~21:42 全是这一条，
+        画面上明明已经是分集页（底部「进行观览」亮着、旁边写着票数 1/9）。
+
+        白字包围盒实测 **123x30** vs 模板 **120x29**（×1.025 / ×1.035）—— 正是
+        ``SCALE_FALLBACK_ANCHORS`` 治的那种病。这颗已登记进名单，PC 下原样不过
+        就按 ±3% 扫一遍：本帧 ×1.02 → **0.8504**。
+        """
+        from auto_game_unified.core import matcher
+
+        previous = matcher.ACTIVE_BACKEND
+        matcher.set_active_backend("pc")
+        try:
+            page = pc_machine().observe_page(pc_load("episode_page_pc_20261106"))
+        finally:
+            matcher.set_active_backend(previous)
+
+        self.assertIs(MoonlightState.EPISODE, page)
+
+    def test_the_larger_page_is_still_pc_only(self) -> None:
+        """隔离铁律：同一张「画大了 3.5%」的帧，模拟器模板也不许认成分集页。
+
+        实测模拟器共享图在这张 PC 帧上原样 0.5766、扫到 ×1.02 也只有 0.5859 ——
+        扫尺寸不会把 PC 页搬进模拟器口径。
+        """
+        from auto_game_unified.core import matcher
+
+        machine = MoonlightStateMachine(
+            build_moonlight_templates(resolve_template_dir(TEMPLATES, "emulator")),
+            initial_state=MoonlightState.ENTRY,
+        )
+        previous = matcher.ACTIVE_BACKEND
+        matcher.set_active_backend("emulator")
+        try:
+            page = machine.observe_page(pc_load("episode_page_pc_20261106"))
+        finally:
+            matcher.set_active_backend(previous)
+
+        self.assertIsNot(MoonlightState.EPISODE, page)
+
+class PcUseTicketDialogTests(unittest.TestCase):
+    """「使用剧场门票」弹窗在 PC 上认不出 ⇒ 点完「进行观览」画面看着等于没反应。
+
+    2026-11-06 22:47 真机：分集页认出来了（修完之后）、`watch-episode` 也点出去了，
+    弹窗确实弹了（诊断图 `20261106_224722_017599_manual_stop.png`：标题「使用剧场门票」、
+    正文「距离免费观览还剩2天…」、持有 10 张、取消/确认两颗按钮），但**页面判不出来**
+    ⇒ 主循环认为目标页一直没来，干等 42 秒。
+
+    根因和分集页那次同源：PC 上这一行被画成 **280×89**，而共享模板是 **330×104**
+    （差 16%，超出 ``SCALE_FALLBACK_ANCHORS`` 的 ±3%），原样只有 **0.7457**（阈 0.80）。
+    修法：补 ``templates/moonlight_theater/pc/use_ticket_title.png``（310×105，自真机帧重裁）。
+    本帧 **1.0000**；模拟器帧上同一张只有 0.7383，且「购买剧场门票」帧只有 **0.5160**。
+    """
+
+    def test_the_use_ticket_dialog_is_recognised_on_pc(self) -> None:
+        from auto_game_unified.core import matcher
+
+        previous = matcher.ACTIVE_BACKEND
+        matcher.set_active_backend("pc")
+        try:
+            probe = pc_machine()
+            page = probe.observe_page(pc_load("use_ticket_pc_20261106"))
+            action = probe.next_action(pc_load("use_ticket_pc_20261106"))
+        finally:
+            matcher.set_active_backend(previous)
+
+        self.assertIs(MoonlightState.USE_TICKET, page)
+        # 用户 2026-10-17 拍板「花掉那张券」⇒ 这一页的正确动作就是点「确认」
+        self.assertIsNotNone(action)
+        self.assertEqual("accept-ticket", action.name)
+        self.assertLessEqual(
+            {"观览指南弹窗", "剧情页", "战斗中"},
+            set(action.target_pages),
+        )
+
+    def test_the_use_ticket_dialog_stays_pc_only(self) -> None:
+        """隔离铁律：模拟器模板跑同一张 PC 帧，不许认成「使用剧场门票」。"""
+        from auto_game_unified.core import matcher
+
+        machine_obj = MoonlightStateMachine(
+            build_moonlight_templates(resolve_template_dir(TEMPLATES, "emulator"))
+        )
+        previous = matcher.ACTIVE_BACKEND
+        matcher.set_active_backend("emulator")
+        try:
+            page = machine_obj.observe_page(pc_load("use_ticket_pc_20261106"))
+        finally:
+            matcher.set_active_backend(previous)
+
+        self.assertIsNot(MoonlightState.USE_TICKET, page)
+
+    def test_the_buy_ticket_dialog_is_not_mistaken_for_the_use_ticket_one(self) -> None:
+        """花钱级排他：**「购买剧场门票」绝不能被认成「使用剧场门票」。**
+
+        认错的后果是点「确认」把 500,000 金币花出去 —— 那是用户明令禁止的。
+        实测 PC 版标题模板在「购买」那一帧上只有 **0.5160**（阈 0.80），余量 0.28。
+        """
+        from auto_game_unified.core.matcher import load_template
+
+        title = load_template(
+            str(TEMPLATES / "pc" / "use_ticket_title.png")
+        )
+        import cv2
+
+        purchase = load("purchase")
+        scores = cv2.matchTemplate(purchase, title, cv2.TM_CCOEFF_NORMED)
+        self.assertLess(float(scores.max()), 0.80)
+
+
 # ---- PC 分集页左上返回箭头（2026-11-05 00:35 真机 timeout_episode）------------
 
 
@@ -1393,3 +1624,84 @@ class PcBackButtonRegionTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PcStoryDarkFrameTests(unittest.TestCase):
+    """剧情页的**黑屏 / 淡入帧**：整屏黑 + 一句字幕，连 ▼ 都还没出来。
+
+    2026-11-06 23:36 真机：花券确认（`accept-ticket`）之后落的就是这一帧
+    （诊断图里只有「菲奥雷托 / 为了不从大姐手上得到爵位。」+ 右上角四颗灰图标）。
+    `moonlight.story` 的判据是 ``story_continue``（▼），而字幕还在逐字打、▼ 根本没出来
+    ⇒ `observe_page` 返回 None ⇒ `accept-ticket` 的转场 60 秒不成立 ⇒ 整条路线 ✗。
+
+    兜底判据是**两个互相独立的统计量**：整屏暗 ≥ 90% **且** 底部字幕条白字 ≥ 1%。
+    实测这一帧 99.4% / 1.33%；观览指南 94.3% / 0.13%、使用门票 95.1% / 0.52%、
+    购买门票 86.0% / 0.91%、分集页 46.8% / 7.12% —— 只有它两条同时满足。
+
+    ⚠️ 这条判据是**纯统计量、两端都生效**（模拟器上遇到同一帧也一样），
+    因为它修的是「谁都会遇到的剧情黑屏帧」，不是平台差异。
+    """
+
+    def test_a_black_story_frame_without_arrow_still_advances(self) -> None:
+        page = pc_machine().observe_page(pc_load("story_dark_pc_20261106"))
+        action = pc_machine().next_action(pc_load("story_dark_pc_20261106"))
+
+        self.assertIs(MoonlightState.STORY, page)
+        self.assertIsNotNone(action)
+        self.assertTrue(action.name.startswith("advance-story"), action.name)
+        # 没有 ▼ 也知道点哪儿：固定推进点在分集页是空白、在剧情页落在字幕框内
+        self.assertEqual((760, 1000), action.point)
+
+    def test_a_story_frame_without_arrow_still_reads_via_the_hud(self) -> None:
+        """字幕打完了、▼ 正好闪没的那一帧：靠右上角「记录」图标认出来。
+
+        2026-11-06 23:57 真机：字幕完整显示（「我也知道自己没有胜算。从小到大，
+        每次对练我都输给了哥哥。」）、右上角四颗图标都在，但**底部没有 ▼**。
+        只认 ▼ 就会判成 None ⇒ 一帧动作都不发 ⇒ 180 秒绝对超时。
+
+        实测这一帧：``story_hud`` **0.9979**、``story_continue`` **0.0**（完全没有）。
+        hud 的正例地板 0.9859、反例天花板 0.6343，间隔 0.35，比 ▼ 那条厚得多。
+        """
+        frame = pc_load("story_hud_pc_20261106")
+
+        page = pc_machine().observe_page(frame)
+        action = pc_machine().next_action(frame)
+
+        self.assertIs(MoonlightState.STORY, page)
+        self.assertIsNotNone(action)
+        self.assertTrue(action.name.startswith("advance-story"), action.name)
+        self.assertEqual((760, 1000), action.point)
+
+    def test_the_hud_anchor_does_not_leak_onto_other_pages(self) -> None:
+        """排他：战斗 / CLEAR / 分集页 / 四类弹窗 / 列表页，都不许被 hud 认成剧情页。"""
+        probe = machine()
+        for name in (
+            "battle",
+            "clear",
+            "episode_fresh",
+            "episode_reward",
+            "guide",
+            "purchase",
+            "ticket",
+            "reward_popup",
+            "list_free",
+        ):
+            self.assertIsNot(MoonlightState.STORY, probe.observe_page(load(name)), name)
+
+    def test_the_dark_frame_rule_does_not_swallow_other_pages(self) -> None:
+        """排他：四类弹窗 + 分集页 + 剧场列表，一个都不许被「黑屏剧情」收走。
+
+        这四类弹窗在 ``_PAGES`` 里本来就排在 story 前面；这里钉的是「即使它们
+        进到兜底那一步，两个统计量也不该同时满足」。
+        """
+        probe = machine()
+        for name in (
+            "guide",
+            "purchase",
+            "ticket",
+            "reward_popup",
+            "episode_fresh",
+            "list_free",
+            "clear",
+        ):
+            self.assertIsNot(MoonlightState.STORY, probe.observe_page(load(name)), name)

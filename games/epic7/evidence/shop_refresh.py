@@ -50,6 +50,39 @@ LIST_FINGERPRINT_BITS = LIST_FINGERPRINT_BLOCK * LIST_FINGERPRINT_BLOCK
 # 实测换列表 100~132 位（39%~52%），同列表静帧 8~26 位、同批买掉一行 40~42 位。
 # 取 25% 作为阈值，两侧各留约 1.5 倍余量。
 LIST_FINGERPRINT_CHANGE_BITS = LIST_FINGERPRINT_BITS // 4
+
+# ── 「按行」的指纹：整块 DCT 会把几行的差异**平均掉** ───────────────────────
+#
+# 2026-11-06 22:21 真机（PC）：整批商品**全换了**，整块指纹却只有 **60 位**
+# （阈 64，差 4 位）⇒ 判「刷新结果不明确，禁止重复确认」当场停住。
+# 病根不是 PC：这一批 5 行里有 4 行是「4 星英雄 + 29,000 金币」，图标/价格/按钮
+# 位置全一样，低频分量抓不到细节差别（同一帧的整块画面差只有 6.68，比「买掉一行」
+# 的 7.10 还小 —— 色块变化比内容变化更显著，所以画面差这条路也走不通）。
+#
+# 按行切就分得开（每行单独 64x64 → DCT 低 16x16 = 256 位）：
+#
+#   ==================  ============================================  ==========
+#   样本                 逐行距离（7 行）                                判定
+#   ==================  ============================================  ==========
+#   同列表静帧           4    4    0    4    4    6   16                未变
+#   买入一行（誓约书签）  26   12    4   44   28    2   22                未变
+#   买入一行（神秘奖牌）  24    4   34   28    6    4    6                未变
+#   **整批换（本次真机）** 56   28   76   34   50   56   40               **换了**
+#   ==================  ============================================  ==========
+#
+# ⇒ 判据取「距离 ≥ 48 的行数 ≥ 3」**且**「总和 ≥ 240」。
+#   买入那两档最多 44 位、总和 138 / 106；整批换是 4 行过 48、总和 340。
+#   双条件是为了防「一次买掉两三行」被误当成刷新 —— 那会**多花 3 钻**。
+LIST_ROW_COUNT = 7
+# 只取「图标 + 商品名」那一段（x 650~1500），右侧的价格/按钮列不进来：
+# 买入时那一列会从绿变灰，把它算进来反而会抬高「买掉一行」的分数。
+LIST_ROW_REGION = (650, 140, 850, 940)  # x, y, 宽, 高
+ROW_FINGERPRINT_RESOLUTION = 64
+ROW_FINGERPRINT_BLOCK = 16
+ROW_FINGERPRINT_BITS = ROW_FINGERPRINT_BLOCK * ROW_FINGERPRINT_BLOCK
+ROW_FINGERPRINT_CHANGE_BITS = 48
+ROW_FINGERPRINT_CHANGED_ROWS = 3
+ROW_FINGERPRINT_TOTAL_BITS = 240
 # Live spending stays disabled until both target types have current-client row
 # and purchase-price fixtures. Both target transactions are now verified.
 MYSTIC_TRANSACTION_VERIFIED = True
@@ -120,6 +153,9 @@ class ShopObservation:
     purchase_price: int | None = None
     refresh_price: int | None = None
     list_fingerprint: str = ""
+    # 逐行指纹（见 ``shop_row_fingerprints``）：整块指纹在「同一版面换一批商品」时会
+    # 被平均掉（2026-11-06 真机只有 60 位），这一组是补它的盲区。
+    row_fingerprints: tuple[str, ...] = ()
     scores: Mapping[str, float] | None = None
 
 
@@ -254,6 +290,58 @@ def shop_fingerprint_distance(left: str, right: str) -> int:
     except ValueError:
         # 无法比较时按「最大差异」处理：不可解释的指纹不得当成「列表没变」。
         return LIST_FINGERPRINT_BITS
+
+
+def shop_row_fingerprints(screen: np.ndarray) -> tuple[str, ...]:
+    """把商品列表按固定行数切开，每行单独取一个 DCT 指纹。
+
+    为什么整块指纹不够用、为什么阈值取这两个数，全写在 ``LIST_ROW_COUNT`` 上面
+    那张实测表里。这里只强调一点：**行切分必须与抓帧时的滚动位置无关地保持稳定** ——
+    判的是「同一轮刷新前后」两张图，滚动位置本来就不变，所以固定网格够用。
+    """
+    x, y, width, height = LIST_ROW_REGION
+    crop = screen[y : y + height, x : x + width]
+    if crop.size == 0:
+        return ()
+    step = crop.shape[0] // LIST_ROW_COUNT
+    if step <= 0:
+        return ()
+    fingerprints: list[str] = []
+    for index in range(LIST_ROW_COUNT):
+        band = crop[index * step : (index + 1) * step]
+        gray = cv2.cvtColor(band, cv2.COLOR_RGB2GRAY)
+        reduced = cv2.resize(
+            gray,
+            (ROW_FINGERPRINT_RESOLUTION, ROW_FINGERPRINT_RESOLUTION),
+            interpolation=cv2.INTER_AREA,
+        )
+        coefficients = cv2.dct(reduced.astype(np.float32))[
+            :ROW_FINGERPRINT_BLOCK, :ROW_FINGERPRINT_BLOCK
+        ].flatten()
+        median = float(np.median(coefficients[1:]))
+        bits = (coefficients > median).astype(np.uint8)
+        fingerprints.append(np.packbits(bits).tobytes().hex())
+    return tuple(fingerprints)
+
+
+def changed_shop_rows(
+    left: tuple[str, ...], right: tuple[str, ...]
+) -> tuple[int, int]:
+    """返回（「变了」的行数, 各行距离的总和）。
+
+    拿不到成对的逐行指纹（缺帧、长度不一致）时返回 ``(0, 0)`` ——
+    这条只是**附加证据**，取不到就退回原来的整块指纹，不许凭它单方面宣布「换了」。
+    """
+    if not left or not right or len(left) != len(right):
+        return 0, 0
+    distances = [
+        (int(first, 16) ^ int(second, 16)).bit_count()
+        for first, second in zip(left, right)
+    ]
+    return (
+        sum(1 for value in distances if value >= ROW_FINGERPRINT_CHANGE_BITS),
+        sum(distances),
+    )
 
 
 class ShopRefreshObserver:
@@ -559,6 +647,7 @@ class ShopRefreshObserver:
                 refresh_point=matches["refresh_button_3"].center,
                 refresh_price=3,
                 list_fingerprint=self._fingerprint(screen),
+                row_fingerprints=shop_row_fingerprints(screen),
                 scores=scores,
             )
         return ShopObservation(page=ShopPage.UNKNOWN, scores=scores)

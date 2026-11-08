@@ -1227,3 +1227,4 @@ def test_the_friendship_limit_is_ten():
     """
 
     assert FRIENDSHIP_PURCHASE_LIMIT == 10
+

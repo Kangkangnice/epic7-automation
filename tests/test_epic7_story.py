@@ -1,5 +1,6 @@
 from pathlib import Path
 import unittest
+from types import SimpleNamespace
 
 import cv2
 import numpy as np
@@ -12,6 +13,7 @@ from auto_game_unified.games.epic7.story import (
     StoryStateMachine,
     build_story_templates,
 )
+from auto_game_unified.games.epic7.template_paths import TemplateDir
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -64,6 +66,39 @@ class Epic7StoryStateMachineTests(unittest.TestCase):
                     )
                 )
 
+    def test_pc_backend_picks_up_battle_guide_pc_templates(self):
+        """PC 真机上这层弹窗必须认得出（2026-11-07 主线卡在这一页）。
+
+        共享模板（模拟器裁的）在 PC 帧上 title 只有 0.6681（阈 0.85）⇒ 双锚点整页
+        返回 None ⇒ 战斗阶段只能干等，20 秒后「安全停止」。修法是
+        ``templates/story/pc/battle_guide_{title,dont_show}.png`` 两张覆盖图。
+        """
+        popup = load_fixture("battle_guide_warning_pc_live_20261107")
+        pc_templates = build_story_templates(TemplateDir(TEMPLATES, "pc"))
+
+        match = story_module.find_battle_guide_dont_show(
+            popup,
+            pc_templates.battle_guide_title,
+            pc_templates.battle_guide_dont_show,
+        )
+        self.assertIsNotNone(match)
+        self.assertTrue(1240 <= match.center[0] <= 1310)
+        self.assertTrue(825 <= match.center[1] <= 890)
+
+        # 两锚点缺一不可：删掉任一区域都必须拒绝识别（与模拟器那套同一条纪律）。
+        for region in ((780, 250, 420, 180), (1080, 760, 420, 190)):
+            without_anchor = popup.copy()
+            x, y, width, height = region
+            without_anchor[y : y + height, x : x + width] = 0
+            with self.subTest(region=region):
+                self.assertIsNone(
+                    story_module.find_battle_guide_dont_show(
+                        without_anchor,
+                        pc_templates.battle_guide_title,
+                        pc_templates.battle_guide_dont_show,
+                    )
+                )
+
     def test_battle_adapter_exposes_battle_guide_dont_show_action(self):
         machine = StoryStateMachine(build_story_templates(TEMPLATES))
 
@@ -111,6 +146,40 @@ class Epic7StoryStateMachineTests(unittest.TestCase):
         self.assertIn("来源=右上角自动关闭图标", manual.auto_evidence)
         self.assertIn("布局=auto_controls", auto.auto_evidence)
         self.assertNotIn("来源=", auto.auto_evidence)
+
+    def test_auto_layout_is_not_overridden_by_a_stray_auto_off_icon(self):
+        """布局=自动开着时，右上角图标擦线命中不许改判手动。
+
+        2026-11-07 08:55 真机那场战斗的日志写的是
+        「布局=auto_controls 自动关图标=0.8268 来源=右上角自动关闭图标」——
+        四格底座全亮说明自动**确实开着**，却因为图标过了 0.80 就判手动、跑去点开关
+        （同一分钟点了两次：08:55:08 / 08:55:14）。
+
+        规则本身 2026-10-09 月塔事故后就定过：「图标只在布局看不出长相（transition）
+        时才作数」，月塔 / 远征 / 竞技场三条都换成了 `resolve_auto_state`，
+        **主线漏改**。这条用例把主线钉在同一条规则上。
+        """
+        machine = StoryStateMachine(build_story_templates(TEMPLATES), pc_rules=True)
+        frame = load_fixture("battle_auto_on_live_20260809")
+
+        # 伪造「图标擦线命中」：底下的布局仍是该帧真实的 auto_controls。
+        real_locate = machine._locate
+
+        def locate_with_stray_icon(screen, name):
+            if name == "auto_off":
+                return SimpleNamespace(score=0.8268, center=(1650, 90))
+            return real_locate(screen, name)
+
+        machine._locate = locate_with_stray_icon
+
+        observation = machine.observe_battle(frame, None)
+
+        self.assertEqual(AutoBattleState.AUTO, observation.auto_state)
+        self.assertIsNone(observation.auto_point)
+        self.assertIn("布局=auto_controls", observation.auto_evidence)
+        self.assertIn("自动关图标=0.8268", observation.auto_evidence)
+        # 日志里不该再说「是图标决定的」—— 那种说法正是旧写法留下的。
+        self.assertNotIn("来源=右上角自动关闭图标", observation.auto_evidence)
 
     def test_battle_adapter_whitelists_post_start_story_actions(self):
         machine = StoryStateMachine(build_story_templates(TEMPLATES))
@@ -659,6 +728,84 @@ class Epic7StoryStateMachineTests(unittest.TestCase):
 
         self.assertEqual("enable_auto", action.name)
         self.assertFalse(machine.auto_enabled)
+
+    def test_enable_auto_reports_the_plain_battle_page_name(self):
+        """`enable_auto` 的 source_page 必须是「战斗中」，不许带修饰后缀。
+
+        它经 `_action` → `_confirm_page(source_page)` **每帧**改写「当前已确认页面」，
+        主循环再拿这个值比对上一个动作的 `target_pages`（`runner_base._transition_completed`）；
+        对不上就把状态机刚给出的动作置 None —— 状态机彻底失声。
+
+        2026-11-07 08:10 真机：这里原本写「战斗中（自动关闭）」，而
+        `skip_confirm.target_pages` 里只有「战斗中」⇒ 两者对不上 ⇒ 转场永远不完成
+        ⇒ `enable_auto` **一次都没发出去**（日志里完全没有这个动作）⇒ 干等到
+        60 秒报「转场超时 动作=skip_confirm」，而截图里战斗早就开始了、只是自动没开。
+
+        ⚠️ 期望值**独立写死**，不许读 `action.source_page` 自比（`topics/hazards.md`
+        的「护栏别写空」）。「自动是关的」这条信息归 `reason`，不归页面名。
+
+        ⚠️ 这条只在 **PC** 上成立：模拟器保留原名「战斗中（自动关闭）」，
+        由 `test_simulator_keeps_the_legacy_auto_page_name` 钉住。
+        """
+        machine = StoryStateMachine(
+            build_story_templates(TEMPLATES),
+            initial_state=StoryState.WAIT_BATTLE,
+            pc_rules=True,
+        )
+
+        action = machine.next_action(load_fixture("battle_auto_off_live_20260809"))
+
+        self.assertEqual("enable_auto", action.name)
+        self.assertEqual("战斗中", action.source_page)
+        self.assertIn(action.source_page, action.target_pages)
+        # 也要能在「上一个动作」的目标名单里找到 —— 那才是它被采信的前提。
+        skip_confirm = StoryStateMachine(
+            build_story_templates(TEMPLATES),
+            initial_state=StoryState.WAIT_SKIP_CONFIRM,
+            pc_rules=True,
+        ).next_action(load_fixture("skip_confirm"))
+        self.assertEqual("skip_confirm", skip_confirm.name)
+        self.assertIn(action.source_page, skip_confirm.target_pages)
+
+    def test_simulator_keeps_the_legacy_auto_page_name(self):
+        """模拟器必须是原名 —— 这是「模拟器完全不动」的看门用例。
+
+        2026-11-07 用户明确要求：所有改动只能落在 PC，模拟器一个字节都不许变。
+        所以 `pc_rules` 默认 False，`enable_auto` 的 `source_page` 保持
+        「战斗中（自动关闭）」（尽管它跟 `skip_confirm.target_pages` 对不上）。
+        """
+        machine = StoryStateMachine(
+            build_story_templates(TEMPLATES), initial_state=StoryState.WAIT_BATTLE
+        )
+
+        action = machine.next_action(load_fixture("battle_auto_off_live_20260809"))
+
+        self.assertEqual("enable_auto", action.name)
+        self.assertEqual("战斗中（自动关闭）", action.source_page)
+
+    def test_simulator_keeps_trusting_the_auto_off_icon(self):
+        """模拟器的自动战斗判定必须保持原样：图标命中即改判手动。
+
+        这是 `resolve_auto_state` 只在 PC 生效的看门用例 —— 模拟器上哪怕布局
+        明判「自动开着」，只要图标命中就仍然改判手动（旧行为，一字不改）。
+        """
+        machine = StoryStateMachine(build_story_templates(TEMPLATES))
+        frame = load_fixture("battle_auto_on_live_20260809")
+
+        real_locate = machine._locate
+
+        def locate_with_stray_icon(screen, name):
+            if name == "auto_off":
+                return SimpleNamespace(score=0.8268, center=(1650, 90))
+            return real_locate(screen, name)
+
+        machine._locate = locate_with_stray_icon
+
+        observation = machine.observe_battle(frame, None)
+
+        self.assertEqual(AutoBattleState.MANUAL, observation.auto_state)
+        self.assertIn("来源=右上角自动关闭图标", observation.auto_evidence)
+        self.assertEqual((1650, 90), observation.auto_point)
 
     def test_auto_on_frame_confirms_enabled_without_another_click(self):
         machine = StoryStateMachine(

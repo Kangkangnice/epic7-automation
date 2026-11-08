@@ -210,6 +210,11 @@ REGIONS = {
     #     类别会因商店变，**图标不变**（同一张模板在两处实测 1.0000 / 0.9966）；
     #   * 商品名「友情点数」那四个字也可以当判据，但图标更省事（一张图就够）。
     # ⚠️ 区域只罩图标那一列，不碰左边商人、不碰右边的类别/商品名/按钮。
+    # 2026-11-07 起目标商品扩成四种：另两种书签也走图标这一路，区域与绿心完全一样。
+    # 真帧实测（阈 0.80）：圣约书签真行 0.9815 / 迷宫现有帧最高 0.559；
+    # 神秘书签真行 0.966 / 迷宫现有帧最高 0.391 ⇒ 余量够，不会把别的商品认成书签。
+    "covenant_candidate": (830, 150, 200, 982),
+    "mystic_candidate": (830, 150, 200, 982),
     "friendship_candidate": (830, 150, 200, 982),
     # 右侧「购买」按钮列。一屏可能有多行 ⇒ 用 find_all_templates。
     "buy_button": (1690, 150, 220, 950),
@@ -251,6 +256,17 @@ THRESHOLDS["labyrinth_entry"] = 0.85
 THRESHOLDS["labyrinth_entry_alt"] = 0.85
 
 _TEMPLATE_PATHS = {key: f"{key}.png" for key in REGIONS}
+# 这三张不是本路线的图，是**同一个商品**在秘密商店里的那份（不另存第二份，会漂移）。
+# 运行时由 ``build_labyrinth_stone_templates`` 从 shop_refresh/ 载入；这里把路径写对，
+# 全库审计工具（report_scale_margin / audit_scale_fallback）才找得到它们。
+_SHARED_SHOP_ICON_KEYS = (
+    "covenant_candidate",
+    "mystic_candidate",
+    "friendship_candidate",
+)
+_TEMPLATE_PATHS.update(
+    {key: f"../shop_refresh/{key}.png" for key in _SHARED_SHOP_ICON_KEYS}
+)
 
 # 页面键 -> 判定顺序（**顺序即意图**）。下面几条是刻意的：
 #   - 三个弹窗排最前：它们盖在底页上，而模板匹配对「压暗」不敏感；

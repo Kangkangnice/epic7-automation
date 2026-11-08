@@ -9,7 +9,7 @@
 进迷宫 → 开场剧情（可跳过）→ 十字路口房间
   ├ 开地图 → 把视野拖到左上 → 找「左下蓝松鼠 / 右下宝箱」那个出口 pin → 传送（3 士气）
   ├ 落地房 → 点左下 **W** 徽记赶路（最多 3 次）→ 流浪商人（蓝松鼠）的房间
-  └ 点**蓝松鼠本体** → 商店 → 只买写着「强化石」的那几行（买完那行变灰）
+  └ 点**蓝松鼠本体** → 商店 → 买强化石，以及友情点数 / 圣约书签 / 神秘书签（买完那行变灰）
 收工 → 商店返回箭头 → 暂停菜单 → 放弃战斗 → 确认「结束」
   → 落回迷宫详情页 → 右上角蓝色菜单 → 酒馆 → 大厅
 ```
@@ -333,9 +333,12 @@ class LabyrinthStoneTemplates:
     shop_title: np.ndarray
     stone_category: np.ndarray
     stone_in_name: np.ndarray
-    # 「友情点数」的商品**图标**（绿心）—— 2026-10-31 用户要求加进购买候选。
-    # ⚠️ 与秘密商店**共用同一张图**（`shop_refresh/friendship_candidate.png`）：
-    # 是同一个商品、同一个图标，另存第二份迟早漂移。
+    # 除强化石外，目标商品一律认**图标**（2026-11-07 起三种）：
+    # 友情点数（绿心）/ 圣约书签（蓝星）/ 神秘书签（橙花）。
+    # ⚠️ 三张图全部与秘密商店**共用同一份**（`shop_refresh/`）：同一个商品、
+    # 同一个图标，另存第二份迟早漂移；类别标签反而会随商店变，不能当判据。
+    covenant_candidate: np.ndarray
+    mystic_candidate: np.ndarray
     friendship_candidate: np.ndarray
     buy_button: np.ndarray
     shop_footer: np.ndarray
@@ -365,6 +368,10 @@ def build_labyrinth_stone_templates(template_dir: Path) -> LabyrinthStoneTemplat
         path = template_dir / f"{name}.png"
         return load_template(str(path)) if Path(path).is_file() else None
 
+    def load_shared(name: str) -> np.ndarray:
+        """秘密商店里同款商品的图标，跨目录借用（同 tower.py 借 story/auto_off.png）。"""
+        return load_template(str(template_dir.parent / "shop_refresh" / f"{name}.png"))
+
     return LabyrinthStoneTemplates(
         labyrinth_card=load("labyrinth_card"),
         labyrinth_entry=load("labyrinth_entry"),
@@ -390,11 +397,9 @@ def build_labyrinth_stone_templates(template_dir: Path) -> LabyrinthStoneTemplat
         shop_title=load("shop_title"),
         stone_category=load("stone_category"),
         stone_in_name=load("stone_in_name"),
-        # 跨目录复用秘密商店那张：同一个商品图标，不另存第二份
-        # （同 ``evidence/tower.py`` 里 ``auto_off`` 借用 ``story/auto_off.png`` 的做法）。
-        friendship_candidate=load_template(
-            str(template_dir.parent / "shop_refresh" / "friendship_candidate.png")
-        ),
+        covenant_candidate=load_shared("covenant_candidate"),
+        mystic_candidate=load_shared("mystic_candidate"),
+        friendship_candidate=load_shared("friendship_candidate"),
         buy_button=load("buy_button"),
         shop_footer=load("shop_footer"),
         buy_dialog_title=load("buy_dialog_title"),
@@ -612,19 +617,25 @@ class LabyrinthStoneStateMachine:
 
         返回 ``(匹配, 白字像素数)``，没有就 None。
 
-        ⚠️ **三道锁，缺一不可**：
+        ⚠️ **两条认商品的路 + 一道共同的锁**：
 
-        1. 这一行的**类别标签**写着「强化石」（``stone_category``，位置见
-           ``BUY_TO_CATEGORY_DY``）；
-        2. 这一行的**商品名里有一个「石」字**（``stone_in_name``）；
-        3. 这一行的**按钮上有一片白字**（``button_white_pixels`` ≥
-           ``BUY_BUTTON_WHITE_PIXELS``）。
+        - **图标路**：这一行的商品图标是友情点数 / 圣约书签 / 神秘书签之一
+          （三张图借用 ``shop_refresh/``，与秘密商店同一个商品、同一张图）。
+        - **文字路**（只管强化石）：① 这一行的**类别标签**写着「强化石」
+          （``stone_category``，位置见 ``BUY_TO_CATEGORY_DY``）；② 这一行的
+          **商品名里有一个「石」字**（``stone_in_name``）。
+        - **共同锁**：这一行的**按钮上有一片白字**（``button_white_pixels`` ≥
+          ``BUY_BUTTON_WHITE_PIXELS``）。
 
-        为什么要有第 2 道：2026-09-25 第一次事故是第 1 道单独失灵（偏移写反 ⇒ 每一行
-        都拿下一行的类别来判断自己），于是「强化拳套」被当成强化石买了。第 2 道问的是
-        完全不同的一件事（商品名里有没有「石」），两者不会一起错。
+        为什么这些非强化石商品走图标：它们的类别标签会随商店变（友情点数在迷宫写
+        「召唤」、在秘密商店写「货币」），**图标不变**。两种书签实测真行 0.9815 / 0.966，
+        迷宫现有帧最高只有 0.559 / 0.391（阈 0.80）⇒ 不会把拳套之类认成书签。
 
-        为什么第 3 道是「数白字」而不是「取最亮一颗」：
+        为什么文字路要有两道：2026-09-25 第一次事故是类别那道单独失灵（偏移写反 ⇒
+        每一行都拿下一行的类别来判断自己），于是「强化拳套」被当成强化石买了。另一道
+        问的是完全不同的一件事（商品名里有没有「石」），两者不会一起错。
+
+        为什么共同锁是「数白字」而不是「取最亮一颗」：
         - 2026-09-25 第二次事故：「相对亮度」在真机上把**已售罄**（0/1）判成「还能买」，
           于是对着售罄行连点 4 次、整条路线卡死。
         - 2026-10-19 第三次事故：「最亮一颗」被**一颗**游离白像素骗过 —— 底边被裁那行
@@ -636,15 +647,22 @@ class LabyrinthStoneStateMachine:
         """
         categories = self._locate_all(screen, "stone_category")
         stones = self._locate_all(screen, "stone_in_name")
-        # 「友情点数」走**图标**那一路（2026-10-31）：它的类别标签在迷宫写的是「召唤」、
-        # 在秘密商店写的是「货币」—— 类别会变，图标不变。
-        friendships = self._locate_all(screen, "friendship_candidate")
+        # 图标路：三张图共用同一个搜索区、同一把尺子，命中任意一个就算目标商品。
+        icons = [
+            match
+            for name in (
+                "covenant_candidate",
+                "mystic_candidate",
+                "friendship_candidate",
+            )
+            for match in self._locate_all(screen, name)
+        ]
         buttons = self._locate_all(screen, "buy_button")
         for button in sorted(buttons, key=lambda match: match.center[1]):
-            friend_ok = any(
-                abs(friend.center[1] - button.center[1])
+            icon_ok = any(
+                abs(icon.center[1] - button.center[1])
                 <= BUY_ROW_PAIR_TOLERANCE
-                for friend in friendships
+                for icon in icons
             )
             category_ok = any(
                 abs(category.center[1] - (button.center[1] + BUY_TO_CATEGORY_DY))
@@ -656,7 +674,7 @@ class LabyrinthStoneStateMachine:
                 <= STONE_NAME_TOLERANCE
                 for stone in stones
             )
-            if not (friend_ok or (category_ok and name_ok)):
+            if not (icon_ok or (category_ok and name_ok)):
                 continue
             live = button_white_pixels(screen, button.center)
             if live < BUY_BUTTON_WHITE_PIXELS:
@@ -1040,7 +1058,8 @@ class LabyrinthStoneStateMachine:
                 source_page=page,
                 target_pages=(state_label(LabyrinthStoneState.BUY_CONFIRM),),
                 reason=(
-                    f"这一行类别写着强化石、名字里有「石」、按钮上有 {live} 颗白字像素"
+                    "这一行是目标商品（强化石 / 友情点数 / 书签）、"
+                    f"按钮上有 {live} 颗白字像素"
                     f"（≥ {BUY_BUTTON_WHITE_PIXELS}，说明还没卖完），点「购买」@{button.center}"
                 ),
             )
@@ -1056,7 +1075,7 @@ class LabyrinthStoneStateMachine:
                 source_page=page,
                 in_page_evidence="列表整体上移：出现此前不在视口里的新「购买」行",
                 reason=(
-                    f"视口里没有可买的强化石了，下滑第 "
+                    "视口里没有可买的目标商品了，下滑第 "
                     f"{self.shop_scrolls}/{MAX_SHOP_SCROLLS} 次"
                     + (
                         f"（认出来 {len(sold_out)} 行是强化石但已经卖完）"
@@ -1073,7 +1092,7 @@ class LabyrinthStoneStateMachine:
             source_page=page,
             target_pages=(state_label(LabyrinthStoneState.MERCHANT_ROOM),),
             reason=(
-                "全部翻完了，没有可买的强化石"
+                "全部翻完了，没有可买的目标商品"
                 + (f"（{len(sold_out)} 行强化石都已售罄）" if sold_out else "")
                 + f"，点左上角返回箭头收工（中心={arrow.center}）"
             ),
@@ -1183,15 +1202,15 @@ class LabyrinthStoneStateMachine:
         return None
 
     def _purchase_tally(self) -> str:
-        """收尾汇报用的**账单**：买了几块、分别是商店里哪几行。
+        """收尾汇报用的**账单**：买了几件、分别是商店里哪几行。
 
-        ⚠️ 现在只报「几块 + 哪几行」，**报不出金额**（读价格要另做数字字模，
-        见 ``docs/maintenance/labyrinth_stone.md`` 的已知缺口）。
+        ⚠️ 现在只报「几件 + 哪几行」，**报不出金额也分不出品类**（读价格要另做
+        数字字模，见 ``docs/maintenance/labyrinth_stone.md`` 的已知缺口）。
         """
         if not self.bought:
-            return "（强化石都买过了 / 商店里没有可买的强化石，一块没买）"
+            return "（目标商品都买过了 / 商店里没有可买的强化石、友情点数或书签，一件没买）"
         rows = "、".join(f"第 {row} 行" for row in self.purchase_rows)
-        return f"，买了 {self.bought} 块强化石（{rows}）"
+        return f"，买了 {self.bought} 件目标商品（强化石 / 友情点数 / 书签，{rows}）"
 
     def _finish(self, reason: str) -> None:
         self.state = LabyrinthStoneState.FINISHED
@@ -1405,7 +1424,7 @@ class LabyrinthStoneRunner(ModeRunnerBase):
             )
             raise RuntimeError(
                 f"迷宫强化石这一趟没做成：{blocked}"
-                f"（人已回到大厅，买到 {self.machine.bought} 块强化石）"
+                f"（人已回到大厅，买到 {self.machine.bought} 件目标商品）"
             )
         return done
 

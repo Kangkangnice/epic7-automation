@@ -464,6 +464,73 @@ def test_shop_refuses_a_row_whose_category_cannot_be_paired(monkeypatch):
     assert action.point == (1792, 299), "类别坏了之后只剩图标那一路：买友情点数"
 
 
+# ---- ⑤ 附：秘密商店那几种书签也买（2026-11-07）--------------------------------
+
+SHOP_FIXTURES = ROOT / "tests" / "fixtures" / "epic7_shop_refresh"
+
+# 秘密商店真夹具里两张书签图标的实测中心（模板分 0.9815 / 0.966，阈 0.80）。
+# 迷宫商店至今没有「恰好刷出书签」的真帧，接线验证用**真图标块 + 真商店版面**拼一张。
+BOOKMARK_ICON_SOURCES = {
+    "covenant_candidate": ("covenant_row_live_20260831", (901, 695)),
+    "mystic_candidate": ("mystic_row_live_20260831", (901, 576)),
+}
+
+
+def shop_frame_with_bookmark_icon(kind: str) -> np.ndarray:
+    """把秘密商店真帧里的书签图标，平移到迷宫商店「唯一还亮着」那行的图标位。
+
+    只挪图标那一列（x 812~1012），不碰类别 / 商品名 / 购买按钮三列 —— 这一行的
+    类别与名字仍写着「强化拳套」，能不能买就**只取决于图标判据**接没接上。
+    """
+    source_name, (sx, sy) = BOOKMARK_ICON_SOURCES[kind]
+    raw = cv2.imread(str(SHOP_FIXTURES / f"{source_name}.png"), cv2.IMREAD_COLOR)
+    assert raw is not None, f"缺夹具 {source_name}.png"
+    source = cv2.cvtColor(raw, cv2.COLOR_BGR2RGB)
+    half_w, half_h = 100, 70
+    patch = source[sy - half_h : sy + half_h, sx - half_w : sx + half_w]
+    assert patch.shape == (2 * half_h, 2 * half_w, 3)
+
+    screen = frame("shop_mostly_bought").copy()
+    # 该行按钮中心 (1792,843)，同一行的商品图标中心实测比它高 43 像素。
+    tx, ty = 912, 800
+    screen[ty - half_h : ty + half_h, tx - half_w : tx + half_w] = patch
+    return screen
+
+
+def test_three_target_icons_share_one_search_region_and_threshold():
+    """三张商品图都在同一列、同一把尺子下找，别有谁偷偷换了区域或阈值。"""
+    profile = build_machine().templates.evidence
+    keys = (*BOOKMARK_ICON_SOURCES, "friendship_candidate")
+    assert len({profile.atom(key).region for key in keys}) == 1
+    assert len({profile.atom(key).threshold for key in keys}) == 1
+    assert profile.atom("covenant_candidate").region == (830, 150, 200, 982)
+
+
+@pytest.mark.parametrize("kind", list(BOOKMARK_ICON_SOURCES))
+@pytest.mark.parametrize(
+    "fixture",
+    ["shop", "shop_mostly_bought", "shop_clipped_bottom_row_live_20261019"],
+)
+def test_bookmark_icons_never_false_positive_on_real_labyrinth_frames(fixture, kind):
+    """真迷宫帧里没有书签 ⇒ 两张新图一颗都不许命中。
+
+    实测最高分：圣约 0.559 / 神秘 0.391，离阈值 0.80 还有一大截 ⇒ 判据能证伪。
+    """
+    machine = build_machine()
+    assert machine._locate_all(frame(fixture), kind) == []
+
+
+@pytest.mark.parametrize("kind", list(BOOKMARK_ICON_SOURCES))
+def test_a_bookmark_row_is_bought(kind):
+    """迷宫商店刷出圣约 / 神秘书签 ⇒ 买它；旧代码只会当它是拳套、下滑走人。"""
+    machine = build_machine(entered=True, teleported=True)
+
+    action = machine.next_action(shop_frame_with_bookmark_icon(kind))
+
+    assert action.name == "buy-stone"
+    assert action.point == (1792, 843), "唯一还亮着的那一行现在有书签图标"
+
+
 def test_shop_scrolls_a_few_times_and_then_leaves(monkeypatch):
     """商店里一行都买不了（今天全卖完了）⇒ 下滑几次就走，不磨时间。
 

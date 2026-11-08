@@ -528,19 +528,45 @@ _NODE_TEMPLATES = {
     _SEG_OUTPOST_2: "morola_node",
 }
 # 视角平移扫寻序列（找不到目标节点时的拖动增量，手指拖动方向 = 内容跟随方向：
-# 往下拖 (+y) 露出上面的地图）。整轮净位移为 0，扫完回到出发点附近；
+# 往下拖 (+y) 露出上面的地图）。整轮 y 方向净位移为 0，扫完回到出发点附近；
 # 上限 _PAN_LIMIT 次，找不到大不了原地等状态超时兜底（fail-closed，绝不瞎点）。
+#
+# ⚠️ **每个增量都必须让终点留在 `_PAN_SAFE` 里面**（2026-11-05 PC 真机就死在这）：
+# 原来写的是 `(0, -680)` / `(0, 680)`，配起点 y=560 算出来是 **-120 / 1240** ——
+# 后者越过画布底边 1132，前者是负坐标。拖动终点落到画面外，这一拖在游戏侧
+# 要么被吞掉要么只走半程，六次扫寻全空 ⇒ 地图上永远找不到 BOSS 节点 ⇒
+# 干等状态超时。日志特征：`pan_map_1..6` 六个动作都发了，之后一条业务动作都没有。
+# ⇒ 数值改成对称的 ±480（终点 80 / 1040，两侧各留 20px 余量），并在
+# `_pan_endpoint` 里再夹一次 —— 常量将来被人改宽时，夹取仍然兜得住。
 _PAN_SWEEPS: tuple[tuple[int, int], ...] = (
     (0, 340),    # 往下拖 → 露出上方（goblin 在默认视角被顶部 HUD 挡住，最先试这个）
-    (0, -680),   # 拉回并越过
+    (0, -480),   # 拉回并越过
     (420, 0),    # 往右拖 → 露出左侧（morola 偏左）
     (-840, 0),   # 拉回并越过
-    (0, 680),
+    (0, 480),
     (0, -340),
 )
 _PAN_LIMIT = 6
 _PAN_START = (990, 560)     # 滑动起点（屏幕中部地图区）
 _PAN_DURATION_MS = 600
+# 滑动起终点允许出现的范围：(x0, y0, x1, y1)。画布 1982x1132（见 `_CURSOR_REGION`
+# 与夹具裁剪）；四边各留 60px，避免贴边触发系统手势/被窗口层裁掉。
+_PAN_SAFE = (60, 60, 1922, 1072)
+
+
+def _pan_endpoint(delta: tuple[int, int]) -> tuple[int, int]:
+    """把扫寻增量换算成**安全区内**的拖动终点。
+
+    起点固定 `_PAN_START`，终点 = 起点 + 增量，再夹进 `_PAN_SAFE`。
+    夹取是第二道防线：它保证「配置被改宽」时不会再把坐标算到画面外，
+    但**不**替配置擦屁股 —— 夹完位移变小、扫寻范围变窄这种事要靠
+    `test_every_pan_endpoint_stays_inside_the_canvas` 在测试里先拦住。
+    """
+
+    return (
+        min(max(_PAN_START[0] + delta[0], _PAN_SAFE[0]), _PAN_SAFE[2]),
+        min(max(_PAN_START[1] + delta[1], _PAN_SAFE[1]), _PAN_SAFE[3]),
+    )
 # 「走路结束」判定：地图中部内容区连续 2 帧几乎不变（角色/旗帜的待机动画按容忍度豁免）。
 _SETTLE_REGION = (400, 200, 1100, 600)
 _SETTLE_CHANGED_MAX = (_SETTLE_REGION[2] * _SETTLE_REGION[3]) // 10
@@ -741,6 +767,10 @@ class SideStoryStateMachine(StoryStateMachine):
         # ``_boss_done``：② 已打满（entry_exhausted 命中），正走在「返回 → 场景页
         # 「离开」→ 地图」的退场路上；回到地图即切 ③。
         self._boss_done = False
+        # ``_outpost_done``：③ 据点已打满（entry_exhausted 命中），正走在同一条退场
+        # 路上；回到地图即推进到**下一个**据点（而不是收工）。与 `_boss_done` 分开是
+        # 因为两者推进的目标不同：BOSS 段只有一个去处（据点①），据点段要分①②。
+        self._outpost_done = False
         # ``_final_leave``：最后一个据点已点「离开」，回地图即抛 SideStoryCleared。
         self._final_leave = False
         # ``_node_clicked``：已点目标节点图标，角色正在走过去；期间**绝不点
@@ -940,26 +970,47 @@ class SideStoryStateMachine(StoryStateMachine):
         #   * `_SEG_BOSS`：地狱级打满 ⇒ **不再收工**，点「返回」退场接 ③（用户明确要求
         #     ①→②→③ 连起来）。回程两条路都接得住：落到地狱级场景页 → `_boss_done`
         #     分支点「离开」；直接落回地图 → 地图分支的 `_boss_done` 兜底切 ③。
-        #   * 其他段（③ 据点次数用尽 / ① 不可能出现）：维持旧语义 = 本路线收工
-        #     （退出码 2）。⚠️ 已知局限：中途重跑且据点①已用尽时，会在这里收工而跳过
-        #     据点②——「从耗尽的据点准备页一路退回地图再导航下一个」需要更多退场机制，
-        #     本期不做，文档已记。
+        #   * `_SEG_OUTPOST_*`：据点打满 ⇒ 同样不退化成收工，点「返回」退场后由地图
+        #     分支推进到下一段（据点① → 据点②，据点② → 收工）。旧行为在这里直接
+        #     抛 `SideStoryCleared`，据点①已用尽时会**静默跳过据点②**。
+        #   * `_SEG_NORMAL`：理论上不可能出现（普通关卡不显示次数），维持收工。
         exhausted = self._locate(screen, "entry_exhausted")
         if exhausted is not None:
-            if self._segment == _SEG_BOSS:
-                self._boss_done = True
+            if self._segment != _SEG_NORMAL:
                 back = self._locate(screen, "story_back")
-                if back is not None:
-                    return True, self._action(
-                        "boss_done_back",
-                        back.center,
-                        source_page="队伍准备",
-                        target_pages=("地狱级场景页", "助手选择", "队伍准备", "关卡地图"),
-                        reason="② BOSS 次数用尽：点「返回」退场接③据点（不再就地收工）",
-                        target_states=(StoryState.STAGE, StoryState.TEAM),
+                if back is None:
+                    # 「返回」这一帧还没认出来，先等（下一帧会再进这个分支）。
+                    return True, None
+                if self._segment == _SEG_BOSS:
+                    self._boss_done = True
+                    name = "boss_done_back"
+                    reason = "② BOSS 次数用尽：点「返回」退场接③据点（不再就地收工）"
+                else:
+                    # ③ 据点用尽 ⇒ 同样是「这一段打完了」，但**不能收工**：
+                    # 旧行为在这里直接 `SideStoryCleared`，于是「中途重跑 + 据点①已用尽」
+                    # 会把据点②整个跳过（代码里原来就写着这条已知局限）。
+                    # 现在改成点「返回」退场，回地图后由地图分支推进到下一段：
+                    # 据点① → 据点②，据点② → 收工。
+                    self._outpost_done = True
+                    name = "outpost_done_back"
+                    reason = (
+                        "③ 据点次数用尽：点「返回」退场，回地图后接下一个据点"
+                        "（不再就地收工，旧行为会跳过据点②）"
                     )
-                # 「返回」这一帧还没认出来，先等（下一帧会再进这个分支）。
-                return True, None
+                return True, self._action(
+                    name,
+                    back.center,
+                    source_page="队伍准备",
+                    target_pages=(
+                        "据点场景页",
+                        "地狱级场景页",
+                        "助手选择",
+                        "队伍准备",
+                        "关卡地图",
+                    ),
+                    reason=reason,
+                    target_states=(StoryState.STAGE, StoryState.TEAM),
+                )
             raise SideStoryCleared(
                 "次数已用尽（可入场次数已全部耗尽），支线故事本路线完成"
             )
@@ -1066,6 +1117,15 @@ class SideStoryStateMachine(StoryStateMachine):
             if self._boss_done:
                 self._boss_done = False
                 self._segment = _SEG_OUTPOST_1
+            # ③ 据点打满后若「返回」直接落回地图（没经过据点场景页），在这里推进：
+            # 据点① → 据点②；据点② → 收工。⚠️ 必须排在 `_final_leave` 判断**之前**，
+            # 它可能会把 `_final_leave` 置起来 —— 那一帧就该收工。
+            if self._outpost_done:
+                self._outpost_done = False
+                if self._segment == _SEG_OUTPOST_1:
+                    self._segment = _SEG_OUTPOST_2
+                else:
+                    self._final_leave = True
             # 最后一个据点点完「离开」回地图 ⇒ 全程完成，收工（退出码 2）。
             if self._final_leave:
                 raise SideStoryCleared(
@@ -1075,9 +1135,35 @@ class SideStoryStateMachine(StoryStateMachine):
                 # ① 段：按光标走（原逻辑不动）。
                 point = self._cursor_point(screen)
                 if point is None:
-                    # 转场途中（地图刚进场还没画完）或本期地图的光标长得不一样。
-                    # 返回 None = 「这一帧没有要做的动作」，让主循环继续轮询，
-                    # 而不是抛「未识别」把整条路线判死。
+                    # ⚠️ 2026-11-07 真机：本期地图上**根本不画那颗青色菱形**（颜色区间里
+                    # 最大候选面积只有 102，判据要 ≥150）。角色站在终点节点上时尤其如此。
+                    # 旧行为在这里返回 None 干等到状态超时 —— 用户手动停在地图再启动
+                    # （这正好是接力的典型落点）就永远动不了，看起来就是「三段没串起来」。
+                    #
+                    # 改用游戏自己给的入口：右下角「准备战斗」是**当前选中节点**的按钮，
+                    # 常显、语义明确，比去找一颗会随期次换皮的发光标记可靠得多。
+                    # 它只在「找不到光标」时才被读到，正常帧仍然走上面的光标路径。
+                    prep = self._locate(screen, "prepare_battle_map")
+                    if prep is not None:
+                        self._arrow_misses = 0
+                        return True, self._action(
+                            "pick_stage",
+                            prep.center,
+                            source_page="关卡地图",
+                            target_pages=(
+                                "选择辅助英雄",
+                                "助手选择",
+                                "队伍准备",
+                                "选择难度",
+                                "关卡入口",
+                            ),
+                            reason=(
+                                "地图上没有当前角色光标：点「准备战斗」"
+                                "进入当前选中关卡（贯通三段的第一环）"
+                            ),
+                            target_states=(StoryState.TEAM, StoryState.STAGE),
+                        )
+                    # 连「准备战斗」都没有 = 确实还在转场途中，继续轮询。
                     return True, None
                 self._arrow_misses = 0
                 return True, self._action(
@@ -1277,6 +1363,10 @@ class SideStoryStateMachine(StoryStateMachine):
         else:
             self._final_leave = True
             reason = "据点②（摩罗戈拉）打完，点「离开」回地图收工"
+        # 场景页这条路已经推进过段落了 ⇒ 清掉 `_outpost_done`，别让地图分支再推一次
+        # （再推一次会把据点②整个跳过去）。这条对「正常打完」和「次数用尽后退场」
+        # 两种来路都成立。
+        self._outpost_done = False
         self._leaving = True
         return self._action(
             "outpost_leave",
@@ -1363,7 +1453,7 @@ class SideStoryStateMachine(StoryStateMachine):
         if self._pan_attempts > _PAN_LIMIT:
             return None
         delta = _PAN_SWEEPS[(self._pan_attempts - 1) % len(_PAN_SWEEPS)]
-        end = (_PAN_START[0] + delta[0], _PAN_START[1] + delta[1])
+        end = _pan_endpoint(delta)
         return self._action(
             f"pan_map_{self._pan_attempts}",
             end,
@@ -1408,6 +1498,7 @@ class SideStoryStateMachine(StoryStateMachine):
             self._segment,
             self._leaving,
             self._boss_done,
+            self._outpost_done,
             self._final_leave,
             self._node_clicked,
             self._pan_attempts,
@@ -1425,6 +1516,7 @@ class SideStoryStateMachine(StoryStateMachine):
                 self._segment,
                 self._leaving,
                 self._boss_done,
+                self._outpost_done,
                 self._final_leave,
                 self._node_clicked,
                 self._pan_attempts,
