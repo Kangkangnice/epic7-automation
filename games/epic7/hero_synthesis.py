@@ -17,7 +17,7 @@ from typing import Any, Callable, Optional
 import cv2
 import numpy as np
 
-from auto_game_unified.core.matcher import load_template
+from auto_game_unified.core.matcher import find_template, load_template
 from auto_game_unified.games.epic7.template_paths import is_pc
 from auto_game_unified.core.recovery import RecoveryGate
 from auto_game_unified.core.runtime import Runtime
@@ -158,6 +158,16 @@ class HeroTemplates:
     threshold: float = 0.80
     assume_non_max_rating: bool = False
     pc: bool = False
+    # 「已达最高献身技能级别，无法继续刻印记忆。」提示条（**PC 专属**，可选）。
+    #
+    # 为什么是可选而不是必需：这张图只存在于 ``hero/pc/`` 下，模拟器没有对应样本，
+    # 塞进证据画像会被 ``_assert_anchor_templates`` 判成「判据锚点缺模板」直接起不来。
+    # 加载方式与 ``rating_sss_list`` 同一个套路：文件不在就是 None，判据整段跳过。
+    #
+    # 判据来历（2026-11-08）：英雄刻印已满时游戏在底部挂这条黄条，绿按钮不出现、
+    # 但右侧材料卡照样认得出 ⇒ 「既不能加料也不能合成」那道逃生门永远不成立，
+    # 整条路线在刻印页空等 5 分钟。实测正例 29 张全 1.0000、反例 1483 张最高 0.4091。
+    imprint_max_level_notice: Optional[np.ndarray] = None
 
 
 def build_hero_templates(template_root: Path) -> HeroTemplates:
@@ -180,6 +190,8 @@ def build_hero_templates(template_root: Path) -> HeroTemplates:
         if Path(rating_sss_list_path).is_file()
         else None
     )
+    # PC 专属：「已达最高献身技能级别」提示条。模拟器没有这张图 ⇒ None ⇒ 判据跳过。
+    notice_path = hero / "imprint_max_level_notice.png"
     return HeroTemplates(
         filter_button=load_template(str(hero / "filter_button.png")),
         filter_level_label=load_template(str(hero / "filter_level_label.png")),
@@ -225,6 +237,14 @@ def build_hero_templates(template_root: Path) -> HeroTemplates:
         threshold=evidence.atom("filter_button").threshold,
         assume_non_max_rating=False,
         pc=is_pc(template_root),
+        # ⚠️ 用 ``hero / <名字>`` 而不是 ``hero / "pc" / <名字>``：``TemplateDir``
+        # 已经会在 PC 后端下自动优先取 ``hero/pc/同名图``，再手拼一层 pc/ 反而
+        # 会把回落路径写死（踩过「双候选形同虚设」那个坑，见 PC 移植 playbook 坑 23）。
+        imprint_max_level_notice=(
+            load_template(str(notice_path))
+            if Path(notice_path).is_file()
+            else None
+        ),
     )
 
 
@@ -327,6 +347,33 @@ class HeroSynthStateMachine(HeroVisionMixin):
     _IMPRINT_ADD_NO_PROGRESS_LIMIT = 3
     # 刻印页「既不能加料也不能合成」连续确认多少次就返回英雄列表换下一个。
     _IMPRINT_ESCAPE_OBSERVATIONS = 3
+    # 「已达最高献身技能级别，无法继续刻印记忆。」提示条的裁框与阈值。
+    # 来历：`runtime_logs/_hero_build_notice.py` 从 11-08 现场帧裁出（545x66），
+    # 正例 29 张全 **1.0000**、反例全库 1483 张最高 **0.4091** ⇒ 阈值 0.80
+    # 两侧余量各 0.20 / 0.39。**改这两个数之前先重跑那个脚本。**
+    _MAX_LEVEL_NOTICE_REGION = (688, 1010, 545, 66)
+    _MAX_LEVEL_NOTICE_THRESHOLD = 0.80
+
+    def _imprint_max_level_notice_present(self, screen: np.ndarray) -> bool:
+        """画面底部是不是挂着「已达最高献身技能级别，无法继续刻印记忆。」。
+
+        这是**业务结论**而不是识别故障：这个英雄刻印已经满了，点材料也加不进去。
+        判据只存在于 PC（``hero/pc/imprint_max_level_notice.png``）；模拟器拿到的
+        是 None ⇒ 直接返回 False，模拟器行为与从前一字不差。
+        """
+        template = self.templates.imprint_max_level_notice
+        if template is None:
+            return False
+        return (
+            find_template(
+                screen,
+                template,
+                self._MAX_LEVEL_NOTICE_THRESHOLD,
+                region=self._MAX_LEVEL_NOTICE_REGION,
+                reference_size=self._REFERENCE_SIZE,
+            )
+            is not None
+        )
 
     @staticmethod
     def _assert_anchor_templates(templates: HeroTemplates) -> None:
@@ -942,6 +989,31 @@ class HeroSynthStateMachine(HeroVisionMixin):
             )
         if self.state is HeroSynthState.IMPRINT_ADD and not complete_imprint_page:
             if pc:
+                # ⚠️ 业务结论优先于逃生门（2026-11-08 实跑补）：英雄刻印已满时，
+                # 游戏在底部挂一条黄条「已达最高献身技能级别，无法继续刻印记忆。」——
+                # 绿按钮不出现（不能合成），**但右侧材料卡照样认得出**（看着能加料）。
+                # ⇒ 下面那段「绿按钮不在 + 既没有 Up 卡也没有材料卡」的逃生门
+                #   **永远不成立**，`return None` 一直干等到超时：11-08 08:51~08:56
+                #   整整空等 5 分钟、留下 50 多张同状态诊断帧，整批汇总里记成一个 ✗。
+                # 这条提示是**确定性的业务结论**，不是「等画面稳定」能等出来的东西 ⇒
+                # 认到它就立刻返回英雄列表换下一个，别再空转。
+                # 判据：`hero/pc/imprint_max_level_notice.png`（正例 29 张全 1.0000、
+                #       反例全库 1483 张最高 0.4091）。
+                if self._imprint_max_level_notice_present(screen):
+                    back = self._back_point(screen)
+                    if back is not None:
+                        self._imprint_escape_observations = 0
+                        self._imprint_add_no_progress = 0
+                        return self._simulator_transition_action(
+                            "back_to_list",
+                            back,
+                            source_page="刻印加材料",
+                            target_pages=("英雄列表",),
+                            reason=(
+                                "英雄已达最高献身技能级别（页面底部提示条已确认），"
+                                "这个英雄刻满了，返回列表换下一个"
+                            ),
+                        )
                 # ⚠️ 逃生门（2026-11-03 PC 实测补）：绿按钮不在（**不能合成**）+ 右侧既没有
                 # Up 卡也没有可见材料卡（**不能加料**）⇒ 这一页代码处理不了，原来只会
                 # ``return None`` 干等到转场超时（实测 55 秒），最后连 ESC 回家都失败。
