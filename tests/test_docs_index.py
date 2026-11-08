@@ -218,6 +218,11 @@ def _howto_problems(directory: Path) -> list[str]:
             problems.append(f"{path.name}: last_verified 缺失或不是 YYYY-MM-DD")
         if not fields.get("review_when"):
             problems.append(f"{path.name}: review_when 是空的")
+        if not fields.get("when"):
+            problems.append(
+                f"{path.name}: 缺 when —— 要写「什么时候该翻这份」的可判定触发条件"
+                "（例如「要跑 --live 实机时」），不要写「需要时」"
+            )
         topic = fields.get("topic", "").strip()
         if not topic:
             problems.append(f"{path.name}: 缺 topic（一个主题一个英文短键，全库唯一）")
