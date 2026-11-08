@@ -559,6 +559,31 @@ class PcCaptureRetryTests(unittest.TestCase):
 
         self.assertEqual(pc_window.CAPTURE_ATTEMPTS, calls["count"])
 
+    def test_the_retry_budget_grows_enough_to_survive_a_reconnect_blackout(self):
+        """线路重连会把画面打成黑屏十几秒：固定 0.3 秒 × 10 次（3 秒）撑不住。
+
+        2026-11-08 竞技场跑到第 6 轮时网络断开，十次重试在两秒多里就打光，
+        紧接着「回首页」也跟着失败。光加次数治不了这一类 —— 黑屏时长取决于
+        「重连要多久」，不是「抖一下」。
+
+        这条锁的是**退避形状**，不写死具体数值：
+        ① 首次等待仍是原来的短延迟（偶发重绘失败的代价不能变大）；
+        ② 总预算必须够到十秒以上；
+        ③ 单跳不得超过上限（仍然有界）。
+        """
+        find = patch.object(self.game, "_find_window", return_value=1)
+        rect = patch.object(self.game, "_validated_rect")
+        bitblt = patch.object(self.game, "_capture_client_bitblt", return_value=None)
+        with find, rect, bitblt, patch.object(self.game, "_sleep") as sleep:
+            with self.assertRaisesRegex(RuntimeError, "PC 后台截图失败"):
+                self.game.capture()
+
+        waits = [call.args[0] for call in sleep.call_args_list]
+        self.assertTrue(waits, "一次等待都没有，退避根本没生效")
+        self.assertEqual(pc_window.CAPTURE_RETRY_DELAY, waits[0])
+        self.assertGreaterEqual(sum(waits), 10.0)
+        self.assertLessEqual(max(waits), pc_window.CAPTURE_MAX_DELAY)
+
 
 if __name__ == "__main__":
     unittest.main()

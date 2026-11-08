@@ -506,6 +506,9 @@ class ScaleFallbackTests(unittest.TestCase):
                     "battle_clear",
                     "entry_card",
                     "reward_popup_close",
+                    # 2026-11-06 21:42 真机：PC 上分集页被画大 3.5%，
+                    # 原样 white_mask 0.7658（阈 0.80）⇒ 入场后转场永不成立。
+                    "watch_button",
                     "result_title",
                     "team_select_title",
                     "worldboss_title",
