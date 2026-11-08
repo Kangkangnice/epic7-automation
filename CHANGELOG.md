@@ -8,6 +8,7 @@
 
 ### 新增
 
+- **进行中的交接单有了专门去处：`docs/wip/`**（2026-11-08）。上一版把「交接说明不进仓库」一刀切，漏了「做到一半被中断」这一层 —— 那时下一个人只能读未提交的 diff 猜意图，而 `docs/STATUS.md` 上也看不见「有活干了一半」。现在：复制 `docs/wip/_TEMPLATE.md` 建 `docs/wip/<日期>-<主题>.md`，填清 `route` / `status` / `started` / `next_step`，它会**自动出现在 `STATUS.md` 的「在制品」一节**（带状态、开始日期、下一步）；合并进 main 后删掉。元数据由 `tests/test_docs_index.py` 校验，做完的工作请直接删、不要标成 done 留着。同时把 `docs/EXTENDING.md` 加进 `AGENTS.md` 的必读清单（新增路线时原来根本读不到它）。
 - **文档治理：现状页由代码生成，索引即白名单**（2026-11-08）。起因是清点时发现 `docs/` 下 144 份 Markdown 里有 108 份是过期的一次性产物，而且文档里写着「十六条路线」而代码已是十七条 —— 这类漂移不会让任何测试变红，却会让读文档的人（尤其是 AI agent）照着过期的事实干活。现在：①`docs/STATUS.md` 由 `python -m auto_game_unified.tools.gen_status` 从 `catalog.py` / `modes.py` / 素材目录算出，**不许手改**，与代码不一致时 `tests/test_status_doc.py` 直接报红并给出重生成命令；②`docs/README.md` 是索引也是白名单，`docs/` 下每个文档必须能在索引里点到（`tests/test_docs_index.py`），新冒出来一份没人知道的文档会被点名拦下；③同一处门禁还查断链、查决策记录的元数据、并禁止首页抄写路线条数；④新增 `docs/decisions/` 记录「为什么当初这么定」，一决策一文件、只增不改。**「交接说明 / 施工计划 / 设计稿」自此不进仓库**，信息当场拆进提交信息、本文件或决策记录。
 - **PC 端「不占用前台」输入通道（实验）**：`core/pc_window.py` 增加 `foreground` / `background` 两条通道，**默认仍是抢前台**。后台通道走 `SetCursorPos` + `WM_ACTIVATE` + `PostMessage` —— 本客户端是 GLFW（导入表里有 `GetCursorPos` / `RegisterRawInputDevices`），UI 每帧读真实系统光标，只发消息一定点不动。命令行 `--pc-input-mode background`；桌面界面在 PC 后端下多一颗「不占用前台」开关，选择会记进会话存档。⚠️ 拖拽/滑动与 Esc 返回在后台通道下**安全中止**而不是静默降级；启用前必须先用 `tools/probe_background_input.py` 在本机实测生效。
 - **后台输入探针**：`tools/probe_background_input.py` 支持 hover / click / activate 三种变体、多点扫描、用户空闲与画面静止护栏、有界等待空闲（`--wait-idle`）。无人值守时只允许 hover，绝不自动点击；探针不抢前台、结束时还原系统光标、发送前后各存一帧。

@@ -21,9 +21,21 @@
 
 - `docs/TRANSITION_CONTRACTS.md`
 - `docs/HUMAN_AI_WORKFLOW.md`
+- **新增路线或新增动作**时，还要读 `docs/EXTENDING.md`
 - 目标路线测试和最新真实失败证据
 
 本规则适用于全部路线、模拟器后端和后续 PC 迁移。
+
+## 做到一半要停（超时 / 被叫停 / 上下文用尽）
+
+**先建交接单：复制 `docs/wip/_TEMPLATE.md` 到 `docs/wip/<日期>-<主题>.md`，填完再停。**
+
+它会自动出现在 `docs/STATUS.md` 的「在制品」一节，所以下一个人（或你自己换个会话）
+打开现状页就知道有活没干完、做到哪一步、下一步干什么。
+
+交接单是**临时凭证**：合并进 main 之后删掉它，结论进提交信息 / `CHANGELOG.md` /
+`docs/decisions/` / `docs/maintenance/<路线>.md`。门禁会检查它的元数据是否完整
+（`tests/test_docs_index.py`）。
 
 ## 不可违反的视觉动作契约
 
