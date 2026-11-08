@@ -296,6 +296,73 @@ A 帧**原样**存成了夹具 `tests/fixtures/epic7_knights_donation/support_pa
 思路重写一遍（它只复用了生产常量与 `glyph_boxes` / `normalize_glyph` / `green_mask` / `white_mask`，
 没有自己的私有逻辑）。
 
+## PC 上「请求支援」弹窗认不出：模板焊死了会变的持有数量（2026-11-08 修）
+
+### 现象
+
+每日任务连打，骑士团捐赠这一步直接报：
+
+```
+模式=骑士团捐赠 结论待确认=UnrecognizedScreen 详情=骑士团捐赠画面[骑士团活动·资源支援]未识别
+```
+
+随后 `页面=骑士团捐赠:骑士团活动·资源支援 状态=画面已静止但仍认不出是哪一页`
+→ 等满 60 秒转场超时 → 整批**退出码 1**（其余六条路线都是 ✓）。
+
+### 根因：不在弹窗，在模板
+
+弹窗是**正常打开**的（现场帧里「请求支援」标题、四个页签、资源网格、绿色确认键齐全）。
+真正的断点是页面组合判据：
+
+| 原子 | 现场帧得分 | 阈值 | 结论 |
+|---|---|---|---|
+| `popup_title` | 1.0000 | 0.80 | 过 |
+| `flower_cell` | **0.8426** | **0.88** | **不过** |
+| `flower_cell_selected` | 0.4127 | 0.85 | 不过（正确，未选中） |
+
+`request_popup` = `popup_title` + 花朵格子任一态 ⇒ 第二项差 **0.0374** 不过阈 ⇒ 整页判不出。
+
+为什么差这一点：`pc/flower_cell.png` 采图那天那格写的是「**363**」，11-08 现场是「**1321**」。
+模板把**会变的持有数量**一起裁进去了，数字一换，`TM_CCOEFF_NORMED` 就从 1.0000 掉到 0.8426。
+
+### 修法：裁掉数字行，判据与阈值一字未改
+
+两张 PC 图各裁到**高 130**（原 184）：数字行落到模板之外，花朵图标、绿勾（选中态）、
+右侧金框（选中态）都还在。`evidence` 的 region、阈值、点击点计算全都没动 ——
+匹配中心只上移 27 px（(1642,686) → (1642,659)），仍压在格子内。
+
+原图备份在 `runtime_logs/_kd_flower_backup/flower_cell{,_selected}.184.png`。
+
+### 改完的实测（`runtime_logs/_probe_kd_popup_atoms.py`，与实跑同一把尺）
+
+| 项 | 分数 | 门槛 | 结论 |
+|---|---|---|---|
+| `flower_cell`（1321 那格，未选中） | **0.9999** | 正例 ≥0.94 | ✓ |
+| `flower_cell_selected`（同一格，未选中） | **0.6081** | 反例 ≤0.70 | ✓ |
+| 两者间隔 | 0.39 | ≥0.15 | ✓ |
+| `observe_page` | `REQUEST_POPUP` | — | ✓ |
+
+全库 40 张骑士团帧复扫（`runtime_logs/_kd_scan_flower_frames.py`）：
+11-02 / 11-08 那 12 张 PC 弹窗帧全部 0.9999，且页面全部判成 `request_popup`；
+其余页面帧（主页 / 列表 / 每周任务 / 奖励弹窗）上 `flower_cell` 最高 0.38，零误命中。
+
+### ⚠️ 还没被真机验过的一项
+
+`flower_cell_selected` 的**正例**目前只有模拟器帧（`tests/fixtures/epic7_knights_donation/`
+`request_popup_selected.png`，0.9480）。PC 侧缺一张「花真被选中」的现场帧 ——
+采集它需要点一下花格（不消耗额度），但那要用**管理员权限**驱动游戏（游戏是管理员进程，
+UIPI 会拦非提权进程的键鼠注入）。
+
+补法：`python auto_game_unified/runtime_logs/_kd_capture_flower.py`（该脚本只导航 + 点花格 +
+抓帧，**不点底部确认键**），然后把 `04_flower_selected.png` 量一遍，
+应 ≥0.94；再把它放进 `tests/fixtures/epic7_knights_donation_pc/`。
+
+### 守它的测试
+
+`tests/test_knights_donation_pc.py`（5 条）：弹窗帧必须判成 `REQUEST_POPUP` /
+花朵格在「1321」那帧上 ≥0.94 且落在格子内 / 未选中时选中态判据 ≤0.70 /
+**模板高度 ≤140（谁把数字行带回来就红）** / 资源支援页上两颗花朵格判据都不许命中。
+
 ## 改模板 / 加夹具时别忘了登记
 
 1. `tests/test_project_layout.py::test_epic7_knights_donation_fixture_set_exists`
