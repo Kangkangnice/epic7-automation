@@ -85,8 +85,8 @@ python tools/compress_images.py --staged --apply && git add <刚压过的文件>
 
 ## 完成规则
 
-运行编译检查和**按改动范围选定的测试**。涉及真实游戏时，在用户完成整个业务闭环前只能报告
-离线验证结果；局部流程通过不能证明路线已经修复。
+运行编译检查和**按改动范围选定的测试**；涉及真实游戏时，业务闭环没走完只能报离线结果
+（局部通过不等于路线修好）。实机怎么跑、权限怎么判见 [`docs/howto/live_verification.md`](docs/howto/live_verification.md)。
 
 ## 验证门槛：改多少验多少，**同一次提交只跑一遍**
 
