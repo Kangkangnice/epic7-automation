@@ -1,0 +1,27 @@
+#!/bin/sh
+# 提交信息闸门：本次改动命中文档复审规则时，必须留下「看过」的痕迹。
+#
+# 为什么单独一个钩子：pre-commit 看的是**文件内容**，本钩子看的是**提交信息**。
+# 复审是人的判断，机器验证不了「真读了」，但能验证「有没有留痕」——
+# 这就把「审文档」从可跳过的自觉动作，变成提交时必然会碰到的一问。
+#
+# 本地可用 git commit --no-verify 跳过；服务端跳不过：
+# .github/workflows/tests.yml 的 Governance gate 会在干净检出上再跑一遍治理门禁。
+#
+# 安装（每个 clone 一次，与 pre-commit 共用同一目录）：
+#     git config core.hooksPath tools/githooks
+#
+# $1 = git 传进来的提交信息文件路径（一般是 .git/COMMIT_EDITMSG）。
+
+if command -v python >/dev/null 2>&1; then
+    PY=python
+elif command -v py >/dev/null 2>&1; then
+    PY="py -3"
+else
+    echo "[commit-msg] 找不到 python，检查无法执行 —— 拒绝提交。" >&2
+    exit 1
+fi
+
+# shellcheck disable=SC2086
+$PY tools/doc_review.py --staged --require-note "$1"
+exit $?

@@ -1,17 +1,14 @@
 """文档漂移审查工具的护栏。
 
 分两半：
-- **纯函数**（``affected_docs`` / ``is_stale``）：不碰 git 不碰磁盘，直接拿假数据验；
-- **接线**（游标文件、映射表里的文档是否还存在）：这类错误不会自己冒出来，
+- **纯函数**（``affected_docs`` / ``review_note_missing``）：不碰 git 不碰磁盘，拿假数据验；
+- **接线**（映射表里的文档是否还存在、关键路径有没有规则）：这类错误不会自己冒出来，
   必须有人守着 —— 比如某份维护手册改了名，映射表还指着旧名字，工具就静默少提醒一份。
 """
 
 from __future__ import annotations
 
-import subprocess
 from pathlib import Path
-
-import pytest
 
 from auto_game_unified.tools import doc_review
 
@@ -46,6 +43,32 @@ def test_shared_modules_pull_in_the_contract_docs() -> None:
     assert "docs/TRANSITION_CONTRACTS.md" in docs
 
 
+def test_pc_changes_remind_you_of_the_pc_guide() -> None:
+    """反向验证：PC 主文档自称唯一权威，改了窗口层就必须提醒复审它。
+
+    2026-11-08 治理时发现映射表 0 条指向它 —— 也就是说这份 666 行文档
+    当时没有任何机制会让人回头看。守卫的就是「补了规则又悄悄删掉」。
+    """
+    for changed in (
+        "core/pc_window.py",
+        "games/epic7/template_paths.py",
+        "games/epic7/templates/story/home.png",
+        "desktop/catalog.py",
+        "main.py",
+    ):
+        docs = doc_review.affected_docs([changed])
+        assert "docs/PC_TEMPLATE_MIGRATION.md" in docs, (
+            f"改了 {changed} 却没提醒复审 PC 客户端接入指南：{docs}"
+        )
+
+
+def test_shared_templates_remind_you_of_both_backends() -> None:
+    """PC 会回落共享模板，改共享图必须同时看采集规范与 PC 结论。"""
+    docs = doc_review.affected_docs(["games/epic7/templates/story/home.png"])
+    assert "docs/TEMPLATE_CAPTURE.md" in docs
+    assert "docs/PC_TEMPLATE_MIGRATION.md" in docs
+
+
 def test_duplicates_are_collapsed() -> None:
     """多个模块映射到同一份文档时只出现一次。"""
     docs = doc_review.affected_docs(["games/epic7/arena.py", "games/epic7/arena.py"])
@@ -77,52 +100,72 @@ def test_every_mapped_document_really_exists() -> None:
     )
 
 
-# ---------------------------------------------------------------- 阈值
+# ---------------------------------------------------------------- 映射覆盖率
 
 
-@pytest.mark.parametrize(
-    ("behind", "expected"),
-    [(0, False), (1, False), (29, False), (30, False), (31, True), (200, True)],
-)
-def test_the_stale_threshold_is_inclusive_of_the_boundary(behind: int, expected: bool) -> None:
-    """正好等于阈值不算落后，超过才算 —— 边界写死，避免以后改动时悄悄挪。"""
-    assert doc_review.is_stale(behind) is expected
+def test_every_critical_path_has_a_review_target() -> None:
+    """映射表不许漏掉关键路径。
 
-
-# ---------------------------------------------------------------- 游标
-
-
-def _git(*args: str) -> str:
-    result = subprocess.run(
-        ["git", *args], cwd=ROOT, capture_output=True, text=True, check=False
-    )
-    return result.stdout.strip() if result.returncode == 0 else ""
-
-
-def test_the_cursor_file_holds_a_real_commit() -> None:
-    """游标必须是一个当前仓库里真实存在的提交，否则工具会直接报错退出。"""
-    cursor = doc_review.read_cursor()
-    if not cursor:
-        pytest.skip("还没设过游标（首次使用请跑 doc_review --mark）")
-    assert _git("cat-file", "-t", cursor) == "commit", (
-        f"docs/doc-review-cursor.txt 里的 {cursor!r} 不是一个提交。"
-        "常见原因：改写过历史、或者从别的分支抄了 SHA。跑 --mark 重置即可。"
+    守的是「新加了一个模块 / 改了某条通道，映射表却没登记」—— 工具不会报错，
+    只会静默少提醒一份文档。2026-11-09 就漏过 ``core/pc_window.py``。
+    """
+    missing = [path for path in doc_review.MUST_MAP if not doc_review.affected_docs([path])]
+    assert not missing, (
+        "这些关键改动路径没有任何复审规则：\n  "
+        + "\n  ".join(missing)
+        + "\n请在 doc_review.DOC_RULES 补一条，别靠人记得。"
     )
 
 
-def test_the_cursor_is_an_ancestor_of_head() -> None:
-    """游标必须是 HEAD 的祖先 —— 否则「之后有多少提交」这个数就没有意义了。"""
-    cursor = doc_review.read_cursor()
-    if not cursor:
-        pytest.skip("还没设过游标")
-    if _git("cat-file", "-t", cursor) != "commit":
-        pytest.skip("游标不是提交，由上一条用例报错")
-    code = subprocess.run(
-        ["git", "merge-base", "--is-ancestor", cursor, "HEAD"],
-        cwd=ROOT,
-        capture_output=True,
-        check=False,
-    ).returncode
-    assert code == 0, (
-        f"游标 {cursor[:7]} 不是 HEAD 的祖先（可能改写过历史）。跑 --mark 重置。"
+def test_staged_mode_reads_the_index_not_a_cursor(monkeypatch) -> None:
+    """复审只看本次改动，不再依赖任何「上次审到哪」的状态。"""
+    calls: list[tuple[str, ...]] = []
+
+    def fake_git(*args: str) -> str:
+        calls.append(args)
+        return "core/pc_window.py\n"
+
+    monkeypatch.setattr(doc_review, "_git", fake_git)
+    assert doc_review.staged_files() == ["core/pc_window.py"]
+    assert calls[0][:2] == ("diff", "--cached")
+
+
+# ---------------------------------------------------------------- 提交留痕
+
+
+def test_a_commit_that_changes_mapped_code_needs_a_note(tmp_path: Path) -> None:
+    """命中规则的提交，没写复审留痕就该被拦。"""
+    docs = doc_review.affected_docs(["core/pc_window.py"])
+    assert docs, "前提不成立：这条路径本来就该命中规则"
+    message = tmp_path / "COMMIT_EDITMSG"
+    message.write_text("修一个窗口问题\n", encoding="utf-8")
+    assert doc_review.review_note_missing(message, docs)
+
+
+def test_a_commit_with_the_note_passes(tmp_path: Path) -> None:
+    message = tmp_path / "COMMIT_EDITMSG"
+    message.write_text(
+        "修一个窗口问题\n\nDoc-reviewed: PC 主文档现行结论未变\n",
+        encoding="utf-8",
     )
+    assert not doc_review.review_note_missing(message, ["docs/PC_TEMPLATE_MIGRATION.md"])
+
+
+def test_a_commit_that_touches_nothing_mapped_needs_no_note(tmp_path: Path) -> None:
+    """没命中规则就不该逼人写标记，否则大家会学会无脑复制。"""
+    message = tmp_path / "COMMIT_EDITMSG"
+    message.write_text("只改了测试\n", encoding="utf-8")
+    assert not doc_review.review_note_missing(message, [])
+    assert doc_review.affected_docs(["tests/test_arena.py"]) == []
+
+
+def test_an_unreadable_commit_message_is_rejected(tmp_path: Path) -> None:
+    """读不到提交信息时 fail-closed，别当成「审过了」。"""
+    assert doc_review.review_note_missing(tmp_path / "missing", ["docs/STATUS.md"])
+
+
+def test_the_note_marker_is_exact(tmp_path: Path) -> None:
+    """大小写/别名不算留痕，避免随手一句「看过文档」就蒙混过去。"""
+    message = tmp_path / "COMMIT_EDITMSG"
+    message.write_text("doc-reviewed: 看过了\n", encoding="utf-8")
+    assert doc_review.review_note_missing(message, ["docs/STATUS.md"])

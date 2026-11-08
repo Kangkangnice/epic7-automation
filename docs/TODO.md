@@ -8,6 +8,17 @@
 - **部分具备**：已有检测、重试或诊断，但尚未形成完整的来源—目标—业务成功契约，或缺少足够实机证据。
 - **待实证**：当前只能提出风险，需要补充固定截图、录屏、运行日志或可复现测试。
 
+## 待验证 / 缺口登记
+
+> 分类规矩见 [`README.md`](README.md) 第四节：**还欠一步证据的东西放这里**，
+> 别埋在路线维护手册里 —— 埋进去现状页看不见，下一个人也不会知道有活没干完。
+> 正在处理中的活则建 `docs/wip/` 交接单，它会自动出现在 `STATUS.md` 的「在制品」一节。
+
+- [ ] **骑士团捐赠：PC 侧缺一张「花格被选中」的现场帧**。`flower_cell_selected` 目前只有
+  模拟器正例（0.9480），采集要点与脚本见 `maintenance/knights_donation.md`
+  的「还没被真机验过的一项」。需要提权驱动游戏（UIPI 会拦非提权进程的键鼠注入），
+  采完量分应 ≥0.94，再放进 `tests/fixtures/epic7_knights_donation_pc/`。
+
 ## 优先级
 
 - **P0**：资源安全、误点防护、支持范围真实性。
@@ -33,7 +44,8 @@
 - [ ] **建立实机支持证据表**。每条路线分别记录模拟器固定样本、dry-run、1 轮实机、2 轮实机和异常恢复结果。验证：只有证据齐全的组合才能在 README 标记“支持”。
 - [x] **PC 后端声明已按实跑证据更新**（2026-11-06）。旧口径「PC 仅用于采集模板与开发验证、
       没有任何路线通过验收、默认不在界面出现」**已作废**：界面名单
-      `desktop/catalog.PC_READY_ROUTES` 现有 **12 条**，逐条凭据见
+      `desktop/catalog.PC_READY_ROUTES`（**现行条数与名单看 [STATUS.md](STATUS.md)**，
+      本表不写死数字，它会随着放行变化），逐条凭据见
       [PC 客户端接入指南](PC_TEMPLATE_MIGRATION.md) 与下方 PC 迁移矩阵。
       ⚠️ 仍要守住两条：① 放行 = 代码跑通 + 用户在界面自测，**不等于五步验收全做完**；
       ② PC 渲染差异要按**多帧余量**验收，单帧过阈不算证据。
@@ -70,7 +82,8 @@
 ## PC 迁移矩阵（2026-11-06 更新）
 
 > 口径：**跑通即放行，由用户在界面上自测**（2026-11-02 22:06 用户拍板），不要求先走完
-> 五步验收。名单与逐条凭据的唯一出处是 `desktop/catalog.PC_READY_ROUTES`（现 **12 条**），
+> 五步验收。名单与逐条凭据的唯一出处是 `desktop/catalog.PC_READY_ROUTES`
+> （**现行条数与放行名单看 [STATUS.md](STATUS.md)**，本表不写死数字），
 > 本表只做总览；逐页判据、分数与踩坑结论以 [PC 客户端接入指南](PC_TEMPLATE_MIGRATION.md) 为准。
 
 **接入方式**（2026-09-28 定，未再变）：平台差异只允许存在于**图片**
@@ -96,7 +109,10 @@
 | expedition / fodder / survivor / community | 0 | 未在 PC 上做过 | 未开工 |
 
 另有 `templates/global/pc/` 23 张 + `templates/navigation/pc/` 9 张为多路线共用（合计 32）；
-全部 PC 专属图合计 **119 张**（`find games/epic7/templates -path '*/pc/*.png' | wc -l` 口径；
+以上是 2026-11-06 的采集流水账，**别当现行数量**。当时用的
+`find ... -path '*/pc/*.png'` 口径还漏了 `templates/pc/<路线>/` 那一种路径；
+**现行图片数量与统计口径一律看 [STATUS.md](STATUS.md)**（由 `tools/gen_status.py` 从素材目录算出）。
+下面这些是当时的增量记录：
 2026-11-06 12:29 教学遮罩新增 3 张 `global/pc/tutorial_*.png`，同日支线故事期次主页
 新增 2 张 `side_story/pc/event_home_*.png`；17:29 批量四条 ✗ 新增 3 张：
 `hero/pc/auto_select_label.png` 与 `navigation/pc/arena_rank_reward_{title,close}.png`；

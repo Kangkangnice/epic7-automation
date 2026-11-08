@@ -43,10 +43,10 @@
 fail-closed：认不出改了哪条路线、或该路线一个测试文件都匹配不到，一律退化成全量，
 绝不用「没测到」冒充「没问题」。
 
-本机会自动找一个真的装了 pytest 的解释器来跑测试（PATH 上的 `python` 可能没有依赖，
-那样钩子会安静退化成只做编译检查 —— 看着跑了其实没验）。可用环境变量
-`AUTO_GAME_PYTHON` 覆盖。确实找不到时只做编译检查并**大声警告**（不阻塞提交），
-退出码仍为 0；真正的测试失败才会返回非 0。
+本机会自动找一个真的装了 pytest 的解释器来跑测试（PATH 上的 `python` 可能没有依赖）。
+可用环境变量 `AUTO_GAME_PYTHON` 覆盖。**找不到就拒绝提交（退出码 1）** ——
+「没装依赖」不能成为治理规矩静默失效的理由；CI 一定装了依赖，别用 `--no-verify` 绕过。
+静态检查（ruff / mypy）仍按原有降级口径：没装就大声跳过，装了就必须过。
 """
 
 from __future__ import annotations
@@ -823,12 +823,13 @@ def main() -> int:
     interpreter = find_python_with_pytest()
     if interpreter is None:
         print(
-            f"[check] 警告：本机找不到装了 pytest 的解释器，**只做了编译检查、没跑测试**"
+            f"[check] 拒绝提交：本机找不到装了 pytest 的解释器，测试没法跑"
             f"（依据：{reason}）"
         )
-        print("[check] 跳过测试不等于没问题。可用 AUTO_GAME_PYTHON 指定解释器，")
+        print("[check] 可用 AUTO_GAME_PYTHON 指定解释器，")
         print("[check] 例如：AUTO_GAME_PYTHON=D:\\anaconda\\python.exe python tools/check.py")
-        return 0
+        print("[check] 治理规矩不能因为「这台机器没装依赖」就静默失效；CI 一定会装，别绕过。")
+        return 1
 
     print(f"[check] 依据：{reason}")
     print(f"[check] 测试解释器：{' '.join(interpreter)}")

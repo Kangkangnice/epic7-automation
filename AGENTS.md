@@ -23,7 +23,7 @@
 
 - `docs/TRANSITION_CONTRACTS.md`
 - `docs/HUMAN_AI_WORKFLOW.md`
-- **新增路线或新增动作**时，还要读 `docs/EXTENDING.md`
+- **新增路线或新增动作**时读 `docs/EXTENDING.md`；**移植 PC / 改 PC 后端**时读 [`docs/PC_TEMPLATE_MIGRATION.md`](docs/PC_TEMPLATE_MIGRATION.md)
 - **要实机跑闭环**时，读 `docs/howto/live_verification.md`（权限 / 点不动 / 失败判定）
 - 目标路线测试和最新真实失败证据
 

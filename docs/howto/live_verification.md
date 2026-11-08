@@ -2,7 +2,7 @@
 topic: live-verification
 when: 要跑 --live 实机、要点游戏里的按钮、或出现「截图正常但游戏不动」时
 last_verified: 2026-11-08
-review_when: 改了 core/elevation.py、desktop/preflight.py、app.STARTUP_HINTS，或换过客户端
+review_when: 改了 core/elevation.py、core/pc_window.py、desktop/preflight.py、app.STARTUP_HINTS，或换过客户端
 ---
 
 # 实机闭环验证：让 agent 自己动鼠标

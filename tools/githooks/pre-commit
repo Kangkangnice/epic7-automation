@@ -6,6 +6,7 @@
 #     git config core.hooksPath tools/githooks
 #
 # 跳过检查（确有急事时）：git commit --no-verify
+#   ⚠️ 本地能跳，服务端跳不过：CI 会再跑一遍同样的门禁，失败就合不进 main。
 # 手工排查：python tools/check.py --files a.py b.py
 
 if command -v python >/dev/null 2>&1; then
@@ -13,8 +14,9 @@ if command -v python >/dev/null 2>&1; then
 elif command -v py >/dev/null 2>&1; then
     PY="py -3"
 else
-    echo "[pre-commit] 找不到 python，跳过检查（不影响提交）"
-    exit 0
+    echo "[pre-commit] 找不到 python，检查无法执行 —— 拒绝提交。" >&2
+    echo "[pre-commit] 装好 Python 或设置 AUTO_GAME_PYTHON 后重试；别靠 --no-verify 绕过（CI 会拦）。" >&2
+    exit 1
 fi
 
 # 用装了 pytest/opencv 的解释器；缺依赖时 check.py 会降级为只做编译检查。
