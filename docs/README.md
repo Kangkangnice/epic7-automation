@@ -121,3 +121,30 @@ python -m auto_game_unified.tools.doc_review --mark   # 审完没问题，把游
 - [`superpowers/specs/2026-08-25-epic7-auto-assistant-productization-design.md`](superpowers/specs/2026-08-25-epic7-auto-assistant-productization-design.md)
   —— 产品化命名与视觉约束，`NOTICE.md` 引用其第 9 节
 - [`REFERENCE.md`](REFERENCE.md) —— 旧版 README 全文（343 行逐条说明），保留是因为写得比新 README 细
+
+---
+
+## 五、这套机制还在运转吗（自检清单）
+
+**每轮较大的改动合进来之后，或者你接手别人的活之前，跑这五条。** 前四条机器判定，
+第五条要靠眼睛。
+
+| # | 检查什么 | 怎么查 | 通过标准 |
+|---|---|---|---|
+| 1 | 结构化事实与代码是否一致 | `python -m pytest -q tests/test_status_doc.py` | 全绿（红就说明有人手改了 STATUS，或忘了重生成） |
+| 2 | 有没有没登记的文档、断链、ADR 元数据缺失 | `python -m pytest -q tests/test_docs_index.py` | 全绿 |
+| 3 | 复审游标落后多少 | `python -m auto_game_unified.tools.doc_review` | 输出里「需要复审」的几份确实看过了 |
+| 4 | 有没有交接单遗留 | 看 [`STATUS.md`](STATUS.md) 的「在制品」一节 | 该在的在（还在干），做完的已经删掉 |
+| 5 | 提交信息说得清"为什么"吗 | `git log --oneline -10` | 能看懂改了什么、以及**为什么**改（不是只写「修复」） |
+
+### 机器查不了的三件事（要靠人看）
+
+1. **文档进错通道**：一件事该进 `docs/decisions/`（决策），却写进了
+   `docs/maintenance/<路线>.md`（维护手册）—— 白名单只保证"有登记"，管不了"分对类"。
+2. **交接单是"填完就删"还是"堆着"**：`STATUS.md` 里如果排着一串两周前的 `in-progress`，
+   说明有人开了活没收回。
+3. **门禁被绕过**：`--no-verify` 用了没人知道。看 `git log` 里有没有本该红过的提交
+   却照样进来了（比如改了模板却没动 `test_template_paths.py`）。
+
+> 这套东西的验收标准不是「文档写得多」，而是**漂移多久能被发现**：
+> 结构化事实 0 天、半成品 0 天、语义漂移取决于你多久跑一次第 3 条。
