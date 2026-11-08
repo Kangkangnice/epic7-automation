@@ -1,5 +1,6 @@
 import argparse
 import json
+import os
 import sys
 import time
 from dataclasses import dataclass
@@ -15,7 +16,12 @@ from auto_game_unified.core.qqbot import send_qqbot_c2c
 from auto_game_unified.core.recovery import RecoveryGate
 from auto_game_unified.core.runtime import ManualStop, Runtime
 from auto_game_unified.core.window import Epic7Window
-from auto_game_unified.core.pc_window import Epic7PcWindow
+from auto_game_unified.core.pc_window import (
+    PC_INPUT_ENV,
+    PC_INPUT_FOREGROUND,
+    PC_INPUT_MODES,
+    Epic7PcWindow,
+)
 from auto_game_unified.games.epic7.daily_tasks import (
     DAILY_TASKS,
     DailyReport,
@@ -25,7 +31,10 @@ from auto_game_unified.games.epic7.finish_home import _assert_finish_home_declar
 from auto_game_unified.games.epic7.public_flow_verification import (
     assert_public_flow_verification_declared,
 )
-from auto_game_unified.games.epic7.template_paths import resolve_template_dir
+from auto_game_unified.games.epic7.template_paths import (
+    is_pc,
+    resolve_template_dir,
+)
 from auto_game_unified.games.epic7.route_metadata import (
     assert_route_metadata_consistent,
 )
@@ -52,6 +61,7 @@ from auto_game_unified.games.epic7.global_popups import (
     load_knights_signin_templates,
     load_knights_weekly_reward_templates,
     load_uncontrollable_templates,
+    load_tutorial_skip_templates,
     load_tutorial_unlock_templates,
     load_date_change_templates,
     load_knights_activity_templates,
@@ -63,6 +73,9 @@ from auto_game_unified.games.epic7.global_popups import (
     load_web_network_error_templates,
     load_worldboss_support_reward_templates,
 )
+# PC 专属弹窗扩展：新判据与模板全在这个模块里，模拟器分支不会 import 之后
+# 调用它的注入函数（见下面 run_mode 里的 is_pc 判断）。
+from auto_game_unified.games.epic7.global_popups_pc import install_pc_only_popups
 
 
 ROOT = Path(__file__).resolve().parent
@@ -139,6 +152,10 @@ def _build_runtime(
     calibration = None
     if window_backend == "pc":
         game_window = Epic7PcWindow()
+        # 输入通道：默认前台；后台需本机探针实测通过后由界面/命令行显式开启。
+        game_window.set_input_mode(
+            os.environ.get(PC_INPUT_ENV, PC_INPUT_FOREGROUND)
+        )
         calibration = game_window.ensure_render_size()
     else:
         game_window = Epic7Window()
@@ -451,7 +468,7 @@ def run_mode(
     navigator = None
     home_return = None
     if not dry_run:
-        runtime.set_capture_guard(
+        guard = (
             Epic7GlobalPopupGuard(
                 load_network_reconnect_templates(template_root / "global"),
                 intimacy_templates=load_intimacy_level_up_templates(
@@ -557,11 +574,21 @@ def run_mode(
                 tutorial_unlock_templates=load_tutorial_unlock_templates(
                     template_root / "global"
                 ),
+                # 新手账号大厅右上角的「跳过教学 ✕」（把快捷菜单蓝四格顶掉的那块）。
+                # 图只在 pc/ 里 ⇒ 模拟器加载成 None ⇒ 整段跳过。
+                tutorial_skip_templates=load_tutorial_skip_templates(
+                    template_root / "global"
+                ),
                 login_reward_templates=load_login_reward_templates(
                     template_root / "global"
                 ),
             )
         )
+        # PC 专属弹窗（「解锁缘分」等）：**只有** PC 分支会注入，模拟器连这一行
+        # 都不会执行；守卫的构造参数一字未改，模拟器路径保持原样。
+        if is_pc(template_root):
+            guard = install_pc_only_popups(guard, template_root / "global")
+        runtime.set_capture_guard(guard)
         if spec.needs_navigation:
             navigator = Epic7Navigator(
                 build_navigation_templates(template_root),
@@ -649,6 +676,20 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         choices=["emulator", "pc"],
         default="emulator",
         help="capture/input backend: emulator (LDPlayer) or pc (Epic Seven PC client)",
+    )
+    parser.add_argument(
+        "--pc-input-mode",
+        choices=list(PC_INPUT_MODES),
+        # ⚠️ 不能给 default=foreground：桌面界面的 Worker 是通过环境变量
+        # EPIC7_PC_INPUT_MODE 把用户选的通道传下来的，无条件写默认值会把
+        # background 悄悄抹回 foreground（界面勾了「不占用前台」却照样抢前台）。
+        # 只有**命令行显式传了**才覆盖环境变量。
+        default=None,
+        help=(
+            "PC 端输入通道：foreground=抢前台（默认，始终可用）；"
+            "background=不抢前台（SetCursorPos + PostMessage，需本机实测通过）。"
+            "不传则沿用 EPIC7_PC_INPUT_MODE 环境变量"
+        ),
     )
     parser.add_argument("--stop-file", help=argparse.SUPPRESS)
     # 界面传下来的路线参数（``{路线名: {参数名: 值}}`` 的 JSON）。
@@ -855,6 +896,11 @@ def _apply_fixed_cycles(args: argparse.Namespace) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
+    # 输入通道是进程级设置：写进环境供 ``_build_runtime`` 读取（桌面端的子进程
+    # 也走同一条路，见 desktop/worker.py）。放在这里统一落，避免两条入口各写一遍。
+    # ⚠️ 只在 CLI **显式传参**时写：否则 Worker 设好的 background 会被默认值覆盖。
+    if args.pc_input_mode is not None:
+        os.environ[PC_INPUT_ENV] = args.pc_input_mode
     if args.daily:
         # `--mode` 此时无意义（它有默认值 "arena"，无法可靠区分「用户显式传了」），
         # 所以不报错、直接忽略 —— 界面与命令行都不会同时传这两个。
