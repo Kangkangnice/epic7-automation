@@ -21,12 +21,44 @@
 | 跑挂了要排查 | [`TROUBLESHOOTING.md`](TROUBLESHOOTING.md) | 长期 |
 | 在 PC 客户端上跑（移植 / 放行 / 踩坑） | [`PC_TEMPLATE_MIGRATION.md`](PC_TEMPLATE_MIGRATION.md) · [`maintenance/pc_page_capture_checklist.md`](maintenance/pc_page_capture_checklist.md) | **PC 结论唯一权威** |
 | 每日任务的分组与执行顺序 | [`maintenance/daily_tasks_grouping.md`](maintenance/daily_tasks_grouping.md) | 长期 |
+| 突然冒出个想法，先记下来 / 以后想挑个活干 | [`BACKLOG.md`](BACKLOG.md) | 滚动更新 · 未评估的想法 |
 | 看还有哪些没做完 | [`TODO.md`](TODO.md) | 滚动更新 |
 | 看这次改了什么 | [`../CHANGELOG.md`](../CHANGELOG.md) | 一次性记录 |
 | 和 AI 协作时的分工 | [`HUMAN_AI_WORKFLOW.md`](HUMAN_AI_WORKFLOW.md) | 长期 |
 | 竞品做到了哪些我们没做 | [`COMPETITOR_FEATURES.md`](COMPETITOR_FEATURES.md) | 参考 |
 | 世界首领战的设计取舍 | [`WORLD_BOSS_DESIGN.md`](WORLD_BOSS_DESIGN.md) | 设计稿 |
 | 全局「每个动作都要有验收」的加固方案 | [`maintenance/action_verification_plan.md`](maintenance/action_verification_plan.md) | 方案 |
+
+### 规范都放在哪（含仓库外的）
+
+有些规矩**不在本仓库**：工作区的 `.workbuddy/memory/topics/`（按主题分册，
+装的是本机坐标、实测分数、逐次实跑复盘）和用户级技能 `~/.workbuddy/skills/`
+不进 Git、不受本页门禁管。所以在这里把两边都登记，免得下次又「找不着、或者照旧文档踩坑」。
+
+> **判断标准**：换台机器、clone 一份仓库、换个 agent 还必须知道的 → **必须写进仓库**并登记在本页；
+> 只是这台机的坐标、分数、某次实跑复盘 → 留在记忆通道，别搬进来（搬进来只会让仓库天天过期）。
+> 发现记忆里躺着一条**规矩**而不是案例 → 上收到下表对应的仓内文档，并在本表改指向。
+
+| 主题 | 仓内权威（跨机器必须知道） | 仓库外补充（本机案例，按需翻） |
+|---|---|---|
+| 现状：路线名单 / PC 放行 / 每日顺序 | [`STATUS.md`](STATUS.md)（代码生成） | — |
+| 安全：危险按钮 / 干跑默认 / 退出码 / 回家 | [`../AGENTS.md`](../AGENTS.md) · [`EXTENDING.md`](EXTENDING.md) 第 5 节 | `.workbuddy/memory/topics/safety.md` |
+| 转场五段证据 / 判据唯一 / 陌生页可恢复 | [`TRANSITION_CONTRACTS.md`](TRANSITION_CONTRACTS.md) | `topics/transitions.md` · `lessons.md` |
+| 模板采集 / 判据纪律 / 锚点 / 夹具 / 反向验证 | [`TEMPLATE_CAPTURE.md`](TEMPLATE_CAPTURE.md) · [`../AGENTS.md`](../AGENTS.md) | `topics/discipline.md` · `anchors.md` · `hazards.md` · `fixtures.md` |
+| 全局弹窗（新弹窗的 10 个接触点） | [`TRANSITION_CONTRACTS.md`](TRANSITION_CONTRACTS.md) + 下方逐路线手册 | `topics/global_popups.md` |
+| 新增路线 / 登记四处 / 两道准入关 | [`EXTENDING.md`](EXTENDING.md) · [`../CONTRIBUTING.md`](../CONTRIBUTING.md) | `topics/route_admission.md` · `route_metadata.md` |
+| 主循环 / 点击通道 / 战斗移交 / 时间源 | [`ARCHITECTURE.md`](ARCHITECTURE.md) | `topics/runner_loop.md` · `click_channel.md` · `battle_auto_flip.md` |
+| 开局接力 / 断点恢复 | [`RESUME_COVERAGE.md`](RESUME_COVERAGE.md) · [`TRANSITION_CONTRACTS.md`](TRANSITION_CONTRACTS.md) | `topics/resume.md` |
+| 实机权限 / 鼠标 / 截图 / 失败判定 | [`howto/live_verification.md`](howto/live_verification.md) | `topics/env.md` |
+| **PC 移植**（结论 + 作业流水线） | [`PC_TEMPLATE_MIGRATION.md`](PC_TEMPLATE_MIGRATION.md) · [`maintenance/pc_page_capture_checklist.md`](maintenance/pc_page_capture_checklist.md) | 技能 `~/.workbuddy/skills/epic7-pc-route-port/` · `topics/pc_templates.md` · `pc_port_pitfalls.md` |
+| 验证门槛 / 提交钩子 / 打包 / 并发协作 | [`../CONTRIBUTING.md`](../CONTRIBUTING.md) · [`../AGENTS.md`](../AGENTS.md) · 本页第三、四节 | `topics/engineering_gate.md` · `env.md` |
+| 桌面界面 / 通知 / 快捷方式 | [`USER_GUIDE.md`](USER_GUIDE.md) | `topics/desktop.md` · `notify.md` |
+| 逐路线细节 | 下一节那张表 | `topics/side_story.md` · `tower_retry.md` · `arena_outcome.md` · `survivor.md` · `routes_entry.md` |
+| 为什么当初这么定 | [`decisions/`](decisions/) | — |
+
+⚠️ 仓库外的两份**不是可选阅读**：要移植一条 PC 路线时，作业顺序以技能里的七阶段流水线为准；
+遇到「点不动 / 认不出」先在 `topics/` 搜该坐标或页面名（上一次很可能已经查到同样深度）。
+但它们会随这台机器变，**结论冲突时一律以仓内文档为准**。
 
 ---
 
@@ -81,7 +113,8 @@
 |---|---|---|---|
 | **现状** | 系统现在是什么样 | `docs/STATUS.md`（生成）/ `USER_GUIDE` / `maintenance/<路线>` | 永远准确 |
 | **手法** | 具体怎么操作、失败了怎么判 | `docs/howto/<主题>.md`（带 `last_verified` / `review_when`） | 长期，**判断变了就要改** |
-| **决策** | 当初为什么这么定 | `docs/decisions/NNNN-*.md` | 永久，只增不改，被推翻标 superseded |
+| **决策** | 当初为什么这么定 | `docs/decisions/NNNN-*.md` | 永久；**草稿期可改正文**，入库后只增不改，被推翻标 superseded |
+| **已知缺口** | 还欠哪一步证据 / 待验证项 | [`TODO.md`](TODO.md)（滚动）；正在处理则 `docs/wip/` | 补完就划掉，**不许只埋在路线手册里** |
 | **在制品** | 这次做到哪、下一步是什么 | `docs/wip/<日期>-<主题>.md` | **合并即删**，不是文档 |
 | **过程** | 这次改了什么、怎么改的 | 提交信息 + `CHANGELOG.md` | 一次性 |
 | **记忆** | 踩过什么坑、查过什么 | `.workbuddy/memory/` | 30 天后蒸馏进 `MEMORY.md` |
@@ -113,22 +146,29 @@
 3. **不许写死会漂移的数字** —— 想说「现在有多少条路线」，去链 `STATUS.md`，不要抄数字。
    首页（`README.md` 与本页）有专门的门禁盯着这一条。
 
-### 定期复审：让语义漂移有地方暴露
+### 复审：按本次改动即时判定，提交时留痕
 
 `STATUS.md` 保证的是**结构化事实**（路线数、放行名单）。其余文档里那句话还成不成立，
 机器判断不了 —— 架构说明、每路线维护手册、用户手册，只能人读一遍。为了让它变便宜，
-用一个**游标**记住「上次审到哪个提交」，下次只从那里往后看：
+工具按**本次改动的文件**映射出「该看哪几份」，而不是重读整个 `docs/`：
 
 ```powershell
-python -m auto_game_unified.tools.doc_review          # 自上次审阅以来改了哪些、该复审哪几份
-python -m auto_game_unified.tools.doc_review --mark   # 审完没问题，把游标推到 HEAD
+python -m auto_game_unified.tools.doc_review           # 工作区相对 HEAD 的改动
+python -m auto_game_unified.tools.doc_review --staged  # 只看暂存区
 ```
 
-游标在 [`doc-review-cursor.txt`](doc-review-cursor.txt)，映射规则在
-`tools/doc_review.py::DOC_RULES`。发版前可以用 `--check`：落后超过 30 个提交返回非零。
+映射规则在 `tools/doc_review.py::DOC_RULES`；关键路径不许漏登记，反向护栏在
+`tests/test_doc_review.py`。
 
-**它不阻断每次提交** —— 语义漂移本来就不可能靠提交门禁发现，硬拦只会让人开始习惯性绕过。
-这是业界（社区 skill `doc-maintenance`）的做法：不追求预防一切，只追求**让复审便宜、让落后可见**。
+⚠️ **2026-11-09 起不再有游标**。初版用 `doc-review-cursor.txt` 记住「上次审到哪个提交」，
+验收时抓到两个洞：游标是**要人记得推进的状态**（一忙就落后 7 个提交），而且只看两个提交
+之间的 diff，**工作区里没提交的改动完全看不见**。现在没有任何需要记忆的状态。
+
+留痕规则：本次改动命中了规则，提交信息里就必须有一行 `Doc-reviewed:`，写清看过哪几份
+（确实没有变化就写「无变化」）。`tools/githooks/commit-msg` 会拦下没留痕的提交。
+机器只能验证「有没有留痕」，**不能验证「有没有真读」** —— 但它把「审文档」从可跳过的
+自觉动作，变成提交时必然会碰到的一问。本地 `--no-verify` 能跳，服务端跳不过：
+CI 的 `Governance gate` 会在干净检出上再跑一遍治理门禁。
 
 ### 存档
 
@@ -149,7 +189,7 @@ python -m auto_game_unified.tools.doc_review --mark   # 审完没问题，把游
 |---|---|---|---|
 | 1 | 结构化事实与代码是否一致 | `python -m pytest -q tests/test_status_doc.py` | 全绿（红就说明有人手改了 STATUS，或忘了重生成） |
 | 2 | 有没有没登记的文档、断链、ADR 元数据缺失 | `python -m pytest -q tests/test_docs_index.py` | 全绿 |
-| 3 | 复审游标落后多少 | `python -m auto_game_unified.tools.doc_review` | 输出里「需要复审」的几份确实看过了 |
+| 3 | 本次改动该复审的文档有没有留痕 | `python -m auto_game_unified.tools.doc_review` + 看提交信息 | 命中规则的提交信息里有一行 `Doc-reviewed:` |
 | 4 | 有没有交接单遗留 | 看 [`STATUS.md`](STATUS.md) 的「在制品」一节 | 该在的在（还在干），做完的已经删掉 |
 | 5 | 提交信息说得清"为什么"吗 | `git log --oneline -10` | 能看懂改了什么、以及**为什么**改（不是只写「修复」） |
 
@@ -159,8 +199,8 @@ python -m auto_game_unified.tools.doc_review --mark   # 审完没问题，把游
    `docs/maintenance/<路线>.md`（维护手册）—— 白名单只保证"有登记"，管不了"分对类"。
 2. **交接单是"填完就删"还是"堆着"**：`STATUS.md` 里如果排着一串两周前的 `in-progress`，
    说明有人开了活没收回。
-3. **门禁被绕过**：`--no-verify` 用了没人知道。看 `git log` 里有没有本该红过的提交
-   却照样进来了（比如改了模板却没动 `test_template_paths.py`）。
+3. **门禁被绕过**：本地 `--no-verify` 能跳钩子，但 CI 的 `Governance gate` 会再跑一遍；
+   看 CI 绿不绿、以及提交信息里有没有该有的 `Doc-reviewed:`。
 
 > 这套东西的验收标准不是「文档写得多」，而是**漂移多久能被发现**：
-> 结构化事实 0 天、半成品 0 天、语义漂移取决于你多久跑一次第 3 条。
+> 结构化事实 0 天、半成品 0 天、语义漂移取决于每次提交有没有认真写那条 `Doc-reviewed:`。

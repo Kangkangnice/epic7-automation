@@ -44,6 +44,14 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: python -m compileall -q auto_game_unified
 
+      # 治理门禁单独成一步：本机可以用 --no-verify 跳钩子，但这一步在干净检出上跑，
+      # 跳不过去。失败时一眼就能看出是「文档治理」而不是「业务测试」坏了。
+      # 这里同时就是「干净检出一致性」检查：本机被 .gitignore 忽略的临时文件不在场。
+      - name: Governance gate (docs / status / handover)
+        working-directory: ${{ github.workspace }}
+        run: |
+          python -m pytest -q auto_game_unified/tests/test_status_doc.py auto_game_unified/tests/test_docs_index.py auto_game_unified/tests/test_doc_review.py auto_game_unified/tests/test_new_decision.py auto_game_unified/tests/test_governance_selfcheck.py
+
       - name: Run test suite
         working-directory: ${{ github.workspace }}
         run: python -m pytest -q auto_game_unified/tests

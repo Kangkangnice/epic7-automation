@@ -27,6 +27,7 @@
 
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
 
 from auto_game_unified.desktop import catalog
@@ -41,11 +42,45 @@ STATUS_PATH = PACKAGE_ROOT / "docs" / "STATUS.md"
 TITLE = "# 现状速查"
 
 
-def _count(pattern: str) -> int:
-    return sum(1 for _ in PACKAGE_ROOT.glob(pattern))
+def _tracked_pngs() -> set[str]:
+    """git 已跟踪的 png（相对包目录，统一用 ``/``）。
+
+    ⚠️ 不能用 ``rglob`` 数本机文件：本机可能躺着被 ``.gitignore`` 忽略的临时抓帧
+    （2026-11-09 就有一张 2 MB 的 ``tests/fixtures/_tmpcheck/_now.png``）。
+    那样本机算出 440 张、干净检出只有 439 张 —— **本机和提交钩子全绿，别人 clone
+    下来必红**。现状页描述的是仓库现状，唯一可信的口径就是入库清单。
+
+    反过来，``_probe_wb_chest/`` 这种下划线开头的目录是**正式夹具**、确实入库了，
+    所以也不能简单「排除下划线目录」。只有问 git 才能分清。
+
+    打包产物不会调用本函数（现状页是开发期生成的静态文档），开发/CI 一定有 git；
+    万一没有就 fail-closed 报错，绝不悄悄给一个可能错的数字。
+    """
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(PACKAGE_ROOT), "ls-files", "*.png"],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+    except (OSError, subprocess.CalledProcessError) as exc:
+        raise RuntimeError(
+            "生成现状页需要 git（要读已入库素材清单）。"
+            "打包产物不会调用本函数；开发/CI 环境一定有 git。原始错误：" + str(exc)
+        ) from exc
+    return {
+        line.strip().replace("\\", "/")
+        for line in result.stdout.splitlines()
+        if line.strip()
+    }
 
 
-def _count_pc_templates() -> int:
+def _count_under(directory: str, tracked: set[str]) -> int:
+    prefix = directory.rstrip("/") + "/"
+    return sum(1 for name in tracked if name.startswith(prefix) and name.endswith(".png"))
+
+
+def _count_pc_templates(tracked: set[str]) -> int:
     """PC 专用模板的张数。
 
     注意有**两种**放法并存，不能用 ``**/pc/*.png`` 一个通配符：
@@ -53,8 +88,14 @@ def _count_pc_templates() -> int:
     漏掉后一种会让数字凭空少 9 张 —— 2026-11-08 第一次写就踩了。
     统一按「路径里有名为 pc 的目录段」判。
     """
-    root = PACKAGE_ROOT / "games" / "epic7" / "templates"
-    return sum(1 for path in root.rglob("*.png") if "pc" in path.relative_to(root).parts)
+    prefix = "games/epic7/templates/"
+    return sum(
+        1
+        for name in tracked
+        if name.startswith(prefix)
+        and name.endswith(".png")
+        and "pc" in name[len(prefix) :].split("/")[:-1]
+    )
 
 
 def _frontmatter(text: str) -> dict[str, str]:
@@ -167,11 +208,13 @@ def _pc_only_lines() -> list[str]:
 def render() -> str:
     """把当前代码的现状渲染成 Markdown 全文。
 
-    纯函数：不读磁盘上的 ``STATUS.md``，只读代码与素材目录，所以可以反复调用比对。
+    不读磁盘上的 ``STATUS.md``，只读代码、入库素材清单与在制品交接单，
+    所以可以反复调用比对，且与干净检出的结果一致。
     """
-    templates = _count("games/epic7/templates/**/*.png")
-    pc_templates = _count_pc_templates()
-    fixtures = _count("tests/fixtures/**/*.png")
+    tracked = _tracked_pngs()
+    templates = _count_under("games/epic7/templates", tracked)
+    pc_templates = _count_pc_templates(tracked)
+    fixtures = _count_under("tests/fixtures", tracked)
 
     parts: list[str] = [
         TITLE,

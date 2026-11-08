@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
 from unittest import mock
 
@@ -230,4 +231,50 @@ def test_the_template_is_not_treated_as_a_handover(tmp_path: Path) -> None:
         "---\nstatus: proposed\n---\n\n# 模板\n", encoding="utf-8"
     )
     assert gen_status._wip_rows(tmp_path) == ["（当前没有未完成的工作）"]
+
+
+def test_an_untracked_local_frame_cannot_change_the_page(monkeypatch) -> None:
+    """反向验证：本机多一张没入库的图，现状页不许跟着变。
+
+    2026-11-09 真实事故：一张被 ``.gitignore`` 忽略的 2 MB 临时抓帧被数进现状页，
+    本机 440 张 / 干净检出 439 张 —— 本机与提交钩子全绿，别人 clone 下来必红。
+    """
+    baseline = gen_status.render()
+    probe_dir = ROOT / "tests" / "fixtures" / "_governance_probe"
+    probe = probe_dir / "probe.png"
+    probe_dir.mkdir(exist_ok=True)
+    probe.write_bytes(b"not a real png")
+    try:
+        assert gen_status.render() == baseline, (
+            "本机多一张未入库的图，现状页就变了 —— 假绿又回来了"
+        )
+    finally:
+        probe.unlink(missing_ok=True)
+        probe_dir.rmdir()
+
+    # 反向：把它算进入库清单，数字必须变，否则上面那条是空转的。
+    tracked = gen_status._tracked_pngs()
+    monkeypatch.setattr(
+        gen_status,
+        "_tracked_pngs",
+        lambda: tracked | {"tests/fixtures/_governance_probe/probe.png"},
+    )
+    assert gen_status.render() != baseline, (
+        "入库清单多一张图，现状页却没变 —— 计数根本没在读入库清单"
+    )
+
+
+def test_the_fixture_number_is_independently_the_tracked_count() -> None:
+    """用另一条 git 命令独立算一遍，防止生成器悄悄改回「数本机文件」。"""
+    result = subprocess.run(
+        ["git", "-C", str(ROOT), "ls-files", "tests/fixtures/*.png"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    expected = len([name for name in result.stdout.splitlines() if name.strip()])
+    assert f"现场夹具 **{expected}** 张" in _on_disk(), (
+        "现状页的夹具数与 git 入库清单对不上 —— "
+        "注意这一页只能描述仓库现状，不能描述本机目录"
+    )
 

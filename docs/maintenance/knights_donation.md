@@ -362,6 +362,9 @@ A 帧**原样**存成了夹具 `tests/fixtures/epic7_knights_donation/support_pa
 
 ### ⚠️ 还没被真机验过的一项
 
+> 本项已登记到 [`docs/TODO.md`](../TODO.md) 的「待验证 / 缺口登记」，别只留在这里 ——
+> 埋在路线手册里现状页看不见。补完请回来把这一节改成实测结论，并划掉 TODO 那条。
+
 `flower_cell_selected` 的**正例**目前只有模拟器帧（`tests/fixtures/epic7_knights_donation/`
 `request_popup_selected.png`，0.9480）。PC 侧缺一张「花真被选中」的现场帧 ——
 采集它需要点一下花格（不消耗额度），但那要用**管理员权限**驱动游戏（游戏是管理员进程，
