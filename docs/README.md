@@ -86,6 +86,10 @@
 | **过程** | 这次改了什么、怎么改的 | 提交信息 + `CHANGELOG.md` | 一次性 |
 | **记忆** | 踩过什么坑、查过什么 | `.workbuddy/memory/` | 30 天后蒸馏进 `MEMORY.md` |
 
+写到 `docs/howto/` 时**直接复制 [`howto/_TEMPLATE.md`](howto/_TEMPLATE.md)** —— 结构是固定的
+（自检 → 标准做法 → 失败判定 → 依据与作废条件 → 墓碑 → 更改记录），别自己发明一套。
+`docs/howto/` 下的文件**必须**登记到本页，否则门禁会拦下。
+
 ⚠️ **「手法」这一类最容易悄悄过期** —— 不是代码变了，是**当初的判断变了**
 （比如后来发现不必提权）。没有 diff、没有报错、没有测试会变红。所以 `docs/howto/` 下的文档
 **必须**带 `last_verified` 与 `review_when` 两个字段（`tests/test_docs_index.py` 会查），
