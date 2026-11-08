@@ -36,7 +36,6 @@ from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QScrollArea,
-    QSizePolicy,
     QSpinBox,
     QVBoxLayout,
     QWidget,

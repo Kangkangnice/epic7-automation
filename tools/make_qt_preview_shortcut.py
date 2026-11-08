@@ -25,7 +25,6 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
-import sys
 
 PACKAGE_DIR = Path(__file__).resolve().parents[1]
 WORKSPACE = PACKAGE_DIR.parent
