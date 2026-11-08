@@ -32,7 +32,11 @@ from pathlib import Path
 from typing import Any, Callable, Mapping, Optional
 
 from auto_game_unified.core.runtime import ManualStop
-from auto_game_unified.games.epic7.modes import MODE_SPECS, get_mode
+from auto_game_unified.games.epic7.modes import (
+    MODE_SPECS,
+    PC_ONLY_ROUTES,
+    get_mode,
+)
 
 
 @dataclass(frozen=True)
@@ -82,6 +86,11 @@ DAILY_TASKS: tuple[DailyTask, ...] = (
     # 三秒收工，且出口是 ``ResourceExhausted``（汇总里记成 ``resource``，
     # 不是 ✗ 失败）。有额度时才变成「看几幕剧情」的长流程，所以放整张表的最后。
     DailyTask(mode="moonlight_theater"),
+    # 成就领取（2026-11-08）。放最后：它是「有就领、没有就走」的类型，
+    # 没新成就时几秒收工，不会拖长整轮。
+    # ⚠️ 目前只有 PC 素材 —— 模拟器后端下整条会被跳过（见 ``PC_ONLY_ROUTES``），
+    # 汇总里记成 ``skipped`` 并写明原因，不算失败。
+    DailyTask(mode="achievement"),
 )
 
 
@@ -96,7 +105,11 @@ class DailyOutcome:
 
     @property
     def ok(self) -> bool:
-        return self.status in {"completed", "resource"}
+        # ``not_supported`` = 「这条路线当前后端没有素材，本轮按设计跳过」。
+        # 它不是失败：既没跑、也没出错，只是素材边界（见 ``PC_ONLY_ROUTES``）。
+        # ⚠️ 与 ``skipped`` 刻意分开：后者专指「上一段回不到首页，为避免连锁失败
+        # 而放弃剩余任务」，那**是**一次失败（``ok`` 必须为 False）。
+        return self.status in {"completed", "resource", "not_supported"}
 
 
 def _short_failure(detail: str, limit: int = 90) -> str:
@@ -137,6 +150,7 @@ class DailyReport:
             "resource": "✓(资源耗尽)",
             "failed": "✗",
             "skipped": "—",
+            "not_supported": "—(当前后端无素材)",
         }
         parts = []
         for outcome in self.outcomes:
@@ -272,6 +286,20 @@ def run_daily_tasks(
         spec = get_mode(mode)
         label = spec.label
         cycles = overrides.get(mode, spec.default_cycles)
+
+        # 只放 PC 素材的路线在模拟器上必然缺图（构造期 FileNotFoundError）⇒
+        # 直接跳过并记一笔，不让一条「素材还没做」的路线把整轮连打打断。
+        # ⚠️ 记成 ``skipped`` 而不是失败：这不是故障，是素材边界（见 ``PC_ONLY_ROUTES``）。
+        if window_backend != "pc" and mode in PC_ONLY_ROUTES:
+            report.outcomes.append(
+                DailyOutcome(
+                    mode=mode,
+                    label=label,
+                    status="not_supported",
+                    detail="目前只有 PC 客户端版素材，模拟器上跳过；要跑请切到 PC 客户端",
+                )
+            )
+            continue
 
         # 段间检查：这一段之前先确保人在大厅（第一条不用 —— 开局本来就该在大厅，
         # 且第一条的 _enter_mode 自己会处理）。

@@ -3,7 +3,8 @@ from pathlib import Path
 from unittest.mock import patch
 
 from auto_game_unified.games.epic7.evidence import shop_refresh as shop_evidence
-from auto_game_unified.games.epic7.modes import MODE_SPECS, get_mode
+from auto_game_unified.games.epic7.modes import MODE_SPECS, PC_ONLY_ROUTES, get_mode
+from auto_game_unified.games.epic7.template_paths import TemplateDir
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -30,6 +31,7 @@ class Epic7ModeRegistryTests(unittest.TestCase):
                 "side_story",
                 "moonlight_theater",
                 "activity_story",
+                "achievement",
             },
             set(MODE_SPECS),
         )
@@ -183,8 +185,8 @@ class RouteHookRegistryTests(unittest.TestCase):
         with patch.object(shop_evidence, "LIVE_TRANSACTIONS_VERIFIED", True):
             self.assertIsNone(shop.preflight("shop_refresh", False))
 
-    def test_arena_runner_options_carry_the_two_live_paths_and_nothing_on_dry_run(self):
-        """竞技场实跑要落两个盘（买票记账 + 每局结算画面），干跑一个都不落。"""
+    def test_arena_runner_options_carry_the_live_path_and_nothing_on_dry_run(self):
+        """竞技场实跑要落一个盘（买票记账），干跑一个都不落。"""
         arena = get_mode("arena")
         self.assertIsNotNone(arena.runner_options, "竞技场的落盘参数从注册项上掉了")
 
@@ -192,7 +194,6 @@ class RouteHookRegistryTests(unittest.TestCase):
         self.assertEqual(
             {
                 "purchase_stamp_path": ROOT / "runtime_logs" / "arena_ticket_purchase.txt",
-                "outcome_frame_dir": ROOT / "docs" / "manual_review" / "arena",
             },
             arena.runner_options(ROOT, False, {}),
         )
@@ -201,7 +202,6 @@ class RouteHookRegistryTests(unittest.TestCase):
         self.assertEqual(
             {
                 "purchase_stamp_path": ROOT / "runtime_logs" / "arena_ticket_purchase.txt",
-                "outcome_frame_dir": ROOT / "docs" / "manual_review" / "arena",
             },
             arena.runner_options(ROOT, False, {"only_npc": True}),
         )
@@ -218,7 +218,7 @@ class RouteHookRegistryTests(unittest.TestCase):
             # 社区签到同理，而且更硬：竖屏段那三条每日任务的坐标根本还没采到，
             # 放进实跑就是一次**必然失败**。
             "community": "preflight",
-            # 竞技场实跑要落两个盘（买票记账 + 每局结算画面），路径只有 main 知道。
+            # 竞技场实跑要落一个盘（买票记账），路径只有 main 知道。
             "arena": "runner_options",
         }
         for name, spec in MODE_SPECS.items():
@@ -242,9 +242,17 @@ class TemplateRootConventionTests(unittest.TestCase):
     """
 
     def test_every_route_builds_a_machine_from_the_real_template_root(self):
+        # ⚠️ 「真实模板根」对**只放 PC 素材**的路线是 ``templates`` 的 pc 视图，
+        # 不是模拟器视图。用户 2026-11-08 的口径：新路线先只补 PC 图，模拟器
+        # 以后要用时再补（补完还要实测）。拿模拟器根去构建这类路线必然缺图，
+        # 那是在要求「一条还没做模拟器素材的路线凭空可用」，不是本用例想守的东西。
+        pc_only = PC_ONLY_ROUTES
         for name, spec in sorted(MODE_SPECS.items()):
             with self.subTest(mode=name):
-                machine = spec.build_machine(TEMPLATES, spec.default_state)
+                root = (
+                    TemplateDir(TEMPLATES, "pc") if name in pc_only else TEMPLATES
+                )
+                machine = spec.build_machine(root, spec.default_state)
                 self.assertIsNotNone(machine, f"{name} 在真模板根上构造出了 None")
 
     def test_a_wrong_template_root_fails_loudly_instead_of_silently(self):
