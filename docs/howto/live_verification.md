@@ -38,8 +38,50 @@ python -m auto_game_unified.tools.live_check --backend pc
 
 看到这三条不要查模板、不要改坐标 —— 先跑 `live_check`。
 
-**怎么提权**：右键 Windows Terminal / PowerShell → 「以管理员身份运行」，再执行同一条命令。
+**怎么提权**（用户不在旁边时也能自己完成）：
+
+```powershell
+Start-Process -FilePath python -ArgumentList `
+  "-m","auto_game_unified.main","--mode","arena","--live","--confirm","RUN","--max-cycles","1","--window-backend","pc" `
+  -Verb RunAs
+```
+
+`-Verb RunAs` 会让新进程拿到管理员令牌。**它会不会弹 UAC，取决于这台机器的设置**，见下一节。
+
 （PC 客户端本身也用管理员启动，两边权限级别要**一致**。）
+
+### UAC 到底会不会弹（别猜，看设置）
+
+2026-11-08 实测本机：
+
+```
+HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System
+  EnableLUA                 = 1   （UAC 是开着的）
+  ConsentPromptBehaviorAdmin = 0   （0 = 从不通知，静默提权）
+  PromptOnSecureDesktop      = 0
+```
+
+`ConsentPromptBehaviorAdmin = 0` 意味着**管理员操作直接提升，不弹窗**。所以「请你点一下 UAC」
+这句话在这台机器上是错觉 —— 脚本里写着，但从来没弹过，用户也从没点过。
+
+⚠️ **反过来也不能假设「一定不弹」**：换台机器、或把 UAC 调回默认档，`-Verb RunAs` 就会弹窗，
+而人在洗澡时它只会等到超时然后失败。所以：
+
+- **唯一可靠的判据是实测** `elevation.current_process_elevated()`，不是「应该会弹/不会弹」；
+- 无人值守**不要**设计成「弹个窗等人点」。要么事先把权限对齐（开机就用管理员启动），
+  要么用不需要提权的后端（模拟器普通权限）。
+
+### 无人值守时的铁律
+
+用户说「你自己做闭环，我去洗澡了」时，按这三步走，**不要靠试**：
+
+1. `live_check` —— 一次只读检查就能定案；
+2. 不匹配就用上面那条 `-Verb RunAs` 命令重跑（本机静默生效，不需要人）；
+3. 还是不行就**停下来写清楚**：需要什么权限、当前是什么权限、`live_check` 的原始输出。
+   把结论留在日志里，比反复试十次有用。
+
+用户明确抱怨过这种行为：*「试了一下，发现控制不了鼠标，要不然就停下来了，要不然就去各种尝试」*。
+瞎试会浪费十几分钟，而且日志里看不出你在试什么。
 
 ## 三、一次实机怎么跑
 
@@ -103,3 +145,5 @@ python -m auto_game_unified.main --mode arena --live --confirm RUN --max-cycles 
 | 日期 | 改了什么 | 依据 |
 |---|---|---|
 | 2026-11-08 | 建档。此前这些知识只存在于 `core/elevation.py` 的注释和几次会话里，没有入口 | 用户反馈「同样的问题两三天后被另一个 agent 再问一遍」 |
+| 2026-11-08 | 补「UAC 到底会不会弹」与「无人值守铁律」，并把 `Start-Process -Verb RunAs` 写成可复制的命令 | 用户反馈「脚本说要点 UAC，但我从没点过、每次都成功」。查注册表：`ConsentPromptBehaviorAdmin=0`（从不通知，静默提权）—— 那句提示从来没兑现过 |
+| 2026-11-08 | 实跑前加闸门：`--live --window-backend pc` 时先查窗口与权限，不通过就拒绝并指向本文件 | 只有 2 条路线配了运行前闸门，其余在权限不对时会跑下去，表现成「日志说已点击、游戏不动」 |
