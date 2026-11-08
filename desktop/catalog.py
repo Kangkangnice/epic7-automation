@@ -3,7 +3,7 @@
 from dataclasses import dataclass
 from typing import Mapping
 
-from auto_game_unified.games.epic7.modes import MODE_SPECS
+from auto_game_unified.games.epic7.modes import MODE_SPECS, PC_ONLY_ROUTES
 
 
 PRODUCT_NAME = "第七史诗自动助手"
@@ -92,6 +92,30 @@ def group_description(group: str) -> str:
 #   其余路线在界面上被拦住并说明原因（见 ``app.DesktopController.start``）。
 #   命令行 `--window-backend pc` **不受这层限制** —— 开发验证本来就走命令行。
 BACKENDS: tuple[str, str] = ("emulator", "pc")
+
+# ── 后端文案（2026-11-08 从 desktop/app.py 搬来）───────────────────────────
+#
+# 界面文案的**唯一出处应该在 catalog**，不该住在某个界面文件里 —— 以前只有
+# Tk 一套界面时无所谓，现在 Tk / Qt 两套都要显示这两句话，留在 app.py 会让
+# Qt 侧为了拿两个字符串去 import 一个 tkinter 模块（或自己抄一份，然后漂移）。
+STARTUP_ORDER_HINT = (
+    "请先启动雷电模拟器并进入《第七史诗》，再启动本助手并检测环境。"
+)
+STARTUP_HINTS: dict[str, str] = {
+    "emulator": STARTUP_ORDER_HINT,
+    "pc": (
+        "请先启动《第七史诗》PC 客户端，再以管理员身份启动本助手并检测环境。"
+        "竞技场、主线、圣域收菜已在 PC 上验过；骑士团捐赠、刷书签、迷宫强化石"
+        "已放行但还没实机验过，跑起来出问题请留日志。"
+        "成就领取目前只有 PC 素材（它会自己从大厅走到成就页）。"
+        "其余路线请切回模拟器。"
+    ),
+}
+BACKEND_LABELS: dict[str, str] = {
+    "emulator": "模拟器（雷电）",
+    "pc": "PC 客户端",
+}
+
 # 已在 PC 上通过真机验收的路线。**只写真凭实据的**：验收口径见
 # `docs/PC_TEMPLATE_MIGRATION.md` 第 3 节（加载 → 顺序测试 → 干跑 → 1 轮实跑 → 2 轮实跑）。
 #
@@ -199,6 +223,17 @@ PC_READY_ROUTES: frozenset[str] = frozenset(
         #   跑完也不回家。次数固定 99（`cycles_editable=False`），真实终点是
         #   右下角按钮不再消耗票 ⇒ 抛 ActivityStoryCleared（退出码 2）。
         "activity_story",
+        # 2026-11-08：成就领取（PC 端首条路线，只有 PC 素材）。
+        # 真凭实据（两轮连续实跑，都退出码 0，日志 `runtime_logs/_ach_run_out.txt`）：
+        #   第 1 轮：claim-all → close-reward-popup → claim-effect-upgrade → skip-story
+        #     → confirm-skip-story → close-effect-popup → switch-class → claim-all
+        #     → close-reward-popup → 完成一轮 cycles=1
+        #   第 2 轮：完成一轮 cycles=1（四个分类都没角标，立刻收工）
+        # ⚠️ 只有 PC 图：模拟器跑会 `FileNotFoundError`（故意的，fail-closed）。
+        # ⚠️ `needs_navigation=False`：**必须先人工把游戏停在成就页再启动**，
+        #   界面上这条因此是 `standalone_only`、不能和别的路线混勾。
+        #   导航那一节还没做，缺什么写在 `docs/maintenance/achievement.md` 末尾。
+        "achievement",
     }
 )
 
@@ -393,10 +428,10 @@ ROUTES = (
     ),
     RouteInfo(
         "labyrinth_stone",
-        "替你每天进一次迷宫「混乱的提雷尔城」1 区域：传送到流浪商人，只买强化石，"
-        "然后退出回大厅。\n"
+        "替你每天进一次迷宫「混乱的提雷尔城」1 区域：传送到流浪商人，买强化石，"
+        "以及友情点数、圣约书签、神秘书签，然后退出回大厅。\n"
         "每天一次，跑一遍就结束；传送到商人要花 3 点士气。\n"
-        "注意：强化石要花金币买，拳套、友情点这类商品一律不买。",
+        "注意：这几样都要花金币买，拳套之类不在名单上的商品一律不买；买过的行会跳过。",
     ),
     RouteInfo(
         "sanctuary",
@@ -415,13 +450,24 @@ ROUTES = (
     ),
     RouteInfo(
         "moonlight_theater",
-        "替你把月光剧场本周的免费观览看完：有免费标记的剧场才进，看完剧情领奖励，"
-        "再换下一个。\n"
-        "只白嫖免费场次 —— 门票不足时游戏会弹「50 万金币购买」，它只会点取消。"
-        "剧情不能跳过，只能一屏屏点过去，所以这条比较慢；次数不可调，"
-        "一轮 = 本周免费场次全部看完。\n"
-        "注意：看完就收工，不会多花一分钱；只支持模拟器。",
+        "把月光剧场本周能看的都看完：先从最左边开始，一张张往右扫 —— "
+        "有免费标记的免费看，没有的也进去看看有没有「剧场门票」，有就用一张。\n"
+        "门票能花，金币一分不花：门票不足会弹「50 万金币购买」，它只点取消，"
+        "并记住「券没了」，后面没免费的剧场直接跳过。"
+        "剧情不能跳过，只能一屏屏点，所以比较慢；次数不可调，一轮 = 免费和门票都处理完。\n"
+        "注意：看完就收工；只支持模拟器。",
         group=GROUP_ONDEMAND,
+    ),
+    RouteInfo(
+        "achievement",
+        "把成就里能领的奖励一次领干净：从大厅右上角快捷菜单进成就页，"
+        "4 个分类逐个点「全部领取」，每领一次弹出来的奖励框自己关掉；"
+        "某个分类领完如果冒出「持续效果上升」，也会点进去把效果升掉"
+        "（剧情自动跳过）。\n"
+        "一轮 = 4 个分类全都没有红角标了 —— 没新成就时它什么都不做，几秒就结束，"
+        "次数不可调，可以和其他路线串着跑。\n"
+        "注意：目前只有 PC 版素材（模拟器以后再补），所以这条只在 PC 客户端上出现。",
+        group=GROUP_DAILY,
     ),
 )
 

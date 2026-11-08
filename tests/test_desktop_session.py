@@ -183,3 +183,31 @@ def test_tiny_or_broken_window_discarded(tmp_path: Path) -> None:
         loaded = session.load(path)
         assert loaded is not None
         assert loaded.window is None
+
+
+def test_input_mode_round_trip(tmp_path: Path) -> None:
+    path = tmp_path / "session.json"
+    state = session.SessionState(backend="pc", pc_input_mode="background")
+    session.save(path, state)
+    loaded = session.load(path)
+    assert loaded == state
+    assert loaded is not None
+    assert loaded.pc_input_mode == "background"
+
+
+def test_bad_input_mode_falls_back_to_foreground(tmp_path: Path) -> None:
+    """手改坏的存档不能把助手送进「点了没反应」的后台通道。"""
+    for raw in ("backgroundd", 1, None, "", ["background"]):
+        path = _write(tmp_path / "session.json", {"pc_input_mode": raw})
+        loaded = session.load(path)
+        assert loaded is not None
+        assert loaded.pc_input_mode == "foreground"
+
+
+def test_legacy_session_without_input_mode_defaults_to_foreground(tmp_path: Path) -> None:
+    path = _write(
+        tmp_path / "session.json", {"selection": ["arena"], "backend": "pc"}
+    )
+    loaded = session.load(path)
+    assert loaded is not None
+    assert loaded.pc_input_mode == "foreground"

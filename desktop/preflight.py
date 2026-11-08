@@ -12,6 +12,10 @@ from auto_game_unified.core.elevation import privilege_warning_for
 from auto_game_unified.core.pc_window import Epic7PcWindow
 from auto_game_unified.core.window import Epic7Window
 from auto_game_unified.games.epic7.modes import get_mode
+from auto_game_unified.games.epic7.template_paths import (
+    TemplateDir,
+    resolve_template_dir,
+)
 
 
 class PreflightStatus(str, Enum):
@@ -32,6 +36,25 @@ class PreflightReport:
     @property
     def can_start(self) -> bool:
         return self.status is PreflightStatus.PASS
+
+
+def template_root_for_backend(
+    template_root: Path, window_backend: str
+) -> Path | TemplateDir:
+    """开始前复检必须使用与**实跑完全相同**的模板根。
+
+    ``main.py`` 实跑时是 ``resolve_template_dir(ROOT/templates, window_backend)``：
+    PC 后端下 ``root / "achievement" / "claim_all.png"`` 会自动优先取
+    ``achievement/pc/claim_all.png``。复检若直接传普通 ``Path``，``is_pc()``
+    恒为假，只会去找共享层的 ``achievement/claim_all.png`` —— 成就领取是第一条
+    **只有 PC 素材**的路线，于是被误报「缺图」（文件其实就在 pc/ 下）。
+
+    模拟器后端保持原样传 ``Path``：普通 Path 本来就是模拟器口径，也不会改动
+    现有桌面测试里对 template_root 的断言。
+    """
+    if window_backend == "pc":
+        return resolve_template_dir(template_root, window_backend)
+    return template_root
 
 
 def _probe_templates(mode: str, template_root: Path) -> None:

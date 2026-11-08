@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from auto_game_unified.core.pc_window import PC_INPUT_ENV
 from auto_game_unified.desktop.worker import (
     RunRequest,
     WorkerController,
@@ -117,6 +118,60 @@ def test_worker_forwards_selected_window_backend(tmp_path):
 
     command = calls[0][0]
     assert command[command.index("--window-backend") + 1] == "pc"
+
+
+def test_worker_forwards_pc_input_mode_via_cli_and_env(tmp_path):
+    """界面勾「不占用前台」时，命令行和环境变量必须一起带上 background。
+
+    回归点：以前 CLI 的默认值 foreground 会在 ``main()`` 里反写环境变量，
+    界面怎么选都跑成抢前台。
+    """
+    calls = []
+    worker = WorkerController(
+        repo_parent=tmp_path,
+        popen=lambda command, **kwargs: calls.append((command, kwargs))
+        or FakeProcess(),
+    )
+
+    worker.start(
+        RunRequest(
+            ("story",), {"story": 1}, "pc", pc_input_mode="background"
+        )
+    )
+    worker.join_reader()
+
+    command, options = calls[0]
+    assert command[command.index("--pc-input-mode") + 1] == "background"
+    assert options["env"][PC_INPUT_ENV] == "background"
+
+
+def test_worker_defaults_to_foreground(tmp_path):
+    calls = []
+    worker = WorkerController(
+        repo_parent=tmp_path,
+        popen=lambda command, **kwargs: calls.append((command, kwargs))
+        or FakeProcess(),
+    )
+
+    worker.start(RunRequest(("story",), {"story": 1}))
+    worker.join_reader()
+
+    command, options = calls[0]
+    assert command[command.index("--pc-input-mode") + 1] == "foreground"
+    assert options["env"][PC_INPUT_ENV] == "foreground"
+
+
+def test_worker_rejects_unknown_pc_input_mode_before_spawning(tmp_path):
+    worker = WorkerController(
+        repo_parent=tmp_path,
+        popen=lambda command, **kwargs: pytest.fail("非法通道不该启动子进程"),
+    )
+    with pytest.raises(ValueError, match="未知 PC 输入通道"):
+        worker.start(
+            RunRequest(
+                ("story",), {"story": 1}, "pc", pc_input_mode="backgroundd"
+            )
+        )
 
 
 def test_worker_stop_creates_signal_file_before_process_exits(tmp_path):

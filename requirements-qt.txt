@@ -1,0 +1,10 @@
+# Qt / Fluent 版桌面界面的**可选**依赖。
+#
+# 不写进 requirements.txt：现有 Tk 界面一个字节都不依赖 Qt，
+# 让只想跑脚本 / 只想用原界面的人不必多装 94 MB。
+#
+# ⚠️ 许可：PySide6 是 LGPLv3，PySide6-Fluent-Widgets 是 GPLv3。
+# 本项目已确认可以整体开源，因此可用；若将来要闭源分发，必须先换掉
+# PySide6-Fluent-Widgets（改成 PySide6 原生控件 + QSS）。
+PySide6>=6.8,<7
+PySide6-Fluent-Widgets>=1.7
