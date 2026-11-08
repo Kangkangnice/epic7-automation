@@ -67,7 +67,9 @@
 | [0007](decisions/0007-achievement-done-per-class.md) | 成就收工改成逐个分类确认，不再看角标红点 |
 | [0008](decisions/0008-one-guide-per-topic.md) | 手法类文档一个主题只许一份，新做法覆盖旧做法 |
 
-写新决策：复制 [`decisions/_TEMPLATE.md`](decisions/_TEMPLATE.md)，编号接着往后排。
+写新决策：跑 `python -m auto_game_unified.tools.new_decision --title "一句话说清" --slug 英文短名`
+占号并生成骨架。**不要手动取号** —— 两个 agent 并行时各自「接着往后排」必然撞号
+（2026-11-08 撞过一次，两边都写成 0006）。工具用原子创建文件占位，同时跑也只会拿到两个号。
 
 ---
 
