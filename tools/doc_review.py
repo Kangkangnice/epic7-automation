@@ -62,6 +62,13 @@ DOC_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("games/epic7/achievement.py", ("docs/maintenance/achievement.md",)),
     ("games/epic7/", ("docs/STATUS.md",)),
     ("core/", ("docs/ARCHITECTURE.md", "docs/TRANSITION_CONTRACTS.md")),
+    # 权限/实机这条线：知识与代码是「判断」，改了就一定要回头读那份手册。
+    ("core/elevation.py", ("docs/howto/live_verification.md",)),
+    ("desktop/preflight.py", ("docs/howto/live_verification.md", "docs/USER_GUIDE.md")),
+    ("tools/live_check.py", ("docs/howto/live_verification.md",)),
+    ("tools/_run_live", ("docs/howto/live_verification.md",)),
+    ("tools/_verify_", ("docs/howto/live_verification.md",)),
+    ("tools/_diagnose_", ("docs/howto/live_verification.md",)),
     ("desktop_qt/", ("docs/USER_GUIDE.md",)),
     ("desktop/", ("docs/USER_GUIDE.md",)),
     ("main.py", ("docs/USER_GUIDE.md", "docs/ARCHITECTURE.md")),
@@ -82,20 +89,27 @@ def affected_docs(changed: list[str]) -> list[str]:
     """改动文件清单 → 需要复审的文档（去重、排序）。
 
     纯函数：不碰 git、不碰磁盘，方便直接拿假数据验。
+
+    判定顺序：**先看规则，再看忽略名单** —— 否则 ``tools/`` 整体被忽略之后，
+    ``tools/live_check.py`` 这种「本来就该提醒复审手册」的路径永远轮不到。
     """
     docs: set[str] = set()
     for path in changed:
         normalised = path.strip().replace("\\", "/")
         if not normalised:
             continue
-        if normalised.startswith(IGNORED_PREFIXES):
-            continue
         if normalised.startswith("docs/"):
             # 文档自己改了，就不用「提醒你去看它」了。
             continue
+        matched = False
         for prefix, targets in DOC_RULES:
             if normalised.startswith(prefix):
                 docs.update(targets)
+                matched = True
+        if matched:
+            continue
+        if normalised.startswith(IGNORED_PREFIXES):
+            continue
     return sorted(docs)
 
 

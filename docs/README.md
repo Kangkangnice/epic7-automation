@@ -10,6 +10,7 @@
 | 你想干什么 | 读哪份 | 性质 |
 |---|---|---|
 | 知道现在支持哪些路线、哪些放行了 | [`STATUS.md`](STATUS.md) | **自动生成**，唯一事实源 |
+| **让 agent 真的进游戏点鼠标做实机闭环** | [`howto/live_verification.md`](howto/live_verification.md) | **手法**，判断变了就要改 |
 | 接手别人做到一半的活 | 先看 [`STATUS.md`](STATUS.md) 的「在制品」一节，再点开里面链到的交接单 | 临时 |
 | 装起来用、界面怎么点 | [`USER_GUIDE.md`](USER_GUIDE.md) | 长期 |
 | 看懂代码怎么分层 | [`ARCHITECTURE.md`](ARCHITECTURE.md) · [`architecture/auto_game_unified.code-map.md`](architecture/auto_game_unified.code-map.md) | 长期 |
@@ -62,6 +63,9 @@
 | [0003](decisions/0003-arena-outcome-frames-not-saved.md) | 竞技场结算画面不再落盘 |
 | [0004](decisions/0004-four-channels-for-docs.md) | 文档分四个通道，交接说明不进仓库 |
 | [0005](decisions/0005-handover-lives-in-docs-wip.md) | 进行中的交接单放 `docs/wip/`，合并即删（补 0004 的遗漏） |
+| [0006](decisions/0006-pc-slide-must-foreground.md) | PC 滑动必须抢前台，抓帧不怕遮挡，最小化自动还原 |
+| [0007](decisions/0007-achievement-done-per-class.md) | 成就收工改成逐个分类确认，不再看角标红点 |
+| [0008](decisions/0008-one-guide-per-topic.md) | 手法类文档一个主题只许一份，新做法覆盖旧做法 |
 
 写新决策：复制 [`decisions/_TEMPLATE.md`](decisions/_TEMPLATE.md)，编号接着往后排。
 
@@ -74,10 +78,16 @@
 | 类型 | 回答什么 | 放哪 | 寿命 |
 |---|---|---|---|
 | **现状** | 系统现在是什么样 | `docs/STATUS.md`（生成）/ `USER_GUIDE` / `maintenance/<路线>` | 永远准确 |
+| **手法** | 具体怎么操作、失败了怎么判 | `docs/howto/<主题>.md`（带 `last_verified` / `review_when`） | 长期，**判断变了就要改** |
 | **决策** | 当初为什么这么定 | `docs/decisions/NNNN-*.md` | 永久，只增不改，被推翻标 superseded |
 | **在制品** | 这次做到哪、下一步是什么 | `docs/wip/<日期>-<主题>.md` | **合并即删**，不是文档 |
 | **过程** | 这次改了什么、怎么改的 | 提交信息 + `CHANGELOG.md` | 一次性 |
 | **记忆** | 踩过什么坑、查过什么 | `.workbuddy/memory/` | 30 天后蒸馏进 `MEMORY.md` |
+
+⚠️ **「手法」这一类最容易悄悄过期** —— 不是代码变了，是**当初的判断变了**
+（比如后来发现不必提权）。没有 diff、没有报错、没有测试会变红。所以 `docs/howto/` 下的文档
+**必须**带 `last_verified` 与 `review_when` 两个字段（`tests/test_docs_index.py` 会查），
+并且每条做法都要写清「依据 / 怎么复核 / 什么时候作废」。这是唯一能让人主动回头看的办法。
 
 **「交接说明」「施工计划」「设计稿」不进仓库。** 它们的信息当场拆进上面三处：为什么进决策、
 改了什么进 CHANGELOG、怎么改进提交信息。这一条是为了根治「交接文档越堆越多、没人知道哪份还有效」。

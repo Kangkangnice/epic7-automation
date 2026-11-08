@@ -25,6 +25,9 @@ _SKIP_NAMES = {"README.md"}
 #: 交接单目录：不进索引白名单，改由 ``docs/STATUS.md`` 的「在制品」一节兜底。
 WIP_DIR = DOCS / "wip"
 
+#: 「手法」类文档目录：怎么操作、失败了怎么判。必须带复核元数据。
+HOWTO_DIR = DOCS / "howto"
+
 #: 交接单允许的状态（与 ``wip/_TEMPLATE.md`` 一致）。``done`` 不在其中是故意的：
 #: 做完了就该删掉这份交接单，而不是把它标成完成继续留着。
 WIP_STATUS = {"in-progress", "blocked", "abandoned"}
@@ -145,6 +148,89 @@ def test_the_whitelist_would_catch_a_stray_doc() -> None:
         "反向验证失败：一个没登记的文件没有被 _unindexed 报出来，"
         "说明白名单检查是空转的。"
     )
+
+
+# ---------------------------------------------------------------- 手法类文档
+
+
+def test_howto_guides_follow_the_rules() -> None:
+    """``docs/howto/`` 的每条规则都必须满足。
+
+    这一类最容易**悄悄过期**：不是代码变了，是当初的判断变了（后来发现不必提权）。
+    没有 diff、没有报错、没有测试会变红 —— 只能靠元数据 + 唯一主题 + 更改记录提醒人。
+    """
+    problems = _howto_problems(HOWTO_DIR)
+    assert not problems, (
+        "手法类文档有问题：\n  " + "\n  ".join(problems) + "\n\n"
+        "照 docs/howto/live_verification.md 开头的写法补齐。"
+    )
+
+
+def test_a_second_guide_for_the_same_topic_is_caught(tmp_path: Path) -> None:
+    """反向验证：同一个 topic 写了两份，必须被报出来。
+
+    这是「新做法覆盖旧做法」的执行机构 —— 没有它，agent 遇到更好的做法时
+    最省力的动作就是**再写一份**，于是两份并存、下一个人挑到旧的那份，把坑再踩一遍。
+    """
+    for name in ("a.md", "b.md"):
+        (tmp_path / name).write_text(
+            "---\ntopic: same-thing\nlast_verified: 2026-11-08\n"
+            "review_when: 随便\n---\n\n## 更改记录\n",
+            encoding="utf-8",
+        )
+    problems = _howto_problems(tmp_path)
+    assert any("重复" in item for item in problems), (
+        f"两份同 topic 的文档没有被报出来：{problems}"
+    )
+
+
+def test_a_howto_without_metadata_is_caught(tmp_path: Path) -> None:
+    """反向验证：没有复核元数据的手法文档必须被报出来。"""
+    (tmp_path / "some-guide.md").write_text("# 随手写的手法\n", encoding="utf-8")
+    problems = _howto_problems(tmp_path)
+    assert any("缺 frontmatter" in item for item in problems), problems
+
+
+def _howto_files(directory: Path | None = None) -> list[Path]:
+    directory = HOWTO_DIR if directory is None else directory
+    if not directory.exists():
+        return []
+    return sorted(p for p in directory.glob("*.md") if not p.name.startswith("_"))
+
+
+def _howto_problems(directory: Path) -> list[str]:
+    """手法类文档的全部规则问题：元数据、topic 唯一、必须有更改记录。
+
+    三条对应「新做法怎么覆盖旧做法」：
+    - ``topic`` 唯一 ⇒ 一个主题只许一份文件，想到更好的就改旧的，不许并存；
+    - 必须有「更改记录」⇒ 覆盖留下痕迹，历史不丢；
+    - ``last_verified`` / ``review_when`` ⇒ 判断变了能被人看见。
+    """
+    problems: list[str] = []
+    seen_topics: dict[str, str] = {}
+    for path in _howto_files(directory):
+        text = path.read_text(encoding="utf-8")
+        fields = _frontmatter(text)
+        if not fields:
+            problems.append(f"{path.name}: 缺 frontmatter")
+            continue
+        if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", fields.get("last_verified", "")):
+            problems.append(f"{path.name}: last_verified 缺失或不是 YYYY-MM-DD")
+        if not fields.get("review_when"):
+            problems.append(f"{path.name}: review_when 是空的")
+        topic = fields.get("topic", "").strip()
+        if not topic:
+            problems.append(f"{path.name}: 缺 topic（一个主题一个英文短键，全库唯一）")
+        elif topic in seen_topics:
+            problems.append(
+                f"topic={topic!r} 重复：{seen_topics[topic]} 与 {path.name} —— "
+                "同一个主题只许有一份，请改旧的那份而不是新开"
+            )
+        else:
+            seen_topics[topic] = path.name
+        if "更改记录" not in text:
+            problems.append(f"{path.name}: 没有「更改记录」小节（改过什么、依据是什么，要留痕）")
+    return problems
 
 
 # ---------------------------------------------------------------- 决策记录
