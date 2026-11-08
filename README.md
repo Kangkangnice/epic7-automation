@@ -45,7 +45,7 @@
 
 </div>
 
-> 17 条路线的逐条说明见 [完整参考](docs/REFERENCE.md)；怎么勾选、怎么跑见 [使用手册](docs/USER_GUIDE.md)。
+> 路线清单与逐条说明见 [现状速查](docs/STATUS.md) 与 [完整参考](docs/REFERENCE.md)；怎么勾选、怎么跑见 [使用手册](docs/USER_GUIDE.md)。
 
 ## 📸 界面一览
 
@@ -89,14 +89,16 @@ python -u -m auto_game_unified.desktop
 | 赛季 | 远征 · 月塔 |
 | 活动 | 限时活动 · 活动剧情 |
 
-共 **17 条**；其中 **13 条**已在 PC 客户端放行，「成就领取」目前只有 PC 版素材。活动路线与其它路线互斥，且需要人工停在指定页面。逐条边界与限制见 [完整参考](docs/REFERENCE.md)。
+具体条数与 PC 放行名单见 [现状速查](docs/STATUS.md) —— 那一页由代码生成，不会过期。活动路线与其它路线互斥，且需要人工停在指定页面。逐条边界与限制见 [完整参考](docs/REFERENCE.md)。
 
 ## 📚 文档
 
 | | |
 | --- | --- |
+| 📊 [现状速查](docs/STATUS.md) | 路线名单、PC 放行情况、每日任务顺序（自动生成） |
+| 🗂️ [文档索引](docs/README.md) | 我要做 X 该看哪份；文档怎么组织、怎么写 |
 | 📖 [使用手册](docs/USER_GUIDE.md) | 安装、界面、干跑 / 实跑、日志、停止与退出码 |
-| 📦 [完整参考](docs/REFERENCE.md) | 17 条路线逐条说明、命令行全参数、通知与测试 |
+| 📦 [完整参考](docs/REFERENCE.md) | 逐条路线说明、命令行全参数、通知与测试 |
 | 🏗️ [架构说明](docs/ARCHITECTURE.md) | 分层、运行时、证据模型与 Runner 主循环 |
 | 🔗 [页面转场契约](docs/TRANSITION_CONTRACTS.md) | 五段式证据、fail-closed 与接力规则 |
 | 🖥️ [PC 客户端接入指南](docs/PC_TEMPLATE_MIGRATION.md) | PC 抓帧、模板差异与逐路线验收状态 |
