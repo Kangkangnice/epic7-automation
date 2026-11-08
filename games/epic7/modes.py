@@ -96,6 +96,10 @@ from auto_game_unified.games.epic7.navigation_plan import (
     NavigationStep,
 )
 from auto_game_unified.games.epic7.runner_base import ModeRunnerBase
+from auto_game_unified.games.epic7.template_paths import is_pc
+# PC-only 红点补判据（2026-11-08）：只在下面的 _build_hero_synthesis 里按
+# is_pc(template_root) 装配，模拟器分支不会调用，业务逻辑一行不改。
+from auto_game_unified.games.epic7.hero_vision_pc import install_pc_red_dot_vision
 from auto_game_unified.games.epic7.knights_donation import (
     KNIGHTS_GUILD_HOME_PAGE,
     KnightsDonationRunner,
@@ -115,6 +119,14 @@ from auto_game_unified.games.epic7.sanctuary import (
     SanctuaryState,
     SanctuaryStateMachine,
     detect_resume_point as detect_sanctuary_resume_point,
+)
+from auto_game_unified.games.epic7.achievement import (
+    ACHIEVEMENT_PAGE,
+    AchievementRunner,
+    AchievementState,
+    AchievementStateMachine,
+    build_achievement_templates,
+    detect_achievement_resume_point,
 )
 from auto_game_unified.games.epic7.moonlight_theater import (
     MoonlightRunner,
@@ -225,6 +237,9 @@ def _build_arena(template_root: Path, state: str) -> ArenaStateMachine:
     return ArenaStateMachine(
         build_templates(template_root),
         initial_state=ArenaState(state),
+        # 平台差异的**唯一注入点**：模拟器传 False，状态机走 2026-11-07 之前的
+        # 原代码路径；PC 传 True，启用两处专属规则（判据顺序 + 页面名规范）。
+        pc_rules=is_pc(template_root),
     )
 
 
@@ -232,6 +247,7 @@ def _build_story(template_root: Path, state: str) -> StoryStateMachine:
     return StoryStateMachine(
         build_story_templates(template_root / "story"),
         initial_state=StoryState(state),
+        pc_rules=is_pc(template_root),
     )
 
 
@@ -270,10 +286,15 @@ def _build_activity_story(template_root: Path, state: str) -> ActivityStoryState
 
 
 def _build_hero_synthesis(template_root: Path, state: str) -> HeroSynthStateMachine:
-    return HeroSynthStateMachine(
+    machine = HeroSynthStateMachine(
         build_hero_templates(template_root),
         initial_state=HeroSynthState(state),
     )
+    # PC 专属装配口：模拟器实例保持原判据，连这个方法都不会被装上去。
+    # 同 _build_arena / _build_story 的 pc_rules 注入，平台差异只在这里分叉一次。
+    if is_pc(template_root):
+        install_pc_red_dot_vision(machine, template_root)
+    return machine
 
 
 def _build_shop_refresh(template_root: Path, state: str) -> ShopRefreshStateMachine:
@@ -386,6 +407,15 @@ def _build_sanctuary(template_root: Path, state: str) -> SanctuaryStateMachine:
     )
 
 
+def _build_achievement(template_root: Path, state: str) -> AchievementStateMachine:
+    # 与圣域反过来：成就的模板根是 templates/achievement，但 story 的跳过图在
+    # templates/story/，所以工厂吃**总根**，由 build_achievement_templates 自己拼。
+    return AchievementStateMachine(
+        build_achievement_templates(template_root),
+        initial_state=AchievementState(state),
+    )
+
+
 def _build_moonlight_theater(
     template_root: Path, state: str
 ) -> MoonlightStateMachine:
@@ -441,7 +471,7 @@ def _preflight_community(mode: str, dry_run: bool) -> Optional[str]:
 def _arena_runner_options(
     root: Path, dry_run: bool, params: Mapping[str, Any]
 ) -> dict[str, Any]:
-    """竞技场实跑才需要的两个落盘位置（干跑一个盘都不写）。
+    """竞技场实跑才需要的落盘位置（干跑一个盘都不写）。
 
     ``params`` 现在没有消费者 —— 竞技场还没有任何可调参数。签名先接上，
     等它真要加（打不打 NPC / 输几场换人）时只改这个函数，不用动上层。
@@ -452,8 +482,6 @@ def _arena_runner_options(
     return {
         # 买票「今天买过没有」的记账文件。
         "purchase_stamp_path": root / "runtime_logs" / "arena_ticket_purchase.txt",
-        # 每局结算画面留一张盘，给「胜负判得对不对」留可回看的证据（见 ArenaRunner）。
-        "outcome_frame_dir": root / "docs" / "manual_review" / "arena",
     }
 
 
@@ -571,7 +599,7 @@ MODE_SPECS = {
         # 就直接从那一步接着跑；停在别的支线页面才退回原来的「一直返回」流程。
         # 判据要问导航器认出的页名 —— 接力点里有「竞技场模式选择页」这个导航链中间站。
         resume_probe=_resume_probe(detect_resume_point, use_navigator=True),
-        # 实跑要落两个盘（买票记账 + 每局结算画面），路径只有主线装配层知道仓库根。
+        # 实跑要落一个盘（买票记账），路径只有主线装配层知道仓库根。
         runner_options=_arena_runner_options,
         navigation_plan=NavigationPlan(
             mode="arena",
@@ -806,8 +834,10 @@ MODE_SPECS = {
         states=frozenset(state.value for state in MoonlightState),
         build_machine=_build_moonlight_theater,
         runner_type=MoonlightRunner,
-        # 「一次把本周免费的观览都打完」⇒ 没有「打几遍」的概念，次数不给用户选。
-        # 真实终点是「右边没有海报了且当前剧场没有 Free」，那一步抛
+        # 「一次把本周能看的都打完」⇒ 没有「打几遍」的概念，次数不给用户选。
+        # 「能看」= 免费额度 + **手上已有的剧场门票**（2026-11-06 用户拍板：
+        # 没有免费额度的剧场也要进去看看有没有券；券只花已持有的，永不花金币买）。
+        # 真实终点是「往右换不动了（已经是最右边那个剧场）」，那一步抛
         # ``MoonlightCleared`` 提前收工（退出码 2 = 干完了但没得干了）。
         #
         # ⚠️ 给的是**兜底上限**，不是「跑一幕」：``completed_cycles`` 记的是**幕**
@@ -1115,6 +1145,42 @@ MODE_SPECS = {
             resume_action="跳过回大厅与进入圣域",
             resume_state_done="已在圣域主页",
             ready_note="圣域主页已就绪",
+        ),
+    ),
+    # 2026-11-08：成就领取（**PC 端首条路线**，按用户口径先只放 PC 素材）。
+    "achievement": ModeSpec(
+        name="achievement",
+        label="成就领取",
+        default_state=AchievementState.PAGE.value,
+        # 终态 ``DONE`` 不给当起始状态：它是「4 个分类都没红点了」的记号，不是一页画面。
+        states=frozenset(
+            state.value
+            for state in AchievementState
+            if state is not AchievementState.DONE
+        ),
+        build_machine=_build_achievement,
+        runner_type=AchievementRunner,
+        # 一天领一遍就够，领完当天不会再长出来 ⇒ 不给用户选次数。
+        cycles_editable=False,
+        # 开局接力：停在成就页或任一弹窗上都就地接管（判据与运行期同源）。
+        resume_probe=_resume_probe(detect_achievement_resume_point),
+        # 导航链：大厅 →（右上角蓝四格）快捷菜单 →（第 4 排第 1 个「成就」）成就页。
+        # ⚠️ 入口图标左上角挂着会变数字的橙红角标，模板**从角标下边缘起裁**
+        # （与大厅那颗蓝四格同一套裁法，见 ``NavigationTemplates.achievement_entry``）。
+        navigation_plan=NavigationPlan(
+            mode="achievement",
+            steps=(
+                NavigationStep(
+                    "lobby", ("quick_menu",), "lobby_quick_menu_button", "打开快捷菜单"
+                ),
+                NavigationStep(
+                    "quick_menu", (ACHIEVEMENT_PAGE,), "achievement_entry", "进入成就"
+                ),
+            ),
+            resume_entries=frozenset({ACHIEVEMENT_PAGE}),
+            resume_action="跳过回大厅与进入成就",
+            resume_state_done="已在成就页",
+            ready_note="成就页已就绪",
         ),
     ),
     "community": ModeSpec(
@@ -1426,6 +1492,18 @@ def _assert_navigation_declared() -> None:
                 f"路线 {name} 的 navigation_plan.mode 是 {plan.mode!r}，对不上；"
                 "抄注册行最容易漏改的就是它。"
             )
+
+
+# 只有 PC 素材、**模拟器上跑必然缺图**的路线（2026-11-08）。
+#
+# 为什么不靠探测模板：探测要真去 build 一次状态机（会抛 ``FileNotFoundError``），
+# 而界面和每日任务连打在**勾选/编排阶段**就要回答这个问题，那时候还不该启动任何东西。
+#
+# ⚠️ 写进这里等于声明「模拟器没有素材」。模拟器补完图之后要把它移出去，
+# 否则界面会一直拦着、连打也会一直跳过它。
+# ⚠️ 放在 ``modes`` 而不是 ``desktop.catalog``：它是**路线属性**（素材有没有），
+# 不是界面偏好；``games/`` 也不能反向 import ``desktop/``。
+PC_ONLY_ROUTES: frozenset[str] = frozenset({"achievement"})
 
 
 def _run_load_time_checks() -> None:

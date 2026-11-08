@@ -42,8 +42,10 @@ def test_daily_list_keeps_the_agreed_order():
         "labyrinth_stone",
         "arena",
         # 周的存量内容，但用户 2026-10-17 拍板放进日常：每天顺手看一眼，
-        # 没额度时三秒收工（resource，不是失败），有额度时才是长流程 ⇒ 排最后。
+        # 没额度时三秒收工（resource，不是失败），有额度时才是长流程。
         "moonlight_theater",
+        # 成就领取（2026-11-08）：有就领、没有就走，几秒收工 ⇒ 排最后。
+        "achievement",
     ]
     # 名字从 ``modes.MODE_SPECS.label`` 派生 —— 这里改叫「刷书签」是用户
     # 2026-09-27 拍板的（原先是「商店刷新」，与别处的「刷书签」不一致）。
@@ -55,6 +57,7 @@ def test_daily_list_keeps_the_agreed_order():
         "迷宫强化石",
         "竞技场",
         "月光剧场",
+        "成就领取",
     ]
 
 
@@ -138,6 +141,7 @@ def test_no_selection_means_the_default_list():
         "labyrinth_stone",
         "arena",
         "moonlight_theater",
+        "achievement",
     )
 
 
@@ -325,7 +329,9 @@ def test_runs_each_selected_mode_once_in_order():
         "arena",
         "moonlight_theater",
     ]
-    assert [o.status for o in report.outcomes] == ["completed"] * 7
+    # 前 7 条正常完成；第 8 条「成就领取」只有 PC 素材，模拟器后端下按设计跳过 ——
+    # 用 ``not_supported``（``ok`` 为 True），不是失败。
+    assert [o.status for o in report.outcomes] == ["completed"] * 7 + ["not_supported"]
     assert report.any_failed is False
     assert report.aborted_reason is None
 
@@ -430,6 +436,8 @@ def test_a_failing_task_is_skipped_and_the_rest_still_run():
 
     report = run_daily_tasks(selected=None, dry_run=True, run_mode=run_mode)
 
+    # ⚠️ 「成就领取」不会出现在 ``calls`` 里：它只有 PC 素材，模拟器后端下**在
+    # 派发之前**就被跳过（记一条 ``not_supported``），``run_mode`` 根本没被调用。
     assert calls == [
         "world_boss",
         "knights_donation",
@@ -447,6 +455,7 @@ def test_a_failing_task_is_skipped_and_the_rest_still_run():
         "completed",
         "completed",
         "completed",
+        "not_supported",
     ]
     assert report.any_failed is True
     assert "模板缺失" in report.outcomes[1].detail

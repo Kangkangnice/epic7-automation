@@ -124,6 +124,8 @@ PAGE_LABELS = {
     "hero_list": "英雄列表",
     "hero_equipment": "英雄装备子页",
     "quick_menu": "快捷菜单",
+    # 成就页（2026-11-08，成就领取路线的落点）。
+    "achievement": "成就页",
     "story_ready": "主线入口",
     "arena_ready": "竞技场入口",
     "shop_refresh": "秘密商店",
@@ -226,6 +228,24 @@ class NavigationTemplates:
     # 快捷菜单第 3 行中间那颗「骑士团」（进骑士团主页）。
     # ⚠️ 它左上角也有个**蓝点**（未读角标）。模板从盾牌本体起裁，**零蓝点像素**。
     quick_menu_knights: np.ndarray
+    # 快捷菜单第 4 行第 1 个「成就」（进成就页，2026-11-08）。
+    #
+    # ⚠️ 这个入口左上角常挂一颗**橙红角标 + 数字**（未领成就数，天天在变：13 / 7 / 2…）。
+    # 角标压在图标左上角，与图标本体重叠约 17px。裁法和大厅那颗蓝四格**同一套**：
+    # **从角标下边缘（y=765）起裁**，只取「图标下半 + 下面的『成就』二字」⇒ 角标免疫。
+    # 实测：带角标帧 1.0000 / 把角标抹掉后 **0.9901**；成就页与大厅两帧反例
+    # 0.1819 / 0.2083 ⇒ 0.90 门槛两侧余量 0.09 / 0.69。
+    # ⚠️ **`navigation/` 下这份是 PC 图的副本，不是模拟器样本**。导航模板是**所有路线
+    # 共享的装配**（``build_navigation_templates`` 缺一张就整个导航器起不来），所以
+    # 不能让一条「只有 PC 素材」的路线把模拟器那 15 条的导航一起搞挂。
+    # 模拟器真要跑成就时，会先在 ``build_achievement_templates`` 缺另外 5 张图那里
+    # 就 fail-closed（那才是正确的失败点），走不到用这张图去匹配快捷菜单。
+    achievement_entry: np.ndarray
+    # 成就页左上角「成就」标题 —— 给 ``observe()`` 认「现在是成就页」。
+    # 复用 ``templates/achievement/page_title.png``（不另存第二份）。
+    # ⚠️ 同理：``achievement/page_title.png`` 也是 PC 图副本，只为让共享导航器
+    # 能构建；模拟器那条路线在构造期就会因缺图报错。
+    achievement_page_title: np.ndarray
     # 装备子页（英雄界面左侧那个剑盾图标）的选中态。
     # ⚠️ **必需模板，不是可选的**：它是 ``observe()`` 区分「英雄列表」与
     # 「英雄装备子页」的**唯一依据**。历史上这里写成 ``Optional`` 并配
@@ -515,6 +535,10 @@ def build_navigation_templates(template_root: Path) -> NavigationTemplates:
         ),
         quick_menu_hero=load_template(str(navigation / "quick_menu_hero.png")),
         quick_menu_knights=load_template(str(navigation / "quick_menu_knights.png")),
+        achievement_entry=load_template(str(navigation / "achievement_entry.png")),
+        achievement_page_title=load_template(
+            str(template_root / "achievement" / "page_title.png")
+        ),
         # 直接 load_template：模板缺失就抛 FileNotFoundError（fail closed）。
         # 这里**不许**再写 ``if path.exists() else None`` —— 那会让判据静默降级。
         hero_equipment_tab_active=load_template(
@@ -791,6 +815,11 @@ class Epic7Navigator:
         "quick_menu_hero": (1745, 200, 150, 130),
         # 菜单第 3 行中间「骑士团」。实测菜单帧 0.9970~0.9973、全库次高 0.4401 ⇒ 余量 0.56。
         "quick_menu_knights": (1555, 550, 150, 120),
+        # 菜单第 4 行第 1 个「成就」。区域只罩那一格（模板 52x78 + 一圈余量），
+        # 不蹭左边的大厅底图、也不去够右边「英雄休息室」。
+        "achievement_entry": (1395, 750, 90, 100),
+        # 成就页左上角「成就」标题。区域比两个字大一圈给抗锯齿留余量。
+        "achievement_page_title": (55, 50, 210, 95),
         # 骑士团主页的「世界首领战」入口图标（骷髅盾牌）。排他性实测：本页 0.9890，
         # 跨页最高 0.4210（远征海报）。
         "worldboss_entry": (380, 620, 180, 140),
@@ -1109,6 +1138,14 @@ class Epic7Navigator:
             return PageObservation(
                 "quick_menu", min(menu_hero.score, menu_knights.score)
             )
+
+        # 成就页（2026-11-08）。排在快捷菜单**之后**：菜单开着时两个入口图标
+        # （hero / knights）就是身份，这一页不可能同时是菜单。
+        # 判据只有左上角「成就」两个字 —— 它与成就路线自己用的 ``page_title``
+        # 是**同一张图**（复用，不另存第二份）。
+        achievement_title = self._locate(screen, "achievement_page_title")
+        if achievement_title is not None:
+            return PageObservation("achievement", achievement_title.score)
 
         shop_observation = self.templates.shop_refresh_observer.observe(screen)
         if shop_observation.page is ShopPage.SHOP:
