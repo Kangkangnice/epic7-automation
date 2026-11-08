@@ -46,7 +46,9 @@ def test_the_status_page_matches_the_code() -> None:
     # 给出最小可用的差异，而不是让人自己 diff 全文。
     expected_lines = expected.splitlines()
     actual_lines = actual.splitlines()
-    for index, (want, got) in enumerate(zip(expected_lines, actual_lines), start=1):
+    for index, (want, got) in enumerate(
+        zip(expected_lines, actual_lines, strict=False), start=1
+    ):
         if want != got:
             raise AssertionError(
                 f"{REGENERATE_HINT}\n\n"

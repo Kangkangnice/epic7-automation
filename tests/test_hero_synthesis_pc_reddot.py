@@ -178,7 +178,7 @@ class PcRedDotExclusivityTests(unittest.TestCase):
 
     def test_unrelated_orange_ui_in_other_routes_does_not_ring_the_bell(self):
         """全库审计里 zone 内橙红像素 1100+ 的战斗/剧情帧，模板分数仍要低。"""
-        tpl = load_pc_red_dot_template(TemplateDir(TEMPLATES, "pc"))
+        _tpl = load_pc_red_dot_template(TemplateDir(TEMPLATES, "pc"))
         nav = ROOT / "tests" / "fixtures" / "epic7_navigation"
         for name in ("lobby.png", "story_stage.png"):
             path = nav / name

@@ -47,6 +47,11 @@ ignore = [
 [tool.ruff.lint.per-file-ignores]
 # conftest 给 cv2.imread / PIL.Image.open 打桩，必须 import 原函数才能存下来。
 "tests/conftest.py" = ["F401"]
+# ⚠️ 这两个模块顶部那批 import 是**刻意的再导出**：控制器 / 界面文案搬到新模块后，
+# 原位置保留同名导入，老 import 路径与既有测试一条都不用改（见 CHANGELOG 的解耦条目）。
+# ruff 会把它们报成「导入未使用」，但删掉就是破坏兼容性 —— 按文件豁免，别动代码。
+"desktop/app.py" = ["F401"]
+"desktop/catalog.py" = ["F401"]
 # ⚠️ E402（import 不在文件顶部）在这里是**刻意的**，不是漏排：
 #   - core/window.py：必须先 SetProcessDPIAware() 再 import pyautogui，
 #     否则逻辑坐标与物理像素会混用（该文件顶部有详细注释）。

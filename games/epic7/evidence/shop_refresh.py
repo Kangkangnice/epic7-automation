@@ -336,7 +336,7 @@ def changed_shop_rows(
         return 0, 0
     distances = [
         (int(first, 16) ^ int(second, 16)).bit_count()
-        for first, second in zip(left, right)
+        for first, second in zip(left, right, strict=False)
     ]
     return (
         sum(1 for value in distances if value >= ROW_FINGERPRINT_CHANGE_BITS),
