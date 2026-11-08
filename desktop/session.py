@@ -12,7 +12,7 @@
    界面照旧「一条都不勾」。这里抛异常会让助手打不开，代价远大于丢一次勾选。
 2. **路线名与次数都要按 ``MODE_SPECS`` 校验**：手改过的文件不能让界面进入非法状态
    （不存在的路线、负数次数、只读路线被改成别的值 —— 全部退回默认）。
-3. **只存「用户视角」的东西**：勾选、次数、后端、上次结果。
+3. **只存「用户视角」的东西**：勾选、次数、后端、输入通道、上次结果。
    路线内部参数这里**只原样搬运、不解释**（见 ``params``）—— 哪些参数有意义由各路线
    自己声明，本模块不认任何具名路线，将来加参数不用回来改这里。
 
@@ -28,6 +28,11 @@ import json
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Mapping
+
+from auto_game_unified.core.pc_window import (
+    PC_INPUT_FOREGROUND,
+    PC_INPUT_MODES,
+)
 
 SESSION_FILENAME = "session.json"
 SESSION_VERSION = 1
@@ -64,6 +69,10 @@ class SessionState:
     selection: tuple[str, ...] = ()
     cycles: Mapping[str, int] = field(default_factory=dict)
     backend: str = "emulator"
+    # PC 端输入通道：foreground=抢前台 / background=不抢前台。
+    # 和勾选/后端一样「记住上次」；坏值一律退回 foreground（约定 2 的同一条）。
+    # ⚠️ 保留默认约束：全新安装、旧存档缺这个字段时，绝不能默认成后台通道。
+    pc_input_mode: str = PC_INPUT_FOREGROUND
     last_run: LastRun | None = None
     # 路线内部参数的口袋：``{路线名: {参数名: 值}}``。
     # 现在没有任何路线往里写，但格式先定死 —— 将来加参数只加内容，不改结构。
@@ -135,6 +144,15 @@ def load(path: Path) -> SessionState | None:
     if not isinstance(backend, str) or not backend:
         backend = "emulator"
 
+    # 输入通道只认两种：手改坏 / 版本升级后残留的怪值一律退回前台 ——
+    # 不能让一份坏存档把助手悄悄送进「点了没反应」的后台通道。
+    raw_input_mode = payload.get("pc_input_mode")
+    pc_input_mode = (
+        raw_input_mode
+        if isinstance(raw_input_mode, str) and raw_input_mode in PC_INPUT_MODES
+        else PC_INPUT_FOREGROUND
+    )
+
     last_run: LastRun | None = None
     raw_last = payload.get("last_run")
     if isinstance(raw_last, dict):
@@ -180,6 +198,7 @@ def load(path: Path) -> SessionState | None:
         selection=selection,
         cycles=cycles,
         backend=backend,
+        pc_input_mode=pc_input_mode,
         last_run=last_run,
         params=params,
         profiles=profiles,
@@ -195,6 +214,7 @@ def save(path: Path, state: SessionState) -> None:
         "selection": list(state.selection),
         "cycles": dict(state.cycles),
         "backend": state.backend,
+        "pc_input_mode": state.pc_input_mode,
         "params": {name: dict(value) for name, value in state.params.items()},
         "profiles": {
             name: {

@@ -1,11 +1,20 @@
+from pathlib import Path
+
 import numpy as np
+import pytest
 
 from auto_game_unified.core.pc_window import (
     WindowCalibration,
     WindowRect,
 )
 from auto_game_unified.desktop import preflight as preflight_module
-from auto_game_unified.desktop.preflight import PreflightStatus, run_preflight
+from auto_game_unified.desktop.preflight import (
+    PreflightStatus,
+    run_preflight,
+    template_root_for_backend,
+    validate_route_templates,
+)
+from auto_game_unified.games.epic7.template_paths import is_pc
 
 
 class FakeWindow:
@@ -163,3 +172,26 @@ def test_route_template_validation_uses_selected_mode(tmp_path):
     )
 
     assert calls == [("arena", tmp_path)]
+
+
+# 复检的模板根必须与实跑同源：成就领取是第一条只有 pc/ 素材的路线，
+# 普通 Path 会去找 templates/achievement/claim_all.png 并误报缺图。
+TEMPLATE_ROOT = Path(__file__).resolve().parents[1] / "games" / "epic7" / "templates"
+
+
+def test_pc_preflight_template_root_loads_pc_only_achievement():
+    root = template_root_for_backend(TEMPLATE_ROOT, "pc")
+    assert is_pc(root) is True
+    validate_route_templates("achievement", root)  # 不抛 = pc/ 下的图找得到
+
+
+def test_emulator_preflight_template_root_keeps_pc_only_route_fail_closed():
+    root = template_root_for_backend(TEMPLATE_ROOT, "emulator")
+    assert is_pc(root) is False
+    with pytest.raises(Exception) as caught:
+        validate_route_templates("achievement", root)
+    assert "achievement" in str(caught.value)
+
+
+def test_emulator_preflight_template_root_stays_plain_path():
+    assert template_root_for_backend(TEMPLATE_ROOT, "emulator") == TEMPLATE_ROOT

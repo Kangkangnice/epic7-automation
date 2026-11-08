@@ -46,13 +46,17 @@ a = Analysis(
         "auto_game_unified.tests",
         "pytest",
         "_pytest",
-        # 界面只用 tkinter。Qt 是环境里某个依赖「顺带装上的」—— 实测第一次打包
-        # 把它整套 Qt5 拖进了包（目录版 316 MB）。本程序一行 Qt 代码都没有，
-        # 排掉之后包体积明显下降；自检与界面都不依赖它。
+        # 默认界面只用 tkinter。Qt / Fluent 版是**可选入口**（desktop_qt/），
+        # 依赖单独放在 requirements-qt.txt，默认产物不带它 —— 实测 Qt 曾被
+        # 环境里某个依赖顺带拖进包（目录版 316 MB）。
+        # ⚠️ 2026-11-08 起本仓库确实有了 Qt 代码，但默认入口仍走 Tk；
+        # 将来要把 Qt 版设为默认，必须连同体积预算一起重新评估这一段。
+        "auto_game_unified.desktop_qt",
         "PyQt5",
         "PyQt6",
         "PySide2",
         "PySide6",
+        "qfluentwidgets",
         "qtpy",
         "shiboken2",
         "shiboken6",

@@ -9,7 +9,7 @@ from tkinter import ttk
 from unittest.mock import patch
 
 from auto_game_unified.desktop import app as app_module
-from auto_game_unified.desktop import theme
+from auto_game_unified.desktop import session, theme
 from auto_game_unified.desktop.app import DesktopApp, DesktopController, fit_window_size
 from auto_game_unified.desktop.catalog import (
     ROUTES,
@@ -318,6 +318,62 @@ def test_controller_passes_selected_backend_to_worker():
     assert worker.request.backend == "pc"
 
 
+def test_controller_defaults_to_foreground_input_mode():
+    controller = DesktopController(worker=FakeWorker())
+    assert controller.pc_input_mode == "foreground"
+
+
+def test_controller_passes_background_input_mode_to_worker_on_pc():
+    worker = FakeWorker()
+    controller = DesktopController(worker=worker)
+    controller.toggle("arena", True)
+    controller.select_backend("pc")
+    controller.select_pc_input_mode("background")
+    controller.apply_preflight(passed_preflight())
+
+    controller.start()
+
+    assert worker.request.pc_input_mode == "background"
+
+
+def test_controller_never_sends_background_mode_to_emulator():
+    """模拟器没有第二条输入通道：就算记住了上次的选择，也不该往下传。"""
+    worker = FakeWorker()
+    controller = DesktopController(worker=worker)
+    controller.toggle("arena", True)
+    controller.select_pc_input_mode("background")
+    controller.apply_preflight(passed_preflight())
+
+    controller.start()
+
+    assert worker.request.backend == "emulator"
+    assert worker.request.pc_input_mode == "foreground"
+    # 选择本身还在，切回 PC 时不需要重勾。
+    assert controller.pc_input_mode == "background"
+
+
+def test_controller_restores_input_mode_from_session():
+    controller = DesktopController(worker=FakeWorker())
+    controller.apply_session(
+        session.SessionState(backend="pc", pc_input_mode="background")
+    )
+    assert controller.pc_input_mode == "background"
+
+
+def test_controller_rejects_unknown_input_mode():
+    controller = DesktopController(worker=FakeWorker())
+    with pytest.raises(ValueError, match="未知 PC 输入通道"):
+        controller.select_pc_input_mode("backgroundd")
+
+
+def test_controller_rejects_input_mode_switch_while_running():
+    worker = FakeWorker()
+    worker.running = True
+    controller = DesktopController(worker=worker)
+    with pytest.raises(RuntimeError, match="运行期间不能切换输入通道"):
+        controller.select_pc_input_mode("background")
+
+
 def test_the_pc_backend_refuses_routes_without_pc_acceptance():
     """PC 后端露面了，但**没验收的路线**不许在界面上跑 —— 那是一次必然失败的实跑。
 
@@ -376,6 +432,40 @@ def test_the_ui_shows_the_pc_backend_button(tk_window, tmp_path):
     labels = [button.cget("text") for button in app._backend_buttons]
     assert labels == ["模拟器（雷电）", "PC 客户端"]
     assert app.backend_var.get() == "emulator"
+
+
+def test_input_mode_switch_only_shows_up_on_pc_backend(tk_window, tmp_path):
+    """模拟器下这颗开关连行高都不该占 —— 它不是模拟器能用的东西。"""
+    app = DesktopApp(
+        tk_window,
+        controller=DesktopController(worker=FakeWorker()),
+        project_root=tmp_path,
+    )
+    button = app._input_mode_button
+    assert button is not None
+    assert button.grid_info() == {}
+
+    app.backend_var.set("pc")
+    app._on_backend_change()
+
+    assert button.grid_info() != {}
+
+
+def test_ticking_no_foreground_persists_the_choice(tk_window, tmp_path):
+    app = DesktopApp(
+        tk_window,
+        controller=DesktopController(worker=FakeWorker()),
+        project_root=tmp_path,
+    )
+    assert app.controller.pc_input_mode == "foreground"
+
+    app.pc_input_mode_var.set(True)
+    app._on_pc_input_mode_change()
+
+    assert app.controller.pc_input_mode == "background"
+    loaded = session.load(app._session_path)
+    assert loaded is not None
+    assert loaded.pc_input_mode == "background"
 
 
 def test_controller_rejects_unknown_backend():
@@ -1130,7 +1220,7 @@ def test_the_old_bulk_buttons_are_gone(tmp_path, tk_window):
 
 
 def test_a_group_header_ticks_the_whole_group(tmp_path, tk_window):
-    """点「每日」⇒ 那 7 条全勾上，**别的组一条都不动**。"""
+    """点「每日」⇒ 那 8 条全勾上，**别的组一条都不动**。"""
     controller = DesktopController(worker=FakeWorker())
     app = DesktopApp(tk_window, controller=controller, project_root=tmp_path)
     tk_window.update_idletasks()
@@ -1150,6 +1240,7 @@ def test_a_group_header_ticks_the_whole_group(tmp_path, tk_window):
         "labyrinth_stone",
         "sanctuary",
         "community",
+        "achievement",
     ]
     for mode in expected:
         assert app.route_vars[mode].get() is True, mode
@@ -1175,7 +1266,7 @@ def test_a_group_header_untickes_the_whole_group_and_leaves_others_alone(
     app._on_group_toggle("每日")
     app._group_vars["按需"].set(True)
     app._on_group_toggle("按需")
-    assert len(controller.selection) == 12, controller.selection
+    assert len(controller.selection) == 13, controller.selection
 
     app._group_vars["每日"].set(False)
     app._on_group_toggle("每日")
@@ -1211,12 +1302,12 @@ def test_unticking_one_route_drops_the_group_box(tmp_path, tk_window):
     tk_window.update_idletasks()
 
     assert app._group_vars["每日"].get() is False
-    # 其余六条仍然勾着 —— 组标题不勾 ≠ 整组被清空。
-    assert len(controller.selection) == 6, controller.selection
+    # 其余七条仍然勾着 —— 组标题不勾 ≠ 整组被清空。
+    assert len(controller.selection) == 7, controller.selection
     # 再点一下组标题 = 整组**重新勾上**（把 arena 补回末尾）。
     app._group_vars["每日"].set(True)
     app._on_group_toggle("每日")
-    assert len(controller.selection) == 7
+    assert len(controller.selection) == 8
     assert controller.selection[-1] == "arena"
 
 

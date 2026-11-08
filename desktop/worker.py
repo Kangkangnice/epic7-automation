@@ -14,6 +14,8 @@ import tempfile
 import threading
 from typing import Callable, Mapping
 
+from auto_game_unified.core.pc_window import PC_INPUT_ENV, PC_INPUT_MODES
+
 
 @dataclass(frozen=True)
 class RunRequest:
@@ -38,6 +40,9 @@ class RunRequest:
     # 竞品对应：``功能参数初始化`` 先把 ``ui`` 表整理成运行参数，再交给各路线读；
     # 这里只是把「整理好的一份」原样传下去，解释权归各路线自己。
     params: Mapping[str, Mapping[str, object]] = field(default_factory=dict)
+    # PC 端输入通道：``foreground``（默认，抢前台）/ ``background``（不抢前台）。
+    # 它是**进程级**设置，写进子进程环境变量，不进 --params-file（那是路线参数）。
+    pc_input_mode: str = "foreground"
 
 
 @dataclass(frozen=True)
@@ -99,6 +104,10 @@ class WorkerController:
             raise RuntimeError("已有自动化任务正在运行")
         if not request.modes:
             raise ValueError("至少要勾选一条路线")
+        # 输入通道要落到命令行参数里，非法值在这里挡掉，别等子进程 argparse
+        # 报一句英文 usage（界面上会变成「运行失败」而不是「配置错了」）。
+        if request.pc_input_mode not in PC_INPUT_MODES:
+            raise ValueError(f"未知 PC 输入通道：{request.pc_input_mode!r}")
         # 次数下限由路线的 ``ModeSpec.min_cycles`` 决定（正常是 1；「刷书签」是 0
         # —— 只扫一遍、不付费刷新）。延迟 import 避免 desktop ⇄ games 模块成环。
         from auto_game_unified.games.epic7.modes import MODE_SPECS
@@ -150,11 +159,16 @@ class WorkerController:
             "RUN",
             "--stop-file",
             str(self.stop_file),
+            # 显式传参 + 环境变量双保险：命令行优先级最高，进程命令行里也能
+            # 直接看到这次用的是哪条输入通道（排障时不用去猜环境）。
+            "--pc-input-mode",
+            request.pc_input_mode,
         ]
         if params_file is not None:
             command += ["--params-file", str(params_file)]
         environment = os.environ.copy()
         environment["PYTHONIOENCODING"] = "utf-8"
+        environment[PC_INPUT_ENV] = request.pc_input_mode
         try:
             self._process = self._popen(
                 command,

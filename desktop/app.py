@@ -14,14 +14,24 @@ from typing import Callable, Mapping
 import webbrowser
 
 from auto_game_unified.core.data_paths import data_root
+from auto_game_unified.core.pc_window import (
+    PC_INPUT_BACKGROUND,
+    PC_INPUT_FOREGROUND,
+    PC_INPUT_MODES,
+)
 from auto_game_unified.desktop import session, theme
+from auto_game_unified.desktop.controller import DesktopController
 from auto_game_unified.desktop.catalog import (
+    BACKEND_LABELS,
     DAILY_LABEL,
     PRODUCT_NAME,
     PRODUCT_VERSION,
     ROUTES,
     RouteInfo,
+    PC_ONLY_ROUTES,
     PC_READY_ROUTES,
+    STARTUP_HINTS,
+    STARTUP_ORDER_HINT,
     group_description,
     grouped_routes,
     route_by_name,
@@ -37,6 +47,7 @@ from auto_game_unified.desktop.onboarding import (
 from auto_game_unified.desktop.preflight import (
     PreflightReport,
     run_preflight,
+    template_root_for_backend,
     validate_route_templates,
 )
 from auto_game_unified.desktop.update_check import UpdateInfo, check_for_update
@@ -54,21 +65,8 @@ TEMPLATE_ROOT = ROOT / "games" / "epic7" / "templates"
 # 运行产物写到哪：源码运行时就是 ROOT，打包安装后是 %LOCALAPPDATA%\Epic7AutoAssistant。
 DATA_ROOT = data_root()
 ICON_DIR = Path(__file__).resolve().parent / "icons"
-STARTUP_ORDER_HINT = (
-    "请先启动雷电模拟器并进入《第七史诗》，再启动本助手并检测环境。"
-)
-STARTUP_HINTS = {
-    "emulator": STARTUP_ORDER_HINT,
-    "pc": (
-        "请先启动《第七史诗》PC 客户端，再以管理员身份启动本助手并检测环境。"
-        "竞技场、主线、圣域收菜已在 PC 上验过；骑士团捐赠、刷书签、迷宫强化石"
-        "已放行但还没实机验过，跑起来出问题请留日志。其余路线请切回模拟器。"
-    ),
-}
-BACKEND_LABELS = {
-    "emulator": "模拟器（雷电）",
-    "pc": "PC 客户端",
-}
+# STARTUP_HINTS / BACKEND_LABELS 已搬到 catalog.py（界面文案的唯一出处）：
+# Tk 与 Qt 两套界面读同一份，避免两份中文提示各改各的。
 # 点了「安全停止」之后的宽限期：过了还不退，就强行结束这个卡住的运行。
 #
 # 依据（2026-08-31 ~ 2026-09-28 的 ``desktop_worker.log``）：88 次正常停止**全部**
@@ -190,212 +188,8 @@ def _all_selected(routes: tuple[RouteInfo, ...], selection: list[str]) -> bool:
     return bool(routes) and all(route.mode in selection for route in routes)
 
 
-class DesktopController:
-    """界面状态：勾了哪几条路线、每条跑几次。
-
-    ⚠️ 「勾选」是**有序**的 —— 用户 2026-09-29 拍板「按勾选先后确定顺序」，
-    所以这里用 ``list`` 而不是 ``set``。取消再重新勾 = 排到最后。
-    """
-
-    def __init__(self, *, worker: WorkerController) -> None:
-        self.worker = worker
-        self.selected_backend = "emulator"
-        self.preflight_report: PreflightReport | None = None
-        # 默认**一条都不勾**（用户 2026-09-29 拍板）：每次自己挑。顺带当一道
-        # 「点开始前先想一下」的确认 —— 世界首领战会花体力、刷书签会花天空石。
-        self.selection: list[str] = []
-        # 每条路线跑几次。默认取各路线自己的默认值；界面上能改的那几条可变，
-        # 游戏本身有每日上限的（世界首领战、骑士团捐赠、迷宫强化石、英雄合成）改不动。
-        self.cycles: dict[str, int] = {
-            route.mode: route.default_cycles for route in ROUTES
-        }
-
-    def apply_session(self, state: session.SessionState) -> None:
-        """把上次的勾选 / 次数 / 后端套回来（界面打开时调一次）。
-
-        非法值已经在 ``session.load`` 里挡掉了（未知路线、越界次数、只读路线被改）。
-        这里只再守一条**界面自己的规矩**：「活动」这类只能单独跑的路线不能和别的共存
-        —— 文件可能是旧版本存的，也可能是路线后来才改成 ``standalone_only`` 的。
-        """
-        if self.worker.running:
-            return
-        names = [mode for mode in state.selection if mode in MODE_SPECS]
-        standalone = [mode for mode in names if route_by_name(mode).standalone_only]
-        self.selection = standalone[:1] if standalone else names
-        for mode, cycles in state.cycles.items():
-            if mode in MODE_SPECS:
-                self.cycles[mode] = cycles
-        if state.backend in STARTUP_HINTS:
-            self.selected_backend = state.backend
-
-    def apply_profile(self, profile: session.Profile) -> None:
-        """把一套命名配置套到界面上：勾选顺序 + 每条次数。
-
-        次数先整体回到各路线默认值，再套这套配置里记的 —— 否则「日常」切到「活动」
-        时，活动没提到的路线会带着日常的次数，两套配置互相污染。
-        """
-        if self.worker.running:
-            return
-        names = [mode for mode in profile.selection if mode in MODE_SPECS]
-        standalone = [mode for mode in names if route_by_name(mode).standalone_only]
-        self.selection = standalone[:1] if standalone else names
-        self.cycles = {route.mode: route.default_cycles for route in ROUTES}
-        for mode, cycles in profile.cycles.items():
-            if mode in MODE_SPECS:
-                self.cycles[mode] = cycles
-
-    @property
-    def can_start(self) -> bool:
-        return bool(
-            self.preflight_report is not None
-            and self.preflight_report.can_start
-            and not self.worker.running
-        )
-
-    @property
-    def ready(self) -> bool:
-        """能不能开跑：至少勾了一条，且没有任务在跑。"""
-        return bool(self.selection) and not self.worker.running
-
-    def toggle(self, mode: str, checked: bool) -> None:
-        """勾上/取消一条路线。**勾上的时机就是它的执行位次。**
-
-        「活动」这类只能单独跑的路线（``standalone_only``）与其它路线互斥：
-        它的起点是用户人工摆好的页面，串在别的路线后面时那个起点早被破坏了。
-        互斥是双向的 —— 勾活动会清掉别的，勾别的也会清掉活动。
-        """
-        if self.worker.running:
-            raise RuntimeError("运行期间不能修改任务")
-        route = route_by_name(mode)  # 未知路线在这里就报错
-        if not checked:
-            if mode in self.selection:
-                self.selection.remove(mode)
-            return
-        if mode in self.selection:
-            return
-        if route.standalone_only:
-            self.selection.clear()
-        else:
-            self.selection = [
-                name
-                for name in self.selection
-                if not route_by_name(name).standalone_only
-            ]
-        self.selection.append(mode)
-
-    def select_group(self, group: str) -> None:
-        """整组勾上：把该组每一条都加进选择，**已勾的跳过、新来的排在末尾**。
-
-        这是界面上「点分类名 = 整组勾上」的唯一实现（2026-10-18 取代了原来卡头那
-        三颗「全选 / 全选（不含活动）/ 取消全选」按钮）。
-
-        ⚠️ 为什么是「追加到末尾」而不是像旧的 ``select_all`` 那样整体替换：用户拍板
-        的语义是「勾选先后就是执行顺序」。用户点某一组的勾选框，等于**现在才开始勾
-        这一组** ⇒ 它们排到已勾的后面。整体替换会把用户先前手挑的顺序抹掉。
-
-        ⚠️ ``standalone_only``（活动组）互斥仍然成立，且是**双向**的：
-        - 这一组里只要有一条只能单独跑 ⇒ 结果**就只剩这一组**，组外的全清；
-          但组内**也只能留一条** —— 活动组现在有「活动小游戏」和「活动剧情」，
-          两条都要求人先把游戏停在各自那一页，串着跑时第二条的起点早被第一条
-          破坏了 ⇒ 组勾选只勾**该组的第一条**（要跑另一条就单独点它的勾选框，
-          那条走 ``toggle``，会把这一条清掉）。
-        - 这一组没有这种路线 ⇒ 先把 selection 里那条「只能单独跑」的踢掉，再追加。
-        """
-        if self.worker.running:
-            raise RuntimeError("运行期间不能修改任务")
-        routes = routes_in_group(group)
-        if not routes:
-            return
-        if any(route.standalone_only for route in routes):
-            self.selection = [
-                route.mode for route in routes if route.standalone_only
-            ][:1]
-            return
-        self.selection = [
-            name for name in self.selection if not route_by_name(name).standalone_only
-        ]
-        for route in routes:
-            if route.mode not in self.selection:
-                self.selection.append(route.mode)
-
-    def clear_group(self, group: str) -> None:
-        """整组取消：只把这一组的路线从选择里拿掉，**别组的一条都不动**。"""
-        if self.worker.running:
-            raise RuntimeError("运行期间不能修改任务")
-        dropping = {route.mode for route in routes_in_group(group)}
-        self.selection = [name for name in self.selection if name not in dropping]
-
-    def set_cycles(self, mode: str, cycles: int) -> None:
-        """改某条路线的次数（界面上那个输入框）。
-
-        固定次数的路线（世界首领战每天 2 次、骑士团捐赠 / 迷宫强化石 / 英雄合成
-        跑一遍就结束）**不接受输入**：游戏本身就有每日上限，填个大数字只会在主页
-        空转到「次数已用完」，所以直接打回默认值。
-        """
-        if self.worker.running:
-            raise RuntimeError("运行期间不能修改任务")
-        route = route_by_name(mode)  # 未知路线在这里就报错
-        if not route.cycles_editable:
-            self.cycles[mode] = route.default_cycles
-            return
-        if cycles < route.min_cycles:
-            raise ValueError(
-                "运行次数不能为负数"
-                if route.min_cycles == 0
-                else "运行次数必须是正整数"
-            )
-        self.cycles[mode] = cycles
-
-    def plan(self) -> tuple[tuple[str, int], ...]:
-        """这次要跑的「路线 + 次数」—— 界面上看到的那一套，就是它的唯一出处。"""
-        return tuple((mode, self.cycles[mode]) for mode in self.selection)
-
-    def start(self) -> None:
-        if not self.can_start:
-            raise RuntimeError("请先完成环境检测")
-        plan = self.plan()
-        if not plan:
-            raise RuntimeError("至少要勾选一条路线")
-        if self.selected_backend == "pc":
-            # PC 后端已露面，但只有**通过 PC 验收**的路线才让在界面上跑：
-            # 没验收的路线在 PC 上是必然失败，而失败原因看起来像程序坏了。
-            # （命令行 --window-backend pc 不受此限，开发验证走命令行。）
-            not_ready = [
-                mode for mode, _ in plan if mode not in PC_READY_ROUTES
-            ]
-            if not_ready:
-                names = "、".join(route_by_name(mode).label for mode in not_ready)
-                raise RuntimeError(
-                    f"「{names}」还没有在 PC 客户端上通过验收，界面暂不支持；"
-                    "请先切回模拟器，或用命令行做开发验证。"
-                )
-        self.worker.start(
-            RunRequest(
-                modes=tuple(mode for mode, _ in plan),
-                cycles=dict(plan),
-                backend=self.selected_backend,
-            )
-        )
-
-    def select_backend(self, backend: str) -> None:
-        if self.worker.running:
-            raise RuntimeError("运行期间不能切换窗口后端")
-        if backend not in STARTUP_HINTS:
-            raise ValueError(f"未知窗口后端：{backend}")
-        if backend == self.selected_backend:
-            return
-        self.selected_backend = backend
-        # 检测结果属于上一个后端，切换后必须重新检测。
-        self.preflight_report = None
-
-    def apply_preflight(self, report: PreflightReport) -> None:
-        self.preflight_report = report
-
-    def stop(self) -> None:
-        self.worker.request_stop()
-
-    def drain_events(self) -> list[WorkerEvent]:
-        return self.worker.drain_events()
+# DesktopController 已搬到 desktop/controller.py —— 它是与界面无关的业务状态，
+# Tk 与 Qt 两套界面共用同一份；这里保留同名导入，既有 import 路径不变。
 
 
 class DesktopApp:
@@ -496,6 +290,9 @@ class DesktopApp:
         self.route_vars: dict[str, tk.BooleanVar] = {}
         self.cycle_vars: dict[str, tk.StringVar] = {}
         self._backend_buttons: list[ttk.Radiobutton] = []
+        # PC 端「不占用前台」开关：只有 PC 后端才露面（见
+        # ``_refresh_pc_input_mode_visibility``）。None = 布局还没建完。
+        self._input_mode_button: ttk.Checkbutton | None = None
         self._checking = False
         # 上次的勾选 / 次数 / 后端 —— 必须在**建界面之前**套回 controller：
         # 勾选框是照 ``controller.selection`` 生成的（见 ``_build_group_grid``）。
@@ -533,6 +330,16 @@ class DesktopApp:
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
         self._build_layout()
         self._show_last_run()
+        if (
+            self.controller.selected_backend == "pc"
+            and self.controller.pc_input_mode == PC_INPUT_BACKGROUND
+        ):
+            # 后台通道是实验功能：从存档恢复时要明说，别让用户以为「今天怎么
+            # 点了没反应」—— 这是最容易误判成程序坏掉的一种状态。
+            self._append_log(
+                "已恢复上次的输入通道：不占用前台（实验）。"
+                "如点击无响应，请取消勾选「不占用前台」重新运行。"
+            )
         self._refresh_profile_box()
         self._refresh_route_details()
         self._refresh_controls()
@@ -565,6 +372,7 @@ class DesktopApp:
             selection=tuple(self.controller.selection),
             cycles=dict(self.controller.cycles),
             backend=self.controller.selected_backend,
+            pc_input_mode=self.controller.pc_input_mode,
         )
 
     def _save_session(self) -> None:
@@ -815,6 +623,22 @@ class DesktopApp:
             )
             button.pack(side=tk.LEFT, padx=(0, px(theme.SPACE_LG)))
             self._backend_buttons.append(button)
+        # 「不占用前台」：PC 端专用。默认收起（模拟器后端没有第二条输入通道），
+        # 切到 PC 后端才露出。收起用 grid_remove —— 不留空行、不占高度。
+        self.pc_input_mode_var = tk.BooleanVar(
+            value=self.controller.pc_input_mode == PC_INPUT_BACKGROUND
+        )
+        self._input_mode_button = ttk.Checkbutton(
+            bar,
+            text="不占用前台",
+            variable=self.pc_input_mode_var,
+            command=self._on_pc_input_mode_change,
+            style="Route.TCheckbutton",
+        )
+        self._input_mode_button.grid(
+            row=2, column=2, sticky="e", pady=(px(theme.SPACE_XS), 0)
+        )
+        self._refresh_pc_input_mode_visibility()
         # 「开始任务」才是这一屏的主行动，这里用次行动样式。
         self.check_button = ttk.Button(
             bar, text="检测环境", command=self._check_environment
@@ -1408,7 +1232,50 @@ class DesktopApp:
         self._append_log(
             f"窗口后端已切换为{BACKEND_LABELS[self.controller.selected_backend]}，请重新检测环境。"
         )
+        self._refresh_pc_input_mode_visibility()
         self._refresh_controls()
+
+    def _refresh_pc_input_mode_visibility(self) -> None:
+        """只有 PC 后端才有第二条输入通道；模拟器下把开关整行收掉。
+
+        收起 ≠ 清空选择：``controller.pc_input_mode`` 原样留着，用户切回 PC 时
+        上次勾的「不占用前台」还在（和 ``session`` 记住上次的语义一致）。
+        """
+        button = self._input_mode_button
+        if button is None:
+            return
+        if self.controller.selected_backend == "pc":
+            button.grid()
+        else:
+            button.grid_remove()
+
+    def _on_pc_input_mode_change(self) -> None:
+        desired = (
+            PC_INPUT_BACKGROUND
+            if self.pc_input_mode_var.get()
+            else PC_INPUT_FOREGROUND
+        )
+        try:
+            self.controller.select_pc_input_mode(desired)
+        except Exception as error:
+            messagebox.showerror("无法切换输入通道", str(error), parent=self.root)
+            self.pc_input_mode_var.set(
+                self.controller.pc_input_mode == PC_INPUT_BACKGROUND
+            )
+            return
+        self._save_session()
+        if desired == PC_INPUT_BACKGROUND:
+            self._append_log(
+                "输入通道=不占用前台（实验）：点击改走 SetCursorPos + PostMessage，"
+                "不再抢游戏窗口前台。启用前请先用 tools/probe_background_input.py "
+                "在本机实测生效；点不动就取消勾选。"
+            )
+            self._append_log(
+                "后台通道限制：拖拽/滑动与 Esc 返回暂不支持，遇到会安全中止"
+                "（不会假装点成功），届时切回前台模式重跑。"
+            )
+        else:
+            self._append_log("输入通道=抢前台（默认）：点击前会激活游戏窗口。")
 
     def _checking_message(self) -> str:
         if self.controller.selected_backend == "pc":
@@ -1555,15 +1422,17 @@ class DesktopApp:
         plan = self.controller.plan()
 
         def check() -> None:
-            report = self._preflight_runner(
-                window_backend=self.controller.selected_backend
-            )
+            backend = self.controller.selected_backend
+            # 复检与实跑必须看同一套图：PC 后端下要用带 pc/ 覆盖的模板根，
+            # 否则只有 PC 素材的路线（成就领取）会被误判成缺图。
+            template_root = template_root_for_backend(self.template_root, backend)
+            report = self._preflight_runner(window_backend=backend)
             route_error: Exception | None = None
             if report.can_start:
                 # **每一条**都查一遍模板：勾几条就可能缺几套，提前发现比跑到一半失败好。
                 for mode, _ in plan:
                     try:
-                        self._route_validator(mode, self.template_root)
+                        self._route_validator(mode, template_root)
                     except Exception as error:  # noqa: BLE001 —— 报清是哪条缺
                         route_error = RuntimeError(
                             f"{route_by_name(mode).label}：{error}"
@@ -1714,6 +1583,8 @@ class DesktopApp:
             button.configure(state=route_state)
         for button in self._backend_buttons:
             button.configure(state=route_state)
+        if self._input_mode_button is not None:
+            self._input_mode_button.configure(state=route_state)
         self.check_button.configure(
             state=tk.DISABLED if running or self._checking else tk.NORMAL
         )

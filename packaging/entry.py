@@ -15,15 +15,22 @@ import sys
 from pathlib import Path
 
 # 源码直接跑 ``python packaging/entry.py`` 时，工作区还没进 sys.path。
+# parents[2] 才是工作区（entry.py -> packaging -> auto_game_unified -> 工作区）；
+# 早期写成 parents[1] 塞进去的是包目录，直跑自检会报
+# 「No module named 'auto_game_unified'」，打包后 frozen 分支不走所以一直没暴露。
 if not getattr(sys, "frozen", False):
-    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 
 def _self_check() -> int:
     from auto_game_unified.core.data_paths import data_root
     from auto_game_unified.desktop.app import TEMPLATE_ROOT
     from auto_game_unified.desktop.catalog import PRODUCT_NAME, PRODUCT_VERSION, ROUTES
-    from auto_game_unified.desktop.preflight import validate_route_templates
+    from auto_game_unified.desktop.preflight import (
+        template_root_for_backend,
+        validate_route_templates,
+    )
+    from auto_game_unified.games.epic7.modes import PC_ONLY_ROUTES
 
     lines: list[str] = []
     failures = 0
@@ -57,10 +64,15 @@ def _self_check() -> int:
 
     broken: list[str] = []
     for route in ROUTES:
-        try:
-            validate_route_templates(route.mode, TEMPLATE_ROOT)
-        except Exception as error:  # noqa: BLE001 —— 报清是哪条路线加载不了
-            broken.append(f"{route.label}：{error}")
+        # 两个后端都要能装配模板；PC 专属路线本来就只有 PC 素材，模拟器下不查，
+        # 否则会把「设计上就跑不了」误报成产物缺图。
+        backends = ("pc",) if route.mode in PC_ONLY_ROUTES else ("emulator", "pc")
+        for backend in backends:
+            root = template_root_for_backend(TEMPLATE_ROOT, backend)
+            try:
+                validate_route_templates(route.mode, root)
+            except Exception as error:  # noqa: BLE001 —— 报清是哪条路线加载不了
+                broken.append(f"{route.label}[{backend}]：{error}")
     record(
         not broken,
         "路线模板加载",
