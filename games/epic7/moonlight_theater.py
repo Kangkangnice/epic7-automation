@@ -76,13 +76,18 @@ from auto_game_unified.games.epic7.evidence.moonlight_theater import (
     REFERENCE_SIZE,
     BATTLE_ANCHORS,
     BATTLE_ANCHOR_VOTES,
+    MAX_SWEEP_LEFT_STEPS,
     REWARD_BUTTON_POINT,
     REWARD_DOT_MIN_ORANGE_PIXELS,
     REWARD_DOT_PIXEL_REGION,
     STORY_ARROW_EXCLUDE,
     STORY_CLICK_POINT,
+    STORY_DARK_FRAME_MIN_DARK_RATIO,
+    STORY_DARK_FRAME_MIN_SUBTITLE_WHITE,
+    STORY_DARK_FRAME_SUBTITLE_REGION,
     THEATER_NEXT_POINT,
     THEATER_POSTER_REGION,
+    THEATER_PREV_POINT,
     build_moonlight_evidence,
 )
 from auto_game_unified.games.epic7.route_action import RouteAction
@@ -92,14 +97,14 @@ from auto_game_unified.games.epic7.unknown_screen import UnrecognizedScreen
 
 
 class MoonlightCleared(ResourceExhausted):
-    """本周免费的观览额度已经全部领完。
+    """本周能看的都看完了：免费额度扫完，手上有的剧场门票也花完。
 
     与支线故事的 ``SideStoryCleared``、月塔的 ``FloorsConquered`` 同族
     （继承 ``ResourceExhausted``，退出码 2「跑完了但没得跑了」）：对用户来说不是
     失败，是「本周已经清空」。走这条出口基类会顺手把游戏带回首页。
     """
 
-    stop_label = "本周免费观览已领完"
+    stop_label = "本周免费与门票都已处理完"
 
 
 class MoonlightState(Enum):
@@ -179,6 +184,8 @@ class MoonlightTemplates:
     ticket_confirm: np.ndarray
     ticket_cancel: np.ndarray
     story_continue: np.ndarray
+    # 剧情页右上角那排图标里的「记录」——▼ 会闪、会消失，这一颗不会。
+    story_hud: np.ndarray
     # 战斗画面自有的三枚（复用的 ``battle_scene_visible`` 在本路线认不出，见证据档案）
     battle_hp_bar: np.ndarray
     battle_avatar_axis: np.ndarray
@@ -202,7 +209,7 @@ def build_moonlight_templates(template_dir: Path) -> MoonlightTemplates:
             "watch_button", "reward_dot", "guide_title", "guide_confirm",
             "purchase_title", "purchase_cancel",
             "use_ticket_title", "ticket_confirm", "ticket_cancel",
-            "story_continue",
+            "story_continue", "story_hud",
             "battle_hp_bar", "battle_avatar_axis", "battle_round_buttons",
             "battle_clear", "reward_popup_close",
         )},
@@ -291,6 +298,17 @@ class MoonlightStateMachine:
         self._confirmed_page = ""
         # 本场战斗是否已经存过样张（每场只存一张，见 ``_snapshot_battle``）。
         self._battle_sampled = False
+        # 剧场门票是不是已经确认用光。
+        # 置位时机：看到「购买剧场门票」弹窗（那一刻游戏明确说「你没券了」），
+        # 或者「使用剧场门票」弹窗上确认按钮已经点不动了。
+        # 作用**只有一个**：没有 Free 的剧场不再进去探券 —— 否则每个剧场都会弹
+        # 一次 500,000 金币的购买框。它**绝不拦有 Free 的剧场**：券花光了，剩下的
+        # 免费额度照样要打完（2026-11-06 用户明确要求）。
+        self._tickets_exhausted = False
+        # 「往左归位」做了没有。从入口进列表页时置 False（见 ``_at_entry``），
+        # 归位到最左端后置 True，此后一张列表页只在「往右扫」这一条路上决策。
+        self._sweep_left_done = True
+        self._sweep_left_steps = 0
         # 本帧的实测（只为日志说清楚凭什么）。
         self.has_free = False
         self.free_reason = ""
@@ -352,11 +370,36 @@ class MoonlightStateMachine:
         for page_key, state in _PAGE_STATES:
             if profile.page(page_key).evaluate(flags) is EvidenceState.SAFE:
                 return state
-        if flags["story_continue"]:
-            return None
+        # 剧情页有两个锚点：▼（``story_continue``）和右上角那排图标里的「记录」
+        # （``story_hud``）。**▼ 会消失** —— 字幕逐字打出时没有、黑屏淡入时没有、
+        # 它自己还在闪 ⇒ 只认 ▼ 会周期性掉线（2026-11-06 23:57 真机就是字幕完整
+        # 显示、▼ 正好闪没，判成 None、180 秒绝对超时）。hud 那颗全程都在。
+        if flags["story_continue"] or flags["story_hud"]:
+            return MoonlightState.STORY
+        # 剧情页的**黑屏 / 淡入帧**：字幕正在逐字打出，画面里连 ▼ 都还没有。
+        # 2026-11-06 23:36 真机：花券确认后落的就是这一帧（整屏黑 + 一句字幕）
+        # ⇒ page 判成 None ⇒ `accept-ticket` 的转场 60 秒不成立 ⇒ 整条路线 ✗。
+        if self._looks_like_story_dark_frame(screen):
+            return MoonlightState.STORY
         if battle_scene_visible(screen) or self._battle_anchor_votes(screen) >= BATTLE_ANCHOR_VOTES:
             return MoonlightState.BATTLE
         return None
+
+    def _looks_like_story_dark_frame(self, screen: np.ndarray) -> bool:
+        """剧情页的黑屏帧：整屏够暗 **且** 底部字幕条里有白字。
+
+        两个量缺一不可：只看「暗」会把观览指南 / 门票弹窗（94~95%）一起收进来；
+        只看「底部有白字」会把分集页（7.1%）收进来。实测表见
+        ``STORY_DARK_FRAME_MIN_DARK_RATIO`` 上面那段。
+        """
+        gray = cv2.cvtColor(screen, cv2.COLOR_RGB2GRAY)
+        if float(np.mean(gray < 40)) < STORY_DARK_FRAME_MIN_DARK_RATIO:
+            return False
+        x, y, width, height = STORY_DARK_FRAME_SUBTITLE_REGION
+        band = gray[y : y + height, x : x + width]
+        if band.size == 0:
+            return False
+        return float(np.mean(band > 200)) >= STORY_DARK_FRAME_MIN_SUBTITLE_WHITE
 
     def _battle_anchor_votes(self, screen: np.ndarray) -> int:
         """本路线自有的战斗 HUD 锚点命中数（3 取 2 即为战斗）。"""
@@ -530,15 +573,27 @@ class MoonlightStateMachine:
     # ---- 各页决策 ----
 
     def _at_entry(self, screen: np.ndarray) -> Optional[MoonlightAction]:
-        if not self._entry_free(screen):
-            self._finish("月光剧场入口没有绿色 F 角标，本周免费已领完")
+        """入口卡片：**有 F 没 F 都进去**（2026-11-06 用户拍板改的口径）。
+
+        原来这里是「没有绿 F 就收工」，理由是这条路线只打免费。现在多了一条
+        「免费打完了用门票接着打」，而门票够不够只有进了剧场、点到「进行观览」
+        才知道（分集页那枚票数含义未实证，不能当判据）。所以「入口没有 F」只说明
+        **免费额度没了**，不再等于「没得打」。
+
+        仍然读一次 F 角标：只写日志，一眼看出这一趟是免费优先还是纯花券，
+        读不到也不拦。
+        """
+        self._entry_free(screen)
+        # 进了剧场选择页要先把选中项推到最左再往右扫 —— 游戏记住的是上次看的
+        # 那个剧场，只往右会把左边的免费漏掉（见 ``_sweep_to_left_edge``）。
+        self._sweep_left_done = False
         card = self._required(screen, "entry_card")
         return self._action(
             "open-theater",
             point=card.center,
             source_page=state_label(MoonlightState.ENTRY),
             target_pages=(state_label(MoonlightState.LIST),),
-            reason="入口有 F 角标，点进剧场选择页",
+            reason="点进剧场选择页（有免费先打免费，没有就看看有没有门票）",
         )
 
     def _at_list(self, screen: np.ndarray) -> Optional[MoonlightAction]:
@@ -547,35 +602,40 @@ class MoonlightStateMachine:
         # 「入场 → 购买弹窗 → 取消 → 退回列表 → 又入场」会变成死循环。
         fingerprint = self._poster_fingerprint(screen)
         self._snapshot_theater(screen, "list", fingerprint)
-        if fingerprint not in self._skip_posters and self._probe_free(screen):
-            self._current_poster = fingerprint
-            self._poster_signature = None
-            # ⚠️ 「看过这一幕」的记账**只在这里清**（进新剧场 = 换了一集）。
-            # 以前是「决定离开分集页时」就清 —— 2026-11-05 00:58 真机证明那样会**漏记账**：
-            # 那次离开动作被主循环的转场重放吞掉（见 ``_at_episode`` 里 claim-reward
-            # 的注释），机器已经把自己记成「没看过」，自救重决策时又对同一集点了
-            # 「进行观览」⇒ 弹「使用剧场门票」⇒ **白花一张门票把同一幕又看了一遍**。
-            self.watched_current = False
-            self.claimed_current = False
-            self._reward_wait_since = None
-            button = self._required(screen, "enter_button")
-            # ⚠️ 出口有**三个**：正常是分集页；「入场」本身也可能弹门票（用户原话
-            # 「进行观览和入场都通向花钱」）⇒ 购买/使用门票两个弹窗都得认。
-            # 少写一个的后果和 ``watch-episode`` 那次一样：主循环认为目标没来，
-            # 把弹窗那一帧的动作整个吞掉，路线干等到状态超时。
-            return self._action(
-                "enter-theater",
-                point=button.center,
-                source_page=state_label(MoonlightState.LIST),
-                target_pages=(
-                    state_label(MoonlightState.EPISODE),
-                    state_label(MoonlightState.PURCHASE),
-                    state_label(MoonlightState.USE_TICKET),
-                ),
-                reason=f"当前剧场可免费观览（{self.free_reason}），入场",
-            )
 
-        # 当前剧场没有 Free ⇒ 往右换一张。右边已经没有了就收工。
+        # 阶段 1：先把选中项推到最左边，再从最左往右扫一遍（见 ``_sweep_to_left_edge``）。
+        if not self._sweep_left_done:
+            action = self._sweep_to_left_edge(screen, fingerprint)
+            if action is not None:
+                return action
+            # 已经到最左（或到了次数上界）⇒ **本帧直接接着处理当前剧场**，不空转。
+            # ⚠️⚠️ 这里绝不能 ``return None``。主循环是先用 ``preview()`` 算稳定签名、
+            # 再调 ``next_action()`` 提交的，而 ``preview()`` 会把 ``_sweep_left_done``
+            # 一起回滚 —— 返回 None 会让「到最左」这一步每帧重复一次，真正该发的
+            # 入场 / 往右动作永远轮不到（2026-11-06 改完实测就是这个形态：
+            # 归位点了一帧之后整条路线停在列表页，一个动作都不再发）。
+
+        # 阶段 2：从左往右逐个剧场处理。**免费优先**，门票只补没有免费的那些。
+        if fingerprint not in self._skip_posters:
+            if self._probe_free(screen):
+                return self._enter_theater(
+                    screen,
+                    fingerprint,
+                    f"当前剧场可免费观览（{self.free_reason}），入场",
+                )
+            # 没有免费额度 ⇒ 进去看看手上有没有剧场门票（2026-11-06 用户拍板）。
+            # 只在还没确认「券用光」时探：确认用光之后再进去，只会让每个剧场都弹一次
+            # 500,000 金币的购买框。⚠️ 这道标记**只拦「无 Free 的剧场」**，
+            # 有 Free 的照进照打 —— 券花光了，剩下的免费额度一个都不许漏。
+            if not self._tickets_exhausted:
+                return self._enter_theater(
+                    screen,
+                    fingerprint,
+                    "当前剧场没有免费额度，入场看看有没有剧场门票可用",
+                )
+
+        # 没有免费额度、门票也用光了（或这个剧场已经处理过）⇒ 往右换一张。
+        # 右边已经没有了就收工。
         #
         # 「右边没有了」的判据是**点了之后中间那张海报一模一样** —— 不是「点不动」
         # （点哪张选哪张，最右端再点右边是纯粹的无效点击），也不是「整帧逐字节相同」
@@ -588,8 +648,8 @@ class MoonlightStateMachine:
         ):
             self._poster_signature = None
             self._finish(
-                "往右点了一下，中间那张海报没换（已到最后一个剧场且它没有 Free 角标），"
-                "本周已结束"
+                "往右点了一下，中间那张海报没换（已到最右边那个剧场）；"
+                "免费额度与手上的剧场门票都处理完了，本周结束"
             )
 
         self._poster_signature = poster
@@ -598,7 +658,84 @@ class MoonlightStateMachine:
             point=self._scaled_point(screen, THEATER_NEXT_POINT),
             source_page=state_label(MoonlightState.LIST),
             in_page_evidence="下一张海报被选中（中间那张的画面必须变）",
-            reason=f"当前剧场没有免费额度（{self.free_reason}），往右换一个",
+            reason=(
+                f"当前剧场没有可用的免费或门票（{self.free_reason}），往右换一个"
+            ),
+        )
+
+    def _enter_theater(
+        self, screen: np.ndarray, fingerprint: str, reason: str
+    ) -> MoonlightAction:
+        """从剧场选择页点「入场」，并把「这一个剧场」的业务记账清零。
+
+        免费剧场和「探门票」的剧场走同一条入场动作，只是``reason``不同 ——
+        两者进去之后分集页上的决策完全一样（点观览 ⇒ 指南/剧情/门票弹窗），
+        所以没必要分成两个动作名（分成两个反而会让主循环的同名动作账各记一半）。
+        """
+        self._current_poster = fingerprint
+        self._poster_signature = None
+        # ⚠️ 「看过这一幕」的记账**只在这里清**（进新剧场 = 换了一集）。
+        # 以前是「决定离开分集页时」就清 —— 2026-11-05 00:58 真机证明那样会**漏记账**：
+        # 那次离开动作被主循环的转场重放吞掉（见 ``_at_episode`` 里 claim-reward
+        # 的注释），机器已经把自己记成「没看过」，自救重决策时又对同一集点了
+        # 「进行观览」⇒ 弹「使用剧场门票」⇒ **白花一张门票把同一幕又看了一遍**。
+        self.watched_current = False
+        self.claimed_current = False
+        self._reward_wait_since = None
+        button = self._required(screen, "enter_button")
+        # ⚠️ 出口有**三个**：正常是分集页；「入场」本身也可能弹门票（用户原话
+        # 「进行观览和入场都通向花钱」）⇒ 购买/使用门票两个弹窗都得认。
+        # 少写一个的后果和 ``watch-episode`` 那次一样：主循环认为目标没来，
+        # 把弹窗那一帧的动作整个吞掉，路线干等到状态超时。
+        return self._action(
+            "enter-theater",
+            point=button.center,
+            source_page=state_label(MoonlightState.LIST),
+            target_pages=(
+                state_label(MoonlightState.EPISODE),
+                state_label(MoonlightState.PURCHASE),
+                state_label(MoonlightState.USE_TICKET),
+            ),
+            reason=reason,
+        )
+
+    def _sweep_to_left_edge(
+        self, screen: np.ndarray, fingerprint: str
+    ) -> Optional[MoonlightAction]:
+        """把选中的剧场一路推到**最左边**（返回 ``None`` 表示已经归位）。
+
+        为什么要先归位：游戏记住的是「上次看的那个剧场」，它不一定是第一个。只往右
+        扫会把左边那些还有免费额度的剧场整个漏掉 —— 而免费额度是本路线的第一目标。
+
+        判「到最左」跟判「到最右」是同一把尺子：点完左边，**中间那张海报的画面**
+        没变就是到头了（同一剧场两次差 0.000、换一张 64 以上，见
+        ``THEATER_POSTER_REGION`` 的实测表）。
+        """
+        poster = self._crop(screen, THEATER_POSTER_REGION).copy()
+        if self._poster_signature is not None and not meaningful_change(
+            self._poster_signature, poster
+        ):
+            self._sweep_left_done = True
+            self._poster_signature = None
+            return None
+
+        self._poster_signature = poster
+        self._sweep_left_steps += 1
+        if self._sweep_left_steps > MAX_SWEEP_LEFT_STEPS:
+            # 有界兜底：万一「点左边有效、但海报区域判不出变化」来回打转，
+            # 宁可少扫左边几个剧场，也不能一直点下去。接着走正常流程往右扫。
+            self._sweep_left_done = True
+            self._poster_signature = None
+            return None
+
+        return self._action(
+            # 名字带海报指纹：连点左边时右边那张一直在换，指纹跟着换才不会撞上
+            # 主循环那本「同名动作 45 秒一次、4 次判死」的账。
+            f"prev-theater#{fingerprint}",
+            point=self._scaled_point(screen, THEATER_PREV_POINT),
+            source_page=state_label(MoonlightState.LIST),
+            in_page_evidence="上一张海报被选中（中间那张的画面必须变）",
+            reason="先把选中项推到最左边，避免漏掉左边的免费剧场",
         )
 
     def _at_episode(self, screen: np.ndarray) -> Optional[MoonlightAction]:
@@ -732,7 +869,17 @@ class MoonlightStateMachine:
         )
 
     def _at_story(self, screen: np.ndarray) -> Optional[MoonlightAction]:
-        self._required(screen, "story_continue")
+        if (
+            self._locate(screen, "story_continue") is None
+            and self._locate(screen, "story_hud") is None
+        ):
+            # 黑屏 / 淡入帧：▼ 还没出来（字幕在逐字打）。这一帧**必须照点**，
+            # 否则剧情停在第一句永远不动。推进点是固定常量 ``STORY_CLICK_POINT``
+            # （(760,1000) 在分集页是空白、在剧情页落在字幕框内，见那里的注释），
+            # 所以没有 ▼ 也知道该点哪儿。
+            # ⚠️ 只有确认「整屏黑 + 底部有字幕白字」才走这条；别的画面照样失败关闭。
+            if not self._looks_like_story_dark_frame(screen):
+                self._required(screen, "story_continue")
         # ⚠️ **进剧情 ⇒ 这一集的观览额度已经消耗掉**。这是本路线最关键的一条记账，
         # 记晚了就是 2026-10-17 真机那场事故：
         #   剧情走完回分集页 → 橙点没认出来 → 判定「没看过」→ 又点「进行观览」→
@@ -766,12 +913,16 @@ class MoonlightStateMachine:
     def _at_purchase(self, screen: np.ndarray) -> Optional[MoonlightAction]:
         """购买门票弹窗：**只点取消**，绝不点购买（用户明确不许花金币）。
 
-        同时记两件事：①「这个剧场这个幕要花门票」⇒ 接下来在分集页**只许撤**
+        同时记三件事：①「这个剧场这个幕要花门票」⇒ 接下来在分集页**只许撤**
         （``must_leave``），否则会「取消 → 又点进行观览 → 又弹购买」；② 这个剧场
-        拉进 ``_skip_posters``，退回列表后不再入场（角标没消失也挡得住）。
+        拉进 ``_skip_posters``，退回列表后不再入场（角标没消失也挡得住）；
+        ③ **门票确认用光**（``_tickets_exhausted``）—— 这一下等于游戏亲口说
+        「你手上没有券了」，于是后面那些没有免费额度的剧场不必再一个一个进去探，
+        否则每个都会弹一次这个 500,000 金币的框。
         """
         cancel = self._required(screen, "purchase_cancel")
         self.must_leave = True
+        self._tickets_exhausted = True
         self._skip_posters.add(self._current_poster)
         return self._action(
             "cancel-purchase",
@@ -866,6 +1017,10 @@ class MoonlightStateMachine:
         """点「取消」并放弃这个剧场。**已经决定不花之后，任何情况下都走这条。**"""
         cancel = self._required(screen, "ticket_cancel")
         self.must_leave = True
+        # 走到这里只有两种原因：①刚点过「购买」框的取消（那个框本身就说明没券）；
+        # ②「使用门票」框上的确认按钮点不动（券用光后按钮会变灰）。
+        # 两种都等于「手上没券了」⇒ 后面没有免费额度的剧场别再一个个进去探。
+        self._tickets_exhausted = True
         self._skip_posters.add(self._current_poster)
         return self._action(
             "cancel-ticket",
@@ -938,6 +1093,9 @@ class MoonlightStateMachine:
             self.finish_reason,
             self.has_free,
             self.free_reason,
+            self._tickets_exhausted,
+            self._sweep_left_done,
+            self._sweep_left_steps,
         )
         try:
             action = self.next_action(screen)
@@ -957,6 +1115,9 @@ class MoonlightStateMachine:
                 self.finish_reason,
                 self.has_free,
                 self.free_reason,
+                self._tickets_exhausted,
+                self._sweep_left_done,
+                self._sweep_left_steps,
             ) = snapshot
 
     # ---- 战斗观察（交给 BattleSupervisor） ----

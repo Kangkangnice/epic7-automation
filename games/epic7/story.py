@@ -29,6 +29,7 @@ from auto_game_unified.games.epic7.battle_controls import (
     BattleControls,
     battle_scene_visible,
     observe_battle_controls,
+    resolve_auto_state,
 )
 from auto_game_unified.games.epic7.pre_battle import (
     PreBattleMode,
@@ -72,6 +73,14 @@ _STORY_SKIP_REGION = STORY_SKIP_REGION
 _STORY_SKIP_CONFIRM_REGION = STORY_SKIP_CONFIRM_REGION
 _BATTLE_GUIDE_TITLE_REGION = BATTLE_GUIDE_TITLE_REGION
 _BATTLE_GUIDE_DONT_SHOW_REGION = BATTLE_GUIDE_DONT_SHOW_REGION
+
+# 布局判据 → 自动战斗状态。2026-11-07 抽成模块级常量：PC 分支要用「图标合并后」
+# 的那份控制值再查一次表，两处查同一张，避免长出第二份复制粘贴。
+_AUTO_STATE_BY_CONTROLS = {
+    BattleControls.AUTO_CONTROLS: AutoBattleState.AUTO,
+    BattleControls.MANUAL_CONTROLS: AutoBattleState.MANUAL,
+    BattleControls.TRANSITION: AutoBattleState.UNKNOWN,
+}
 
 
 def find_battle_guide_dont_show(
@@ -477,9 +486,28 @@ class StoryStateMachine:
         self,
         templates: StoryTemplates,
         initial_state: StoryState = StoryState.STAGE,
+        *,
+        pc_rules: bool = False,
     ) -> None:
         self.templates = templates
         self.state = initial_state
+        # PC 专属规则开关：由装配点（``modes.py::_build_story``）按模板目录注入。
+        #
+        # 默认 **False** ⇒ 模拟器走 2026-11-07 之前的原代码路径，行为一个字节不变。
+        # 只有改成 True 的三处（自动战斗判定 / 点击点 / 「点自动」的页面名）走新逻辑。
+        #
+        # ⚠️ 为什么用开关而不是补图：这三处**没有图可补** —— 前两处是判据合并策略、
+        # 第三处是程序内部的字符串常量，跟"认不认得出"无关。而项目 `§4.2` 禁止的是
+        # 「散落各处的阈值分叉」（七个 evidence 各一张表那种），这里是**单点注入的
+        # 一个开关**，装配点只有 `modes.py` 一处，与既有的
+        # 「`complete_close` 只有 PC 载到才动 `_REGIONS`」是同一类受控例外。
+        #
+        # ⚠️ 继承本类的 `ActivityStoryStateMachine` / `SideStoryStateMachine`
+        # **暂未接入**（它们的 `build_*_machine` 没传这个参数 ⇒ 恒为 False ⇒
+        # PC 上也走原逻辑）。那两条路线 2026-11-07 没有报错证据，按「精准修改」
+        # 不做超范围改动；将来它们真在 PC 上撞到同一个坑，只需在各自的
+        # `build_*_machine` 里补一行 `pc_rules=is_pc(template_dir)`。
+        self._pc_rules = pc_rules
         if templates.evidence is not None:
             self._REGIONS = {
                 key: atom.region for key, atom in templates.evidence.atoms.items()
@@ -678,20 +706,28 @@ class StoryStateMachine:
         previous_screen: np.ndarray | None,
     ) -> BattleObservation:
         controls = self.observe_battle_controls(screen)
-        auto_state = {
-            BattleControls.AUTO_CONTROLS: AutoBattleState.AUTO,
-            BattleControls.MANUAL_CONTROLS: AutoBattleState.MANUAL,
-            BattleControls.TRANSITION: AutoBattleState.UNKNOWN,
-        }[controls]
         auto_match = self._locate(screen, "auto_off")
         auto_score = "无" if auto_match is None else f"{auto_match.score:.4f}"
+        auto_state = _AUTO_STATE_BY_CONTROLS[controls]
         auto_evidence = f"布局={controls.value} 自动关图标={auto_score}"
-        # 「右上角关自动图标 ⇒ 判定为手动」：按钮布局判成 transition（看不出长相）
-        # 时靠这个图标兜底 —— 否则那一帧会停在「未知」，而「未知」按安全设计是
-        # 不许点自动的，战斗就会干等到超时。图标认不到就不覆盖上面的布局判定。
-        if auto_match is not None:
-            auto_state = AutoBattleState.MANUAL
-            auto_evidence += " 来源=右上角自动关闭图标"
+        if self._pc_rules:
+            # PC：图标（弱证据）只在布局看不出长相时才作数 —— 与月塔 / 远征 / 竞技场
+            # 同一条规则（``resolve_auto_state`` 的 docstring，2026-10-09 月塔事故）。
+            #
+            # 2026-11-07 08:55 真机：布局明明判出 ``auto_controls``（四格底座全亮 =
+            # 自动确实开着），图标却擦着阈值命中 0.8268 ⇒ 旧写法改判手动、同一分钟
+            # 点了两次开关。PC 上这个图标比模拟器容易误命中：模拟器「自动开」帧实测
+            # 0.0000，同一张共享模板在 PC 战斗帧上能到 0.80~0.93（全库 343 张
+            # 「布局=自动开着」的帧里，出现这种组合的 15 张**全是 PC**）。
+            resolved = resolve_auto_state(controls, auto_match is not None)
+            auto_state = _AUTO_STATE_BY_CONTROLS[resolved]
+            if resolved is not controls:
+                auto_evidence += " 来源=右上角自动关闭图标"
+        else:
+            # 模拟器：保持 2026-11-07 之前的原逻辑（图标命中即改判手动）。
+            if auto_match is not None:
+                auto_state = AutoBattleState.MANUAL
+                auto_evidence += " 来源=右上角自动关闭图标"
         stamina_popup = (
             self._locate(screen, "stamina_popup")
             if self.templates.stamina_popup is not None
@@ -746,19 +782,36 @@ class StoryStateMachine:
             # 这个正常业务退出写成故障（2026-11-06 17:15 主线实跑即此死法）。
             # 只在两项都假时补判：真战斗画面上一帧额外判据都不跑。
             result_visible = self._battle_failed(screen) is not None
+        if self._pc_rules:
+            # PC：**只有判成「手动」才需要点**，也才该给坐标 —— 与月塔 / 远征同一条
+            # 口径（`tower.py` / `expedition.py` 的 `auto_point` 都带这个条件）。
+            # 原先无条件给点：08:55 那帧已判成 AUTO，却仍带着 (1650,90)，
+            # 一旦有消费方不看 auto_state 直接用坐标，就是又点了一下开关。
+            auto_point = (
+                (
+                    auto_match.center
+                    if auto_match is not None
+                    else self._scaled_point(screen, self._AUTO_CLICK_POINT)
+                )
+                if auto_state is AutoBattleState.MANUAL
+                else None
+            )
+        else:
+            # 模拟器：保持 2026-11-07 之前的原写法（不看 auto_state，图标命中就给点）。
+            auto_point = (
+                auto_match.center
+                if auto_match is not None
+                else self._scaled_point(screen, self._AUTO_CLICK_POINT)
+                if auto_state is AutoBattleState.MANUAL
+                else None
+            )
         return BattleObservation(
             pre_battle_visible=pre_battle.mode is not PreBattleMode.UNKNOWN,
             battle_visible=battle_visible,
             result_visible=result_visible,
             frame_valid=valid_game_frame(screen),
             auto_state=auto_state,
-            auto_point=(
-                auto_match.center
-                if auto_match is not None
-                else self._scaled_point(screen, self._AUTO_CLICK_POINT)
-                if auto_state is AutoBattleState.MANUAL
-                else None
-            ),
+            auto_point=auto_point,
             business_progress=progressing,
             allowed_action=allowed_action,
             pre_battle_business_visible=stamina_popup is not None,
@@ -1046,7 +1099,19 @@ class StoryStateMachine:
                 return self._action(
                     "enable_auto",
                     point,
-                    source_page="战斗中（自动关闭）",
+                    # ⚠️ 页面名会被 ``_action`` → ``_confirm_page()`` 写成「当前已确认
+                    # 页面」，主循环拿它去比对上一个动作的 ``target_pages``；两边必须
+                    # 一字不差，否则刚给出的动作被置 None、状态机失声。
+                    #
+                    # 2026-11-07 08:10 真机：剧情跳过确认点完后进入**自动战斗关着**的
+                    # 战斗画面，旧名「战斗中（自动关闭）」跟 ``skip_confirm.target_pages``
+                    # 里的「战斗中」对不上 ⇒ ``enable_auto`` 一次都没发出去过 ⇒
+                    # 干等 60 秒报「转场超时 动作=skip_confirm」。
+                    #
+                    # PC 上用规范名「战斗中」（全仓没有任何名单把带后缀的那个当目标，
+                    # 所以只会增加匹配、不会减少）；模拟器保留原名，行为零改动。
+                    # 「自动是关的」这条信息由下面的 ``reason`` 承担，不写进页面名。
+                    source_page="战斗中" if self._pc_rules else "战斗中（自动关闭）",
                     target_pages=("战斗中",),
                     reason="战斗头像布局与自动关闭图标已识别",
                     target_states=(StoryState.ACTIVE,),

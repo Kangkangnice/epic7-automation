@@ -26,10 +26,13 @@ from auto_game_unified.games.epic7.side_story import (
 )
 from auto_game_unified.games.epic7.side_story import (
     _PAN_LIMIT,
+    _PAN_SAFE,
     _PAN_START,
+    _PAN_SWEEPS,
     _SEG_BOSS,
     _SEG_OUTPOST_1,
     _SEG_OUTPOST_2,
+    _pan_endpoint,
 )
 
 
@@ -165,6 +168,50 @@ class NormalToBossChainTests(unittest.TestCase):
         self.assertEqual((717, 357), action.point)
 
 
+class PanSweepGeometryTests(unittest.TestCase):
+    """扫寻几何：每个拖动终点都必须落在画布安全区内。
+
+    2026-11-05 PC 真机就死在这一条 —— `(0, -680)` / `(0, 680)` 配起点 y=560
+    算出的终点是 **-120 / 1240**，后者越过画布底边 1132。拖动终点落到画面外，
+    这一拖在游戏侧被吞掉（或只走半程），六次扫寻全空 ⇒ 地图上永远找不到 BOSS
+    节点 ⇒ 干等状态超时。日志特征：`pan_map_1..6` 都发了，之后一条业务动作都没有。
+    """
+
+    def test_every_pan_endpoint_stays_inside_the_canvas(self):
+        for index, delta in enumerate(_PAN_SWEEPS, start=1):
+            with self.subTest(step=index, delta=delta):
+                x, y = _pan_endpoint(delta)
+                self.assertGreaterEqual(x, _PAN_SAFE[0])
+                self.assertGreaterEqual(y, _PAN_SAFE[1])
+                self.assertLessEqual(x, _PAN_SAFE[2])
+                self.assertLessEqual(y, _PAN_SAFE[3])
+
+    def test_every_pan_actually_moves_the_view(self):
+        # 位移为 0 的「拖动」是空操作，白耗一次有界重试。
+        for index, delta in enumerate(_PAN_SWEEPS, start=1):
+            with self.subTest(step=index, delta=delta):
+                self.assertNotEqual(_PAN_START, _pan_endpoint(delta))
+
+    def test_the_configured_increments_are_legal_without_clamping(self):
+        # 夹取是兜底，不是许可证：配置本身就必须让终点落在安全区里。
+        # 这一条对旧配置（(0, -680) / (0, 680)）会直接变红 —— 它才是真正的回归护栏；
+        # 上面那条 `stays_inside` 只证明「就算写错也不会送出去」。
+        for index, delta in enumerate(_PAN_SWEEPS, start=1):
+            with self.subTest(step=index, delta=delta):
+                raw = (_PAN_START[0] + delta[0], _PAN_START[1] + delta[1])
+                self.assertEqual(raw, _pan_endpoint(delta))
+
+    def test_the_old_out_of_canvas_increments_are_clamped_not_sent_as_is(self):
+        # 回归护栏：即便有人把旧增量写回去，夹取也必须把它们拉回安全区。
+        self.assertEqual(_PAN_SAFE[1], _pan_endpoint((0, -680))[1])
+        self.assertEqual(_PAN_SAFE[3], _pan_endpoint((0, 680))[1])
+
+    def test_the_sweep_is_symmetric_in_y(self):
+        # 扫完一轮 y 方向回到原点（注释里承诺过）：净位移必须为 0，
+        # 否则每轮扫寻都会把视角往上/下推一截，越扫越偏。
+        self.assertEqual(0, sum(delta[1] for delta in _PAN_SWEEPS))
+
+
 class BossExhaustedChainTests(unittest.TestCase):
     def test_boss_exhausted_clicks_back_instead_of_stop(self):
         """② 段「次数用尽」⇒ 点「返回」退场接③（**不再就地收工**）。"""
@@ -269,6 +316,40 @@ class LedgerHygieneTests(unittest.TestCase):
         self.assertIsNotNone(action)
         self.assertEqual("pick_node_boss_node", action.name)
         self.assertEqual((1220, 787), action.point)
+
+
+class MapEntryWithoutCursorTests(unittest.TestCase):
+    """① 段从地图起步：本期不画青色菱形时，改点「准备战斗」。
+
+    2026-11-07 真机（用户手动停在支线地图）实测：颜色区间里最大的青色候选
+    面积只有 102，判据要求 ≥150 ⇒ 旧行为返回 None 干等状态超时。用户手动
+    停在地图再启动是接力的典型落点，这一卡住看起来就是「三段没串起来」。
+    """
+
+    def test_map_without_cursor_clicks_prepare_battle(self):
+        machine = build_side_story_machine(TEMPLATES)
+        screen = _load(FIXTURES / "epic7_side_story" / "map_no_cursor.png")
+
+        self.assertIsNone(machine._cursor_point(screen))
+        prep = machine._locate(screen, "prepare_battle_map")
+        self.assertIsNotNone(prep)
+
+        action = machine.next_action(screen)
+
+        self.assertIsNotNone(action)
+        self.assertEqual("pick_stage", action.name)
+        self.assertEqual(prep.center, action.point)
+
+    def test_map_with_cursor_still_prefers_the_cursor(self):
+        """有光标的旧帧不能被「准备战斗」抢走（原路径零改动）。"""
+
+        machine = build_side_story_machine(TEMPLATES)
+        screen = _load(FIXTURES / "epic7_side_story" / "map.png")
+
+        action = machine.next_action(screen)
+
+        self.assertEqual("pick_stage", action.name)
+        self.assertEqual((1180, 605), action.point)
 
 
 if __name__ == "__main__":

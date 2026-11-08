@@ -191,6 +191,11 @@ class Epic7StoryPcTests(unittest.TestCase):
                 "prepare_battle_updated_alt.png",
                 "prepare_battle.png",
                 "complete_close.png",
+                # 2026-11-07：PC 把「战斗指南」这四个字也换了字形 ——
+                # 共享图只有 0.6681（阈 0.85），双锚点因此整页认不出；
+                # 重裁后两个锚点各 1.0000。见 `test_battle_guide_warning_...`。
+                "battle_guide_title.png",
+                "battle_guide_dont_show.png",
             },
             overrides,
         )

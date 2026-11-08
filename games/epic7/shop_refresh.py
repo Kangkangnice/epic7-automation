@@ -15,11 +15,14 @@ from auto_game_unified.games.epic7.resume_probe import ResumePoint
 from auto_game_unified.games.epic7.evidence.shop_refresh import (
     LIST_FINGERPRINT_CHANGE_BITS,
     PURCHASE_PRICES,
+    ROW_FINGERPRINT_CHANGED_ROWS,
+    ROW_FINGERPRINT_TOTAL_BITS,
     ShopItemKind,
     ShopObservation,
     ShopPage,
     ShopRefreshObserver,
     ShopRowObservation,
+    changed_shop_rows,
     shop_fingerprint_distance,
 )
 
@@ -544,35 +547,42 @@ class ShopRefreshRunner:
     ) -> tuple[np.ndarray, ShopObservation]:
         attempts = 1
         self.runtime.log(
-            f"模式=刷书签 执行动作={action} 尝试={attempts}/2"
+            f"模式=刷书签 执行动作={action} 尝试={attempts}/3"
         )
         self.runtime.click(point, action)
         clicked_at = self.now()
         deadline = clicked_at + self.transaction_timeout
         stable = StableObservation(required=2)
         last_screen: np.ndarray | None = None
+        # 超时时把「这 20 秒里到底看到过哪些页面」写进日志。
+        # 2026-11-06 23:19 那次就吃亏在这：日志只有「点了一下」和「21 秒后超时」，
+        # 中间一帧都没留，只能靠猜。去重后保序，最多十几项。
+        seen_pages: list[str] = []
         while self.now() < deadline:
             screen = self.runtime.capture()
             last_screen = screen
             observation = self.observer.observe(screen)
+            if not seen_pages or seen_pages[-1] != observation.page.value:
+                seen_pages.append(observation.page.value)
             signature = self._observation_signature(observation)
             if stable.update(signature) and observation.page is target_page:
                 return screen, observation
             if (
-                attempts < 2
+                attempts < 3
                 and source_still(observation)
                 and self.now() - clicked_at >= self.open_retry_seconds
             ):
                 attempts += 1
                 self.runtime.log(
-                    f"模式=刷书签 来源仍在 动作={action} 尝试={attempts}/2"
+                    f"模式=刷书签 来源仍在 动作={action} 尝试={attempts}/3"
                 )
                 self.runtime.click(point, action)
                 clicked_at = self.now()
                 stable.reset()
             self.sleep(self.poll_seconds)
         raise self._failure(
-            f"等待页面[{target_page.value}]超时，来源重试已耗尽",
+            f"等待页面[{target_page.value}]超时，来源重试已耗尽 "
+            f"点击={attempts}次 期间页面={'→'.join(seen_pages) or '无'}",
             last_screen,
         )
 
@@ -803,7 +813,23 @@ class ShopRefreshRunner:
             if difference > peak_difference:
                 peak_difference = difference
                 peak_screen = screen
-            fingerprint_changed = bool(
+            # 「这一批商品换了」有两条路，满足任一条即可：
+            # ① 整块指纹够远（历史 100~132 位，铁证）；
+            # ② **逐行**指纹显示大多数行都变了。2026-11-06 22:21 那次整批换只差
+            #    60 位（阈 64），刚好卡在阈下 —— 那批 5 行里 4 行都是
+            #    「4 星英雄 + 29,000 金币」，版面结构一样、低频分量抓不到差别，
+            #    整块指纹和画面差（6.68，比「买掉一行」的 7.10 还小）双双失效。
+            # ⚠️ ② 走的是**双条件**（行数 + 距离总和），只满足一个不算：
+            #    一次买掉两三行也能把「变了的行数」顶上去，那会误判成刷新、多花 3 钻。
+            changed_rows, row_distance = changed_shop_rows(
+                source.row_fingerprints, observation.row_fingerprints
+            )
+            rows_replaced = (
+                observation.page is ShopPage.SHOP
+                and changed_rows >= ROW_FINGERPRINT_CHANGED_ROWS
+                and row_distance >= ROW_FINGERPRINT_TOTAL_BITS
+            )
+            fingerprint_changed = rows_replaced or bool(
                 observation.page is ShopPage.SHOP
                 and observation.list_fingerprint
                 and shop_fingerprint_distance(
@@ -825,7 +851,9 @@ class ShopRefreshRunner:
                         "模式=刷书签 业务成功=刷新 "
                         f"已完成={self.machine.stats.completed_refreshes}/"
                         f"{self.machine.stats.target_refreshes} "
-                        f"钻石花费={self.machine.stats.skystone_spent}"
+                        f"钻石花费={self.machine.stats.skystone_spent} "
+                        f"逐行变化={changed_rows}/{len(observation.row_fingerprints)} "
+                        f"总和={row_distance}"
                     )
                     return
             else:

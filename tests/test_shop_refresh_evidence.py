@@ -8,13 +8,18 @@ from auto_game_unified.games.epic7.evidence.shop_refresh import (
     LIST_FINGERPRINT_CHANGE_BITS,
     LIVE_TRANSACTIONS_VERIFIED,
     PURCHASE_PRICES,
+    ROW_FINGERPRINT_CHANGED_ROWS,
+    ROW_FINGERPRINT_TOTAL_BITS,
     ShopItemKind,
     ShopPage,
+    ShopRefreshObserver,
     build_shop_refresh_evidence,
     build_shop_refresh_observer,
+    changed_shop_rows,
     classify_item_scores,
     same_shop_row,
     shop_fingerprint_distance,
+    shop_row_fingerprints,
 )
 from auto_game_unified.games.epic7.template_paths import resolve_template_dir
 
@@ -403,3 +408,62 @@ def test_target_without_same_row_buy_button_is_not_actionable():
     covenant_rows = [row for row in result.rows if row.kind is ShopItemKind.COVENANT]
     assert len(covenant_rows) == 1
     assert covenant_rows[0].buy_point is None
+
+
+# ---- 「整批换了」的逐行判据（2026-11-06 22:21 真机 60 位的灰区）--------------
+#
+# 那一轮：整批商品**全换了**，整块指纹却只有 **60 位**（阈 64，差 4 位）⇒ 判
+# 「刷新结果不明确，禁止重复确认」当场停住。病根是那一批 5 行里 4 行都是
+# 「4 星英雄 + 29,000 金币」，版面结构一样、低频分量抓不到细节差别；同一帧的
+# 整块画面差只有 6.68，比「买掉一行」的 7.10 还小 —— 所以画面差那条路也走不通。
+# 逐行指纹分得开，下面四条把两侧都钉住。
+
+
+def test_a_whole_batch_change_is_detected_when_the_global_hash_stops_short():
+    source = _screen("refresh_source_20261106")
+    after = _screen("refresh_after_20261106")
+
+    global_distance = shop_fingerprint_distance(
+        ShopRefreshObserver._fingerprint(source),
+        ShopRefreshObserver._fingerprint(after),
+    )
+    changed, total = changed_shop_rows(
+        shop_row_fingerprints(source), shop_row_fingerprints(after)
+    )
+
+    # 先钉住「整块指纹确实不够用」——否则这条测试就成了摆设
+    assert global_distance < LIST_FINGERPRINT_CHANGE_BITS
+    assert changed >= ROW_FINGERPRINT_CHANGED_ROWS
+    assert total >= ROW_FINGERPRINT_TOTAL_BITS
+
+
+def test_buying_one_row_is_not_mistaken_for_a_refresh():
+    """买掉一行（誓约书签 / 神秘奖牌） ⇒ 逐行判据必须说「没换」。
+
+    误判成「换了」的代价是**多花 3 钻再刷一次**，所以这条比上面那条更要紧。
+    """
+    for before, after in (
+        ("covenant_row_live_20260831", "covenant_purchased_row_live_20260831"),
+        ("mystic_row_live_20260831", "mystic_purchased_row_live_20260831"),
+    ):
+        changed, total = changed_shop_rows(
+            shop_row_fingerprints(_screen(before)),
+            shop_row_fingerprints(_screen(after)),
+        )
+        assert changed < ROW_FINGERPRINT_CHANGED_ROWS, (before, changed, total)
+        assert total < ROW_FINGERPRINT_TOTAL_BITS, (before, changed, total)
+
+
+def test_the_same_list_does_not_move_at_all():
+    changed, total = changed_shop_rows(
+        shop_row_fingerprints(_screen("shop_scroll_top_live_20260914_a")),
+        shop_row_fingerprints(_screen("shop_scroll_top_live_20260914_b")),
+    )
+    assert changed == 0
+    assert total < ROW_FINGERPRINT_TOTAL_BITS // 4
+
+
+def test_missing_row_fingerprints_fall_back_to_the_global_hash():
+    """取不到逐行指纹 ⇒ 返回 (0, 0)，绝不许凭它单方面宣布「换了」。"""
+    assert changed_shop_rows((), ()) == (0, 0)
+    assert changed_shop_rows(("a", "b"), ("a",)) == (0, 0)

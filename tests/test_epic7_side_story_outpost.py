@@ -69,6 +69,11 @@ def map_page() -> np.ndarray:
     return _load(FIXTURES / "epic7_side_story" / "map.png")
 
 
+def exhausted_prep() -> np.ndarray:
+    # 「S.摩罗戈拉生长地」0/1 队伍准备页：含「可入场次数已全部耗尽。」
+    return _load(FIXTURES / "epic7_side_story" / "exhausted_prep.png")
+
+
 class OutpostTests(unittest.TestCase):
     def test_outpost_team_detection_sets_mode(self):
         """据点队伍页命中 `outpost_team` ⇒ 置位 `_in_outpost`（副作用）。"""
@@ -177,6 +182,66 @@ class OutpostTests(unittest.TestCase):
         except SideStoryCleared:
             self.fail("正常地图页不应触发收工")
         self.assertFalse(machine._in_outpost)
+
+
+class OutpostExhaustedTests(unittest.TestCase):
+    """据点次数用尽：**退场接下一段**，不就地收工。
+
+    旧行为在这里直接 ``SideStoryCleared``：中途重跑、据点①已用尽时，据点②会被
+    静默跳过 —— 代码里曾把这条写成「已知局限」。新语义是点「返回」退场，回地图后
+    由地图分支推进（据点① → 据点②，据点② → 收工）。
+    """
+
+    def test_outpost1_exhausted_backs_out_and_advances_to_outpost2(self):
+        machine = build_side_story_machine(TEMPLATES)
+        machine._segment = _SEG_OUTPOST_1
+
+        action = machine.next_action(exhausted_prep())
+
+        self.assertIsNotNone(action)
+        self.assertEqual("outpost_done_back", action.name)
+        self.assertTrue(machine._outpost_done)
+        self.assertFalse(machine._final_leave)
+
+        # 「返回」直接落回地图：推进到据点②，且**不**收工。
+        try:
+            machine.next_action(map_page())
+        except SideStoryCleared:
+            self.fail("据点①次数用尽后退场回地图不应收工（会跳过据点②）")
+        self.assertEqual(_SEG_OUTPOST_2, machine._segment)
+        self.assertFalse(machine._final_leave)
+
+    def test_outpost2_exhausted_backs_out_then_map_terminates(self):
+        machine = build_side_story_machine(TEMPLATES)
+        machine._segment = _SEG_OUTPOST_2
+
+        action = machine.next_action(exhausted_prep())
+        self.assertEqual("outpost_done_back", action.name)
+        self.assertTrue(machine._outpost_done)
+
+        # 最后一个据点也打满了 ⇒ 回地图才是真收工。
+        with pytest.raises(SideStoryCleared):
+            machine.next_action(map_page())
+
+    def test_outpost_scene_after_exhaustion_advances_only_once(self):
+        """「返回」落回据点场景页时，段落只推进一次（否则据点②会被跳过）。"""
+
+        machine = build_side_story_machine(TEMPLATES)
+        machine._segment = _SEG_OUTPOST_1
+        machine._in_outpost = True
+        machine.next_action(exhausted_prep())
+
+        action = machine.next_action(outpost_scene())
+
+        self.assertEqual("outpost_leave", action.name)
+        self.assertEqual(_SEG_OUTPOST_2, machine._segment)
+        self.assertFalse(machine._outpost_done)  # 场景页那条路已经消化掉退场标记
+
+        try:
+            machine.next_action(map_page())
+        except SideStoryCleared:
+            self.fail("据点①退场回地图不应收工")
+        self.assertEqual(_SEG_OUTPOST_2, machine._segment)
 
 
 if __name__ == "__main__":

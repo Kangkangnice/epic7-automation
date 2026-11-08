@@ -24,9 +24,11 @@ import pytest
 from auto_game_unified import main as main_module
 from auto_game_unified.games.epic7.modes import (
     MODE_SPECS,
+    PC_ONLY_ROUTES,
     RESUME_EXEMPT,
     get_mode,
 )
+from auto_game_unified.games.epic7.template_paths import TemplateDir
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -169,7 +171,10 @@ def test_every_route_is_registered_in_the_coverage_doc():
 
 def _reference_frames(mode: str) -> list:
     """这条路线自己的夹具，裁到基准尺寸。比基准小的跳过（匹配层会按宽高比拒绝）。"""
-    group = FIXTURES / f"epic7_{mode}"
+    # ⚠️ 只有 PC 素材的路线（``modes.PC_ONLY_ROUTES``）夹具放在 ``*_pc`` 目录下，
+    # 与 ``tests/fixtures`` 的既有约定一致（PC 帧不混进模拟器基线目录）。
+    suffix = "_pc" if mode in PC_ONLY_ROUTES else ""
+    group = FIXTURES / f"epic7_{mode}{suffix}"
     frames = []
     for path in sorted(group.glob("*.png")):
         raw = cv2.imread(str(path), cv2.IMREAD_COLOR)
@@ -198,7 +203,10 @@ def test_the_probe_recognises_at_least_one_of_its_own_fixtures(name: str):
     """
 
     spec = MODE_SPECS[name]
-    machine = spec.build_machine(TEMPLATE_ROOT, spec.default_state)
+    # 「真实模板根」对只有 PC 素材的路线是 pc 视图，不是模拟器视图 —— 拿模拟器根
+    # 去构建它们必然缺图，那是在要求「一条还没做模拟器素材的路线凭空可用」。
+    root = TemplateDir(TEMPLATE_ROOT, "pc") if name in PC_ONLY_ROUTES else TEMPLATE_ROOT
+    machine = spec.build_machine(root, spec.default_state)
     frames = _reference_frames(name)
 
     assert frames, f"{name} 没有可用夹具，这条测试等于没跑"
