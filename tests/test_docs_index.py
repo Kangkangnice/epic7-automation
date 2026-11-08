@@ -22,6 +22,13 @@ INDEX = DOCS / "README.md"
 #: 索引里必须覆盖到的文档：``docs/`` 下所有 ``.md``，除了索引自己与 ``_`` 开头的模板。
 _SKIP_NAMES = {"README.md"}
 
+#: 交接单目录：不进索引白名单，改由 ``docs/STATUS.md`` 的「在制品」一节兜底。
+WIP_DIR = DOCS / "wip"
+
+#: 交接单允许的状态（与 ``wip/_TEMPLATE.md`` 一致）。``done`` 不在其中是故意的：
+#: 做完了就该删掉这份交接单，而不是把它标成完成继续留着。
+WIP_STATUS = {"in-progress", "blocked", "abandoned"}
+
 #: 决策记录允许的状态（与 ``_TEMPLATE.md`` 里写的一致）。
 ALLOWED_STATUS = {"proposed", "accepted", "superseded", "deprecated", "rejected"}
 
@@ -51,10 +58,18 @@ def _indexed_paths(index_text: str) -> set[Path]:
 
 
 def _required_docs() -> list[Path]:
+    """需要登记在索引里的文档。
+
+    排除三类：索引自己、``_`` 开头的模板、以及 ``docs/wip/`` 下的交接单 ——
+    交接单是临时凭证，它的归宿是 `docs/STATUS.md` 的「在制品」一节（自动生成），
+    不该因为开一份活就要去改索引、干完再改回来。
+    """
     return sorted(
         path
         for path in DOCS.rglob("*.md")
-        if path.name not in _SKIP_NAMES and not path.name.startswith("_")
+        if path.name not in _SKIP_NAMES
+        and not path.name.startswith("_")
+        and WIP_DIR not in path.parents
     )
 
 
@@ -242,4 +257,83 @@ def test_the_front_pages_do_not_hardcode_route_counts() -> None:
         "首页写死了路线条数，这些数字一定会过期：\n  " + "\n  ".join(problems) + "\n\n"
         "改成「具体条数与 PC 放行名单见 docs/STATUS.md」这种写法 —— "
         "那一页由代码生成，永远不会过期。"
+    )
+
+
+# ---------------------------------------------------------------- 在制品交接单
+
+
+def _wip_files(directory: Path | None = None) -> list[Path]:
+    directory = WIP_DIR if directory is None else directory
+    if not directory.exists():
+        return []
+    return sorted(path for path in directory.glob("*.md") if not path.name.startswith("_"))
+
+
+def _metadata_problems(files: list[Path]) -> list[str]:
+    """交接单元数据的问题清单。抽成函数是为了能拿临时目录做反向验证。"""
+    problems = []
+    for path in files:
+        fields = _frontmatter(path.read_text(encoding="utf-8"))
+        if not fields:
+            problems.append(f"{path.name}: 缺 frontmatter")
+            continue
+        missing = [
+            key
+            for key in ("route", "status", "owner", "started", "next_step")
+            if not fields.get(key)
+        ]
+        if missing:
+            problems.append(f"{path.name}: 缺字段 {missing}")
+        if fields.get("status") and fields["status"] not in WIP_STATUS:
+            problems.append(
+                f"{path.name}: status={fields['status']!r} 不合法，"
+                f"只能是 {sorted(WIP_STATUS)}"
+            )
+        if fields.get("started") and not re.fullmatch(r"\d{4}-\d{2}-\d{2}", fields["started"]):
+            problems.append(f"{path.name}: started 不是 YYYY-MM-DD")
+    return problems
+
+
+def test_handover_notes_carry_metadata() -> None:
+    """每份交接单都要写清「谁 / 什么状态 / 什么时候开始 / 下一步」。
+
+    这不是形式主义：交接单的唯一用途就是让**下一个人**接手，
+    而这四项缺任何一项，接手的人都得先去问一圈。
+    """
+    problems = _metadata_problems(_wip_files())
+    assert not problems, (
+        "交接单元数据有问题：\n  " + "\n  ".join(problems) + "\n\n"
+        "照 docs/wip/_TEMPLATE.md 补齐即可。做完的工作请直接删掉交接单，"
+        "不要标成 done 留着。"
+    )
+
+
+def test_a_half_filled_handover_is_caught(tmp_path: Path) -> None:
+    """反向验证：缺 ``next_step`` 或状态写错的交接单必须被报出来。
+
+    没有这条，上面那条在「还没有交接单」时是空转的 —— 等第一次真有人用到，
+    才会发现规则根本没生效。
+    """
+    (tmp_path / "2026-11-08-bad.md").write_text(
+        "---\nroute: 演示\nstatus: done\nstarted: 2026/11/08\n---\n\n# 坏例子\n",
+        encoding="utf-8",
+    )
+
+    problems = _metadata_problems(_wip_files(tmp_path))
+
+    assert any("缺字段" in item for item in problems), f"没报出缺字段：{problems}"
+    assert any("不合法" in item for item in problems), f"没报出非法状态：{problems}"
+    assert any("started" in item for item in problems), f"没报出日期格式：{problems}"
+
+
+def test_handover_file_names_start_with_a_date() -> None:
+    """文件名必须是 ``YYYY-MM-DD-英文短名.md``，按名字就能看出先后。"""
+    problems = []
+    for path in _wip_files():
+        if not re.fullmatch(r"\d{4}-\d{2}-\d{2}-[a-z0-9-]+\.md", path.name):
+            problems.append(path.name)
+    assert not problems, (
+        "这些交接单的文件名不合规（应为 2026-11-08-some-task.md）：\n  "
+        + "\n  ".join(problems)
     )

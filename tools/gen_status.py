@@ -57,6 +57,65 @@ def _count_pc_templates() -> int:
     return sum(1 for path in root.rglob("*.png") if "pc" in path.relative_to(root).parts)
 
 
+def _frontmatter(text: str) -> dict[str, str]:
+    """解析极简 YAML frontmatter（只支持 ``key: value`` 单行）。"""
+    if not text.startswith("---\n"):
+        return {}
+    end = text.find("\n---", 4)
+    if end < 0:
+        return {}
+    fields: dict[str, str] = {}
+    for line in text[4:end].splitlines():
+        if ":" not in line:
+            continue
+        key, value = line.split(":", 1)
+        fields[key.strip()] = value.strip()
+    return fields
+
+
+def _cell(value: str) -> str:
+    """表格单元里不能出现裸竖线。"""
+    return value.replace("|", "/").strip() or "—"
+
+
+def _wip_rows(directory: Path | None = None) -> list[str]:
+    """在制品一节的内容。
+
+    只看 ``started`` 字段、**不看文件 mtime** —— 一次 ``git clone`` 或 ``checkout``
+    会把所有 mtime 刷成当下，那样生成结果就不可复现，比对会永远失败。
+
+    ``directory`` 只为测试留口（用临时目录验证「有条目 / 没条目」两种输出），
+    正常调用不传。
+    """
+    if directory is None:
+        directory = PACKAGE_ROOT / "docs" / "wip"
+    entries = []
+    for path in sorted(directory.glob("*.md")):
+        if path.name.startswith("_"):
+            continue
+        text = path.read_text(encoding="utf-8")
+        fields = _frontmatter(text)
+        title = next(
+            (line[2:].strip() for line in text.splitlines() if line.startswith("# ")),
+            path.stem,
+        )
+        entries.append((path, title, fields))
+    if not entries:
+        return ["（当前没有未完成的工作）"]
+    rows = [
+        "| 主题 | 状态 | 开始 | 下一步 |",
+        "|---|---|---|---|",
+    ]
+    for path, title, fields in entries:
+        link = f"[{_cell(title)}](wip/{path.name})"
+        rows.append(
+            f"| {link} | {_cell(fields.get('status', ''))} "
+            f"| {_cell(fields.get('started', ''))} "
+            f"| {_cell(fields.get('next_step', ''))} |"
+        )
+    return rows
+
+
 def _pc_state(mode: str) -> str:
     if mode in catalog.PC_READY_ROUTES:
         return "已放行"
@@ -135,17 +194,25 @@ def render() -> str:
         "  其余路线选了会被拦下并说明原因。命令行 `--window-backend pc` 不受这层限制。",
         "- **默认次数**：界面上预填的值，`-` 表示该路线没有次数概念。",
         "",
-        f"## 二、每日任务的执行顺序（共 {len(daily_tasks.DAILY_TASKS)} 条）",
+        "## 二、在制品（进行中）",
+        "",
+        "> 这一节一旦有条目，说明**有工作没做完**。每份交接单在 [`docs/wip/`](wip/)，",
+        "> 合并进 main 之后要删掉。开工做到一半要停时，复制",
+        "> [`wip/_TEMPLATE.md`](wip/_TEMPLATE.md) 建一份 —— 见 `AGENTS.md`「做到一半要停」。",
+        "",
+        *_wip_rows(),
+        "",
+        f"## 三、每日任务的执行顺序（共 {len(daily_tasks.DAILY_TASKS)} 条）",
         "",
         "界面上「每日」分组按下表从上到下执行；每段之间会先确认回到大厅再开下一条。",
         "",
         *_daily_lines(),
         "",
-        "## 三、仅 PC 的路线",
+        "## 四、仅 PC 的路线",
         "",
         *_pc_only_lines(),
         "",
-        "## 四、素材与测试规模",
+        "## 五、素材与测试规模",
         "",
         f"- 识别模板 **{templates}** 张，其中 PC 专用 **{pc_templates}** 张",
         f"- 现场夹具 **{fixtures}** 张（`tests/fixtures/`，跑测试用的真实截图）",
@@ -154,7 +221,7 @@ def render() -> str:
         "`tests/test_template_paths.py` 登记，多跑一次生成器只是同一步的延续。",
         "测试文件个数刻意不写在这里：它每天都在变，写进来只会让这一页天天过期。",
         "",
-        "## 五、这一页之外去哪找",
+        "## 六、这一页之外去哪找",
         "",
         "- 文档索引与「我该看哪一份」：[`docs/README.md`](README.md)",
         "- 为什么当初这么定：[`docs/decisions/`](decisions/)",

@@ -104,17 +104,24 @@ def test_the_daily_section_follows_the_real_execution_order() -> None:
 
 
 def test_the_page_carries_no_timestamp() -> None:
-    """生成物里不许写时间。
+    """除「在制品」一节外，生成物里不许写日期。
 
     写了就会「今天生成、明天过期」，比对将每天失败一次 —— 那是最劝退的设计，
     一旦发生，人就会开始习惯性手改文档，整套机制立刻失效。
+
+    **在制品一节是例外**：那里显示的是交接单作者手写的 `started`，
+    是内容而不是生成时间戳。真实的坑：第一版规则不区分，交接单一进目录就撞红。
     """
     text = _on_disk()
+    start = text.find("## 二、在制品")
+    end = text.find("## 三、")
+    if start >= 0 and end > start:
+        text = text[:start] + text[end:]
     for year in ("2025-", "2026-", "2027-"):
         assert year not in text, (
-            f"docs/STATUS.md 里出现了日期（{year}...）。"
+            f"docs/STATUS.md（「在制品」一节之外）出现了日期（{year}...）。"
             "这一页必须与时间无关，否则每天都会变成「过期状态」。"
-            "需要写日期的地方是 CHANGELOG 与 docs/decisions/，不是这里。"
+            "需要写日期的地方是 CHANGELOG、docs/decisions/ 与交接单的 started 字段。"
         )
 
 
@@ -162,3 +169,65 @@ def test_pc_only_routes_are_marked_unavailable_on_emulator() -> None:
             f"{mode} 的表格行没有标「不可用（仅 PC）」：\n{line}\n"
             "仅 PC 的路线在模拟器后端下会被整条跳过，文档必须说清楚。"
         )
+
+
+# ---------------------------------------------------------------- 在制品
+
+
+def test_the_page_has_an_in_progress_section() -> None:
+    """现状页必须有一节专门回答「有没有活没干完」。
+
+    没有这一节时，STATUS 只能反映**已经合入代码的事实** —— 做到一半被中断的工作
+    在页面上完全隐形，接手的人只能去翻未提交的 diff。
+    """
+    text = _on_disk()
+    assert "## 二、在制品（进行中）" in text, (
+        "docs/STATUS.md 里没有「在制品」一节。"
+        "这一节是「进行中的工作」唯一的可见入口，不能被生成器漏掉。"
+    )
+    if not gen_status._wip_rows() or gen_status._wip_rows() == ["（当前没有未完成的工作）"]:
+        assert "（当前没有未完成的工作）" in text, (
+            "当前没有交接单，但现状页里既没列条目也没写「当前没有未完成的工作」，"
+            f"读的人会以为这一节坏了。{REGENERATE_HINT}"
+        )
+
+
+def test_the_in_progress_section_lists_a_handover(tmp_path: Path) -> None:
+    """反向验证：放进一份交接单，生成结果必须列出标题、状态与下一步。
+
+    守的是「在制品」变成摆设：没有这条，一个永远输出「当前没有」的生成器
+    也能让上面那条用例变绿。
+    """
+    note = tmp_path / "2026-11-08-demo-task.md"
+    note.write_text(
+        "---\n"
+        "route: 演示\n"
+        "status: in-progress\n"
+        "owner: 测试\n"
+        "started: 2026-11-08\n"
+        "next_step: 先跑一轮竞技场看退出码\n"
+        "---\n"
+        "\n"
+        "# 演示用交接单\n",
+        encoding="utf-8",
+    )
+
+    joined = "\n".join(gen_status._wip_rows(tmp_path))
+
+    assert "演示用交接单" in joined, "交接单的标题没有出现在「在制品」一节里"
+    assert "in-progress" in joined, "交接单的状态没有出现"
+    assert "先跑一轮竞技场看退出码" in joined, "下一步没有出现，接手的人不知道从哪开始"
+    assert "2026-11-08-demo-task.md" in joined, "没有链到交接单本身"
+
+
+def test_an_empty_in_progress_directory_says_so(tmp_path: Path) -> None:
+    assert gen_status._wip_rows(tmp_path) == ["（当前没有未完成的工作）"]
+
+
+def test_the_template_is_not_treated_as_a_handover(tmp_path: Path) -> None:
+    """``_TEMPLATE.md`` 只是模板，不能被当成「有一份活的交接单」。"""
+    (tmp_path / "_TEMPLATE.md").write_text(
+        "---\nstatus: proposed\n---\n\n# 模板\n", encoding="utf-8"
+    )
+    assert gen_status._wip_rows(tmp_path) == ["（当前没有未完成的工作）"]
+
