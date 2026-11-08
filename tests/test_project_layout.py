@@ -86,10 +86,24 @@ class ProjectLayoutTests(unittest.TestCase):
                 # 判据只裁黑框左半（不含会变的角色名），4 帧 0.9999~1.0000，
                 # 全库 360 张反例最高 0.4323。
                 "tutorial_unlock_pc_live_20261106.png",
+                # 2026-11-06 22:27 PC 真机：新手账号大厅右上角常驻一块「跳过教学 ✕」，
+                # 把**快捷菜单蓝四格顶掉** ⇒ 导航「打开快捷菜单」锚点找不到，
+                # 多条路线在这台机器上反复失败（老账号的模拟器没有这个东西）。
+                "tutorial_skip_pc_live_20261106.png",
                 # 2026-11-06 17:23 批量：竞技场「升级奖励」弹窗的 PC 字形版。
                 # 这颗全局弹窗 10-20 就接好了，但两张锚点图是模拟器字形，
                 # PC 帧上只有 0.6604 / 0.6861（阈 0.88）⇒ 守卫不出手。
                 "arena_rank_reward_pc_live_20261106.png",
+                # 2026-11-07 13:11 PC 真机：主线 Episode 5 第 3 关通关后弹出
+                # 「解锁缘分」（已与贝洛妮卡结下缘分 + 金色 OK），整页盖住关卡
+                # 入口 ⇒ 主线报「页面无进展：主线画面[跳过确认]未识别」，安全停止
+                # 回家。第 24 类全局弹窗的唯一正例，判据住在 PC 专属模块里。
+                "relationship_unlock_pc_live_20261107.png",
+                # 2026-11-07 15:51 PC 真机（用户截图还原成 1982x1132 生产画布）：
+                # 宠物小屋图标上方的紫金礼盒 + 白色对话气泡角标。这条判据
+                # 2026-09-28 就有、PC 也一直在用共享图；这里补的是**首个 PC 正例**
+                # ——此前全库只有模拟器帧，PC 侧没有人能证明它会点。
+                "pet_gift_pc_live_20261107.png",
             },
             {path.name for path in fixture_dir.glob("*.png")},
         )
@@ -138,6 +152,13 @@ class ProjectLayoutTests(unittest.TestCase):
             # ⇒ confirm-result 转场失败、收尾 ESC 又无效（一条命犯两桩）。
             # 正例帧供 `test_pc_rank_promotion_popup_is_recognized` 用。
             "rank_promotion_pc_live_20261103.png",
+            # 2026-11-07 PC 真机：点「刷新对手」后弹出的「更新交战对手」确认窗。
+            # ① 共享模板在 PC 上三个锚点全塌（0.6374/0.7967/0.7273，阈 0.90）
+            #    ⇒ 补 `templates/pc/arena_refresh_{title,free,confirm}.png`；
+            # ② 它同时是「半透明遮罩把红色状态压没」的物证 —— 这一帧上
+            #    `has_safe_opponent` 会返回 True，而刷新前日志写的是三名均不可挑战。
+            # 供 `test_safe_list_waiter_never_accepts_a_list_while_popup_is_up` 用。
+            "free_refresh_confirm_pc_live_20261107.png",
         }
         fixture_dir = ROOT / "tests" / "fixtures" / "epic7_arena"
         self.assertEqual(expected, {path.name for path in fixture_dir.glob("*.png")})
@@ -202,6 +223,11 @@ class ProjectLayoutTests(unittest.TestCase):
             # 它证明弹窗标题在 PC 上只有 0.6084（阈 0.82）⇒ 整个弹窗关不掉、
             # ESC 也无效；修法是 `templates/story/pc/friend_request_title.png`。
             "friend_request_pc_live_20261101.png",
+            # 2026-11-07 PC 真机：「战斗指南」战力差警告盖在队伍准备页上。
+            # 两个共享锚点在 PC 上分别是 0.6681 / 0.9004（阈 0.85）⇒ 标题那一颗
+            # 认不出 ⇒ 双锚点整页返回 None ⇒ 战斗阶段空等 20 秒后「安全停止」。
+            # 修法是 `templates/story/pc/battle_guide_{title,dont_show}.png`。
+            "battle_guide_warning_pc_live_20261107.png",
         }
         fixture_dir = ROOT / "tests" / "fixtures" / "epic7_story"
         self.assertEqual(expected, {path.name for path in fixture_dir.glob("*.png")})
@@ -326,6 +352,10 @@ class ProjectLayoutTests(unittest.TestCase):
             # 结算页：分数 2,685,243、MVP 头像、右下「确认」。这张同时是
             # result_title 的正例，以及「奖励弹窗必须靠 forbidden 排他」的对照组。
             "battle_result_pc_live_20261103.png",
+            # 2026-11-08：骑士团签到的「达成度奖励」弹窗（PC 帧）。共享层模板在这帧只有
+            # 0.3796 / 0.6435 ⇒ 补了两张 `navigation/pc/knights_signin_*.png`。
+            # 它借用本目录的 `_world_boss_screen` 读帧（同尺寸全屏帧，没必要再建一套）。
+            "knights_signin_popup_pc_live_20261108.png",
         }
         fixture_dir = ROOT / "tests" / "fixtures" / "epic7_world_boss"
         self.assertEqual(expected, {path.name for path in fixture_dir.glob("*.png")})

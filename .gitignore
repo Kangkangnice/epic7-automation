@@ -26,6 +26,9 @@ packaging/build*/
 packaging/dist*/
 # 测试临时落地目录（`_tmpcheck` 里只有跑测试时抓的 `_now.png`）
 tests/fixtures/_tmpcheck/
+# 竞技场结算画面：2026-11-08 已取消该落盘功能，目录里可能还留着旧图。
+# 名字带时间戳、永不重复 ⇒ 以前每跑一轮就 +10 张 / 21 MB 进历史（累积 103 张 / 211 MB）。
+docs/manual_review/arena/
 # 源码运行时的用户状态：data_root() 在源码模式下就是包目录，跑一次界面就会在这里
 # 留下「已同意须知」和「上次查版本的时间」。它们因人而异、不进版本库，
 # 否则每个从源码跑的人 `git status` 立刻变脏。

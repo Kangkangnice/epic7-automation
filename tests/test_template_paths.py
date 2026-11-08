@@ -367,6 +367,12 @@ def test_real_template_root_only_has_the_reviewed_pc_overrides():
         # ⚠️ 只放 pc/：模拟器仍用共享图 + 共享 region（episode_fresh 0.9198 不动）。
         "moonlight_theater/pc/back_button.png",
         "moonlight_theater/pc/guide_title.png",
+        # 2026-11-06 22:47：**「使用剧场门票」标题**。PC 上这一行被画**小** 16%
+        # （280×89 vs 共享图 330×104），超出 ``SCALE_FALLBACK_ANCHORS`` 的 ±3% 扫描
+        # 范围 ⇒ 原样 0.7457（阈 0.80）⇒ 弹窗弹出后整页判不出、干等 42 秒。
+        # 重裁 310×105 后本帧 1.0000；⚠️ 花钱级排他：它在「购买剧场门票」那一帧上
+        # 只有 0.5160，绝不会把「取消」认成「确认」。
+        "moonlight_theater/pc/use_ticket_title.png",
         # 英雄合成（2026-11-03）：满 SSS 的刻印印记。PC 上这一块整体左移
         # （落点 x≈45，模拟器模板在 x≈261），且渲染不同 ⇒ 共享图在全屏也只有
         # 0.5593（阈 0.90）。**后果不是报错而是静默判错**：满 SSS 的英雄被当成
@@ -429,6 +435,10 @@ def test_real_template_root_only_has_the_reviewed_pc_overrides():
             "global/pc/tutorial_unlock_title.png",
             "global/pc/tutorial_skip_button.png",
             "global/pc/tutorial_highlight_icon.png",
+            # 2026-11-06 22:27：新手账号大厅右上角那块「跳过教学 ✕」里的 **✕ 本体**。
+            # 判据用上面的 ``tutorial_skip_button``，这张只负责「点哪儿」——
+            # 用户明确要求点 ✕，点「跳过教学」四个字只是展开/收起说明。
+            "global/pc/tutorial_skip_confirm.png",
             # 2026-11-06 17:29 批量四条独立 ✗ 的 PC 覆盖图（代码零改动那两条）。
             # ① 英雄合成「自动选择」：PC 把这四个字渲染成另一套字形，共享图
             #    全屏最高只有 0.6953（阈 0.85）⇒ 传送选择页判据缺一角，
@@ -442,8 +452,70 @@ def test_real_template_root_only_has_the_reviewed_pc_overrides():
             #    补 PC 图后两锚点各 1.0000，点击点 (962,832)。
             "navigation/pc/arena_rank_reward_title.png",
             "navigation/pc/arena_rank_reward_close.png",
+            # 2026-11-08 真机：骑士团签到达成度奖励弹窗，共享层标题在 PC 帧只有
+            # 0.3796（阈 0.80）⇒ 未知画面超时。PC 覆盖图双锚点 1.0000，
+            # 全库 398 张夹具零误命中，标题跨页最高 0.4107。
+            "navigation/pc/knights_signin_title.png",
+            "navigation/pc/knights_signin_close.png",
+            # 2026-11-07：主线「战斗指南」战力差警告（两个锚点都走 HSV 白字掩膜）。
+            # 共享图在 PC 帧上 title **0.6681** / dont_show 0.9004（阈 0.85）——
+            # 标题那颗一塌，双锚点整页返回 None ⇒ 战斗阶段只等不点，
+            # 20 秒后「战斗画面持续无法识别超时」安全停止，整条主线记 ✗。
+            # 按 PC 帧重裁后两个锚点各 **1.0000**、点击点 (1271,854) 落在「不再显示」上；
+            # 反例（team / results / complete / next_stage / 对手列表等 11 帧）最高 0.6649。
+            # 补之前先试过「换低通口径」和「扫尺寸」：低通虽能到 0.92，但全库反例里
+            # 月塔那张「战斗指南」的**确认**按钮会跟竞技场刷新的「确认」撞到 0.9387
+            # （掩膜口径下靠颜色区分，0.9502→低通丢色彩后转正）⇒ 否决。
+            "story/pc/battle_guide_title.png",
+            "story/pc/battle_guide_dont_show.png",
+            # 2026-11-07：竞技场「更新交战对手」免费刷新确认（三锚点 + 颜色区分）。
+            # 共享图在 PC 帧上 0.6374 / 0.7967 / 0.7273（阈 0.90）⇒ 三锚点全塌 ⇒
+            # ``free_refresh_confirm`` 恒 None ⇒ 刷新等待器一直等新列表直到超时，
+            # 期间还会被半透明遮罩骗着判「刷新成功」（见 arena.py 的注释）。
+            # 重裁后三锚点各 **1.0000**、点击点 (1231,800) 落在「确认」上；
+            # 反例最高 0.7536（skip_confirm.png）⇒ 余量 0.146。
+            "pc/arena_refresh_title.png",
+            "pc/arena_refresh_free.png",
+            "pc/arena_refresh_confirm.png",
+            # 2026-11-07 13:11：主线 Episode 5 通关后弹出的「解锁缘分」通知窗
+            # （第 24 类全局弹窗，也是第一个完全住在 ``global_popups_pc.py``
+            # 里的 PC 专属判据 —— ``global_popups.py`` 一个字节没改）。
+            # 标题四字 1.0000、全库 381 帧负例最高 0.4761（阈 0.82，余量 0.3439）；
+            # OK 按钮 1.0000、只负责定位点击点 (957,825)。两张图只在 pc/ 下。
+                "global/pc/relationship_unlock_title.png",
+                "global/pc/relationship_unlock_ok.png",
+                # 2026-11-08：英雄刻印已满时底部的「已达最高献身技能级别，
+                # 无法继续刻印记忆。」提示条（判据型：认到就说明这个英雄刻满了）。
+                # 裁自 11-08 08:56 现场帧（545x66），正例 29 张全 **1.0000**、
+                # 反例全库 1483 张最高 **0.4091**（阈 0.80，两侧余量各 0.20 / 0.39）。
+                # 只有 pc/ 下这一张；模拟器没有对应样本 ⇒ 加载成 None ⇒ 判据整段跳过。
+                "hero/pc/imprint_max_level_notice.png",
+                # 2026-11-08：英雄合成「刻印记忆」红点（PC-only 第二判据）。
+                # 模拟器红点 (1038,949,18,19) 稳落在收紧的 _REDDOT_ZONE 内；
+                # PC 静止态红点 (1030,942,26~29,26) 更大更靠左上，左边还有同色
+                # 橙棕斜带相连 ⇒ boundingRect 贴框边 ⇒ is_centered_dot 的 3px
+                # 内缩规则判 False，有红点的卡被直接翻过去（16:41 两次跳过）。
+                # 裁自当天用户截图 (1027,939,28,28)；真机静止帧 0.9177~0.9525、
+                # 用户截图 1.0000；全库 2830 帧里非红点最高约 0.51（阈 0.80）。
+                # 原判据为真时短路，这张图只补漏，不改模拟器口径。
+                "hero/pc/imprint_red_dot.png",
+                # 2026-11-08：成就领取（PC 端首条路线，模拟器暂无素材）。
+                # 全部裁自当天真机帧；反例最高值见 `runtime_logs/_ach_build_templates2.py`
+                # 的输出（effect_upgrade 0.4067 / reward_title 0.3241 /
+                # popup_close_* 0.34 左右，阈 0.80）。
+                "achievement/pc/page_title.png",
+                "achievement/pc/claim_all.png",
+                "achievement/pc/effect_upgrade.png",
+                "achievement/pc/reward_title.png",
+                "achievement/pc/popup_close_reward.png",
+                "achievement/pc/popup_close_effect.png",
+                # 2026-11-08：快捷菜单第 4 排第 1 个「成就」入口（导航用）。
+                # 裁法与大厅那颗蓝四格同一套：**从橙红角标下边缘起裁**，
+                # 只取「图标下半 + 下面的『成就』二字」⇒ 角标免疫。
+                # 实测带角标 1.0000 / 抹掉角标 0.9901；反例 0.1819 / 0.2083（阈 0.90）。
+                "navigation/pc/achievement_entry.png",
 
-    }, actual
+        }, actual
 
     shared = resolve_template_dir(REAL_ROOT)
     pc = resolve_template_dir(REAL_ROOT, "pc")
