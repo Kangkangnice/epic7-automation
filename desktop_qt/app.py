@@ -495,7 +495,8 @@ class QtDesktopWindow(FluentWindow):
             self._append_log(
                 "输入通道=不占用前台（实验）：启用前请先用 "
                 "tools/probe_background_input.py 在本机实测；"
-                "拖拽/滑动与 Esc 暂不支持，遇到会安全中止。"
+                "滑动没法后台做（Raw Input 只认前台），含滑动的路线会短暂把窗口切到前面，"
+                "滑完立刻把前台还原；Esc 返回会自动改走前台。"
             )
         else:
             self._append_log("输入通道=抢前台（默认）。")

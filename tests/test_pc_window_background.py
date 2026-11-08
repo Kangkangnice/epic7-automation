@@ -47,6 +47,28 @@ class InputModeSwitchTests(unittest.TestCase):
         self.assertEqual(self.game.input_mode, PC_INPUT_BACKGROUND)
         self.assertTrue(any("通道=background" in line for line in messages))
 
+    def test_minimized_window_is_restored_before_touching_it(self):
+        """最小化是**唯一**真正取不到画面的情况：客户区变成 0×0，必须先还原。
+
+        （遮挡不影响 —— 2026-11-08 实测把游戏整个盖住，BitBlt 仍返回完整画面。）
+        照 ``core/window.py`` 的口径：先 ``SW_SHOWNOACTIVATE``（还原但不抢焦点），
+        不生效才 ``SW_RESTORE``。
+        """
+        messages: list[str] = []
+        self.game.set_event_sink(messages.append)
+        self.game._user32 = MagicMock()
+        states = [True, False]  # 第一次问：最小化；ShowWindow 之后再问：已还原
+
+        def iconic(_hwnd):
+            return states.pop(0) if states else False
+
+        self.game._user32.IsIconic.side_effect = iconic
+
+        self.game._restore_if_minimized(123)
+
+        self.game._user32.ShowWindow.assert_called_once_with(123, 0x0004)
+        self.assertTrue(any("已最小化" in line for line in messages))
+
     def test_click_dispatches_to_background_when_selected(self):
         self.game.set_input_mode(PC_INPUT_BACKGROUND)
         with patch.object(self.game, "_background_click") as background:
@@ -110,32 +132,35 @@ class BackgroundClickMessageTests(unittest.TestCase):
         ):
             self.game._background_click((900, LEGACY_TOP - 1))
 
-    def test_swipe_uses_background_drag_sequence(self):
-        """后台不再抛错：按下 → 分步移动 → 抬起，轨迹全程不抢前台。"""
-        def fill_cursor(pointer):
-            point = ctypes.cast(pointer, ctypes.POINTER(wintypes.POINT)).contents
-            point.x, point.y = 640, 480
-            return 1
+    def test_swipe_goes_foreground_even_in_background_mode(self):
+        """滑动**没有**后台方案：Raw Input 只喂前台窗口。
 
-        self.game._user32.GetCursorPos.side_effect = fill_cursor
+        2026-11-08 实跑对照（同一客户端、同一条刷书签路线）：
+        - 21:08 后台拖拽：消息全发出去了，列表一个像素没动
+          （诊断图 ``scroll_source`` 与 ``scroll_peak`` 的商品行完全相同，
+          那 25.8 的「画面差」全是商人对话气泡弹出又消失）；
+        - 13:31 前台真鼠标拖拽：连续 5 次全部滚动成功，画面差 30~33。
+
+        所以后台通道下也必须激活窗口走 SendInput，**不许再发 PostMessage 轨迹**。
+        这条反向护栏钉的就是「别再退回后台拖拽」。
+        """
+        self.game.set_input_mode(PC_INPUT_BACKGROUND)
         with (
             patch.object(self.game, "_find_window", return_value=123),
             patch.object(self.game, "_ensure_input_allowed"),
             patch.object(self.game, "_validated_rect", return_value=self.rect),
+            patch.object(self.game, "activate", return_value=123) as activate,
+            patch.object(self.game, "_send_swipe") as send_swipe,
+            patch.object(self.game, "_restore_foreground", return_value=True) as restore,
         ):
-            self.game.swipe(
-                (100, 100 + LEGACY_TOP), (200, 200 + LEGACY_TOP), 160
-            )
-        posts = [call.args for call in self.game._user32.PostMessageW.call_args_list]
-        self.assertEqual(posts[0][1], _WM_LBUTTONDOWN)
-        self.assertEqual(posts[-1][1], _WM_LBUTTONUP)
-        self.assertGreaterEqual(
-            sum(1 for post in posts if post[1] == _WM_MOUSEMOVE), 5
-        )
-        self.game._user32.SetCursorPos.assert_any_call(300, 400)
-        self.game._user32.SendMessageW.assert_called_once_with(
-            123, _WM_ACTIVATE, _WA_ACTIVE, 0
-        )
+            self.game.swipe((100, 100 + LEGACY_TOP), (200, 200 + LEGACY_TOP), 160)
+
+        activate.assert_called_once()
+        send_swipe.assert_called_once()
+        # 滑完必须把前台还给用户原来的窗口（刷书签一轮滑 2 次，不还不行的）
+        restore.assert_called_once()
+        self.game._user32.PostMessageW.assert_not_called()
+        self.game._user32.SetCursorPos.assert_not_called()
 
     def test_second_click_skips_restore_when_user_did_not_move_mouse(self):
         """连续点击只做一次瞬移（不来回还原），抖动砍半。"""
