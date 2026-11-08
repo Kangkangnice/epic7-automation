@@ -97,6 +97,23 @@
 3. **不许写死会漂移的数字** —— 想说「现在有多少条路线」，去链 `STATUS.md`，不要抄数字。
    首页（`README.md` 与本页）有专门的门禁盯着这一条。
 
+### 定期复审：让语义漂移有地方暴露
+
+`STATUS.md` 保证的是**结构化事实**（路线数、放行名单）。其余文档里那句话还成不成立，
+机器判断不了 —— 架构说明、每路线维护手册、用户手册，只能人读一遍。为了让它变便宜，
+用一个**游标**记住「上次审到哪个提交」，下次只从那里往后看：
+
+```powershell
+python -m auto_game_unified.tools.doc_review          # 自上次审阅以来改了哪些、该复审哪几份
+python -m auto_game_unified.tools.doc_review --mark   # 审完没问题，把游标推到 HEAD
+```
+
+游标在 [`doc-review-cursor.txt`](doc-review-cursor.txt)，映射规则在
+`tools/doc_review.py::DOC_RULES`。发版前可以用 `--check`：落后超过 30 个提交返回非零。
+
+**它不阻断每次提交** —— 语义漂移本来就不可能靠提交门禁发现，硬拦只会让人开始习惯性绕过。
+这是业界（社区 skill `doc-maintenance`）的做法：不追求预防一切，只追求**让复审便宜、让落后可见**。
+
 ### 存档
 
 只供追溯，**不要照着做**（里面的接口可能已经删了）：
