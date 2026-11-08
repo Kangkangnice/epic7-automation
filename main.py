@@ -894,6 +894,30 @@ def _apply_fixed_cycles(args: argparse.Namespace) -> None:
         args.max_cycles = spec.default_cycles
 
 
+def _pc_live_precondition(window_backend: str) -> str | None:
+    """PC 后端**实跑**前的窗口与权限前置检查，返回阻断原因（``None`` 表示可以跑）。
+
+    为什么放在 CLI 边界而不是 ``run_mode``：``run_mode`` 要能被测试直接调用，
+    而这条检查会去枚举真实窗口；放在命令行入口，既只跑一次，也不会拦住单测。
+
+    为什么必须拦：Windows 的 UIPI 规定低权限进程不能往高权限窗口发输入。助手权限低于
+    PC 客户端时，键鼠输入会被**静默**拦掉 —— 截图正常、识别正常、日志里每个动作都写
+    「已点击」，游戏一动不动。这种故障看起来像模板过期或坐标算错，过去只能靠人猜。
+
+    它不试图「自动提权」：提权要不要弹窗取决于那台机器的 UAC 设置，探不出来也不该猜。
+    拦下来 + 给出下一步命令，比让 agent 在错的前提上试十分钟更有用。
+    """
+    if window_backend != "pc":
+        return None
+    # 延迟导入：模拟器路线不该为 PC 专用的检查付出启动开销。
+    from auto_game_unified.desktop import preflight as preflight_module
+
+    report = preflight_module.run_preflight(window_backend="pc")
+    if report.status is preflight_module.PreflightStatus.PASS:
+        return None
+    return f"PC 后端实跑未就绪：{report.message}"
+
+
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     # 输入通道是进程级设置：写进环境供 ``_build_runtime`` 读取（桌面端的子进程
@@ -923,6 +947,14 @@ def main(argv: list[str] | None = None) -> int:
             )
     if args.live and args.start_state is not None:
         raise SystemExit("--start-state 仅在空跑诊断模式可用")
+    if args.live:
+        blocked = _pc_live_precondition(args.window_backend)
+        if blocked is not None:
+            raise SystemExit(
+                f"{blocked}\n\n"
+                "先自检看清楚：python -m auto_game_unified.tools.live_check --backend pc\n"
+                "标准做法（怎么提权、怎么判失败）：docs/howto/live_verification.md"
+            )
     spec = get_mode(args.mode)
     try:
         start_state = spec.resolve_state(args.start_state)
