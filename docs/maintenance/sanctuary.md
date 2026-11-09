@@ -146,7 +146,7 @@
 |---|---|
 | 页面判据、区域、阈值、三行位置 | `games/epic7/evidence/sanctuary.py` |
 | 状态机、动作、转场契约、接力 | `games/epic7/sanctuary.py` |
-| 模板 | `games/epic7/templates/sanctuary/`（5 张）+ `templates/navigation/lobby_sanctuary.png` |
+| 模板 | `games/epic7/templates/sanctuary/`（共享 5 张）+ `games/epic7/templates/sanctuary/pc/`（PC 覆盖 4 张，合计 9 张）+ `templates/navigation/lobby_sanctuary.png` |
 | 登记（四处） | `modes.py::MODE_SPECS`、`desktop/catalog.py::ROUTES`、`daily_tasks.py::DAILY_TASKS`、`tools/check.py::ROUTE_KEYWORDS` |
 | 导航链 | **不在 `navigation.py`**：链条与接力白名单声明在 `modes.py::MODE_SPECS["sanctuary"].navigation_plan`（数据）。`navigation.py` 只留执行器与共用设施（`PAGE_LABELS` / `NavigationTemplates` / `_REGIONS` / `observe()`）；锚点图仍放 `templates/navigation/` |
 | 测试 | `tests/test_sanctuary.py`、夹具 `tests/fixtures/epic7_sanctuary/`（19 张实拍帧） |
