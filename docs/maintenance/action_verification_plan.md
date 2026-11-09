@@ -76,9 +76,12 @@
 所以会出现：点了酒馆（其实成功了）→ 0.5 秒后画面还在切 → 认不出 → 兜底按 ESC。
 那两次 ESC 是白按的，还差点把刚打开的家门关上。
 
-**关键有利条件**：`main.HomeReturn` 构造时**就持有 `navigator`**（`main.py:454`），
-而 `navigator.observe(screen)` 返回 `PageObservation(name, confidence)` ——
-**页面身份信息已经在手边，只是没接进 `return_home_v2`。**
+**关键有利条件（2026-09-26 重构后依旧成立，但接入口变了）**：`HomeReturn` 与
+`Epic7Navigator` 都持有 `navigator`（`main.py:281` / `navigation.py` 构造），而
+`navigator.observe(screen)` 返回 `PageObservation(name, confidence)` ——
+**页面身份一直在手边**。2026-09-26 重构后，`observe` 由 `navigation.return_home`
+（`navigation.py:1529`）在内部喂给 `return_home_v2`；`main.HomeReturn.__call__` 只把调用
+转交 `navigator.return_home(...)`（`main.py:288`），**不再自己传 `observe`**。
 
 #### 具体改法
 
@@ -96,8 +99,10 @@ def return_home_v2(
 ) -> np.ndarray:
 ```
 
-`main.HomeReturn.__call__` 传入 `observe=lambda screen: self._navigator.observe(screen).name`。
-**（`HomeReturn` 已有 `self._navigator`，不用改构造）**
+`navigation.return_home`（`navigation.py:1529`）在内部把
+`observe=lambda screen: self.observe(screen).name` 喂给 `return_home_v2`；
+`main.HomeReturn.__call__` 只负责转交 `navigator.return_home(...)`（`main.py:288`），不自己传 `observe`。
+**（2026-09-26 重构后如此；`HomeReturn` 仍持有 `self._navigator`，不用改构造）**
 
 **② 验收动作（照搬老流程的形态，但用统一口径）**
 
@@ -136,7 +141,15 @@ def return_home_v2(
 | 门槛 | **全量**（动 `home_return.py` + `main.py`） |
 | 实跑 | 竞技场跑 2 轮，确认收尾日志不再出现「同一层连按」 |
 
-### 阶段 2：统一 `navigation.return_home` 的验收口径 —— ❌ **实测数据否掉了，不要做**
+### 阶段 2：统一 `navigation.return_home` 的验收口径 —— ❌ **前提已不存在，自动作废**
+
+**⚠️ 代码现状（2026-09-26 起）：本节的前提没了。** 老的那套 `navigation.return_home`
+自包含循环（用 `page_or_picture_changed` 做像素兜底口径）已在 2026-09-26 整段删除；
+现在 `navigation.return_home`（`navigation.py:1502`）只是 `return_home_v2` 的薄封装，
+直接把 `observe=lambda screen: self.observe(screen).name`（line 1529）喂进去（见下方
+`navigation.py` 的方法文档）。**全项目只有 v2 一套回家实现，没有「老流程」可统一**，
+所以阶段 2 不再是「实测否掉」，而是「前提没了」。**下方保留的是当时的分析记录，仅供追溯，
+不要照着改代码。**
 
 **原计划**：把 `navigation.py:811` 的 `page_or_picture_changed`（含像素兜底）
 换成 `left_page`（纯页面身份），与其他地方统一。
@@ -182,7 +195,7 @@ def return_home_v2(
 | 3.2 | `survivor.py:387` | 点「重新进行」后不确认 | 点后确认离开 `survivor.result` |
 | 3.3 | `survivor.py:313` | 摇杆滑动，**无页名** | 页名从调用方传入（调用处有 `observation.page == "survivor.battle"`） |
 | 3.4 | `survivor.py:326` | 点升级卡，**无页名** | 同上（调用处有 `observation.page == "survivor.level_up"`） |
-| 3.5 | `global_popups.py:499` | 有弹窗身份 + 双帧，口径接近 | 评估是否统一 |
+| 3.5 | `global_popups.py:1660`（`_find_popup`） | 有弹窗身份 + 双帧，口径接近 | 评估是否统一 |
 
 ### 阶段 4：处理「真拿不到页面名」的 2 处 —— **必须有明确降级依据**
 
@@ -235,7 +248,7 @@ def return_home_v2(
 | 文件 | 改动 |
 | --- | --- |
 | `games/epic7/home_return.py` | 新增 `_ActionVerifier` 类（+ `_StableTwo.sees_change`）；`return_home_v2` 新增 `observe` 形参；5 处动作全部改走验收器；新增 `_VERIFY_TIMEOUT_SECONDS = 12.0` |
-| `main.py::HomeReturn.__call__` | 传入 `observe=lambda screen: self._navigator.observe(screen).name` |
+| `navigation.return_home`（`navigation.py:1502` → `return_home_v2` line 1529） | 在内部把 `observe=lambda screen: self.observe(screen).name` 喂给 v2；`main.py::HomeReturn.__call__` 只转交 `navigator.return_home(...)` |
 | `tests/test_home_return_failure.py` | 新增 5 条真 Runner 级测试 |
 | `tests/test_public_flow_verification.py` | 断言从「关键词」升级为「AST 符号 + 调用次数」 |
 | `games/epic7/public_flow_verification.py` | 表态文案对齐真实符号名 |
