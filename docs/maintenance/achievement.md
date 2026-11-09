@@ -178,7 +178,7 @@ python auto_game_unified/runtime_logs/_ach_collect.py
 
 `navigation/achievement_entry.png` 与 `achievement/page_title.png`（**不在 pc/ 下**）
 都是 PC 图的副本。原因是 `build_navigation_templates` 是**所有路线共享的装配**——
-缺一张就整个导航器起不来，不能让一条「只有 PC 素材」的路线把模拟器那 15 条一起搞挂。
+缺一张就整个导航器起不来，不能让一条「只有 PC 素材」的路线把模拟器那批路线一起搞挂（当时是 15 条，现行可用条数见 [STATUS.md](../STATUS.md)）。
 
 模拟器真要跑成就时，会先在 `build_achievement_templates` 缺另外 5 张图那里
 就 fail-closed（**那才是正确的失败点**），走不到用这张图去匹配快捷菜单。

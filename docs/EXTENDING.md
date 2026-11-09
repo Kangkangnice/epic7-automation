@@ -192,7 +192,8 @@ tests/test_hunt_runner.py
 
 - 自带独立主循环的裸定义（`class XxxRunner:`，`super()` 0 次）：`shop_refresh` / `survivor`；
 - 继承**事务型**主循环基类 `TransactionalRunnerBase`（它**不是** `ModeRunnerBase` 的子类）的：
-  `arena` / `expedition`（`expedition` 2026-09-26 从裸定义搬过去，`arena` 同日迁完）。
+  `arena` / `expedition` / `tower`（`expedition` 2026-09-26 从裸定义搬过去，`arena` 同日迁完，
+  `tower` 2026-10-08 起同族）。
 
 ⚠️ 判定规则只有一条：**打开开关 ⇄ 进豁免名单，二选一**（`_assert_transition_stance_declared`）。
 别把「它的动作没有 `target_pages`」直接推成「打开开关会抛错」—— 还要问一句

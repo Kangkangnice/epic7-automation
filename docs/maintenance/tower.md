@@ -605,7 +605,7 @@ ESC 无效 → `返回首页失败` → 每日任务「已中止：竞技场 之
 
 **还没被真机走过的**：这一页之后的 `结算页（CLEAR）→ 下一层 → 准备战斗`。
 `result_clear` 在 PC 上尚无现场帧可验（两次实跑都死在三选一），下次跑通才能确认。
-间接证据偏乐观：主线的同款「CLEAR」大字母在 PC 上**没有覆盖图也能过**（`templates/story/pc/` 只有 `complete` / `friend_request_title` / `stamina_popup` 三张），
+间接证据偏乐观：主线的同款「CLEAR」大字母在 PC 上**没有覆盖图也能过**（当时 `templates/story/pc/` 只有 `complete` / `friend_request_title` / `stamina_popup` 三张，现行共 **9 张**，清单见 `tests/test_epic7_story_pc.py`），
 说明 PC 压得狠的是**中文小字**，大号拉丁字母不受影响。
 
 ## UI 尺寸漂移：这一条路线最先踩到（2026-11-04）

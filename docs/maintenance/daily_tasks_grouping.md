@@ -13,7 +13,7 @@
 
 | 分组 | 判据 | 成员 |
 | --- | --- | --- |
-| **每日** | **几乎每天都要跑**，天天在、跑不跑不该犹豫 | 竞技场 / 刷书签 / 世界首领战 / 骑士团捐赠 / 迷宫强化石 / 圣域收菜 / 社区签到 |
+| **每日** | **几乎每天都要跑**，天天在、跑不跑不该犹豫 | 竞技场 / 刷书签 / 世界首领战 / 骑士团捐赠 / 迷宫强化石 / 圣域收菜 / 社区签到 / 成就领取 |
 | **按需** | **内容常驻、但跑不跑看当下需不需要** | 英雄合成 / 主线 / 狗粮 / 支线故事 / 月光剧场 |
 | **赛季** | **按赛季轮换**，赛季一换内容与阶段就变 | 远征 / 月塔 |
 | **活动** | **限时活动**，随活动开合出现 / 消失 | 活动小游戏（survivor） / 活动剧情（activity_story） |
@@ -21,8 +21,8 @@
 ⚠️ **「按需」与「每日」的差别是「跑不跑」，不是「内容在不在」** —— 这是 2026-10-18
 新增这一组时唯一要守住的分界。主线 / 狗粮 / 支线故事 / 月光剧场都是**长期存在**的内容，
 不是限时活动；它们只是不需要天天跑。所以这一组**不能**叫「临时」（那容易读成
-「快下线了」，与「活动」撞车），也不能并进「每日」（那样每日那栏会膨胀到 12 条，
-真正每天必跑的那 7 条反而被淹掉）。
+「快下线了」，与「活动」撞车），也不能并进「每日」（那样每日那栏会膨胀到 13 条，
+真正每天必跑的那 8 条反而被淹掉）。
 
 两个历史上容易搞错、结论没变的归属：
 
@@ -141,7 +141,7 @@ grouped_routes()                             # ((组名, 该组路线), ...)，�
 
 ### 5.1 序号圈码用尽（真 bug，被新测试当场抓出）
 
-`_CIRCLED` 只有 10 个圈码（①②…⑩），而「每日 + 按需」一次能勾 **12 条**。
+`_CIRCLED` 只有 10 个圈码（①②…⑩），而「每日 + 按需」一次能勾**当时的 12 条**（现行 8 + 5 = **13 条**，这个坑只会更明显）。
 
 ```
 IndexError: string index out of range
@@ -179,11 +179,11 @@ Checkbutton 已经把变量翻过去了 —— 不重刷界面的话，勾选框
 | 测试 | 钉住什么 |
 | --- | --- |
 | `test_groups_are_defined_in_display_order` | 四个中文名与展示顺序（**写死**，不读实现） |
-| `test_group_membership_is_what_the_user_asked_for` | 逐条归属真值表（15 条覆盖满） |
+| `test_group_membership_is_what_the_user_asked_for` | 逐条归属真值表（现行 17 条覆盖满） |
 | `test_grouped_routes_returns_display_order_and_skips_empty_groups` | 不漏不重；组内仍按书写顺序 |
 | `test_task_panel_renders_a_group_header_per_group` | 四个组标题（Checkbutton）按行号递增，且各自排在自己那组路线**之前** |
 | `test_the_old_bulk_buttons_are_gone` | 三颗批量按钮**真的删掉了** |
-| `test_a_group_header_ticks_the_whole_group` | 点「每日」= 那 7 条全上，别组一条不动 |
+| `test_a_group_header_ticks_the_whole_group` | 点「每日」= 那 8 条全上，别组一条不动 |
 | `test_a_group_header_untickes_the_whole_group_and_leaves_others_alone` | 再点一下只清这一组，别组保留 |
 | `test_unticking_one_route_drops_the_group_box` | 取消一条 ⇒ 组勾自动消失；再点组标题是**重勾** |
 | `test_group_selection_appends_after_what_is_already_ticked` | 顺序语义 = 追加到末尾 |

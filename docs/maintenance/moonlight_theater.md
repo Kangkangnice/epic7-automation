@@ -610,7 +610,7 @@ python auto_game_unified/tools/check.py
   而且这个剧场**不再入场**（否则「取消 → 又入场 → 又弹购买」死循环）
 - `test_a_watched_theater_is_not_entered_again_either` —— 看完一幕也不重进（一幕一剧场）
 - `test_claim_reward_never_targets_the_watch_button` —— 领奖点不能落到「进行观览」
-- `test_entry_without_free_badge_stops_the_route_without_clicking` —— 没有绿 F 就一个点击都不发
+- `test_entry_without_free_badge_still_enters_to_look_for_tickets` —— 没有绿 F **仍会入场探券**（2026-11-06 起入口 F 不再是闸门；旧名 `test_entry_without_free_badge_stops_the_route_without_clicking` 已作废）
 - `test_the_repeating_arrow_is_kept_out_of_the_progress_fingerprint` —— 指纹挖掉 ▼ 但保留字幕框
 - `test_the_poster_fingerprint_tells_theaters_apart` —— 动作名里的指纹要能区分海报
 - `test_clear_issues_a_click_instead_of_waiting` —— **CLEAR 上必须发动作**
@@ -652,5 +652,5 @@ python auto_game_unified/tools/check.py
 | 页面决策 / 点击点 / 业务标记 | `games/epic7/moonlight_theater.py` 的 `MoonlightStateMachine` |
 | 主循环节奏（轮询、同名窗口、稳定签名） | 同文件的 `MoonlightRunner` |
 | 入口导航（大厅 → 支线故事） | `games/epic7/modes.py` 的 `MODE_SPECS["moonlight_theater"].navigation_plan` |
-| 界面分组 / 文案 | `desktop/catalog.py`（`group` 默认就是「日常」） |
+| 界面分组 / 文案 | `desktop/catalog.py`（`group` 默认「每日」；本路线显式归「按需」。四组是每日 / 按需 / 赛季 / 活动，没有「日常」） |
 | 每日任务默认清单 | `games/epic7/daily_tasks.py` |
