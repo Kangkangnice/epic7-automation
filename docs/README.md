@@ -164,8 +164,11 @@ python -m auto_game_unified.tools.doc_review --staged                # 提交前
    改了就跑 `python -m auto_game_unified.tools.gen_status` 重生成。
 2. **新增任何 `.md` 必须登记在本页** —— `tests/test_docs_index.py` 会检查
    `docs/` 下每个文档都能从本页点到。没登记的文档等于不存在，门禁直接红。
-3. **不许写死会漂移的数字** —— 想说「现在有多少条路线」，去链 `STATUS.md`，不要抄数字。
-   首页（`README.md` 与本页）有专门的门禁盯着这一条。
+3. **不许写死会漂移的数字** —— 想说「现在有多少条路线 / 几张 PC 图 / 几张模板」，
+   去链 [`STATUS.md`](STATUS.md) 的「按路线的现行事实」（由 `gen_status.py` 生成），不要抄数字。
+   首页有专门的门禁；**路线手册尤其不许写分数、模板尺寸、夹具张数** —— 这些一改代码就过期。
+   全部文档的可生成事实候选由 [`audit_docs.py`](../tools/audit_docs.py) 定期体检列出，
+   它是提示不是红（做成红人会绕过去）。
 
 ### 门禁查不到的那一层：定期体检
 
@@ -212,11 +215,19 @@ CI 的 `Governance gate` 会在干净检出上再跑一遍治理门禁。
 
 ### 存档
 
-只供追溯，**不要照着做**（里面的接口可能已经删了）：
+只供追溯，**不要照着做**（里面的接口可能已经删了）。这几份都带
+`status: superseded` 头，机器据此判断：**不进 `Doc-reviewed:` 复审范围、不能当现行依据**；
+门禁 `tests/test_docs_index.py` 会盯着，别把存档文档加进 `doc_review.DOC_RULES`。
 
 - [`superpowers/specs/2026-08-25-epic7-auto-assistant-productization-design.md`](superpowers/specs/2026-08-25-epic7-auto-assistant-productization-design.md)
   —— 产品化命名与视觉约束，`NOTICE.md` 引用其第 9 节
-- [`REFERENCE.md`](REFERENCE.md) —— 旧版 README 全文（343 行逐条说明），保留是因为写得比新 README 细
+- [`REFERENCE.md`](REFERENCE.md) —— 旧版 README 全文存档，保留是因为写得比新 README 细
+- [`WORLD_BOSS_DESIGN.md`](WORLD_BOSS_DESIGN.md) —— 世界首领战 2026-09 施工记录（现行状态看文件头与 STATUS）
+- [`maintenance/route_extensibility_review.md`](maintenance/route_extensibility_review.md)
+  —— 新增路线可扩展性审查的 2026-09-27 快照，方案已落地
+
+⚠️ 给一份文档加 `status: superseded` **不是删除**：内容照旧可查，只是从「改代码时要读的那几份」里摘出去。
+现行文档默认就是 `active`，不用逐份加标记（不给 50 多份文档做形式化 frontmatter）。
 
 ---
 
