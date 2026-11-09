@@ -446,7 +446,8 @@ UIPI 会拦非提权进程的键鼠注入）。
    （`knights_support_digits` 已登记）。
 3. 加**新路线**（不是新文件）还要动 `games/epic7/modes.py::MODE_SPECS`、
    `desktop/catalog.py::ROUTES`、`games/epic7/daily_tasks.py::DAILY_TASKS`（默认清单）
-   三处 —— 见 `AGENTS`/项目记忆里的「新增路线登记四处」。
+   三处。**文档侧该改哪几份的哪节**，别照着旧笔记里的「登记四处」猜，
+   跑 `python -m auto_game_unified.tools.doc_review --scenario new-route`（唯一来源）。
 
 ## 守这些判据的测试
 

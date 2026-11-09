@@ -169,3 +169,85 @@ def test_the_note_marker_is_exact(tmp_path: Path) -> None:
     message = tmp_path / "COMMIT_EDITMSG"
     message.write_text("doc-reviewed: 看过了\n", encoding="utf-8")
     assert doc_review.review_note_missing(message, ["docs/STATUS.md"])
+
+
+# ---------------------------------------------------------------- 开发闭环
+# 这张清单是「开工读什么 / 改完更新什么」的唯一来源，它自己也会过期：
+# 文档改名、章节重写、锚点删掉，工具不会报错，只会静默把 Agent 指到错地方。
+
+
+def _concrete(step: doc_review.DocStep) -> bool:
+    """带 <...> 的是占位符（如 <route>），不做存在性检查。"""
+    return "<" not in step.target
+
+
+def test_every_scenario_document_really_exists() -> None:
+    missing: list[str] = []
+    for scenario in doc_review.SCENARIOS:
+        for step in (*scenario.read_first, *scenario.update_after):
+            if _concrete(step) and not (ROOT / step.target).exists():
+                missing.append(f"{scenario.key}: {step.target}")
+    assert not missing, (
+        "开发闭环清单指向了不存在的文档：\n  "
+        + "\n  ".join(missing)
+        + "\n改了文档名字就同步改 tools/doc_review.py::SCENARIOS。"
+    )
+
+
+def test_every_scenario_section_anchor_still_exists() -> None:
+    """锚点写成标题前缀；STATUS 那种带动态数字的标题也能匹配。"""
+    missing: list[str] = []
+    for scenario in doc_review.SCENARIOS:
+        for step in (*scenario.read_first, *scenario.update_after):
+            if not _concrete(step) or not step.section:
+                continue
+            path = ROOT / step.target
+            if not path.is_file():
+                continue
+            headings = [
+                line.lstrip("#").strip()
+                for line in path.read_text(encoding="utf-8").splitlines()
+                if line.startswith("## ")
+            ]
+            if not any(h.startswith(step.section) for h in headings):
+                missing.append(f"{scenario.key}: {step.target} §{step.section}")
+    assert not missing, (
+        "开发闭环清单指向的章节已经不在了：\n  "
+        + "\n  ".join(missing)
+        + "\n章节改了标题就同步改 tools/doc_review.py::SCENARIOS。"
+    )
+
+
+def test_scenario_detection_prefers_the_most_specific_trigger() -> None:
+    """`modes.py` 必须压过泛前缀 `games/epic7/`，否则新增路线永远被判成修 bug。"""
+    assert doc_review.scenario_for(["games/epic7/modes.py"]).key == "new-route"
+    assert doc_review.scenario_for(["games/epic7/global_popups.py"]).key == "new-mechanism"
+    assert doc_review.scenario_for(["games/epic7/arena.py"]).key == "fix-bug"
+    assert doc_review.scenario_for(["core/matcher.py"]).key == "fix-bug"
+
+
+def test_scenario_detection_ignores_doc_only_changes() -> None:
+    """只改文档不该硬套一个开发场景。"""
+    assert doc_review.scenario_for(["docs/README.md"]) is None
+    assert doc_review.scenario_for(["tests/test_arena.py"]) is None
+
+
+def test_route_manual_template_has_six_sections() -> None:
+    """手册六节是模板本身，别悄悄增删。"""
+    assert doc_review.ROUTE_MANUAL_SECTIONS == (
+        "这条路线在游戏里干什么",
+        "页面链路",
+        "判据为什么这么设计",
+        "危险边界",
+        "现行事实",
+        "已知缺口",
+    )
+
+
+def test_every_scenario_has_a_closed_loop() -> None:
+    """三个环节缺一不可：读在先、改完写回、新发现沉淀，外加一条校验命令。"""
+    for scenario in doc_review.SCENARIOS:
+        assert scenario.read_first, f"{scenario.key} 没写开工前读什么"
+        assert scenario.update_after, f"{scenario.key} 没写改完更新什么"
+        assert scenario.deposit, f"{scenario.key} 没写新发现往哪沉淀"
+        assert scenario.verify, f"{scenario.key} 没写闭环校验命令"

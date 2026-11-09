@@ -47,7 +47,7 @@
 | 转场五段证据 / 判据唯一 / 陌生页可恢复 | [`TRANSITION_CONTRACTS.md`](TRANSITION_CONTRACTS.md) | `topics/transitions.md` · `lessons.md` |
 | 模板采集 / 判据纪律 / 锚点 / 夹具 / 反向验证 | [`TEMPLATE_CAPTURE.md`](TEMPLATE_CAPTURE.md) · [`../AGENTS.md`](../AGENTS.md) | `topics/discipline.md` · `anchors.md` · `hazards.md` · `fixtures.md` |
 | 全局弹窗（新弹窗的 10 个接触点） | [`TRANSITION_CONTRACTS.md`](TRANSITION_CONTRACTS.md) + 下方逐路线手册 | `topics/global_popups.md` |
-| 新增路线 / 登记四处 / 两道准入关 | [`EXTENDING.md`](EXTENDING.md) · [`../CONTRIBUTING.md`](../CONTRIBUTING.md) | `topics/route_admission.md` · `route_metadata.md` |
+| 新增路线 / 开工读什么、改完改哪节 / 两道准入关 | [`EXTENDING.md`](EXTENDING.md) · `doc_review --scenario new-route`（清单唯一来源） | `topics/route_admission.md` · `route_metadata.md` |
 | 主循环 / 点击通道 / 战斗移交 / 时间源 | [`ARCHITECTURE.md`](ARCHITECTURE.md) | `topics/runner_loop.md` · `click_channel.md` · `battle_auto_flip.md` |
 | 开局接力 / 断点恢复 | [`RESUME_COVERAGE.md`](RESUME_COVERAGE.md) · [`TRANSITION_CONTRACTS.md`](TRANSITION_CONTRACTS.md) | `topics/resume.md` |
 | 实机权限 / 鼠标 / 截图 / 失败判定 | [`howto/live_verification.md`](howto/live_verification.md) | `topics/env.md` |
@@ -120,6 +120,25 @@
 | **在制品** | 这次做到哪、下一步是什么 | `docs/wip/<日期>-<主题>.md` | **合并即删**，不是文档 |
 | **过程** | 这次改了什么、怎么改的 | 提交信息 + `CHANGELOG.md` | 一次性 |
 | **记忆** | 踩过什么坑、查过什么 | `.workbuddy/memory/` | 30 天后蒸馏进 `MEMORY.md` |
+
+### 开发闭环：先看现状、再改代码、改完写回
+
+文档只在对开发有用时才存在。任何改动都按这个顺序走；**该读哪份、改哪节以清单为准**，
+不再另抄一份「登记四处」（清单在 `tools/doc_review.py::SCENARIOS`，是唯一来源）：
+
+```powershell
+python -m auto_game_unified.tools.doc_review --scenario new-route   # 开工前：读现状
+python -m auto_game_unified.tools.doc_review --staged                # 提交前：该改哪节
+```
+
+`--scenarios` 列出全部场景（新增路线 / 修 bug / 新增机制）。
+
+- **开工前**读清单列的那几节，先搞清楚现状和「当初为什么这么定」，别直接改阈值。
+- **改完代码有变化才更新**对应章节；确实没变化就不造文档动作，提交信息写
+  `Doc-reviewed: 无变化`。
+- **新发现按性质沉淀**：判据理由变了 → 手册「判据为什么这么设计」；推翻决定 →
+  `decisions/`；新缺口 → `TODO.md`；事故过程与实跑流水 → 提交信息 / 项目记忆，不进仓库文档。
+- 清单里的文档路径与章节锚点由 `tests/test_doc_review.py` 反向验，改名或删节直接报红。
 
 写到 `docs/howto/` 时**直接复制 [`howto/_TEMPLATE.md`](howto/_TEMPLATE.md)** —— 结构是固定的
 （自检 → 标准做法 → 失败判定 → 依据与作废条件 → 墓碑 → 更改记录），别自己发明一套。
