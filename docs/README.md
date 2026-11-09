@@ -43,7 +43,7 @@
 | 主题 | 仓内权威（跨机器必须知道） | 仓库外补充（本机案例，按需翻） |
 |---|---|---|
 | 现状：路线名单 / PC 放行 / 每日顺序 | [`STATUS.md`](STATUS.md)（代码生成） | — |
-| 安全：危险按钮 / 干跑默认 / 退出码 / 回家 | [`../AGENTS.md`](../AGENTS.md) · [`EXTENDING.md`](EXTENDING.md) 第 5 节 | `.workbuddy/memory/topics/safety.md` |
+| 安全：危险按钮 / 干跑默认 / 退出码 / 回家 / **哪些动作花资源、靠什么拦住误点、哪条路线有哪些实机证据** | [`../AGENTS.md`](../AGENTS.md) · [`EXTENDING.md`](EXTENDING.md) 第 5 节 · [`SAFETY_MATRIX.md`](SAFETY_MATRIX.md) | `.workbuddy/memory/topics/safety.md` |
 | 转场五段证据 / 判据唯一 / 陌生页可恢复 | [`TRANSITION_CONTRACTS.md`](TRANSITION_CONTRACTS.md) | `topics/transitions.md` · `lessons.md` |
 | 模板采集 / 判据纪律 / 锚点 / 夹具 / 反向验证 | [`TEMPLATE_CAPTURE.md`](TEMPLATE_CAPTURE.md) · [`../AGENTS.md`](../AGENTS.md) | `topics/discipline.md` · `anchors.md` · `hazards.md` · `fixtures.md` |
 | 全局弹窗（新弹窗的 10 个接触点） | [`TRANSITION_CONTRACTS.md`](TRANSITION_CONTRACTS.md) + 下方逐路线手册 | `topics/global_popups.md` |
