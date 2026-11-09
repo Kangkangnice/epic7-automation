@@ -92,7 +92,7 @@ python tools/compress_images.py --staged --apply && git add <刚压过的文件>
 
 **提交那一次由钩子跑（`tools/githooks/pre-commit` → `tools/check.py`），不要再手工跑一遍。**
 开发中途想看结果才手工跑：`python tools/check.py --files a.py b.py`（约 1~2 分钟）。
-`--no-verify` **默认禁止**（钩子是唯一的强制关卡）；`--full` 只在 CI / 发布前用；
+`--no-verify` **默认禁止**（钩子是唯一的强制关卡）；`--full` 只在 PR 合并 / 发布前用；
 改共享模块最费时间，这类改动**攒在一起一次提交**，别拆成几次各跑一遍。
 
 ⚠️ 五个坑（`--vs HEAD` 会把上一轮未提交的改动算进来、手工跑完又改文件那次作废、
