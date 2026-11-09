@@ -111,6 +111,9 @@ class ProjectLayoutTests(unittest.TestCase):
     def test_epic7_arena_fixture_set_exists(self):
         expected = {
             "list.png",
+            # 2026-11-09 模拟器：进竞技场时弹出的「新的每周排名开始！」覆盖层。
+            # 它不在守卫清单里 ⇒ 导航只等 106 秒后报「转场失败」。
+            "weekly_rank_start_popup.png",
             "selected.png",
             "team.png",
             "battle.png",
@@ -278,6 +281,9 @@ class ProjectLayoutTests(unittest.TestCase):
             # 「选择队伍」变灰（按钮文字区 HSV 亮度 118.8 → 49.8）。两张都要留，
             # 是判断「还有没有次数」的回归证据。
             "worldboss_home_exhausted.png",
+            # 2026-11-09 模拟器：未开放/次数用完时右下角换成「管理辅助队伍」。
+            # 旧「选择队伍」图在这帧只有 0.5107（阈 0.82）⇒ 导航判未知画面。
+            "worldboss_home_manage_support_team.png",
             "team_select.png",
             "team_config.png",
             # 体力 17 < 20 时弹出的全局体力弹窗，与 story 共用同一套模板
