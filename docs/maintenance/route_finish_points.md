@@ -152,7 +152,10 @@
 
 ## 四、新增路线时怎么做（准入清单）
 
-按 `docs/EXTENDING.md` 的「登记四处」格式（开工前交接单 + §4 注册模式：在 `MODE_SPECS` 注册、声明 `RESUME_EXEMPT` / `TRANSITION_EXEMPT` / `FINISH_HOME_EXEMPT`），**再加一问**：
+开工前先跑 `python -m auto_game_unified.tools.doc_review --scenario new-route` 读现状
+（文档侧该读哪份、改哪节以它为准，不再有手抄的「登记四处」清单）。代码侧按
+`docs/EXTENDING.md` §4 注册模式：在 `MODE_SPECS` 注册、声明
+`RESUME_EXEMPT` / `TRANSITION_EXEMPT` / `FINISH_HOME_EXEMPT`，**再加一问**：
 
 1. ~~在 `MODE_SPECS` 注册~~（既有）
 2. ~~声明接力立场~~（`RESUME_EXEMPT`，既有）
@@ -257,4 +260,6 @@ v2 在「认不出这一页」时会按 ESC 退一层，按完**必须等画面�
 - `games/epic7/finish_home.py` —— 「收尾回首页」豁免名单 + 加载期自查
 - `games/epic7/runner_base.py::_close_out` —— 四个出口的完整口径
 - `docs/maintenance/labyrinth_stone.md` —— 迷宫那条链路（终点写法的样板）
-- `docs/EXTENDING.md` —— 路线准入「登记四处」（开工前交接单 + §4 注册模式；本文件为第五处：回答「我的终点在哪」）
+- `docs/EXTENDING.md` —— §4 注册模式；开发与文档的闭环清单是
+  `doc_review --scenario new-route`。本文件只回答其中一问：「这条路线终点在哪」，
+  不再自称第几处（清单一旦按编号称呼，就会不停膨胀）

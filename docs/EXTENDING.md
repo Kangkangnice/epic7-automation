@@ -14,6 +14,18 @@
 **合并进 main 之后删掉交接单** —— 结论该进提交信息、`CHANGELOG.md`、
 `docs/decisions/` 或 `docs/maintenance/<路线>.md`，不该留在 wip 里。
 
+**动手前先了解现状，别凭记忆猜要改哪些文档**：
+
+```powershell
+python -m auto_game_unified.tools.doc_review --scenario new-route
+```
+
+它会列出「开工前先读哪几份的哪节」和「改完代码后必须同步更新的哪几节」，
+也是**新增路线要登记哪些文档的唯一来源** —— 本指南不再另抄一份「登记四处」。
+修 bug / 新增全局机制换成 `--scenario fix-bug` / `new-mechanism`，全部场景看 `--scenarios`。
+清单里的文档路径与章节锚点由 `tests/test_doc_review.py` 反向验，改名或删节会直接报红。
+下面正文讲的是**代码怎么做**，清单讲的是**读哪份、改哪节**，两者不重复。
+
 ## 0. 视觉证据维护入口
 
 每条路线的模板、搜索区域、阈值和页面组合集中在 `games/epic7/evidence/` 下对应文件；业务状态机仍保留在路线模块中。界面改版时先根据诊断中的证据键名修改证据清单，不要先改状态机。
@@ -252,8 +264,9 @@ tests/test_hunt_runner.py
   也不会知道它会被轮换掉。三个非默认值的分界见
   [每日任务分组维护](maintenance/daily_tasks_grouping.md)（那里有一条判据：
   「按需」与「每日」的差别是**跑不跑**，不是内容在不在）。
-- README 补充新模式命令和实机验证边界。
-- `docs/TODO.md` 和 PC 迁移矩阵同步更新，不把候选模板写成已支持。
+- **文档同步按闭环清单走**：开工前 `--scenario new-route` 读现状，改完代码对照它的
+  「改完代码后要更新」逐项核（手册、README 索引、STATUS 重生成、TODO 的 PC 迁移矩阵等）。
+  有变化才改，没变化就不造文档动作；别把候选模板写成已支持。
 
 ## 7. 远征路线的当前边界
 
