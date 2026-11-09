@@ -18,7 +18,7 @@
 # 扩范围的姿势：往下面 files 里加一个模块，跑 mypy，把新暴露的问题要么修掉、要么写明原因。
 
 [tool.ruff]
-target-version = "py310"
+target-version = "py311"
 line-length = 100
 # 生成物与历史快照不参与检查。
 extend-exclude = [
@@ -62,7 +62,7 @@ ignore = [
 "tools/_verify_pc_input_elevated.py" = ["E402"]
 
 [tool.mypy]
-python_version = "3.10"
+python_version = "3.11"
 # 依赖没带类型标注（numpy/opencv/PIL/pyautogui 等），别让「缺 stub」淹没真问题。
 ignore_missing_imports = true
 # 让 auto_game_unified 这个包名可导入（配置在包目录里，包根在上一层）。

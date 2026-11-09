@@ -56,7 +56,7 @@ def test_clicks_the_same_point_until_stopped() -> None:
 
 
 def test_emergency_hotkey_stops_even_with_a_long_interval() -> None:
-    """间隔填成 1 分钟时，F9 也必须立刻停 —— 靠的是 50 毫秒切片等待。"""
+    """间隔填成 1 分钟时，按 P 也必须立刻停 —— 靠的是 50 毫秒切片等待。"""
     pressed = {"on": False}
     clicker = AutoClicker(click=lambda x, y: None, hotkey=lambda: pressed["on"])
     clicker.start(ClickPlan(0, 0, 60_000))

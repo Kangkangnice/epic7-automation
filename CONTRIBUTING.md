@@ -28,7 +28,8 @@
 ## 本地环境
 
 - Windows 64 位；
-- Python 3.10 及以上；
+- Python 3.11 及以上（界面依赖 PySide6，而 numpy / Pillow 的现行版本也只出 3.11+ 的安装包；
+  3.10 装不上，别照着试）；
 - 仓库目录必须叫 `auto_game_unified`，并且**从它的父目录**运行：
 
 ```powershell

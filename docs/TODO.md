@@ -14,6 +14,13 @@
 > 别埋在路线维护手册里 —— 埋进去现状页看不见，下一个人也不会知道有活没干完。
 > 正在处理中的活则建 `docs/wip/` 交接单，它会自动出现在 `STATUS.md` 的「在制品」一节。
 
+- [ ] **打包产物还没有按新界面实跑过一次（体积会涨到 300 MB 量级）**。2026-11-09 删掉 Tk 界面、
+  PySide6 与 PySide6-Fluent-Widgets 并进 `requirements.txt` 之后，`packaging/epic7_auto_assistant.spec`
+  去掉了 Qt 的 exclude、补了 `collect_data_files("qfluentwidgets")`，但**这一步没有实跑 PyInstaller**。
+  出安装包 / 发版前必须先补，确认三件事：①产物能正常启动并画出界面（缺 Qt 插件时会黑窗或直接退出）；
+  ②按钮与侧栏图标不是空白（漏了 qfluentwidgets 的数据文件就会白板）；③体积从约 90 MB 涨到什么程度。
+  做法：`python packaging/build.py`（它会顺带跑一次 `--self-check`），再双击产物人工看一遍界面。
+  验完删掉这一条。
 - [ ] **骑士团捐赠：PC 侧缺一张「花格被选中」的现场帧**。`flower_cell_selected` 目前只有
   模拟器正例（0.9480），采集要点与脚本见 `maintenance/knights_donation.md`
   的「还没被真机验过的一项」。需要提权驱动游戏（UIPI 会拦非提权进程的键鼠注入），
