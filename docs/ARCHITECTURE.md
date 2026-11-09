@@ -12,7 +12,12 @@ auto_game_unified/
 │  ├─ recovery.py           # 战斗锁：已承诺战斗期间禁止打断（只有 lock/unlock）
 │  ├─ hotkey.py             # Windows P 键停止
 │  ├─ qqbot.py             # 官方 QQ 机器人开放平台 C2C 私聊推送
-│  └─ window.py             # 游戏窗口捕获与局部坐标点击
+│  ├─ window.py             # 模拟器窗口捕获与局部坐标点击（雷电 adb 通道）
+│  ├─ pc_window.py          # PC 客户端窗口 I/O（BitBlt 后台抓屏、SendInput 点击、ESC、滑动）
+│  ├─ evidence_diagnostics.py # 失败诊断落盘（screen/source/target/evidence.json）
+│  ├─ elevation.py          # UIPI 提权判断（对方窗口权限更高时点击会被静默拦掉）
+│  ├─ portrait.py           # 竖屏通道（H5 网页把模拟器切成竖屏时的取图与坐标）
+│  └─ data_paths.py         # 运行产物（日志/诊断/导出）目录
 ├─ games/epic7/
 │  ├─ navigation.py         # 从支持页面受控返回大厅并进入目标模式（导航链的**执行器**）
 │  ├─ navigation_plan.py    # 导航链的声明式数据（纯 dataclass，不含任何路线知识）
