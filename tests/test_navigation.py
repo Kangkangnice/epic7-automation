@@ -3115,6 +3115,28 @@ class WorldBossNavigationTests(unittest.TestCase):
         # 次数打完只是按钮变灰，页面本身还是同一页，导航链要照样能认出来。
         self.assertEqual("worldboss_home", exhausted.name)
 
+    def test_world_boss_home_manage_support_team_variant_is_recognized(self):
+        """未开放/次数用完时右下角换成「管理辅助队伍」，导航仍要认出这一页。
+
+        前提断言：旧的单张「选择队伍」图在这一帧上确实不成立（实测 0.5107 < 0.82），
+        否则夹具过期后这条测试会绿着却什么也没守（2026-10-30 的教训）。
+        """
+        navigator = self.navigator([])
+        frame = world_boss_fixture("worldboss_home_manage_support_team")
+        old = matcher.load_template(
+            str(TEMPLATES / "world_boss" / "select_team_button.png")
+        )
+        old_match = find_template(
+            frame,
+            old,
+            0.0,
+            region=(1450, 990, 532, 130),
+            reference_size=(1982, 1132),
+        )
+        assert old_match is not None and old_match.score < 0.82
+
+        self.assertEqual("worldboss_home", navigator.observe(frame).name)
+
     def test_lobby_with_knights_icon_is_still_the_lobby(self):
         """底部那枚骑士团盾牌图标是大厅常驻控件，不能拿它判「在骑士团页」。"""
         navigator = self.navigator([])

@@ -141,6 +141,28 @@ class BattleRecordTemplates:
 
 
 @dataclass(frozen=True)
+class WeeklyRankStartTemplates:
+    """「新的每周排名开始！」弹窗（每周结算后的段位重置通知）。
+
+    2026-11-09 08:52 模拟器每日任务：点进竞技场后弹出这一层，盖住对手列表；
+    它不在任何弹窗清单里 ⇒ 导航「画面已静止但仍认不出是哪一页」⇒ 只等 106 秒
+    ⇒ 报「导航转场 竞技场模式选择 → arena_ready 失败」。
+
+    与「战斗记录」「段位升级奖励」是三件不同的事：那两层分别是防守战报和
+    打完一局后的奖励，这一层是**每周结算**、进竞技场时一次性弹出的通知。
+
+    ``title`` = 排他锚点（紧裁「新的每周排名开始！」白字 378x51；真帧 1.0000，
+    全库 440 张横屏夹具最高 0.3672）；``close`` = 点击点，复用「段位升级奖励」
+    那张通用「点击关闭」灰字图（同一控件只存一份，本层实测 0.9847）。
+    ⚠️ close 单独不排他，必须靠标题兜住；这一层的关闭按钮比别层**低**
+    （中心约 (961, 936)），所以两块 ROI 都要自己定，照抄别层会两边切掉。
+    """
+
+    title: np.ndarray
+    close: np.ndarray
+
+
+@dataclass(frozen=True)
 class KnightsGrowthRankTemplates:
     """「骑士团成长Rank提升」弹窗（标题 + 点击关闭，与骑士团那四个同形）。
 
@@ -406,6 +428,12 @@ _ARENA_RANK_REWARD_THRESHOLD = 0.88
 _BATTLE_RECORD_TITLE_REGION = (820, 226, 360, 80)
 _BATTLE_RECORD_CLOSE_REGION = _ARENA_RANK_REWARD_CLOSE_REGION
 _BATTLE_RECORD_THRESHOLD = 0.88
+# 「新的每周排名开始！」弹窗（2026-11-09 立，第 24 类）。
+# 现场：08:52 模拟器每日任务的竞技场 ✗。标题在 y 206~257，比「战斗记录」更高；
+# 关闭那行灰字在 y ~900~945，比段位奖励那层（y 795~905）低 ⇒ 两块 ROI 都要自己定。
+_WEEKLY_RANK_START_TITLE_REGION = (740, 180, 500, 120)
+_WEEKLY_RANK_START_CLOSE_REGION = (820, 850, 340, 130)
+_WEEKLY_RANK_START_THRESHOLD = 0.88
 # 「骑士团成长Rank提升」弹窗（2026-10-30 立，骑士团那一族的第 5 个）。
 #
 # 现场：19:48 世界首领战从大厅打开快捷菜单 → 点「骑士团」→ 弹出这一层盖住骑士团主页
@@ -595,6 +623,20 @@ def load_battle_record_templates(
     """
     return BattleRecordTemplates(
         title=load_template(str(template_dir / "battle_record_title.png")),
+        close=load_template(str(template_dir / "arena_rank_reward_close.png")),
+    )
+
+
+def load_weekly_rank_start_templates(
+    template_dir: Path,
+) -> WeeklyRankStartTemplates:
+    """读「新的每周排名开始！」弹窗的两个锚点（``templates/navigation`` 下）。
+
+    ``close`` 复用「段位升级奖励」那张通用「点击关闭」灰字图 —— 同一个控件只存一份。
+    两张都直接 ``load_template``，缺图就开跑前抛，不做静默降级。
+    """
+    return WeeklyRankStartTemplates(
+        title=load_template(str(template_dir / "weekly_rank_start_title.png")),
         close=load_template(str(template_dir / "arena_rank_reward_close.png")),
     )
 
@@ -1318,6 +1360,37 @@ def find_battle_record_close(
     return Match(close.center, min(title.score, close.score))
 
 
+def find_weekly_rank_start_close(
+    screen: np.ndarray,
+    title_template: np.ndarray,
+    close_template: np.ndarray,
+) -> Match | None:
+    """认「新的每周排名开始！」弹窗，命中就返回底部「点击关闭」的中心。
+
+    双锚点：标题排他，关闭点给位置。ROI 与「战斗记录」/「段位奖励」都不同 ——
+    这一层的标题更高、关闭按钮更低，照抄别层会两边都切掉。
+    """
+    title = find_template(
+        screen,
+        title_template,
+        _WEEKLY_RANK_START_THRESHOLD,
+        region=_WEEKLY_RANK_START_TITLE_REGION,
+        reference_size=_REFERENCE_SIZE,
+    )
+    if title is None:
+        return None
+    close = find_template(
+        screen,
+        close_template,
+        _WEEKLY_RANK_START_THRESHOLD,
+        region=_WEEKLY_RANK_START_CLOSE_REGION,
+        reference_size=_REFERENCE_SIZE,
+    )
+    if close is None:
+        return None
+    return Match(close.center, min(title.score, close.score))
+
+
 def find_web_network_error_close(
     screen: np.ndarray,
     templates: WebNetworkErrorTemplates,
@@ -1408,6 +1481,7 @@ class Epic7GlobalPopupGuard:
         | None = None,
         arena_rank_reward_templates: ArenaRankRewardTemplates | None = None,
         battle_record_templates: BattleRecordTemplates | None = None,
+        weekly_rank_start_templates: WeeklyRankStartTemplates | None = None,
         knights_growth_rank_templates: KnightsGrowthRankTemplates | None = None,
         pet_gift_templates: PetGiftTemplates | None = None,
         web_network_error_templates: WebNetworkErrorTemplates | None = None,
@@ -1440,6 +1514,7 @@ class Epic7GlobalPopupGuard:
         self.worldboss_support_reward_templates = worldboss_support_reward_templates
         self.arena_rank_reward_templates = arena_rank_reward_templates
         self.battle_record_templates = battle_record_templates
+        self.weekly_rank_start_templates = weekly_rank_start_templates
         self.knights_growth_rank_templates = knights_growth_rank_templates
         self.pet_gift_templates = pet_gift_templates
         self.web_network_error_templates = web_network_error_templates
@@ -1711,6 +1786,20 @@ class Epic7GlobalPopupGuard:
                     "close-battle-record",
                     "battle_record_failed",
                     f"战斗记录弹窗点击{_MAX_POPUP_CLICKS}次后仍未消失",
+                )
+        if self.weekly_rank_start_templates is not None:
+            match = find_weekly_rank_start_close(
+                screen,
+                self.weekly_rank_start_templates.title,
+                self.weekly_rank_start_templates.close,
+            )
+            if match is not None:
+                return (
+                    match,
+                    "weekly_rank_start",
+                    "close-weekly-rank-start",
+                    "weekly_rank_start_failed",
+                    f"新的每周排名弹窗点击{_MAX_POPUP_CLICKS}次后仍未消失",
                 )
         if self.knights_growth_rank_templates is not None:
             match = find_knights_growth_rank_close(

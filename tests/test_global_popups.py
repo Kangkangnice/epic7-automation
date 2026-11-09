@@ -9,6 +9,7 @@ from auto_game_unified.games.epic7.global_popups import (
     Epic7GlobalPopupGuard,
     find_arena_rank_reward_close,
     find_battle_record_close,
+    find_weekly_rank_start_close,
     find_friend_request_cancel,
     find_friendship_points_popup_close,
     find_gift_support_close,
@@ -30,6 +31,7 @@ from auto_game_unified.games.epic7.global_popups import (
     find_worldboss_support_reward_close,
     load_arena_rank_reward_templates,
     load_battle_record_templates,
+    load_weekly_rank_start_templates,
     load_friend_request_templates,
     load_friendship_points_templates,
     load_gift_support_templates,
@@ -2188,3 +2190,88 @@ def test_global_guard_dismisses_the_tutorial_skip_button():
     assert abs(clicks[0][0] - 1877) <= 8, clicks
     assert abs(clicks[0][1] - 96) <= 8, clicks
     assert any("动作=dismiss-tutorial-skip" in line for line in logs)
+
+
+# ── 「新的每周排名开始！」弹窗（2026-11-09，第 24 类）──────────────────────
+# 现场：08:52 模拟器每日任务，点进竞技场后这一层盖住对手列表；守卫清单里没有它
+# ⇒ 导航「画面已静止但仍认不出是哪一页」⇒ 只等 106 秒 ⇒ 转场失败。
+
+
+def test_weekly_rank_start_popup_is_recognized_from_both_anchors():
+    popup = _arena_screen("weekly_rank_start_popup.png")
+    templates = load_weekly_rank_start_templates(NAVIGATION_TEMPLATES)
+
+    match = find_weekly_rank_start_close(popup, templates.title, templates.close)
+
+    assert match is not None
+    # 这一层的「点击关闭」比别的弹窗低：中心约 (961, 936)。
+    assert 900 <= match.center[0] <= 1020
+    assert 890 <= match.center[1] <= 970
+
+
+def test_weekly_rank_start_popup_requires_both_anchors():
+    """标题与关闭点缺一不可；单靠通用灰字会乱点。"""
+    popup = _arena_screen("weekly_rank_start_popup.png")
+    templates = load_weekly_rank_start_templates(NAVIGATION_TEMPLATES)
+    without_title = popup.copy()
+    without_title[180:300, 740:1240] = 0
+    without_close = popup.copy()
+    without_close[850:980, 820:1160] = 0
+
+    assert (
+        find_weekly_rank_start_close(without_title, templates.title, templates.close)
+        is None
+    )
+    assert (
+        find_weekly_rank_start_close(without_close, templates.title, templates.close)
+        is None
+    )
+
+
+def test_weekly_rank_start_popup_rejects_nearby_popups_and_pages():
+    """旁边的两层竞技场弹窗和普通页都不能命中，否则守卫会反复点。"""
+    templates = load_weekly_rank_start_templates(NAVIGATION_TEMPLATES)
+
+    for frame in (
+        _arena_screen("selected.png"),
+        _global_screen("battle_record_live_20261030.png"),
+        # 跨路线反例：同一天另一条 ✗ 的首领战主页现场帧（1982x1132，与基准画布一致）。
+        _world_boss_screen("worldboss_home_manage_support_team.png"),
+    ):
+        assert (
+            find_weekly_rank_start_close(frame, templates.title, templates.close)
+            is None
+        )
+
+
+def test_guard_dismisses_weekly_rank_start_popup():
+    popup = _arena_screen("weekly_rank_start_popup.png")
+    recovered = _arena_screen("selected.png")
+    screens = iter([popup, popup, recovered])
+    clicks = []
+    logs = []
+    clock = FakeClock()
+    runtime = Runtime(
+        lambda: next(screens),
+        clicks.append,
+        monotonic=clock.now,
+        emit=logs.append,
+    )
+    runtime.set_capture_guard(
+        Epic7GlobalPopupGuard(
+            load_network_reconnect_templates(TEMPLATES),
+            weekly_rank_start_templates=load_weekly_rank_start_templates(
+                NAVIGATION_TEMPLATES
+            ),
+            sleep=clock.sleep,
+            now=clock.now,
+        )
+    )
+
+    received = runtime.capture()
+
+    assert np.array_equal(received, recovered)
+    assert len(clicks) == 1
+    assert 900 <= clicks[0][0] <= 1020
+    assert 890 <= clicks[0][1] <= 970
+    assert any("动作=close-weekly-rank-start" in line for line in logs)
