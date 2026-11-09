@@ -428,3 +428,65 @@ def test_handover_file_names_start_with_a_date() -> None:
         "这些交接单的文件名不合规（应为 2026-11-08-some-task.md）：\n  "
         + "\n  ".join(problems)
     )
+
+
+# ---------------------------------------------------------------- 存档状态
+# 「只供追溯」以前只是一句人话，Agent 照样会把它读一遍、照样被复审叫去看。
+# 改成机器可读的 status 之后，必须有人守着别让它重新混进现行文档集合。
+
+ALLOWED_DOC_STATUS = {"active", "generated", "superseded"}
+
+
+def _statused_docs() -> dict[Path, str]:
+    """扫治理 V2 管辖的文档，只取显式写了 status 的那几份。
+
+    现行文档**默认就是 active**，不给几十份文档做形式化 frontmatter ——
+    标记只给「非现行」的用，这才不会变成又一种要人维护的负担。
+
+    ``decisions/``（accepted / proposed）与 ``wip/``（in-progress）是更早的两套
+    status 语义，各有专门门禁（见本文件上半部分），不归这里管。
+    """
+    result: dict[Path, str] = {}
+    for path in DOCS.rglob("*.md"):
+        if path.relative_to(DOCS).parts[0] in {"decisions", "wip"}:
+            continue
+        fields = _frontmatter(path.read_text(encoding="utf-8"))
+        if "status" in fields:
+            result[path] = fields["status"]
+    return result
+
+
+def _relative(path: Path) -> str:
+    return path.relative_to(ROOT).as_posix()
+
+
+def test_document_status_values_are_legal() -> None:
+    bad = {_relative(p): status for p, status in _statused_docs().items()
+           if status not in ALLOWED_DOC_STATUS}
+    assert not bad, f"这些文档的 status 不在允许集合 {ALLOWED_DOC_STATUS} 里：{bad}"
+
+
+def test_superseded_docs_are_not_review_targets() -> None:
+    """存档文档不该进 doc_review 映射：改一次代码不必再读只供追溯的东西。"""
+    from auto_game_unified.tools import doc_review
+
+    superseded = {_relative(p) for p, status in _statused_docs().items()
+                  if status == "superseded"}
+    targets = {target for _prefix, group in doc_review.DOC_RULES for target in group}
+    overlap = sorted(targets & superseded)
+    assert not overlap, (
+        "这些存档文档仍被 doc_review.DOC_RULES 当成复审目标：\n  "
+        + "\n  ".join(overlap)
+        + "\n存档只供追溯，别让提交钩子再叫人去读它。"
+    )
+
+
+def test_superseded_docs_are_listed_in_the_archive_section() -> None:
+    """标了 superseded 就必须在 README 存档节登记，否则等于悄悄消失。"""
+    index_text = (DOCS / "README.md").read_text(encoding="utf-8")
+    archive = index_text.split("### 存档")[1].split("\n---")[0]
+    missing = [_relative(p) for p, status in _statused_docs().items()
+               if status == "superseded" and p.name not in archive]
+    assert not missing, (
+        "这些存档文档没在 README「存档」节里登记：\n  " + "\n  ".join(missing)
+    )

@@ -14,21 +14,18 @@
 | 接手别人做到一半的活 | 先看 [`STATUS.md`](STATUS.md) 的「在制品」一节，再点开里面链到的交接单 | 临时 |
 | 装起来用、界面怎么点 | [`USER_GUIDE.md`](USER_GUIDE.md) | 长期 |
 | 看懂代码怎么分层 | [`ARCHITECTURE.md`](ARCHITECTURE.md) · [`architecture/auto_game_unified.code-map.md`](architecture/auto_game_unified.code-map.md) | 长期 |
-| 新增一条自动化路线 | [`EXTENDING.md`](EXTENDING.md) · [`maintenance/route_extensibility_review.md`](maintenance/route_extensibility_review.md) | 长期 |
-| 采一张新截图 / 做一颗新模板 | [`TEMPLATE_CAPTURE.md`](TEMPLATE_CAPTURE.md) · [`maintenance/template_dynamic_content_review.md`](maintenance/template_dynamic_content_review.md) | 长期 |
+| 新增一条自动化路线 | [`EXTENDING.md`](EXTENDING.md) · `doc_review --scenario new-route`（开工/收尾清单） | 长期 |
+| 采一张新截图 / 做一颗新模板 | [`TEMPLATE_CAPTURE.md`](TEMPLATE_CAPTURE.md) | 长期 |
 | 改状态机、加动作 | [`TRANSITION_CONTRACTS.md`](TRANSITION_CONTRACTS.md) | **契约**，改前必读 |
 | 开局停在半路，想知道能不能接上 | [`RESUME_COVERAGE.md`](RESUME_COVERAGE.md) · [`maintenance/route_finish_points.md`](maintenance/route_finish_points.md) | 长期 |
 | 跑挂了要排查 | [`TROUBLESHOOTING.md`](TROUBLESHOOTING.md) | 长期 |
 | 想知道哪些动作会花资源、靠什么拦住误点；每条路线到底有哪些实机证据 | [`SAFETY_MATRIX.md`](SAFETY_MATRIX.md) | 长期 |
 | 在 PC 客户端上跑（移植 / 放行 / 踩坑） | [`PC_TEMPLATE_MIGRATION.md`](PC_TEMPLATE_MIGRATION.md) · [`maintenance/pc_page_capture_checklist.md`](maintenance/pc_page_capture_checklist.md) | **PC 结论唯一权威** |
-| 每日任务的分组与执行顺序 | [`maintenance/daily_tasks_grouping.md`](maintenance/daily_tasks_grouping.md) | 长期 |
+| 每日任务的分组与执行顺序 | [`STATUS.md`](STATUS.md) 第三节（自动生成）· [`EXTENDING.md`](EXTENDING.md) 四组分界 | 事实 + 业务口径 |
 | 突然冒出个想法，先记下来 / 以后想挑个活干 | [`BACKLOG.md`](BACKLOG.md) | 滚动更新 · 未评估的想法 |
 | 看还有哪些没做完 | [`TODO.md`](TODO.md) | 滚动更新 |
 | 看这次改了什么 | [`../CHANGELOG.md`](../CHANGELOG.md) | 一次性记录 |
-| 和 AI 协作时的分工（历史做法；实机权限看上面 howto 那份） | [`HUMAN_AI_WORKFLOW.md`](HUMAN_AI_WORKFLOW.md) | 历史存档 |
-| 竞品做到了哪些我们没做 | [`COMPETITOR_FEATURES.md`](COMPETITOR_FEATURES.md) | 参考 |
-| 世界首领战的设计取舍 | [`WORLD_BOSS_DESIGN.md`](WORLD_BOSS_DESIGN.md) | 设计稿 |
-| 全局「每个动作都要有验收」的加固方案 | [`maintenance/action_verification_plan.md`](maintenance/action_verification_plan.md) | 方案 |
+| 人和 AI 怎么配合做新路线 | [`../CONTRIBUTING.md`](../CONTRIBUTING.md)「人和 AI 怎么配合做新路线」 | 长期 |
 
 ### 规范都放在哪（含仓库外的）
 
@@ -47,7 +44,7 @@
 | 转场五段证据 / 判据唯一 / 陌生页可恢复 | [`TRANSITION_CONTRACTS.md`](TRANSITION_CONTRACTS.md) | `topics/transitions.md` · `lessons.md` |
 | 模板采集 / 判据纪律 / 锚点 / 夹具 / 反向验证 | [`TEMPLATE_CAPTURE.md`](TEMPLATE_CAPTURE.md) · [`../AGENTS.md`](../AGENTS.md) | `topics/discipline.md` · `anchors.md` · `hazards.md` · `fixtures.md` |
 | 全局弹窗（新弹窗的 10 个接触点） | [`TRANSITION_CONTRACTS.md`](TRANSITION_CONTRACTS.md) + 下方逐路线手册 | `topics/global_popups.md` |
-| 新增路线 / 登记四处 / 两道准入关 | [`EXTENDING.md`](EXTENDING.md) · [`../CONTRIBUTING.md`](../CONTRIBUTING.md) | `topics/route_admission.md` · `route_metadata.md` |
+| 新增路线 / 开工读什么、改完改哪节 / 两道准入关 | [`EXTENDING.md`](EXTENDING.md) · `doc_review --scenario new-route`（清单唯一来源） | `topics/route_admission.md` · `route_metadata.md` |
 | 主循环 / 点击通道 / 战斗移交 / 时间源 | [`ARCHITECTURE.md`](ARCHITECTURE.md) | `topics/runner_loop.md` · `click_channel.md` · `battle_auto_flip.md` |
 | 开局接力 / 断点恢复 | [`RESUME_COVERAGE.md`](RESUME_COVERAGE.md) · [`TRANSITION_CONTRACTS.md`](TRANSITION_CONTRACTS.md) | `topics/resume.md` |
 | 实机权限 / 鼠标 / 截图 / 失败判定 | [`howto/live_verification.md`](howto/live_verification.md) | `topics/env.md` |
@@ -121,6 +118,25 @@
 | **过程** | 这次改了什么、怎么改的 | 提交信息 + `CHANGELOG.md` | 一次性 |
 | **记忆** | 踩过什么坑、查过什么 | `.workbuddy/memory/` | 30 天后蒸馏进 `MEMORY.md` |
 
+### 开发闭环：先看现状、再改代码、改完写回
+
+文档只在对开发有用时才存在。任何改动都按这个顺序走；**该读哪份、改哪节以清单为准**，
+不再另抄一份「登记四处」（清单在 `tools/doc_review.py::SCENARIOS`，是唯一来源）：
+
+```powershell
+python -m auto_game_unified.tools.doc_review --scenario new-route   # 开工前：读现状
+python -m auto_game_unified.tools.doc_review --staged                # 提交前：该改哪节
+```
+
+`--scenarios` 列出全部场景（新增路线 / 修 bug / 新增机制）。
+
+- **开工前**读清单列的那几节，先搞清楚现状和「当初为什么这么定」，别直接改阈值。
+- **改完代码有变化才更新**对应章节；确实没变化就不造文档动作，提交信息写
+  `Doc-reviewed: 无变化`。
+- **新发现按性质沉淀**：判据理由变了 → 手册「判据为什么这么设计」；推翻决定 →
+  `decisions/`；新缺口 → `TODO.md`；事故过程与实跑流水 → 提交信息 / 项目记忆，不进仓库文档。
+- 清单里的文档路径与章节锚点由 `tests/test_doc_review.py` 反向验，改名或删节直接报红。
+
 写到 `docs/howto/` 时**直接复制 [`howto/_TEMPLATE.md`](howto/_TEMPLATE.md)** —— 结构是固定的
 （自检 → 标准做法 → 失败判定 → 依据与作废条件 → 墓碑 → 更改记录），别自己发明一套。
 `docs/howto/` 下的文件**必须**登记到本页，否则门禁会拦下。
@@ -145,8 +161,11 @@
    改了就跑 `python -m auto_game_unified.tools.gen_status` 重生成。
 2. **新增任何 `.md` 必须登记在本页** —— `tests/test_docs_index.py` 会检查
    `docs/` 下每个文档都能从本页点到。没登记的文档等于不存在，门禁直接红。
-3. **不许写死会漂移的数字** —— 想说「现在有多少条路线」，去链 `STATUS.md`，不要抄数字。
-   首页（`README.md` 与本页）有专门的门禁盯着这一条。
+3. **不许写死会漂移的数字** —— 想说「现在有多少条路线 / 几张 PC 图 / 几张模板」，
+   去链 [`STATUS.md`](STATUS.md) 的「按路线的现行事实」（由 `gen_status.py` 生成），不要抄数字。
+   首页有专门的门禁；**路线手册尤其不许写分数、模板尺寸、夹具张数** —— 这些一改代码就过期。
+   全部文档的可生成事实候选由 [`audit_docs.py`](../tools/audit_docs.py) 定期体检列出，
+   它是提示不是红（做成红人会绕过去）。
 
 ### 门禁查不到的那一层：定期体检
 
@@ -193,11 +212,13 @@ CI 的 `Governance gate` 会在干净检出上再跑一遍治理门禁。
 
 ### 存档
 
-只供追溯，**不要照着做**（里面的接口可能已经删了）：
+**当前没有存档文档。** 只供追溯的旧 README 存档、设计稿、施工记录、方案快照已在
+文档治理 V2 中删除——它们的内容在 git 历史里可查，仍有效的结论已上收到
+`NOTICE.md` / `EXTENDING.md` / `CONTRIBUTING.md` / `TODO.md`，不需要再留一份会过期的副本。
 
-- [`superpowers/specs/2026-08-25-epic7-auto-assistant-productization-design.md`](superpowers/specs/2026-08-25-epic7-auto-assistant-productization-design.md)
-  —— 产品化命名与视觉约束，`NOTICE.md` 引用其第 9 节
-- [`REFERENCE.md`](REFERENCE.md) —— 旧版 README 全文（343 行逐条说明），保留是因为写得比新 README 细
+以后若确实出现「只供追溯、不要照着做」的材料：给它加 `status: superseded` 头，
+在本节登记一句「为什么留」，并保证它**不在 `doc_review.DOC_RULES` 的复审目标里**
+（`tests/test_docs_index.py` 会查）。现行文档默认就是 `active`，不用逐份加标记。
 
 ---
 
@@ -247,18 +268,16 @@ CI 的 `Governance gate` 会在干净检出上再跑一遍治理门禁。
 | [`howto/live_verification.md`](howto/live_verification.md) | 手法 | 让 agent 真的进游戏点鼠标：只读自检 → 提权 → 实跑的授权流程与话术 |
 | [`USER_GUIDE.md`](USER_GUIDE.md) | 用户 | 装、跑、干跑、实跑、退出码、通知、日志在哪。**日常只用这份** |
 | [`TROUBLESHOOTING.md`](TROUBLESHOOTING.md) | 用户 | 跑挂了怎么查：看哪几个文件、卡死怎么判断、反馈时该留什么现场 |
-| [`REFERENCE.md`](REFERENCE.md) | 存档 | 2026-11-08 之前的首页全文（逐条路线说明、命令行细节）。找老参数时翻它 |
-| [`HUMAN_AI_WORKFLOW.md`](HUMAN_AI_WORKFLOW.md) | 存档 | 人机分工的旧做法。**「默认权限」一节已作废**，现行口径在 `howto/live_verification.md` |
 | [`TODO.md`](TODO.md) | 清单 | 未完成的加固项、待验证缺口、PC 迁移矩阵。回答「还欠什么」 |
 | [`BACKLOG.md`](BACKLOG.md) | 清单 | 想法池：还没评估的功能念头。想找活干从这里挑 |
-| [`COMPETITOR_FEATURES.md`](COMPETITOR_FEATURES.md) | 参考 | 竞品有什么我们没有：可调参数、整条缺的路线，数字都来自脚本统计 |
-| [`WORLD_BOSS_DESIGN.md`](WORLD_BOSS_DESIGN.md) | 设计 | 世界首领战为什么这么打：次数、体力、跳过时机、结算判据的取舍 |
 | [`architecture/auto_game_unified.code-map.md`](architecture/auto_game_unified.code-map.md) | 骨架 | 目录职责表（哪个目录放什么），钉在某个提交上便于对照 |
-| [`superpowers/specs/2026-08-25-epic7-auto-assistant-productization-design.md`](superpowers/specs/2026-08-25-epic7-auto-assistant-productization-design.md) | 设计 | 2026-08 的产品化设计：把这套开发者工具做成普通玩家能装能用的免费工具 |
 
 ### 逐路线维护手册（`maintenance/`）
 
-每份只回答三件事：**改哪里、缺口在哪、怎么验**。判据的实测依据不在这里，在代码注释里。
+每份是**业务契约的一页纸**，六节固定：这条路线干什么 / 页面链路 / 判据为什么这么设计 /
+危险边界 / 现行事实 / 已知缺口。只回答「为什么、有什么作用、流程怎么走」，
+**不写**匹配分数、模板尺寸、夹具张数、事故时间线——这些一改代码就过期，
+事实一律链 [`STATUS.md`](STATUS.md)「按路线的现行事实」，缺口链 [`TODO.md`](TODO.md)。
 
 | 手册 | 这条路线是干什么的 |
 |---|---|
@@ -275,19 +294,15 @@ CI 的 `Governance gate` 会在干净检出上再跑一遍治理门禁。
 | [`community_checkin.md`](maintenance/community_checkin.md) | 社区签到：模拟器转竖屏，签到 + 三条每日任务 + 兑换按上限兑满 |
 | [`achievement.md`](maintenance/achievement.md) | 成就领取：4 个分类**逐个进去**领完（不是看红点），两端素材都有 |
 
-⚠️ 没有手册的路线：狗粮、刷书签、活动小游戏、活动剧情、世界首领战（后者规则在设计稿里）。
-它们不是没人管，是还没人写——补的时候照上面那三件套写。
+⚠️ 没有手册的路线：狗粮、刷书签、活动小游戏、活动剧情、世界首领战。
+它们不是没人管，是还没人写——补的时候照上面六节写，别再攒施工流水。
 
 ### 专题方案（`maintenance/`）
 
 | 文档 | 这份是干什么的 |
 |---|---|
-| [`action_verification_plan.md`](maintenance/action_verification_plan.md) | 全局「每个动作都要有验收」的改造方案（阶段 1 已实施，3/4 待排期） |
-| [`daily_tasks_grouping.md`](maintenance/daily_tasks_grouping.md) | 界面四分组（每日/按需/赛季/活动）与整组勾选的口径 |
 | [`pc_page_capture_checklist.md`](maintenance/pc_page_capture_checklist.md) | PC 采页清单：一次把页面停到位抓完，提前算出一页会不会在 PC 上卡 |
-| [`route_extensibility_review.md`](maintenance/route_extensibility_review.md) | 新增路线的可扩展性审查（2026-09-27 **快照**，方案已落地，别照着改） |
 | [`route_finish_points.md`](maintenance/route_finish_points.md) | 每条路线的「终点」在哪，`return home` 只允许在终点衔接 |
-| [`template_dynamic_content_review.md`](maintenance/template_dynamic_content_review.md) | 模板「含会变内容」的评审工作表（**仍有 2 个未解决项**，不是过期文档） |
 
 ### 决策记录（`decisions/`）
 

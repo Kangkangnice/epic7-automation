@@ -205,6 +205,60 @@ def _pc_only_lines() -> list[str]:
     ]
 
 
+#: 模板根不统一（2026-11-08 实测）。按路线名猜目录会给出**误导性的 0**，
+#: 所以显式写清，并由 tests/test_status_doc.py 钉住「这两格不许退化成 0」。
+#: 值 = (模板目录名, 夹具目录前缀)
+ROUTE_DIR_ALIASES = {"hero_synthesis": ("hero", "epic7_hero")}
+#: 竞技场模板与全局共享图混放在 templates/ 根、templates/pc/ 根，
+#: 无法按路线归属 —— 宁可写「共享根」，也不要报一个假的 0。
+SHARED_TEMPLATE_ROOT_ROUTES = frozenset({"arena"})
+
+
+def _route_fact_rows(tracked: set[str]) -> list[str]:
+    """按路线的现行事实。
+
+    治理 V2：手册里凡「有几张 PC 图 / 几张模板 / 几张夹具」这类会漂移的数字，
+    一律链到本表，不再手抄 —— 素材一入库、重生成本页，数字自己跟上。
+    口径与 ``_count_pc_templates`` 一致：PC 图有两种放法
+    ``templates/<路线>/pc/`` 与 ``templates/pc/<路线>/``，漏一种就会凭空少几张。
+    """
+    tmpl = "games/epic7/templates/"
+    fixtures = "tests/fixtures/"
+    rows = [
+        "| 路线 | PC 专用图 | 模板合计 | 现场夹具 | 开局接力 | PC 放行 |",
+        "|---|---:|---:|---:|---|---|",
+    ]
+    for route in catalog.ROUTES:
+        mode = route.mode
+        directory, fixture_prefix = ROUTE_DIR_ALIASES.get(mode, (mode, f"epic7_{mode}"))
+        if mode in SHARED_TEMPLATE_ROOT_ROUTES:
+            pc_cell = template_cell = "共享根"
+        else:
+            in_route = [n for n in tracked if n.startswith(f"{tmpl}{directory}/") and n.endswith(".png")]
+            in_pc_root = [n for n in tracked if n.startswith(f"{tmpl}pc/{directory}/") and n.endswith(".png")]
+            pc_count = sum(1 for n in in_route if n.startswith(f"{tmpl}{directory}/pc/")) + len(in_pc_root)
+            pc_cell = str(pc_count)
+            template_cell = str(len(in_route) + len(in_pc_root))
+        fixture_count = sum(
+            1 for n in tracked
+            if n.startswith(f"{fixtures}{fixture_prefix}") and n.endswith(".png")
+        )
+        spec = modes.MODE_SPECS[mode]
+        if not spec.needs_navigation:
+            resume = "不适用（无导航）"
+        elif spec.resume_probe is not None:
+            resume = "有探针"
+        elif mode in modes.RESUME_EXEMPT:
+            resume = "豁免（见 modes.py）"
+        else:
+            resume = "**未表态**（加载期应拦下）"
+        rows.append(
+            f"| `{mode}` | {pc_cell} | {template_cell} | {fixture_count} "
+            f"| {resume} | {_pc_state(mode)} |"
+        )
+    return rows
+
+
 def render() -> str:
     """把当前代码的现状渲染成 Markdown 全文。
 
@@ -263,6 +317,17 @@ def render() -> str:
         "注意：这两个数字**加一张图就要重生成一次**。这是有意的 —— 素材入库本来就要在",
         "`tests/test_template_paths.py` 登记，多跑一次生成器只是同一步的延续。",
         "测试文件个数刻意不写在这里：它每天都在变，写进来只会让这一页天天过期。",
+        "",
+        "### 按路线的现行事实（自动生成）",
+        "",
+        "> 路线手册里**不要再手抄**「有几张 PC 图 / 几张模板 / 几张夹具」，链到本表即可。",
+        "> 口径：模板只数 `games/epic7/templates/<路线>/` 与 `templates/pc/<路线>/`；",
+        "> 夹具数 `tests/fixtures/epic7_<路线>*` 前缀。",
+        "> `hero_synthesis` 的素材目录叫 `hero`；`arena` 的模板与全局共享图混放在模板根，",
+        "> 无法按路线归属，标「共享根」而不是报一个假的 0 —— 别名见 `gen_status.py::ROUTE_DIR_ALIASES`。",
+        "> 开局接力读 `MODE_SPECS.resume_probe` 与 `RESUME_EXEMPT`，PC 放行读 `PC_READY_ROUTES`。",
+        "",
+        *_route_fact_rows(tracked),
         "",
         "## 六、这一页之外去哪找",
         "",

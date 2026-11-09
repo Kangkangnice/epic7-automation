@@ -138,7 +138,7 @@
 `evidence/arena.py`（区域 / 阈值 / 模板路径三处）；
 测试 `tests/test_arena_purchase_popup.py`（判据串门 + **真 Runner 级**收尾接线）。
 
-⚠️ 同理，`arena.py:1385`「今日友情点旗帜已购买」那个出口把状态硬改成
+⚠️ 同理，`arena.py:1513`（状态硬改 `ArenaState.BATTLE`）/ 1517（日志「今日友情点旗帜已购买」）那个出口把状态硬改成
 `ArenaState.BATTLE` 再 `_close_out()` —— **状态和画面不一致**。
 它现在被 `_close_out` 里的兜底一起覆盖了（那条路若弹窗已弹出也会被关掉），
 但那个多余的赋值本身值得清（**本次没动**，避免混进无关改动）。
@@ -152,7 +152,10 @@
 
 ## 四、新增路线时怎么做（准入清单）
 
-按 `topics/route_admission.md` 那套「登记四处」的格式，**再加一问**：
+开工前先跑 `python -m auto_game_unified.tools.doc_review --scenario new-route` 读现状
+（文档侧该读哪份、改哪节以它为准，不再有手抄的「登记四处」清单）。代码侧按
+`docs/EXTENDING.md` §4 注册模式：在 `MODE_SPECS` 注册、声明
+`RESUME_EXEMPT` / `TRANSITION_EXEMPT` / `FINISH_HOME_EXEMPT`，**再加一问**：
 
 1. ~~在 `MODE_SPECS` 注册~~（既有）
 2. ~~声明接力立场~~（`RESUME_EXEMPT`，既有）
@@ -215,7 +218,11 @@ v2 的出口接线（`main.run_mode`）：
 | `arena` | 已实跑验收（2026-09-25，退出码 0、2 轮） |
 | `world_boss` | **已加入，待实跑验收** |
 | `knights_donation` | **已加入，待实跑验收** |
-| 其余 7 条 | 仍走老流程（`navigation.return_home`） |
+| 其余 7 条 | 现已一并走 v2（见下注；2026-09-26 重构后无「老流程」分支） |
+
+⚠️ **本表是 2026-09-25 晚的快照**：2026-09-26 起 `navigation.return_home` 整段重写为
+`return_home_v2` 的薄封装（见本文件第五节），10 条路线只有一套回家实现，「老流程 / v2」
+的区分已消失。下方「后两条」的叙述里提到的「老流程」也指当时尚未重构前的状态。
 
 后两条是一起加的，起因是当晚每日任务实跑：骑士团捐赠卡住后交回**老**流程，
 老流程在「资源支援」弹窗页上认不出画面 ⇒ 触发它内置的「点画面中央」唤醒 4 次
@@ -249,8 +256,10 @@ v2 在「认不出这一页」时会按 ESC 退一层，按完**必须等画面�
 ## 相关文件
 
 - `games/epic7/home_return.py` —— v2 实现与全部实测证据
-- `games/epic7/navigation.py::return_home` —— 老的回家流程（将被 v2 替换）
+- `games/epic7/navigation.py::return_home` —— v2 的薄封装（2026-09-26 起；不再有「老流程」分支）
 - `games/epic7/finish_home.py` —— 「收尾回首页」豁免名单 + 加载期自查
 - `games/epic7/runner_base.py::_close_out` —— 四个出口的完整口径
 - `docs/maintenance/labyrinth_stone.md` —— 迷宫那条链路（终点写法的样板）
-- `topics/route_admission.md` —— 路线准入「登记四处」（本文件为第五处）
+- `docs/EXTENDING.md` —— §4 注册模式；开发与文档的闭环清单是
+  `doc_review --scenario new-route`。本文件只回答其中一问：「这条路线终点在哪」，
+  不再自称第几处（清单一旦按编号称呼，就会不停膨胀）
