@@ -1,8 +1,8 @@
 ---
 topic: live-verification
 when: 要跑 --live 实机、要点游戏里的按钮、或出现「截图正常但游戏不动」时
-last_verified: 2026-11-08
-review_when: 改了 core/elevation.py、core/pc_window.py、desktop/preflight.py、app.STARTUP_HINTS，或换过客户端
+last_verified: 2026-11-09
+review_when: 改了 core/elevation.py、core/pc_window.py、desktop/preflight.py、catalog.STARTUP_HINTS，或换过客户端
 ---
 
 # 实机闭环验证：让 agent 自己动鼠标
@@ -25,7 +25,7 @@ python -m auto_game_unified.tools.live_check --backend pc
 | 后端 | 需要管理员？ | 依据 |
 |---|---|---|
 | 模拟器（雷电） | **不强制** | 但若模拟器是管理员启动的、助手不是，点击会被静默拦掉（见下） |
-| PC 客户端 | **必须** | `desktop/preflight.py` 的 PC 分支写明「客户端要求以管理员身份运行助手」，`app.STARTUP_HINTS` 里也是这句 |
+| PC 客户端 | **必须** | `desktop/preflight.py` 的 PC 分支写明「客户端要求以管理员身份运行助手」，`catalog.STARTUP_HINTS` 里也是这句 |
 
 **判据不是「大概像」**（摘自 `core/elevation.py`）：Windows 的 UIPI 规定**权限低的进程不能往权限高的窗口发输入**。
 所以要读的是目标窗口所属进程令牌里的 `TokenElevation`，不是进程名、也不是用户名。
@@ -148,3 +148,4 @@ python -m auto_game_unified.main --mode arena --live --confirm RUN --max-cycles 
 | 2026-11-08 | 建档。此前这些知识只存在于 `core/elevation.py` 的注释和几次会话里，没有入口 | 用户反馈「同样的问题两三天后被另一个 agent 再问一遍」 |
 | 2026-11-08 | 补「UAC 到底会不会弹」与「无人值守铁律」，并把 `Start-Process -Verb RunAs` 写成可复制的命令 | 用户反馈「脚本说要点 UAC，但我从没点过、每次都成功」。查注册表：`ConsentPromptBehaviorAdmin=0`（从不通知，静默提权）—— 那句提示从来没兑现过 |
 | 2026-11-08 | 实跑前加闸门：`--live --window-backend pc` 时先查窗口与权限，不通过就拒绝并指向本文件 | 只有 2 条路线配了运行前闸门，其余在权限不对时会跑下去，表现成「日志说已点击、游戏不动」 |
+| 2026-11-09 | `review_when` 里的 `app.STARTUP_HINTS` 改成 `catalog.STARTUP_HINTS`，并复核 `last_verified` | 全库文档复核：界面文案已搬到 `desktop/catalog.py`，`desktop/app.py` 只剩同名再导出，写旧路径会让人翻错文件 |

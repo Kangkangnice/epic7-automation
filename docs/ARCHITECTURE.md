@@ -172,7 +172,10 @@ auto_game_unified/
 
 ## 开局接力
 
-`ModeSpec.resume_probe`（可选）给一条路线装上「开局接着往下跑」的能力。目前三条路线接了：`arena`、`story`、`expedition`；
+`ModeSpec.resume_probe`（可选）给一条路线装上「开局接着往下跑」的能力。现行共 **11 条**接了探针：
+`arena` / `story` / `expedition` / `tower` / `side_story` / `shop_refresh` / `world_boss` /
+`knights_donation` / `labyrinth_stone` / `sanctuary` / `achievement`（以 `games/epic7/modes.py` 为准，
+逐条覆盖矩阵见 [RESUME_COVERAGE.md](RESUME_COVERAGE.md)）；
 其余路线 `resume_probe is None`，调用签名与行为完全不变（仍是 `return_home()` + `navigate()`）。
 
 契约：`ResumeProbe = (machine, screen, navigator) -> Optional[ResumePoint]`，其中

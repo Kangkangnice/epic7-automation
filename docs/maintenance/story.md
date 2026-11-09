@@ -167,7 +167,8 @@ action = (last_transition_action
 ### 回归靠什么
 
 - `tests/test_epic7_story_pc.py`：PC 关卡入口帧上「准备战斗」必须过阈、
-  后续页面锚点一律不得命中、且 `templates/story/pc/` **不存在**（有人补图就红）。
+  后续页面锚点一律不得命中。⚠️ 原文此处写的「`templates/story/pc/` 不存在、有人补图就红」是 2026-09 的当时状态；
+  现行该目录已有 **9 张** PC 覆盖图（清单见 `tests/test_epic7_story_pc.py`），补图不再必然报错。
 - 夹具：`tests/fixtures/epic7_story/stage_pc_live_20261101.png`。
 - **还没做的**：第二轮连续实跑。第 5 步验收由用户在界面自测补上
   （`catalog.PC_READY_ROUTES` 已含 `story`）。别因为"跑一遍没出事"就当验收齐了。

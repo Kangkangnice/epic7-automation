@@ -24,7 +24,7 @@
 | 突然冒出个想法，先记下来 / 以后想挑个活干 | [`BACKLOG.md`](BACKLOG.md) | 滚动更新 · 未评估的想法 |
 | 看还有哪些没做完 | [`TODO.md`](TODO.md) | 滚动更新 |
 | 看这次改了什么 | [`../CHANGELOG.md`](../CHANGELOG.md) | 一次性记录 |
-| 和 AI 协作时的分工 | [`HUMAN_AI_WORKFLOW.md`](HUMAN_AI_WORKFLOW.md) | 长期 |
+| 和 AI 协作时的分工（历史做法；实机权限看上面 howto 那份） | [`HUMAN_AI_WORKFLOW.md`](HUMAN_AI_WORKFLOW.md) | 历史存档 |
 | 竞品做到了哪些我们没做 | [`COMPETITOR_FEATURES.md`](COMPETITOR_FEATURES.md) | 参考 |
 | 世界首领战的设计取舍 | [`WORLD_BOSS_DESIGN.md`](WORLD_BOSS_DESIGN.md) | 设计稿 |
 | 全局「每个动作都要有验收」的加固方案 | [`maintenance/action_verification_plan.md`](maintenance/action_verification_plan.md) | 方案 |
@@ -115,6 +115,7 @@
 | **手法** | 具体怎么操作、失败了怎么判 | `docs/howto/<主题>.md`（带 `last_verified` / `review_when`） | 长期，**判断变了就要改** |
 | **决策** | 当初为什么这么定 | `docs/decisions/NNNN-*.md` | 永久；**草稿期可改正文**，入库后只增不改，被推翻标 superseded |
 | **已知缺口** | 还欠哪一步证据 / 待验证项 | [`TODO.md`](TODO.md)（滚动）；正在处理则 `docs/wip/` | 补完就划掉，**不许只埋在路线手册里** |
+| **想法池** | 未评估、不排期的点子 | [`BACKLOG.md`](BACKLOG.md) | 不承诺做；选中开工才挪进 TODO / `docs/wip/` |
 | **在制品** | 这次做到哪、下一步是什么 | `docs/wip/<日期>-<主题>.md` | **合并即删**，不是文档 |
 | **过程** | 这次改了什么、怎么改的 | 提交信息 + `CHANGELOG.md` | 一次性 |
 | **记忆** | 踩过什么坑、查过什么 | `.workbuddy/memory/` | 30 天后蒸馏进 `MEMORY.md` |

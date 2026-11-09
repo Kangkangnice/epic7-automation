@@ -42,12 +42,15 @@ python -u -m auto_game_unified.desktop
 ## 跑测试
 
 ```powershell
-cd D:\AI\codex\auto_game\auto_game_unified
-python -m pytest -q
-python -m compileall -q .
-python -m ruff check .
-python -m mypy
+cd D:\AI\codex\auto_game
+python -m pytest -q auto_game_unified/tests
+python -m compileall -q auto_game_unified
+python -m ruff check auto_game_unified
+python -m mypy --config-file auto_game_unified/pyproject.toml
 ```
+
+⚠️ 这四条与 CI（`.github/workflows/tests.yml`）**逐字一致**：mypy 的 `files` 路径按仓库父目录
+解析，进到包目录里再跑 `python -m mypy` 会读错配置（见 `pyproject.toml` 的注释）。
 
 提交门禁是仓库自带的 `tools/check.py`，它按**改动范围**决定跑什么：
 
@@ -55,7 +58,7 @@ python -m mypy
 |---|---|---|
 | 只有文档 / `.github/` / 图片 | 只做编译检查 | 几秒 |
 | 单条路线的模块与它的测试 | 该路线的测试 | 1~2 分钟 |
-| **共享模块**（`core/`、`desktop/`、`main.py`、`modes.py`、`navigation.py` 等） | **全量** | 约 14 分钟 |
+| **共享模块**（`core/`、`desktop/`、`main.py`、`modes.py`、`navigation.py` 等） | **定向测试**（按文件 stem 映射；映射不到只提示） | 1~2 分钟 |
 
 装钩子（每个 clone 各装一次）：
 
@@ -102,7 +105,7 @@ python packaging/build.py
 
 它会做四件事：PyInstaller 目录版打包 → 确认 spec 剔掉的 videoio ffmpeg 二进制
 真没进产物 → 跑一次 `Epic7AutoAssistant.exe --self-check`（检查产物目录可写、
-模板在不在、十五条路线能不能全部加载）→ 打免安装 ZIP 并写 `SHA256SUMS.txt`。
+模板在不在、全部路线能不能加载 —— 条数以 `desktop/catalog.ROUTES` 为准）→ 打免安装 ZIP 并写 `SHA256SUMS.txt`。
 产物在 `packaging/dist/`（已 gitignore，不进历史）。
 
 `--no-build` 复用已有目录版，只重打 ZIP；`--skip-smoke` 跳过自检。
@@ -148,7 +151,7 @@ python packaging/build.py
 4. **夹具**：真机帧放进 `tests/fixtures/epic7_<路线>/`，每个页面至少一张正样本，另附能区分相邻页面的负样本；
 5. **状态机与 Runner**：优先复用 `runner_base` / `transactional_runner_base` / `battle_controls` / `pre_battle` / `global_popups`，不要自己再造一套；
 6. **测试**：覆盖页面唯一性、转场契约、资源耗尽与失败关闭；
-7. **登记**：`modes.py`、`desktop/catalog.py`、`navigation.py`、`tools/check.py` 的 `ROUTE_KEYWORDS` 四处都要登记。
+7. **登记**：`modes.py::MODE_SPECS`、`desktop/catalog.py::ROUTES`、`daily_tasks.py::DAILY_TASKS`（进默认清单才需要）、`tools/check.py::ROUTE_KEYWORDS`。**导航链不再改 `navigation.py`** —— 链条与接力白名单声明在 `MODE_SPECS["<路线>"].navigation_plan` 这份数据里，`navigation.py` 只留执行器。
 
 **失败关闭是底线**：认不出的页面不许猜、不许连点、不许「等超时算过」。认不出就保存诊断并停下，退出码 `1`。
 
@@ -181,7 +184,7 @@ docs(chore): 竞技场实跑记录更新；README 与手册同步
 - [ ] 没有提交包含个人信息的截图（昵称、QQ、角色名）；
 - [ ] 没有把环境变量、Token、AppSecret 写进代码或文档；
 - [ ] 没有删除 `tests/fixtures/` 里被其它测试引用的图；
-- [ ] 改了共享模块的话，知道这次提交会跑全量；
+- [ ] 改了共享模块的话，知道这次提交默认跑定向测试（`--full` 才跑全量）；
 - [ ] 文档跟着代码一起改（README / 用户手册 / 路线矩阵）。
 
 ## 许可证
