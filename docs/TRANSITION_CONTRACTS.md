@@ -481,8 +481,7 @@ class NewRouteRunner(ModeRunnerBase):
 ⚠️ **开关只对继承 `ModeRunnerBase` 的路线有意义**。`shop_refresh` / `survivor` 是
 自带独立主循环的裸定义，那段校验它们**走不到**；`arena` / `expedition` 继承的是
 **另一族**基类 `TransactionalRunnerBase`（2026-09-26 起：远征先搬、竞技场随后），
-开关的读取点在 `ModeRunnerBase.run()` 里，对它俩一样无效。四者（两条裸定义＋
-两条另一族基类）的共同点是「属性设了**没人读**」—— 既不拦也不报错。
+开关的读取点在 `ModeRunnerBase.run()` 里，对它俩一样无效。五者（两条裸定义 + 三条另一族基类：arena / expedition / tower）的共同点是「属性设了**没人读**」—— 既不拦也不报错。
 所以别看到「它的动作没有 `target_pages`」就推断「打开开关会抛错」，
 还要问一句「它的 runner 走得到那段代码吗」（2026-09-24 实测踩过这个坑，
 护栏测试里有一条专门钉住它）。
