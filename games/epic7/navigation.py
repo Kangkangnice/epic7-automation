@@ -348,7 +348,9 @@ class NavigationTemplates:
     lobby_shop_entry: tuple[np.ndarray, ...]
     lobby_knights: np.ndarray
     worldboss_entry: np.ndarray
-    lobby_worldboss_select_team: np.ndarray
+    # 首领战主页右下角按钮有两种长相：可打时「选择队伍」，未开放/次数用完时换成
+    # 「管理辅助队伍」（2026-11-09 实跑帧，旧图只有 0.5107）。任一过阈即认作该页。
+    lobby_worldboss_select_team: tuple[np.ndarray, ...]
     # 大厅左侧竖排菜单最上面那个「圣域」入口（在「光辉里程碑」上方）。
     # ⚠️ 截的是**文字标签**而不是那个城墙堡垒图标 —— 图标上没有文字，做模板只会
     # 截到一片渐变色块；文字是唯一「只此一处」的稳定特征。代价见
@@ -618,8 +620,11 @@ def build_navigation_templates(template_root: Path) -> NavigationTemplates:
         ),
         lobby_knights=load_template(str(navigation / "lobby_knights.png")),
         worldboss_entry=load_template(str(navigation / "worldboss_entry.png")),
-        lobby_worldboss_select_team=load_template(
-            str(template_root / "world_boss" / world_boss_select_team.template_path)
+        lobby_worldboss_select_team=(
+            load_template(
+                str(template_root / "world_boss" / world_boss_select_team.template_path)
+            ),
+            load_template(str(template_root / "world_boss" / "manage_support_team.png")),
         ),
         lobby_sanctuary=load_template(str(navigation / "lobby_sanctuary.png")),
         sanctuary_forest_row=load_template(
@@ -1165,8 +1170,9 @@ class Epic7Navigator:
         # 判据只用两个排他锚点（跨页扫描见 runtime_logs/_wb_probe_nav.py）：
         #   - worldboss_entry（骑士团主页的「世界首领战」骷髅盾牌）：本页 0.9890，
         #     跨页最高 0.4210；
-        #   - select_team_button（首领战主页右下角「选择队伍」）：本页 1.0000/0.9161，
-        #     跨页最高 0.4192（见 evidence/world_boss.py 的扫描表）。
+        #   - 首领战主页右下角按钮：可打时「选择队伍」（本页 1.0000/0.9161，跨页最高
+        #     0.4192），未开放/次数用完时换成「管理辅助队伍」（2026-11-09 实跑帧，
+        #     旧图只有 0.5107）。两张候选任一过阈即认作 worldboss_home。
         # **两页顶部标题完全相同**（实测都是 1.0000），所以只能靠这两个按钮区分。
         worldboss_entry = self._locate(screen, "worldboss_entry", 0.85)
         if worldboss_entry:

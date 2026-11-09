@@ -52,6 +52,7 @@ from auto_game_unified.games.epic7.global_popups import (
     load_account_rank_up_templates,
     load_arena_rank_reward_templates,
     load_battle_record_templates,
+    load_weekly_rank_start_templates,
     load_friend_request_templates,
     load_friendship_points_templates,
     load_gift_claim_templates,
@@ -535,6 +536,12 @@ def run_mode(
                 # 导航判不出页面 ⇒ 只等 129 秒后转场失败；随后回家又栽在快捷菜单上，
                 # **整轮每日任务只跑完竞技场一条就中止**，后面 5 条路线一条没跑。
                 battle_record_templates=load_battle_record_templates(
+                    template_root / "navigation"
+                ),
+                # 「新的每周排名开始！」：每周结算后进竞技场时一次性弹出的段位重置通知。
+                # ⚠️ 2026-11-09 08:52 那次竞技场 ✗ 就是它没登记：守卫认不出 ⇒
+                # 导航只等 106 秒后报「竞技场模式选择 → arena_ready 失败」。
+                weekly_rank_start_templates=load_weekly_rank_start_templates(
                     template_root / "navigation"
                 ),
                 # 「骑士团成长Rank提升」弹窗：只在骑士团成长等级提升时出现（低频），
