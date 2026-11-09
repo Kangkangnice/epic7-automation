@@ -16,20 +16,24 @@ auto_game_unified/
 ├─ games/epic7/
 │  ├─ navigation.py         # 从支持页面受控返回大厅并进入目标模式（导航链的**执行器**）
 │  ├─ navigation_plan.py    # 导航链的声明式数据（纯 dataclass，不含任何路线知识）
-│  ├─ global_popups.py      # 全局弹窗守卫：断网/亲密度/友情点数/好友申请
+│  ├─ global_popups.py      # 全局弹窗守卫（现行 20+ 类，清单见文件里的 _find_popup）
 │  ├─ unknown_screen.py     # 未知画面唤醒（萤火待机等）与安全停止
 │  ├─ battle_controls.py    # 战斗内 Auto/加速按钮识别
 │  ├─ stamina.py            # 体力弹窗共享：区域、模板、补体力决策
 │  ├─ runner_base.py        # 同构模式公共主循环（ModeRunnerBase；点一次→每帧重问状态机）
-│  ├─ transactional_runner_base.py  # 事务型公共主循环（目标页连续两帧才提交状态；远征/竞技场这一族）
-│  ├─ arena.py              # 竞技场状态机和 Runner
-│  ├─ story.py              # 主线状态机和 Runner
-│  ├─ expedition.py         # 远征状态机和 Runner
-│  ├─ fodder.py             # 狗粮 Episode 3-7 状态机和 Runner
-│  ├─ hero_synthesis.py     # 英雄合成（三星刻印自动合成）状态机和 Runner
-│  ├─ modes.py              # 模式注册、默认状态和构建器
-│  ├─ evidence/              # 各路线视觉证据：模板、区域、阈值和页面组合
-│  └─ templates/            # 线上识别使用的局部模板
+│  ├─ transactional_runner_base.py  # 事务型公共主循环（目标页连续两帧才提交状态）
+│  ├─ template_paths.py     # 平台差异的**唯一入口**：共享图 / pc 同名图覆盖
+│  ├─ **其余「一条路线一个模块」**：arena / story / expedition / tower / fodder /
+│  │   hero_synthesis / side_story / activity_story / knights_donation / sanctuary /
+│  │   labyrinth_stone / moonlight_theater / survivor / community / shop_refresh /
+│  │   world_boss / achievement（现行名单以 modes.MODE_SPECS 为准）
+│  ├─ daily_tasks.py        # 每日连打的**编排**（不是一条路线，不占 --mode）
+│  ├─ modes.py              # 模式注册、默认状态、构建器、准入表态
+│  ├─ evidence/             # 各路线视觉证据：模板、区域、阈值和页面组合
+│  └─ templates/            # 线上识别使用的局部模板（pc/ 子目录是平台覆盖）
+├─ desktop/                 # Tk 桌面助手（**唯一交互入口**）+ 控制器与界面文案
+├─ desktop_qt/              # Qt + Fluent 预览入口（可选依赖，默认入口仍是 Tk）
+├─ tools/                   # 现状页生成、门禁检查、采图、打包、文档体检等开发工具
 ├─ tests/
 │  ├─ fixtures/             # 当前客户端完整页面回归截图
 │  └─ test_*.py             # 页面、动作、循环、超时和反例测试
@@ -105,7 +109,9 @@ auto_game_unified/
 
 ## 同构模式公共骨架
 
-`runner_base.py` 的 `ModeRunnerBase` 统一实现主线和狗粮两条同构线的公共主循环：
+`runner_base.py` 的 `ModeRunnerBase` 统一实现**同构线**的公共主循环。
+2026-11-09 核实时它覆盖 12 条：主线 `story` 与它的两个子类（支线故事 / 活动剧情）、狗粮、
+英雄合成、骑士团捐赠、圣域收菜、迷宫强化石、月光剧场、世界首领战、成就领取、社区签到。
 
 - 空跑短路、两帧稳定确认、同动作 45 秒转场等待、4 次点击上限。
 - 结论门槛（收工 / 认不出画面也要连续两帧一致）。
@@ -114,11 +120,25 @@ auto_game_unified/
 
 各模式只通过钩子注入差异：超时表、战斗移交方式（先点击再移交 / 战斗监督代点 / 停留战斗态直接移交）、战斗监控实现（`BattleSupervisor` 或自带循环）。
 
-竞技场和远征保留独立 Runner，但状态轮询统一委托 `core/supervisor.py` 的 `wait_until_target`。
+**另一族**是事务型的 `TransactionalRunnerBase`：竞技场、远征、月塔。它们的出口验收比
+`ModeRunnerBase` 更严 —— 目标页连续两帧才提交，来源/目标契约缺任一直接 raise。
+⚠️ 竞技场虽然继承它，但**保留自己的 `run()`**（循环策略与远征有 10 处实质差异），
+所以它不走基类里那道「画面冻住就不补点」的闸门。
+
+**完全自带主循环**的是两条：刷书签 `ShopRefreshRunner` 与活动小游戏 `SurvivorRunner`。
+它们各自用 `_wait_stable` / `_observe_stable(page, timeout)` 验收，不经过任何基类。
 
 ## 全局弹窗守卫
 
-`global_popups.py` 的 `Epic7GlobalPopupGuard` 在各模式轮询间隙统一处理全局弹窗，一次安装全模式共享：
+`global_popups.py` 的 `Epic7GlobalPopupGuard` 在各模式轮询间隙统一处理全局弹窗，一次安装全模式共享。
+**它早已不是四种弹窗的清单**：2026-11-09 核实时注册了 20 多类（断网、亲密度、友情点数、好友申请是
+最早的四类，之后陆续加了支线故事通知、获得奖励、领取支援物品、账号 Rank、骑士团签到 / 支援 /
+周奖励 / 成长 Rank、首领战支援奖励、段位升级奖励、战斗记录、新的每周排名、每周排名选择奖励、
+宠物礼物、变更日期、登录奖励、网页网络错误、「无法控制」剧情、轻触解锁、跳过教学……）。
+**别在这里手抄清单**——现行类别以 `_find_popup()` 里的分支为准，另有一组 PC 专属弹窗由
+`install_pc_only_popups()` 挂上去。
+
+下表只列最早那四类，**不是全集**：
 
 | 弹窗 | 识别 | 处理 |
 | --- | --- | --- |
@@ -127,7 +147,11 @@ auto_game_unified/
 | 友情点数 | 标题 + 关闭按钮 | 点击关闭，2 次未消失安全停止 |
 | 好友申请 | 标题 + 取消按钮 | 点击取消，2 次未消失安全停止 |
 
-新增全局弹窗时优先扩展守卫处理链，不在单个模式内加本地分支。体力不足弹窗是业务弹窗而非全局弹窗，由 `stamina.py` 统一决策（生命之叶补充 → 确认 → 耗尽安全停止）。
+新增全局弹窗时优先扩展守卫处理链，不在单个模式内加本地分支。
+⚠️ 有一类**不能**交给守卫抢关：与路线自己同 UI 的通知层（如英雄合成的「传送奖励」、
+骑士团捐赠的「支援成功奖励」），守卫抢先点掉会让路线的 `target_pages` 永远不成立 ——
+这类用 `ModeSpec.reward_notice_guard` 按路线关掉。
+体力不足弹窗是业务弹窗而非全局弹窗，由 `stamina.py` 统一决策（生命之叶补充 → 确认 → 耗尽安全停止）。
 
 ## 日志规范
 
@@ -236,8 +260,10 @@ auto_game_unified/
 ```text
 时间戳_原因.png
 时间戳_原因/
-├─ screen.png
-└─ evidence.json
+├─ screen.png           # 最终全屏（与外面那张同源）
+├─ source.png           # 来源页裁剪（有来源区域时才有）
+├─ target.png           # 目标页裁剪（有目标区域时才有）
+└─ evidence.json        # 动作 / 来源 / 目标 / 尝试次数 / 逐锚点分数 / 结论
 ```
 
 `evidence.json` 记录证据配置文件、模板路径、搜索区域、参考尺寸、实际分数、阈值、是否命中、中心点和页面结论。低于阈值的模板仍保留数值分数，便于区分“差一点”“区域错误”和“模板完全失效”；只有可选模板文件不存在时分数才是 `null`。`config` 字段就是 UI 改版时应优先修改的位置。
