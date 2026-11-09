@@ -19,6 +19,7 @@
 | 改状态机、加动作 | [`TRANSITION_CONTRACTS.md`](TRANSITION_CONTRACTS.md) | **契约**，改前必读 |
 | 开局停在半路，想知道能不能接上 | [`RESUME_COVERAGE.md`](RESUME_COVERAGE.md) · [`maintenance/route_finish_points.md`](maintenance/route_finish_points.md) | 长期 |
 | 跑挂了要排查 | [`TROUBLESHOOTING.md`](TROUBLESHOOTING.md) | 长期 |
+| 想知道哪些动作会花资源、靠什么拦住误点；每条路线到底有哪些实机证据 | [`SAFETY_MATRIX.md`](SAFETY_MATRIX.md) | 长期 |
 | 在 PC 客户端上跑（移植 / 放行 / 踩坑） | [`PC_TEMPLATE_MIGRATION.md`](PC_TEMPLATE_MIGRATION.md) · [`maintenance/pc_page_capture_checklist.md`](maintenance/pc_page_capture_checklist.md) | **PC 结论唯一权威** |
 | 每日任务的分组与执行顺序 | [`maintenance/daily_tasks_grouping.md`](maintenance/daily_tasks_grouping.md) | 长期 |
 | 突然冒出个想法，先记下来 / 以后想挑个活干 | [`BACKLOG.md`](BACKLOG.md) | 滚动更新 · 未评估的想法 |
@@ -42,7 +43,7 @@
 | 主题 | 仓内权威（跨机器必须知道） | 仓库外补充（本机案例，按需翻） |
 |---|---|---|
 | 现状：路线名单 / PC 放行 / 每日顺序 | [`STATUS.md`](STATUS.md)（代码生成） | — |
-| 安全：危险按钮 / 干跑默认 / 退出码 / 回家 | [`../AGENTS.md`](../AGENTS.md) · [`EXTENDING.md`](EXTENDING.md) 第 5 节 | `.workbuddy/memory/topics/safety.md` |
+| 安全：危险按钮 / 干跑默认 / 退出码 / 回家 / **哪些动作花资源、靠什么拦住误点、哪条路线有哪些实机证据** | [`../AGENTS.md`](../AGENTS.md) · [`EXTENDING.md`](EXTENDING.md) 第 5 节 · [`SAFETY_MATRIX.md`](SAFETY_MATRIX.md) | `.workbuddy/memory/topics/safety.md` |
 | 转场五段证据 / 判据唯一 / 陌生页可恢复 | [`TRANSITION_CONTRACTS.md`](TRANSITION_CONTRACTS.md) | `topics/transitions.md` · `lessons.md` |
 | 模板采集 / 判据纪律 / 锚点 / 夹具 / 反向验证 | [`TEMPLATE_CAPTURE.md`](TEMPLATE_CAPTURE.md) · [`../AGENTS.md`](../AGENTS.md) | `topics/discipline.md` · `anchors.md` · `hazards.md` · `fixtures.md` |
 | 全局弹窗（新弹窗的 10 个接触点） | [`TRANSITION_CONTRACTS.md`](TRANSITION_CONTRACTS.md) + 下方逐路线手册 | `topics/global_popups.md` |
@@ -147,6 +148,25 @@
 3. **不许写死会漂移的数字** —— 想说「现在有多少条路线」，去链 `STATUS.md`，不要抄数字。
    首页（`README.md` 与本页）有专门的门禁盯着这一条。
 
+### 门禁查不到的那一层：定期体检
+
+上面三条只管**链接、数量、索引**。文档正文里还有两类东西会悄悄过期，机器默认看不见：
+反引号里的**文件路径**（`games/epic7/xxx.py`、某张图）和**函数名**（`foo()`）。
+
+```bash
+python -m auto_game_unified.tools.audit_docs          # 全量
+python -m auto_game_unified.tools.audit_docs --only path
+```
+
+⚠️ **它是体检工具，不是门禁**，输出是「待人工判断的候选」而不是错误清单。原因：
+存量里有大量**墓碑式引用**（「`launcher.py` 已整体删除，别照着快照去改」）和
+**工作区外引用**（`.workbuddy/memory/topics/*.md`），它们都是对的。
+不做成门禁还有一层：把几百条候选做成红，人会习惯性绕过钩子，那比不查更糟。
+
+判断口径：**同一句话在教你现在怎么做 → 必须能解析到真实文件；在讲过去发生了什么 → 不用管。**
+
+
+
 ### 复审：按本次改动即时判定，提交时留痕
 
 `STATUS.md` 保证的是**结构化事实**（路线数、放行名单）。其余文档里那句话还成不成立，
@@ -205,3 +225,71 @@ CI 的 `Governance gate` 会在干净检出上再跑一遍治理门禁。
 
 > 这套东西的验收标准不是「文档写得多」，而是**漂移多久能被发现**：
 > 结构化事实 0 天、半成品 0 天、语义漂移取决于每次提交有没有认真写那条 `Doc-reviewed:`。
+
+---
+
+## 六、逐份总表：每个文档是干什么的
+
+上面几节是「按场景找入口」，这节是「按文件找定位」——**新接手的人照着这张表就能知道
+哪份该读、哪份只是存档，不用点开每份猜**。
+
+| 文档 | 类别 | 这份是干什么的（业务逻辑） |
+|---|---|---|
+| [`STATUS.md`](STATUS.md) | 事实源 | 路线名单 / PC 放行 / 每日顺序 / 素材规模。**由代码生成、不许手改**，与代码不一致会报红 |
+| [`README.md`](README.md) | 索引 | 本页。按「你现在要干什么」查该读哪份；同时是「新文档必须在这登记」的白名单 |
+| [`ARCHITECTURE.md`](ARCHITECTURE.md) | 骨架 | 系统怎么分层：窗口 I/O / 视觉证据 / 状态机 / 三族 Runner、主循环、战斗移交。回答「代码为什么这么分」 |
+| [`TRANSITION_CONTRACTS.md`](TRANSITION_CONTRACTS.md) | 契约 | 一次点击 ≠ 业务成功：来源页 → 动作 → 目标页 → 业务成功 → 失败留什么证据。**改状态机前必读** |
+| [`TEMPLATE_CAPTURE.md`](TEMPLATE_CAPTURE.md) | 契约 | 模板与夹具怎么采：紧裁、不含会变内容、反向验证、多尺度回退。**改判据前必读** |
+| [`EXTENDING.md`](EXTENDING.md) | 契约 | 新增一条路线要改哪几处、在哪登记、过哪两道准入关 |
+| [`PC_TEMPLATE_MIGRATION.md`](PC_TEMPLATE_MIGRATION.md) | 契约 | PC 客户端接入**唯一权威**：为什么抓帧只能 BitBlt、点击为什么要抢前台、PC 图放哪、逐路线凭据 |
+| [`SAFETY_MATRIX.md`](SAFETY_MATRIX.md) | 契约 | 哪些动作花资源 / 不可逆、靠什么拦住误点；每条路线到底有哪些实机证据 |
+| [`RESUME_COVERAGE.md`](RESUME_COVERAGE.md) | 契约 | 每条路线的每个环节「停在那儿能不能接着跑」，以及落点判据 |
+| [`howto/live_verification.md`](howto/live_verification.md) | 手法 | 让 agent 真的进游戏点鼠标：只读自检 → 提权 → 实跑的授权流程与话术 |
+| [`USER_GUIDE.md`](USER_GUIDE.md) | 用户 | 装、跑、干跑、实跑、退出码、通知、日志在哪。**日常只用这份** |
+| [`TROUBLESHOOTING.md`](TROUBLESHOOTING.md) | 用户 | 跑挂了怎么查：看哪几个文件、卡死怎么判断、反馈时该留什么现场 |
+| [`REFERENCE.md`](REFERENCE.md) | 存档 | 2026-11-08 之前的首页全文（逐条路线说明、命令行细节）。找老参数时翻它 |
+| [`HUMAN_AI_WORKFLOW.md`](HUMAN_AI_WORKFLOW.md) | 存档 | 人机分工的旧做法。**「默认权限」一节已作废**，现行口径在 `howto/live_verification.md` |
+| [`TODO.md`](TODO.md) | 清单 | 未完成的加固项、待验证缺口、PC 迁移矩阵。回答「还欠什么」 |
+| [`BACKLOG.md`](BACKLOG.md) | 清单 | 想法池：还没评估的功能念头。想找活干从这里挑 |
+| [`COMPETITOR_FEATURES.md`](COMPETITOR_FEATURES.md) | 参考 | 竞品有什么我们没有：可调参数、整条缺的路线，数字都来自脚本统计 |
+| [`WORLD_BOSS_DESIGN.md`](WORLD_BOSS_DESIGN.md) | 设计 | 世界首领战为什么这么打：次数、体力、跳过时机、结算判据的取舍 |
+| [`architecture/auto_game_unified.code-map.md`](architecture/auto_game_unified.code-map.md) | 骨架 | 目录职责表（哪个目录放什么），钉在某个提交上便于对照 |
+| [`superpowers/specs/2026-08-25-epic7-auto-assistant-productization-design.md`](superpowers/specs/2026-08-25-epic7-auto-assistant-productization-design.md) | 设计 | 2026-08 的产品化设计：把这套开发者工具做成普通玩家能装能用的免费工具 |
+
+### 逐路线维护手册（`maintenance/`）
+
+每份只回答三件事：**改哪里、缺口在哪、怎么验**。判据的实测依据不在这里，在代码注释里。
+
+| 手册 | 这条路线是干什么的 |
+|---|---|
+| [`story.md`](maintenance/story.md) | 主线/刷图循环，含战前「快速战斗」切换与各类结算页 |
+| [`arena.md`](maintenance/arena.md) | 竞技场：选对手、打、失败轮换、免费刷新；含每周排名的两层弹窗 |
+| [`expedition.md`](maintenance/expedition.md) | 远征：三阶段选择、战斗、公开招募 |
+| [`tower.md`](maintenance/tower.md) | 月塔：连打 25 层，每层 15 体力且**明令不补体力** |
+| [`hero_synthesis.md`](maintenance/hero_synthesis.md) | 英雄合成：逐张检查、SSS 优先保护、材料不可逆、SSS 副本走传送 |
+| [`knights_donation.md`](maintenance/knights_donation.md) | 骑士团捐赠：资源支援 + 每周任务领奖 |
+| [`sanctuary.md`](maintenance/sanctuary.md) | 圣域收菜：三行材料里把「领取奖励」点掉，「照料」亮着也点 |
+| [`labyrinth_stone.md`](maintenance/labyrinth_stone.md) | 迷宫强化石：进混乱的提雷尔城找流浪商人买石头 |
+| [`moonlight_theater.md`](maintenance/moonlight_theater.md) | 月光剧场：每周免费观览（存量），没有免费额度就花门票、**永不花金币** |
+| [`side_story.md`](maintenance/side_story.md) | 支线故事：靠发光徽记定位当前关，一次把本期打完 |
+| [`community_checkin.md`](maintenance/community_checkin.md) | 社区签到：模拟器转竖屏，签到 + 三条每日任务 + 兑换按上限兑满 |
+| [`achievement.md`](maintenance/achievement.md) | 成就领取：4 个分类**逐个进去**领完（不是看红点），两端素材都有 |
+
+⚠️ 没有手册的路线：狗粮、刷书签、活动小游戏、活动剧情、世界首领战（后者规则在设计稿里）。
+它们不是没人管，是还没人写——补的时候照上面那三件套写。
+
+### 专题方案（`maintenance/`）
+
+| 文档 | 这份是干什么的 |
+|---|---|
+| [`action_verification_plan.md`](maintenance/action_verification_plan.md) | 全局「每个动作都要有验收」的改造方案（阶段 1 已实施，3/4 待排期） |
+| [`daily_tasks_grouping.md`](maintenance/daily_tasks_grouping.md) | 界面四分组（每日/按需/赛季/活动）与整组勾选的口径 |
+| [`pc_page_capture_checklist.md`](maintenance/pc_page_capture_checklist.md) | PC 采页清单：一次把页面停到位抓完，提前算出一页会不会在 PC 上卡 |
+| [`route_extensibility_review.md`](maintenance/route_extensibility_review.md) | 新增路线的可扩展性审查（2026-09-27 **快照**，方案已落地，别照着改） |
+| [`route_finish_points.md`](maintenance/route_finish_points.md) | 每条路线的「终点」在哪，`return home` 只允许在终点衔接 |
+| [`template_dynamic_content_review.md`](maintenance/template_dynamic_content_review.md) | 模板「含会变内容」的评审工作表（**仍有 2 个未解决项**，不是过期文档） |
+
+### 决策记录（`decisions/`）
+
+一决策一文件、**只增不改**，回答「当初为什么这么定」。被后来的决定推翻时**不删原文**，
+在文末追加「已被 NNNN 取代」。编号从 0001 起连续，按编号就能看出先后。

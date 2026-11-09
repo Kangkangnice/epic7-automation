@@ -22,10 +22,11 @@
 | 节点 | 文件 | HEAD 行 |
 | --- | --- | --- |
 | 路线注册表 | `games/epic7/modes.py` | 455 `MODE_SPECS` |
-| 6 条共享主循环 | `games/epic7/runner_base.py` | 37 `ModeRunnerBase` |
-| 4 条自写循环 | `games/epic7/arena.py` | 1017 `ArenaRunner` |
-| 4 条自写循环 | `games/epic7/shop_refresh.py` | 330 `ShopRefreshRunner` |
-| 4 条自写循环 | `games/epic7/survivor.py` | 217 `SurvivorRunner` |
+| 公共主循环（12 条走这条） | `games/epic7/runner_base.py` | 37 `ModeRunnerBase` |
+| 事务型主循环（3 条：竞技场 / 远征 / 月塔） | `games/epic7/transactional_runner_base.py` | `TransactionalRunnerBase` |
+| 其中竞技场**保留自己的 run()** | `games/epic7/arena.py` | `ArenaRunner` |
+| 完全自写循环（不经任何基类） | `games/epic7/shop_refresh.py` | `ShopRefreshRunner` |
+| 完全自写循环（不经任何基类） | `games/epic7/survivor.py` | `SurvivorRunner` |
 | 共用机制 | `games/epic7/navigation.py` | 141 `NavigationTemplates`（导航链的**执行器**） |
 | 共用机制 | `games/epic7/navigation_plan.py` | 46 `NavigationPlan`（导航链的**声明式数据**） |
 | 共用机制 | `games/epic7/global_popups.py` | 16 `NetworkReconnectTemplates` |
@@ -35,8 +36,12 @@
 | 视觉判据层 | `games/epic7/evidence/common.py` | 60 `EvidenceProfile` |
 | 视觉判据层 | `games/epic7/evidence/knights_donation.py` | 271 `build_knights_donation_evidence` |
 
-⚠️ 两个**还没提交**、因此没被钉进 HEAD 的文件（图里仍以文字提及，但表里不列行号）：
-`games/epic7/home_return.py`（回家 v2）、`games/epic7/evidence/labyrinth_stone.py`（迷宫强化石判据）。
+⚠️ 2026-11-09 核对：`games/epic7/home_return.py` 与 `games/epic7/evidence/labyrinth_stone.py`
+**早已提交入库**（原文写「还没提交」是当时的快照），所以它们也该有行号 —— 本表暂留类名，
+下次重钉这张图时一并补上。
+
+⚠️ 「HEAD 行」会随代码漂：本表钉的是上面那个提交，**行号只对那个版本有效**。
+要定位时以**类名/函数名**为准（全仓唯一），行号只作参考。
 
 ## 核心引擎 core/（与具体游戏无关）
 
