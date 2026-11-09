@@ -328,10 +328,11 @@ def test_runs_each_selected_mode_once_in_order():
         "labyrinth_stone",
         "arena",
         "moonlight_theater",
+        "achievement",
     ]
-    # 前 7 条正常完成；第 8 条「成就领取」只有 PC 素材，模拟器后端下按设计跳过 ——
-    # 用 ``not_supported``（``ok`` 为 True），不是失败。
-    assert [o.status for o in report.outcomes] == ["completed"] * 7 + ["not_supported"]
+    # 2026-11-09 起「成就领取」两边都能跑：模拟器图补齐后模拟器也会真的派发它，
+    # 不再记 ``not_supported``。
+    assert [o.status for o in report.outcomes] == ["completed"] * 8
     assert report.any_failed is False
     assert report.aborted_reason is None
 
@@ -372,6 +373,7 @@ def test_cycles_are_passed_from_the_daily_list():
         # 竞技场默认 10 次（用户 2026-10-18 拍板，原来是 1）。
         ("arena", 10),
         ("moonlight_theater", 99),
+        ("achievement", 1),
     ]
 
 
@@ -401,6 +403,7 @@ def test_cycles_override_replaces_only_the_named_modes():
         ("labyrinth_stone", 1),
         ("arena", 5),
         ("moonlight_theater", 99),
+        ("achievement", 1),
     ]
 
 
@@ -436,8 +439,7 @@ def test_a_failing_task_is_skipped_and_the_rest_still_run():
 
     report = run_daily_tasks(selected=None, dry_run=True, run_mode=run_mode)
 
-    # ⚠️ 「成就领取」不会出现在 ``calls`` 里：它只有 PC 素材，模拟器后端下**在
-    # 派发之前**就被跳过（记一条 ``not_supported``），``run_mode`` 根本没被调用。
+    # 2026-11-09 起「成就领取」也会被派发（模拟器图已补齐）。
     assert calls == [
         "world_boss",
         "knights_donation",
@@ -446,6 +448,7 @@ def test_a_failing_task_is_skipped_and_the_rest_still_run():
         "labyrinth_stone",
         "arena",
         "moonlight_theater",
+        "achievement",
     ]
     assert [o.status for o in report.outcomes] == [
         "completed",
@@ -455,7 +458,7 @@ def test_a_failing_task_is_skipped_and_the_rest_still_run():
         "completed",
         "completed",
         "completed",
-        "not_supported",
+        "completed",
     ]
     assert report.any_failed is True
     assert "模板缺失" in report.outcomes[1].detail

@@ -10,6 +10,7 @@ from auto_game_unified.games.epic7.global_popups import (
     find_arena_rank_reward_close,
     find_battle_record_close,
     find_weekly_rank_start_close,
+    find_weekly_rank_select_action,
     find_friend_request_cancel,
     find_friendship_points_popup_close,
     find_gift_support_close,
@@ -32,6 +33,7 @@ from auto_game_unified.games.epic7.global_popups import (
     load_arena_rank_reward_templates,
     load_battle_record_templates,
     load_weekly_rank_start_templates,
+    load_weekly_rank_select_templates,
     load_friend_request_templates,
     load_friendship_points_templates,
     load_gift_support_templates,
@@ -2275,3 +2277,118 @@ def test_guard_dismisses_weekly_rank_start_popup():
     assert 900 <= clicks[0][0] <= 1020
     assert 890 <= clicks[0][1] <= 970
     assert any("动作=close-weekly-rank-start" in line for line in logs)
+
+
+# ── 「每周排名选择奖励」弹窗（2026-11-09，第 25 类）────────────────────────
+# 现场：11:41 模拟器每日任务，紧接在上一类通知之后弹出；它点一下关不掉，
+# 必须先选一个奖励再领。守卫按「领取按钮亮没亮」决定这一步点哪。
+# 选哪个由用户 2026-11-09 拍板：默认钻石（左侧 800 天空石）。
+
+
+def _lit_claim_confirm(frame: np.ndarray) -> np.ndarray:
+    """造一帧「已经选中钻石」：把领取按钮那行灰字整体提亮。
+
+    只抬亮度、不动形状 —— 真机上按钮可用时就是文字转白，形状不变。
+    """
+    lit = frame.astype(np.int16).copy()
+    lit[831:869, 853:1066] = np.clip(lit[831:869, 853:1066] + 70, 0, 255)
+    return lit.astype(np.uint8)
+
+
+def test_weekly_rank_select_popup_points_at_the_diamond_card_first():
+    popup = _arena_screen("weekly_rank_select_popup.png")
+    templates = load_weekly_rank_select_templates(NAVIGATION_TEMPLATES)
+
+    choice = find_weekly_rank_select_action(popup, templates)
+
+    assert choice is not None
+    match, action = choice
+    assert action == "select-weekly-rank-diamond"
+    # 左侧天空石卡片整块是 (773,575,127,127)，中心 (836,638)。
+    assert 820 <= match.center[0] <= 850, match.center
+    assert 620 <= match.center[1] <= 655, match.center
+
+
+def test_weekly_rank_select_popup_claims_only_after_the_button_lights_up():
+    popup = _arena_screen("weekly_rank_select_popup.png")
+    lit = _lit_claim_confirm(popup)
+    templates = load_weekly_rank_select_templates(NAVIGATION_TEMPLATES)
+
+    before = find_weekly_rank_select_action(popup, templates)
+    after = find_weekly_rank_select_action(lit, templates)
+
+    assert before is not None and before[1] == "select-weekly-rank-diamond"
+    assert after is not None
+    match, action = after
+    assert action == "claim-weekly-rank-select"
+    # 「领取选择的奖励」文字中心约 (960,850)。
+    assert 900 <= match.center[0] <= 1020, match.center
+    assert 830 <= match.center[1] <= 875, match.center
+
+
+def test_weekly_rank_select_popup_needs_all_three_anchors():
+    """标题、卡片、领取按钮缺一不可：缺了就宁可不点，也不能猜一个坐标去领奖。"""
+    popup = _arena_screen("weekly_rank_select_popup.png")
+    templates = load_weekly_rank_select_templates(NAVIGATION_TEMPLATES)
+
+    without_title = popup.copy()
+    without_title[275:385, 740:1200] = 0
+    without_card = popup.copy()
+    without_card[535:735, 735:945] = 0
+    without_confirm = popup.copy()
+    without_confirm[800:900, 820:1120] = 0
+
+    assert find_weekly_rank_select_action(without_title, templates) is None
+    assert find_weekly_rank_select_action(without_card, templates) is None
+    assert find_weekly_rank_select_action(without_confirm, templates) is None
+
+
+def test_weekly_rank_select_popup_rejects_other_arena_pages():
+    """竞技场别的弹窗与普通页都不能命中，否则守卫会在那些页面上乱点。"""
+    templates = load_weekly_rank_select_templates(NAVIGATION_TEMPLATES)
+
+    for frame in (
+        _arena_screen("selected.png"),
+        _global_screen("battle_record_live_20261030.png"),
+    ):
+        assert find_weekly_rank_select_action(frame, templates) is None
+
+
+def test_guard_selects_the_diamond_then_claims_the_reward():
+    """端到端：第一帧点钻石卡片，选中后下一帧点领取，弹窗消失后放行。"""
+    popup = _arena_screen("weekly_rank_select_popup.png")
+    lit = _lit_claim_confirm(popup)
+    recovered = _arena_screen("selected.png")
+    screens = iter([popup, popup, lit, recovered])
+    clicks = []
+    logs = []
+    clock = FakeClock()
+    runtime = Runtime(
+        lambda: next(screens),
+        clicks.append,
+        monotonic=clock.now,
+        emit=logs.append,
+    )
+    runtime.set_capture_guard(
+        Epic7GlobalPopupGuard(
+            load_network_reconnect_templates(TEMPLATES),
+            weekly_rank_select_templates=load_weekly_rank_select_templates(
+                NAVIGATION_TEMPLATES
+            ),
+            sleep=clock.sleep,
+            now=clock.now,
+            poll_seconds=0.1,
+            retry_interval_seconds=0.0,
+        )
+    )
+
+    received = runtime.capture()
+
+    assert np.array_equal(received, recovered)
+    assert len(clicks) == 2, clicks
+    assert 820 <= clicks[0][0] <= 850, clicks
+    assert 620 <= clicks[0][1] <= 655, clicks
+    assert 900 <= clicks[1][0] <= 1020, clicks
+    assert 830 <= clicks[1][1] <= 875, clicks
+    assert any("动作=select-weekly-rank-diamond" in line for line in logs)
+    assert any("动作=claim-weekly-rank-select" in line for line in logs)

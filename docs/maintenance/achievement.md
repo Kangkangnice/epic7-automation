@@ -1,19 +1,22 @@
-# 成就领取视觉维护（PC 端首条路线）
+# 成就领取视觉维护（首个 PC 端立项的路线，2026-11-09 起双平台）
 
 入口：`games/epic7/achievement.py`（状态机 + Runner）·
 `games/epic7/evidence/achievement.py`（判据、区域、阈值、角标）
-模板：`games/epic7/templates/achievement/pc/`（**只有 PC 素材**）
+模板：`games/epic7/templates/achievement/`（模拟器）· `.../achievement/pc/`（PC 客户端，同名覆盖）
 
-## 为什么这条路线只有 PC 图
+## 为什么最初只有 PC 图（该状态已结束）
 
 用户 2026-11-08 的原话：「逻辑业务逻辑是通用在什么地方点什么，但它这个图片素材呢，
 你可以先先放到 PC 端，然后呢，因为这个模拟器到目前还用不到嘛，可能以后模拟器需要用的
 时候呢，我再去做测试，然后如果测试发现，有些不通用的，我再给模拟器增加一些图片」。
 
-所以：业务状态机**没有任何平台分支**；模板只放 `pc/`。模拟器跑这条会
-`FileNotFoundError`（构造期就炸），这是**故意的** —— 带着半套判据跑到真机上
-比开跑前报错危险得多。模拟器要启用时，把 `pc/` 里六张同名图放到
-`templates/achievement/` 下、按模拟器实测重定阈值即可。
+所以业务状态机**没有任何平台分支**，最初模板只放 `pc/`，模拟器跑这条会在构造期
+`FileNotFoundError` —— 那是**故意的**：带着半套判据跑到真机上比开跑前报错危险得多。
+
+**2026-11-09 模拟器侧补齐**（用户要求「把开关打开测试，有问题就补模拟器图」）：
+共享层 5 张页面图 + 导航入口图都按模拟器现场帧重裁，`achievement` 已从
+`modes.PC_ONLY_ROUTES` 移出，两个后端都真的会跑。实测两轮：有奖那轮
+「领取 → 关闭 → 逐个分类进入 → 回大厅」约 21 秒，无奖那轮约 27 秒收工，退出码 0。
 
 ## 业务闭环
 
@@ -144,7 +147,7 @@ python auto_game_unified/runtime_logs/_ach_collect.py
   否则会被 `_frame_key()` 同帧幂等吃掉）
 - 角标：现场帧读出分类 2/3/4 三颗 / 弹窗帧没有角标
 - 颜色：亮态 ≥0.20、灰态 ≤0.02，阈值两侧余量各 >0.09
-- **平台**：模拟器缺图必须在构造期 `FileNotFoundError`
+- **平台**：两个平台各自装配得起来，且共享层与 `pc/` 用的不是同一张图（防有人把 PC 图放回共享层）
 
 ## 导航（2026-11-08 当天补完）
 
@@ -174,22 +177,25 @@ python auto_game_unified/runtime_logs/_ach_collect.py
 ⚠️ 奖励/升级弹窗开着时导航器也会报「成就页」（半透明遮罩透出标题，实测 0.9996~0.9999）。
 这对导航是**好事**：进成就那一步遇到弹窗也能验收通过。路线内部由状态机自己先判弹窗。
 
-### 共享层的那两张「副本图」
+### 共享层与 pc/ 的分工（2026-11-09 改）
 
-`navigation/achievement_entry.png` 与 `achievement/page_title.png`（**不在 pc/ 下**）
-都是 PC 图的副本。原因是 `build_navigation_templates` 是**所有路线共享的装配**——
-缺一张就整个导航器起不来，不能让一条「只有 PC 素材」的路线把模拟器那批路线一起搞挂（当时是 15 条，现行可用条数见 [STATUS.md](../STATUS.md)）。
+一开始 `navigation/achievement_entry.png` 与 `achievement/page_title.png`（不在 `pc/` 下）
+都是 **PC 图的副本** —— 因为 `build_navigation_templates` 是所有路线共享的装配，
+缺一张整个导航器就起不来，不能让一条「只有 PC 素材」的路线把别的路线一起搞挂。
 
-模拟器真要跑成就时，会先在 `build_achievement_templates` 缺另外 5 张图那里
-就 fail-closed（**那才是正确的失败点**），走不到用这张图去匹配快捷菜单。
+现在反过来：**共享层放模拟器图，PC 用 `pc/` 下的同名图**。这才是 `template_paths.py`
+的默认约定（共享图是模拟器口径，`pc/` 是覆盖）。PC 端那两张图一直在 `navigation/pc/`
+与 `achievement/pc/` 里，所以这次替换对 PC 零影响。
+
+⚠️ 别把 PC 图放回共享层：`test_achievement.py::test_the_two_platforms_do_not_share_the_same_pictures`
+会直接红（模拟器版「成就」标题 124x60、PC 版 100x52）。
 
 ### 和其他路线串跑
 
 - `needs_navigation=True` ⇒ `standalone_only` 自动变 False，界面可以和别的路线一起勾；
 - 收尾走 `ModeRunnerBase` 的 `_close_out()` ⇒ **正常跑完会自己回大厅**，下一段接得上；
 - 已进 `DAILY_TASKS` 默认清单（排在最后：有就领、没有就走，几秒收工）；
-- ⚠️ 模拟器后端下整条会被**跳过**（`PC_ONLY_ROUTES`），汇总里记
-  `not_supported`（显示成「—(当前后端无素材)」），**不是失败**。
+- 2026-11-09 起两个后端都会真的跑它，汇总里不再记 `not_supported`。
 
 ### 开局接力
 
@@ -199,6 +205,14 @@ python auto_game_unified/runtime_logs/_ach_collect.py
 
 ## 还没做的
 
-**模拟器素材**。这条路线只有 `pc/` 下的六张图 + 上面两张副本。模拟器要用时：
-把六张同名图放进 `templates/achievement/`（去掉 `pc/` 那层），按模拟器实测重定阈值，
-再把 `achievement` 从 `modes.PC_ONLY_ROUTES` 里移出去。
+**模拟器侧还差两张图没有真机正例**：`effect_upgrade`（「持续效果上升」金色按钮）与
+`popup_close_effect`（效果升级弹窗的关闭点）。这两张目前是 PC 图暂放在共享层 ——
+不是偷懒，是**业务条件没凑齐**：2026-11-09 那台号声望 5,615/6,000，没到档位，
+页面上根本不出现那颗按钮，采不到正例。
+
+影响可控：`effect_upgrade` 是「出现才点」的可选动作，当前在模拟器上得 0.4562（阈 0.80）
+⇒ 不命中 ⇒ 只是少领一次效果升级，主流程（领取 / 切分类 / 收工）不受影响。
+等哪天声望满档、按钮真的出现，用同一套探针重裁一次即可，判据一行不用改。
+
+⚠️ 顺带记一条：判「有没有可领」用的是绿色占比（亮 0.248 / 灰 0.0000），与模板无关，
+所以「全部领取」亮没亮**不受这两张缺图影响**。

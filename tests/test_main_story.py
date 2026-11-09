@@ -83,6 +83,9 @@ class MainStoryTests(unittest.TestCase):
                 battle_record_templates = object()
                 # 「新的每周排名开始！」（2026-11-09 接，第 24 类）。
                 weekly_rank_start_templates = object()
+                # 「每周排名选择奖励」（2026-11-09 接，第 25 类）：
+                # 紧跟在上一类之后，要选奖励再领取，点一下关不掉。
+                weekly_rank_select_templates = object()
                 # 「骑士团成长Rank提升」弹窗（2026-10-30 接，第 13 个）。
                 knights_growth_rank_templates = object()
                 # 「支线故事通知」弹窗（2026-11-01 接，第 14 个）。
@@ -247,6 +250,14 @@ class MainStoryTests(unittest.TestCase):
                         )
                     )
                     stack.enter_context(
+                        # 「每周排名选择奖励」：接在通知层之后，要选钻石再领取。
+                        patch.object(
+                            main_module,
+                            "load_weekly_rank_select_templates",
+                            return_value=weekly_rank_select_templates,
+                        )
+                    )
+                    stack.enter_context(
                         # 「骑士团成长Rank提升」弹窗：只在骑士团成长等级提升时出现。
                         # 这一组沿用历史的 patch.multiple（合成一个上下文管理器）；
                         # 外层已用 ExitStack 拍平，不必再靠合并来省嵌套层数。
@@ -335,6 +346,7 @@ class MainStoryTests(unittest.TestCase):
                     arena_rank_reward_templates=arena_rank_reward_templates,
                     battle_record_templates=battle_record_templates,
                     weekly_rank_start_templates=weekly_rank_start_templates,
+                    weekly_rank_select_templates=weekly_rank_select_templates,
                     knights_growth_rank_templates=knights_growth_rank_templates,
                     side_story_notice_templates=side_story_notice_templates,
                     reward_notice_templates=reward_notice_templates,

@@ -53,6 +53,7 @@ from auto_game_unified.games.epic7.global_popups import (
     load_arena_rank_reward_templates,
     load_battle_record_templates,
     load_weekly_rank_start_templates,
+    load_weekly_rank_select_templates,
     load_friend_request_templates,
     load_friendship_points_templates,
     load_gift_claim_templates,
@@ -542,6 +543,12 @@ def run_mode(
                 # ⚠️ 2026-11-09 08:52 那次竞技场 ✗ 就是它没登记：守卫认不出 ⇒
                 # 导航只等 106 秒后报「竞技场模式选择 → arena_ready 失败」。
                 weekly_rank_start_templates=load_weekly_rank_start_templates(
+                    template_root / "navigation"
+                ),
+                # 「每周排名选择奖励」：紧跟在上面那道通知之后，要选一个奖励再领取。
+                # ⚠️ 它点一下关不掉 —— 守卫按「领取按钮亮没亮」决定先点钻石还是点领取；
+                # 选哪个奖励是用户 2026-11-09 拍板的（默认钻石，即左侧 800 天空石）。
+                weekly_rank_select_templates=load_weekly_rank_select_templates(
                     template_root / "navigation"
                 ),
                 # 「骑士团成长Rank提升」弹窗：只在骑士团成长等级提升时出现（低频），

@@ -163,6 +163,37 @@ class WeeklyRankStartTemplates:
 
 
 @dataclass(frozen=True)
+class WeeklyRankSelectTemplates:
+    """「每周排名选择奖励」弹窗（每周结算后二选一：天空石 / 神秘奖牌）。
+
+    2026-11-09 11:41 模拟器每日任务：竞技场在「模式选择 → 竞技场」这一段被它挡住。
+    它与第 24 类「新的每周排名开始！」是**前后脚的两道通知**：先出通知层，
+    关掉后再出这一层让你选奖励。11:41 那轮已经关掉通知层，卡在这一层
+    ⇒ 画面静止仍认不出 ⇒ 30 秒后报「导航转场 竞技场模式选择 → arena_ready 失败」。
+
+    这一层与其它弹窗的根本区别：**点一下关不掉**。必须先选中一个奖励，
+    再点「领取选择的奖励」。所以它不返回固定点击点，而是「当前该点哪一个」：
+
+    - 领取按钮**文字还是灰的** ⇒ 还没选中 ⇒ 点 ``sky_stone``
+      （用户 2026-11-09 拍板：默认选钻石，即左侧 800 天空石）。
+    - 领取按钮**文字变白** ⇒ 已选中 ⇒ 点 ``confirm`` 领取。
+
+    ``title`` = 排他锚点（紧裁「每周排名选择奖励」白字 366x52；真帧 1.0000，
+    442 张夹具在同一 ROI 口径下最高 0.5267）；``sky_stone`` = 左侧天空石卡片整块
+    127x127（真帧 1.0000，反例最高 0.7357）；``confirm`` = 底部按钮文字 213x38
+    （真帧 1.0000，反例最高 0.3730）。
+
+    ⚠️ 三张图都裁自**模拟器**现场帧。PC 端会压低文字类锚点（见
+    ``PC_TEMPLATE_MIGRATION.md``），真要在 PC 上跑这条时，先量一次分数再决定是否补
+    ``navigation/pc/`` 同名图。
+    """
+
+    title: np.ndarray
+    sky_stone: np.ndarray
+    confirm: np.ndarray
+
+
+@dataclass(frozen=True)
 class KnightsGrowthRankTemplates:
     """「骑士团成长Rank提升」弹窗（标题 + 点击关闭，与骑士团那四个同形）。
 
@@ -434,6 +465,21 @@ _BATTLE_RECORD_THRESHOLD = 0.88
 _WEEKLY_RANK_START_TITLE_REGION = (740, 180, 500, 120)
 _WEEKLY_RANK_START_CLOSE_REGION = (820, 850, 340, 130)
 _WEEKLY_RANK_START_THRESHOLD = 0.88
+# 「每周排名选择奖励」弹窗（2026-11-09 立，第 25 类）。
+# 现场：11:41 模拟器每日任务，紧跟在上一类通知之后；标题在 y ~307、两张卡片在
+# y 575~702、领取按钮文字在 y ~837。三块 ROI 都按这一层自己定。
+_WEEKLY_RANK_SELECT_TITLE_REGION = (740, 275, 460, 110)
+_WEEKLY_RANK_SELECT_CARD_REGION = (735, 535, 210, 200)
+_WEEKLY_RANK_SELECT_CONFIRM_REGION = (820, 800, 300, 100)
+# 亮度判据的区域：正好框住「领取选择的奖励」这六个字（不掺按钮底色）。
+_WEEKLY_RANK_SELECT_CONFIRM_TEXT_REGION = (853, 831, 213, 38)
+_WEEKLY_RANK_SELECT_THRESHOLD = 0.88
+# 未选中时文字是灰的：2026-11-09 11:41 现场帧实测该区域 p99 亮度 153、
+# 白像素占比 0.0000；选中后文字转白。阈值取 0.01 = 「只要出现成片白字就算亮」。
+# ⚠️ 手上没有「已选中」的真机帧，这条是灰态实测 + 亮态推断；真机跑通后按实测值订正。
+_WEEKLY_RANK_SELECT_CONFIRM_LIT_RATIO = 0.01
+_WEEKLY_RANK_SELECT_LUMA = 170
+_WEEKLY_RANK_SELECT_SPREAD = 60
 # 「骑士团成长Rank提升」弹窗（2026-10-30 立，骑士团那一族的第 5 个）。
 #
 # 现场：19:48 世界首领战从大厅打开快捷菜单 → 点「骑士团」→ 弹出这一层盖住骑士团主页
@@ -638,6 +684,21 @@ def load_weekly_rank_start_templates(
     return WeeklyRankStartTemplates(
         title=load_template(str(template_dir / "weekly_rank_start_title.png")),
         close=load_template(str(template_dir / "arena_rank_reward_close.png")),
+    )
+
+
+def load_weekly_rank_select_templates(
+    template_dir: Path,
+) -> WeeklyRankSelectTemplates:
+    """读「每周排名选择奖励」弹窗的三个锚点（``templates/navigation`` 下）。
+
+    三张都是本层专用，缺一张就开跑前抛 —— 尤其 ``sky_stone`` 是「点哪个奖励」的
+    唯一依据，缺了不能退回写死坐标，那会点错奖励且一周只能领一次。
+    """
+    return WeeklyRankSelectTemplates(
+        title=load_template(str(template_dir / "weekly_rank_select_title.png")),
+        sky_stone=load_template(str(template_dir / "weekly_rank_select_sky_stone.png")),
+        confirm=load_template(str(template_dir / "weekly_rank_select_confirm.png")),
     )
 
 
@@ -1391,6 +1452,70 @@ def find_weekly_rank_start_close(
     return Match(close.center, min(title.score, close.score))
 
 
+def _weekly_rank_select_confirm_lit(screen: np.ndarray) -> bool:
+    """「领取选择的奖励」按钮文字是否已经变白（等价于「已经选中了某个奖励」）。
+
+    只看这一小块文字区域的白像素占比。未选中时文字是灰的：2026-11-09 11:41
+    现场帧实测 p99 亮度只有 153、白像素占比 0.0000；选中后文字转白，占比会成片出现。
+    """
+    x, y, w, h = _WEEKLY_RANK_SELECT_CONFIRM_TEXT_REGION
+    scale_x = screen.shape[1] / _REFERENCE_SIZE[0]
+    scale_y = screen.shape[0] / _REFERENCE_SIZE[1]
+    if abs(scale_x - scale_y) > 0.02:
+        raise RuntimeError("画面宽高比与模板基准不一致")
+    x, y = round(x * scale_x), round(y * scale_y)
+    w, h = round(w * scale_x), round(h * scale_y)
+    patch = screen[y : y + h, x : x + w].astype(np.int16)
+    luma = patch.mean(axis=2)
+    spread = patch.max(axis=2) - patch.min(axis=2)
+    lit = (luma > _WEEKLY_RANK_SELECT_LUMA) & (spread < _WEEKLY_RANK_SELECT_SPREAD)
+    return float(lit.mean()) > _WEEKLY_RANK_SELECT_CONFIRM_LIT_RATIO
+
+
+def find_weekly_rank_select_action(
+    screen: np.ndarray,
+    templates: WeeklyRankSelectTemplates,
+) -> tuple[Match, str] | None:
+    """认「每周排名选择奖励」弹窗，返回**这一次该点哪里**和动作名。
+
+    这层弹窗要两次点击才能过：先选钻石，再点领取。守卫每轮都会重新判画面，
+    所以这里靠「领取按钮亮没亮」决定这一步点哪，不需要跨帧记忆，也不写死坐标：
+
+    - 按钮文字还灰 ⇒ 返回天空石卡片中心，动作 ``select-weekly-rank-diamond``；
+    - 按钮文字已白 ⇒ 返回领取按钮中心，动作 ``claim-weekly-rank-select``。
+    """
+    title = find_template(
+        screen,
+        templates.title,
+        _WEEKLY_RANK_SELECT_THRESHOLD,
+        region=_WEEKLY_RANK_SELECT_TITLE_REGION,
+        reference_size=_REFERENCE_SIZE,
+    )
+    if title is None:
+        return None
+    confirm = find_template(
+        screen,
+        templates.confirm,
+        _WEEKLY_RANK_SELECT_THRESHOLD,
+        region=_WEEKLY_RANK_SELECT_CONFIRM_REGION,
+        reference_size=_REFERENCE_SIZE,
+    )
+    if confirm is None:
+        return None
+    if _weekly_rank_select_confirm_lit(screen):
+        return Match(confirm.center, min(title.score, confirm.score)), "claim-weekly-rank-select"
+    stone = find_template(
+        screen,
+        templates.sky_stone,
+        _WEEKLY_RANK_SELECT_THRESHOLD,
+        region=_WEEKLY_RANK_SELECT_CARD_REGION,
+        reference_size=_REFERENCE_SIZE,
+    )
+    if stone is None:
+        return None
+    return Match(stone.center, min(title.score, stone.score)), "select-weekly-rank-diamond"
+
+
 def find_web_network_error_close(
     screen: np.ndarray,
     templates: WebNetworkErrorTemplates,
@@ -1482,6 +1607,7 @@ class Epic7GlobalPopupGuard:
         arena_rank_reward_templates: ArenaRankRewardTemplates | None = None,
         battle_record_templates: BattleRecordTemplates | None = None,
         weekly_rank_start_templates: WeeklyRankStartTemplates | None = None,
+        weekly_rank_select_templates: WeeklyRankSelectTemplates | None = None,
         knights_growth_rank_templates: KnightsGrowthRankTemplates | None = None,
         pet_gift_templates: PetGiftTemplates | None = None,
         web_network_error_templates: WebNetworkErrorTemplates | None = None,
@@ -1515,6 +1641,7 @@ class Epic7GlobalPopupGuard:
         self.arena_rank_reward_templates = arena_rank_reward_templates
         self.battle_record_templates = battle_record_templates
         self.weekly_rank_start_templates = weekly_rank_start_templates
+        self.weekly_rank_select_templates = weekly_rank_select_templates
         self.knights_growth_rank_templates = knights_growth_rank_templates
         self.pet_gift_templates = pet_gift_templates
         self.web_network_error_templates = web_network_error_templates
@@ -1800,6 +1927,19 @@ class Epic7GlobalPopupGuard:
                     "close-weekly-rank-start",
                     "weekly_rank_start_failed",
                     f"新的每周排名弹窗点击{_MAX_POPUP_CLICKS}次后仍未消失",
+                )
+        if self.weekly_rank_select_templates is not None:
+            choice = find_weekly_rank_select_action(
+                screen, self.weekly_rank_select_templates
+            )
+            if choice is not None:
+                match, action = choice
+                return (
+                    match,
+                    "weekly_rank_select",
+                    action,
+                    "weekly_rank_select_failed",
+                    f"每周排名选择奖励弹窗点击{_MAX_POPUP_CLICKS}次后仍未消失",
                 )
         if self.knights_growth_rank_templates is not None:
             match = find_knights_growth_rank_close(
