@@ -32,7 +32,7 @@
   - 能不能复用现有主线 `story` 的导航、队伍和战斗流程，不另起一套。
 - **翻资料**：新增路线流程 [EXTENDING.md](EXTENDING.md)、
   主线手册 [maintenance/story.md](maintenance/story.md)、
-  分组口径 [maintenance/daily_tasks_grouping.md](maintenance/daily_tasks_grouping.md)。
+  分组口径 [EXTENDING.md](EXTENDING.md)「四组的分界」那段。
 
 ## 2. 复查文档治理的实际效果
 

@@ -75,7 +75,7 @@ DOC_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("games/epic7/templates/", ("docs/TEMPLATE_CAPTURE.md", "docs/STATUS.md")),
     ("games/epic7/evidence/", ("docs/STATUS.md", "docs/TRANSITION_CONTRACTS.md")),
     ("games/epic7/modes.py", ("docs/STATUS.md", "docs/EXTENDING.md")),
-    ("games/epic7/daily_tasks.py", ("docs/STATUS.md", "docs/maintenance/daily_tasks_grouping.md")),
+    ("games/epic7/daily_tasks.py", ("docs/STATUS.md", "docs/EXTENDING.md")),
     ("games/epic7/navigation.py", ("docs/STATUS.md", "docs/TRANSITION_CONTRACTS.md")),
     ("games/epic7/hero_synthesis.py", ("docs/maintenance/hero_synthesis.md",)),
     ("games/epic7/arena.py", ("docs/maintenance/arena.md",)),
