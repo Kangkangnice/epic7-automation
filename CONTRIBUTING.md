@@ -91,7 +91,8 @@ python auto_game_unified/tools/check.py --install-hook
     于是可能出现「变更记录说做了 5 件事、仓库里只落地 1 件」。
   - 决策编号一律走 `python -m auto_game_unified.tools.new_decision`，不要手取号。
   - 提交信息里若本次改动命中了复审规则，要加一行 `Doc-reviewed:`（钩子会提示清单）。
-- **默认不跑全量**（2026-10-25 用户拍板）：`--full` 只在 CI、发布前或明确要兜底时用。
+- **默认不跑全量**（2026-10-25 用户拍板）：`--full` 只在 PR 合并、发布前或明确要兜底时用；
+  CI 的全量也只在这些环节跑，平时 push 不再重复一遍（见下面「日常怎么改代码」）。
 - 静态检查（ruff + mypy）每次都跑，几秒钟；没装会大声跳过，装了就必须过。
   规则范围在 `pyproject.toml`，mypy 目前**只覆盖 `core/` 与导航链数据模块**。
   2026-09-30 上线第一次跑就抓到 `core/window.py` 里一个真 bug
@@ -177,6 +178,36 @@ fix(epic7): 战斗菜单判页按「哪个标签被选中」分三页 —— 修
 feat(desktop): 每日任务面板三分组 + 批量勾选
 docs(chore): 竞技场实跑记录更新；README 与手册同步
 ```
+
+## 日常怎么改代码（必须走 PR）
+
+`main` 受保护，**不能直接 push**。一次改动走这四步：
+
+```powershell
+git checkout -b fix/arena-team-page
+# 改代码；提交时钩子会自动跑定向测试，不用手工再跑一遍
+git add -- games/epic7/arena.py      # 精确加文件，别用 git add -A
+git commit -m "fix(arena): 队伍页误判讨伐准备页"
+git push -u origin HEAD
+gh pr create --base main --fill
+# 等 CI 的 pytest 变绿（PR 会跑一次全量，约 17 分钟）
+gh pr merge --squash
+```
+
+三层检查各自负责什么：
+
+| 什么时候 | 跑什么 | 谁在跑 |
+|---|---|---|
+| 每次 `git commit` | 按改动范围的定向测试（几秒~2 分钟） | 本机提交钩子 |
+| 每次 `git push`（含功能分支） | 编译、静态检查、文档治理门禁 | CI，几分钟 |
+| PR 合进 `main` 前 | **全量测试** | CI，约 17 分钟 |
+| 发版打 `v*` tag / 手动触发 / 每周一 | 全量测试（兜底） | CI |
+
+⚠️ 单人仓库的「强审」= 必须开 PR + CI 必绿 + 禁止直推 / 强推 / 删分支 +
+所有 review 对话必须解决。审批人数目前是 **0**：GitHub 不允许 PR 作者批准自己的 PR，
+设成 1 会把你自己锁死。等有第二个账号或协作者，再把它调成 1。
+
+⚠️ 改共享模块时本机钩子只跑定向；别拆成好几次提交各跑一遍，攒一起提交。
 
 ## 提交 PR 前自检
 
