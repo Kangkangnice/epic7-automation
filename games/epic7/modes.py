@@ -205,7 +205,7 @@ class ModeSpec:
     # 业务模式」的路线才设成 0 —— 目前**只有** ``shop_refresh``：0 次 = 照常进商店、
     # 从上到下扫一遍、把想要的买掉，但**一次都不付费刷新**（秘密商店自己会随时间自动刷新）。
     # 各入口的「次数必须为正」校验一律以本字段为准
-    # （``desktop/app.py`` / ``desktop/worker.py`` / ``main.py`` / ``shop_refresh.py``）。
+    # （``desktop/worker.py`` / ``main.py`` / ``shop_refresh.py``）。
     min_cycles: int = 1
     needs_navigation: bool = True
     resume_probe: Optional[ResumeProbe] = None

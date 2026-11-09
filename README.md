@@ -8,7 +8,7 @@
 
 <div>
   <img alt="platform" src="https://img.shields.io/badge/platform-Windows-blueviolet">
-  <img alt="python" src="https://img.shields.io/badge/python-3.10%2B-blue">
+  <img alt="python" src="https://img.shields.io/badge/python-3.11%2B-blue">
   <img alt="license" src="https://img.shields.io/badge/license-MIT-green">
   <img alt="routes" src="https://img.shields.io/badge/routes-17-orange">
 </div>
@@ -59,7 +59,7 @@
 
 ## ⚡ 快速开始
 
-环境：Windows · Python 3.10+ · 游戏语言**简体中文** · 雷电模拟器或 PC 客户端 · 基准画布 `1982 × 1132`。
+环境：Windows · Python 3.11+ · 游戏语言**简体中文** · 雷电模拟器或 PC 客户端 · 基准画布 `1982 × 1132`。
 
 **1. 安装**（仓库需克隆为 `auto_game_unified`，命令从它的**父目录**执行）
 
