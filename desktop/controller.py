@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 from auto_game_unified.core.pc_window import (
+    PC_INPUT_BACKGROUND,
     PC_INPUT_FOREGROUND,
     PC_INPUT_MODES,
 )
@@ -43,9 +44,9 @@ class DesktopController:
     def __init__(self, *, worker: WorkerController) -> None:
         self.worker = worker
         self.selected_backend = "emulator"
-        # PC 端输入通道。默认抢前台 —— 后台通道需要逐机实测，绝不默认开。
+        # PC 端输入通道。默认后台（2026-11-09 用户拍板，后台点击已实跑正常）。
         # 模拟器后端下这个值原样保留（用户切回 PC 还在），但不生效。
-        self.pc_input_mode = PC_INPUT_FOREGROUND
+        self.pc_input_mode = PC_INPUT_BACKGROUND
         self.preflight_report: PreflightReport | None = None
         # 默认**一条都不勾**（用户 2026-09-29 拍板）：每次自己挑。顺带当一道
         # 「点开始前先想一下」的确认 —— 世界首领战会花体力、刷书签会花天空石。

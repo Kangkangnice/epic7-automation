@@ -247,7 +247,7 @@ class QtDesktopWindow(FluentWindow):
         row.addWidget(self.backend_combo)
 
         row.addSpacing(16)
-        row.addWidget(BodyLabel("不占用前台（实验）", card))
+        row.addWidget(BodyLabel("不占用前台", card))
         self.background_switch = SwitchButton(card)
         self.background_switch.checkedChanged.connect(self._on_background_changed)
         row.addWidget(self.background_switch)
@@ -601,13 +601,12 @@ class QtDesktopWindow(FluentWindow):
             return
         if checked:
             self._append_log(
-                "输入通道=不占用前台（实验）：启用前请先用 "
-                "tools/probe_background_input.py 在本机实测；"
+                "输入通道=不占用前台：点击走后台，不抢前台；"
                 "滑动没法后台做（Raw Input 只认前台），含滑动的路线会短暂把窗口切到前面，"
                 "滑完立刻把前台还原；Esc 返回会自动改走前台。"
             )
         else:
-            self._append_log("输入通道=抢前台（默认）。")
+            self._append_log("输入通道=抢前台。")
         self._sync_from_controller()
         self._save_session()
 
