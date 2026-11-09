@@ -111,8 +111,10 @@ python -m auto_game_unified.main --mode arena --live --confirm RUN --max-cycles 
 | `_verify_pc_input_elevated.py` | 验证「点星星 3 星卡」这一下到底有没有生效，连拍 3 张帧 |
 | `_verify_hero_tab_elevated.py` | 验证英雄详情页切页签后的画面 |
 | `_diagnose_pc_activation_elevated.py` | 诊断「能不能把 PC 窗口切到前台」，输出前台窗口详情 |
+| `_verify_survivor_joystick.py` | 验证活动小游戏的摇杆滑动在 PC 上的 `duration` 到底该给多少（这条**还没标定完**，见 `TODO.md`） |
 
-要新增场景，**别再加第六个**：优先用第三节那条命令行。
+要新增场景，**别再加第七个**：优先用第三节那条命令行。（2026-11-09 核对：实际已有 6 个，
+而原文写的是「别再加第六个」—— 数错了，改过来。）
 
 ## 五、失败怎么判
 
