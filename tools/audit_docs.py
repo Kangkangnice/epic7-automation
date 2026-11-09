@@ -75,10 +75,10 @@ DIAGNOSTIC_ARTIFACTS = {"evidence.json", "screen.png", "source.png", "target.png
 BUILTIN_SYMBOLS = {"super", "zip", "print", "len", "open", "time", "get", "format"}
 
 # 2026-11-09 判定用的归类依据
-HISTORICAL_DOCS = {
-    "docs/WORLD_BOSS_DESIGN.md",                       # 头部明写「整份只作追溯」
-    "docs/maintenance/route_extensibility_review.md",  # README 标 2026-09-27 快照
-}
+# 治理 V2 把「整份只供追溯」的快照/设计稿删掉了，不再有整份豁免的文档。
+# 剩下的历史引用靠同行墓碑词（TOMBSTONE_WORDS）与小节标题（SECTION_MARKERS）识别。
+# 保留这个空集合是为了让 classify() 的结构不变，并提醒后来人：别再攒「整份存档」。
+HISTORICAL_DOCS: frozenset[str] = frozenset()
 SECTION_MARKERS = ("存档", "快照", "只供追溯", "施工记录", "仅留")
 # 同行出现这些词 ⇒ 讲已删掉的东西、或拿错误路径当反例，不是活引用
 TOMBSTONE_WORDS = (

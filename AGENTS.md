@@ -22,7 +22,7 @@
 修改任何视觉识别、点击、导航、重试、事务或路线前，必须阅读（适用于全部路线、模拟器与 PC 迁移）：
 
 - `docs/TRANSITION_CONTRACTS.md`
-- `docs/HUMAN_AI_WORKFLOW.md`
+- `CONTRIBUTING.md`（人和 AI 怎么配合做新路线；旧的「用户操作、AI 只读观测」分工已作废）
 - **新增路线或新增动作**时读 `docs/EXTENDING.md`；**移植 PC / 改 PC 后端**时读 [`docs/PC_TEMPLATE_MIGRATION.md`](docs/PC_TEMPLATE_MIGRATION.md)
 - **要实机跑闭环**时，读 `docs/howto/live_verification.md`（权限 / 点不动 / 失败判定）
 - 目标路线测试和最新真实失败证据
