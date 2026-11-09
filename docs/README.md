@@ -19,6 +19,7 @@
 | 改状态机、加动作 | [`TRANSITION_CONTRACTS.md`](TRANSITION_CONTRACTS.md) | **契约**，改前必读 |
 | 开局停在半路，想知道能不能接上 | [`RESUME_COVERAGE.md`](RESUME_COVERAGE.md) · [`maintenance/route_finish_points.md`](maintenance/route_finish_points.md) | 长期 |
 | 跑挂了要排查 | [`TROUBLESHOOTING.md`](TROUBLESHOOTING.md) | 长期 |
+| 想知道哪些动作会花资源、靠什么拦住误点；每条路线到底有哪些实机证据 | [`SAFETY_MATRIX.md`](SAFETY_MATRIX.md) | 长期 |
 | 在 PC 客户端上跑（移植 / 放行 / 踩坑） | [`PC_TEMPLATE_MIGRATION.md`](PC_TEMPLATE_MIGRATION.md) · [`maintenance/pc_page_capture_checklist.md`](maintenance/pc_page_capture_checklist.md) | **PC 结论唯一权威** |
 | 每日任务的分组与执行顺序 | [`maintenance/daily_tasks_grouping.md`](maintenance/daily_tasks_grouping.md) | 长期 |
 | 突然冒出个想法，先记下来 / 以后想挑个活干 | [`BACKLOG.md`](BACKLOG.md) | 滚动更新 · 未评估的想法 |
