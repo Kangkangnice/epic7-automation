@@ -78,7 +78,7 @@ PACKAGE = PACKAGE_DIR.name
 TEST_KEYWORD_OVERRIDES: dict[str, tuple[str, ...]] = {
     # 串跑编排层：主模块 + 桌面入口 + 圣域（它直接调用 daily_tasks 的编排）。
     "games/epic7/daily_tasks.py": (
-        "daily_tasks", "desktop_worker", "desktop_app", "sanctuary",
+        "daily_tasks", "desktop_worker", "sanctuary",
     ),
     # 注册表：路线清单、桌面目录、导航计划三处都会读它。
     "games/epic7/modes.py": (

@@ -13,6 +13,7 @@
 | **让 agent 真的进游戏点鼠标做实机闭环** | [`howto/live_verification.md`](howto/live_verification.md) | **手法**，判断变了就要改 |
 | 接手别人做到一半的活 | 先看 [`STATUS.md`](STATUS.md) 的「在制品」一节，再点开里面链到的交接单 | 临时 |
 | 装起来用、界面怎么点 | [`USER_GUIDE.md`](USER_GUIDE.md) | 长期 |
+| 用连点器（固定点一直点） | [`USER_GUIDE.md`](USER_GUIDE.md) 第 2.1 节 | 长期 |
 | 看懂代码怎么分层 | [`ARCHITECTURE.md`](ARCHITECTURE.md) · [`architecture/auto_game_unified.code-map.md`](architecture/auto_game_unified.code-map.md) | 长期 |
 | 新增一条自动化路线 | [`EXTENDING.md`](EXTENDING.md) · `doc_review --scenario new-route`（开工/收尾清单） | 长期 |
 | 采一张新截图 / 做一颗新模板 | [`TEMPLATE_CAPTURE.md`](TEMPLATE_CAPTURE.md) | 长期 |

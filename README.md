@@ -78,7 +78,7 @@ python -u -m auto_game_unified.desktop
 
 > 命令行入口 `python -m auto_game_unified.main` 保留给开发调试；**默认是干跑**，实跑必须显式加 `--live --confirm RUN`。
 
-> 🎨 **Qt / Fluent 预览界面**（可选）：`python -m pip install -r requirements-qt.txt` 后执行 `python -m auto_game_unified.desktop_qt`。它和原界面共用同一份业务控制器，默认入口仍是上面的 Tk 版。
+> 🧰 界面左侧有三页：**每日任务** / **运行日志** / **实用工具**（目前是固定点连点器），底部是「关于」。2026-11-09 起只有这一套界面了（原来的 Tk 版已删除），依赖也合并进了 `requirements.txt`。
 
 ## 🗂️ 路线一览
 
