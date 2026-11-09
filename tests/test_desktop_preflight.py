@@ -1,7 +1,6 @@
 from pathlib import Path
 
 import numpy as np
-import pytest
 
 from auto_game_unified.core.pc_window import (
     WindowCalibration,
