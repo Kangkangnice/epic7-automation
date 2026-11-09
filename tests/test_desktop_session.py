@@ -148,19 +148,19 @@ def test_input_mode_round_trip(tmp_path: Path) -> None:
     assert loaded.pc_input_mode == "background"
 
 
-def test_bad_input_mode_falls_back_to_foreground(tmp_path: Path) -> None:
-    """手改坏的存档不能把助手送进「点了没反应」的后台通道。"""
+def test_bad_input_mode_falls_back_to_background(tmp_path: Path) -> None:
+    """手改坏的存档一律退回默认通道（后台），不能把默认反过来。"""
     for raw in ("backgroundd", 1, None, "", ["background"]):
         path = _write(tmp_path / "session.json", {"pc_input_mode": raw})
         loaded = session.load(path)
         assert loaded is not None
-        assert loaded.pc_input_mode == "foreground"
+        assert loaded.pc_input_mode == "background"
 
 
-def test_legacy_session_without_input_mode_defaults_to_foreground(tmp_path: Path) -> None:
+def test_legacy_session_without_input_mode_defaults_to_background(tmp_path: Path) -> None:
     path = _write(
         tmp_path / "session.json", {"selection": ["arena"], "backend": "pc"}
     )
     loaded = session.load(path)
     assert loaded is not None
-    assert loaded.pc_input_mode == "foreground"
+    assert loaded.pc_input_mode == "background"

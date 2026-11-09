@@ -40,9 +40,9 @@ class RunRequest:
     # 竞品对应：``功能参数初始化`` 先把 ``ui`` 表整理成运行参数，再交给各路线读；
     # 这里只是把「整理好的一份」原样传下去，解释权归各路线自己。
     params: Mapping[str, Mapping[str, object]] = field(default_factory=dict)
-    # PC 端输入通道：``foreground``（默认，抢前台）/ ``background``（不抢前台）。
+    # PC 端输入通道：``background``（默认，不抢前台）/ ``foreground``（抢前台）。
     # 它是**进程级**设置，写进子进程环境变量，不进 --params-file（那是路线参数）。
-    pc_input_mode: str = "foreground"
+    pc_input_mode: str = "background"
 
 
 @dataclass(frozen=True)

@@ -196,9 +196,11 @@ class Epic7PcWindow:
         self._sleep = sleep_fn
         self._event_sink = event_sink
         self._user32 = ctypes.WinDLL("user32", use_last_error=True)
-        # 默认前台：后台通道是**逐机器实测**才敢开的（见模块顶部的通道说明），
-        # 没验证过就默认后台会把「偶发点不动」变成默认故障。
-        self._input_mode: str = PC_INPUT_FOREGROUND
+        # 默认后台（2026-11-09 用户拍板）：后台点击已多次实跑正常 —— 2026-11-08 起
+        # 每日任务全程走 background，进商店 / 骑士团 / 成就页的点击全部生效。
+        # 用户要求默认打开、不必每次手动切。拖拽与 ESC 仍按各自规则改走前台
+        # （见 ``swipe`` / ``back``），这条默认值不影响它们。
+        self._input_mode: str = PC_INPUT_BACKGROUND
         # 后台动作结束后光标停在哪个屏幕坐标；None = 还没发过后台动作。
         # 用来判断「用户是不是动过鼠标」，见 _background_cursor_begin()。
         self._cursor_anchor: tuple[int, int] | None = None

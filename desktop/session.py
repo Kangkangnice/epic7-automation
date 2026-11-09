@@ -30,7 +30,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from auto_game_unified.core.pc_window import (
-    PC_INPUT_FOREGROUND,
+    PC_INPUT_BACKGROUND,
     PC_INPUT_MODES,
 )
 
@@ -56,9 +56,9 @@ class SessionState:
     cycles: Mapping[str, int] = field(default_factory=dict)
     backend: str = "emulator"
     # PC 端输入通道：foreground=抢前台 / background=不抢前台。
-    # 和勾选/后端一样「记住上次」；坏值一律退回 foreground（约定 2 的同一条）。
-    # ⚠️ 保留默认约束：全新安装、旧存档缺这个字段时，绝不能默认成后台通道。
-    pc_input_mode: str = PC_INPUT_FOREGROUND
+    # 和勾选/后端一样「记住上次」；坏值一律退回默认值 background。
+    # 2026-11-09 用户拍板：后台点击已实跑正常，默认就是后台，不再要求先手动打开。
+    pc_input_mode: str = PC_INPUT_BACKGROUND
     last_run: LastRun | None = None
     # 路线内部参数的口袋：``{路线名: {参数名: 值}}``。
     # 现在没有任何路线往里写，但格式先定死 —— 将来加参数只加内容，不改结构。
@@ -127,13 +127,13 @@ def load(path: Path) -> SessionState | None:
     if not isinstance(backend, str) or not backend:
         backend = "emulator"
 
-    # 输入通道只认两种：手改坏 / 版本升级后残留的怪值一律退回前台 ——
-    # 不能让一份坏存档把助手悄悄送进「点了没反应」的后台通道。
+    # 输入通道只认两种：手改坏 / 版本升级后残留的怪值一律退回默认值
+    # （后台，2026-11-09 起 —— 与 SessionState 的默认保持一致，别让坏存档把默认反过来）。
     raw_input_mode = payload.get("pc_input_mode")
     pc_input_mode = (
         raw_input_mode
         if isinstance(raw_input_mode, str) and raw_input_mode in PC_INPUT_MODES
-        else PC_INPUT_FOREGROUND
+        else PC_INPUT_BACKGROUND
     )
 
     last_run: LastRun | None = None

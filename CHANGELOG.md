@@ -28,6 +28,8 @@
 
 ### 变更
 
+- **PC 端输入通道默认改成「不占用前台」**（2026-11-09 用户要求）。它此前标着「实验」且默认关闭，理由是「需逐机实测」；但 2026-11-08 每日任务已全程走后台通道、进商店 / 骑士团 / 成就页的点击全部生效，用户又连续实跑多轮确认无问题，于是定为默认：界面开关默认打开、去掉「（实验）」字样，新存档的默认值与坏值回落也一并改成后台（旧存档缺这个字段时同样落到后台）。**只改一处不够** —— 默认值分布在窗口层、会话存档、控制器、Worker 请求与 `main.py` 的环境变量兜底五处，只改窗口层会被 `main.py` 的兜底顶回前台，现已补用例钉住。点击走后台；**拖拽 / 滑动与 Esc 仍强制前台**（Raw Input 只喂前台窗口，实测后台拖拽列表一个像素没动），滑完立刻把原窗口还回去。想全程前台可在界面关掉开关，或传 `--pc-input-mode foreground`。
+
 - **删掉一直没人用的「多套命名配置」**（2026-11-09 用户要求）。`desktop/session.py` 里的 `Profile` 类、`SessionState.profiles` / `active_profile` 两个字段、读写逻辑，以及 `DesktopController.apply_profile()` 全部删除 —— 用户原话是「多套配置是什么意思啊？这个也没有啊，删掉吧」，说明这套东西从上线起就没被用过。勾选与次数仍按会话存档自动记住上次，那才是日常真正用得上的部分。旧 `session.json` 里残留的 `profiles` 键会被忽略（读的时候不再看它），不需要迁移。
 
 - **界面只剩一套：Qt / Fluent**（2026-11-09 用户要求「老外观就当它不存在」）。删除 `desktop/app.py`（1,750 行 Tk 界面）、`desktop/theme.py`、`desktop/launch_hidden.py`、`tools/make_qt_preview_shortcut.py` 与 `requirements-qt.txt`；`EPIC7_UI=qt` 那个开关也一并删掉 —— 只有一条路就不需要开关。`python -m auto_game_unified.desktop` 现在直接转发到 `desktop_qt.app`，桌面图标仍走 `desktop_qt/launch.py` + `pythonw.exe`。界面相关的测试（`test_desktop_app.py` 整个文件、`test_onboarding.py` / `test_elevation.py` / `test_update_check.py` 里测界面的部分）随之删除，纯逻辑用例一条没动。

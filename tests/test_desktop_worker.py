@@ -145,7 +145,7 @@ def test_worker_forwards_pc_input_mode_via_cli_and_env(tmp_path):
     assert options["env"][PC_INPUT_ENV] == "background"
 
 
-def test_worker_defaults_to_foreground(tmp_path):
+def test_worker_defaults_to_background(tmp_path):
     calls = []
     worker = WorkerController(
         repo_parent=tmp_path,
@@ -157,8 +157,8 @@ def test_worker_defaults_to_foreground(tmp_path):
     worker.join_reader()
 
     command, options = calls[0]
-    assert command[command.index("--pc-input-mode") + 1] == "foreground"
-    assert options["env"][PC_INPUT_ENV] == "foreground"
+    assert command[command.index("--pc-input-mode") + 1] == "background"
+    assert options["env"][PC_INPUT_ENV] == "background"
 
 
 def test_worker_rejects_unknown_pc_input_mode_before_spawning(tmp_path):
