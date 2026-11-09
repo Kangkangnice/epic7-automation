@@ -392,7 +392,7 @@ PC 静止态红点左边还有一条**同色橙棕斜带**（立绘边框装饰�
 | `games/epic7/modes.py::_build_hero_synthesis` | **唯一装配口**：`if is_pc(template_root): install_pc_red_dot_vision(machine, template_root)` |
 | `tests/test_hero_synthesis_pc_reddot.py` | **新增** 18 条 + 12 subtest |
 | `tests/test_template_paths.py` | PC 图白名单 +1 |
-| `tests/fixtures/epic7_hero_pc/` | 3 张 PC 夹具（用户截图还原 / 真机 `switch_before` / 同轮刻印页负例） |
+| `tests/fixtures/epic7_hero_pc/` | 6 张 PC 夹具（2026-11-06/08 真机及用户截图还原：刻印满级提示、刻印页无红点、列表红点·静止/转场、传送选择及其护栏后） |
 
 **没碰**：`hero_synthesis.py`、`hero_vision.py`、`_REDDOT_ZONE`、HSV 区间、
 `is_centered_dot`、`build_hero_templates`、任何模拟器分支。

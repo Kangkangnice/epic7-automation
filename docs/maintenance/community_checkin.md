@@ -154,10 +154,11 @@
 | `order_confirm`   | (270,745,540,240)  | 订单确认页·固定免责提示        | 与 `redeem_done` 同坐标 |
 | `redeem_done`     | (265,736,550,256)  | 「兑换成功」弹窗本体          |                     |
 | `share_sheet`     | (330,1570,420,220) | 分享面板「复制链接」          |                     |
-| `post_detail`     | (560,1790,440,90)  | 帖子底部操作栏             |                     |
+| `post_detail`     | (790,1790,110,85)  | 帖子底部操作栏·分享箭头（不含评论数）             |                     |
+| `signin_done`     | (271,628,539,103)  | 「签到成功！」弹窗表头          |                     |
 | `network_error`   | (280,880,520,260)  | 「网络连接异常，下拉刷新」       | 全局态，优先级最高           |
 
-阈值统一 **0.82**（`THRESHOLD`）：9 个锚点在来源帧上都是 1.0000、对手 ≤0.41，  
+阈值统一 **0.82**（`THRESHOLD`）：11 个锚点在来源帧上都是 1.0000、对手 ≤0.41，  
 0.82 落在很宽的空档里。全库 105 张竖屏帧扫下来**零可疑命中**  
 （明细见 `runtime_logs/_make_community_anchors.py` 的报告与  
 `docs/manual_review/community/_anchors_report.txt`）。
@@ -462,8 +463,8 @@ MISSING_LIVE_DATA = ("信息流里三条每日任务的执行坐标（点开第�
 | **发送层**（滑动换发 / 换向取图兜底） | `games/epic7/runner_base.py` 的两个钩子（`_perform_action` / `_capture_frame`）+ `community.py` 的覆写。⚠️ 共享模块，改了要跑全量 |
 | 固定坐标点击（光球按钮那一步） | `games/epic7/navigation_plan.py::NavigationStep.fixed_point`；取值声明在 `modes.py` |
 | 导航链与接力白名单                  | **不在 `navigation.py`**：链条声明在 `modes.py::MODE_SPECS["community"].navigation_plan`（数据）                                           |
-| 模板                         | `templates/community/`（`pages/` 判页 12 + `digits/` 10 + `strings/` 备用 8）与 `templates/navigation/` 4 张                           |
-| 测试                         | `tests/test_community.py` / `test_community_pages.py` / `test_community_numbers.py`；夹具 `tests/fixtures/epic7_community/`（12 张） |
+| 模板                         | `templates/community/`（`pages/` 判页 15 + `digits/` 10 + `strings/` 备用 8）与 `templates/navigation/` 4 张                           |
+| 测试                         | `tests/test_community.py` / `test_community_pages.py` / `test_community_numbers.py`；夹具 `tests/fixtures/epic7_community/`（21 张） |
 
 判据/读数的生成与复核脚本（`runtime_logs/`，gitignore 的，需要时重建）：  
 `_make_community_anchors.py`（判页锚点 + 全库扫描报告）、`_make_community_digits.py`、  
@@ -875,7 +876,7 @@ D:\anaconda\python.exe auto_game_unified\tools\check.py --full
 ### 竖屏判据怎么复核（改判据时）
 
 1. `runtime_logs/_make_community_anchors.py` 重跑 → 出全库扫描报告；  
-   看「9 个锚点零可疑命中」是否还成立（**同栈内**命中是正常的，**跨栈**命中才是事故）。
+   看「11 个锚点零可疑命中」是否还成立（**同栈内**命中是正常的，**跨栈**命中才是事故）。
 2. 用 `docs/manual_review/community/` 里的索引图肉眼对一遍「帧名 vs 实际页面」。
 3. 改数字读数时跑 `_probe_community_numbers.py`，看 19 个验证点是否仍全中。
 
@@ -1160,7 +1161,7 @@ def observe(self, screen):
 反向验证脚本：`auto_game_unified/.workbuddy/_reverse_verify_viewer.py`（11 个注入点，
 跑法 `D:/anaconda/python.exe auto_game_unified/.workbuddy/_reverse_verify_viewer.py`）。
 
-⚠️ 这一轮反向验证又抓出 **2 条空护栏**，形状都记在 `MEMORY.md` 的「教训」里：
+⚠️ 这一轮反向验证又抓出 **2 条空护栏**（具体形状见下两条）：
 ① 边界样本不能造极端值（纯色 1.0 那张「怎么放水都挡得住」）；
 ② **不许拿被测常量当断言输入**（`for page in sorted(_GLOBAL_OVERLAY_PAGES)`）。
 
@@ -1677,7 +1678,7 @@ _wait_for_page("activity_menu") -> RuntimeError: 导航开始前应处于[活动
 
 ## 变异验证（拆掉修复必须变红，4/4 全红）
 
-脚本 `auto_game_unified/runtime_logs/_mutate_community_stranger.py`：
+脚本 `auto_game_unified/runtime_logs/_mutate_community_stranger.py`（gitignore，需要时按名重建）：
 
 | 变异 | 结果 |
 | --- | --- |
@@ -1724,7 +1725,7 @@ _wait_for_page("activity_menu") -> RuntimeError: 导航开始前应处于[活动
 **为什么没做**：手上**没有任何一张社区 H5 的真实加载中帧**。项目纪律要求判据出自真实帧，
 拿一张合成灰图定出来的阈值，等于又造一个凭推断的判据。
 
-**已有的测量**（`tests/fixtures/epic7_community/` 全 20 张，画布 10%~92% 行带；
+**已有的测量**（`tests/fixtures/epic7_community/` 全 21 张，画布 10%~92% 行带；
 「平坦行占比」= 行内 `max-min < 6` 的行数占比；「对比度」= 该带 `std`）：
 
 | 帧 | 平坦行占比 | 对比度 std |
