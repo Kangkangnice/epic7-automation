@@ -25,6 +25,9 @@ def _parser() -> ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # 英文版 Windows 控制台默认是 cp1252，打印中文会抛 UnicodeEncodeError
+    # 并让脚本以 1 退出（本机中文环境看不出来）。显式固定成 UTF-8。
+    sys.stdout.reconfigure(encoding="utf-8")
     parser = _parser()
     args = parser.parse_args(argv)
     if args.mode != "arena":
