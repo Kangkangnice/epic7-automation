@@ -88,8 +88,8 @@ DAILY_TASKS: tuple[DailyTask, ...] = (
     DailyTask(mode="moonlight_theater"),
     # 成就领取（2026-11-08）。放最后：它是「有就领、没有就走」的类型，
     # 没新成就时几秒收工，不会拖长整轮。
-    # ⚠️ 目前只有 PC 素材 —— 模拟器后端下整条会被跳过（见 ``PC_ONLY_ROUTES``），
-    # 汇总里记成 ``skipped`` 并写明原因，不算失败。
+    # ⚠️ 2026-11-09 模拟器图补齐后，两个后端都会真的跑它（原先只有 PC 素材，
+    # 模拟器下整条被跳过并记 ``not_supported``）。
     DailyTask(mode="achievement"),
 )
 

@@ -248,13 +248,29 @@ class AchievementEvidenceTests(unittest.TestCase):
 
 
 class AchievementPlatformTests(unittest.TestCase):
-    def test_the_emulator_has_no_templates_yet(self):
-        """这条路线**只放了 PC 素材**（用户口径）。模拟器缺图必须在构造期就炸。
+    def test_both_platforms_have_their_own_templates_now(self):
+        """2026-11-09 模拟器侧补齐后，两边都能装配（此前是「模拟器必须炸」）。
 
-        故意不写成「静默跳过」：带着半套判据跑到真机上，比开跑前报错危险得多。
+        这条原来断言 ``FileNotFoundError`` —— 当时只有 PC 素材。现在方向反过来：
+        它保护的是**共享层那 5 张模拟器图别被删掉**，删了模拟器这条路线就跑不了。
         """
-        with self.assertRaises(FileNotFoundError):
-            build_achievement_templates(TemplateDir(TEMPLATES, "emulator"))
+        emulator = build_achievement_templates(TemplateDir(TEMPLATES, "emulator"))
+        pc = build_achievement_templates(TemplateDir(TEMPLATES, "pc"))
+
+        self.assertIsNotNone(emulator)
+        self.assertIsNotNone(pc)
+
+    def test_the_two_platforms_do_not_share_the_same_pictures(self):
+        """共享层必须是模拟器图、``pc/`` 下是 PC 图 —— 两边不许互相顶替。
+
+        实测：同一个「成就」标题，模拟器版 124x60、PC 版 100x52；
+        模拟器版打在模拟器帧上 1.0000、打在 PC 帧上会掉分，反之亦然。
+        """
+        emulator = build_achievement_templates(TemplateDir(TEMPLATES, "emulator"))
+        pc = build_achievement_templates(TemplateDir(TEMPLATES, "pc"))
+
+        self.assertNotEqual(emulator.page_title.shape, pc.page_title.shape)
+        self.assertNotEqual(emulator.claim_all.shape, pc.claim_all.shape)
 
 
 class AchievementNavigationTests(unittest.TestCase):
