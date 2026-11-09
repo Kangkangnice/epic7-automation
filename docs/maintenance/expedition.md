@@ -29,7 +29,7 @@
 
 模板从现场帧裁出（`runtime_diagnostics/epic7_expedition/20261003_193135_...`），
 只取固定文案「未持有通缉传单。完成讨伐中级以上将有一定几率获得。」——
-**零可变内容**，不含「0/10」和倒计时（见 `template_dynamic_content_review.md`）。
+**零可变内容**，不含「0/10」和倒计时（模板从现场帧只裁固定文案，裁法见 [`TEMPLATE_CAPTURE.md`](../TEMPLATE_CAPTURE.md)）。
 
 三道关（与英雄合成同款）：
 

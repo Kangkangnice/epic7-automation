@@ -15,7 +15,7 @@
 | 装起来用、界面怎么点 | [`USER_GUIDE.md`](USER_GUIDE.md) | 长期 |
 | 看懂代码怎么分层 | [`ARCHITECTURE.md`](ARCHITECTURE.md) · [`architecture/auto_game_unified.code-map.md`](architecture/auto_game_unified.code-map.md) | 长期 |
 | 新增一条自动化路线 | [`EXTENDING.md`](EXTENDING.md) · [`maintenance/route_extensibility_review.md`](maintenance/route_extensibility_review.md) | 长期 |
-| 采一张新截图 / 做一颗新模板 | [`TEMPLATE_CAPTURE.md`](TEMPLATE_CAPTURE.md) · [`maintenance/template_dynamic_content_review.md`](maintenance/template_dynamic_content_review.md) | 长期 |
+| 采一张新截图 / 做一颗新模板 | [`TEMPLATE_CAPTURE.md`](TEMPLATE_CAPTURE.md) | 长期 |
 | 改状态机、加动作 | [`TRANSITION_CONTRACTS.md`](TRANSITION_CONTRACTS.md) | **契约**，改前必读 |
 | 开局停在半路，想知道能不能接上 | [`RESUME_COVERAGE.md`](RESUME_COVERAGE.md) · [`maintenance/route_finish_points.md`](maintenance/route_finish_points.md) | 长期 |
 | 跑挂了要排查 | [`TROUBLESHOOTING.md`](TROUBLESHOOTING.md) | 长期 |
@@ -287,7 +287,6 @@ CI 的 `Governance gate` 会在干净检出上再跑一遍治理门禁。
 | [`pc_page_capture_checklist.md`](maintenance/pc_page_capture_checklist.md) | PC 采页清单：一次把页面停到位抓完，提前算出一页会不会在 PC 上卡 |
 | [`route_extensibility_review.md`](maintenance/route_extensibility_review.md) | 新增路线的可扩展性审查（2026-09-27 **快照**，方案已落地，别照着改） |
 | [`route_finish_points.md`](maintenance/route_finish_points.md) | 每条路线的「终点」在哪，`return home` 只允许在终点衔接 |
-| [`template_dynamic_content_review.md`](maintenance/template_dynamic_content_review.md) | 模板「含会变内容」的评审工作表（**仍有 2 个未解决项**，不是过期文档） |
 
 ### 决策记录（`decisions/`）
 

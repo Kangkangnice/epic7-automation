@@ -292,9 +292,10 @@ D:\anaconda\python.exe auto_game_unified\tools\check.py --full
 （旧的 165×87）把「战斗」上方那条 **EVENT 标**也裁了进去，而那条标那天挂到了
 「竞技场」上方 ⇒ 模板里那一格空着 ⇒ 全区域最高 **0.6749**（阈 0.82）。
 
-**已经改掉**：模板缩成只留「战斗」二字（65×32），点击点由 (1827,531) 变 (1819,537)。
-完整证据（两种挂法、地板/天花板、录屏帧那处已知代价）在
-`docs/maintenance/template_dynamic_content_review.md` 的 **D3** 一节。
+**已经改掉**：模板重新只裁「战斗」二字（不再把上方 EVENT 标裁进去）。当前模板在
+`games/epic7/templates/navigation/lobby_battle.png`，专项回归用例见
+`tests/test_navigation.py::test_battle_entry_ignores_the_event_badge_hanging_over_another_row`
+（用现场帧 `lobby_battle_badge_on_arena_live_20261019` 验证「EVENT 标挂到竞技场上方」时仍能认出「战斗」）。
 
 **以后看到这条报错怎么分诊**：`缺少导航锚点 X` 一律先看**那张模板里有没有放会变的东西**
 （活动标 / 数值 / 头像 / 段位字），再看阈值 —— 阈值基本没问题，
