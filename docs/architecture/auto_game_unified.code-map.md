@@ -11,7 +11,8 @@
 
 | 节点 | 文件 | HEAD 行 |
 | --- | --- | --- |
-| 交互入口 | `desktop/app.py` | 162 `DesktopApp` |
+| 交互入口 | `desktop_qt/app.py` | `QtDesktopWindow`（唯一界面；Tk 版已于 2026-11-09 删除） |
+| 与界面无关的业务状态 | `desktop/controller.py` | `DesktopController` |
 | main.py 装配与调度 | `main.py` | 290 `run_mode` |
 | 每日任务编排 | `games/epic7/daily_tasks.py` | 147 `run_daily_tasks`、125 `ensure_at_lobby` |
 

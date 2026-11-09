@@ -151,3 +151,4 @@ python -m auto_game_unified.main --mode arena --live --confirm RUN --max-cycles 
 | 2026-11-08 | 补「UAC 到底会不会弹」与「无人值守铁律」，并把 `Start-Process -Verb RunAs` 写成可复制的命令 | 用户反馈「脚本说要点 UAC，但我从没点过、每次都成功」。查注册表：`ConsentPromptBehaviorAdmin=0`（从不通知，静默提权）—— 那句提示从来没兑现过 |
 | 2026-11-08 | 实跑前加闸门：`--live --window-backend pc` 时先查窗口与权限，不通过就拒绝并指向本文件 | 只有 2 条路线配了运行前闸门，其余在权限不对时会跑下去，表现成「日志说已点击、游戏不动」 |
 | 2026-11-09 | `review_when` 里的 `app.STARTUP_HINTS` 改成 `catalog.STARTUP_HINTS`，并复核 `last_verified` | 全库文档复核：界面文案已搬到 `desktop/catalog.py`，`desktop/app.py` 只剩同名再导出，写旧路径会让人翻错文件 |
+| 2026-11-09 | 界面统一到 `desktop_qt/`，`desktop/app.py`、`desktop/theme.py`、`desktop/launch_hidden.py` 已删除 | 用户要求「老外观就当它不存在」。上一条里「只剩同名再导出」的说法随之作废 —— 现在根本没有那个文件 |

@@ -1,11 +1,11 @@
 """桌面助手的业务状态：勾了哪几条、每条几次、用哪个后端、能不能开跑。
 
-2026-11-08 从 ``desktop/app.py`` 搬出来。**类体一字未改**（唯一替换是把
-``STARTUP_HINTS`` 换成 ``catalog.BACKENDS``：两者键集合相同，但前者定义在 Tk
-文件里，搬走后会形成循环导入）。
+2026-11-08 从 Tk 界面（``desktop/app.py``，2026-11-09 已整个删除）搬出来。
+**类体一字未改**（唯一替换是把 ``STARTUP_HINTS`` 换成 ``catalog.BACKENDS``：
+两者键集合相同，但前者当时定义在界面文件里，搬走后会形成循环导入）。
 
-这里是**纯逻辑**，不 import tkinter，也不 import 任何 Qt —— 两套界面都从这里
-拿同一份判据，避免「界面换了一套，勾选/准入规则跟着漂移」。
+这里是**纯逻辑**，不 import 任何界面库 —— 界面从这里拿判据，避免
+「换了一层皮，勾选 / 准入规则跟着漂移」。
 
 ⚠️ 改本文件等于改公共层：提交前必须跑全量门禁（见 AGENTS.md）。
 """
@@ -75,22 +75,6 @@ class DesktopController:
             self.selected_backend = state.backend
         if state.pc_input_mode in PC_INPUT_MODES:
             self.pc_input_mode = state.pc_input_mode
-
-    def apply_profile(self, profile: session.Profile) -> None:
-        """把一套命名配置套到界面上：勾选顺序 + 每条次数。
-
-        次数先整体回到各路线默认值，再套这套配置里记的 —— 否则「日常」切到「活动」
-        时，活动没提到的路线会带着日常的次数，两套配置互相污染。
-        """
-        if self.worker.running:
-            return
-        names = [mode for mode in profile.selection if mode in MODE_SPECS]
-        standalone = [mode for mode in names if route_by_name(mode).standalone_only]
-        self.selection = standalone[:1] if standalone else names
-        self.cycles = {route.mode: route.default_cycles for route in ROUTES}
-        for mode, cycles in profile.cycles.items():
-            if mode in MODE_SPECS:
-                self.cycles[mode] = cycles
 
     @property
     def can_start(self) -> bool:

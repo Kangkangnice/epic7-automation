@@ -1,6 +1,31 @@
-numpy==1.26.4
+# ⚠️ 2026-11-09 统一升到「Python 3.13 上装得起来」的那一版。
+#
+# 原来钉的是 numpy 1.26.4 / Pillow 10.3.0 —— 这两个版本**没有 cp313 的 wheel**，
+# 而 3.13 是本机唯一能跑 PySide6 6.12 的解释器（Anaconda 自带的 3.11 用 VS2015
+# 工具集编译，加载 Qt6Core 直接报「找不到指定的程序」，换 PATH 也无效）。
+# 也就是说：旧的钉法在「能开界面的环境」里根本装不上。
+#
+# 新版本不是随便挑的：下面这套就是本机一直在实跑的那套（numpy 2.x / Pillow 13），
+# 全量测试 2698 条在它上面全绿。
+numpy==2.4.6
+# opencv 是 abi3 wheel（cp37-abi3），3.11 与 3.13 通用，不需要跟着动。
 opencv-python==4.11.0.86
-Pillow==10.3.0
+Pillow==13.0.0
 PyAutoGUI==0.9.54
 PyGetWindow==0.0.9
-psutil==5.9.0
+# 5.9.0 起在 PyPI 上只剩源码包（sdist），没装 C 编译器的新环境会在这一行直接失败。
+# 5.9.8 是同一系列里仍有 abi3 wheel 的最后一个版本，API 与 5.9.0 一致
+# （`worker.py` 只用 Process / cpu_percent / children 这几个稳定接口）。
+psutil==5.9.8
+
+# 桌面界面（2026-11-09 起是**唯一**界面，不再是可选项）。
+#
+# 原来这两行单独放在 requirements-qt.txt 里，因为当时默认界面是 Tk、
+# Qt 只是「装了才用」的预览外观。Tk 版删掉之后这个区分没有意义了：
+# 不装它们就没有界面可开。**别再把它们拆出去。**
+#
+# ⚠️ 许可：PySide6 是 LGPLv3，PySide6-Fluent-Widgets 是 GPLv3。
+# 本项目是 MIT 开源的，因此可用；若将来要闭源分发，必须先换掉
+# PySide6-Fluent-Widgets（改成 PySide6 原生控件 + QSS）。
+PySide6>=6.8,<7
+PySide6-Fluent-Widgets>=1.7

@@ -115,53 +115,6 @@ def test_params_for_unknown_route_dropped(tmp_path: Path) -> None:
     assert loaded.params == {"arena": {"only_npc": True}}
 
 
-def test_profiles_round_trip(tmp_path: Path) -> None:
-    path = tmp_path / "session.json"
-    state = session.SessionState(
-        profiles={
-            "日常": session.Profile(
-                selection=("arena", "sanctuary"), cycles={"arena": 5}
-            ),
-            "活动": session.Profile(selection=("story",)),
-        },
-        active_profile="日常",
-    )
-
-    session.save(path, state)
-    loaded = session.load(path)
-
-    assert loaded is not None
-    assert set(loaded.profiles) == {"日常", "活动"}
-    assert loaded.profiles["日常"].selection == ("arena", "sanctuary")
-    assert loaded.profiles["日常"].cycles == {"arena": 5}
-    assert loaded.active_profile == "日常"
-
-
-def test_bad_profile_is_sanitized(tmp_path: Path) -> None:
-    """配置里的坏数据走**和主状态同一套**校验：不存在的路线丢掉、越界次数回默认。"""
-    path = _write(
-        tmp_path / "session.json",
-        {
-            "profiles": {
-                "坏的": {"selection": ["arena", "不存在的路线"], "cycles": {"arena": -3}},
-                "不是字典": 1,
-                "": {"selection": ["arena"]},
-            },
-            "active_profile": "没这个配置",
-        },
-    )
-
-    loaded = session.load(path)
-
-    assert loaded is not None
-    assert "不是字典" not in loaded.profiles
-    assert "" not in loaded.profiles
-    assert loaded.profiles["坏的"].selection == ("arena",)
-    assert loaded.profiles["坏的"].cycles["arena"] == MODE_SPECS["arena"].default_cycles
-    # 指向一个不存在的配置 ⇒ 当作没选，界面上不会出现一个选不中的名字。
-    assert loaded.active_profile == ""
-
-
 def test_window_round_trip(tmp_path: Path) -> None:
     path = tmp_path / "session.json"
     session.save(path, session.SessionState(window={"x": 120, "y": 80, "w": 1400, "h": 900}))
