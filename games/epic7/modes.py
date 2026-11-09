@@ -1507,7 +1507,7 @@ def _assert_navigation_declared() -> None:
             )
 
 
-# 只有 PC 素材、**模拟器上跑必然缺图**的路线（2026-11-08）。
+# 只有 PC 素材、**模拟器上跑必然缺图**的路线（2026-11-08 立）。
 #
 # 为什么不靠探测模板：探测要真去 build 一次状态机（会抛 ``FileNotFoundError``），
 # 而界面和每日任务连打在**勾选/编排阶段**就要回答这个问题，那时候还不该启动任何东西。
@@ -1516,7 +1516,11 @@ def _assert_navigation_declared() -> None:
 # 否则界面会一直拦着、连打也会一直跳过它。
 # ⚠️ 放在 ``modes`` 而不是 ``desktop.catalog``：它是**路线属性**（素材有没有），
 # 不是界面偏好；``games/`` 也不能反向 import ``desktop/``。
-PC_ONLY_ROUTES: frozenset[str] = frozenset({"achievement"})
+#
+# 2026-11-09：``achievement`` 移出（模拟器侧 5 张页面图 + 导航入口图已补齐），
+# 名单暂时**清空**。保留这个集合是因为界面与每日任务连打都还在读它 ——
+# 以后真出现「只有一边有素材」的路线，仍然往这里丢一个名字即可。
+PC_ONLY_ROUTES: frozenset[str] = frozenset()
 
 
 def _run_load_time_checks() -> None:

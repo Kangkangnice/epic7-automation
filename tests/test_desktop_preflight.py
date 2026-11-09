@@ -1,7 +1,6 @@
 from pathlib import Path
 
 import numpy as np
-import pytest
 
 from auto_game_unified.core.pc_window import (
     WindowCalibration,
@@ -185,12 +184,15 @@ def test_pc_preflight_template_root_loads_pc_only_achievement():
     validate_route_templates("achievement", root)  # 不抛 = pc/ 下的图找得到
 
 
-def test_emulator_preflight_template_root_keeps_pc_only_route_fail_closed():
+def test_emulator_preflight_template_root_loads_achievement_too():
+    """2026-11-09：模拟器侧补齐 5 张页面图 + 导航入口图后，两边都能过复检。
+
+    这条原来断言的是「模拟器必须报缺图」（当时成就只有 PC 素材）。
+    现在方向反过来了：它保护的是共享层这 5 张图别被谁删掉 —— 删了模拟器就没法跑。
+    """
     root = template_root_for_backend(TEMPLATE_ROOT, "emulator")
     assert is_pc(root) is False
-    with pytest.raises(Exception) as caught:
-        validate_route_templates("achievement", root)
-    assert "achievement" in str(caught.value)
+    validate_route_templates("achievement", root)  # 不抛 = 共享层 5 张图都在
 
 
 def test_emulator_preflight_template_root_stays_plain_path():

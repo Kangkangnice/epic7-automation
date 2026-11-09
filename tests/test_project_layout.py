@@ -114,6 +114,9 @@ class ProjectLayoutTests(unittest.TestCase):
             # 2026-11-09 模拟器：进竞技场时弹出的「新的每周排名开始！」覆盖层。
             # 它不在守卫清单里 ⇒ 导航只等 106 秒后报「转场失败」。
             "weekly_rank_start_popup.png",
+            # 2026-11-09 模拟器：紧跟在上面那层之后的「每周排名选择奖励」，
+            # 要先选钻石再点领取（点一下关不掉）。同一帧也是三张模板的正例。
+            "weekly_rank_select_popup.png",
             "selected.png",
             "team.png",
             "battle.png",
