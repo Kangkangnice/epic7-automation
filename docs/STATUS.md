@@ -70,6 +70,35 @@
 `tests/test_template_paths.py` 登记，多跑一次生成器只是同一步的延续。
 测试文件个数刻意不写在这里：它每天都在变，写进来只会让这一页天天过期。
 
+### 按路线的现行事实（自动生成）
+
+> 路线手册里**不要再手抄**「有几张 PC 图 / 几张模板 / 几张夹具」，链到本表即可。
+> 口径：模板只数 `games/epic7/templates/<路线>/` 与 `templates/pc/<路线>/`；
+> 夹具数 `tests/fixtures/epic7_<路线>*` 前缀。
+> `hero_synthesis` 的素材目录叫 `hero`；`arena` 的模板与全局共享图混放在模板根，
+> 无法按路线归属，标「共享根」而不是报一个假的 0 —— 别名见 `gen_status.py::ROUTE_DIR_ALIASES`。
+> 开局接力读 `MODE_SPECS.resume_probe` 与 `RESUME_EXEMPT`，PC 放行读 `PC_READY_ROUTES`。
+
+| 路线 | PC 专用图 | 模板合计 | 现场夹具 | 开局接力 | PC 放行 |
+|---|---:|---:|---:|---|---|
+| `hero_synthesis` | 11 | 28 | 34 | 豁免（见 modes.py） | 已放行 |
+| `story` | 9 | 34 | 45 | 有探针 | 已放行 |
+| `arena` | 共享根 | 共享根 | 28 | 有探针 | 已放行 |
+| `expedition` | 0 | 19 | 17 | 有探针 | 未放行 |
+| `tower` | 9 | 21 | 29 | 有探针 | 已放行 |
+| `fodder` | 0 | 6 | 11 | 豁免（见 modes.py） | 未放行 |
+| `side_story` | 5 | 23 | 29 | 有探针 | 已放行 |
+| `shop_refresh` | 8 | 26 | 31 | 有探针 | 已放行 |
+| `survivor` | 0 | 6 | 6 | 不适用（无导航） | 未放行 |
+| `activity_story` | 1 | 3 | 3 | 不适用（无导航） | 已放行 |
+| `world_boss` | 7 | 18 | 30 | 有探针 | 已放行 |
+| `knights_donation` | 12 | 34 | 16 | 有探针 | 已放行 |
+| `labyrinth_stone` | 14 | 50 | 30 | 有探针 | 已放行 |
+| `sanctuary` | 4 | 9 | 19 | 有探针 | 已放行 |
+| `community` | 0 | 33 | 21 | 豁免（见 modes.py） | 未放行 |
+| `moonlight_theater` | 4 | 23 | 26 | 豁免（见 modes.py） | 已放行 |
+| `achievement` | 6 | 12 | 11 | 有探针 | 已放行 |
+
 ## 六、这一页之外去哪找
 
 - 文档索引与「我该看哪一份」：[`docs/README.md`](README.md)
