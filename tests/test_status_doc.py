@@ -70,10 +70,13 @@ def test_the_page_lists_every_route_exactly_once() -> None:
     在「重生成过一次」之后照样通过。
     """
     text = _on_disk()
+    # 只看第一节「路线总览」：STATUS 后来又加了一张「按路线的现行事实」表，
+    # 全文计数会把两张表都算进去，误报成「重复了一行」。
+    first_table = text.split("## 二、在制品")[0]
     for mode in modes.MODE_SPECS:
-        occurrences = text.count(f"| `{mode}` |")
+        occurrences = first_table.count(f"| `{mode}` |")
         assert occurrences == 1, (
-            f"路线 {mode} 在 docs/STATUS.md 的表格里出现了 {occurrences} 次，应当恰好 1 次。"
+            f"路线 {mode} 在 docs/STATUS.md 第一节表格里出现了 {occurrences} 次，应当恰好 1 次。"
             f"要么是生成器漏了它，要么是重复了一行。请跑生成器后人工确认。"
         )
 
@@ -279,4 +282,50 @@ def test_the_fixture_number_is_independently_the_tracked_count() -> None:
         "现状页的夹具数与 git 入库清单对不上 —— "
         "注意这一页只能描述仓库现状，不能描述本机目录"
     )
+
+
+# ---------------------------------------------------------------- 按路线事实表
+
+
+def _fact_cell(text: str, mode: str, column: int) -> str:
+    """取按路线事实表某行某列：1=PC 图，2=模板合计，3=现场夹具。
+
+    第一节表格行是 ``| 2 | `story` | ...``，不会与这里 ``| `story` |`` 开头混淆。
+    """
+    for line in text.splitlines():
+        if line.startswith(f"| `{mode}` |"):
+            return [cell.strip() for cell in line.split("|")][column + 1]
+    raise AssertionError(f"按路线事实表里没有 {mode}")
+
+
+def test_the_route_fact_table_lists_every_route() -> None:
+    """手册要链这张表，就必须覆盖全部路线，不能静默少一行。"""
+    text = _on_disk()
+    section = text.split("### 按路线的现行事实")[1].split("## 六、")[0]
+    for mode in modes.MODE_SPECS:
+        assert f"| `{mode}` |" in section, f"按路线事实表漏了 {mode}"
+
+
+def test_routes_with_nonstandard_template_roots_do_not_report_a_fake_zero() -> None:
+    """`hero` 目录与「共享根」两处最容易按路线名猜出误导性的 0。
+
+    2026-11-09 第一版就报了 arena 0 张 PC 图 —— 实际它有 8 张，只是混放在模板根。
+    宁可写「共享根」，也不能给一个看起来精确、其实错的数字。
+    """
+    text = _on_disk()
+    assert _fact_cell(text, "hero_synthesis", 1) != "0"
+    assert _fact_cell(text, "hero_synthesis", 2) != "0"
+    assert int(_fact_cell(text, "hero_synthesis", 3)) > 0
+    assert _fact_cell(text, "arena", 1) == "共享根"
+    assert int(_fact_cell(text, "arena", 3)) > 0
+
+
+def test_the_route_pc_count_follows_the_tracked_images(monkeypatch) -> None:
+    """加一张 PC 图，表里那条路线的数字自己 +1 —— 证明不是人抄的。"""
+    baseline = gen_status.render()
+    tracked = gen_status._tracked_pngs()
+    extra = "games/epic7/templates/story/pc/__governance_probe.png"
+    monkeypatch.setattr(gen_status, "_tracked_pngs", lambda: tracked | {extra})
+    changed = gen_status.render()
+    assert int(_fact_cell(changed, "story", 1)) == int(_fact_cell(baseline, "story", 1)) + 1
 
