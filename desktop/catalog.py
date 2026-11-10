@@ -236,6 +236,8 @@ PC_READY_ROUTES: frozenset[str] = frozenset(
         #   界面上这条因此是 `standalone_only`、不能和别的路线混勾。
         #   导航那一节还没做，缺什么写在 `docs/maintenance/achievement.md` 末尾。
         "achievement",
+        # 2026-11-09：主线补星（同样只有 PC 素材）。
+        "story_star",
     }
 )
 
@@ -470,6 +472,14 @@ ROUTES = (
         "次数不可调，可以和其他路线串着跑。\n"
         "注意：目前只有 PC 版素材（模拟器以后再补），所以这条只在 PC 客户端上出现。",
         group=GROUP_DAILY,
+    ),
+    RouteInfo(
+        "story_star",
+        "把主线 Episode 里没满 3 星的小节补满：从关卡列表进「选取Episode」，"
+        "只补第6时代与 Episode 1~5；篇章看星数，小节看绿勾，战斗和队伍复用主线。\n"
+        "一轮 = 六章里所有未满星小节扫完，次数不可调，打完自动回列表接着找下一个。\n"
+        "注意：只有 PC 素材；横向翻页用滚轮，拖拽无效。",
+        group=GROUP_ONDEMAND,
     ),
 )
 

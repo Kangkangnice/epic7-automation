@@ -173,6 +173,9 @@ ROUTE_KEYWORDS = {
     # 证据 `evidence/achievement.py`、模板 `templates/achievement/pc/`、
     # 测试 `test_achievement.py` —— 文件名都带 achievement ⇒ 一条就够。
     "achievement": "achievement",
+    # 主线补星（2026-11-09）。主模块 `story_star.py`、证据 `evidence/story_star.py`、
+    # 测试 `test_story_star.py` —— 文件名都带 story_star ⇒ 一条就够。
+    "story_star": "story_star",
     # 社区签到这一组：主模块 + 两个判据模块。`route_of()` 是按**文件名**查表的，
     # 所以三个都要登记 —— 漏了 `community_pages` 会让「只改了判据模板区」这种
     # 最小的改动静默退回全量（9 分钟），而且理由看不出来。

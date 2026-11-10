@@ -11,6 +11,7 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
 from auto_game_unified.core.pc_window import (
     PC_INPUT_BACKGROUND,
@@ -19,6 +20,21 @@ from auto_game_unified.core.pc_window import (
 from auto_game_unified.desktop.catalog import route_by_name
 from auto_game_unified.desktop.controller import DesktopController
 from auto_game_unified.desktop.worker import WorkerController
+
+
+class _RecordingWorker:
+    """只记录 `notice` / `start`，不真的开子进程。"""
+
+    def __init__(self) -> None:
+        self.running = False
+        self.requests: list[object] = []
+        self.notices: list[str] = []
+
+    def notice(self, message: str) -> None:
+        self.notices.append(message)
+
+    def start(self, request: object) -> None:
+        self.requests.append(request)
 
 
 class DesktopControllerTest(unittest.TestCase):
@@ -83,6 +99,51 @@ class DesktopControllerTest(unittest.TestCase):
         self.assertEqual(c.pc_input_mode, PC_INPUT_FOREGROUND)
         with self.assertRaises(ValueError):
             c.select_pc_input_mode("whatever")
+
+    def test_emulator_skips_only_pc_only_routes_and_runs_the_rest(self) -> None:
+        """新路线只影响它自己：模拟器下补星缺图，老路线必须照常跑。"""
+        worker = _RecordingWorker()
+        c = DesktopController(worker=worker)
+        c.toggle("story", True)
+        c.toggle("story_star", True)  # 只有 PC 素材
+        c.preflight_report = SimpleNamespace(can_start=True)
+
+        c.start()
+
+        # 勾选顺序不变，只把不可用的那条剔掉。
+        self.assertEqual(worker.requests[0].modes, ("story",))
+        self.assertEqual(
+            dict(worker.requests[0].cycles),
+            {"story": route_by_name("story").default_cycles},
+        )
+        self.assertEqual(len(worker.notices), 1)
+        self.assertIn("主线补星", worker.notices[0])
+        self.assertIn("已跳过", worker.notices[0])
+
+    def test_pc_skips_unapproved_routes_but_runs_the_rest(self) -> None:
+        worker = _RecordingWorker()
+        c = DesktopController(worker=worker)
+        c.select_backend("pc")
+        c.toggle("story", True)  # 已放行
+        c.toggle("expedition", True)  # 未在 PC 放行
+        c.preflight_report = SimpleNamespace(can_start=True)
+
+        c.start()
+
+        self.assertEqual(worker.requests[0].modes, ("story",))
+        self.assertIn("远征", worker.notices[0])
+
+    def test_all_unsupported_routes_still_raise_instead_of_silently_doing_nothing(self) -> None:
+        worker = _RecordingWorker()
+        c = DesktopController(worker=worker)
+        c.toggle("story_star", True)
+        c.preflight_report = SimpleNamespace(can_start=True)
+
+        with self.assertRaises(RuntimeError) as caught:
+            c.start()
+
+        self.assertIn("都不可用", str(caught.exception))
+        self.assertEqual(worker.requests, [])
 
 
 if __name__ == "__main__":

@@ -183,37 +183,50 @@ class DesktopController:
         """这次要跑的「路线 + 次数」—— 界面上看到的那一套，就是它的唯一出处。"""
         return tuple((mode, self.cycles[mode]) for mode in self.selection)
 
-    def start(self) -> None:
-        if not self.can_start:
-            raise RuntimeError("请先完成环境检测")
+    def resolve_plan(
+        self,
+    ) -> tuple[tuple[tuple[str, int], ...], tuple[str, ...]]:
+        """按当前后端筛掉**用不了**的路线，返回 ``(要跑的, 被跳过的)``。
+
+        **新路线只影响它自己**：某条路线在当前后端没素材 / 没放行时，跳过那一条，
+        其余勾选照常跑。这与 ``games/epic7/daily_tasks.py`` 里
+        ``not_supported`` 的口径一致 —— 不能让一条路线把整批老路线一起拦下。
+        **全被筛掉仍要报错**，不许「什么都没跑」冒充成功。
+        """
         plan = self.plan()
         if not plan:
             raise RuntimeError("至少要勾选一条路线")
+
         if self.selected_backend == "pc":
-            # PC 后端已露面，但只有**通过 PC 验收**的路线才让在界面上跑：
-            # 没验收的路线在 PC 上是必然失败，而失败原因看起来像程序坏了。
-            # （命令行 --window-backend pc 不受此限，开发验证走命令行。）
-            not_ready = [
-                mode for mode, _ in plan if mode not in PC_READY_ROUTES
-            ]
-            if not_ready:
-                names = "、".join(route_by_name(mode).label for mode in not_ready)
-                raise RuntimeError(
-                    f"「{names}」还没有在 PC 客户端上通过验收，界面暂不支持；"
-                    "请先切回模拟器，或用命令行做开发验证。"
-                )
+            # PC 后端只放行通过验收的路线；没放行的在 PC 上必然失败，
+            # 而失败原因看起来像程序坏了。（命令行开发验证不受此限。）
+            unsupported = [mode for mode, _ in plan if mode not in PC_READY_ROUTES]
+            reason = "还没有在 PC 客户端上通过验收"
         else:
-            # 反过来也要拦：只有 PC 素材的路线在模拟器上必然缺图
-            # （构造期 FileNotFoundError），而那个错看起来也像程序坏了。
-            no_material = [
-                mode for mode, _ in plan if mode in PC_ONLY_ROUTES
-            ]
-            if no_material:
-                names = "、".join(route_by_name(mode).label for mode in no_material)
-                raise RuntimeError(
-                    f"「{names}」目前只有 PC 客户端版素材，模拟器上还没有图；"
-                    "请切到 PC 客户端再跑。"
-                )
+            # 反过来：只有 PC 素材的路线在模拟器上构造期就缺图。
+            unsupported = [mode for mode, _ in plan if mode in PC_ONLY_ROUTES]
+            reason = "目前只有 PC 客户端版素材，模拟器上还没有图"
+
+        skipped = tuple(unsupported)
+        runnable = tuple((mode, cycles) for mode, cycles in plan if mode not in skipped)
+        if not runnable:
+            names = "、".join(route_by_name(mode).label for mode in skipped)
+            raise RuntimeError(
+                f"所选路线在当前窗口后端都不可用：{names}（{reason}）；"
+                "请切换窗口后端，或改勾别的路线。"
+            )
+        return runnable, skipped
+
+    def start(self) -> None:
+        if not self.can_start:
+            raise RuntimeError("请先完成环境检测")
+        plan, skipped = self.resolve_plan()
+        if skipped:
+            names = "、".join(route_by_name(mode).label for mode in skipped)
+            self.worker.notice(
+                f"已跳过 {len(skipped)} 条当前后端不可用的路线：{names}"
+                "（其余勾选照常运行；要跑它们请切换窗口后端）。"
+            )
         self.worker.start(
             RunRequest(
                 modes=tuple(mode for mode, _ in plan),

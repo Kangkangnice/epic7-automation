@@ -32,6 +32,7 @@ class Epic7ModeRegistryTests(unittest.TestCase):
                 "moonlight_theater",
                 "activity_story",
                 "achievement",
+                "story_star",
             },
             set(MODE_SPECS),
         )

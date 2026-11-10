@@ -14,7 +14,7 @@ auto_game_unified/
 │  ├─ autoclicker.py        # 固定点连点器（「实用工具」页；与路线无关，不认画面）
 │  ├─ qqbot.py             # 官方 QQ 机器人开放平台 C2C 私聊推送
 │  ├─ window.py             # 模拟器窗口捕获与局部坐标点击（雷电 adb 通道）
-│  ├─ pc_window.py          # PC 客户端窗口 I/O（BitBlt 后台抓屏、SendInput 点击、ESC、滑动）
+│  ├─ pc_window.py          # PC 客户端窗口 I/O（BitBlt 后台抓屏、SendInput 点击、ESC、滑动、滚轮）
 │  ├─ evidence_diagnostics.py # 失败诊断落盘（screen/source/target/evidence.json）
 │  ├─ elevation.py          # UIPI 提权判断（对方窗口权限更高时点击会被静默拦掉）
 │  ├─ portrait.py           # 竖屏通道（H5 网页把模拟器切成竖屏时的取图与坐标）

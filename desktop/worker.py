@@ -99,6 +99,15 @@ class WorkerController:
         """
         return tuple(self._recent_output)
 
+    def notice(self, message: str) -> None:
+        """往界面日志写一条**界面自己产生**的提示（不经过子进程）。
+
+        当前用途：某条路线在当前窗口后端下没有素材 / 没放行，只跳过它自己，
+        其余勾选照跑。这类消息不是子进程输出，不能等 ``_read_output`` 去发，
+        否则用户会看到「开始任务」却不知道有路线被跳过了。
+        """
+        self._events.put(WorkerEvent("log", message))
+
     def start(self, request: RunRequest) -> None:
         if self.running:
             raise RuntimeError("已有自动化任务正在运行")
