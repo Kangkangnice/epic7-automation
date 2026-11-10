@@ -1,25 +1,27 @@
-"""Qt / Fluent 版桌面界面（可选入口，不替换现有 Tk 界面）。
+"""桌面界面（Qt / Fluent）。
 
-启动：``python -m auto_game_unified.desktop_qt``
-依赖：``python -m pip install -r requirements-qt.txt``
+启动：``python -m auto_game_unified.desktop_qt``（``desktop`` 那个入口也转发到这里）
+依赖：``python -m pip install -r requirements.txt``
 
-## 为什么要先解耦
+⚠️ 2026-11-09 起这是**唯一**的界面。原来那套 Tk 界面（``desktop/app.py``、
+``desktop/theme.py``、``desktop/launch_hidden.py``）已按用户要求整体删除；
+``EPIC7_UI=qt`` 这个环境变量开关也一并删掉 —— 只有一条路就不需要开关。
+
+## 业务状态在哪
 
 ``DesktopController`` 是「勾了哪几条、每条几次、用哪个后端、能不能开跑」这套
-**与界面无关的业务状态**。它原来住在 ``desktop/app.py`` 里，而那个文件一开头就
-import tkinter —— Qt 侧想复用它就得把整个 Tk 拉进来（有些环境根本没装 tkinter）。
-2026-11-08 把它搬到 ``desktop/controller.py`` 后，两套界面读的是**同一个类**，
-不会出现「换了一套皮，勾选顺序 / 启动准入规则跟着漂移」。
+**与界面无关的业务状态**，住在 ``desktop/controller.py``，不 import 任何界面库。
+界面只负责把它的真相画出来、把用户的操作喂回去。
 
-## 本版对齐了什么、还差什么
+## 已对齐 / 还欠什么
 
 已对齐：四分组勾选（含整组勾选与活动互斥）、序号即执行顺序、次数输入与只读路线、
 后端切换、PC「不占用前台」开关、环境检测、开始前复检（含逐条模板校验）、
-安全停止、实时日志轮询、会话存档、窗口几何记忆、诊断包导出。
+安全停止（含 30 秒强杀兜底）、实时日志轮询、会话存档、窗口几何记忆、诊断包导出、
+首次使用须知、版本检查、实用工具（连点器）。
 
-⚠️ 刻意**没做**（落地切默认之前必须补）：首次使用须知弹窗、更新检查、
-多套命名配置（profiles）、打包 spec 与安装包图标。这四样都在 Tk 版里有实现，
-切默认入口时逐项对齐，别凭本文件推断「已经有了」。
+刻意**不做**「多套命名配置」（日常 / 活动 / 周末那套保存与切换）：2026-11-09 用户
+明确说不需要。勾选与次数已经按会话存档自动记住上次，日常真正用得上的就是那条。
 """
 
 from __future__ import annotations
@@ -28,6 +30,7 @@ from dataclasses import replace
 from pathlib import Path
 import sys
 import threading
+import time
 
 from PySide6.QtCore import QObject, Qt, QTimer, Signal
 from PySide6.QtGui import QFont, QFontDatabase
@@ -62,6 +65,7 @@ from qfluentwidgets import (
     Theme,
 )
 
+from auto_game_unified.core.autoclicker import AutoClicker
 from auto_game_unified.core.data_paths import data_root
 from auto_game_unified.core.pc_window import (
     PC_INPUT_BACKGROUND,
@@ -82,12 +86,17 @@ from auto_game_unified.desktop.catalog import (
 )
 from auto_game_unified.desktop.controller import DesktopController
 from auto_game_unified.desktop.diagnostics import export_diagnostics
+from auto_game_unified.desktop.onboarding import has_consent, record_consent
 from auto_game_unified.desktop.preflight import (
     run_preflight,
     template_root_for_backend,
     validate_route_templates,
 )
+from auto_game_unified.desktop.update_check import check_for_update
 from auto_game_unified.desktop.worker import WorkerController
+from auto_game_unified.desktop_qt.autoclicker import AutoClickerPage
+from auto_game_unified.desktop_qt.onboarding import prompt_consent
+from auto_game_unified.desktop_qt.style import SPIN_BOX_QSS
 
 ROOT = Path(__file__).resolve().parents[1]
 REPO_PARENT = ROOT.parent
@@ -95,36 +104,21 @@ TEMPLATE_ROOT = ROOT / "games" / "epic7" / "templates"
 DATA_ROOT = data_root()
 _CIRCLED = "①②③④⑤⑥⑦⑧⑨⑩"
 
-# 次数输入框改用原生 QSpinBox，而不是 qfluentwidgets 的 SpinBox：
-# 后者在 PySide6 6.12 下把内部 QLineEdit 压成 1px 宽（真机实测
-# geometry=(0, 1, 1, 31)），文字存在却被整个裁掉；加宽、改只读都无效。
-# 这里只给这一个原生控件写浅色令牌，**不设全局 stylesheet** ——
-# 上一轮「深底白字」事故就是全局覆盖和组件 QSS 打架造成的。
-# 对比度实测（前景/背景，WCAG 2.1）：
-#   #1A1A1A / #FFFFFF ≈ 17.4:1   正文（要求 ≥4.5:1）
-#   #5B5B5B / #F3F4F6 ≈ 6.2:1   禁用态文字（禁用可豁免，仍做够）
-#   #8A8A8A / #FFFFFF ≈ 3.5:1   非文本边框（要求 ≥3:1）
-#   #0078D7 / #FFFFFF ≈ 4.6:1   聚焦描边 / 主色
-_SPIN_BOX_QSS = """
-QSpinBox {
-    color: #1A1A1A;
-    background-color: #FFFFFF;
-    border: 1px solid #8A8A8A;
-    border-radius: 6px;
-    padding: 4px 8px;
-    min-height: 24px;
-    font-size: 14px;
-}
-QSpinBox:focus { border: 2px solid #0078D7; }
-QSpinBox:disabled { color: #5B5B5B; background-color: #F3F4F6; }
-QSpinBox::up-button, QSpinBox::down-button {
-    width: 20px; border: none; background: transparent;
-}
-"""
+# 点了「安全停止」之后的宽限期：过了还不退，就强行结束这个卡住的运行。
+#
+# 依据（2026-08-31 ~ 2026-09-28 的 ``desktop_worker.log``）：88 次正常停止**全部**
+# 在 1~2 秒内以退出码 130 结束，只有 2 次「停止请求之后没有任何结束」——都是运行
+# 卡在**一次底层调用内部**（等一次点击的回执），永远轮不到「动作之间查停止信号」。
+# 所以 30 秒 = 正常路径的十几倍。
+# ⚠️ **别调小**：万一停止正好落在一次**正常收尾**的动作里，强行结束会让它跳过回家
+# 流程（游戏停在半路）。宁可多等，也不误杀。
+STOP_GRACE_MS = 30_000
+# 宽限期内的轮询间隔 —— 只决定「多久发现它其实已经退了」，不是超时精度。
+STOP_POLL_MS = 500
 
 
 def _position_prefix(index: int) -> str:
-    """与 Tk 版 ``DesktopApp._position_prefix`` 同一套展示规则（圈码不够退阿拉伯数字）。"""
+    """序号前缀：头 10 位用圈码，之后退成 `11.`（版面放不下第 11 个圈码）。"""
     return _CIRCLED[index] if index < len(_CIRCLED) else f"{index + 1}."
 
 
@@ -133,6 +127,7 @@ class _Bridge(QObject):
 
     check_done = Signal(object)          # PreflightReport 或 Exception
     start_done = Signal(object, object)  # (PreflightReport 或 None, Exception 或 None)
+    update_done = Signal(object)         # UpdateInfo 或 None
 
 
 class QtDesktopWindow(FluentWindow):
@@ -155,12 +150,24 @@ class QtDesktopWindow(FluentWindow):
         self._bridge = _Bridge()
         self._bridge.check_done.connect(self._on_check_done)
         self._bridge.start_done.connect(self._on_start_done)
+        self._bridge.update_done.connect(self._on_update_done)
         self._route_checks: dict[str, CheckBox] = {}
         self._route_spins: dict[str, QSpinBox] = {}
         self._group_checks: dict[str, CheckBox] = {}
         self._suspend_events = False
         self._checking = False
         self._last_running = False
+        # 「使用须知」确认状态。判定与落盘都在 desktop/onboarding.py（产品条款），
+        # 这里只管「没同意就别让开始任务亮起来」。
+        self.consented = has_consent(self.data_root)
+        self._update_info = None
+        # 连点器是**独立于路线**的通用工具：一个后台线程 + 一组固定坐标，
+        # 业务状态全在 core/autoclicker.py。这里只持有它，好让两件事互斥：
+        # 每日任务在跑时不许开连点，连点在跑时不许开始任务。
+        self.autoclicker = AutoClicker()
+        # 停止兜底的计时器（见 _start_stop_watchdog）。第一次点停止时才建。
+        self._stop_timer: QTimer | None = None
+        self._stop_deadline = 0.0
 
         previous = session.load(self._session_path)
         if previous is not None:
@@ -168,6 +175,7 @@ class QtDesktopWindow(FluentWindow):
 
         self._build_task_page()
         self._build_log_page()
+        self._build_tools_page()
         self._build_about_page()
         self._sync_from_controller()
         self._show_group_detail(grouped_routes()[0][0])
@@ -182,6 +190,13 @@ class QtDesktopWindow(FluentWindow):
         self._poll_timer = QTimer(self)
         self._poll_timer.timeout.connect(self._poll_worker)
         self._poll_timer.start(120)
+
+        # 先让主界面画出来再弹须知：反过来的话，对话框后面是一片空白，
+        # 用户会以为自己只打开了对话框、根本没装上东西（Tk 版当年同一条理由）。
+        QTimer.singleShot(150, self._ensure_consent)
+        # 版本检查排在须知之后、且更晚：先把该看到的画出来，再在后台悄悄问一次。
+        # 它没有任何阻塞行为，慢也不会影响使用。
+        QTimer.singleShot(400, self._start_update_check)
 
     # ── 构建界面 ────────────────────────────────────────────────────────────
 
@@ -214,6 +229,13 @@ class QtDesktopWindow(FluentWindow):
         self.hint_label = CaptionLabel("", card)
         self.hint_label.setWordWrap(True)
         layout.addWidget(self.hint_label)
+        # 「发现新版本」那一行。默认收起（hidden），有新版才露面。
+        # 用自带链接的 QLabel：点了交给系统浏览器，**不下载、不替换任何文件**。
+        self.update_label = CaptionLabel("", card)
+        self.update_label.setWordWrap(True)
+        self.update_label.setOpenExternalLinks(True)
+        self.update_label.setVisible(False)
+        layout.addWidget(self.update_label)
 
         row = QHBoxLayout()
         row.setSpacing(12)
@@ -225,7 +247,7 @@ class QtDesktopWindow(FluentWindow):
         row.addWidget(self.backend_combo)
 
         row.addSpacing(16)
-        row.addWidget(BodyLabel("不占用前台（实验）", card))
+        row.addWidget(BodyLabel("不占用前台", card))
         self.background_switch = SwitchButton(card)
         self.background_switch.checkedChanged.connect(self._on_background_changed)
         row.addWidget(self.background_switch)
@@ -272,7 +294,7 @@ class QtDesktopWindow(FluentWindow):
                 line.addWidget(box, 1)
 
                 spin = QSpinBox(card)
-                spin.setStyleSheet(_SPIN_BOX_QSS)
+                spin.setStyleSheet(SPIN_BOX_QSS)
                 spin.setRange(route.min_cycles, 99)
                 spin.setFixedWidth(112)
                 # 次数固定 = 标准「禁用」态。我们自己的 QSS 把禁用文字写成
@@ -347,6 +369,30 @@ class QtDesktopWindow(FluentWindow):
         layout.addLayout(row)
         self.addSubInterface(page, FluentIcon.DOCUMENT, "运行日志")
 
+    def _build_tools_page(self) -> None:
+        """「实用工具」：与游戏路线无关的通用小工具，第一个是连点器。
+
+        位置就是导航栏第三项（``关于`` 在 BOTTOM，不算主功能）——
+        用户 2026-11-09 要求「放最后」，即「运行日志」之后。
+        """
+        page = AutoClickerPage(
+            clicker=self.autoclicker,
+            busy_reason=self._autoclick_block_reason,
+            parent=self,
+        )
+        page.setObjectName("toolsView")
+        self.addSubInterface(page, FluentIcon.DEVELOPER_TOOLS, "实用工具")
+
+    def _autoclick_block_reason(self) -> str | None:
+        """现在能不能开连点器：不能就返回一句人话，能就返回 ``None``。
+
+        ⚠️ 两套点击同时发会互相干扰 —— 每日任务的点击是「认画面 → 点这一个点」，
+        中间被连点器抢走鼠标就会点到别的地方。宁可直接拒绝，也不要「大概能跑」。
+        """
+        if self.worker.running:
+            return "每日任务正在运行。先停下它再开连点器，两套点击同时发会互相干扰。"
+        return None
+
     def _build_about_page(self) -> None:
         page = QWidget(self)
         page.setObjectName("aboutView")
@@ -354,7 +400,7 @@ class QtDesktopWindow(FluentWindow):
         layout.setContentsMargins(32, 24, 32, 24)
         layout.setSpacing(12)
         layout.addWidget(TitleLabel(PRODUCT_NAME, page))
-        layout.addWidget(CaptionLabel(f"版本 {PRODUCT_VERSION} · Qt / Fluent 预览版", page))
+        layout.addWidget(CaptionLabel(f"版本 {PRODUCT_VERSION}", page))
         about = BodyLabel(
             "基于窗口截图与 OpenCV 模板匹配的 PVE 自动化。"
             "只在认出预期页面时点击；陌生页面、黑屏、遮挡、转场超时一律留证停止。\n\n"
@@ -364,16 +410,26 @@ class QtDesktopWindow(FluentWindow):
         about.setWordWrap(True)
         layout.addWidget(about)
         note = BodyLabel(
-            "⚠️ 本入口仍是预览版：使用须知弹窗、更新检查、多套配置与打包接入尚未对齐 Tk 版。"
-            "日常使用请继续用原桌面入口；确认外观后再把它设为默认。",
+            "「每日任务」按勾选顺序依次跑选中的路线；「实用工具」里是与路线无关的"
+            "小工具（目前是固定点连点器）。两者不能同时开 —— 两套点击会互相干扰。",
             page,
         )
         note.setWordWrap(True)
         layout.addWidget(note)
+        row = QHBoxLayout()
+        self.consent_button = PushButton("重新查看使用须知", page)
+        self.consent_button.clicked.connect(self._show_consent)
+        row.addWidget(self.consent_button)
+        row.addStretch(1)
+        layout.addLayout(row)
         layout.addStretch(1)
         self.addSubInterface(
             page, FluentIcon.INFO, "关于", NavigationItemPosition.BOTTOM
         )
+
+    def _show_consent(self) -> None:
+        """重看条款。**已经同意过的只是重看，不因为这次点了「暂不使用」而收回。**"""
+        prompt_consent(self)
 
     # ── 状态同步 ────────────────────────────────────────────────────────────
 
@@ -410,7 +466,10 @@ class QtDesktopWindow(FluentWindow):
     def _refresh_actions(self) -> None:
         running = self.worker.running
         self.start_button.setEnabled(
-            self.controller.can_start and self.controller.ready and not self._checking
+            self.controller.can_start
+            and self.controller.ready
+            and not self._checking
+            and self.consented
         )
         self.stop_button.setEnabled(running)
         self.check_button.setEnabled(not running and not self._checking)
@@ -427,6 +486,56 @@ class QtDesktopWindow(FluentWindow):
             f"已勾选 {len(self.controller.selection)} 条 · "
             "按勾选顺序执行"
         )
+
+    # ── 使用须知 / 版本检查 ─────────────────────────────────────────────────
+
+    def _ensure_consent(self) -> None:
+        """首次启动（或条款改版后）确认一次使用须知。
+
+        拒绝不弹第二个窗、不拦着关窗口，只在日志里说明「开始任务」为什么点不动 ——
+        它本来就该由**按钮状态**表达，而不是一串弹窗。
+        """
+        if self.consented:
+            return
+        if not prompt_consent(self):
+            self._append_log(
+                "尚未确认使用须知，「开始任务」保持禁用。"
+                "想重新阅读请点「关于」页里的「重新查看使用须知」。"
+            )
+            return
+        self.consented = True
+        if not record_consent(self.data_root):
+            # 落盘失败**照样放行**：用户刚刚确实点了同意，写不进去是这个目录的问题。
+            self._append_log(
+                f"提示：无法保存确认记录（{self.data_root} 不可写），下次启动会再问一次。"
+            )
+        self._refresh_actions()
+
+    def _start_update_check(self) -> None:
+        """后台问一次有没有新版。**查不到什么都不做** —— 不报错、不弹窗。"""
+
+        def job() -> None:
+            try:
+                info = check_for_update(PRODUCT_VERSION, self.data_root)
+            except Exception:  # noqa: BLE001 —— 版本检查失败不该影响任何别的事
+                info = None
+            self._bridge.update_done.emit(info)
+
+        threading.Thread(
+            target=job, name="epic7-qt-update-check", daemon=True
+        ).start()
+
+    def _on_update_done(self, info: object) -> None:
+        """有新版就在状态卡留一行；没有就什么都不做（那一行本来就是收起的）。"""
+        if info is None:
+            return
+        self._update_info = info
+        self.update_label.setText(
+            f'发现新版本 {info.latest}（当前 {info.current}），'
+            f'<a href="{info.url}">点这里查看</a>'
+        )
+        self.update_label.setVisible(True)
+        self._append_log(f"发现新版本 {info.latest}（当前 {info.current}）：{info.url}")
 
     # ── 用户操作 ────────────────────────────────────────────────────────────
 
@@ -492,13 +601,12 @@ class QtDesktopWindow(FluentWindow):
             return
         if checked:
             self._append_log(
-                "输入通道=不占用前台（实验）：启用前请先用 "
-                "tools/probe_background_input.py 在本机实测；"
+                "输入通道=不占用前台：点击走后台，不抢前台；"
                 "滑动没法后台做（Raw Input 只认前台），含滑动的路线会短暂把窗口切到前面，"
                 "滑完立刻把前台还原；Esc 返回会自动改走前台。"
             )
         else:
-            self._append_log("输入通道=抢前台（默认）。")
+            self._append_log("输入通道=抢前台。")
         self._sync_from_controller()
         self._save_session()
 
@@ -536,6 +644,18 @@ class QtDesktopWindow(FluentWindow):
         self._refresh_actions()
 
     def _on_start_clicked(self) -> None:
+        if self.autoclicker.running:
+            self._notify(
+                "warning",
+                "连点器还开着",
+                "先到「实用工具」里停止连点，再开始任务 —— 两套点击同时发会互相干扰。",
+            )
+            return
+        if not self.consented:
+            # 按钮本来就该是灰的（见 _refresh_actions）。走到这里只可能是
+            # 事件顺序异常，仍然守住这条线。
+            self._notify("warning", "使用须知", "请先阅读并同意《使用须知》再开始。")
+            return
         if not self.controller.can_start:
             self._notify("warning", "请先完成环境检测", "点右上角「检测环境」后再开始。")
             return
@@ -561,7 +681,7 @@ class QtDesktopWindow(FluentWindow):
                         try:
                             validate_route_templates(mode, template_root)
                         except Exception as caught:
-                            # 与 Tk 版对齐：报清是哪条路线，别只甩一个裸路径给用户。
+                            # 报清是哪条路线，别只甩一个裸路径给用户。
                             error = RuntimeError(
                                 f"{route_by_name(mode).label}：{caught}"
                             )
@@ -597,6 +717,48 @@ class QtDesktopWindow(FluentWindow):
     def _on_stop_clicked(self) -> None:
         self.controller.stop()
         self._append_log("已发出安全停止请求。")
+        self._start_stop_watchdog()
+
+    def _start_stop_watchdog(self) -> None:
+        """停止请求之后再加一道兜底：宽限期内不退就强行结束。
+
+        为什么必须有（2026-09-28 实机取证）：停止是「在两次动作**之间**查一次信号
+        文件」，而工作进程有可能**卡在一次底层调用的内部**（等一次点击的回执）——
+        卡在里面就永远轮不到下一次检查，信号写了也白写。只写信号、只把按钮变灰，
+        界面就只能一直等下去。
+
+        ⚠️ 用 QTimer 而不是后台线程：这是纯计时 + 一次 force_stop，主线程足够，
+        也省掉「跨线程收界面状态」那一步。
+        """
+        self._stop_deadline = time.monotonic() + STOP_GRACE_MS / 1000
+        if self._stop_timer is None:
+            self._stop_timer = QTimer(self)
+            self._stop_timer.timeout.connect(self._watch_stop)
+        self._stop_timer.start(STOP_POLL_MS)
+
+    def _watch_stop(self) -> None:
+        if self._stop_timer is not None and not self.worker.running:
+            self._stop_timer.stop()
+            return
+        if time.monotonic() < self._stop_deadline:
+            return
+        if self._stop_timer is not None:
+            self._stop_timer.stop()
+        seconds = STOP_GRACE_MS / 1000
+        if self.worker.force_stop():
+            self._append_log(
+                f"等待 {seconds:.0f} 秒仍无响应，已强行结束这个卡住的运行。"
+                "它卡在一次底层调用里读不到停止信号，这次走不完回家流程，"
+                "游戏可能停在半路；重新开始前请先确认模拟器运行正常。"
+            )
+        else:
+            self._append_log(
+                f"等待 {seconds:.0f} 秒仍无响应，并且无法结束这个运行；"
+                "请在任务管理器中手动结束助手进程。"
+            )
+        # 强行结束时读输出的线程可能还卡在那条阻塞的管道上（``事件=结束`` 不会来），
+        # 所以这里必须自己把按钮状态收回来，不能等 finished 事件。
+        self._refresh_actions()
 
     def _on_export_clicked(self) -> None:
         selection = self.controller.selection
@@ -724,7 +886,7 @@ class QtDesktopWindow(FluentWindow):
         screen = QApplication.primaryScreen()
         available = screen.availableGeometry() if screen is not None else None
         if available is not None:
-            # Tk 版与 Qt 版共用同一份会话文件，老界面存下来的可能是最大化 /
+            # 会话文件是跨版本共用的，以前那套界面存下来的可能是最大化 /
             # 接近全屏的几何，直接继承就会「一打开非常大」。超过可用区 85%
             # 一律不认，回退到上面按屏幕比例算的首屏尺寸。
             if w > available.width() * 0.85 or h > available.height() * 0.85:
@@ -749,6 +911,9 @@ class QtDesktopWindow(FluentWindow):
             self._append_log(f"[{kind}] {title}：{content}")
 
     def closeEvent(self, event) -> None:  # noqa: N802 —— Qt 的回调名
+        # 关窗口必须先把连点线程停掉：它是 daemon，进程退出时也会消失，
+        # 但「点完 Close 到进程真正退出」之间还有几百毫秒，这期间鼠标不该还在点。
+        self.autoclicker.stop()
         self._save_session()
         geometry = self.geometry()
         previous = session.load(self._session_path) or session.SessionState()

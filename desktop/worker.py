@@ -40,9 +40,9 @@ class RunRequest:
     # 竞品对应：``功能参数初始化`` 先把 ``ui`` 表整理成运行参数，再交给各路线读；
     # 这里只是把「整理好的一份」原样传下去，解释权归各路线自己。
     params: Mapping[str, Mapping[str, object]] = field(default_factory=dict)
-    # PC 端输入通道：``foreground``（默认，抢前台）/ ``background``（不抢前台）。
+    # PC 端输入通道：``background``（默认，不抢前台）/ ``foreground``（抢前台）。
     # 它是**进程级**设置，写进子进程环境变量，不进 --params-file（那是路线参数）。
-    pc_input_mode: str = "foreground"
+    pc_input_mode: str = "background"
 
 
 @dataclass(frozen=True)
@@ -98,6 +98,15 @@ class WorkerController:
         （``main._run_daily``），界面不重算「谁跑了、跑成没跑成」。
         """
         return tuple(self._recent_output)
+
+    def notice(self, message: str) -> None:
+        """往界面日志写一条**界面自己产生**的提示（不经过子进程）。
+
+        当前用途：某条路线在当前窗口后端下没有素材 / 没放行，只跳过它自己，
+        其余勾选照跑。这类消息不是子进程输出，不能等 ``_read_output`` 去发，
+        否则用户会看到「开始任务」却不知道有路线被跳过了。
+        """
+        self._events.put(WorkerEvent("log", message))
 
     def start(self, request: RunRequest) -> None:
         if self.running:

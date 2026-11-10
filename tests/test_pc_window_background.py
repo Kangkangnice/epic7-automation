@@ -32,9 +32,10 @@ class InputModeSwitchTests(unittest.TestCase):
     def setUp(self):
         self.game = Epic7PcWindow()
 
-    def test_default_is_foreground(self):
-        # 后台通道需要逐机实测，默认绝不能是它。
-        self.assertEqual(self.game.input_mode, PC_INPUT_FOREGROUND)
+    def test_default_is_background(self):
+        # 2026-11-09 用户拍板：后台点击已多次实跑正常，默认就是后台。
+        # 拖拽 / ESC 不受影响，它们各自强制前台（见 swipe / back 的说明）。
+        self.assertEqual(self.game.input_mode, PC_INPUT_BACKGROUND)
 
     def test_unknown_mode_is_rejected_instead_of_silently_falling_back(self):
         with self.assertRaisesRegex(ValueError, "未知的 PC 输入通道"):
@@ -248,6 +249,23 @@ class InputModeWiringTests(unittest.TestCase):
             main_module._build_runtime(
                 "arena", dry_run=False, window_backend="pc"
             )
+        fake_window.set_input_mode.assert_called_once_with(PC_INPUT_BACKGROUND)
+
+    def test_build_runtime_defaults_to_background_when_env_missing(self):
+        """环境变量没设时必须落到后台。
+
+        回归点：``main.py`` 里原先写死 ``PC_INPUT_FOREGROUND`` 兜底 —— 只改窗口层
+        的类默认值会被它顶掉，这条钉子盯的就是那层兜底。
+        """
+        fake_window = MagicMock()
+        with (
+            patch.dict(os.environ, {}, clear=False),
+            patch.object(main_module, "Epic7PcWindow", return_value=fake_window),
+            patch.object(main_module, "Runtime"),
+            patch.object(main_module, "WindowsPStopHotkey"),
+        ):
+            os.environ.pop(PC_INPUT_ENV, None)
+            main_module._build_runtime("arena", dry_run=False, window_backend="pc")
         fake_window.set_input_mode.assert_called_once_with(PC_INPUT_BACKGROUND)
 
 

@@ -63,6 +63,7 @@ class Runtime:
             [tuple[int, int], tuple[int, int], int], None
         ]
         | None = None,
+        wheel: Callable[[tuple[int, int], int], None] | None = None,
         wake: Callable[[tuple[int, int]], None] | None = None,
         back: Callable[[], None] | None = None,
         dry_run: bool = False,
@@ -79,6 +80,7 @@ class Runtime:
         self._capture = capture
         self._click = click
         self._swipe = swipe
+        self._wheel = wheel
         self._wake = wake
         self._back = back
         self.dry_run = dry_run
@@ -167,6 +169,17 @@ class Runtime:
         if self._swipe is None:
             raise RuntimeError("未配置滑动动作")
         self._swipe(start, end, duration_ms)
+
+    def wheel(self, point: tuple[int, int], notches: int, action: str) -> None:
+        """在画布坐标 ``point`` 处滚动鼠标滚轮（正数向上、负数向下）。"""
+        self._stop_if_requested()
+        prefix = "空跑 " if self.dry_run else ""
+        self.log(f"{prefix}执行滚轮 动作={action} 点={point} 格数={notches}")
+        if self.dry_run:
+            return
+        if self._wheel is None:
+            raise RuntimeError("未配置滚轮动作")
+        self._wheel(point, notches)
 
     def back(self, action: str = "back") -> None:
         self._stop_if_requested()

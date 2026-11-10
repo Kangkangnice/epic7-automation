@@ -1,11 +1,11 @@
 """桌面助手的业务状态：勾了哪几条、每条几次、用哪个后端、能不能开跑。
 
-2026-11-08 从 ``desktop/app.py`` 搬出来。**类体一字未改**（唯一替换是把
-``STARTUP_HINTS`` 换成 ``catalog.BACKENDS``：两者键集合相同，但前者定义在 Tk
-文件里，搬走后会形成循环导入）。
+2026-11-08 从 Tk 界面（``desktop/app.py``，2026-11-09 已整个删除）搬出来。
+**类体一字未改**（唯一替换是把 ``STARTUP_HINTS`` 换成 ``catalog.BACKENDS``：
+两者键集合相同，但前者当时定义在界面文件里，搬走后会形成循环导入）。
 
-这里是**纯逻辑**，不 import tkinter，也不 import 任何 Qt —— 两套界面都从这里
-拿同一份判据，避免「界面换了一套，勾选/准入规则跟着漂移」。
+这里是**纯逻辑**，不 import 任何界面库 —— 界面从这里拿判据，避免
+「换了一层皮，勾选 / 准入规则跟着漂移」。
 
 ⚠️ 改本文件等于改公共层：提交前必须跑全量门禁（见 AGENTS.md）。
 """
@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 from auto_game_unified.core.pc_window import (
+    PC_INPUT_BACKGROUND,
     PC_INPUT_FOREGROUND,
     PC_INPUT_MODES,
 )
@@ -43,9 +44,9 @@ class DesktopController:
     def __init__(self, *, worker: WorkerController) -> None:
         self.worker = worker
         self.selected_backend = "emulator"
-        # PC 端输入通道。默认抢前台 —— 后台通道需要逐机实测，绝不默认开。
+        # PC 端输入通道。默认后台（2026-11-09 用户拍板，后台点击已实跑正常）。
         # 模拟器后端下这个值原样保留（用户切回 PC 还在），但不生效。
-        self.pc_input_mode = PC_INPUT_FOREGROUND
+        self.pc_input_mode = PC_INPUT_BACKGROUND
         self.preflight_report: PreflightReport | None = None
         # 默认**一条都不勾**（用户 2026-09-29 拍板）：每次自己挑。顺带当一道
         # 「点开始前先想一下」的确认 —— 世界首领战会花体力、刷书签会花天空石。
@@ -75,22 +76,6 @@ class DesktopController:
             self.selected_backend = state.backend
         if state.pc_input_mode in PC_INPUT_MODES:
             self.pc_input_mode = state.pc_input_mode
-
-    def apply_profile(self, profile: session.Profile) -> None:
-        """把一套命名配置套到界面上：勾选顺序 + 每条次数。
-
-        次数先整体回到各路线默认值，再套这套配置里记的 —— 否则「日常」切到「活动」
-        时，活动没提到的路线会带着日常的次数，两套配置互相污染。
-        """
-        if self.worker.running:
-            return
-        names = [mode for mode in profile.selection if mode in MODE_SPECS]
-        standalone = [mode for mode in names if route_by_name(mode).standalone_only]
-        self.selection = standalone[:1] if standalone else names
-        self.cycles = {route.mode: route.default_cycles for route in ROUTES}
-        for mode, cycles in profile.cycles.items():
-            if mode in MODE_SPECS:
-                self.cycles[mode] = cycles
 
     @property
     def can_start(self) -> bool:
@@ -198,37 +183,50 @@ class DesktopController:
         """这次要跑的「路线 + 次数」—— 界面上看到的那一套，就是它的唯一出处。"""
         return tuple((mode, self.cycles[mode]) for mode in self.selection)
 
-    def start(self) -> None:
-        if not self.can_start:
-            raise RuntimeError("请先完成环境检测")
+    def resolve_plan(
+        self,
+    ) -> tuple[tuple[tuple[str, int], ...], tuple[str, ...]]:
+        """按当前后端筛掉**用不了**的路线，返回 ``(要跑的, 被跳过的)``。
+
+        **新路线只影响它自己**：某条路线在当前后端没素材 / 没放行时，跳过那一条，
+        其余勾选照常跑。这与 ``games/epic7/daily_tasks.py`` 里
+        ``not_supported`` 的口径一致 —— 不能让一条路线把整批老路线一起拦下。
+        **全被筛掉仍要报错**，不许「什么都没跑」冒充成功。
+        """
         plan = self.plan()
         if not plan:
             raise RuntimeError("至少要勾选一条路线")
+
         if self.selected_backend == "pc":
-            # PC 后端已露面，但只有**通过 PC 验收**的路线才让在界面上跑：
-            # 没验收的路线在 PC 上是必然失败，而失败原因看起来像程序坏了。
-            # （命令行 --window-backend pc 不受此限，开发验证走命令行。）
-            not_ready = [
-                mode for mode, _ in plan if mode not in PC_READY_ROUTES
-            ]
-            if not_ready:
-                names = "、".join(route_by_name(mode).label for mode in not_ready)
-                raise RuntimeError(
-                    f"「{names}」还没有在 PC 客户端上通过验收，界面暂不支持；"
-                    "请先切回模拟器，或用命令行做开发验证。"
-                )
+            # PC 后端只放行通过验收的路线；没放行的在 PC 上必然失败，
+            # 而失败原因看起来像程序坏了。（命令行开发验证不受此限。）
+            unsupported = [mode for mode, _ in plan if mode not in PC_READY_ROUTES]
+            reason = "还没有在 PC 客户端上通过验收"
         else:
-            # 反过来也要拦：只有 PC 素材的路线在模拟器上必然缺图
-            # （构造期 FileNotFoundError），而那个错看起来也像程序坏了。
-            no_material = [
-                mode for mode, _ in plan if mode in PC_ONLY_ROUTES
-            ]
-            if no_material:
-                names = "、".join(route_by_name(mode).label for mode in no_material)
-                raise RuntimeError(
-                    f"「{names}」目前只有 PC 客户端版素材，模拟器上还没有图；"
-                    "请切到 PC 客户端再跑。"
-                )
+            # 反过来：只有 PC 素材的路线在模拟器上构造期就缺图。
+            unsupported = [mode for mode, _ in plan if mode in PC_ONLY_ROUTES]
+            reason = "目前只有 PC 客户端版素材，模拟器上还没有图"
+
+        skipped = tuple(unsupported)
+        runnable = tuple((mode, cycles) for mode, cycles in plan if mode not in skipped)
+        if not runnable:
+            names = "、".join(route_by_name(mode).label for mode in skipped)
+            raise RuntimeError(
+                f"所选路线在当前窗口后端都不可用：{names}（{reason}）；"
+                "请切换窗口后端，或改勾别的路线。"
+            )
+        return runnable, skipped
+
+    def start(self) -> None:
+        if not self.can_start:
+            raise RuntimeError("请先完成环境检测")
+        plan, skipped = self.resolve_plan()
+        if skipped:
+            names = "、".join(route_by_name(mode).label for mode in skipped)
+            self.worker.notice(
+                f"已跳过 {len(skipped)} 条当前后端不可用的路线：{names}"
+                "（其余勾选照常运行；要跑它们请切换窗口后端）。"
+            )
         self.worker.start(
             RunRequest(
                 modes=tuple(mode for mode, _ in plan),

@@ -9,8 +9,8 @@ try:
     from auto_game_unified.desktop_qt.app import main
 except ImportError as error:
     raise SystemExit(
-        "Qt 界面还没装依赖。请先执行：\n"
-        "  python -m pip install -r auto_game_unified\\requirements-qt.txt\n"
+        "界面依赖没装齐。请先执行：\n"
+        "  python -m pip install -r auto_game_unified\\requirements.txt\n"
         f"原始错误：{error}"
     ) from error
 

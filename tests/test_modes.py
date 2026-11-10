@@ -32,6 +32,7 @@ class Epic7ModeRegistryTests(unittest.TestCase):
                 "moonlight_theater",
                 "activity_story",
                 "achievement",
+                "story_star",
             },
             set(MODE_SPECS),
         )
@@ -261,6 +262,12 @@ class TemplateRootConventionTests(unittest.TestCase):
         不写死异常类型（现在实测是 ``FileNotFoundError``）：要守的性质是
         「不许静默通过」—— 哪天模板改成懒加载，错根就会一路漏到实跑，
         以「认不出画面」的形式出现，那时候排查成本比现在高得多。
+
+        ⚠️ 跑这条用例时 OpenCV 会先打一行 ``imread_ ... can't open/read file``
+        的 WARN，路径是 ``templates/world_boss/world_boss/knights_title.png`` ——
+        **那是故意的**，正是「多拼一层根」拼出来的路径，紧接着才抛
+        ``FileNotFoundError``。别把它当真的模板缺失去查（2026-11-09 已经
+        有人查过一轮，结论就是本条注释）。
         """
         try:
             get_mode("world_boss").build_machine(TEMPLATES / "world_boss", "home")

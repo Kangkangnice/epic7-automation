@@ -1,9 +1,12 @@
 """版本检查：只提示、不下载；连不上就当没这回事。
 
-三层：
+两层：
 - 版本号比较（纯函数，边界都在这儿）；
-- 何时该查、查到之后写什么（用临时目录，不碰真的 GitHub）；
-- 界面上那一行「发现新版本」会不会出现、点了会不会开浏览器。
+- 何时该查、查到之后写什么（用临时目录，不碰真的 GitHub）。
+
+⚠️ 2026-11-09 删掉 Tk 界面时，第三层「那一行会不会出现在界面上」随之删除 ——
+它测的是 `DesktopApp`。Qt 版把同一行接在 `desktop_qt/app.py` 的状态卡里，
+用的是本文件测过的 `check_for_update`。
 """
 
 from __future__ import annotations
@@ -13,12 +16,7 @@ import json
 
 import pytest
 
-pytest.importorskip("tkinter")
-import tkinter as tk
-
-from auto_game_unified.desktop import app as app_module
 from auto_game_unified.desktop import update_check
-from auto_game_unified.desktop.app import DesktopApp, DesktopController
 from auto_game_unified.desktop.update_check import (
     UpdateInfo,
     check_for_update,
@@ -258,148 +256,3 @@ def test_fetch_swallows_every_kind_of_failure(error):
     assert fetch_latest_release(opener=fake_opener(None, error=error)) is None
 
 
-# --------------------------------------------------------------------------
-# 界面
-# --------------------------------------------------------------------------
-
-
-class IdleWorker:
-    def __init__(self) -> None:
-        self.running = False
-
-    def drain_events(self) -> list:
-        return []
-
-
-class ImmediateThread:
-    def __init__(self, *, target, **_kwargs) -> None:
-        self.target = target
-
-    def start(self) -> None:
-        self.target()
-
-
-@pytest.fixture(scope="module")
-def tk_root():
-    try:
-        root = tk.Tk()
-    except tk.TclError as exc:
-        # 环境级偶发：一次进程里建第二个 Tk 根时，偶尔会报
-        # "Can't find a usable init.tcl"（全量 2026-10-20 撞过一次，单跑这个文件不复现）。
-        # 跳过而不是整轮变红 —— 目录、Tcl 本身都好好的，换个进程就能起。
-        pytest.skip(f"Tk 起不来：{exc}")
-    root.withdraw()
-    yield root
-    root.destroy()
-
-
-@pytest.fixture
-def tk_window(tk_root):
-    existing = set(tk_root.tk.call("after", "info"))
-    window = tk.Toplevel(tk_root)
-    window.withdraw()
-    yield window
-    for callback in set(tk_root.tk.call("after", "info")) - existing:
-        tk_root.tk.call("after", "cancel", callback)
-    window.destroy()
-
-
-def make_app(tk_window, tmp_path, **overrides) -> DesktopApp:
-    options = {"thread_factory": ImmediateThread}
-    options.update(overrides)
-    return DesktopApp(
-        tk_window,
-        controller=DesktopController(worker=IdleWorker()),
-        project_root=tmp_path,
-        **options,
-    )
-
-
-def test_the_banner_is_hidden_by_default(tk_window, tmp_path):
-    app = make_app(tk_window, tmp_path)
-
-    assert app.update_label.winfo_manager() == ""
-
-
-def test_a_new_release_shows_one_line_and_logs_it(tk_window, tmp_path):
-    app = make_app(tk_window, tmp_path)
-
-    app._show_update(
-        UpdateInfo("0.1.0-dev", "v0.2.0", "https://example.test/release")
-    )
-
-    assert app.update_label.winfo_manager() == "grid"
-    assert "v0.2.0" in app.update_var.get()
-    assert "0.1.0-dev" in app.update_var.get()
-    assert "发现新版本" in app.log_text.get("1.0", tk.END)
-
-
-def test_no_release_keeps_the_banner_hidden(tk_window, tmp_path):
-    app = make_app(tk_window, tmp_path)
-
-    app._show_update(None)
-
-    assert app.update_label.winfo_manager() == ""
-
-
-def test_the_check_runs_in_the_background_and_lands_on_the_banner(tk_window, tmp_path):
-    app = make_app(
-        tk_window,
-        tmp_path,
-        update_check=lambda: UpdateInfo(
-            "0.1.0-dev", "v0.2.0", "https://example.test/release"
-        ),
-    )
-
-    app._start_update_check()
-    # 没有 mainloop：手动跑一次挂起回调，等价于线程结束后回到主线程
-    app.root.update_idletasks()
-    app._show_update(
-        UpdateInfo("0.1.0-dev", "v0.2.0", "https://example.test/release")
-    )
-
-    assert app.update_label.winfo_manager() == "grid"
-
-
-def test_a_broken_check_never_reaches_the_ui(tk_window, tmp_path):
-    def boom():
-        raise RuntimeError("不该冒到界面上")
-
-    app = make_app(tk_window, tmp_path, update_check=boom)
-
-    app._start_update_check()
-
-    assert app.update_label.winfo_manager() == ""
-
-
-def test_without_a_checker_nothing_happens(tk_window, tmp_path):
-    app = make_app(tk_window, tmp_path)
-
-    app._start_update_check()
-
-    assert app.update_label.winfo_manager() == ""
-
-
-def test_clicking_the_banner_opens_the_release_page(tk_window, tmp_path, monkeypatch):
-    opened: list[str] = []
-    monkeypatch.setattr(
-        app_module.webbrowser, "open", lambda url: opened.append(url) or True
-    )
-    app = make_app(tk_window, tmp_path)
-    app._show_update(UpdateInfo("0.1.0-dev", "v0.2.0", "https://example.test/release"))
-
-    app._open_release_page()
-
-    assert opened == ["https://example.test/release"]
-
-
-def test_clicking_without_a_release_does_nothing(tk_window, tmp_path, monkeypatch):
-    opened: list[str] = []
-    monkeypatch.setattr(
-        app_module.webbrowser, "open", lambda url: opened.append(url) or True
-    )
-    app = make_app(tk_window, tmp_path)
-
-    app._open_release_page()
-
-    assert opened == []

@@ -13,6 +13,14 @@ from auto_game_unified.desktop.worker import (
 )
 
 
+def test_notice_is_streamed_to_the_ui_without_a_child_process(tmp_path):
+    worker = WorkerController(repo_parent=tmp_path)
+    worker.notice("已跳过 1 条当前后端不可用的路线：主线补星")
+    assert worker.drain_events() == [
+        WorkerEvent("log", "已跳过 1 条当前后端不可用的路线：主线补星")
+    ]
+
+
 class FakeProcess:
     def __init__(self, exit_code=0, pid=4321):
         self.stdout = iter(["第一行\n", "第二行\n"])
@@ -145,7 +153,7 @@ def test_worker_forwards_pc_input_mode_via_cli_and_env(tmp_path):
     assert options["env"][PC_INPUT_ENV] == "background"
 
 
-def test_worker_defaults_to_foreground(tmp_path):
+def test_worker_defaults_to_background(tmp_path):
     calls = []
     worker = WorkerController(
         repo_parent=tmp_path,
@@ -157,8 +165,8 @@ def test_worker_defaults_to_foreground(tmp_path):
     worker.join_reader()
 
     command, options = calls[0]
-    assert command[command.index("--pc-input-mode") + 1] == "foreground"
-    assert options["env"][PC_INPUT_ENV] == "foreground"
+    assert command[command.index("--pc-input-mode") + 1] == "background"
+    assert options["env"][PC_INPUT_ENV] == "background"
 
 
 def test_worker_rejects_unknown_pc_input_mode_before_spawning(tmp_path):

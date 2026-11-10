@@ -209,6 +209,12 @@ def _pc_only_lines() -> list[str]:
 #: 所以显式写清，并由 tests/test_status_doc.py 钉住「这两格不许退化成 0」。
 #: 值 = (模板目录名, 夹具目录前缀)
 ROUTE_DIR_ALIASES = {"hero_synthesis": ("hero", "epic7_hero")}
+#: 夹具目录名有前缀包含关系时，显式声明「这些目录属于另一条路线」。
+#: `epic7_story_star_pc/` 不能数进 `story`（2026-11-10 合并 main 时撞出：55 应为 45）；
+#: 但不能简单加目录边界 —— `epic7_side_story_boss/` 是 `side_story` 自己的变体夹具。
+ROUTE_FIXTURE_EXCLUDES: dict[str, tuple[str, ...]] = {
+    "story": ("epic7_story_star",),
+}
 #: 竞技场模板与全局共享图混放在 templates/ 根、templates/pc/ 根，
 #: 无法按路线归属 —— 宁可写「共享根」，也不要报一个假的 0。
 SHARED_TEMPLATE_ROOT_ROUTES = frozenset({"arena"})
@@ -239,9 +245,16 @@ def _route_fact_rows(tracked: set[str]) -> list[str]:
             pc_count = sum(1 for n in in_route if n.startswith(f"{tmpl}{directory}/pc/")) + len(in_pc_root)
             pc_cell = str(pc_count)
             template_cell = str(len(in_route) + len(in_pc_root))
+        # 裸前缀能覆盖同路线的变体目录（如 epic7_side_story_boss/），
+        # 但必须显式排除名字以它开头的**另一条路线**（story_star）。
+        excludes = ROUTE_FIXTURE_EXCLUDES.get(mode, ())
         fixture_count = sum(
             1 for n in tracked
-            if n.startswith(f"{fixtures}{fixture_prefix}") and n.endswith(".png")
+            if n.startswith(f"{fixtures}{fixture_prefix}")
+            and n.endswith(".png")
+            and not any(
+                n.startswith(f"{fixtures}{excluded}") for excluded in excludes
+            )
         )
         spec = modes.MODE_SPECS[mode]
         if not spec.needs_navigation:
@@ -285,10 +298,11 @@ def render() -> str:
         "",
         "图例与口径：",
         "",
-        "- **模拟器**：「不可用（仅 PC）」表示这条路线只有 PC 素材，模拟器后端下整条跳过，",
-        "  汇总里记 `not_supported`，不算失败。",
-        "- **PC 客户端**：只有 `desktop/catalog.PC_READY_ROUTES` 里的路线才会出现在界面上；",
-        "  其余路线选了会被拦下并说明原因。命令行 `--window-backend pc` 不受这层限制。",
+        "- **模拟器**：「不可用（仅 PC）」表示这条路线只有 PC 素材；界面勾选时只跳过它自己，",
+        "  每日任务连打里记 `not_supported`，都不算失败。",
+        "- **PC 客户端**：界面只放行 `desktop/catalog.PC_READY_ROUTES` 里的路线；",
+        "  勾到没放行的路线也只跳过那一条、其余照跑（日志会说明），全不可用才报错。",
+        "  命令行 `--window-backend pc` 不受这层限制。",
         "- **默认次数**：界面上预填的值，`-` 表示该路线没有次数概念。",
         "",
         "## 二、在制品（进行中）",
@@ -322,7 +336,8 @@ def render() -> str:
         "",
         "> 路线手册里**不要再手抄**「有几张 PC 图 / 几张模板 / 几张夹具」，链到本表即可。",
         "> 口径：模板只数 `games/epic7/templates/<路线>/` 与 `templates/pc/<路线>/`；",
-        "> 夹具数 `tests/fixtures/epic7_<路线>*` 前缀。",
+        "> 夹具数 `tests/fixtures/epic7_<路线>` 前缀（含 `epic7_<路线>_pc/` 等变体目录）；"
+        "若与另一条路线重名前缀，在 `ROUTE_FIXTURE_EXCLUDES` 显式排除。",
         "> `hero_synthesis` 的素材目录叫 `hero`；`arena` 的模板与全局共享图混放在模板根，",
         "> 无法按路线归属，标「共享根」而不是报一个假的 0 —— 别名见 `gen_status.py::ROUTE_DIR_ALIASES`。",
         "> 开局接力读 `MODE_SPECS.resume_probe` 与 `RESUME_EXEMPT`，PC 放行读 `PC_READY_ROUTES`。",

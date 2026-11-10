@@ -1,8 +1,8 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 620" width="1000" height="620" role="img" aria-label="第七史诗自动助手桌面界面示意">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 780" width="1000" height="780" role="img" aria-label="第七史诗自动助手桌面界面示意">
   <title>第七史诗自动助手 · 桌面界面示意</title>
-  <desc>浅色模式界面示意：白色面板、蓝色主按钮、深色文字、四分组路线清单与右侧说明卡。与真实 Qt 预览界面同一套配色。</desc>
+  <desc>浅色模式界面示意：左侧三页导航（每日任务 / 运行日志 / 实用工具）、白色面板、蓝色主按钮、深色文字、四分组路线清单与右侧说明卡；下方另画出第 2、3 页各自做什么。</desc>
 
-  <rect x="0" y="0" width="1000" height="620" fill="#F5F7FB"/>
+  <rect x="0" y="0" width="1000" height="780" fill="#F5F7FB"/>
   <rect x="10" y="10" width="980" height="600" rx="14" fill="#FFFFFF" stroke="#D1D5DB" stroke-width="1.5"/>
 
   <!-- 标题栏 -->
@@ -13,11 +13,13 @@
   <circle cx="910" cy="36" r="5" fill="#D1D5DB"/>
   <line x1="10" y1="56" x2="990" y2="56" stroke="#E5E7EB" stroke-width="1"/>
 
-  <!-- 左侧导航 -->
+  <!-- 左侧导航：三页 + 关于 -->
   <rect x="10" y="56" width="56" height="554" fill="#F9FAFB"/>
   <rect x="22" y="76" width="32" height="32" rx="6" fill="#EFF6FF"/>
   <rect x="30" y="84" width="16" height="16" rx="3" fill="none" stroke="#0078D7" stroke-width="2"/>
   <rect x="30" y="124" width="16" height="16" rx="3" fill="none" stroke="#9CA3AF" stroke-width="2"/>
+  <rect x="30" y="172" width="16" height="16" rx="3" fill="none" stroke="#9CA3AF" stroke-width="2"/>
+  <circle cx="38" cy="180" r="3.5" fill="none" stroke="#9CA3AF" stroke-width="2"/>
   <rect x="30" y="564" width="16" height="16" rx="8" fill="none" stroke="#9CA3AF" stroke-width="2"/>
 
   <!-- 顶部状态卡 -->
@@ -96,4 +98,17 @@
   <text x="830" y="581" fill="#6B7280" font-family="Microsoft YaHei, PingFang SC, sans-serif" font-size="11" text-anchor="middle">安全停止</text>
   <rect x="882" y="562" width="92" height="30" rx="6" fill="#0078D7"/>
   <text x="928" y="581" fill="#FFFFFF" font-family="Microsoft YaHei, PingFang SC, sans-serif" font-size="11" font-weight="700" text-anchor="middle">开始任务</text>
+
+  <!-- 下方：另外两页（左侧导航第 2、3 项） -->
+  <text x="82" y="646" fill="#6B7280" font-family="Microsoft YaHei, PingFang SC, sans-serif" font-size="11">上面这张停在「每日任务」页。左侧导航第 2、3 项是这两块：</text>
+
+  <rect x="82" y="660" width="430" height="98" rx="8" fill="#FFFFFF" stroke="#E5E7EB" stroke-width="1.5"/>
+  <text x="98" y="684" fill="#111827" font-family="Microsoft YaHei, PingFang SC, sans-serif" font-size="12" font-weight="700">第 2 页 · 运行日志</text>
+  <text x="98" y="708" fill="#1F2937" font-family="Microsoft YaHei, PingFang SC, sans-serif" font-size="11">实时日志全文。跑挂了要留证，先看这一页；</text>
+  <text x="98" y="728" fill="#1F2937" font-family="Microsoft YaHei, PingFang SC, sans-serif" font-size="11">定位清楚之后，再用「导出诊断包」把现场打包发出来。</text>
+
+  <rect x="530" y="660" width="444" height="98" rx="8" fill="#FFFFFF" stroke="#E5E7EB" stroke-width="1.5"/>
+  <text x="546" y="684" fill="#111827" font-family="Microsoft YaHei, PingFang SC, sans-serif" font-size="12" font-weight="700">第 3 页 · 实用工具 —— 连点器</text>
+  <text x="546" y="708" fill="#1F2937" font-family="Microsoft YaHei, PingFang SC, sans-serif" font-size="11">拾取屏幕上的一个点，按填好的间隔一直左键单击；</text>
+  <text x="546" y="728" fill="#0078D7" font-family="Microsoft YaHei, PingFang SC, sans-serif" font-size="11" font-weight="700">随时按 P 停止 —— 与自动化的停止键是同一个键。</text>
 </svg>

@@ -78,7 +78,7 @@ PACKAGE = PACKAGE_DIR.name
 TEST_KEYWORD_OVERRIDES: dict[str, tuple[str, ...]] = {
     # 串跑编排层：主模块 + 桌面入口 + 圣域（它直接调用 daily_tasks 的编排）。
     "games/epic7/daily_tasks.py": (
-        "daily_tasks", "desktop_worker", "desktop_app", "sanctuary",
+        "daily_tasks", "desktop_worker", "sanctuary",
     ),
     # 注册表：路线清单、桌面目录、导航计划三处都会读它。
     "games/epic7/modes.py": (
@@ -173,6 +173,9 @@ ROUTE_KEYWORDS = {
     # 证据 `evidence/achievement.py`、模板 `templates/achievement/pc/`、
     # 测试 `test_achievement.py` —— 文件名都带 achievement ⇒ 一条就够。
     "achievement": "achievement",
+    # 主线补星（2026-11-09）。主模块 `story_star.py`、证据 `evidence/story_star.py`、
+    # 测试 `test_story_star.py` —— 文件名都带 story_star ⇒ 一条就够。
+    "story_star": "story_star",
     # 社区签到这一组：主模块 + 两个判据模块。`route_of()` 是按**文件名**查表的，
     # 所以三个都要登记 —— 漏了 `community_pages` 会让「只改了判据模板区」这种
     # 最小的改动静默退回全量（9 分钟），而且理由看不出来。
