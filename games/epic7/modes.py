@@ -133,6 +133,14 @@ from auto_game_unified.games.epic7.moonlight_theater import (
     MoonlightState,
     MoonlightStateMachine,
 )
+from auto_game_unified.games.epic7.story_star import (
+    STORY_STAR_ENTRY_PAGE,
+    StoryStarRunner,
+    StoryStarState,
+    StoryStarStateMachine,
+    build_story_star_templates,
+    detect_story_star_resume_point,
+)
 from auto_game_unified.games.epic7.world_boss import (
     WORLD_BOSS_ENTRY_PAGE,
     WorldBossRunner,
@@ -205,7 +213,7 @@ class ModeSpec:
     # 业务模式」的路线才设成 0 —— 目前**只有** ``shop_refresh``：0 次 = 照常进商店、
     # 从上到下扫一遍、把想要的买掉，但**一次都不付费刷新**（秘密商店自己会随时间自动刷新）。
     # 各入口的「次数必须为正」校验一律以本字段为准
-    # （``desktop/app.py`` / ``desktop/worker.py`` / ``main.py`` / ``shop_refresh.py``）。
+    # （``desktop/worker.py`` / ``main.py`` / ``shop_refresh.py``）。
     min_cycles: int = 1
     needs_navigation: bool = True
     resume_probe: Optional[ResumeProbe] = None
@@ -413,6 +421,15 @@ def _build_achievement(template_root: Path, state: str) -> AchievementStateMachi
     return AchievementStateMachine(
         build_achievement_templates(template_root),
         initial_state=AchievementState(state),
+    )
+
+
+def _build_story_star(template_root: Path, state: str) -> StoryStarStateMachine:
+    # 与成就同一种口径：工厂吃**总根**，由 ``build_story_star_templates`` 自己拼
+    # ``story_star/`` 与 ``story/``（战斗链路复用主线那套模板）。
+    return StoryStarStateMachine(
+        build_story_star_templates(template_root),
+        initial_state=StoryStarState(state),
     )
 
 
@@ -1196,6 +1213,38 @@ MODE_SPECS = {
             ready_note="成就页已就绪",
         ),
     ),
+    # 2026-11-09：主线补星（PC 端；素材只有 PC，业务逻辑与模拟器共通）。
+    "story_star": ModeSpec(
+        name="story_star",
+        label="主线补星",
+        default_state=StoryStarState.EPISODE.value,
+        # 终态 DONE 不是一页画面（是「6 个 Episode 都扫完了」的记号），不给当起始状态。
+        states=frozenset(
+            state.value
+            for state in StoryStarState
+            if state is not StoryStarState.DONE
+        ),
+        build_machine=_build_story_star,
+        runner_type=StoryStarRunner,
+        # 一次运行 = 把 6 个 Episode 扫一遍，不是「打 N 关」⇒ 不给次数。
+        cycles_editable=False,
+        # 开局接力：三层里任意一层都就地接管（判据与运行期同源）。
+        resume_probe=_resume_probe(detect_story_star_resume_point),
+        # 导航链与主线**同一条**：两条路线进的是同一个关卡列表页。
+        navigation_plan=NavigationPlan(
+            mode="story_star",
+            steps=(
+                NavigationStep(
+                    "lobby", (STORY_STAR_ENTRY_PAGE,), "lobby_story", "进入主线"
+                ),
+            ),
+            resume_entries=frozenset({STORY_STAR_ENTRY_PAGE}),
+            resume_log_mode="主线补星",
+            resume_action="跳过回大厅与进入主线",
+            resume_state_done="已在关卡列表",
+            ready_note="关卡列表已就绪",
+        ),
+    ),
     "community": ModeSpec(
         name="community",
         label="社区签到",
@@ -1518,9 +1567,9 @@ def _assert_navigation_declared() -> None:
 # 不是界面偏好；``games/`` 也不能反向 import ``desktop/``。
 #
 # 2026-11-09：``achievement`` 移出（模拟器侧 5 张页面图 + 导航入口图已补齐），
-# 名单暂时**清空**。保留这个集合是因为界面与每日任务连打都还在读它 ——
-# 以后真出现「只有一边有素材」的路线，仍然往这里丢一个名字即可。
-PC_ONLY_ROUTES: frozenset[str] = frozenset()
+# 同日又加回 ``story_star``（主线补星，只做了 PC 素材；模拟器以后要用再补图并实测）。
+# 保留这个集合是因为界面与每日任务连打都还在读它。
+PC_ONLY_ROUTES: frozenset[str] = frozenset({"story_star"})
 
 
 def _run_load_time_checks() -> None:

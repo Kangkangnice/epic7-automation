@@ -30,7 +30,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from auto_game_unified.core.pc_window import (
-    PC_INPUT_FOREGROUND,
+    PC_INPUT_BACKGROUND,
     PC_INPUT_MODES,
 )
 
@@ -48,20 +48,6 @@ class LastRun:
 
 
 @dataclass(frozen=True)
-class Profile:
-    """一套命名的配置：跑哪几条、每条几次。
-
-    ⚠️ ``params`` 是**预留位**：现在没有路线往里写，但结构先定死 ——
-    将来某条路线有了专属参数，直接往里放，**不用改文件格式、不用改读写代码**。
-    这是「不希望再返工」在数据层的落点。
-    """
-
-    selection: tuple[str, ...] = ()
-    cycles: Mapping[str, int] = field(default_factory=dict)
-    params: Mapping[str, Mapping[str, Any]] = field(default_factory=dict)
-
-
-@dataclass(frozen=True)
 class SessionState:
     """界面需要记住的全部东西。字段全是**界面视角**，与路线实现无关。"""
 
@@ -70,16 +56,13 @@ class SessionState:
     cycles: Mapping[str, int] = field(default_factory=dict)
     backend: str = "emulator"
     # PC 端输入通道：foreground=抢前台 / background=不抢前台。
-    # 和勾选/后端一样「记住上次」；坏值一律退回 foreground（约定 2 的同一条）。
-    # ⚠️ 保留默认约束：全新安装、旧存档缺这个字段时，绝不能默认成后台通道。
-    pc_input_mode: str = PC_INPUT_FOREGROUND
+    # 和勾选/后端一样「记住上次」；坏值一律退回默认值 background。
+    # 2026-11-09 用户拍板：后台点击已实跑正常，默认就是后台，不再要求先手动打开。
+    pc_input_mode: str = PC_INPUT_BACKGROUND
     last_run: LastRun | None = None
     # 路线内部参数的口袋：``{路线名: {参数名: 值}}``。
     # 现在没有任何路线往里写，但格式先定死 —— 将来加参数只加内容，不改结构。
     params: Mapping[str, Mapping[str, Any]] = field(default_factory=dict)
-    # 多套命名配置：日常 / 活动 / 周末。键是用户起的名字。
-    profiles: Mapping[str, Profile] = field(default_factory=dict)
-    active_profile: str = ""
     # 窗口位置与大小：``{"x", "y", "w", "h"}``。None = 还没记过，用默认摆放。
     window: Mapping[str, int] | None = None
 
@@ -144,13 +127,13 @@ def load(path: Path) -> SessionState | None:
     if not isinstance(backend, str) or not backend:
         backend = "emulator"
 
-    # 输入通道只认两种：手改坏 / 版本升级后残留的怪值一律退回前台 ——
-    # 不能让一份坏存档把助手悄悄送进「点了没反应」的后台通道。
+    # 输入通道只认两种：手改坏 / 版本升级后残留的怪值一律退回默认值
+    # （后台，2026-11-09 起 —— 与 SessionState 的默认保持一致，别让坏存档把默认反过来）。
     raw_input_mode = payload.get("pc_input_mode")
     pc_input_mode = (
         raw_input_mode
         if isinstance(raw_input_mode, str) and raw_input_mode in PC_INPUT_MODES
-        else PC_INPUT_FOREGROUND
+        else PC_INPUT_BACKGROUND
     )
 
     last_run: LastRun | None = None
@@ -165,23 +148,6 @@ def load(path: Path) -> SessionState | None:
                 summary=summary,
                 exit_code=code if isinstance(code, int) else None,
             )
-
-    profiles: dict[str, Profile] = {}
-    raw_profiles = payload.get("profiles")
-    if isinstance(raw_profiles, dict):
-        for name, value in raw_profiles.items():
-            if not isinstance(name, str) or not name or not isinstance(value, dict):
-                continue
-            # 一套配置里的勾选/次数走**和主状态同一套校验** —— 坏数据在哪儿都进不来。
-            profiles[name] = Profile(
-                selection=_clean_selection(value.get("selection"), MODE_SPECS),
-                cycles=_clean_cycles(value.get("cycles"), MODE_SPECS),
-                params=_clean_params(value.get("params"), MODE_SPECS),
-            )
-
-    active_profile = payload.get("active_profile")
-    if not isinstance(active_profile, str) or active_profile not in profiles:
-        active_profile = ""
 
     window: dict[str, int] | None = None
     raw_window = payload.get("window")
@@ -201,8 +167,6 @@ def load(path: Path) -> SessionState | None:
         pc_input_mode=pc_input_mode,
         last_run=last_run,
         params=params,
-        profiles=profiles,
-        active_profile=active_profile,
         window=window,
     )
 
@@ -216,17 +180,6 @@ def save(path: Path, state: SessionState) -> None:
         "backend": state.backend,
         "pc_input_mode": state.pc_input_mode,
         "params": {name: dict(value) for name, value in state.params.items()},
-        "profiles": {
-            name: {
-                "selection": list(profile.selection),
-                "cycles": dict(profile.cycles),
-                "params": {
-                    key: dict(value) for key, value in profile.params.items()
-                },
-            }
-            for name, profile in state.profiles.items()
-        },
-        "active_profile": state.active_profile,
         "window": dict(state.window) if state.window is not None else None,
         "last_run": (
             None

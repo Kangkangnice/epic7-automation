@@ -1,18 +1,14 @@
-"""无控制台启动 Qt / Fluent 预览界面 —— 「新外观」快捷方式走这里。
+"""无控制台启动界面 —— 桌面图标走这里。
 
-## 为什么不复用 desktop/launch_hidden.py
-
-那个文件里写死 ``from auto_game_unified.desktop.app import main``，
-是老 Tk 界面的专属入口；``desktop/__main__.py`` 里的 ``EPIC7_UI=qt`` 分支
-它根本不走。改它会动到用户每天都在点的那个图标 —— 不值得。
-所以新外观单独一个入口，两个图标互不干扰。
+2026-11-09 起这是**唯一**的界面入口：Tk 版连同它自己的 ``launch_hidden.py``
+一起删掉了，所以这里不再需要解释「为什么不复用另一个启动器」。
 
 ## 为什么要自己重定向标准流
 
 ``pythonw.exe`` 下 ``sys.stdout`` / ``sys.stderr`` 可能是 ``None``，
 而 qfluentwidgets 导入期就会往 stdout 打一行提示、Qt 平台插件出错会往
 stderr 写。不先接管，双击就是「什么都没发生」，连错在哪都查不到。
-和老入口同一个规矩：**重定向必须发生在 import 界面之前**。
+规矩只有一条：**重定向必须发生在 import 界面之前**。
 """
 
 from __future__ import annotations

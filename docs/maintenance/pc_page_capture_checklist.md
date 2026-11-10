@@ -151,5 +151,17 @@
 3. 一次性把这一批名字加进 `core/matcher.SMOOTH_FALLBACK_ANCHORS`，跑全量测试；
 4. 之后这条路线在 PC 上跑，不再需要「挂一颗补一颗」。
 
+## 十四、主线补星（2026-11-09 立项，11-10 跑通闭环）
+
+`story_star.episode`「选取Episode」面板（P0，⚠️ 标题有两套 PC 渲染，见手册）·
+`story_star.stage_list` 小节列表（P0）· `story_star.prepare` 选择辅助 / 队伍（P0，复用主线图）·
+`story_star.results` CLEAR / 结算 / 完成故事（P2，11-10 已真机采到）·
+`story_star.battle` 战斗中（P2，复用主线判据；11-10 另补一张**本路线专用**的
+右上角 HUD 锚图 `battle_hud.png`，白掩膜 + 尺寸扫描，**共享判据一行未改**）。
+
+⚠️ 这条路线**只做了 PC 素材**；11-10 真机连续 4 关跑通「打完 → 结算 → 回列表 →
+继续」，但六章扫完收工未跑到。逐页判据、分数与踩坑见
+[`story_star.md`](story_star.md) 与 PC 接入指南 §1 第 2 条。
+
 合计（**2026-11-06 的采集快照，不是现行名单**）：当时 12 条路线、98 个页面，
 其中 P0（不消耗资源就能停到）约 45 页。**现行路线与 PC 放行名单看 [STATUS.md](../STATUS.md)**。

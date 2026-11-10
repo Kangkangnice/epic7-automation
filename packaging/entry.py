@@ -23,14 +23,18 @@ if not getattr(sys, "frozen", False):
 
 
 def _self_check() -> int:
-    from auto_game_unified.core.data_paths import data_root
-    from auto_game_unified.desktop.app import TEMPLATE_ROOT
+    from auto_game_unified.core.data_paths import data_root, package_root
     from auto_game_unified.desktop.catalog import PRODUCT_NAME, PRODUCT_VERSION, ROUTES
     from auto_game_unified.desktop.preflight import (
         template_root_for_backend,
         validate_route_templates,
     )
     from auto_game_unified.games.epic7.modes import PC_ONLY_ROUTES
+
+    # ⚠️ 这里**不许** import 界面模块来借一个常量：界面已经换成 Qt，导入它会
+    # 把 PySide6 一起拉起来（慢，而且自检失败时会淹没真正的原因）。
+    # 模板根就是包目录下的固定位置，和 desktop_qt/app.py 里的 TEMPLATE_ROOT 同一个算法。
+    TEMPLATE_ROOT = package_root() / "games" / "epic7" / "templates"
 
     lines: list[str] = []
     failures = 0
@@ -93,7 +97,7 @@ def main() -> int:
     if "--self-check" in sys.argv[1:]:
         return _self_check()
 
-    from auto_game_unified.desktop.app import main as run_app
+    from auto_game_unified.desktop_qt.app import main as run_app
 
     return run_app()
 

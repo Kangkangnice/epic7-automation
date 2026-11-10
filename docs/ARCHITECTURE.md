@@ -10,10 +10,11 @@ auto_game_unified/
 │  ├─ supervisor.py         # 两帧稳定、画面变化、状态轮询和超时监督
 │  ├─ battle_supervisor.py  # 战斗监控：心跳、画面变化进展、结算移交
 │  ├─ recovery.py           # 战斗锁：已承诺战斗期间禁止打断（只有 lock/unlock）
-│  ├─ hotkey.py             # Windows P 键停止
+│  ├─ hotkey.py             # 全局停止键（P）—— 自动化与连点器共用同一个键
+│  ├─ autoclicker.py        # 固定点连点器（「实用工具」页；与路线无关，不认画面）
 │  ├─ qqbot.py             # 官方 QQ 机器人开放平台 C2C 私聊推送
 │  ├─ window.py             # 模拟器窗口捕获与局部坐标点击（雷电 adb 通道）
-│  ├─ pc_window.py          # PC 客户端窗口 I/O（BitBlt 后台抓屏、SendInput 点击、ESC、滑动）
+│  ├─ pc_window.py          # PC 客户端窗口 I/O（BitBlt 后台抓屏、SendInput 点击、ESC、滑动、滚轮）
 │  ├─ evidence_diagnostics.py # 失败诊断落盘（screen/source/target/evidence.json）
 │  ├─ elevation.py          # UIPI 提权判断（对方窗口权限更高时点击会被静默拦掉）
 │  ├─ portrait.py           # 竖屏通道（H5 网页把模拟器切成竖屏时的取图与坐标）
@@ -36,8 +37,8 @@ auto_game_unified/
 │  ├─ modes.py              # 模式注册、默认状态、构建器、准入表态
 │  ├─ evidence/             # 各路线视觉证据：模板、区域、阈值和页面组合
 │  └─ templates/            # 线上识别使用的局部模板（pc/ 子目录是平台覆盖）
-├─ desktop/                 # Tk 桌面助手（**唯一交互入口**）+ 控制器与界面文案
-├─ desktop_qt/              # Qt + Fluent 预览入口（可选依赖，默认入口仍是 Tk）
+├─ desktop/                 # 与界面无关的业务层：控制器、路线文案、会话、worker、预检
+├─ desktop_qt/              # 桌面界面（Qt / Fluent，**唯一交互入口**）
 ├─ tools/                   # 现状页生成、门禁检查、采图、打包、文档体检等开发工具
 ├─ tests/
 │  ├─ fixtures/             # 当前客户端完整页面回归截图

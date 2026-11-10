@@ -10,15 +10,22 @@
 体积代价换来的是「双击就能开」，这一档不值得省。
 
 ⚠️ 模板必须落在 ``auto_game_unified/games/epic7/templates``：
-``desktop/app.py`` 的 ``TEMPLATE_ROOT`` 由 ``__file__`` 往上两级算出来，
-打包后 ``__file__`` 在 ``_internal/auto_game_unified/desktop/app.py``，
+``desktop_qt/app.py`` 的 ``TEMPLATE_ROOT`` 由 ``__file__`` 往上两级算出来，
+打包后 ``__file__`` 在 ``_internal/auto_game_unified/desktop_qt/app.py``，
 往上两级正好是 ``_internal/auto_game_unified``。改这里的 dest 之前先算一遍。
 """
 
 from pathlib import Path
 
+from PyInstaller.utils.hooks import collect_data_files, collect_submodules
+
 REPO = Path(SPECPATH).resolve().parent
 WORKSPACE = REPO.parent
+
+# ⚠️ Qt / Fluent 界面（2026-11-09 起是**唯一**界面）自带一套字体图标与样式资源，
+# PyInstaller 不会自动收进包 —— 少了它们的表现是「窗口能开，但所有图标都是空白」。
+_QFLUENT_DATAS = collect_data_files("qfluentwidgets")
+_QFLUENT_MODULES = collect_submodules("qfluentwidgets")
 
 a = Analysis(
     [str(REPO / "packaging" / "entry.py")],
@@ -29,8 +36,9 @@ a = Analysis(
             str(REPO / "games" / "epic7" / "templates"),
             "auto_game_unified/games/epic7/templates",
         ),
-    ],
-    hiddenimports=[],
+    ]
+    + _QFLUENT_DATAS,
+    hiddenimports=list(_QFLUENT_MODULES),
     hookspath=[],
     runtime_hooks=[],
     # ⚠️ 整个包按**源码**收集，不压成 pyc。
@@ -42,24 +50,20 @@ a = Analysis(
     # 测试、夹具、开发缓存一律不进包：安装包只需要「跑起来必需」的东西。
     # 不排除 unittest 之类的标准库：省不了几兆，但一旦某个依赖在 import 期用到它，
     # 故障会藏在「只在打包版出现」的那一类里，排查成本远高于这点体积。
+    #
+    # ⚠️ 以前这里排除了 ``auto_game_unified.desktop_qt`` + ``PySide6`` +
+    # ``qfluentwidgets``，理由是「默认界面只用 tkinter，Qt 是可选入口」。
+    # 2026-11-09 删掉 Tk 界面之后这条理由不存在了 —— 再排除就是打出一个没有
+    # 界面、双击即崩的包。**别再按旧体积预算把 Qt 加回排除列表。**
     excludes=[
         "auto_game_unified.tests",
         "pytest",
         "_pytest",
-        # 默认界面只用 tkinter。Qt / Fluent 版是**可选入口**（desktop_qt/），
-        # 依赖单独放在 requirements-qt.txt，默认产物不带它 —— 实测 Qt 曾被
-        # 环境里某个依赖顺带拖进包（目录版 316 MB）。
-        # ⚠️ 2026-11-08 起本仓库确实有了 Qt 代码，但默认入口仍走 Tk；
-        # 将来要把 Qt 版设为默认，必须连同体积预算一起重新评估这一段。
-        "auto_game_unified.desktop_qt",
+        # 其余 Qt 绑定不用，留着排除能少几十兆。
         "PyQt5",
         "PyQt6",
         "PySide2",
-        "PySide6",
-        "qfluentwidgets",
-        "qtpy",
         "shiboken2",
-        "shiboken6",
     ],
     noarchive=False,
     optimize=0,

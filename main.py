@@ -18,7 +18,7 @@ from auto_game_unified.core.runtime import ManualStop, Runtime
 from auto_game_unified.core.window import Epic7Window
 from auto_game_unified.core.pc_window import (
     PC_INPUT_ENV,
-    PC_INPUT_FOREGROUND,
+    PC_INPUT_BACKGROUND,
     PC_INPUT_MODES,
     Epic7PcWindow,
 )
@@ -154,9 +154,10 @@ def _build_runtime(
     calibration = None
     if window_backend == "pc":
         game_window = Epic7PcWindow()
-        # 输入通道：默认前台；后台需本机探针实测通过后由界面/命令行显式开启。
+        # 输入通道：默认后台（2026-11-09 用户拍板，后台点击已实跑正常）；
+        # 界面/命令行显式传 foreground 才会抢前台。
         game_window.set_input_mode(
-            os.environ.get(PC_INPUT_ENV, PC_INPUT_FOREGROUND)
+            os.environ.get(PC_INPUT_ENV, PC_INPUT_BACKGROUND)
         )
         calibration = game_window.ensure_render_size()
     else:
@@ -180,6 +181,9 @@ def _build_runtime(
             if getattr(game_window, "swipe", None) is not None
             else None
         ),
+        # 滚轮：只有 PC 客户端实现（2026-11-09）。Episode 时间轴那类**拖拽无效、
+        # 只能滚**的列表要用它；模拟器没有滚轮概念，传 None ⇒ 调到时抛错。
+        wheel=getattr(game_window, "wheel", None),
         wake=game_window.wake,
         back=game_window.back,
         dry_run=dry_run,
@@ -695,15 +699,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--pc-input-mode",
         choices=list(PC_INPUT_MODES),
-        # ⚠️ 不能给 default=foreground：桌面界面的 Worker 是通过环境变量
+        # ⚠️ 不能给 default 写死某个通道：桌面界面的 Worker 是通过环境变量
         # EPIC7_PC_INPUT_MODE 把用户选的通道传下来的，无条件写默认值会把
-        # background 悄悄抹回 foreground（界面勾了「不占用前台」却照样抢前台）。
-        # 只有**命令行显式传了**才覆盖环境变量。
+        # background 悄悄抹回 foreground（界面选了「不占用前台」却照样抢前台）。
+        # 只有**命令行显式传了**才覆盖环境变量；两者都没给时由窗口层取默认（后台）。
         default=None,
         help=(
-            "PC 端输入通道：foreground=抢前台（默认，始终可用）；"
-            "background=不抢前台（SetCursorPos + PostMessage，需本机实测通过）。"
-            "不传则沿用 EPIC7_PC_INPUT_MODE 环境变量"
+            "PC 端输入通道：background=不抢前台（默认）；foreground=抢前台。"
+            "不传则沿用 EPIC7_PC_INPUT_MODE 环境变量，都没给时用默认后台"
         ),
     )
     parser.add_argument("--stop-file", help=argparse.SUPPRESS)

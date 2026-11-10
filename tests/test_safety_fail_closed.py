@@ -30,10 +30,19 @@ import numpy as np
 import pytest
 
 from auto_game_unified.games.epic7.modes import MODE_SPECS
+from auto_game_unified.games.epic7.template_paths import resolve_template_dir
 from auto_game_unified.games.epic7.unknown_screen import UnrecognizedScreen
 
 ROOT = Path(__file__).resolve().parents[1]
 TEMPLATES = ROOT / "games" / "epic7" / "templates"
+# ⚠️ 普通 Path 让 is_pc() 恒假，只有 pc/ 素材的路线会被误报「缺图」。
+# 补星是唯一「模拟器不可用（仅 PC）」的路线，装配要用与实跑同源的模板根。
+PC_ONLY_ROUTES = frozenset({"story_star"})
+PC_ROOT = resolve_template_dir(ROOT / "games" / "epic7" / "templates", "pc")
+
+
+def build_source(mode):
+    return PC_ROOT if mode in PC_ONLY_ROUTES else TEMPLATES
 
 # 动作会消耗资源、或结果不可逆的路线。加新路线时先问一句：它的动作花不花东西？
 RESOURCE_ROUTES = (
@@ -44,6 +53,7 @@ RESOURCE_ROUTES = (
     # 体力
     "expedition",
     "story",
+    "story_star",
     "fodder",
     "tower",
     # 领奖励本身不可逆（领了就没了）
@@ -62,7 +72,7 @@ BLACK = np.zeros((1132, 1982, 3), dtype=np.uint8)
 def test_an_unrecognised_screen_never_yields_a_click(mode: str) -> None:
     """全黑帧上：要么不给动作，要么直接抛「认不出」。"""
     spec = MODE_SPECS[mode]
-    machine = spec.build_machine(TEMPLATES, spec.default_state)
+    machine = spec.build_machine(build_source(mode), spec.default_state)
 
     try:
         action = machine.next_action(BLACK)

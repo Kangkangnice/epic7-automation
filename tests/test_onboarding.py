@@ -1,108 +1,19 @@
-"""首次启动须知：确认记录的判定，以及「不同意就不许开始」这条线。
+"""首次启动须知：确认记录的判定。
 
-分两层测：
-- **纯函数**（``has_consent`` / ``record_consent`` / ``clear_consent``）：不碰 Tk；
-- **界面门禁**：``consent_required=True`` 时「开始任务」必须点不动，同意后才放开。
-
-⚠️ 测试里的 ``consent_required`` 一律**显式传 True**。默认值是 False（只有真正的
-入口 ``main()`` 才打开它），所以现有 GUI 测试不会因为没点过同意就被挡住 ——
-这条默认值本身就是被测对象之一，见 ``test_onboarding_is_off_by_default``。
+⚠️ 2026-11-09 删掉 Tk 界面时，界面门禁那几条（「开始任务」点不点得动）一起删了 ——
+它们测的是 `DesktopApp`，而那个类已经不存在。现在这里只剩**纯函数**：条款文案
+与 consent.json 的读写。界面对接在 `desktop_qt/app.py` 里，靠 PySide6 才能起，
+不适合放在这套纯逻辑测试里。
 """
 
 from __future__ import annotations
 
 from datetime import datetime
 import json
-import re
 
 import pytest
 
-pytest.importorskip("tkinter")
-import tkinter as tk
-
 from auto_game_unified.desktop import onboarding
-from auto_game_unified.desktop.app import DesktopApp, DesktopController
-from auto_game_unified.desktop.preflight import PreflightReport, PreflightStatus
-
-PASSED = PreflightReport(PreflightStatus.PASS, "通过", (1982, 1132))
-
-
-class IdleWorker:
-    """不起真进程的假 worker：只提供界面问得到的那几个属性。"""
-
-    def __init__(self) -> None:
-        self.running = False
-        self.request = None
-
-    def start(self, request) -> None:
-        self.request = request
-
-    def request_stop(self) -> None:
-        pass
-
-    def force_stop(self) -> bool:
-        return True
-
-    def drain_events(self) -> list:
-        return []
-
-
-class ImmediateThread:
-    def __init__(self, *, target, **_kwargs) -> None:
-        self.target = target
-
-    def start(self) -> None:
-        self.target()
-
-
-def ready_controller() -> DesktopController:
-    """勾好一条、且环境检测已通过 —— 只剩「同意」这一道门。"""
-    controller = DesktopController(worker=IdleWorker())
-    controller.toggle("story", True)
-    controller.apply_preflight(PASSED)
-    return controller
-
-
-@pytest.fixture(scope="module")
-def tk_root():
-    try:
-        root = tk.Tk()
-    except tk.TclError as exc:
-        # 环境级偶发：一次进程里建第二个 Tk 根时，偶尔会报
-        # "Can't find a usable init.tcl"（全量 2026-10-20 撞过一次，单跑这个文件不复现）。
-        # 跳过而不是整轮变红 —— 目录、Tcl 本身都好好的，换个进程就能起。
-        pytest.skip(f"Tk 起不来：{exc}")
-    root.withdraw()
-    yield root
-    root.destroy()
-
-
-@pytest.fixture
-def tk_window(tk_root):
-    existing_callbacks = set(tk_root.tk.call("after", "info"))
-    window = tk.Toplevel(tk_root)
-    window.withdraw()
-    yield window
-    for callback in set(tk_root.tk.call("after", "info")) - existing_callbacks:
-        tk_root.tk.call("after", "cancel", callback)
-    window.destroy()
-
-
-def make_app(tk_window, tmp_path, **overrides) -> DesktopApp:
-    options = {
-        "consent_required": True,
-        "consent_probe": lambda _root: False,
-        "consent_prompt": lambda *_args: False,
-        "preflight_runner": lambda **_kwargs: PASSED,
-        "thread_factory": ImmediateThread,
-    }
-    options.update(overrides)
-    return DesktopApp(
-        tk_window,
-        controller=ready_controller(),
-        project_root=tmp_path,
-        **options,
-    )
 
 
 # --------------------------------------------------------------------------
@@ -258,136 +169,9 @@ def test_text_has_no_markdown_markup():
 def test_the_notice_stays_narrow():
     """2026-10-20 用户反馈「使用须知太宽了」，随后要求「一列写完」。
 
-    现在是**单栏**，所以 DIALOG_WRAP 基本就是整窗的内文宽度
-    （整窗 ≈ DIALOG_WRAP + 左右内边距 24×2）。两栏时代是每栏 560、整窗约 1200
-    逻辑像素；现在 520 → 整窗 568，同一块 1600 的屏只占 35%。
+    两栏时代每栏 560、整窗约 1200 逻辑像素，1600 的屏要占 3/4。
     这条钉住「别再随手调宽」，调宽之前先按 1366 的屏量一遍。
     """
-    assert onboarding.DIALOG_WRAP <= 560
+    assert onboarding.DIALOG_WIDTH <= 560
 
 
-def test_the_consent_dialog_gets_a_sane_position(tk_window):
-    """不摆位置的话 Tk 会把对话框丢在屏幕左上角 —— 2026-10-19 打包版截图才发现。
-
-    这里只守两件事：位置被显式设过、且不在负坐标（父窗口贴边时算出来的负值）。
-    """
-    from auto_game_unified.desktop import theme as theme_module
-    from auto_game_unified.desktop.onboarding import ConsentDialog
-
-    theme = theme_module.build(tk_window)
-    dialog = ConsentDialog(tk_window, theme)
-    try:
-        geometry = dialog.geometry()
-        match = re.match(r"^\d+x\d+\+(-?\d+)\+(-?\d+)$", geometry)
-        assert match, f"geometry 里没有位置：{geometry}"
-        assert int(match.group(1)) >= 0
-        assert int(match.group(2)) >= 0
-    finally:
-        dialog.destroy()
-
-
-# --------------------------------------------------------------------------
-# 界面门禁
-# --------------------------------------------------------------------------
-
-
-def test_the_accept_button_works_without_a_checkbox(tk_window):
-    """点「开始使用」就是同意 —— 这一屏不该再有勾选框或二次确认。
-
-    2026-10-20 用户要求去掉「我已阅读并理解…」勾选 + 按钮置灰。这里守三件事：
-    按钮一上来就是可点的、没有那颗勾选框、点下去 ``accepted`` 直接翻成真。
-    """
-    from auto_game_unified.desktop import theme as theme_module
-    from auto_game_unified.desktop.onboarding import ConsentDialog
-
-    theme = theme_module.build(tk_window)
-    dialog = ConsentDialog(tk_window, theme)
-    try:
-        assert str(dialog._accept_button.cget("state")) == "normal"
-        # 旧的勾选框属性必须整个消失，而不是留一个永远为真的哑变量 ——
-        # 留着它，下一个人就会以为「这里还有一道确认」。
-        assert not hasattr(dialog, "_acknowledged")
-        assert not hasattr(dialog, "_refresh_buttons")
-
-        dialog._on_accept()
-        assert dialog.accepted is True
-    finally:
-        dialog.destroy()
-
-
-def test_onboarding_is_off_by_default(tk_window, tmp_path):
-    """默认不开：测试和嵌入式调用不该凭空被一个模态窗挡住。"""
-    app = DesktopApp(
-        tk_window, controller=ready_controller(), project_root=tmp_path
-    )
-
-    assert app.consented is True
-
-
-def test_unconsented_app_keeps_start_disabled(tk_window, tmp_path):
-    app = make_app(tk_window, tmp_path)
-
-    assert app.consented is False
-    assert str(app.start_button.cget("state")) == "disabled"
-
-
-def test_declining_keeps_start_disabled_and_says_why(tk_window, tmp_path):
-    app = make_app(tk_window, tmp_path)
-
-    app._ensure_consent()
-
-    assert app.consented is False
-    assert onboarding.has_consent(tmp_path) is False
-    assert str(app.start_button.cget("state")) == "disabled"
-    # 拒绝时不该再弹第二个窗，而是留一句「为什么点不动、去哪重新看」
-    log = app.log_text.get("1.0", tk.END)
-    assert "使用须知" in log
-
-
-def test_accepting_records_consent_and_unlocks_start(tk_window, tmp_path):
-    app = make_app(tk_window, tmp_path, consent_prompt=lambda *_args: True)
-
-    app._ensure_consent()
-
-    assert app.consented is True
-    assert onboarding.has_consent(tmp_path) is True
-    # 同意之后会顺手跑一次环境检测；测试里没有 mainloop，手动把结果送回去
-    app._finish_environment_check(PASSED)
-    assert str(app.start_button.cget("state")) == "normal"
-
-
-def test_consent_that_cannot_be_saved_still_lets_this_session_run(
-    tk_window, tmp_path
-):
-    """落盘失败不许把人关在门外：用户刚刚确实点了同意，只是下次还得再问一次。"""
-    blocker = tmp_path / "blocker"
-    blocker.write_text("占位", encoding="utf-8")
-    app = make_app(
-        tk_window,
-        tmp_path,
-        data_root=blocker,  # 写不进去的根目录
-        consent_prompt=lambda *_args: True,
-    )
-
-    app._ensure_consent()
-
-    assert app.consented is True
-    app._finish_environment_check(PASSED)
-    assert str(app.start_button.cget("state")) == "normal"
-    assert "无法保存确认记录" in app.log_text.get("1.0", tk.END)
-
-
-def test_second_launch_skips_the_dialog(tk_window, tmp_path):
-    onboarding.record_consent(tmp_path)
-    calls: list[tuple] = []
-    app = make_app(
-        tk_window,
-        tmp_path,
-        consent_probe=onboarding.has_consent,
-        consent_prompt=lambda *args: calls.append(args) or True,
-    )
-
-    app._ensure_consent()
-
-    assert app.consented is True
-    assert calls == []

@@ -93,11 +93,13 @@ def group_description(group: str) -> str:
 #   命令行 `--window-backend pc` **不受这层限制** —— 开发验证本来就走命令行。
 BACKENDS: tuple[str, str] = ("emulator", "pc")
 
-# ── 后端文案（2026-11-08 从 desktop/app.py 搬来）───────────────────────────
+# ── 后端文案（2026-11-08 从界面文件搬来）───────────────────────────────────
 #
-# 界面文案的**唯一出处应该在 catalog**，不该住在某个界面文件里 —— 以前只有
-# Tk 一套界面时无所谓，现在 Tk / Qt 两套都要显示这两句话，留在 app.py 会让
-# Qt 侧为了拿两个字符串去 import 一个 tkinter 模块（或自己抄一份，然后漂移）。
+# 界面文案的**唯一出处应该在 catalog**，不该住在某个界面文件里 —— 当年只有
+# Tk 一套界面时无所谓，后来变成两套各显示一遍，把那两句话留在界面文件里就会
+# 逼着另一边为了拿两个字符串去 import 一个 tkinter 模块（或自己抄一份，然后漂移）。
+# 现在虽然只剩一套界面，这条「文案不住在界面文件里」的规矩仍然成立：
+# 文案要能被测试直接校验，而界面模块一 import 就要拉起 Qt。
 STARTUP_ORDER_HINT = (
     "请先启动雷电模拟器并进入《第七史诗》，再启动本助手并检测环境。"
 )
@@ -234,6 +236,8 @@ PC_READY_ROUTES: frozenset[str] = frozenset(
         #   界面上这条因此是 `standalone_only`、不能和别的路线混勾。
         #   导航那一节还没做，缺什么写在 `docs/maintenance/achievement.md` 末尾。
         "achievement",
+        # 2026-11-09：主线补星（同样只有 PC 素材）。
+        "story_star",
     }
 )
 
@@ -468,6 +472,14 @@ ROUTES = (
         "次数不可调，可以和其他路线串着跑。\n"
         "注意：目前只有 PC 版素材（模拟器以后再补），所以这条只在 PC 客户端上出现。",
         group=GROUP_DAILY,
+    ),
+    RouteInfo(
+        "story_star",
+        "把主线 Episode 里没满 3 星的小节补满：从关卡列表进「选取Episode」，"
+        "只补第6时代与 Episode 1~5；篇章看星数，小节看绿勾，战斗和队伍复用主线。\n"
+        "一轮 = 六章里所有未满星小节扫完，次数不可调，打完自动回列表接着找下一个。\n"
+        "注意：只有 PC 素材；横向翻页用滚轮，拖拽无效。",
+        group=GROUP_ONDEMAND,
     ),
 )
 

@@ -20,6 +20,10 @@ SHARED_TEMPLATES = ROOT / "games" / "epic7" / "templates"
 class PcWindowSafetyTests(unittest.TestCase):
     def setUp(self):
         self.game = Epic7PcWindow()
+        # 本类守的是**前台通道**的安全语义（点前必须置前、点完不还原、权限不够绝不点）。
+        # 2026-11-09 起窗口层默认改走后台通道，所以这里显式声明测哪一条 ——
+        # 默认值本身由 test_pc_window_background.py 守，不在这里重复测。
+        self.game.set_input_mode(pc_window.PC_INPUT_FOREGROUND)
 
     def test_activate_rejects_a_window_that_does_not_become_foreground(self):
         self.game._user32 = MagicMock()
@@ -277,6 +281,7 @@ class PcWindowSafetyTests(unittest.TestCase):
     def test_click_reports_the_game_staying_in_front(self):
         events = []
         game = Epic7PcWindow(event_sink=events.append)
+        game.set_input_mode(pc_window.PC_INPUT_FOREGROUND)
         game._user32 = MagicMock()
         game._user32.GetForegroundWindow.return_value = 999
         with (
@@ -304,6 +309,7 @@ class PcWindowSafetyTests(unittest.TestCase):
         """
         events = []
         game = Epic7PcWindow(event_sink=events.append)
+        game.set_input_mode(pc_window.PC_INPUT_FOREGROUND)
         game._user32 = MagicMock()
         game._user32.GetForegroundWindow.return_value = 999
         with (
