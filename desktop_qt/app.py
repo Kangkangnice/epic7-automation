@@ -90,7 +90,7 @@ from auto_game_unified.desktop.onboarding import has_consent, record_consent
 from auto_game_unified.desktop.preflight import (
     run_preflight,
     template_root_for_backend,
-    validate_route_templates,
+    validate_start_plan,
 )
 from auto_game_unified.desktop.update_check import check_for_update
 from auto_game_unified.desktop.worker import WorkerController
@@ -677,15 +677,8 @@ class QtDesktopWindow(FluentWindow):
             try:
                 report = run_preflight(window_backend=backend)
                 if report.can_start:
-                    for mode, _ in plan:
-                        try:
-                            validate_route_templates(mode, template_root)
-                        except Exception as caught:
-                            # 报清是哪条路线，别只甩一个裸路径给用户。
-                            error = RuntimeError(
-                                f"{route_by_name(mode).label}：{caught}"
-                            )
-                            break
+                    # 只验真正要跑的路线；被后端筛掉的不许挡住其余勾选。
+                    validate_start_plan(self.controller, template_root)
             except Exception as caught:  # noqa: BLE001
                 error = caught
             self._bridge.start_done.emit(report, error)
@@ -710,7 +703,8 @@ class QtDesktopWindow(FluentWindow):
         except Exception as caught:
             self._notify("error", "无法启动", str(caught))
         else:
-            modes = "、".join(route_by_name(mode).label for mode, _ in self.controller.plan())
+            runnable, _skipped = self.controller.resolve_plan()
+            modes = "、".join(route_by_name(mode).label for mode, _ in runnable)
             self._append_log(f"已启动：{modes}")
         self._refresh_actions()
 
