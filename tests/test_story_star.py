@@ -23,6 +23,7 @@ import cv2
 import numpy as np
 import pytest
 
+from auto_game_unified.games.epic7 import story_star as story_star_module
 from auto_game_unified.games.epic7.evidence.story_star import chapter_is_full
 from auto_game_unified.games.epic7.story_star import (
     EPISODE_ROW_POINTS,
@@ -131,6 +132,60 @@ def test_episode_page_opens_first_partial_chapter(machine):
     assert action is not None
     assert action.name == "open-chapter"
     assert action.target_pages == (StoryStarState.STAGE_LIST.value,)
+
+
+def test_right_edge_chapter_would_be_clicked_outside_the_canvas(machine):
+    """Episode 3 面板上第 3 张卡只露半张：星标 (1909,505) ⇒ 落点 (2059,595)。
+
+    2026-11-10 12:21 实跑就是拿这个点去点，被窗口层「拒绝在 PC 游戏渲染区外点击」
+    判成致命错误，整条路线连带后续路线全部没跑。这条用例把「夹具上真能复现」钉住。
+    """
+    screen = load("22_now.png")
+    outside = [
+        center
+        for center in machine.star_points(screen)
+        if not story_star_module.point_in_screen(
+            story_star_module.chapter_click_point(center), screen
+        )
+    ]
+    assert outside == [(1909, 505)], f"应正好有一张卡片落在画布外，实际 {outside}"
+
+
+def test_partial_edge_chapter_scrolls_before_clicking(machine, monkeypatch):
+    """落点越界的未满卡片先右滚；滚到头才点它露出来的那部分（不许静默跳过）。"""
+    screen = load("22_now.png")
+    machine.scroll_signature = None
+    machine.finished = False
+    monkeypatch.setattr(machine, "star_points", lambda _screen: [(1909, 505)])
+    monkeypatch.setattr(
+        story_star_module, "chapter_is_full", lambda _screen, _center: (False, "边缘卡片")
+    )
+
+    first = machine.next_action(screen)
+    assert first is not None and first.name == "scroll-chapters", "越界落点必须先滚"
+    assert "露不全" in first.reason
+
+    # 同一帧再来一次 = 滚不动了（画面没变化）
+    second = machine.next_action(screen)
+    assert second is not None and second.name == "open-chapter"
+    height, width = screen.shape[:2]
+    x, y = second.point
+    assert 0 <= x < width and 0 <= y < height, f"兜底落点仍在画布外：{second.point}"
+
+
+def test_in_bounds_partial_chapter_wins_over_the_edge_one(machine, monkeypatch):
+    """同一屏既有画面内的未满卡片、也有越界的：点画面内那张。"""
+    screen = load("22_now.png")
+    machine.scroll_signature = None
+    machine.finished = False
+    monkeypatch.setattr(machine, "star_points", lambda _screen: [(1909, 505), (829, 505)])
+    monkeypatch.setattr(
+        story_star_module, "chapter_is_full", lambda _screen, _center: (False, "未满")
+    )
+
+    action = machine.next_action(screen)
+    assert action is not None and action.name == "open-chapter"
+    assert action.point == (979, 595), f"应点画面内那张，实际 {action.point}"
 
 
 def test_stage_list_opens_first_unmarked_stage(machine):

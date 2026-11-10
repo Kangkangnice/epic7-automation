@@ -295,7 +295,7 @@
 | hero_synthesis 英雄合成 | 9 | ⚠️ 17:18 传送选择页「自动选择」补 PC 字形图（共享图 0.6953 < 0.85）；19:06 传送奖励层被「获得奖励」全局守卫抢关（同 UI），新增 `reward_notice_guard=False` + `hero/pc/transmit_reward_{title,close}.png` 让状态机自己认 | 已放行（用户自测）；待 19:06 真机复验 |
 | side_story 支线故事 | 5 | ⚠️ 单关连打已通（`replay` 已重裁）；11-06 补 PC 期次主页两颗接力/运行期判据；三期特殊链路从没真机走到 | 已放行（**部分完成**，用户 11-05 同意暂停） |
 | activity_story 活动剧情 | 1 | ✅ 连看多段故事 + 战斗关（11-05/06） | 已放行；⚠️ `ticket_free` 未采到样本 |
-| story_star 主线补星 | 9 | ✅ 11-10 连续 4 关跑通「打完 → 结算 → 回小节列表 → 继续下一个未满篇章」，随后按 P 安全停止（退出码 130）；`battle_unrecognized` 已定位为客户端 UI 画小约 3% 导致共享判据三项擦边，用本路线 HUD 锚点补正（共享判据未动） | 已放行（`PC_ONLY_ROUTES` + `PC_READY_ROUTES`，只有 PC 素材）；⚠️ **六章扫完收工 / 资源耗尽 / 两轮 `--max-cycles` 仍未真机验**，接力不恢复遍历进度、奖励领取入口未找到；见 `docs/maintenance/story_star.md` 第六节 |
+| story_star 主线补星 | 9 | ✅ 11-10 连续 4 关跑通「打完 → 结算 → 回小节列表 → 继续下一个未满篇章」，随后按 P 安全停止（退出码 130）；`battle_unrecognized` 已定位为客户端 UI 画小约 3% 导致共享判据三项擦边，用本路线 HUD 锚点补正（共享判据未动）。12:21 那轮死在「点画布外的右边缘卡片」，已改为先右滚露出整张再点（判据未动） | 已放行（`PC_ONLY_ROUTES` + `PC_READY_ROUTES`，只有 PC 素材）；⚠️ **六章扫完收工 / 资源耗尽 / 两轮 `--max-cycles` 仍未真机验**，接力不恢复遍历进度、奖励领取入口未找到；见 `docs/maintenance/story_star.md` 第六节 |
 | expedition / fodder / survivor / community | 0 | 未在 PC 上做过 | 未开工 |
 
 另有 `templates/global/pc/` 23 张 + `templates/navigation/pc/` 9 张为多路线共用（合计 32）；
