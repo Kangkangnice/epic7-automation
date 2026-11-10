@@ -91,6 +91,7 @@ _WM_MOUSEMOVE = 0x0200
 _WM_LBUTTONDOWN = 0x0201
 _WM_LBUTTONUP = 0x0202
 _MK_LBUTTON = 0x0001
+_MOUSEEVENTF_WHEEL = 0x0800
 
 
 class _BitmapInfoHeader(ctypes.Structure):
@@ -622,6 +623,43 @@ class Epic7PcWindow:
                 f"前置={'成功' if hwnd is not None else '失败'} "
                 f"结果={'成功' if succeeded else '失败'} "
                 f"起点={start} 终点={end} 时长={duration_ms}ms "
+                f"前台已还原={'是' if restored else '否'}"
+            )
+
+    def wheel(self, point: tuple[int, int], notches: int) -> None:
+        """在画布坐标 ``point`` 处滚动鼠标滚轮（``notches`` > 0 向上、< 0 向下）。
+
+        ## 为什么需要它
+
+        2026-11-09 实测：Episode 的篇章时间轴**拖拽完全无效**（在卡片上、两排之间的
+        空隙、时间轴线上各试过一次，画面差只有 2.4~3.9），只有滚轮能横向滚动
+        （每格约 15 px）。滚轮走系统输入通道，因此和 ``swipe`` 同一条限制：**必须前台**。
+
+        ⚠️ 别拿 ``swipe`` 去凑 —— 那条路子对这个列表无效，理由与实测见 ``swipe`` 的 docstring。
+        """
+        previous_foreground = self._user32.GetForegroundWindow()
+        hwnd = self.activate()
+        self._ensure_input_allowed(hwnd)
+        rect = self._validated_rect(hwnd)
+        render_x, render_y = point[0], point[1] - LEGACY_TOP
+        if not (
+            0 <= render_x < RENDER_SIZE[0] and 0 <= render_y < RENDER_SIZE[1]
+        ):
+            raise RuntimeError(f"拒绝在 PC 游戏渲染区外滚动：{point}")
+        succeeded = False
+        try:
+            self._user32.SetCursorPos(rect.left + render_x, rect.top + render_y)
+            self._sleep(0.1)
+            direction = 120 if notches > 0 else -120
+            for _ in range(abs(int(notches))):
+                self._user32.mouse_event(_MOUSEEVENTF_WHEEL, 0, 0, direction, 0)
+                self._sleep(0.12)
+            succeeded = True
+        finally:
+            restored = self._restore_foreground(previous_foreground, hwnd)
+            self._emit(
+                f"模式=PC输入 类型=滚轮 点={point} 格数={notches} "
+                f"结果={'成功' if succeeded else '失败'} "
                 f"前台已还原={'是' if restored else '否'}"
             )
 

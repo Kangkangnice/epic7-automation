@@ -80,6 +80,7 @@
 | 远征 `expedition` | [`maintenance/expedition.md`](maintenance/expedition.md) |
 | 社区签到 `community` | [`maintenance/community_checkin.md`](maintenance/community_checkin.md) |
 | 成就领取 `achievement` | [`maintenance/achievement.md`](maintenance/achievement.md) |
+| 主线补星 `story_star` | [`maintenance/story_star.md`](maintenance/story_star.md) |
 
 ---
 
@@ -294,6 +295,7 @@ CI 的 `Governance gate` 会在干净检出上再跑一遍治理门禁。
 | [`side_story.md`](maintenance/side_story.md) | 支线故事：靠发光徽记定位当前关，一次把本期打完 |
 | [`community_checkin.md`](maintenance/community_checkin.md) | 社区签到：模拟器转竖屏，签到 + 三条每日任务 + 兑换按上限兑满 |
 | [`achievement.md`](maintenance/achievement.md) | 成就领取：4 个分类**逐个进去**领完（不是看红点），两端素材都有 |
+| [`story_star.md`](maintenance/story_star.md) | 主线补星：按星数找未满篇章、按绿勾找未满小节，复用主线战斗链路 |
 
 ⚠️ 没有手册的路线：狗粮、刷书签、活动小游戏、活动剧情、世界首领战。
 它们不是没人管，是还没人写——补的时候照上面六节写，别再攒施工流水。

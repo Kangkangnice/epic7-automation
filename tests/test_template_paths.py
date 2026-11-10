@@ -514,6 +514,28 @@ def test_real_template_root_only_has_the_reviewed_pc_overrides():
                 # 只取「图标下半 + 下面的『成就』二字」⇒ 角标免疫。
                 # 实测带角标 1.0000 / 抹掉角标 0.9901；反例 0.1819 / 0.2083（阈 0.90）。
                 "navigation/pc/achievement_entry.png",
+                # 2026-11-09：主线补星（同样只有 PC 素材）。六张全部裁自当天真机帧。
+                # 区分度（同一批帧上量）：episode_title 1.0000 vs 0.6459、
+                # stage_help 1.0000 vs 0.3476、timeline_icon 1.0000 vs 0.4335、
+                # star_marker 1.0000 vs 0.7381、stage_check 1.0000 vs 0.6528。
+                # ⚠️ stage_check 与 stage_check_small 是**两张不同大小的勾**：
+                # 同一页里第 1 行那颗大一圈、其余小一圈，单模板只能覆盖一种。
+                "story_star/pc/episode_title.png",
+                # 同页另一套渲染（PC UI 画小 3% 时字形变化）：原模板 0.804 漏判，
+                # 这张 1.000；反例关卡列表 0.638 / 准备页 0.518，阈 0.85 不命中。
+                "story_star/pc/episode_title_alt.png",
+                "story_star/pc/stage_help.png",
+                "story_star/pc/timeline_icon.png",
+                "story_star/pc/star_marker.png",
+                "story_star/pc/stage_check.png",
+                "story_star/pc/stage_check_small.png",
+                # 队伍页「战斗开始」：主线那张在这页只有 0.8011（阈 0.80，擦边），
+                # 这张 1.0000、关卡页最高 0.5842（阈 0.85）。
+                "story_star/pc/battle_start.png",
+                # 2026-11-10：战斗画面右上角固定 HUD（白掩膜）。客户端把 UI 画小
+                # 约 3% 时共享战斗判据五项全假 ⇒ 监督 45 秒后报
+                # battle_unrecognized；这张只在补星自己的观察里补正，不改共享判据。
+                "story_star/pc/battle_hud.png",
 
         }, actual
 

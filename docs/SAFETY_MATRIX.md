@@ -23,6 +23,7 @@
 | 剧情 | 进关卡、快速战斗（耗体力） | 体力弹窗走共用 `stamina.next_stamina_decision`；叶子买到上限即 `StaminaExhausted` 干净收尾，不硬闯 | `test_epic7_story.py`、`test_ticket_exhaustion.py` |
 | 狗粮 | 进关卡（耗体力） | 复用剧情那套体力判定；叶子按钮不可用即 `StaminaExhausted` | `test_epic7_fodder.py`、`test_fodder_runner.py` |
 | 月塔 | 每层 15 体力 | **明令不补体力**：体力不够只识别、绝不点购买，走 `StaminaExhausted` | `test_epic7_tower.py` |
+| 主线补星 `story_star` | 进关卡（耗体力） | 复用主线 `stamina.next_stamina_decision`；小节满星（绿勾）才不重打；动作总数 `_MAX_ACTIONS=200` 有界；战斗只在共享判据判不出且帧有效时用本路线 HUD 锚点补正，结算页 / 无效帧不放行；⚠️ **六章扫完收工 / 资源耗尽未真机验** | `test_story_star.py`、`test_safety_fail_closed.py` |
 
 ### 跨路线护栏（2026-11-09 新增）
 
@@ -80,6 +81,7 @@
 | 活动剧情 `activity_story` | ✅ `epic7_activity_story` | ⚠️ | ✅ 连看多段 + 战斗关 | ⚠️ | ⚠️ `ticket_free` 未采到样本 |
 | 社区签到 `community` | ✅ `epic7_community` | ⚠️ | ✅ 模拟器 | — 未在 PC 上做过 | ✅ 竖屏通道 |
 | 成就领取 `achievement` | ✅ `epic7_achievement` + `_pc` | ✅ 11-09 干跑 | ✅ 11-09 模拟器两轮 | ✅ 同左 | ✅ 奖励弹窗 / 空奖收工 |
+| 主线补星 `story_star` | ✅ `epic7_story_star_pc` | ✅ 11-10 干跑（退出码 0） | ⚠️ 11-10 连续 4 关跑通「打完 → 结算 → 回列表 → 继续」，随后按 P 安全停止（退出码 130），**六章扫完收工未跑到** | ⚠️ 同轮内 4 关连续（循环衔接已验），非两轮 `--max-cycles` | ✅ 停在半中间启动命中接力点就地接管、结论门槛拦下「认不出」、手动停止安全收尾；⚠️ 资源耗尽未验 |
 
 ### 这张表暴露的三类缺口
 

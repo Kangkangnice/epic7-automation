@@ -181,6 +181,9 @@ def _build_runtime(
             if getattr(game_window, "swipe", None) is not None
             else None
         ),
+        # 滚轮：只有 PC 客户端实现（2026-11-09）。Episode 时间轴那类**拖拽无效、
+        # 只能滚**的列表要用它；模拟器没有滚轮概念，传 None ⇒ 调到时抛错。
+        wheel=getattr(game_window, "wheel", None),
         wake=game_window.wake,
         back=game_window.back,
         dry_run=dry_run,

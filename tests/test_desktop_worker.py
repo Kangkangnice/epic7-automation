@@ -13,6 +13,14 @@ from auto_game_unified.desktop.worker import (
 )
 
 
+def test_notice_is_streamed_to_the_ui_without_a_child_process(tmp_path):
+    worker = WorkerController(repo_parent=tmp_path)
+    worker.notice("已跳过 1 条当前后端不可用的路线：主线补星")
+    assert worker.drain_events() == [
+        WorkerEvent("log", "已跳过 1 条当前后端不可用的路线：主线补星")
+    ]
+
+
 class FakeProcess:
     def __init__(self, exit_code=0, pid=4321):
         self.stdout = iter(["第一行\n", "第二行\n"])

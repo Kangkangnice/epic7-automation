@@ -46,6 +46,51 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual([], swipes)
         self.assertTrue(any("空跑 执行滑动" in line for line in lines))
 
+    def test_wheel_is_logged_and_sent_once(self):
+        """滚轮通道是主线补星新增的能力，老路线没有它也不该被改到。"""
+        wheels: list[tuple[tuple[int, int], int]] = []
+        lines: list[str] = []
+        runtime = Runtime(
+            lambda: np.zeros((10, 10, 3), dtype=np.uint8),
+            lambda _: None,
+            wheel=lambda point, notches: wheels.append((point, notches)),
+            emit=lines.append,
+        )
+
+        runtime.wheel((200, 700), -3, "scroll-chapters")
+
+        self.assertEqual([((200, 700), -3)], wheels)
+        self.assertTrue(
+            any(
+                "执行滚轮 动作=scroll-chapters" in line
+                and "点=(200, 700)" in line
+                and "格数=-3" in line
+                for line in lines
+            )
+        )
+
+    def test_dry_run_wheel_logs_without_sending(self):
+        wheels: list[tuple[tuple[int, int], int]] = []
+        lines: list[str] = []
+        runtime = Runtime(
+            lambda: np.zeros((10, 10, 3), dtype=np.uint8),
+            lambda _: None,
+            wheel=lambda point, notches: wheels.append((point, notches)),
+            dry_run=True,
+            emit=lines.append,
+        )
+
+        runtime.wheel((200, 700), -3, "scroll-stages")
+
+        self.assertEqual([], wheels)
+        self.assertTrue(any("空跑 执行滚轮" in line for line in lines))
+
+    def test_wheel_without_a_channel_fails_loudly(self):
+        runtime = Runtime(lambda: np.zeros((10, 10, 3), dtype=np.uint8), lambda _: None)
+        with self.assertRaises(RuntimeError) as caught:
+            runtime.wheel((200, 700), -3, "scroll-chapters")
+        self.assertIn("未配置滚轮动作", str(caught.exception))
+
     def test_capture_guard_time_is_excluded_from_runtime_clock(self):
         clock = [10.0]
         guarded = np.full((3, 4, 3), 127, dtype=np.uint8)

@@ -250,6 +250,18 @@ PC 后端**存图的方式换过一次**，而夹具文件本身**不记录自�
 | `shop_refresh` | `shop_refresh.py:632 / 832` |
 | `survivor` | `survivor.py:312` |
 
+### 2.2b 滚轮 —— 已实现（2026-11-09 主线补星）
+
+`Epic7PcWindow.wheel()`：`SetCursorPos` → `mouse_event(MOUSEEVENTF_WHEEL)`，
+每格 120、格间 0.12 秒。和 `swipe()` 同口径，**一律先 `activate()` 抢前台、结束即还原**
+（理由同上：Raw Input 不收后台滚轮，别再试 `PostMessage`）。`main.py` 按窗口对象是否
+提供 `wheel` 接线，模拟器传 `None`，真调到才抛「未配置滚轮动作」；`Runtime.wheel()`
+只做空跑 / 停止检查 / 日志，不判断平台。
+
+主线补星用它横向翻 Episode 时间轴 —— 那一页**拖拽完全无效**，只能滚。
+老路线一个 `wheel()` 调用点都没有，这条新通道不会改变它们的行为。
+护栏：`tests/test_runtime.py` 的三条滚轮用例（真的发出一次 / 空跑不发出 / 缺通道报错）。
+
 ### 2.3 现状：PC 图按需补，验证只在真机实跑时做
 
 **2026-09-28 删掉了整套 PC 镜像目录与离线夹具**（`tests/fixtures/epic7_pc_*` 全部删除，
