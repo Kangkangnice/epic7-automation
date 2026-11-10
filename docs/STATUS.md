@@ -76,7 +76,7 @@
 
 > 路线手册里**不要再手抄**「有几张 PC 图 / 几张模板 / 几张夹具」，链到本表即可。
 > 口径：模板只数 `games/epic7/templates/<路线>/` 与 `templates/pc/<路线>/`；
-> 夹具数 `tests/fixtures/epic7_<路线>*` 前缀。
+> 夹具数 `tests/fixtures/epic7_<路线>` 前缀（含 `epic7_<路线>_pc/` 等变体目录）；若与另一条路线重名前缀，在 `ROUTE_FIXTURE_EXCLUDES` 显式排除。
 > `hero_synthesis` 的素材目录叫 `hero`；`arena` 的模板与全局共享图混放在模板根，
 > 无法按路线归属，标「共享根」而不是报一个假的 0 —— 别名见 `gen_status.py::ROUTE_DIR_ALIASES`。
 > 开局接力读 `MODE_SPECS.resume_probe` 与 `RESUME_EXEMPT`，PC 放行读 `PC_READY_ROUTES`。
@@ -84,7 +84,7 @@
 | 路线 | PC 专用图 | 模板合计 | 现场夹具 | 开局接力 | PC 放行 |
 |---|---:|---:|---:|---|---|
 | `hero_synthesis` | 11 | 28 | 34 | 豁免（见 modes.py） | 已放行 |
-| `story` | 9 | 34 | 55 | 有探针 | 已放行 |
+| `story` | 9 | 34 | 45 | 有探针 | 已放行 |
 | `arena` | 共享根 | 共享根 | 28 | 有探针 | 已放行 |
 | `expedition` | 0 | 19 | 17 | 有探针 | 未放行 |
 | `tower` | 9 | 21 | 29 | 有探针 | 已放行 |
