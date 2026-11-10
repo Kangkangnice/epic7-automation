@@ -23,6 +23,11 @@
 六章扫完 → 收工
 ```
 
+**开场两步是硬约束（2026-11-10 用户纠正）**：无论从大厅干净启动、还是停在小节列表 /
+外层面板接力，开跑第一件事都是点底部时间轴回「选取Episode」，再**显式选中左列第 1 项**
+（第6时代），然后才扫篇章。否则游戏停在「外传 / Episode 6」时会直接在那儿找绿勾开打，
+越过补星范围；准备 / 结算页也不再就地接力 —— 认不出它属于哪个 Episode，接着打同样越界。
+
 **打完一关点「确认」是直接回小节列表的**（2026-11-09 真打验证），没有「下一关」拦路 ——
 所以这条路线不需要主线的 ``next_stage`` 那一段。
 
@@ -140,14 +145,14 @@ def state_label(state: StoryStarState) -> str:
     return STATE_LABELS.get(getattr(state, "value", state), str(state))
 
 
-# 开局接力允许停靠的画面：篇章面板、小节列表、准备战斗三页都能就地接管。
-# ``DONE`` 不是一页画面，不在名单里。
+# 开局接力只允许停在最外层「选取Episode」或关卡列表（小节列表）。
+# ⚠️ 准备战斗 / 结算页刻意**不接**：画面认不出属于哪个 Episode，接着打会把
+# 外传 / Episode 6 这些不在补星范围内的关卡也打掉（2026-11-10 用户纠正）。
+# ``DONE`` 不是一页画面，也不在名单里。
 _RESUMABLE_STATES = frozenset(
     {
         StoryStarState.EPISODE,
         StoryStarState.STAGE_LIST,
-        StoryStarState.PREPARE,
-        StoryStarState.RESULTS,
     }
 )
 
@@ -160,7 +165,11 @@ def detect_story_star_resume_point(
     machine: "StoryStarStateMachine",
     screen: np.ndarray,
 ):
-    """主线补星开局接力：停在三层里任意一层都就地接管。
+    """主线补星开局接力：只接最外层「选取Episode」与关卡列表（小节列表）。
+
+    准备 / 结算页不接 —— 画面认不出属于哪个 Episode，接着打可能越过补星范围。
+    从关卡列表接力时 ``entry=story_ready`` 只省掉「回大厅再进主线」那一趟，
+    开场两步（回最外层 + 选左列第 1 项）仍由 Runner 强制走完。
 
     **判据与运行期同源** —— 直接调状态机自己的 ``observe_page``，不另定阈值、
     不加新锚点。落点状态恒为 ``None``（本状态机每帧重判页面，拨了也没意义）。
@@ -260,6 +269,11 @@ class StoryStarStateMachine:
         # 点完「准备战斗」之后是两页：先「选择辅助英雄」、再「队伍」。
         # 这一步过渡期同样抓不到稳定页面，用标记把它桥接过去。
         self._pending_select = False
+        # 开场两步：先回最外层「选取Episode」，再显式选中左列第 1 项（第6时代）。
+        # 默认 False 是为了让状态机单测能直接喂稳态帧；只有 Runner 开跑时 begin()
+        # 才置 True。否则从大厅干净启动会直接从当前章节的小节开始找绿勾。
+        self._need_open_episode_panel = False
+        self._need_select_first_episode = False
         # 主循环（含干跑）会读这个计数；本路线「一轮 = 扫完 6 章」，
         # 没有逐轮的战斗计数，收工时按「补完的章节数」回填一次即可。
         self.completed_cycles = 0
@@ -267,6 +281,11 @@ class StoryStarStateMachine:
         # 起始状态只是给 ModeSpec 的元数据用 —— 本状态机每帧从画面重判页面，
         # 拨状态没有意义（拨了下一帧就被覆盖）。
         self.state = initial_state or StoryStarState.EPISODE
+
+    def begin(self) -> None:
+        """Runner 开跑前调用：武装开场两步，保证先回外层再选范围内的第 1 项。"""
+        self._need_open_episode_panel = True
+        self._need_select_first_episode = True
 
     # ---- 判据 -------------------------------------------------------------
     def _locate(self, screen: np.ndarray, name: str) -> Optional[Match]:
@@ -391,6 +410,42 @@ class StoryStarStateMachine:
         # 和上一个动作的 ``target_pages`` 对账）。不设的话「点了没换页」永远成立，
         # 每个带 target_pages 的动作都会干等到超时 —— 2026-11-09 23:48 实跑即此。
         self._confirmed_page = page.value
+
+        # 开场两步：先把游戏拉回业务闭环的起点，再按前 6 项扫。
+        # 直接从小节列表开打，会让「外传 / Episode 6」也进补星范围（2026-11-10 用户纠正）。
+        if not self.finished:
+            if (
+                page is StoryStarState.STAGE_LIST
+                and self._need_open_episode_panel
+            ):
+                self._need_open_episode_panel = False
+                icon = self._locate(screen, "timeline_icon")
+                if icon is None:
+                    raise UnrecognizedScreen(
+                        "主线补星：开场找不到底部时间轴图标，无法回最外层"
+                    )
+                return RouteAction(
+                    "open-episode-panel",
+                    icon.center,
+                    source_page=StoryStarState.STAGE_LIST.value,
+                    target_pages=(StoryStarState.EPISODE.value,),
+                    reason="开场先回最外层「选取Episode」面板，确认补星范围",
+                )
+            if (
+                page is StoryStarState.EPISODE
+                and self._need_select_first_episode
+            ):
+                # 外层面板可能正停在「外传 / Episode 6」那一列；显式点回第 1 项。
+                self._need_open_episode_panel = False
+                self._need_select_first_episode = False
+                return RouteAction(
+                    "select-first-episode",
+                    EPISODE_ROW_POINTS[0],
+                    source_page=StoryStarState.EPISODE.value,
+                    in_page_evidence="左列第 1 项「第6时代」已选中，篇章切到范围内第一章",
+                    reason="开局显式切到补星范围内的第 1 项，再扫篇章",
+                )
+
         if page is StoryStarState.RESULTS:
             return self._results_action(screen)
         if page is StoryStarState.PREPARE:
@@ -625,6 +680,8 @@ class StoryStarStateMachine:
             dict(self._stage_attempts),
             self._pending_prepare,
             self._pending_select,
+            self._need_open_episode_panel,
+            self._need_select_first_episode,
         )
         try:
             action = self.next_action(screen)
@@ -641,6 +698,8 @@ class StoryStarStateMachine:
                 self._stage_attempts,
                 self._pending_prepare,
                 self._pending_select,
+                self._need_open_episode_panel,
+                self._need_select_first_episode,
             ) = snapshot
 
     def _battle_hud_visible(self, screen: np.ndarray) -> bool:
@@ -710,6 +769,8 @@ class StoryStarRunner(ModeRunnerBase):
         {
             "scroll-chapters",
             "scroll-stages",
+            "open-episode-panel",
+            "select-first-episode",
             "open-chapter",
             "open-stage",
             "dismiss-results-confirm",
@@ -726,6 +787,8 @@ class StoryStarRunner(ModeRunnerBase):
 
     def __init__(self, machine: StoryStarStateMachine, runtime, **kwargs):
         super().__init__(machine, runtime, **kwargs)
+        # 每次开跑都先武装开场两步：回最外层「选取Episode」+ 选左列第 1 项。
+        machine.begin()
         self._actions = 0
 
     def _state_label(self, state: StoryStarState) -> str:
