@@ -329,3 +329,39 @@ def test_the_route_pc_count_follows_the_tracked_images(monkeypatch) -> None:
     changed = gen_status.render()
     assert int(_fact_cell(changed, "story", 1)) == int(_fact_cell(baseline, "story", 1)) + 1
 
+
+def test_overlapping_fixture_prefixes_go_to_the_right_route() -> None:
+    """`epic7_story` 前缀既吞得到补星（别的路线），也吞得到 side_story 的变体。"""
+    text = _on_disk()
+    tracked = gen_status._tracked_pngs()
+    story = sum(
+        1
+        for n in tracked
+        if n.startswith("tests/fixtures/epic7_story")
+        and not n.startswith("tests/fixtures/epic7_story_star")
+        and n.endswith(".png")
+    )
+    star = sum(
+        1
+        for n in tracked
+        if n.startswith("tests/fixtures/epic7_story_star") and n.endswith(".png")
+    )
+    side = sum(
+        1
+        for n in tracked
+        if n.startswith("tests/fixtures/epic7_side_story") and n.endswith(".png")
+    )
+    assert star > 0
+    assert int(_fact_cell(text, "story", 3)) == story
+    assert int(_fact_cell(text, "story_star", 3)) == star
+    assert int(_fact_cell(text, "side_story", 3)) == side
+    # 反向：不排除会把补星数进主线；盲目加目录边界又会漏掉 side_story_boss。
+    assert story != sum(
+        1
+        for n in tracked
+        if n.startswith("tests/fixtures/epic7_story") and n.endswith(".png")
+    )
+    assert any(
+        n.startswith("tests/fixtures/epic7_side_story_boss/") for n in tracked
+    )
+
