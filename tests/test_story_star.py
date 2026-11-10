@@ -17,6 +17,7 @@ from __future__ import annotations
 
 from dataclasses import replace as dataclass_replace
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import cv2
 import numpy as np
@@ -24,9 +25,13 @@ import pytest
 
 from auto_game_unified.games.epic7.evidence.story_star import chapter_is_full
 from auto_game_unified.games.epic7.story_star import (
+    EPISODE_ROW_POINTS,
+    _RESUMABLE_STATES,
+    StoryStarRunner,
     StoryStarState,
     StoryStarStateMachine,
     build_story_star_templates,
+    detect_story_star_resume_point,
 )
 from auto_game_unified.games.epic7.template_paths import resolve_template_dir
 
@@ -45,6 +50,16 @@ def machine() -> StoryStarStateMachine:
     return StoryStarStateMachine(
         build_story_star_templates(resolve_template_dir(TEMPLATES, "pc"))
     )
+
+
+@pytest.fixture
+def startup_machine() -> StoryStarStateMachine:
+    """Runner 开跑那一刻的状态机：开场两步开关已打开。"""
+    started = StoryStarStateMachine(
+        build_story_star_templates(resolve_template_dir(TEMPLATES, "pc"))
+    )
+    started.begin()
+    return started
 
 
 # ---- 页面判定 -------------------------------------------------------------
@@ -149,6 +164,80 @@ def test_prepare_page_starts_battle(machine):
     action = machine.next_action(load("34_prepare2.png"))
     assert action is not None
     assert action.name == "start-mission"
+
+
+# ---- 开场顺序与接力范围（2026-11-10 用户纠正）------------------------------
+def test_startup_from_stage_list_goes_to_outer_panel_before_playing(startup_machine):
+    """从任何小节列表进来，第一件事是回最外层，不是找绿勾开打。"""
+    screen = load("04_chapter3_stage_list.png")
+    action = startup_machine.next_action(screen)
+    assert action is not None
+    assert action.name == "open-episode-panel"
+    assert action.target_pages == (StoryStarState.EPISODE.value,)
+    icon = startup_machine._locate(screen, "timeline_icon")
+    assert icon is not None
+    assert action.point == icon.center
+    # 还没打任何一关：遍历进度仍在第一项，绿勾账本为空。
+    assert startup_machine.episode_index == 0
+    assert startup_machine._stage_attempts == {}
+
+
+def test_startup_from_stage_list_then_selects_first_inscope_item(startup_machine):
+    """外层打开后先显式选中左列第 1 项，再扫篇章（防停在第 6 章/外传直接开打）。"""
+    first = startup_machine.next_action(load("04_chapter3_stage_list.png"))
+    assert first.name == "open-episode-panel"
+
+    screen = load("22_now.png")
+    second = startup_machine.next_action(screen)
+    assert second is not None
+    assert second.name == "select-first-episode"
+    assert second.point == EPISODE_ROW_POINTS[0]
+    assert second.source_page == StoryStarState.EPISODE.value
+    assert second.in_page_evidence
+
+    # 开场两步只做一次；下一帧回到正常的「点开未满篇章」。
+    third = startup_machine.next_action(screen)
+    assert third is not None
+    assert third.name == "open-chapter"
+
+
+def test_startup_from_episode_panel_also_selects_first_item(startup_machine):
+    """停在外层面板也不许直接扫当前显示的章节，先切回范围内第 1 项。"""
+    action = startup_machine.next_action(load("22_now.png"))
+    assert action is not None
+    assert action.name == "select-first-episode"
+    assert action.point == EPISODE_ROW_POINTS[0]
+
+
+def test_preview_does_not_consume_the_startup_steps(startup_machine):
+    """主循环先用 preview 试算；试算不能把开场开关吃掉。"""
+    screen = load("22_now.png")
+    preview_action, _ = startup_machine.preview(screen)
+    assert preview_action is not None
+    assert preview_action.name == "select-first-episode"
+    # 真正提交那一帧仍应发出同一个动作。
+    committed = startup_machine.next_action(screen)
+    assert committed is not None
+    assert committed.name == "select-first-episode"
+
+
+def test_prepare_and_results_are_not_resumable():
+    """准备 / 结算页认不出属于哪个 Episode，接着打会越过补星范围。"""
+    assert StoryStarState.EPISODE in _RESUMABLE_STATES
+    assert StoryStarState.STAGE_LIST in _RESUMABLE_STATES
+    assert StoryStarState.PREPARE not in _RESUMABLE_STATES
+    assert StoryStarState.RESULTS not in _RESUMABLE_STATES
+    machine = StoryStarStateMachine(
+        build_story_star_templates(resolve_template_dir(TEMPLATES, "pc"))
+    )
+    assert detect_story_star_resume_point(machine, load("34_prepare2.png")) is None
+
+
+def test_runner_arms_the_startup_steps():
+    """Runner 构造时必须打开开场开关，否则开场两步永远不会触发。"""
+    runner_machine = MagicMock()
+    StoryStarRunner(runner_machine, MagicMock())
+    runner_machine.begin.assert_called_once_with()
 
 
 # ---- 战斗观察（2026-11-10 实机失败回归）------------------------------------
