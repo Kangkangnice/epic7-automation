@@ -104,6 +104,17 @@ EPISODE_ROW_POINTS: tuple[tuple[int, int], ...] = (
 # 只补前 6 项：外传与 Episode 6 明确不补（用户 2026-11-09 口径）。
 EPISODE_COUNT = 6
 
+# 点篇章卡片正文的落点偏移（相对星标）。卡片是「星标在左上、正文在右下」。
+# ⚠️ 右边缘的卡片常常只露出星标，卡片大半在画布外 ⇒ 落点会越界：
+# 2026-11-10 12:21 实跑就是这么死的（星标 (1909,505) ⇒ 落点 (2059,595)，
+# 被窗口层「拒绝在 PC 游戏渲染区外点击」判成致命错误，整条路线带走）。
+# 落点越界的卡片**不许点**：它的满星判据区域也被画面裁掉了，读数不可信 ——
+# 先右滚把它整张露出来，再判再点（见 `_episode_action`）。
+CHAPTER_CLICK_DX = 150
+CHAPTER_CLICK_DY = 90
+# 滚到头仍只露出半张卡时的兜底落点：贴着画布内侧，落在卡片看得见的那部分上。
+EDGE_CLICK_MARGIN = 20
+
 # 篇章卡片的滚动落点：上下两排之间的空白处（卡片上不行，会点开它）。
 SCROLL_POINT = (1100, 760)
 # 一次滚 25 格 ≈ 375 px ≈ 一张卡片宽。滚太多会跳过整张卡片。
@@ -143,6 +154,29 @@ class StoryStarState(Enum):
 
 def state_label(state: StoryStarState) -> str:
     return STATE_LABELS.get(getattr(state, "value", state), str(state))
+
+
+def chapter_click_point(center: tuple[int, int]) -> tuple[int, int]:
+    """星标中心 → 卡片正文的点击落点。"""
+    return (center[0] + CHAPTER_CLICK_DX, center[1] + CHAPTER_CLICK_DY)
+
+
+def point_in_screen(point: tuple[int, int], screen: np.ndarray) -> bool:
+    """落点是否在画布内。
+
+    窗口层对越界点击是**致命错误**（``拒绝在 PC/安卓渲染区外点击``），
+    所以路线必须在**决策阶段**就把这种点排除掉，不能拿护栏当兜底。
+    """
+    height, width = screen.shape[:2]
+    return 0 <= point[0] < width and 0 <= point[1] < height
+
+
+def clamped_click_point(point: tuple[int, int], screen: np.ndarray) -> tuple[int, int]:
+    """把越界落点贴回画布内侧（只用于「滚到头也只有半张卡」的兜底）。"""
+    height, width = screen.shape[:2]
+    x = min(max(point[0], EDGE_CLICK_MARGIN), width - 1 - EDGE_CLICK_MARGIN)
+    y = min(max(point[1], EDGE_CLICK_MARGIN), height - 1 - EDGE_CLICK_MARGIN)
+    return (x, y)
 
 
 # 开局接力只允许停在最外层「选取Episode」或关卡列表（小节列表）。
@@ -527,13 +561,21 @@ class StoryStarStateMachine:
         if self.finished:
             return None
         # 先把这一屏里「未满」的篇章逐个点开。
+        # ⚠️ 右边缘的卡片只露出星标时，落点在画布外 —— 那种卡片**先判再点都不行**：
+        # 满星判据要按星标开窗读左右两串数字，窗口被画面裁掉后读数不可信，点击又会被
+        # 窗口层判成致命错误。所以先跳过它，交给下面的右滚把整张卡露出来。
+        edge: Optional[tuple[tuple[int, int], tuple[int, int]]] = None
         for center in self.star_points(screen):
+            point = chapter_click_point(center)
+            if not point_in_screen(point, screen):
+                edge = (center, point)
+                continue
             full, _detail = chapter_is_full(screen, center)
             if not full:
                 self.scroll_signature = None
                 return RouteAction(
                     "open-chapter",
-                    (center[0] + 150, center[1] + 90),
+                    point,
                     source_page=StoryStarState.EPISODE.value,
                     target_pages=(StoryStarState.STAGE_LIST.value,),
                     reason=f"篇章未满（星标 {center}）",
@@ -543,14 +585,29 @@ class StoryStarStateMachine:
             from auto_game_unified.core.supervisor import meaningful_change
 
             if not meaningful_change(self.scroll_signature, screen):
-                return self._next_episode(screen)
+                if edge is None:
+                    return self._next_episode(screen)
+                # 滚到头还有一张只露半张的卡片：点它露出来的那部分。
+                # 直接跳下一个 Episode 等于把它的未满小节**静默漏掉**。
+                self.scroll_signature = None
+                return RouteAction(
+                    "open-chapter",
+                    clamped_click_point(edge[1], screen),
+                    source_page=StoryStarState.EPISODE.value,
+                    target_pages=(StoryStarState.STAGE_LIST.value,),
+                    reason=f"右滚到头，改点边缘卡片露出来的部分（星标 {edge[0]}）",
+                )
+        if edge is None:
+            reason = f"本屏都满，向右滚 {SCROLL_NOTCHES} 格"
+        else:
+            reason = f"右边缘卡片露不全（星标 {edge[0]}），先向右滚 {SCROLL_NOTCHES} 格再判"
         self.scroll_signature = screen.copy()
         return RouteAction(
             "scroll-chapters",
             SCROLL_POINT,
             source_page=StoryStarState.EPISODE.value,
             in_page_evidence="篇章卡片已横向平移",
-            reason=f"本屏都满，向右滚 {SCROLL_NOTCHES} 格",
+            reason=reason,
         )
 
     def _next_episode(self, screen: np.ndarray) -> Optional[RouteAction]:
