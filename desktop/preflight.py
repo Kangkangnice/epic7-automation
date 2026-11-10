@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 import platform
-from typing import Callable
+from typing import Any, Callable
 
 import numpy as np
 
@@ -69,6 +69,29 @@ def validate_route_templates(
     template_probe: Callable[[str, Path], None] = _probe_templates,
 ) -> None:
     template_probe(mode, template_root)
+
+
+def validate_start_plan(
+    controller: Any,
+    template_root: Path | TemplateDir,
+) -> tuple[tuple[tuple[str, int], ...], tuple[str, ...]]:
+    """按当前后端筛掉用不了的路线，只对**真正要跑**的那几条验模板。
+
+    2026-11-10 事故：界面开跑前拿 ``controller.plan()``（未过滤）逐条
+    ``validate_route_templates``。模拟器下勾了只有 PC 素材的 story_star，
+    在普通 Path 模板根上必然 FileNotFoundError；虽然 ``controller.start()``
+    本来会跳过它，但界面在调用 start() 之前就被这道复检挡死，后面 7 条老路线
+    一条都启动不了。这里与 start() 共用 ``resolve_plan()``，保证「验的」和
+    「跑的」是同一份计划。
+    """
+    runnable, skipped = controller.resolve_plan()
+    for mode, _cycles in runnable:
+        try:
+            validate_route_templates(mode, template_root)
+        except Exception as error:
+            label = get_mode(mode).label
+            raise RuntimeError(f"{label}：{error}") from error
+    return runnable, skipped
 
 
 def _probe_pc(window: Epic7PcWindow) -> PreflightReport:

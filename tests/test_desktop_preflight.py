@@ -1,6 +1,7 @@
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 from auto_game_unified.core.pc_window import (
     WindowCalibration,
@@ -197,3 +198,29 @@ def test_emulator_preflight_template_root_loads_achievement_too():
 
 def test_emulator_preflight_template_root_stays_plain_path():
     assert template_root_for_backend(TEMPLATE_ROOT, "emulator") == TEMPLATE_ROOT
+
+
+# ---- 开跑前复检只验「真正要跑」的路线（2026-11-10 事故）------------------
+def test_emulator_start_validation_only_checks_routes_that_will_run(tmp_path):
+    """UI 开跑前若拿未过滤清单逐条验模板，模拟器下勾了只有 PC 素材的
+    story_star 就抛缺图，后面 7 条老路线一条都启动不了。这里钉住新口径：
+    模板复检与 controller.start() 必须用同一份 resolve_plan() 结果。
+    """
+    from auto_game_unified.desktop.controller import DesktopController
+    from auto_game_unified.desktop.preflight import validate_start_plan
+    from auto_game_unified.desktop.worker import WorkerController
+
+    controller = DesktopController(worker=WorkerController(repo_parent=tmp_path))
+    controller.toggle("story_star", True)
+    controller.toggle("arena", True)
+
+    runnable, skipped = validate_start_plan(controller, TEMPLATE_ROOT)
+
+    assert [mode for mode, _ in runnable] == ["arena"]
+    assert skipped == ("story_star",)
+
+
+def test_unfiltered_story_star_template_check_would_block_emulator():
+    """根因钉子：老口径把 PC-only 路线也拿去验，模拟器根下必然缺图。"""
+    with pytest.raises(FileNotFoundError):
+        validate_route_templates("story_star", TEMPLATE_ROOT)
