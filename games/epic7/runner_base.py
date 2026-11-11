@@ -43,6 +43,12 @@ class ModeRunnerBase:
 
     _MODE_LABEL = ""  # 日志用模式名（如 "狗粮"），子类必填
     _ACTION_RETRY_SECONDS = 45
+    # 允许同名动作**连续重复**的动作名；默认空，老路线行为一点不变。
+    # 滚动翻页这类页内动作本来就要连发好几下才能翻到头，页面始终不换，
+    # 主循环的「同一动作最多 4 次」会把「还在滚」误判成「点了没生效」而报错
+    # （2026-11-10 补星换到第 2 章后归位连滚 4 次即此）。这些动作由状态机
+    # 自己判「滚到头没有」收尾，另有 Runner 的总动作数上界兜底。
+    _REPEATABLE_ACTIONS: frozenset[str] = frozenset()
     _ABSOLUTE_TIMEOUT_SECONDS: Optional[int] = 180  # None 表示无绝对超时
     _TIMEOUT_SECONDS: dict[Any, int] = {}
     _BATTLE_ENTRY_ACTION: Optional[str] = None  # 触发战斗移交的动作名
@@ -742,7 +748,8 @@ class ModeRunnerBase:
                             retry_wait_logged = True
                         self.sleep(self.poll_seconds)
                         continue
-                    action_attempts += 1
+                    if action.name not in self._REPEATABLE_ACTIONS:
+                        action_attempts += 1
                 else:
                     last_action_name = action.name
                     action_attempts = 1
