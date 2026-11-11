@@ -65,6 +65,8 @@ class SessionState:
     params: Mapping[str, Mapping[str, Any]] = field(default_factory=dict)
     # 窗口位置与大小：``{"x", "y", "w", "h"}``。None = 还没记过，用默认摆放。
     window: Mapping[str, int] | None = None
+    # 今日游戏便签：固定三个槽位，空串 = 这一行还没填。
+    todos: tuple[str, str, str] = ("", "", "")
 
 
 def session_path(root: Path) -> Path:
@@ -105,6 +107,24 @@ def _clean_params(raw: object, specs: Mapping[str, Any]) -> dict[str, dict[str, 
             if isinstance(name, str) and name in specs and isinstance(value, dict):
                 params[name] = dict(value)
     return params
+
+
+TODO_SLOTS = 3
+TODO_MAX_CHARS = 60
+
+
+def clean_todos(raw: object) -> tuple[str, str, str]:
+    """三条便签：只认字符串、超长截断、不足补空 —— 坏数据一律回到空便签。
+
+    与勾选同一条规矩（约定 1）：手改坏的存档不能让助手打不开，也不能让
+    窄条面板被一段几千字的文本撑爆。
+    """
+    values: list[str] = []
+    if isinstance(raw, (list, tuple)):
+        for item in raw[:TODO_SLOTS]:
+            values.append(item[:TODO_MAX_CHARS] if isinstance(item, str) else "")
+    values.extend([""] * (TODO_SLOTS - len(values)))
+    return (values[0], values[1], values[2])
 
 
 def load(path: Path) -> SessionState | None:
@@ -168,6 +188,7 @@ def load(path: Path) -> SessionState | None:
         last_run=last_run,
         params=params,
         window=window,
+        todos=clean_todos(payload.get("todos")),
     )
 
 
@@ -181,6 +202,7 @@ def save(path: Path, state: SessionState) -> None:
         "pc_input_mode": state.pc_input_mode,
         "params": {name: dict(value) for name, value in state.params.items()},
         "window": dict(state.window) if state.window is not None else None,
+        "todos": list(state.todos),
         "last_run": (
             None
             if state.last_run is None
