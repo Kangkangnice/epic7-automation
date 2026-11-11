@@ -250,10 +250,11 @@ def test_startup_from_stage_list_then_selects_first_inscope_item(startup_machine
     assert second.source_page == StoryStarState.EPISODE.value
     assert second.in_page_evidence
 
-    # 开场两步只做一次；下一帧回到正常的「点开未满篇章」。
+    # 开场两步只做一次；接着先归位到最左，再回到正常的「点开未满篇章」。
     third = startup_machine.next_action(screen)
-    assert third is not None
-    assert third.name == "open-chapter"
+    assert third is not None and third.name == "scroll-chapters-left"
+    fourth = startup_machine.next_action(screen)
+    assert fourth is not None and fourth.name == "open-chapter"
 
 
 def test_startup_from_episode_panel_also_selects_first_item(startup_machine):
@@ -365,3 +366,266 @@ def test_smaller_ui_frame_needs_the_scale_scan(machine):
     )
     assert plain is not None and plain.score < atom.threshold
     assert machine._battle_hud_visible(screen) is True
+
+
+# ---- 业务闭环（2026-11-10 独立审核后的补齐项）--------------------------------
+# 这些用例先验「整条路线怎么把 6 个章节扫完」，再验单点判据：离线只验判据时，
+# 换章 / 归位 / 收工这些设计里的步骤一条都没被跑到（见工作区根的独立审核报告）。
+
+STORY_FIXTURES = Path(__file__).resolve().parent / "fixtures" / "epic7_story"
+
+
+def load_story(name: str):
+    image = cv2.imread(str(STORY_FIXTURES / name))
+    assert image is not None, f"夹具缺失：{name}"
+    return cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+
+
+@pytest.fixture
+def fresh_machine() -> StoryStarStateMachine:
+    """每个用例都拿一台干净的状态机，避免模块级 fixture 的账本串台。"""
+    return StoryStarStateMachine(
+        build_story_star_templates(resolve_template_dir(TEMPLATES, "pc"))
+    )
+
+
+def test_startup_rewinds_chapters_to_the_left_first(startup_machine):
+    """开场选完第 1 项，必须先把篇章滚回最左，才允许开卡片。"""
+    screen = load("22_now.png")
+    first = startup_machine.next_action(screen)
+    assert first is not None and first.name == "select-first-episode"
+    second = startup_machine.next_action(screen)
+    assert second is not None
+    assert second.name == "scroll-chapters-left", (
+        "切换/开局后应先把篇章归位到最左，否则左边未满的章节会被漏掉；"
+        f"实际第一个动作是 {second.name}"
+    )
+
+
+def test_rewind_is_bounded_and_then_scanning_resumes(startup_machine):
+    """归位滚到画面不动就结束，不能一直往左滚、也不能吞掉后续扫篇章。"""
+    screen = load("22_now.png")
+    startup_machine.next_action(screen)  # select-first-episode
+    assert startup_machine.next_action(screen).name == "scroll-chapters-left"
+    third = startup_machine.next_action(screen)  # 同帧 = 滚不动了
+    assert third is not None
+    assert third.name == "open-chapter", (
+        f"归位结束后应回到正常扫篇章，实际 {third.name}"
+    )
+
+
+def test_checked_chapter_is_not_reopened(fresh_machine, monkeypatch):
+    """一张已查过的篇章不许再点开一次，否则就是 12:21 / 18:43 那种空转。"""
+    screen = load("22_now.png")
+    fresh_machine.scroll_signature = None
+    monkeypatch.setattr(fresh_machine, "star_points", lambda _s: [(829, 505)])
+    monkeypatch.setattr(
+        story_star_module, "chapter_is_full", lambda _s, _c: (False, "未满")
+    )
+    first = fresh_machine.next_action(screen)
+    assert first is not None and first.name == "open-chapter"
+    fresh_machine.scroll_signature = None  # 模拟点进去又退回篇章面板
+    second = fresh_machine.next_action(screen)
+    assert second is not None
+    assert second.name != "open-chapter", "同一张已查过的篇章被重复点开"
+
+
+def test_stage_scroll_has_its_own_notch_count(fresh_machine):
+    """小节行距约 150px，不能复用横向翻篇章那 25 格（一次滚过两三行）。"""
+    from auto_game_unified.games.epic7.route_action import RouteAction
+
+    runner = StoryStarRunner(fresh_machine, MagicMock())
+    runner._perform_action(RouteAction("scroll-chapters", (1100, 760)))
+    runner.runtime.wheel.assert_called_once_with(
+        (1100, 760), -story_star_module.SCROLL_NOTCHES, "scroll-chapters"
+    )
+    runner.runtime.reset_mock()
+    runner._perform_action(RouteAction("scroll-stages", (200, 700)))
+    notches = story_star_module.SCROLL_STAGE_NOTCHES
+    assert notches < story_star_module.SCROLL_NOTCHES
+    runner.runtime.wheel.assert_called_once_with(
+        (200, 700), -notches, "scroll-stages"
+    )
+
+
+def test_six_episodes_complete_exactly_one_cycle(fresh_machine, monkeypatch):
+    """一轮 = 扫完 6 个章节，不是「完成 6 轮」。"""
+    screen = load("22_now.png")
+    fresh_machine.episode_index = 5
+    fresh_machine.scroll_signature = screen.copy()
+    monkeypatch.setattr(fresh_machine, "star_points", lambda _s: [])
+    action = fresh_machine.next_action(screen)
+    assert action is None
+    assert fresh_machine.completed_cycles == 1
+
+
+def test_stage_attempt_book_is_not_keyed_by_screen_row(fresh_machine, monkeypatch):
+    """列表滚过一屏后，同一个屏幕行坐标已经是另一关，仍应允许开打。"""
+    screen = load("31_ch10_stages.png")
+    monkeypatch.setattr(fresh_machine, "stage_checks", lambda _s: [])
+    monkeypatch.setattr(
+        story_star_module, "stage_is_full", lambda *_a, **_k: False
+    )
+    fresh_machine.stage_scroll_signature = None
+    first = fresh_machine.next_action(screen)
+    assert first is not None and first.name == "open-stage"
+    fresh_machine._stage_scroll_steps = (
+        getattr(fresh_machine, "_stage_scroll_steps", 0) + 1
+    )
+    fresh_machine._pending_prepare = 0  # 上一关已打完，回到列表重新看
+    second = fresh_machine.next_action(screen)
+    assert second is not None and second.name == "open-stage", (
+        "滚动后同一行被旧账本拦住了，实际会漏掉没打过的小节"
+    )
+
+
+def test_stage_that_stays_uncleared_is_reported(fresh_machine, monkeypatch):
+    """打过回来还是没满星：要报「配置可能不满足通关条件」，不能静默略过。"""
+    screen = load("31_ch10_stages.png")
+    monkeypatch.setattr(fresh_machine, "stage_checks", lambda _s: [])
+    monkeypatch.setattr(
+        story_star_module, "stage_is_full", lambda *_a, **_k: False
+    )
+    fresh_machine.stage_scroll_signature = screen.copy()
+    opened = 0
+    for _ in range(8):
+        fresh_machine._pending_prepare = 0  # 每关打完回到列表重新看
+        action = fresh_machine.next_action(screen)
+        assert action is not None
+        if action.name != "open-stage":
+            break
+        opened += 1
+    assert opened > 0, "这一屏本来就有没满星的小节"
+    assert action.name != "open-stage"
+    assert "通关条件" in action.reason, (
+        f"打过仍未满星的小节没有被明确提示：{action.reason}"
+    )
+
+
+def test_stamina_popup_is_handled_instead_of_unrecognized(fresh_machine):
+    """体力不足弹窗是业务弹窗，不能判成「认不出当前页面」干等超时。"""
+    screen = load_story("stamina_popup_pc_live_20261101.png")
+    action = fresh_machine.next_action(screen)
+    assert action is not None
+    assert action.name in {"stamina-material", "stamina-confirm"}, (
+        f"体力弹窗应进入两段式购买流程，实际 {action.name}"
+    )
+
+
+def test_sweep_moves_through_all_episodes_and_finishes(startup_machine, monkeypatch):
+    """序列级：从开场一路扫到六章收工，中间不许重复开同一张篇章。"""
+    screen = load("22_now.png")
+    monkeypatch.setattr(startup_machine, "star_points", lambda _s: [])
+    names: list[str] = []
+    action = object()
+    for _ in range(80):
+        action = startup_machine.next_action(screen)
+        if action is None:
+            break
+        names.append(action.name)
+    assert action is None, "六章扫完应宣布收工"
+    assert names.count("next-episode") == 5, f"换章次数不对：{names}"
+    assert "open-chapter" not in names
+    assert startup_machine.completed_cycles == 1
+
+
+# ---- 连续滚动不能被「同一动作最多 4 次」误杀（19:18 实跑失败回归）----------
+def test_scroll_actions_are_exempt_from_the_four_try_limit():
+    """19:20:46 那轮：换到第 2 章后归位连滚 4 次，被主循环判「点击未推进」而报错。
+
+    第一章一屏就够、滚 1 次就过；第二章卡片多，归位与往右逐屏看都要连滚
+    好几次。滚动是**页内动作、页面本来就不换**，不能按「点了没换页」计数。
+    """
+    assert StoryStarRunner._REPEATABLE_ACTIONS == frozenset(
+        {"scroll-chapters", "scroll-chapters-left", "scroll-stages"}
+    ), "三个滚动动作都必须在可连续重复名单里"
+    # 老路线默认仍是空名单，行为一点不变。
+    from auto_game_unified.games.epic7.runner_base import ModeRunnerBase
+
+    assert ModeRunnerBase._REPEATABLE_ACTIONS == frozenset()
+
+
+def test_rewind_is_bounded_even_if_the_picture_keeps_changing(fresh_machine, monkeypatch):
+    """背景星光一直在动、判不出「滚不动」时，归位也必须自己收住。"""
+    screen = load("22_now.png")
+    fresh_machine._need_rewind = True
+    from auto_game_unified.core import supervisor
+
+    monkeypatch.setattr(
+        supervisor,
+        "meaningful_change",
+        lambda _before, _after: True,  # 画面永远「有变化」
+    )
+    rolls = 0
+    for _ in range(story_star_module.REWIND_MAX_STEPS + 2):
+        action = fresh_machine._rewind_action(screen)
+        if action is None:
+            break
+        assert action.name == "scroll-chapters-left"
+        rolls += 1
+    assert action is None, "到达上界必须结束归位"
+    assert rolls <= story_star_module.REWIND_MAX_STEPS
+
+
+# ---- 20:27 实跑：往右滚太慢 + 满星小节被点进去开打 --------------------------
+def test_right_scroll_also_compares_only_the_cards_area(fresh_machine, monkeypatch):
+    """往右逐屏看卡片判「滚到头」也必须只看卡片区，否则星空背景让它一直滚。"""
+    from auto_game_unified.core import supervisor
+
+    screen = load("22_now.png")
+    fresh_machine.scroll_signature = screen.copy()
+    seen: list[tuple[int, int]] = []
+
+    def record(before, after):
+        seen.append((before.shape[0], before.shape[1]))
+        return False  # 判成「滚不动」，好走到换章分支
+
+    monkeypatch.setattr(supervisor, "meaningful_change", record)
+    monkeypatch.setattr(fresh_machine, "star_points", lambda _s: [])
+    fresh_machine.next_action(screen)
+    assert seen, "没有调用画面比对"
+    assert seen[0][0] < screen.shape[0] and seen[0][1] < screen.shape[1], (
+        "往右滚还在比整帧，背景动画会让每章多滚十几次"
+    )
+
+
+def test_scroll_retry_wait_is_short(fresh_machine):
+    """滚动是页内动作，不该按换页那样等 6 秒。"""
+    runner = StoryStarRunner(fresh_machine, MagicMock())
+    assert runner._action_retry_seconds("scroll-chapters") <= 2.0
+    assert runner._action_retry_seconds("scroll-stages") <= 2.0
+
+
+def test_open_stage_reason_reports_the_green_checks_it_read(fresh_machine, monkeypatch):
+    """日志要带上这一屏读到的绿勾位置，下次实跑不用截图也能定判据有没有漏检。"""
+    screen = load("31_ch10_stages.png")
+    monkeypatch.setattr(fresh_machine, "stage_checks", lambda _s: [])
+    monkeypatch.setattr(
+        story_star_module, "stage_is_full", lambda *_a, **_k: False
+    )
+    fresh_machine.stage_scroll_signature = None
+    action = fresh_machine.next_action(screen)
+    assert action is not None and action.name == "open-stage"
+    assert "绿勾" in action.reason and "读到" in action.reason
+
+
+def test_prepare_battle_is_cancelled_when_the_stage_is_actually_full(
+    fresh_machine, monkeypatch,
+):
+    """点「准备战斗」之前复核一次：满星小节绝不能被打（20:33 实跑白打一关）。"""
+    from unittest.mock import MagicMock as Mock
+
+    screen = load("13_ep1_full_stages.png")
+    fresh_machine._pending_prepare = 3
+    fresh_machine._pending_stage_row = 432
+    def locate(_screen, name):
+        # 只让「准备战斗」出现；其余（含体力弹窗）一律没有，别把复核测试带偏。
+        return Mock(center=(1740, 1051)) if name == "prepare_battle" else None
+
+    monkeypatch.setattr(fresh_machine.story, "_locate", locate)
+    monkeypatch.setattr(fresh_machine, "stage_checks", lambda _s: [(120, 432)])
+    action = fresh_machine.next_action(screen)
+    assert action is not None
+    assert action.name != "prepare-battle", (
+        "复核发现这一行已有绿勾，必须取消开打、回去重新看整页"
+    )

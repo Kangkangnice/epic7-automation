@@ -295,7 +295,8 @@ class QtDesktopWindow(FluentWindow):
 
                 spin = QSpinBox(card)
                 spin.setStyleSheet(SPIN_BOX_QSS)
-                spin.setRange(route.min_cycles, 99)
+                # 上限给到三位数：刷书签这类路线一轮只扫一次，半天下来要上百轮。
+                spin.setRange(route.min_cycles, 999)
                 spin.setFixedWidth(112)
                 # 次数固定 = 标准「禁用」态。我们自己的 QSS 把禁用文字写成
                 # #5B5B5B on #F3F4F6（6.2:1），数字照样看得见；
