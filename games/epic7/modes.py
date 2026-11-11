@@ -1228,7 +1228,8 @@ MODE_SPECS = {
         runner_type=StoryStarRunner,
         # 一次运行 = 把 6 个 Episode 扫一遍，不是「打 N 关」⇒ 不给次数。
         cycles_editable=False,
-        # 开局接力：三层里任意一层都就地接管（判据与运行期同源）。
+        # 开局接力：只接篇章面板 / 小节列表两页（判据与运行期同源）。
+        # 准备 / 结算页刻意不接：认不出属于哪个 Episode，接着打会越过补星范围。
         resume_probe=_resume_probe(detect_story_star_resume_point),
         # 导航链与主线**同一条**：两条路线进的是同一个关卡列表页。
         navigation_plan=NavigationPlan(

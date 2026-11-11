@@ -13,23 +13,26 @@
           未满        → 点进去
                           逐个看小节徽章右下角有没有绿勾
                               有勾 → 跳过
-                              没勾 → 点它 → 准备战斗 → 战斗开始
-                                      → 跳过剧情 → 结算「确认」
+                              没勾 → 点它 → 准备战斗 → 选择辅助英雄 → 选择队伍
+                                      → 战斗开始 → 跳过剧情
+                                      → CLEAR / 结算成绩 / 完成故事 / 额外奖励逐页点掉
                                       → 自动回到小节列表，再看这一关
                                            有勾 → 继续
                                            没勾 → 报「配置可能不满足通关条件」，跳过
-                          全都有勾 → ESC 回篇章面板
+                          全都有勾 → 点底部时间轴图标回篇章面板
       本 Episode 所有篇章都满 → 点左列下一个 Episode
-六章扫完 → 收工
-```
+六章扫完 → 收工（记一轮）
 
 **开场两步是硬约束（2026-11-10 用户纠正）**：无论从大厅干净启动、还是停在小节列表 /
 外层面板接力，开跑第一件事都是点底部时间轴回「选取Episode」，再**显式选中左列第 1 项**
 （第6时代），然后才扫篇章。否则游戏停在「外传 / Episode 6」时会直接在那儿找绿勾开打，
 越过补星范围；准备 / 结算页也不再就地接力 —— 认不出它属于哪个 Episode，接着打同样越界。
+每次开跑和每次换章，还要先把篇章滚回最左，才允许开卡片。
 
-**打完一关点「确认」是直接回小节列表的**（2026-11-09 真打验证），没有「下一关」拦路 ——
-所以这条路线不需要主线的 ``next_stage`` 那一段。
+**实机修正（2026-11-09/10 真打验证）**：准备战斗是两页（选辅助英雄、队伍）；
+战斗结束后最多四页要逐页点掉（CLEAR / 结算成绩 / 完成故事 / 额外奖励），点完才回小节列表，
+没有主线那条 ``next_stage``。从小节列表按 ESC 实测直接退回**大厅**，回篇章面板只能点
+底部那颗时间轴图标。
 
 ## 三个判据（都在 ``evidence/story_star.py``）
 
@@ -82,6 +85,7 @@ from auto_game_unified.games.epic7.evidence.story_star import (
 )
 from auto_game_unified.games.epic7.route_action import RouteAction
 from auto_game_unified.games.epic7.runner_base import ModeRunnerBase
+from auto_game_unified.games.epic7.stamina import next_stamina_decision
 from auto_game_unified.games.epic7.story import (
     StoryStateMachine,
     build_story_templates,
@@ -119,6 +123,12 @@ EDGE_CLICK_MARGIN = 20
 SCROLL_POINT = (1100, 760)
 # 一次滚 25 格 ≈ 375 px ≈ 一张卡片宽。滚太多会跳过整张卡片。
 SCROLL_NOTCHES = 25
+# 小节列表行距约 150 px：横向那 25 格会一次滚过两三行，把没勾的小节直接漏掉。
+SCROLL_STAGE_NOTCHES = 8
+# 归位往左滚：一次 2 张卡片宽，最多 3 次（约 6 张卡）。客户端滚到最左会自己停，
+# 所以不必逐张往回倒 —— 卡片多的章节逐张倒要连滚十几次，每帧都要等一次确认。
+SCROLL_REWIND_NOTCHES = 50
+REWIND_MAX_STEPS = 3
 
 # 小节列表：行网格不写死 —— 这一章的列表会按小节数量自适应（4 个和 5 个的行距
 # 实测是 150 vs 156），所以首行与行距都用「已出现的绿勾」反推（见 _stage_action）。
@@ -294,7 +304,22 @@ class StoryStarStateMachine:
         self.episode_done = False
         self.scroll_signature: Optional[np.ndarray] = None
         self.stage_scroll_signature: Optional[np.ndarray] = None
-        self._stage_attempts: dict[int, int] = {}
+        # 账本按「章节 + 第几个篇章 + 列表滚过几屏 + 行」记，不按屏幕 y 坐标：
+        # 列表一滚，同一个 y 已经是另一关，按坐标记会漏打或重复打。
+        self._stage_attempts: dict[tuple[int, int, int, int], int] = {}
+        self._chapter_seq = 0
+        self._stage_scroll_steps = 0
+        # 本 Episode 已经点开查过的篇章（星标中心）。退回面板后不许重复点开同一张，
+        # 否则就是 12:21 / 18:43 那种「开章 → 全满 → 退回 → 再开」的空转。
+        self._checked_chapters: set[tuple[int, int]] = set()
+        # 开跑 / 换章后先把篇章滚回最左，滚到画面不动才结束。
+        self._need_rewind = False
+        self._rewind_signature: Optional[np.ndarray] = None
+        self._rewind_steps = 0
+        # 体力弹窗的两段式购买：素材点过之后下一帧才找确认按钮。
+        self._stamina_material_clicked = False
+        # 打过回来还是没满星的小节，报给下一个动作的日志看（不静默略过）。
+        self._unclear_stage_note = ""
         # 点完小节之后，下一帧要先点「准备战斗」再谈别的 —— 点小节只是「选中」，
         # 页面不换，不记住这件事的话下一帧会接着去点下一个小节（永远进不了战斗）。
         # 用**计数**而不是布尔：点完「准备战斗」页面要一两秒才切过去，
@@ -303,6 +328,8 @@ class StoryStarStateMachine:
         # 点完「准备战斗」之后是两页：先「选择辅助英雄」、再「队伍」。
         # 这一步过渡期同样抓不到稳定页面，用标记把它桥接过去。
         self._pending_select = False
+        # 刚点开、正等着点「准备战斗」的是哪一行；开打前要用它复核绿勾。
+        self._pending_stage_row: Optional[int] = None
         # 开场两步：先回最外层「选取Episode」，再显式选中左列第 1 项（第6时代）。
         # 默认 False 是为了让状态机单测能直接喂稳态帧；只有 Runner 开跑时 begin()
         # 才置 True。否则从大厅干净启动会直接从当前章节的小节开始找绿勾。
@@ -320,6 +347,7 @@ class StoryStarStateMachine:
         """Runner 开跑前调用：武装开场两步，保证先回外层再选范围内的第 1 项。"""
         self._need_open_episode_panel = True
         self._need_select_first_episode = True
+        self._need_rewind = True
 
     # ---- 判据 -------------------------------------------------------------
     def _locate(self, screen: np.ndarray, name: str) -> Optional[Match]:
@@ -420,8 +448,103 @@ class StoryStarStateMachine:
                 points.append(center)
         return points
 
+    # ---- 体力（复用主线那套两段式决策，不建第二套）--------------------------
+    def _stamina_action(self, screen: np.ndarray) -> Optional[RouteAction]:
+        """体力不足时按 11-09 的设计用生命之叶补充，不限次数。
+
+        素材点过之后确认按钮要一两秒才渲染，这一档必须让主循环继续等，
+        绝不能 ``return None``（那是宣布收工）。生命之叶耗尽时共享决策会抛
+        ``StaminaExhausted``，由主循环按「资源耗尽」干净收尾（退出码 2）。
+        """
+        if self.story.templates.stamina_popup is None:
+            return None
+        decision = next_stamina_decision(
+            screen,
+            self.story._locate,
+            material_clicked=self._stamina_material_clicked,
+        )
+        if decision.status == "idle":
+            self._stamina_material_clicked = False
+            return None
+        if decision.status == "waiting":
+            raise UnrecognizedScreen(
+                "主线补星：体力弹窗已出现，等待购买确认按钮"
+            )
+        if decision.point is None:
+            raise UnrecognizedScreen("主线补星：体力弹窗没有可点击的落点")
+        if decision.status == "material":
+            self._stamina_material_clicked = True
+            return RouteAction(
+                "stamina-material",
+                decision.point,
+                source_page="体力弹窗",
+                in_page_evidence="体力弹窗仍在，生命之叶已选中",
+                reason="体力不足：点生命之叶素材（按设计不限次数补充）",
+            )
+        self._stamina_material_clicked = False
+        return RouteAction(
+            "stamina-confirm",
+            decision.point,
+            source_page="体力弹窗",
+            in_page_evidence="体力弹窗已关闭，回到队伍准备",
+            reason="体力不足：确认购买生命之叶",
+        )
+
+    # ---- 篇章归位 ---------------------------------------------------------
+    def _finish_rewind(self) -> None:
+        self._need_rewind = False
+        self._rewind_signature = None
+        self._rewind_steps = 0
+        self.scroll_signature = None
+        # 滚动位置变了，之前按星标坐标记的「已查过」全部作废。
+        self._checked_chapters.clear()
+
+    @staticmethod
+    def _chapters_view(screen: np.ndarray) -> np.ndarray:
+        """只取篇章卡片那两排，避开顶部 HUD 与大面积星空背景的待机动画。
+
+        19:20 那轮诊断帧里卡片早已归到最左，整帧却一直被星光判成「还在变」，
+        归位因此停不下来。只看卡片区能可靠判出「滚不动了」。
+        """
+        height, width = screen.shape[:2]
+        return screen[
+            round(height * 0.33) : round(height * 0.90),
+            round(width * 0.15) : round(width * 0.99),
+        ]
+
+    def _rewind_action(self, screen: np.ndarray) -> Optional[RouteAction]:
+        """往上滚（= 往左翻篇章）直到卡片不再移动；返回 None 表示归位完成。"""
+        from auto_game_unified.core.supervisor import meaningful_change
+
+        if (
+            self._rewind_signature is not None
+            and not meaningful_change(
+                self._chapters_view(self._rewind_signature),
+                self._chapters_view(screen),
+            )
+        ):
+            self._finish_rewind()
+            return None
+        if self._rewind_steps >= REWIND_MAX_STEPS:
+            self._finish_rewind()
+            return None
+        self._rewind_signature = screen.copy()
+        self._rewind_steps += 1
+        return RouteAction(
+            "scroll-chapters-left",
+            SCROLL_POINT,
+            source_page=StoryStarState.EPISODE.value,
+            in_page_evidence="篇章卡片已横向平移",
+            reason="切换/开局后先把篇章滚回最左，避免漏掉左侧未满篇章",
+        )
+
     # ---- 决策 -------------------------------------------------------------
     def next_action(self, screen: np.ndarray) -> Optional[RouteAction]:
+        # 体力弹窗排在一切页面判断之前：它是半透明业务弹窗，页面判据认不出它，
+        # 战斗监督会把它交回这里处理（PRE_BATTLE_BUSINESS）。不接就是干等超时。
+        stamina = self._stamina_action(screen)
+        if stamina is not None:
+            return stamina
         # 过渡期优先：刚点过「准备战斗」的话，先认「选择队伍」——
         # 这一两秒里关卡页可能还在，不能拿它去判断「该点哪一行」。
         if self._pending_select:
@@ -479,6 +602,17 @@ class StoryStarStateMachine:
                     in_page_evidence="左列第 1 项「第6时代」已选中，篇章切到范围内第一章",
                     reason="开局显式切到补星范围内的第 1 项，再扫篇章",
                 )
+
+        # 开跑 / 换章后先归位到最左：篇章是横向轮播，游戏会保留上次的滚动位置，
+        # 不归位就从中间开始扫，左边未满的篇章会被静默漏掉。
+        if (
+            not self.finished
+            and page is StoryStarState.EPISODE
+            and self._need_rewind
+        ):
+            rewind = self._rewind_action(screen)
+            if rewind is not None:
+                return rewind
 
         if page is StoryStarState.RESULTS:
             return self._results_action(screen)
@@ -557,6 +691,15 @@ class StoryStarStateMachine:
         # **不能 return None**：那等于宣布收工回家。
         raise UnrecognizedScreen("主线补星：判成准备页，但三个按钮都没定位到")
 
+    def _mark_chapter_opened(self, center: tuple[int, int]) -> None:
+        """记下这张篇章已经查过，并给新篇章的小节账本换一组隔离的键。"""
+        self.scroll_signature = None
+        self._checked_chapters.add(center)
+        self._chapter_seq += 1
+        self._stage_scroll_steps = 0
+        self._unclear_stage_note = ""
+        self._pending_stage_row = None
+
     def _episode_action(self, screen: np.ndarray) -> Optional[RouteAction]:
         if self.finished:
             return None
@@ -566,13 +709,15 @@ class StoryStarStateMachine:
         # 窗口层判成致命错误。所以先跳过它，交给下面的右滚把整张卡露出来。
         edge: Optional[tuple[tuple[int, int], tuple[int, int]]] = None
         for center in self.star_points(screen):
+            if center in self._checked_chapters:
+                continue
             point = chapter_click_point(center)
             if not point_in_screen(point, screen):
                 edge = (center, point)
                 continue
             full, _detail = chapter_is_full(screen, center)
             if not full:
-                self.scroll_signature = None
+                self._mark_chapter_opened(center)
                 return RouteAction(
                     "open-chapter",
                     point,
@@ -584,12 +729,15 @@ class StoryStarStateMachine:
         if self.scroll_signature is not None:
             from auto_game_unified.core.supervisor import meaningful_change
 
-            if not meaningful_change(self.scroll_signature, screen):
+            if not meaningful_change(
+                self._chapters_view(self.scroll_signature),
+                self._chapters_view(screen),
+            ):
                 if edge is None:
                     return self._next_episode(screen)
                 # 滚到头还有一张只露半张的卡片：点它露出来的那部分。
                 # 直接跳下一个 Episode 等于把它的未满小节**静默漏掉**。
-                self.scroll_signature = None
+                self._mark_chapter_opened(edge[0])
                 return RouteAction(
                     "open-chapter",
                     clamped_click_point(edge[1], screen),
@@ -614,18 +762,27 @@ class StoryStarStateMachine:
         self.episode_index += 1
         self.episode_done = False
         self.scroll_signature = None
+        self._checked_chapters.clear()
+        self._stage_scroll_steps = 0
+        self._unclear_stage_note = ""
         if self.episode_index >= EPISODE_COUNT:
             self.finished = True
             self.state = StoryStarState.DONE
-            self.completed_cycles = EPISODE_COUNT
+            # 一轮 = 扫完 6 个章节，不是「完成 6 轮」：主循环拿这个数对账 max_cycles，
+            # 记 6 会让「跑两轮」第一次就收工。
+            self.completed_cycles = 1
             return None
+        # 换章后同样先归位到最左，再扫新章节的篇章。
+        self._need_rewind = True
+        self._rewind_signature = None
+        self._rewind_steps = 0
         point = EPISODE_ROW_POINTS[self.episode_index]
         return RouteAction(
             "next-episode",
             point,
             source_page=StoryStarState.EPISODE.value,
             in_page_evidence="右侧篇章内容已切换",
-            reason=f"切到第 {self.episode_index + 1} 个章节",
+            reason=f"切到第 {self.episode_index + 1} 个章节（补星范围前 6 项）",
         )
 
     def _stage_action(self, screen: np.ndarray) -> Optional[RouteAction]:
@@ -633,19 +790,40 @@ class StoryStarStateMachine:
         if self._pending_prepare > 0:
             prepare = self.story._locate(screen, "prepare_battle")
             if prepare is not None:
-                self._pending_prepare = 0
-                self._pending_select = True
-                return RouteAction(
-                    "prepare-battle",
-                    prepare.center,
-                    source_page=StoryStarState.STAGE_LIST.value,
-                    target_pages=(StoryStarState.PREPARE.value,),
-                    reason="小节已选中，点底部「准备战斗」",
-                )
-            self._pending_prepare -= 1
-            if self._pending_prepare == 0:
-                # 连续几帧都找不到那颗按钮 ⇒ 放弃这次，重新看整页（不能 return None）。
-                raise UnrecognizedScreen("主线补星：等「准备战斗」按钮超时，重新观察")
+                row = self._pending_stage_row
+                # 点「准备战斗」之前，用当前这个已经稳定的画面再核一次绿勾：
+                # 刚切进小节列表的转场中间帧绿勾可能还没渲染完，会把满星行看成
+                # 未满而白打一关（2026-11-10 20:33 实跑）。判据、阈值、模板都不改，
+                # 只是拿同一把尺子在稳定帧上再量一次。
+                if row is not None and stage_is_full(
+                    screen,
+                    self.stage_checks(screen),
+                    row,
+                    row_tolerance=STAGE_ROW_TOLERANCE,
+                ):
+                    # 这一行其实是满星：取消开打，落到下面重新看整页。
+                    # 该行的账本已经记过一次，不会再被选一遍。
+                    self._pending_prepare = 0
+                    self._pending_stage_row = None
+                else:
+                    self._pending_prepare = 0
+                    self._pending_stage_row = None
+                    self._pending_select = True
+                    return RouteAction(
+                        "prepare-battle",
+                        prepare.center,
+                        source_page=StoryStarState.STAGE_LIST.value,
+                        target_pages=(StoryStarState.PREPARE.value,),
+                        reason="小节已选中，点底部「准备战斗」",
+                    )
+            else:
+                self._pending_prepare -= 1
+                if self._pending_prepare == 0:
+                    self._pending_stage_row = None
+                    # 连续几帧都找不到那颗按钮 ⇒ 放弃这次，重新看整页（不能 return None）。
+                    raise UnrecognizedScreen(
+                        "主线补星：等「准备战斗」按钮超时，重新观察"
+                    )
         checks = self.stage_checks(screen)
         ys = sorted({y for _x, y in checks})
         # 行距与首行都用实测的勾反推：这一章的列表会按行数自适应，
@@ -673,18 +851,34 @@ class StoryStarStateMachine:
                 screen, checks, row, row_tolerance=STAGE_ROW_TOLERANCE
             ):
                 continue
-            attempts = self._stage_attempts.get(row, 0)
+            key = (
+                self.episode_index,
+                self._chapter_seq,
+                self._stage_scroll_steps,
+                row,
+            )
+            attempts = self._stage_attempts.get(key, 0)
             if attempts >= self._MAX_STAGE_ATTEMPTS:
+                # 打过回来还是没勾：明确报出来，不能静默略过（设计原文要求）。
+                if not self._unclear_stage_note:
+                    self._unclear_stage_note = (
+                        f"；打过仍未满星已跳过：第 {self.episode_index + 1} 章 "
+                        f"y={row}（配置可能不满足通关条件）"
+                    )
                 continue
-            self._stage_attempts[row] = attempts + 1
+            self._stage_attempts[key] = attempts + 1
             self.stage_scroll_signature = None
             self._pending_prepare = 3
+            self._pending_stage_row = row
             return RouteAction(
                 "open-stage",
                 (self._STAGE_CLICK_X, row - 20),
                 source_page=StoryStarState.STAGE_LIST.value,
                 in_page_evidence="右侧故事内容已切换（该小节被选中）",
-                reason=f"第 y={row} 行没有绿勾，判定未满星",
+                reason=(
+                    f"第 y={row} 行没有绿勾，判定未满星"
+                    f"（本屏读到 {len(checks)} 个绿勾：{ys}）"
+                ),
             )
         # 可见的都有勾 ⇒ 往下滚看更多；滚不动说明本章清完了。
         if self.stage_scroll_signature is not None:
@@ -708,15 +902,17 @@ class StoryStarStateMachine:
                     back.center,
                     source_page=StoryStarState.STAGE_LIST.value,
                     target_pages=(StoryStarState.EPISODE.value,),
-                    reason="本章小节已全满，点底部时间轴图标回篇章面板",
+                    reason="本章小节已全满，点底部时间轴图标回篇章面板"
+                    + self._unclear_stage_note,
                 )
         self.stage_scroll_signature = screen.copy()
+        self._stage_scroll_steps += 1
         return RouteAction(
             "scroll-stages",
             (200, 700),
             source_page=StoryStarState.STAGE_LIST.value,
             in_page_evidence="小节列表已纵向平移",
-            reason="可见小节都有勾，往下滚看更多",
+            reason="可见小节都有勾，往下滚看更多" + self._unclear_stage_note,
         )
 
     def preview(self, screen: np.ndarray):
@@ -735,8 +931,17 @@ class StoryStarStateMachine:
             self.scroll_signature,
             self.stage_scroll_signature,
             dict(self._stage_attempts),
+            set(self._checked_chapters),
+            self._chapter_seq,
+            self._stage_scroll_steps,
+            self._need_rewind,
+            self._rewind_signature,
+            self._rewind_steps,
+            self._stamina_material_clicked,
+            self._unclear_stage_note,
             self._pending_prepare,
             self._pending_select,
+            self._pending_stage_row,
             self._need_open_episode_panel,
             self._need_select_first_episode,
         )
@@ -753,8 +958,17 @@ class StoryStarStateMachine:
                 self.scroll_signature,
                 self.stage_scroll_signature,
                 self._stage_attempts,
+                self._checked_chapters,
+                self._chapter_seq,
+                self._stage_scroll_steps,
+                self._need_rewind,
+                self._rewind_signature,
+                self._rewind_steps,
+                self._stamina_material_clicked,
+                self._unclear_stage_note,
                 self._pending_prepare,
                 self._pending_select,
+                self._pending_stage_row,
                 self._need_open_episode_panel,
                 self._need_select_first_episode,
             ) = snapshot
@@ -821,11 +1035,19 @@ class StoryStarRunner(ModeRunnerBase):
     }
     _BATTLE_ENTRY_ACTION = "start-mission"
     _ALLOW_UNKNOWN_SCREEN_WAKE = False
+    # 滚动是页内动作、页面本来就不换，不能按「同一动作最多 4 次」判成点了没生效：
+    # 归位与往右逐屏看卡片都要连滚好几下（19:18 实跑第二章失败即此）。
+    _REPEATABLE_ACTIONS = frozenset(
+        {"scroll-chapters", "scroll-chapters-left", "scroll-stages"}
+    )
     # 滚动与开篇章都是页内动作，点完一两秒就能看出结果，不给 45 秒白等。
     _SHORT_RETRY_ACTIONS = frozenset(
         {
             "scroll-chapters",
+            "scroll-chapters-left",
             "scroll-stages",
+            "stamina-material",
+            "stamina-confirm",
             "open-episode-panel",
             "select-first-episode",
             "open-chapter",
@@ -838,6 +1060,9 @@ class StoryStarRunner(ModeRunnerBase):
         }
     )
     _SHORT_RETRY_SECONDS = 6.0
+    # 滚动是页内动作，不需要按换页那样等 6 秒。20:27 实跑每章滚十几次、
+    # 每次白等 6 秒，一章耗掉三分钟。
+    _SCROLL_RETRY_SECONDS = 2.0
     # 一次运行最多开多少次章节/小节 —— 有界保护：万一判据把某个满星篇章看成未满，
     # 也只是多开几次，不会无限循环。取 200 足够覆盖 6 章 × 10 篇章 × 若干小节。
     _MAX_ACTIONS = 200
@@ -870,12 +1095,19 @@ class StoryStarRunner(ModeRunnerBase):
             # 每帧判「这一屏都满」→ 往上滚回同一个位置 → 永远扫不到右边那些篇章。
             self.runtime.wheel(action.point, -SCROLL_NOTCHES, action.name)
             return
+        if action.name == "scroll-chapters-left":
+            # 开跑 / 换章后归位到最左：与上面同一颗滚轮，方向相反、一次滚两卡片宽。
+            self.runtime.wheel(action.point, SCROLL_REWIND_NOTCHES, action.name)
+            return
         if action.name == "scroll-stages":
-            self.runtime.wheel(action.point, -SCROLL_NOTCHES, action.name)
+            # 小节行距约 150 px，用横向那 25 格会一次滚过两三行、漏掉没勾的小节。
+            self.runtime.wheel(action.point, -SCROLL_STAGE_NOTCHES, action.name)
             return
         super()._perform_action(action)
 
     def _action_retry_seconds(self, action_name: str) -> float:
+        if action_name in self._REPEATABLE_ACTIONS:
+            return self._SCROLL_RETRY_SECONDS
         if action_name in self._SHORT_RETRY_ACTIONS:
             return self._SHORT_RETRY_SECONDS
         return super()._action_retry_seconds(action_name)
