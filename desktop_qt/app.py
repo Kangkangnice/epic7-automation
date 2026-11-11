@@ -95,6 +95,7 @@ from auto_game_unified.desktop.preflight import (
 from auto_game_unified.desktop.update_check import check_for_update
 from auto_game_unified.desktop.worker import WorkerController
 from auto_game_unified.desktop_qt.autoclicker import AutoClickerPage
+from auto_game_unified.desktop_qt.floating import FloatingRunner
 from auto_game_unified.desktop_qt.onboarding import prompt_consent
 from auto_game_unified.desktop_qt.style import SPIN_BOX_QSS
 
@@ -197,6 +198,12 @@ class QtDesktopWindow(FluentWindow):
         # 版本检查排在须知之后、且更晚：先把该看到的画出来，再在后台悄悄问一次。
         # 它没有任何阻塞行为，慢也不会影响使用。
         QTimer.singleShot(400, self._start_update_check)
+        # 开始任务后收成右上角悬浮球；三条便签沿用会话存档（改了立刻落盘）。
+        self.floating = FloatingRunner(
+            previous.todos if previous is not None else ("", "", "")
+        )
+        self.floating.todos_changed.connect(self._save_todos)
+        self.floating.open_main_requested.connect(self._restore_main_window)
 
     # ── 构建界面 ────────────────────────────────────────────────────────────
 
@@ -354,6 +361,7 @@ class QtDesktopWindow(FluentWindow):
     def _build_log_page(self) -> None:
         page = QWidget(self)
         page.setObjectName("logView")
+        self.log_page = page
         layout = QVBoxLayout(page)
         layout.setContentsMargins(24, 16, 24, 16)
         layout.setSpacing(12)
@@ -707,7 +715,30 @@ class QtDesktopWindow(FluentWindow):
             runnable, _skipped = self.controller.resolve_plan()
             modes = "、".join(route_by_name(mode).label for mode, _ in runnable)
             self._append_log(f"已启动：{modes}")
+            self._enter_floating_mode(
+                tuple((mode, route_by_name(mode).label) for mode, _ in runnable)
+            )
         self._refresh_actions()
+
+    def _enter_floating_mode(self, routes: tuple[tuple[str, str], ...]) -> None:
+        """开始成功后：主窗口收起，右上角只留一颗球；日志页是回来时的落点。"""
+        self.switchTo(self.log_page)
+        self.floating.start_run(routes)
+        self.hide()
+
+    def _restore_main_window(self) -> None:
+        """跑完 / 点面板「主界面」：球和窄条收掉，主窗口回到日志页。"""
+        self.floating.hide_all()
+        self.switchTo(self.log_page)
+        self.showNormal()
+
+    def _save_todos(self, todos: object) -> None:
+        """便签改了就落盘；存档读坏时按 session 的规矩回落到默认值。"""
+        previous = session.load(self._session_path) or session.SessionState()
+        session.save(
+            self._session_path,
+            replace(previous, todos=session.clean_todos(todos)),
+        )
 
     def _on_stop_clicked(self) -> None:
         self.controller.stop()
@@ -804,13 +835,16 @@ class QtDesktopWindow(FluentWindow):
         for event in self.worker.drain_events():
             if event.kind == "log":
                 self._append_log(event.message)
+                self.floating.note_line(event.message)
             elif event.kind == "started":
                 self._append_log("自动化已启动。")
             elif event.kind == "stopping":
                 self._append_log("正在安全停止……")
             elif event.kind == "finished":
                 self._append_log(f"运行结束（退出码 {event.exit_code}）。")
+                self.floating.finish()
                 self._save_last_run(event.exit_code)
+                self._restore_main_window()
         running = self.worker.running
         if running != self._last_running:
             self._last_running = running
@@ -909,6 +943,8 @@ class QtDesktopWindow(FluentWindow):
         # 关窗口必须先把连点线程停掉：它是 daemon，进程退出时也会消失，
         # 但「点完 Close 到进程真正退出」之间还有几百毫秒，这期间鼠标不该还在点。
         self.autoclicker.stop()
+        # 悬浮球 / 窄条是独立窗口，主窗口关了它们不会自动消失。
+        self.floating.hide_all()
         self._save_session()
         geometry = self.geometry()
         previous = session.load(self._session_path) or session.SessionState()
