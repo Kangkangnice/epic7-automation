@@ -67,6 +67,8 @@ class SessionState:
     window: Mapping[str, int] | None = None
     # 今日游戏便签：固定三个槽位，空串 = 这一行还没填。
     todos: tuple[str, str, str] = ("", "", "")
+    # 悬浮球最后停放的位置：``{"x", "y"}``（允许负坐标，多显示器）。None = 默认右上角。
+    ball_pos: Mapping[str, int] | None = None
 
 
 def session_path(root: Path) -> Path:
@@ -180,6 +182,14 @@ def load(path: Path) -> SessionState | None:
         if candidate is not None and candidate["w"] > 200 and candidate["h"] > 150:
             window = candidate
 
+    ball_pos: dict[str, int] | None = None
+    raw_ball = payload.get("ball_pos")
+    if isinstance(raw_ball, dict):
+        try:
+            ball_pos = {"x": int(raw_ball["x"]), "y": int(raw_ball["y"])}
+        except (KeyError, TypeError, ValueError):
+            ball_pos = None
+
     return SessionState(
         selection=selection,
         cycles=cycles,
@@ -189,6 +199,7 @@ def load(path: Path) -> SessionState | None:
         params=params,
         window=window,
         todos=clean_todos(payload.get("todos")),
+        ball_pos=ball_pos,
     )
 
 
@@ -203,6 +214,7 @@ def save(path: Path, state: SessionState) -> None:
         "params": {name: dict(value) for name, value in state.params.items()},
         "window": dict(state.window) if state.window is not None else None,
         "todos": list(state.todos),
+        "ball_pos": dict(state.ball_pos) if state.ball_pos is not None else None,
         "last_run": (
             None
             if state.last_run is None

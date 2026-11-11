@@ -201,3 +201,22 @@ def test_todos_are_truncated_and_padded(tmp_path: Path) -> None:
     loaded = session.load(path)
     assert loaded is not None
     assert loaded.todos == ("甲" * session.TODO_MAX_CHARS, "乙", "")
+
+
+def test_ball_pos_round_trip(tmp_path: Path) -> None:
+    """球拖到哪儿，下次打开还在哪儿（副屏可以是负坐标）。"""
+    path = tmp_path / "session.json"
+    state = session.SessionState(ball_pos={"x": -120, "y": 640})
+    session.save(path, state)
+    loaded = session.load(path)
+    assert loaded == state
+    assert loaded is not None
+    assert loaded.ball_pos == {"x": -120, "y": 640}
+
+
+def test_broken_ball_pos_discarded(tmp_path: Path) -> None:
+    for payload in ({"x": "很左", "y": 1}, {"x": 1}, "右上角", [1, 2]):
+        path = _write(tmp_path / "session.json", {"ball_pos": payload})
+        loaded = session.load(path)
+        assert loaded is not None
+        assert loaded.ball_pos is None
