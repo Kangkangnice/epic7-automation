@@ -186,7 +186,32 @@ def test_manual_auto_state_retries_once_when_first_click_is_swallowed():
     assert diagnostics == []
 
 
-def test_persisted_manual_auto_state_stops_after_four_clicks():
+def test_four_failed_auto_clicks_stop_clicking_but_keep_supervising():
+    """4 次拨不动只是停手，不再把整条路线判失败；画面恢复后这一场仍能打完。
+
+    2026-11-11 模拟器竞技场第 2 轮：卡在 VS 入场演出，图标擦着门槛被判手动，
+    连点 4 次开关没确认就整条路线报错。战斗本身没坏，不该判死刑。
+    """
+    manual = BattleObservation(
+        False, True, False, True, AutoBattleState.MANUAL, (900, 80)
+    )
+    auto = replace(manual, auto_state=AutoBattleState.AUTO, auto_point=None)
+    result = replace(auto, battle_visible=False, result_visible=True)
+    supervisor, gate, observe, clicks, logs, diagnostics = make_supervisor(
+        [manual] * 8 + [auto, auto, result, result],
+        config_overrides={
+            "allowed_action_retry_seconds": 1,
+            "allowed_action_failure_seconds": 2,
+        },
+    )
+
+    assert supervisor.run(observe, cycle=2) is BattleOutcome.RESULT_REACHED
+    assert len(clicks) == 4, "停手之后不许再拨第 5 次"
+    assert diagnostics == []
+
+
+def test_persisted_manual_state_is_still_bounded_by_the_watchdog():
+    """画面一直不恢复时，仍然由看门狗有界收尾，不是无限等、也不是冒充成功。"""
     manual = BattleObservation(
         False, True, False, True, AutoBattleState.MANUAL, (900, 80)
     )
@@ -199,15 +224,12 @@ def test_persisted_manual_auto_state_stops_after_four_clicks():
         },
     )
 
-    with pytest.raises(RuntimeError, match="点击4次后仍为手动战斗"):
+    with pytest.raises(RuntimeError) as error:
         supervisor.run(observe, cycle=2)
-    assert clicks == [
-        ((900, 80), "enable-auto-battle"),
-        ((900, 80), "enable-auto-battle"),
-        ((900, 80), "enable-auto-battle"),
-        ((900, 80), "enable-auto-battle"),
-    ]
-    assert diagnostics == ["auto_not_confirmed"]
+    assert "点击4次后仍为手动战斗" not in str(error.value)
+    assert len(clicks) == 4
+    assert "auto_not_confirmed" not in diagnostics
+    assert any("停手继续监督" in line for line in logs)
 
 
 def test_auto_click_log_names_the_evidence_that_triggered_it():

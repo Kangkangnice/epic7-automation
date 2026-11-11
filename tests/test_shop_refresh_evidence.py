@@ -266,6 +266,26 @@ def test_current_client_purchased_mystic_row_is_not_actionable():
     assert mystic_rows[0].sold_out
 
 
+def test_purchased_row_after_scroll_is_reported_as_sold_out():
+    """2026-11-11 12:00 现场帧：买完友情点数、滚动到底后同一行又出现在列表里。
+
+    这一行的售罄标记 `0/1` 上有两样动态内容，原样口径认不出（0.5818）：
+      * 整行被游戏压暗（已购行的标准处理）；
+      * 焦点还留在这一行，白色快捷键提示「空格」正好叠在数字上。
+    判不出售罄 ⇒ 走到「目标商品缺少同行购买按钮且并非本轮已购槽位」把整条路线打断
+    （日志 12:00:03 就是这么死的）。改按黄色掩膜比 `0/1` 后本帧 0.8590；
+    同一张模板在鼠标箭头压住的那帧（08:37）是 0.8975，而可买行的 `1/1` 只有 0.573。
+    """
+    observer = build_shop_refresh_observer(TEMPLATES)
+
+    result = observer.observe(_screen("friendship_purchased_row_scrolled_live_20261111"))
+
+    rows = [row for row in result.rows if row.kind is ShopItemKind.FRIENDSHIP]
+    assert len(rows) == 1
+    assert rows[0].sold_out
+    assert rows[0].buy_point is None
+
+
 def test_current_client_covenant_row_is_actionable():
     observer = build_shop_refresh_observer(TEMPLATES)
 

@@ -9,7 +9,12 @@ from typing import Mapping
 import cv2
 import numpy as np
 
-from auto_game_unified.core.matcher import Match, find_best_template, load_template
+from auto_game_unified.core.matcher import (
+    MATCH_MODE_WHITE_MASK,
+    Match,
+    find_best_template,
+    load_template,
+)
 
 from .common import AtomEvidence, EvidenceProfile, PageEvidence
 
@@ -159,6 +164,42 @@ class ShopObservation:
     scores: Mapping[str, float] | None = None
 
 
+# 行级「这颗按钮还亮着吗」的判据：**白掩膜口径 + 独立阈值**（不复用 atom 的 0.86）。
+#
+# 2026-11-11 08:37 实跑事故：买完友情点数后判不出结果，报「购买结果不明确，
+# 禁止重复确认」。现场帧（runtime_diagnostics/epic7_shop_refresh/
+# 20261111_083735_077178_shop_refresh_unknown.png）上的两条判据同时失守：
+#   * 售罄行的按钮只是被**压暗**（按钮区平均亮度 34.4，可买行 78.8），
+#     原样口径仍拿到 0.8608 —— 只比 0.86 高 0.0008，被当成「还能买」；
+#   * 唯一能证明售罄的 `sold_out_0_of_1_current` 只有 0.7313（鼠标指针正压在
+#     那个「0」上；把指针涂掉后是 0.9288），于是只能一路等到事务超时。
+#
+# 白掩膜只看「亮字轮廓」，把「暗按钮」和「亮按钮」拉得很开（实测）：
+#   可买：模拟器商店夹具全扫（27 张）最差 **0.7965**；PC 4 张夹具最差 **0.8458**
+#   售罄：covenant/mystic_purchased_row 两张夹具 + 现场帧，**0.0000**
+#   冒牌：确认弹窗页上被压暗的同一颗按钮 **0.0000**（原样口径下反而有 0.97）
+# ⇒ 取 0.70：真阳性留 0.096 余量，假阳性留 0.70。
+ROW_BUY_WHITE_THRESHOLD = 0.70
+
+
+def _yellow_mask(image: np.ndarray) -> np.ndarray:
+    """只留「黄色文字」的二值图：售罄标记 `0/1` 是黄字，可买的 `1/1` 是白字。
+
+    为什么不走原样口径：买完那一格会被游戏**整行压暗**，而且焦点还留在这一行 ——
+    游戏会把一个白色快捷键提示叠在数字上（模拟器显示「空格」，用真实鼠标时是箭头）。
+    实测同一张 `0/1` 模板在 2026-11-11 两次现场帧上：
+        原样口径 0.5818（「空格」盖住）/ 0.7313（鼠标箭头盖住）—— 阈 0.92 全都判不出；
+        黄色掩膜 **0.8590 / 0.8975**，而可买行的 `1/1` 只有 **0.5730~0.5744**。
+    掩膜把「白字标签」和「黄字数字」分到两个通道里，阈值取 0.72（两侧各留约 0.14）。
+    """
+    hsv = cv2.cvtColor(image, cv2.COLOR_RGB2HSV)
+    return (
+        (hsv[:, :, 0] >= 15)
+        & (hsv[:, :, 0] <= 50)
+        & (hsv[:, :, 1] >= 60)
+        & (hsv[:, :, 2] >= 60)
+    ).astype(np.uint8) * 255
+
 REGIONS = {
     "lobby_shop_entry": (0, 430, 220, 230),
     "shop_title": (0, 52, 500, 130),
@@ -198,7 +239,10 @@ THRESHOLDS = {
     "mystic_price_current": 0.92,
     "covenant_price_current": 0.92,
     "friendship_price_current": 0.92,
-    "sold_out_0_of_1_current": 0.92,
+    # ⚠️ 这颗锚点**只按黄色掩膜口径**比对（唯一消费者是 `_sold_for_row`），
+    # 0.72 也只在这个口径下成立：原样口径下售罄行是 0.58~0.73（被「空格」标签
+    # 或鼠标箭头盖住），可买行 0.68 —— 两档贴在一起，原样口径没有安全阈值可用。
+    "sold_out_0_of_1_current": 0.72,
 }
 
 
@@ -356,6 +400,8 @@ class ShopRefreshObserver:
             key: load_template(str(template_root / atom.template_path))
             for key, atom in profile.atoms.items()
         }
+        # 售罄标记 `0/1` 只按黄色掩膜比对（见 `_yellow_mask` 的注释），模板侧同样预处理一次。
+        self._sold_template_mask = _yellow_mask(self.templates["sold_out_0_of_1_current"])
         # 2026-11-06：PC 上同一颗「购买」按钮在**不同行**的长相有细微差别 ——
         # 实测同一帧里 y=626 那行独占 0.9013，而最底那行只有 0.6718（阈 0.86）；
         # 用最底那行重裁一张则反过来（最底 1.0000、y=399 那行只有 0.5227）。
@@ -499,10 +545,11 @@ class ShopRefreshObserver:
                 template,
                 region=row_region,
                 reference_size=REFERENCE_SIZE,
+                mode=MATCH_MODE_WHITE_MASK,
             )
             if match is not None and (best is None or match.score > best.score):
                 best = match
-        if best is None or best.score < atom.threshold:
+        if best is None or best.score < ROW_BUY_WHITE_THRESHOLD:
             return None
         return best.center if same_shop_row(item_y, best.center[1]) else None
 
@@ -513,7 +560,7 @@ class ShopRefreshObserver:
             return (primary,)
         return (primary, self._buy_alt)
 
-    def _sold_for_row(self, screen: np.ndarray, item_y: int) -> bool:
+    def _sold_for_row(self, yellow_screen: np.ndarray, item_y: int) -> bool:
         atom = self.profile.atom("sold_out_0_of_1_current")
         row_region = (
             atom.region[0],
@@ -522,8 +569,8 @@ class ShopRefreshObserver:
             190,
         )
         match = find_best_template(
-            screen,
-            self.templates["sold_out_0_of_1_current"],
+            yellow_screen,
+            self._sold_template_mask,
             region=row_region,
             reference_size=REFERENCE_SIZE,
         )
@@ -535,13 +582,15 @@ class ShopRefreshObserver:
 
     def _rows(self, screen: np.ndarray) -> tuple[ShopRowObservation, ...]:
         rows: list[ShopRowObservation] = []
+        # 整屏只转一次黄色掩膜：7 行共用，别在 `_sold_for_row` 里各转一遍。
+        yellow_screen = _yellow_mask(screen)
         for center, covenant_score, mystic_score, friendship_score in (
             self._target_peaks(screen)
         ):
             kind = classify_item_scores(
                 covenant_score, mystic_score, friendship_score
             )
-            sold_out = self._sold_for_row(screen, center[1])
+            sold_out = self._sold_for_row(yellow_screen, center[1])
             buy_point = (
                 None if sold_out else self._buy_for_row(screen, center[1])
             )

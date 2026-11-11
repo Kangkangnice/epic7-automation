@@ -120,6 +120,7 @@ class BattleSupervisor:
         auto_recoveries = 0
         auto_interference_stopped = False
         auto_interference_logged = False
+        auto_clicks_exhausted_logged = False
         # 「判成手动、但图标没给出坐标」的起始时刻与「已记过一次日志」标记。
         # 判据抖回来就一起清掉（见 auto_point is None 分支）。
         auto_point_missing_since: float | None = None
@@ -403,11 +404,21 @@ class BattleSupervisor:
                             and since_auto_click
                             >= self.config.allowed_action_failure_seconds
                         ):
-                            self._fail(
-                                "auto_not_confirmed",
-                                "点击4次后仍为手动战斗",
-                                screen,
-                            )
+                            # 4 次拨不动：与「自动战斗反复被关闭」同一口径 —— 停手、
+                            # 不再拨，继续监督本场战斗，由无进展 / 绝对超时看门狗兜底。
+                            # 2026-11-11 模拟器竞技场第 2 轮卡在 VS 入场演出帧：
+                            # 战斗本身没坏，判据只是擦着门槛读成手动，不该当场判整条
+                            # 路线失败。判据、阈值、业务规则都不动，也不冒充「自动已开」。
+                            auto_interference_stopped = True
+                            auto_interference_logged = True
+                            if not auto_clicks_exhausted_logged:
+                                auto_clicks_exhausted_logged = True
+                                self.runtime.log(
+                                    f"模式={self.label} 轮次={cycle} 阶段=战斗 "
+                                    "状态=自动开关连点4次未确认 处理=停手继续监督 "
+                                    "判定=入场演出或画面卡顿，等战斗自己推进 "
+                                    f"证据={observation.auto_evidence or '未标注'}"
+                                )
                 elif (
                     stable_auto
                     and observation.auto_state is AutoBattleState.AUTO
