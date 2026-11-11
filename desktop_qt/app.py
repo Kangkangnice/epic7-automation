@@ -198,12 +198,20 @@ class QtDesktopWindow(FluentWindow):
         # 版本检查排在须知之后、且更晚：先把该看到的画出来，再在后台悄悄问一次。
         # 它没有任何阻塞行为，慢也不会影响使用。
         QTimer.singleShot(400, self._start_update_check)
-        # 开始任务后收成右上角悬浮球；三条便签沿用会话存档（改了立刻落盘）。
+        # 开始任务后收成悬浮球；便签与球的停放位置都沿用会话存档。
+        ball_pos = None
+        if previous is not None and previous.ball_pos is not None:
+            try:
+                ball_pos = (int(previous.ball_pos["x"]), int(previous.ball_pos["y"]))
+            except (KeyError, TypeError, ValueError):
+                ball_pos = None
         self.floating = FloatingRunner(
-            previous.todos if previous is not None else ("", "", "")
+            previous.todos if previous is not None else ("", "", ""),
+            ball_pos,
         )
         self.floating.todos_changed.connect(self._save_todos)
-        self.floating.open_main_requested.connect(self._restore_main_window)
+        self.floating.ball_moved.connect(self._save_ball_pos)
+        self.floating.open_main_requested.connect(self._return_to_main_window)
 
     # ── 构建界面 ────────────────────────────────────────────────────────────
 
@@ -353,6 +361,11 @@ class QtDesktopWindow(FluentWindow):
         self.stop_button = PushButton(FluentIcon.PAUSE, "安全停止", self)
         self.stop_button.clicked.connect(self._on_stop_clicked)
         bar.addWidget(self.stop_button)
+        # 只在运行中出现：从主界面回到那颗球（球会保持拖动后的位置）。
+        self.floating_button = PushButton("到悬浮球", self)
+        self.floating_button.clicked.connect(self._enter_floating_mode_again)
+        self.floating_button.setVisible(False)
+        bar.addWidget(self.floating_button)
         self.start_button = PrimaryPushButton(FluentIcon.PLAY, "开始任务", self)
         self.start_button.clicked.connect(self._on_start_clicked)
         bar.addWidget(self.start_button)
@@ -481,6 +494,7 @@ class QtDesktopWindow(FluentWindow):
             and self.consented
         )
         self.stop_button.setEnabled(running)
+        self.floating_button.setVisible(running)
         self.check_button.setEnabled(not running and not self._checking)
         self.backend_combo.setEnabled(not running)
         self.background_switch.setEnabled(
@@ -726,11 +740,17 @@ class QtDesktopWindow(FluentWindow):
         self.floating.start_run(routes)
         self.hide()
 
-    def _restore_main_window(self) -> None:
-        """跑完 / 点面板「主界面」：球和窄条收掉，主窗口回到日志页。"""
-        self.floating.hide_all()
+    def _return_to_main_window(self) -> None:
+        """点面板「主界面」：只收面板，球留在原地，随时能再点回来。"""
+        self.floating.collapse()
         self.switchTo(self.log_page)
         self.showNormal()
+
+    def _enter_floating_mode_again(self) -> None:
+        """主界面点「到悬浮球」：主窗口再收起，球保持原来的位置。"""
+        self.switchTo(self.log_page)
+        self.floating.show_ball()
+        self.hide()
 
     def _save_todos(self, todos: object) -> None:
         """便签改了就落盘；存档读坏时按 session 的规矩回落到默认值。"""
@@ -739,6 +759,17 @@ class QtDesktopWindow(FluentWindow):
             self._session_path,
             replace(previous, todos=session.clean_todos(todos)),
         )
+
+    def _save_ball_pos(self, pos: object) -> None:
+        """拖动结束后记住球的落点，下次打开还在同一个地方。"""
+        if not (isinstance(pos, tuple) and len(pos) == 2):
+            return
+        try:
+            x, y = int(pos[0]), int(pos[1])
+        except (TypeError, ValueError):
+            return
+        previous = session.load(self._session_path) or session.SessionState()
+        session.save(self._session_path, replace(previous, ball_pos={"x": x, "y": y}))
 
     def _on_stop_clicked(self) -> None:
         self.controller.stop()
@@ -844,7 +875,10 @@ class QtDesktopWindow(FluentWindow):
                 self._append_log(f"运行结束（退出码 {event.exit_code}）。")
                 self.floating.finish()
                 self._save_last_run(event.exit_code)
-                self._restore_main_window()
+                # 跑完就不留球了：收干净，主窗口回到日志页。
+                self.floating.hide_all()
+                self.switchTo(self.log_page)
+                self.showNormal()
         running = self.worker.running
         if running != self._last_running:
             self._last_running = running
@@ -943,6 +977,12 @@ class QtDesktopWindow(FluentWindow):
         # 关窗口必须先把连点线程停掉：它是 daemon，进程退出时也会消失，
         # 但「点完 Close 到进程真正退出」之间还有几百毫秒，这期间鼠标不该还在点。
         self.autoclicker.stop()
+        if self.worker.running:
+            # 任务还在跑：关窗口不能顺手把任务带走，收成球留在桌面上。
+            event.ignore()
+            self._append_log("窗口已收成悬浮球，任务继续运行；要退出请先安全停止。")
+            self._enter_floating_mode_again()
+            return
         # 悬浮球 / 窄条是独立窗口，主窗口关了它们不会自动消失。
         self.floating.hide_all()
         self._save_session()

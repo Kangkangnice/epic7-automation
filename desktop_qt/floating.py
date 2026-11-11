@@ -12,8 +12,8 @@ from __future__ import annotations
 from math import sin, pi
 from typing import Sequence
 
-from PySide6.QtCore import QObject, QPointF, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QFontMetrics, QPainter, QPen
+from PySide6.QtCore import QObject, QPoint, QPointF, Qt, QTimer, Signal
+from PySide6.QtGui import QColor, QFontMetrics, QPainter, QPen, QScreen
 from PySide6.QtWidgets import (
     QApplication,
     QGridLayout,
@@ -43,8 +43,6 @@ PANEL_HEIGHT_RATIO = 0.5
 EDGE_GAP = 12
 PULSE_TICK_MS = 50
 PULSE_PERIOD_MS = 2000
-AUTO_COLLAPSE_MS = 15_000
-AFTER_EDIT_COLLAPSE_MS = 2000
 PROGRESS_COLUMN_THRESHOLD = 6
 LOG_LINES = 3
 
@@ -98,6 +96,7 @@ class FloatingBall(QWidget):
     """右上角一颗球：运行中慢呼吸 + 一圈淡蓝脉冲，跑完立刻静止。"""
 
     clicked = Signal()
+    drag_finished = Signal()
 
     def __init__(self) -> None:
         super().__init__()
@@ -109,6 +108,8 @@ class FloatingBall(QWidget):
         self._running = False
         self._caption = "已结束"
         self._phase = 0.0
+        self._press_offset: QPoint | None = None
+        self._dragged = False
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._tick)
 
@@ -151,7 +152,32 @@ class FloatingBall(QWidget):
         painter.drawText(self.rect(), Qt.AlignCenter, self._caption)
 
     def mousePressEvent(self, event) -> None:  # noqa: N802 —— Qt 回调名
-        self.clicked.emit()
+        if event.button() != Qt.LeftButton:
+            return
+        self._press_offset = event.globalPosition().toPoint() - self.pos()
+        self._dragged = False
+        event.accept()
+
+    def mouseMoveEvent(self, event) -> None:  # noqa: N802 —— Qt 回调名
+        if self._press_offset is None or not (event.buttons() & Qt.LeftButton):
+            return
+        target = event.globalPosition().toPoint() - self._press_offset
+        if (target - self.pos()).manhattanLength() > 3:
+            self._dragged = True
+            self.move(target)
+            event.accept()
+
+    def mouseReleaseEvent(self, event) -> None:  # noqa: N802 —— Qt 回调名
+        if event.button() != Qt.LeftButton:
+            return
+        # 拖过就不算点击：松手时只记住位置，不展开面板。
+        if self._dragged:
+            self.drag_finished.emit()
+        else:
+            self.clicked.emit()
+        self._press_offset = None
+        self._dragged = False
+        event.accept()
 
 
 class RunPanel(QWidget):
@@ -230,9 +256,6 @@ class RunPanel(QWidget):
             layout.addWidget(line)
             self._log_labels.append(line)
 
-        self._collapse_timer = QTimer(self)
-        self._collapse_timer.setSingleShot(True)
-        self._collapse_timer.timeout.connect(self.collapse_requested.emit)
 
     def set_running(self, running: bool) -> None:
         self._state.setText("任务进行中" if running else "本次运行已结束")
@@ -279,24 +302,10 @@ class RunPanel(QWidget):
         for label, line in zip(self._log_labels, recent, strict=True):
             label.setText(metrics.elidedText(line, Qt.ElideRight, width))
 
-    def reset_collapse_timer(self, delay: int = AUTO_COLLAPSE_MS) -> None:
-        self._collapse_timer.start(delay)
-
-    def stop_collapse_timer(self) -> None:
-        self._collapse_timer.stop()
-
     def _on_todo_edited(self) -> None:
+        # 只有点「收起」才收：用户抱怨「还没写完就自己收起来」，
+        # 所以这里刻意不做任何定时收回。
         self.todos_changed.emit(tuple(editor.text() for editor in self._todos))
-        # 改完就收回球，别让展开的面板一直盖在游戏右上角。
-        self.reset_collapse_timer(AFTER_EDIT_COLLAPSE_MS)
-
-    def enterEvent(self, event) -> None:  # noqa: N802 —— Qt 回调名
-        self.reset_collapse_timer()
-        super().enterEvent(event)
-
-    def hideEvent(self, event) -> None:  # noqa: N802 —— Qt 回调名
-        self.stop_collapse_timer()
-        super().hideEvent(event)
 
 
 def _divider(parent: QWidget) -> QLabel:
@@ -361,14 +370,22 @@ class FloatingRunner(QObject):
 
     todos_changed = Signal(object)
     open_main_requested = Signal()
+    ball_moved = Signal(object)
 
-    def __init__(self, todos: Sequence[str], parent: QObject | None = None) -> None:
+    def __init__(
+        self,
+        todos: Sequence[str],
+        ball_pos: tuple[int, int] | None = None,
+        parent: QObject | None = None,
+    ) -> None:
         super().__init__(parent)
         self._progress = RunProgress(())
         self._log_lines: list[str] = []
+        self._ball_pos = tuple(ball_pos) if ball_pos else None
         self.ball = FloatingBall()
         self.panel = RunPanel(todos)
         self.ball.clicked.connect(self.expand)
+        self.ball.drag_finished.connect(self._remember_ball_pos)
         self.panel.collapse_requested.connect(self.collapse)
         self.panel.open_main_requested.connect(self.open_main_requested.emit)
         self.panel.todos_changed.connect(self.todos_changed.emit)
@@ -379,19 +396,23 @@ class FloatingRunner(QObject):
         self.panel.set_running(True)
         self.panel.set_progress(self._progress.items)
         self.panel.set_log_lines(())
-        self._place()
         self.panel.hide()
+        self._place_ball()
         self.ball.set_running(True)
+        self.ball.show()
+
+    def show_ball(self) -> None:
+        """从主界面回到球：球一直在原地，面板保持收起。"""
+        self.panel.hide()
         self.ball.show()
 
     def expand(self) -> None:
         self.ball.hide()
-        self._place()
+        self._place_panel_near_ball()
         self.panel.show()
         # 展开后才有真实宽度：按两列的实际列宽重排一次，名字该省略就省略。
         self.panel.set_progress(self._progress.items)
         self.panel.set_log_lines(self._log_lines)
-        self.panel.reset_collapse_timer()
 
     def collapse(self) -> None:
         self.panel.hide()
@@ -417,16 +438,53 @@ class FloatingRunner(QObject):
         self.panel.hide()
         self.ball.hide_all()
 
-    def _place(self) -> None:
-        """贴屏幕右上角。窗口定位用 Qt 逻辑坐标，Qt 自己处理缩放换算。"""
-        screen = QApplication.primaryScreen()
-        available = screen.availableGeometry() if screen is not None else None
-        if available is None or available.isEmpty():
+    def _remember_ball_pos(self) -> None:
+        pos = self.ball.pos()
+        self._ball_pos = (pos.x(), pos.y())
+        self.ball_moved.emit(self._ball_pos)
+
+    def _available(self) -> QScreen | None:
+        """球落在哪块屏就用哪块屏的可用区域；找不到就退回主屏。"""
+        screen = QApplication.screenAt(self.ball.pos()) or QApplication.primaryScreen()
+        return screen
+
+    def _place_ball(self) -> None:
+        """没拖过就放右上角；拖过就回到上次的位置。定位走 Qt 逻辑坐标。"""
+        available = self._available()
+        if self._ball_pos is not None:
+            self.ball.move(*self._ball_pos)
             return
-        width = min(PANEL_MAX_WIDTH, max(PANEL_MIN_WIDTH, int(available.width() / 6)))
-        height = min(PANEL_MAX_HEIGHT, int(available.height() * PANEL_HEIGHT_RATIO))
-        x = available.right() - width - EDGE_GAP
-        y = available.top() + EDGE_GAP
+        if available is None:
+            return
+        area = available.availableGeometry()
+        self.ball.move(
+            area.right() - BALL_SIZE - EDGE_GAP,
+            area.top() + EDGE_GAP,
+        )
+
+    def _place_panel_near_ball(self) -> None:
+        """贴着球展开，并**强制夹回屏幕内** —— 任何一边都不许露到屏幕外。
+
+        球在右半屏时面板向左展开（右边缘对齐球右缘），在左半屏时向右展开；
+        下面放不下就往上收。之前按「屏幕右上角」算，球被拖走后就会跑出屏幕。
+        """
+        anchor = self.ball.pos()
+        screen = self._available()
+        area = screen.availableGeometry() if screen is not None else None
+        width = PANEL_MIN_WIDTH
+        height = 400
+        if area is not None:
+            width = min(PANEL_MAX_WIDTH, max(PANEL_MIN_WIDTH, int(area.width() / 6)))
+            height = min(PANEL_MAX_HEIGHT, int(area.height() * PANEL_HEIGHT_RATIO))
         self.panel.resize(width, height)
+        if area is None:
+            self.panel.move(anchor.x() + BALL_SIZE - width, anchor.y())
+            return
+        if anchor.x() > area.center().x():
+            x = anchor.x() + BALL_SIZE - width
+        else:
+            x = anchor.x()
+        y = anchor.y()
+        x = max(area.left() + EDGE_GAP, min(x, area.right() - width - EDGE_GAP))
+        y = max(area.top() + EDGE_GAP, min(y, area.bottom() - height - EDGE_GAP))
         self.panel.move(x, y)
-        self.ball.move(x + width - BALL_SIZE, y)
