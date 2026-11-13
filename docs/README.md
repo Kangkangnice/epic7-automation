@@ -292,7 +292,7 @@ CI 的 `Governance gate` 会在干净检出上再跑一遍治理门禁。
 | [`sanctuary.md`](maintenance/sanctuary.md) | 圣域收菜：三行材料里把「领取奖励」点掉，「照料」亮着也点 |
 | [`labyrinth_stone.md`](maintenance/labyrinth_stone.md) | 迷宫强化石：进混乱的提雷尔城找流浪商人买石头 |
 | [`moonlight_theater.md`](maintenance/moonlight_theater.md) | 月光剧场：每周免费观览（存量），没有免费额度就花门票、**永不花金币** |
-| [`side_story.md`](maintenance/side_story.md) | 支线故事：靠发光徽记定位当前关，一次把本期打完 |
+| [`side_story.md`](maintenance/side_story.md) | 支线故事：①普通关卡 → ②摩罗戈拉 → ③哥布林 → ④BOSS 阶梯一次跑完；入口、判据与收工条件见该页 |
 | [`community_checkin.md`](maintenance/community_checkin.md) | 社区签到：模拟器转竖屏，签到 + 三条每日任务 + 兑换按上限兑满 |
 | [`achievement.md`](maintenance/achievement.md) | 成就领取：4 个分类**逐个进去**领完（不是看红点），两端素材都有 |
 | [`story_star.md`](maintenance/story_star.md) | 主线补星：按星数找未满篇章、按绿勾找未满小节，复用主线战斗链路 |
