@@ -3102,7 +3102,7 @@ class CommunityRunner(ModeRunnerBase):
             # 要是机器上恰好在跑雷电，它就会去操作那一个 —— 画面看着没问题，点的是别人。
             raise RuntimeError(
                 "社区签到路线的竖屏段只有雷电模拟器有（走 adb）；"
-                f"当前横屏通道是 {type(window).__name__}，请改用默认的模拟器后端"
+                f"当前横屏通道是 {type(window).__name__}，需改用默认的模拟器后端"
             )
         portrait = self._portrait or PortraitChannel(window=window)
         self._portrait = portrait

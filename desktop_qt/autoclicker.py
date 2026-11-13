@@ -106,7 +106,7 @@ class AutoClickerPage(QWidget):
         layout.setSpacing(8)
         layout.addWidget(StrongBodyLabel("点哪里", card))
         hint = CaptionLabel(
-            "把鼠标移到要点的位置，再点「拾取位置」；倒计时结束时记下光标所在的点。",
+            "将光标移至目标位置后执行「拾取位置」；倒计时结束时记录该坐标。",
             card,
         )
         hint.setWordWrap(True)
@@ -130,7 +130,7 @@ class AutoClickerPage(QWidget):
         row.addStretch(1)
         layout.addLayout(row)
 
-        self.position_note = CaptionLabel("还没有取点：先拾取一次，或直接填上面的坐标。", card)
+        self.position_note = CaptionLabel("尚未取点：需执行「拾取位置」或填写坐标。", card)
         self.position_note.setWordWrap(True)
         layout.addWidget(self.position_note)
         return card
@@ -182,8 +182,8 @@ class AutoClickerPage(QWidget):
         layout.addWidget(self.status_label)
 
         note = CaptionLabel(
-            "运行中按 P 可以立即停止 —— 鼠标被按在目标点上时，这是唯一不靠鼠标的出口。"
-            "它会一直点，直到你停止；点到什么就是什么，所以启动前先确认位置。",
+            "执行期间按 P 可立即停止，该方式不依赖鼠标操作。"
+            "连点将持续执行直至手动停止；执行前需确认目标位置。",
             card,
         )
         note.setWordWrap(True)
@@ -230,8 +230,8 @@ class AutoClickerPage(QWidget):
 
     def _on_interval_edited(self, value: int) -> None:
         self.interval_note.setText(
-            f"每 {value / 1000:.2f} 秒点一次（约每秒 {1000 / value:.1f} 次）。"
-            f"最密 {MIN_INTERVAL_MS} 毫秒，再快游戏和系统都跟不上。"
+            f"执行间隔 {value / 1000:.2f} 秒（约每秒 {1000 / value:.1f} 次）。"
+            f"最小间隔 {MIN_INTERVAL_MS} 毫秒。"
         )
 
     # ── 启停 ────────────────────────────────────────────────────────────────
@@ -241,10 +241,10 @@ class AutoClickerPage(QWidget):
             return
         reason = self._busy_reason()
         if reason:
-            self._warn("现在不能开连点器", reason)
+            self._warn("当前无法启动连点器", reason)
             return
         if not self._has_position:
-            self._warn("还没有取点", "先点「拾取位置」，或直接填好 X / Y 再开始。")
+            self._warn("尚未取点", "需执行「拾取位置」或填写 X / Y 坐标。")
             return
         try:
             plan = ClickPlan(
@@ -254,9 +254,9 @@ class AutoClickerPage(QWidget):
             )
             self._clicker.start(plan)
         except Exception as error:  # noqa: BLE001 —— 报进状态行，别静默失败
-            self._warn("没能开始连点", str(error))
+            self._warn("无法启动连点", str(error))
             return
-        self.status_label.setText("正在连点 · 已点 0 次（按 P 停止）")
+        self.status_label.setText("连点执行中 · 已执行 0 次（按 P 停止）")
         self._refresh()
 
     def _stop(self) -> None:
@@ -277,7 +277,7 @@ class AutoClickerPage(QWidget):
             self.pick_button.setEnabled(not running)
         if running:
             self.status_label.setText(
-                f"正在连点 · 已点 {self._clicker.count} 次（按 P 停止）"
+                f"连点执行中 · 已执行 {self._clicker.count} 次（按 P 停止）"
             )
         elif self._clicker.last_error:
             self.status_label.setText(f"已停止：{self._clicker.last_error}")

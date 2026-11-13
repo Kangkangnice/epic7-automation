@@ -20,7 +20,7 @@ PENDING = "pending"
 RUNNING = "running"
 DONE = "done"
 
-STATUS_LABELS = {PENDING: "待跑", RUNNING: "进行中", DONE: "完成"}
+STATUS_LABELS = {PENDING: "待执行", RUNNING: "进行中", DONE: "已完成"}
 
 
 @dataclass(frozen=True)

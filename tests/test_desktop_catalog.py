@@ -82,7 +82,11 @@ def test_survivor_explains_the_manual_entry_page():
     assert survivor.label == "活动"
     # 起点是用户人工停好的页面，必须写在界面上让人看得见。
     assert "选第一张卡" in survivor.description
-    assert "模拟器" in survivor.description
+    # 平台限制**不逐条写进路线说明**：放行范围由 ``PC_READY_ROUTES`` 决定、
+    # 启动时由 ``STARTUP_HINTS`` 统一说明。逐条写「只支持模拟器」正是这里历史上
+    # 反复过期的原因（PC 放行后没人回来改文案）。改为校验真正的业务前提：
+    # 这条不从大厅导航进入，因此不能与别的路线一起勾。
+    assert "不可与其它路线同时勾选" in survivor.description
 
 
 def test_shop_refresh_explains_cycle_semantics():
@@ -116,7 +120,9 @@ def test_world_boss_explains_the_resource_boundary():
     assert world_boss.label == "世界首领战"
     # 「每次 20 体力」和「不会用钻石」是用户定的红线，必须写在界面上让人看得见。
     assert "20 体力" in world_boss.description
-    assert "树叶" in world_boss.description
+    # 生命之叶是游戏内的正式名称（``StaminaExhausted.stop_label`` 同此），
+    # 2026-11-13 统一文案时把旧的简写「树叶」改回正式名称。
+    assert "生命之叶" in world_boss.description
 
 
 def test_world_boss_is_fixed_to_two_cycles():
@@ -143,7 +149,7 @@ def test_knights_donation_is_fixed_to_one_pass():
     # ⚠️ 用户 2026-09-24 更正：有没有红点都要进 ⇒ 界面上不许再写「没红点就结束」。
     assert "红点" not in donation.description
     # 一天只能请求一次支援是用户定的红线，必须写在界面上。
-    assert "每天请求一次" in donation.description
+    assert "每日请求一次" in donation.description
 
 
 # --------------------------------------------------------------------------
@@ -164,7 +170,12 @@ def test_every_route_description_explains_itself():
 
         # 三段式：第 1 段干什么，第 2 段「一轮 = …」+ 能不能自己改，第 3 段「注意：」。
         assert text.count("\n") >= 2, f"{where}没分段，至少要三段"
-        assert "一轮" in text or "一遍" in text, f"{where}没写清一轮跑到哪儿"
+        # 「一轮到哪儿」这件事必须写清。2026-11-13 改说明体后多出两种等价表述
+        # （「一次运行完成…」「每日执行一次即结束」），断言接受这四种，但要求
+        # 至少命中一个 —— 不许一条都不写。
+        assert any(word in text for word in ("一轮", "一遍", "一次运行", "执行一次")), (
+            f"{where}没写清一轮跑到哪儿"
+        )
         assert "注意：" in text, f"{where}缺「注意：」那一段"
 
         # ⚠️ 这段文字直接进 tk 的 Label，写 `**重点**` 会原样显示成星号。
@@ -205,6 +216,12 @@ CODE_JARGON = (
     "代码",
     "程序",
     "算法",
+    # 2026-11-13 改说明体时补：这些是操作方式或内部概念，不是业务结果。
+    "滚轮",
+    "拖拽",
+    "素材",
+    "后端",
+    "转场",
 )
 
 
@@ -233,7 +250,9 @@ def test_every_group_explains_what_ticking_it_does():
 
         assert text, f"{where}是空的"
         assert text.count("\n") >= 2, f"{where}没分段"
-        assert "点这个框" in text, f"{where}没写清点这个框会做什么"
+        # 2026-11-13 改说明体：原文「点这个框 = …」属口语加法号，改成陈述句
+        # 「勾选分组标题可整组选中」。断言跟着换成新的表述。
+        assert "勾选分组标题" in text, f"{where}没写清勾选分组标题会做什么"
         assert "**" not in text, f"{where}里混进了 Markdown 星号"
         assert len(text) <= 160, f"{where}有 {len(text)} 字，太长了"
 

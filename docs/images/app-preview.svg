@@ -26,15 +26,15 @@
   <rect x="82" y="72" width="892" height="96" rx="8" fill="#FFFFFF" stroke="#E5E7EB" stroke-width="1.5"/>
   <text x="100" y="96" fill="#111827" font-family="Microsoft YaHei, PingFang SC, sans-serif" font-size="13" font-weight="700">运行环境</text>
   <text x="100" y="116" fill="#1F2937" font-family="Microsoft YaHei, PingFang SC, sans-serif" font-size="12">尚未检测。请点击「检测环境」。</text>
-  <text x="100" y="134" fill="#6B7280" font-family="Microsoft YaHei, PingFang SC, sans-serif" font-size="11">请先启动雷电模拟器并进入《第七史诗》，再启动本助手并检测环境。</text>
+  <text x="100" y="134" fill="#6B7280" font-family="Microsoft YaHei, PingFang SC, sans-serif" font-size="11">启动雷电模拟器并进入《第七史诗》大厅后，再启动本助手并执行环境检测。</text>
   <text x="100" y="156" fill="#374151" font-family="Microsoft YaHei, PingFang SC, sans-serif" font-size="12">窗口后端</text>
   <rect x="170" y="138" width="150" height="26" rx="5" fill="#FFFFFF" stroke="#8A8A8A"/>
   <text x="182" y="156" fill="#1A1A1A" font-family="Microsoft YaHei, PingFang SC, sans-serif" font-size="11">模拟器（雷电）</text>
   <path d="M304 148 l5 6 l5 -6" fill="none" stroke="#6B7280" stroke-width="1.5"/>
-  <text x="344" y="156" fill="#374151" font-family="Microsoft YaHei, PingFang SC, sans-serif" font-size="12">不占用前台（实验）</text>
-  <rect x="484" y="140" width="32" height="18" rx="9" fill="#E5E7EB"/>
-  <circle cx="493" cy="149" r="7" fill="#FFFFFF" stroke="#9CA3AF"/>
-  <text x="524" y="155" fill="#6B7280" font-family="Microsoft YaHei, PingFang SC, sans-serif" font-size="11">Off</text>
+  <text x="344" y="156" fill="#374151" font-family="Microsoft YaHei, PingFang SC, sans-serif" font-size="12">不占用前台</text>
+  <rect x="484" y="140" width="32" height="18" rx="9" fill="#0078D7"/>
+  <circle cx="507" cy="149" r="7" fill="#FFFFFF"/>
+  <text x="524" y="155" fill="#6B7280" font-family="Microsoft YaHei, PingFang SC, sans-serif" font-size="11">On</text>
   <rect x="856" y="138" width="100" height="28" rx="5" fill="#FFFFFF" stroke="#8A8A8A"/>
   <text x="906" y="156" fill="#1F2937" font-family="Microsoft YaHei, PingFang SC, sans-serif" font-size="11" text-anchor="middle">检测环境</text>
 
@@ -80,18 +80,17 @@
   <!-- 右：说明卡 -->
   <rect x="606" y="180" width="368" height="372" rx="8" fill="#FFFFFF" stroke="#E5E7EB" stroke-width="1.5"/>
   <text x="624" y="206" fill="#111827" font-family="Microsoft YaHei, PingFang SC, sans-serif" font-size="13" font-weight="700">每日 · 整组说明</text>
-  <text x="624" y="234" fill="#1F2937" font-family="Microsoft YaHei, PingFang SC, sans-serif" font-size="11">每天都要过一遍的日常：竞技场、世界首领战、</text>
-  <text x="624" y="252" fill="#1F2937" font-family="Microsoft YaHei, PingFang SC, sans-serif" font-size="11">骑士团捐赠、迷宫强化石、圣域收菜、社区签到、</text>
-  <text x="624" y="270" fill="#1F2937" font-family="Microsoft YaHei, PingFang SC, sans-serif" font-size="11">刷书签、成就领取。</text>
-  <text x="624" y="296" fill="#1F2937" font-family="Microsoft YaHei, PingFang SC, sans-serif" font-size="11">每一条都是「跑一遍就够一天」，同一天里重复</text>
-  <text x="624" y="314" fill="#1F2937" font-family="Microsoft YaHei, PingFang SC, sans-serif" font-size="11">跑不会多拿东西。</text>
-  <text x="624" y="340" fill="#1F2937" font-family="Microsoft YaHei, PingFang SC, sans-serif" font-size="11">点这个框 = 整组一起勾上，再点一下 = 整组取消。</text>
+  <text x="624" y="234" fill="#1F2937" font-family="Microsoft YaHei, PingFang SC, sans-serif" font-size="11">每日执行的常驻内容：竞技场、刷书签、世界首领战、</text>
+  <text x="624" y="252" fill="#1F2937" font-family="Microsoft YaHei, PingFang SC, sans-serif" font-size="11">骑士团捐赠、迷宫强化石、圣域收菜、社区签到、成就领取。</text>
+  <text x="624" y="278" fill="#1F2937" font-family="Microsoft YaHei, PingFang SC, sans-serif" font-size="11">各项按游戏内当日次数或可领取内容执行；次数框置灰的</text>
+  <text x="624" y="296" fill="#1F2937" font-family="Microsoft YaHei, PingFang SC, sans-serif" font-size="11">项目由游戏规则决定，不支持调整。</text>
+  <text x="624" y="322" fill="#1F2937" font-family="Microsoft YaHei, PingFang SC, sans-serif" font-size="11">勾选分组标题可整组选中；再次点击取消整组选中。</text>
   <line x1="624" y1="372" x2="956" y2="372" stroke="#E5E7EB"/>
   <text x="624" y="398" fill="#6B7280" font-family="Microsoft YaHei, PingFang SC, sans-serif" font-size="11">次数固定的路线显示为灰底数字，仍可看清数值。</text>
   <text x="624" y="532" fill="#9CA3AF" font-family="Microsoft YaHei, PingFang SC, sans-serif" font-size="10">界面示意图 · 非实机截图</text>
 
   <!-- 底部操作条 -->
-  <text x="82" y="580" fill="#374151" font-family="Microsoft YaHei, PingFang SC, sans-serif" font-size="11">已勾选 2 条 · 按勾选顺序执行</text>
+  <text x="82" y="580" fill="#374151" font-family="Microsoft YaHei, PingFang SC, sans-serif" font-size="11">已选 2 项 · 按勾选顺序执行</text>
   <rect x="672" y="562" width="106" height="30" rx="6" fill="#FFFFFF" stroke="#8A8A8A"/>
   <text x="725" y="581" fill="#1F2937" font-family="Microsoft YaHei, PingFang SC, sans-serif" font-size="11" text-anchor="middle">导出诊断包</text>
   <rect x="790" y="562" width="80" height="30" rx="6" fill="#F3F4F6" stroke="#C6C9CE"/>

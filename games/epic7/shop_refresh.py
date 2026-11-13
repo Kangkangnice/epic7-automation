@@ -157,8 +157,8 @@ class ShopRunStats:
         mystic = self.initial_mystic + self.paid_mystic
         total = covenant + mystic
         if not total:
-            return "这轮没买到书签"
-        return f"买到 {total} 张书签（誓约 {covenant} / 神秘 {mystic}）"
+            return "本轮未购入书签"
+        return f"购入书签 {total} 张（誓约 {covenant} / 神秘 {mystic}）"
 
 
 @dataclass

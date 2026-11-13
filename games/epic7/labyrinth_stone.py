@@ -1433,11 +1433,11 @@ class LabyrinthStoneRunner(ModeRunnerBase):
         if self.runtime.dry_run:
             return ""
         if getattr(self.machine, "already_explored", False):
-            return "1 区域今天已经探险过，无需再进迷宫"
+            return "1 区域当日探险已完成"
         if not self.machine.bought:
-            return "这趟没买到目标商品（都买过了 / 商店里没有可买的）"
+            return "本轮未购入目标商品"
         rows = "、".join(f"第 {row} 行" for row in self.machine.purchase_rows)
-        return f"买到 {self.machine.bought} 件目标商品（强化石 / 友情点数 / 书签，{rows}）"
+        return f"购入目标商品 {self.machine.bought} 件（强化石 / 友情点数 / 书签，{rows}）"
 
     def _log_cycle_completed(self) -> None:
         reason = getattr(self.machine, "finish_reason", "")

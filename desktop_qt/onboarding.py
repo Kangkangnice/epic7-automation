@@ -37,7 +37,7 @@ class ConsentDialog(QDialog):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(24, 20, 24, 20)
         layout.setSpacing(10)
-        layout.addWidget(StrongBodyLabel("开始之前，请先读一遍", self))
+        layout.addWidget(StrongBodyLabel("使用前须知", self))
 
         for point in RISK_POINTS:
             label = BodyLabel(point, self)
@@ -45,7 +45,7 @@ class ConsentDialog(QDialog):
             layout.addWidget(label)
 
         layout.addSpacing(4)
-        layout.addWidget(StrongBodyLabel("开始运行时需要满足", self))
+        layout.addWidget(StrongBodyLabel("运行条件", self))
         for index, point in enumerate(SETUP_POINTS, start=1):
             label = BodyLabel(f"{index}. {point}", self)
             label.setWordWrap(True)

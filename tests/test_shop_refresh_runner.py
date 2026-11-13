@@ -274,13 +274,13 @@ def test_bookmark_note_adds_initial_and_refreshed_purchases():
         initial_mystic=1, paid_mystic=1,
     )
 
-    assert stats.bookmark_note() == "买到 5 张书签（誓约 3 / 神秘 2）"
+    assert stats.bookmark_note() == "购入书签 5 张（誓约 3 / 神秘 2）"
 
 
 def test_bookmark_note_when_nothing_was_bought():
     stats = ShopRunStats(target_refreshes=0)
 
-    assert stats.bookmark_note() == "这轮没买到书签"
+    assert stats.bookmark_note() == "本轮未购入书签"
 
 
 def test_bookmark_note_never_reports_gold_or_skystone():

@@ -207,7 +207,7 @@ class RunPanel(QWidget):
         header = QHBoxLayout()
         title = QLabel("今日游戏便签", self)
         title.setObjectName("panelTitle")
-        self._state = QLabel("任务进行中", self)
+        self._state = QLabel("执行中", self)
         self._state.setObjectName("statePill")
         collapse = QPushButton("收起", self)
         collapse.clicked.connect(self.collapse_requested.emit)
@@ -227,7 +227,7 @@ class RunPanel(QWidget):
             number.setObjectName("slotNumber")
             number.setFixedWidth(14)
             editor = QLineEdit(self)
-            editor.setPlaceholderText("点这里写今天想做的事")
+            editor.setPlaceholderText("填写今日待办事项")
             editor.setText(todos[index] if index < len(todos) else "")
             editor.editingFinished.connect(self._on_todo_edited)
             row.addWidget(number)
@@ -269,7 +269,7 @@ class RunPanel(QWidget):
 
 
     def set_running(self, running: bool) -> None:
-        self._state.setText("任务进行中" if running else "本次运行已结束")
+        self._state.setText("执行中" if running else "本次运行已结束")
         self._state.setObjectName("statePill" if running else "statePillIdle")
         self.setStyleSheet(_PANEL_QSS)
 
@@ -339,7 +339,7 @@ def _divider(parent: QWidget) -> QLabel:
 
 def _legend(parent: QWidget) -> QHBoxLayout:
     row = QHBoxLayout()
-    for status, caption in ((DONE, "已完成"), (RUNNING, "进行中"), (PENDING, "未开始")):
+    for status, caption in ((DONE, "已完成"), (RUNNING, "进行中"), (PENDING, "待执行")):
         dot = QLabel("", parent)
         dot.setObjectName(f"dot{status.title()}")
         dot.setFixedSize(14, 14)

@@ -43,7 +43,7 @@ def test_raw_defaults_to_a_sentence_when_not_given(_isolated_data_dir):
 
 def test_missing_file_means_not_read_yet(_isolated_data_dir):
     assert countdown.load_countdown() is None
-    assert countdown.countdown_text() == "支线刷新：还没读过"
+    assert countdown.countdown_text() == "支线刷新倒计时：尚未读取"
 
 
 def test_broken_file_does_not_raise(_isolated_data_dir):
@@ -52,7 +52,7 @@ def test_broken_file_does_not_raise(_isolated_data_dir):
     countdown.countdown_path().write_text("{不是 JSON", encoding="utf-8")
 
     assert countdown.load_countdown() is None
-    assert countdown.countdown_text() == "支线刷新：还没读过"
+    assert countdown.countdown_text() == "支线刷新倒计时：尚未读取"
 
 
 def test_non_object_json_is_treated_as_missing(_isolated_data_dir):
@@ -65,8 +65,8 @@ def test_text_carries_both_numbers_and_the_stamp(_isolated_data_dir):
     countdown.save_countdown(13, 12)
 
     text = countdown.countdown_text()
-    assert text.startswith("支线刷新：剩余 13 天 12 小时")
-    assert "读）" in text
+    assert text.startswith("支线刷新倒计时：剩余 13 天 12 小时")
+    assert "读取时间" in text
 
 
 def test_text_reports_an_abnormal_reading_instead_of_crashing(_isolated_data_dir):
@@ -77,7 +77,7 @@ def test_text_reports_an_abnormal_reading_instead_of_crashing(_isolated_data_dir
         encoding="utf-8",
     )
 
-    assert countdown.countdown_text() == "支线刷新：读数异常"
+    assert countdown.countdown_text() == "支线刷新倒计时：读数异常"
 
 
 def test_display_strips_the_year_to_keep_it_on_one_line(_isolated_data_dir):
@@ -91,8 +91,8 @@ def test_display_strips_the_year_to_keep_it_on_one_line(_isolated_data_dir):
     text = countdown.countdown_text()
     stored = countdown.load_countdown()["read_at"]
 
-    assert text.startswith("支线刷新：剩余 13 天 12 小时（")
-    assert " 读）" in text
+    assert text.startswith("支线刷新倒计时：剩余 13 天 12 小时（")
+    assert "读取时间" in text
     assert stored[:4] not in text, f"显示时还带着年份：{text}"
     assert stored.startswith(stored[:4]) and len(stored) == 16, "文件里那份不许缩水"
 
@@ -105,4 +105,4 @@ def test_display_keeps_an_unrecognised_stamp_verbatim(_isolated_data_dir):
         encoding="utf-8",
     )
 
-    assert "（昨天 读）" in countdown.countdown_text()
+    assert "（读取时间 昨天）" in countdown.countdown_text()

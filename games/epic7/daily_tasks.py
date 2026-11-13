@@ -95,14 +95,15 @@ DAILY_TASKS: tuple[DailyTask, ...] = (
 )
 
 
-# 给人看的状态词。**不复用 summary_line 里的 ✓ / ✗**：那一行是给进度条/存档的
-# 紧凑记号，人看结果时要能分清「做完 / 没东西可做 / 根本没跑」。
+# 结果卡与通知使用的状态词。采用说明式短词，不使用口语或内部术语。
+# **不复用 summary_line 里的 ✓ / ✗**：那一行是给进度条与会话存档的紧凑记号，
+# 结果卡需要区分「完成 / 无剩余内容 / 失败 / 未执行 / 环境不支持」。
 STATUS_WORDS: dict[str, str] = {
     "completed": "完成",
-    "resource": "没得做了",
+    "resource": "无剩余内容",
     "failed": "失败",
-    "skipped": "没跑",
-    "not_supported": "本环境跑不了",
+    "skipped": "未执行",
+    "not_supported": "当前环境不支持",
 }
 
 
@@ -192,10 +193,10 @@ class DailyReport:
         """
         marks = {
             "completed": "✓",
-            "resource": "✓(资源耗尽)",
+            "resource": "✓(无剩余内容)",
             "failed": "✗",
             "skipped": "—",
-            "not_supported": "—(当前后端无素材)",
+            "not_supported": "—(当前环境不支持)",
         }
         parts = []
         for outcome in self.outcomes:
@@ -209,19 +210,19 @@ class DailyReport:
         return line
 
     def _headline(self) -> str:
-        """总账：一眼看出今天勾了几条、哪几条没做成、整轮花了多久。"""
-        parts = [f"共 {len(self.outcomes)} 条"]
+        """总账：本轮任务数、各类结论的条数与整轮耗时。"""
+        parts = [f"任务 {len(self.outcomes)} 项"]
         for status, word in (
-            ("completed", "做完"),
-            ("resource", "没得做"),
+            ("completed", "完成"),
+            ("resource", "无剩余内容"),
             ("failed", "失败"),
-            ("not_supported", "本环境跑不了"),
-            ("skipped", "没跑"),
+            ("not_supported", "环境不支持"),
+            ("skipped", "未执行"),
         ):
             count = sum(1 for outcome in self.outcomes if outcome.status == status)
             if count:
-                parts.append(f"{word} {count} 条")
-        parts.append(f"用时 {_format_duration(self.elapsed_seconds)}")
+                parts.append(f"{word} {count} 项")
+        parts.append(f"总用时 {_format_duration(self.elapsed_seconds)}")
         return " · ".join(parts)
 
     def _outcome_line(self, outcome: DailyOutcome) -> str:
@@ -241,7 +242,7 @@ class DailyReport:
         if outcome.status in {"failed", "skipped"} and outcome.detail:
             parts.append(_human_reason(outcome.detail))
         if outcome.status == "not_supported":
-            parts.append("当前环境没有这条的素材")
+            parts.append("当前运行环境不提供此路线")
         return " · ".join(parts)
 
     def result_lines(self) -> list[str]:
@@ -413,7 +414,7 @@ def run_daily_tasks(
                     mode=mode,
                     label=label,
                     status="not_supported",
-                    detail="目前只有 PC 客户端版素材，模拟器上跳过；要跑请切到 PC 客户端",
+                    detail="当前运行环境未提供此路线所需资源，已跳过",
                 )
             )
             continue
@@ -537,13 +538,13 @@ def _run_inspect(
         payload = inspect()
     except ManualStop:
         report.stopped_by_user = True
-        return "支线刷新：巡检被手动停止，这次没读"
+        return "支线刷新倒计时：未读取（用户手动停止）"
     except Exception as error:  # noqa: BLE001 —— 巡检失败不许影响整轮结论
-        return f"支线刷新：没读到（{_human_reason(f'{type(error).__name__}: {error}')}）"
+        return f"支线刷新倒计时：未读取（{_human_reason(f'{type(error).__name__}: {error}')}）"
     if (
         isinstance(payload, dict)
         and isinstance(payload.get("days"), int)
         and isinstance(payload.get("hours"), int)
     ):
-        return f"支线刷新：剩余 {payload['days']} 天 {payload['hours']} 小时"
-    return "支线刷新：没读到（这一页的文字没认出来）"
+        return f"支线刷新倒计时：剩余 {payload['days']} 天 {payload['hours']} 小时"
+    return "支线刷新倒计时：未读取（页面未显示倒计时信息）"

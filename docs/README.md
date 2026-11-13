@@ -269,6 +269,7 @@ CI 的 `Governance gate` 会在干净检出上再跑一遍治理门禁。
 | [`RESUME_COVERAGE.md`](RESUME_COVERAGE.md) | 契约 | 每条路线的每个环节「停在那儿能不能接着跑」，以及落点判据 |
 | [`howto/live_verification.md`](howto/live_verification.md) | 手法 | 让 agent 真的进游戏点鼠标：只读自检 → 提权 → 实跑的授权流程与话术 |
 | [`USER_GUIDE.md`](USER_GUIDE.md) | 用户 | 装、跑、干跑、实跑、退出码、通知、日志在哪。**日常只用这份** |
+| [`UI_COPY_STYLE.md`](UI_COPY_STYLE.md) | 契约 | 界面文案的说明 / 指南体规范：禁口语与实现术语、名单不写死、三类文案的结构与改写对照。**改任何面向用户的字之前必读** |
 | [`TROUBLESHOOTING.md`](TROUBLESHOOTING.md) | 用户 | 跑挂了怎么查：看哪几个文件、卡死怎么判断、反馈时该留什么现场 |
 | [`TODO.md`](TODO.md) | 清单 | 未完成的加固项、待验证缺口、PC 迁移矩阵。回答「还欠什么」 |
 | [`BACKLOG.md`](BACKLOG.md) | 清单 | 想法池：还没评估的功能念头。想找活干从这里挑 |

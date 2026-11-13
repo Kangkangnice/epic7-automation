@@ -62,8 +62,8 @@ class DimensionProbePage(QWidget):
         layout.setSpacing(8)
 
         intro = BodyLabel(
-            "次元探查（三层探查）的代码原样内置在助手里，点「开始」直接跑，"
-            "不用另开程序。它不是每日任务里的一条路线，不参与勾选与环境复检。",
+            "次元探查（三层探查）在助手内直接执行，无需另开程序。"
+            "本项不属于每日任务路线，不参与勾选与环境复检。",
             card,
         )
         intro.setWordWrap(True)
@@ -110,10 +110,10 @@ class DimensionProbePage(QWidget):
         layout.addWidget(self.log_text)
 
         for text in (
-            "注意：开跑会自动放弃你没打完的旧探查并结算掉那半局，跑之前别留半局。",
-            "它会自己调整游戏窗口大小；本助手下次开跑会自动改回。",
-            "运行时别关本助手：它就在同一个程序里，关掉等于中途停止。",
-            "阶段和阵容是它原样带过来的固定配置；账号缺对应英雄、或目标阶段没解锁，它会停下。",
+            "注意：启动时将放弃未完成的探查并结算该局；执行前需确认无进行中的探查。",
+            "执行期间将调整游戏窗口尺寸；助手下次启动时自动还原。",
+            "执行期间不可关闭助手；关闭窗口等同于中途停止。",
+            "阶段与阵容为内置固定配置；账号缺少对应英雄或目标阶段未解锁时，执行将停止。",
         ):
             note = CaptionLabel(text, card)
             note.setWordWrap(True)
@@ -125,7 +125,7 @@ class DimensionProbePage(QWidget):
             return
         reason = self._busy_reason()
         if reason:
-            self._warn("现在不能开始", reason)
+            self._warn("当前无法启动", reason)
             return
         error = self._bridge.start(
             self.stage_combo.currentData(),
@@ -133,7 +133,7 @@ class DimensionProbePage(QWidget):
             self.rounds_spin.value(),
         )
         if error:
-            self._warn("没能启动", error)
+            self._warn("无法启动", error)
             return
         self._refresh()
 

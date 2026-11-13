@@ -163,12 +163,14 @@ class ChaosBridge:
     def _run(self, rounds: int) -> None:
         reasons = {
             "game_window_not_found": (
-                "没找到 PC 客户端窗口。这条功能只支持 STOVE / Steam 版《第七史诗》"
-                "（窗口标题「第七史诗」，进程 EpicSeven.exe），模拟器窗口不算；"
-                "请先启动 PC 客户端、登录并回到游戏主界面。"
+                "未找到 PC 客户端窗口。此项仅支持 STOVE / Steam 版《第七史诗》"
+                "（窗口标题「第七史诗」，进程 EpicSeven.exe），模拟器窗口不适用；"
+                "需先启动 PC 客户端、登录并回到游戏主界面。"
             ),
-            "multiple_game_windows": "找到多个《第七史诗》窗口，请只保留一个再开始。",
-            "permission_required": "需要管理员权限：请用「以管理员身份运行」打开本助手。",
+            "multiple_game_windows": "找到多个《第七史诗》窗口，需只保留一个再开始。",
+            "permission_required": (
+                "权限不足：需以「以管理员身份运行」方式启动本助手。"
+            ),
             "unsupported_display_resolution": "桌面分辨率不足 1920×1080，或显示缩放异常。",
             "window_abnormal": "游戏窗口状态异常（最小化 / 被改动 / 已关闭）。",
             "chaos_unsupported_stage": "账号上没有这个阶段，或该阶段尚未解锁。",

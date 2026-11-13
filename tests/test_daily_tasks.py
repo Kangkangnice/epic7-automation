@@ -292,28 +292,28 @@ def _mixed_report() -> DailyReport:
 
 def test_result_lines_put_the_totals_first():
     lines = _mixed_report().result_lines()
-    assert "共 5 条" in lines[0]
-    assert "做完 1 条" in lines[0]
-    assert "没得做 1 条" in lines[0]
-    assert "失败 1 条" in lines[0]
-    assert "本环境跑不了 1 条" in lines[0]
-    assert "没跑 1 条" in lines[0]
+    assert "任务 5 项" in lines[0]
+    assert "完成 1 项" in lines[0]
+    assert "无剩余内容 1 项" in lines[0]
+    assert "失败 1 项" in lines[0]
+    assert "环境不支持 1 项" in lines[0]
+    assert "未执行 1 项" in lines[0]
     assert "6分12秒" in lines[0]
 
 
 def test_result_lines_show_what_each_route_actually_did():
     text = "\n".join(_mixed_report().result_lines())
     assert "竞技场 · 完成 · 10/10 轮 · 胜 7 / 负 3 · 2分10秒" in text
-    assert "刷书签 · 没得做了 · 1/1 轮 · 42秒" in text
+    assert "刷书签 · 无剩余内容 · 1/1 轮 · 42秒" in text
     assert "圣域收菜 · 失败 · 1分03秒 · 认不出页面" in text
-    assert "成就领取 · 本环境跑不了" in text
-    assert "月塔 · 没跑 · 上一段之后回不到首页" in text
+    assert "成就领取 · 当前环境不支持" in text
+    assert "月塔 · 未执行 · 上一段之后回不到首页" in text
 
 
 def test_result_lines_do_not_count_non_success_as_done():
     report = _mixed_report()
     assert report.any_failed is True
-    assert "做完 1 条" in report.result_lines()[0]
+    assert "完成 1 项" in report.result_lines()[0]
 
 
 def test_brief_lines_drop_per_route_time_but_keep_the_failure_reason():
@@ -439,7 +439,7 @@ def test_run_daily_prints_result_lines(monkeypatch, capsys):
     out = capsys.readouterr().out
 
     assert "每日任务汇总：" in out, "进度条还靠这一行收尾，不能删"
-    assert "每日任务结果：共 5 条" in out
+    assert "每日任务结果：任务 5 项" in out
     assert "每日任务结果：竞技场 · 完成" in out
     assert code == 1
 
@@ -493,12 +493,12 @@ def test_note_is_empty_on_a_dry_run(route):
 
 def test_achievement_note_reports_claims_and_effects():
     runner = _note_runner("achievement", _claims=5, _effects=1)
-    assert runner.route_note() == "全部领取 5 次，持续效果升级 1 次"
+    assert runner.route_note() == "领取成就奖励 5 次；持续效果升级 1 次"
 
 
 def test_achievement_note_when_nothing_new():
     runner = _note_runner("achievement", _claims=0, _effects=0)
-    assert "没有新成就" in runner.route_note()
+    assert "无可领取的成就奖励" in runner.route_note()
 
 
 def test_labyrinth_note_reports_what_was_bought():
@@ -507,7 +507,7 @@ def test_labyrinth_note_reports_what_was_bought():
         purchase_rows=[1, 3, 5],
     )
     assert runner.route_note() == (
-        "买到 3 件目标商品（强化石 / 友情点数 / 书签，第 1 行、第 3 行、第 5 行）"
+        "购入目标商品 3 件（强化石 / 友情点数 / 书签，第 1 行、第 3 行、第 5 行）"
     )
 
 
@@ -515,16 +515,16 @@ def test_labyrinth_note_distinguishes_already_explored():
     runner = _note_runner(
         "labyrinth_stone", already_explored=True, bought=0, purchase_rows=[]
     )
-    assert "今天已经探险过" in runner.route_note()
+    assert "当日探险已完成" in runner.route_note()
 
 
 def test_moonlight_note_reports_acts():
-    assert _note_runner("moonlight_theater", completed_cycles=4).route_note() == "看了 4 幕"
+    assert _note_runner("moonlight_theater", completed_cycles=4).route_note() == "完成观览 4 幕"
 
 
 def test_moonlight_note_when_no_new_act():
     runner = _note_runner("moonlight_theater", completed_cycles=0)
-    assert "没有新看的幕" in runner.route_note()
+    assert "均已处理完毕" in runner.route_note()
 
 
 def test_story_star_note_never_claims_star_counts():
@@ -532,7 +532,7 @@ def test_story_star_note_never_claims_star_counts():
     runner = _note_runner("story_star", completed_cycles=1)
     runner._stages_fought = 3
     text = runner.route_note()
-    assert "打了 3 个未满星小节" in text
+    assert "完成未满星小节 3 个" in text
     assert "颗星" not in text
 
 
@@ -540,7 +540,7 @@ def test_world_boss_note_reports_battles_not_cycles():
     """这条路线 completed_cycles 恒为 0，场次得用另记的 battles_done。"""
     runner = _note_runner("world_boss", completed_cycles=0)
     runner.battles_done = 2
-    assert runner.route_note() == "打了 2 场"
+    assert runner.route_note() == "完成首领战 2 场"
 
 
 def test_knights_note_reports_the_request():
@@ -554,7 +554,7 @@ def test_sanctuary_note_only_after_a_finished_round():
     runner = _note_runner("sanctuary", completed_cycles=0)
     assert runner.route_note() == ""
     runner.machine.completed_cycles = 1
-    assert "三行都收完了" in runner.route_note()
+    assert "三行产出与照料均已处理" in runner.route_note()
 
 
 # --------------------------------------------------------------------------
@@ -1181,11 +1181,11 @@ def test_inspect_runs_once_after_the_routes_and_records_the_note():
     report = _run_with_inspect(inspect)
 
     assert calls == [1], "收尾巡检必须跑且只跑一次"
-    assert report.countdown_note == "支线刷新：剩余 13 天 12 小时"
+    assert report.countdown_note == "支线刷新倒计时：剩余 13 天 12 小时"
     # 读数出现在明细里，但**不是一条任务** —— 总账那行仍然只数路线。
     lines = report.result_lines()
-    assert lines[-1] == "支线刷新：剩余 13 天 12 小时"
-    assert "共 1 条" in lines[0]
+    assert lines[-1] == "支线刷新倒计时：剩余 13 天 12 小时"
+    assert "任务 1 项" in lines[0]
     assert all("支线刷新" not in line for line in lines[1:-1])
 
 
@@ -1254,7 +1254,7 @@ def test_a_failed_route_does_not_stop_the_inspect():
 
     assert report.any_failed is True
     assert report.aborted_reason is None
-    assert report.countdown_note == "支线刷新：剩余 1 天 2 小时"
+    assert report.countdown_note == "支线刷新倒计时：剩余 1 天 2 小时"
 
 
 def test_inspect_failure_never_turns_the_run_into_a_failure():
@@ -1267,7 +1267,7 @@ def test_inspect_failure_never_turns_the_run_into_a_failure():
 
     assert report.any_failed is False, "巡检失败把整轮判成失败 → 通知里会误报"
     assert report.countdown_note is not None
-    assert report.countdown_note.startswith("支线刷新：没读到")
+    assert report.countdown_note.startswith("支线刷新倒计时：未读取")
     assert "等待动作" in report.countdown_note
 
 
@@ -1276,7 +1276,7 @@ def test_inspect_reporting_nothing_is_a_miss_not_a_zero():
 
     report = _run_with_inspect(lambda: None)
 
-    assert report.countdown_note == "支线刷新：没读到（这一页的文字没认出来）"
+    assert report.countdown_note == "支线刷新倒计时：未读取（页面未显示倒计时信息）"
 
 
 def test_inspect_pressing_stop_is_recorded_as_a_manual_stop():
@@ -1288,7 +1288,7 @@ def test_inspect_pressing_stop_is_recorded_as_a_manual_stop():
     report = _run_with_inspect(stop)
 
     assert report.stopped_by_user is True
-    assert report.countdown_note == "支线刷新：巡检被手动停止，这次没读"
+    assert report.countdown_note == "支线刷新倒计时：未读取（用户手动停止）"
     assert report.any_failed is False
 
 

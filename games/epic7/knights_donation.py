@@ -1041,8 +1041,8 @@ class KnightsDonationRunner(ModeRunnerBase):
         if self.runtime.dry_run or self.machine.completed_cycles < 1:
             return ""
         if self.machine.request_done:
-            return "今天的下级精灵之花已请求，逐行支援和每周任务领奖都处理完了"
-        return "逐行支援和每周任务领奖都处理完了"
+            return "下级精灵之花已请求；逐行支援与每周任务奖励已处理"
+        return "逐行支援与每周任务奖励已处理"
 
     def __init__(
         self,

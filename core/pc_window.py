@@ -390,7 +390,7 @@ class Epic7PcWindow:
         if _is_process_elevated(pid.value) and not _is_process_elevated(os.getpid()):
             raise RuntimeError(
                 "PC 客户端以管理员权限运行，而当前自动化未提升权限；"
-                "Windows 会拦截键鼠输入。请以相同权限级别重新启动两者。"
+                "Windows 会拦截键鼠输入。需以相同权限级别重新启动两者。"
             )
 
     def ensure_render_size(self) -> WindowCalibration:
@@ -476,7 +476,7 @@ class Epic7PcWindow:
                 delay = min(delay * CAPTURE_BACKOFF_FACTOR, CAPTURE_MAX_DELAY)
         raise RuntimeError(
             "PC 后台截图失败；为避免抢占前台已安全停止。"
-            f"已重试 {CAPTURE_ATTEMPTS} 次，请保持游戏窗口未最小化后重试"
+            f"已重试 {CAPTURE_ATTEMPTS} 次；需保持游戏窗口未最小化后重试"
         )
 
     def _capture_client_bitblt(self, hwnd) -> np.ndarray | None:
