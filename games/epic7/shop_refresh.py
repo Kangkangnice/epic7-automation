@@ -146,6 +146,20 @@ class ShopRunStats:
             f"总金币={self.total_gold} 停止原因={reason}"
         )
 
+    def bookmark_note(self) -> str:
+        """给结算用的一句话收获：买到哪两类书签、各几张。
+
+        只报收获。金币 / 天空石 / 刷新次数 / 命中率留在 ``summary()`` 的过程日志里，
+        不进每日任务结算（2026-11-12 用户口径：结算不做收支账）。
+        开局那一批和刷新后买的要**加起来**，否则只报了一半。
+        """
+        covenant = self.initial_covenant + self.paid_covenant
+        mystic = self.initial_mystic + self.paid_mystic
+        total = covenant + mystic
+        if not total:
+            return "这轮没买到书签"
+        return f"买到 {total} 张书签（誓约 {covenant} / 神秘 {mystic}）"
+
 
 @dataclass
 class PendingPurchase:
@@ -952,6 +966,16 @@ class ShopRefreshRunner:
                 f"模式=刷书签 收尾=回首页失败 原因={failure} "
                 "处理=已忽略（不影响本次运行结论）"
             )
+
+    def route_note(self) -> str:
+        """整条路线的一句话结果，供每日任务结算显示（与竞技场的「战绩」并列）。
+
+        干跑不碰游戏、本来就买不到东西，这时候报「没买到书签」是假消息 ⇒ 留空，
+        结算里就不显示这一句。
+        """
+        if self.runtime.dry_run:
+            return ""
+        return self.machine.stats.bookmark_note()
 
     def run(self, max_cycles: int | None = None) -> int:
         if max_cycles is None or max_cycles < 0:

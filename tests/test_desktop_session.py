@@ -49,6 +49,41 @@ def test_round_trip_keeps_every_field(tmp_path: Path) -> None:
     assert loaded == state
 
 
+def test_last_run_details_round_trip(tmp_path: Path) -> None:
+    """结果卡的逐条明细要能跟着存档回来，下次打开软件还看得到。"""
+    path = tmp_path / "session.json"
+    state = session.SessionState(
+        last_run=session.LastRun(
+            at="2026-11-12 09:40",
+            summary="竞技场 ✓ / 刷书签 ✓",
+            exit_code=0,
+            details="共 2 条 · 做完 2 条\n竞技场 · 完成 · 10/10 轮",
+        )
+    )
+
+    session.save(path, state)
+    loaded = session.load(path)
+
+    assert loaded == state
+    assert loaded is not None
+    assert loaded.last_run is not None
+    assert "竞技场 · 完成" in loaded.last_run.details
+
+
+def test_old_last_run_without_details_still_loads(tmp_path: Path) -> None:
+    """旧存档没有 details 字段：回落成空，界面显示那一行老摘要。"""
+    path = _write(
+        tmp_path / "session.json",
+        {"last_run": {"at": "2026-11-11 19:40", "summary": "竞技场 ✓", "exit_code": 0}},
+    )
+
+    loaded = session.load(path)
+
+    assert loaded is not None
+    assert loaded.last_run is not None
+    assert loaded.last_run.details == ""
+
+
 def test_unknown_route_dropped_and_duplicates_collapsed(tmp_path: Path) -> None:
     path = _write(
         tmp_path / "session.json",

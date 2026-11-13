@@ -45,6 +45,8 @@ class LastRun:
     at: str
     summary: str
     exit_code: int | None = None
+    # 结果卡的逐条明细（多行文本）。旧存档没有这个字段，读成空串即可。
+    details: str = ""
 
 
 @dataclass(frozen=True)
@@ -165,10 +167,12 @@ def load(path: Path) -> SessionState | None:
         summary = raw_last.get("summary")
         if isinstance(at, str) and isinstance(summary, str):
             code = raw_last.get("exit_code")
+            details = raw_last.get("details")
             last_run = LastRun(
                 at=at,
                 summary=summary,
                 exit_code=code if isinstance(code, int) else None,
+                details=details if isinstance(details, str) else "",
             )
 
     window: dict[str, int] | None = None
@@ -222,6 +226,7 @@ def save(path: Path, state: SessionState) -> None:
                 "at": state.last_run.at,
                 "summary": state.last_run.summary,
                 "exit_code": state.last_run.exit_code,
+                "details": state.last_run.details,
             }
         ),
     }

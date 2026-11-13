@@ -18,6 +18,7 @@ import pytest
 
 from auto_game_unified.games.epic7.side_story import (
     SideStoryCleared,
+    _SEG_BOSS,
     build_side_story_machine,
 )
 
@@ -53,22 +54,67 @@ def ready_prep() -> np.ndarray:
 
 class BossLadderTests(unittest.TestCase):
     def test_fresh_machine_advances_tier_on_boss_scene(self):
-        """BOSS 场景页（中级打完）→ 点「下一个难度」，档位计数 +1。"""
+        """BOSS 场景页（中级打完）→ 点「下一个难度」，**点出去之后**档位 +1。
+
+        前置：这一页只在 ④ 段出现，单页用例要自己把 `_segment` 摆到 BOSS 段
+        （真实链路由哥布林据点「离开」回地图时推进）。
+
+        ⚠️ 2026-11-12 21:21：记账从 `next_action` 挪到 `action_clicked` ——
+        决策路径会被主循环空转重复调用（上一动作未验收时动作被丢掉），
+        在那里自增会让「没点」也算推过一档。
+        """
 
         machine = build_side_story_machine(TEMPLATES)
+        machine._segment = _SEG_BOSS
         self.assertEqual(0, machine._boss_advances)
 
         action = machine.next_action(boss_scene())
 
         self.assertIsNotNone(action)
         self.assertEqual("next_difficulty", action.name)
-        self.assertEqual(1, machine._boss_advances)
+        self.assertEqual(0, machine._boss_advances)  # 还没点出去，不算
+
+        machine.action_clicked(action)
+        self.assertEqual(1, machine._boss_advances)  # 真的点了，才记一档（中级）
+
+        # 第二档：中级 → 上级
+        action = machine.next_action(boss_scene())
+        machine.action_clicked(action)
+        self.assertEqual(2, machine._boss_advances)
+
+        # 第三档：上级 → 地狱级
+        action = machine.next_action(boss_scene())
+        machine.action_clicked(action)
+        self.assertEqual(3, machine._boss_advances)
+
+        # 到顶（地狱级 = 3）⇒ 改走「重新进行」（终点由 entry_exhausted 判定）
+        action = machine.next_action(boss_scene())
+        self.assertIsNotNone(action)
+        self.assertEqual("replay", action.name)
+
+    def test_idle_decisions_do_not_advance_tier(self):
+        """转场等待期的空转决策**不许**推档（2026-11-12「一直打中级」的真因）。
+
+        主循环在「上一动作还没验收通过」时仍每帧调一次 `next_action`，算出来的动作
+        被整个丢掉；若在这里 `+= 1`，点完结算确认等场景页的那几秒就会把档位顶到 2，
+        之后一路「重新进行」，中级打了一遍又一遍。
+        """
+
+        machine = build_side_story_machine(TEMPLATES)
+        machine._segment = _SEG_BOSS
+
+        for _ in range(5):
+            action = machine.next_action(boss_scene())
+            self.assertIsNotNone(action)
+            self.assertEqual("next_difficulty", action.name)
+
+        self.assertEqual(0, machine._boss_advances)
 
     def test_at_hell_tier_next_difficulty_is_not_clicked(self):
         """已推满到地狱级（advances==2）：BOSS 场景页改走「重新进行」，不点「下一个难度」。"""
 
         machine = build_side_story_machine(TEMPLATES)
-        machine._boss_advances = 2
+        machine._boss_advances = 3  # 已站上地狱级（档位序号 3）
 
         action = machine.next_action(boss_scene())
 

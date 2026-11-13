@@ -22,13 +22,13 @@ import unittest
 
 import cv2
 import numpy as np
-import pytest
 
 from auto_game_unified.games.epic7.side_story import (
     SideStoryCleared,
     build_side_story_machine,
 )
 from auto_game_unified.games.epic7.side_story import (
+    _SEG_BOSS,
     _SEG_OUTPOST_1,
     _SEG_OUTPOST_2,
 )
@@ -74,6 +74,11 @@ def exhausted_prep() -> np.ndarray:
     return _load(FIXTURES / "epic7_side_story" / "exhausted_prep.png")
 
 
+def results_page() -> np.ndarray:
+    # 战斗结算确认页（results.png）：底部确认按钮。
+    return _load(FIXTURES / "epic7_side_story" / "results.png")
+
+
 class OutpostTests(unittest.TestCase):
     def test_outpost_team_detection_sets_mode(self):
         """据点队伍页命中 `outpost_team` ⇒ 置位 `_in_outpost`（副作用）。"""
@@ -108,8 +113,11 @@ class OutpostTests(unittest.TestCase):
         self.assertTrue(machine._leaving)
         self.assertFalse(machine._final_leave)
 
-    def test_outpost2_scene_clicks_leave_marks_final(self):
-        """据点②模式里，据点场景页点「离开」，标记 `_final_leave`（回地图即收工）。"""
+    def test_outpost2_scene_clicks_leave_switches_to_boss(self):
+        """据点②（哥布林）场景页点「离开」⇒ 段落切 ④BOSS（**不再收工**）。
+
+        ⚠️ 2026-11-12 顺序订正：BOSS 是最后一段，哥布林之后还有一个目标。
+        """
 
         machine = build_side_story_machine(TEMPLATES)
         machine._in_outpost = True
@@ -120,7 +128,8 @@ class OutpostTests(unittest.TestCase):
         self.assertIsNotNone(action)
         self.assertEqual("outpost_leave", action.name)
         self.assertTrue(machine._leaving)
-        self.assertTrue(machine._final_leave)
+        self.assertEqual(_SEG_BOSS, machine._segment)
+        self.assertFalse(machine._final_leave)
 
     def test_outpost_scene_no_leave_without_mode(self):
         """**没有**据点模式时，据点场景页被当成①（箭头缺失→等待/收工逻辑），绝不误点「离开」。
@@ -141,16 +150,23 @@ class OutpostTests(unittest.TestCase):
         self.assertFalse(machine._final_leave)
         self.assertFalse(machine._in_outpost)
 
-    def test_outpost2_leave_then_map_terminates_route(self):
-        """最后据点已离开（`_final_leave`）→ 地图页命中即抛 `SideStoryCleared` 收工。"""
+    def test_outpost2_leave_then_map_navigates_boss(self):
+        """据点②（哥布林）离开回地图 ⇒ 不收工，切 ④BOSS 去找骷髅。
+
+        ⚠️ 2026-11-12 顺序订正：BOSS 是最后一段，所以这里还**不该**收工。
+        """
 
         machine = build_side_story_machine(TEMPLATES)
         machine._in_outpost = True
         machine._segment = _SEG_OUTPOST_2
-        machine.next_action(outpost_scene())  # 点「离开」，置 _final_leave
+        machine.next_action(outpost_scene())  # 点「离开」，段落切 ④
 
-        with pytest.raises(SideStoryCleared):
-            machine.next_action(map_page())
+        try:
+            action = machine.next_action(map_page())
+        except SideStoryCleared:
+            self.fail("哥布林离开回地图不应收工（后面还有 BOSS）")
+        self.assertIsNotNone(action)
+        self.assertTrue(action.name.startswith(("pick_node_boss_node", "pan_map_")))
 
     def test_outpost1_leave_then_map_navigates_next_outpost(self):
         """据点①离开回地图 ⇒ 不收工，导航去下一个据点（连打链路核心语义）。"""
@@ -158,16 +174,16 @@ class OutpostTests(unittest.TestCase):
         machine = build_side_story_machine(TEMPLATES)
         machine._in_outpost = True
         machine._segment = _SEG_OUTPOST_1
-        machine.next_action(outpost_scene())  # 点「离开」，段落已切 ③b
+        machine.next_action(outpost_scene())  # 点「离开」，段落已切 ③哥布林
 
-        # 回到地图：段落是 _SEG_OUTPOST_2 ⇒ 应去找摩罗戈拉节点，而不是收工。
+        # 回到地图：段落是 _SEG_OUTPOST_2 ⇒ 应去找哥布林节点，而不是收工。
         # map.png 这张夹具里找不到目标节点 ⇒ 走有界平移扫寻（也不收工）。
         try:
             action = machine.next_action(map_page())
         except SideStoryCleared:
             self.fail("据点①离开回地图不应触发收工")
         self.assertIsNotNone(action)
-        self.assertTrue(action.name.startswith(("pick_node_morola_node", "pan_map_")))
+        self.assertTrue(action.name.startswith(("pick_node_goblin_node", "pan_map_")))
 
     def test_normal_map_resets_outpost_mode_without_terminating(self):
         """正常地图页（未离开）重置 `_in_outpost`、不收工。"""
@@ -182,6 +198,41 @@ class OutpostTests(unittest.TestCase):
         except SideStoryCleared:
             self.fail("正常地图页不应触发收工")
         self.assertFalse(machine._in_outpost)
+
+    def test_boss_segment_never_enters_outpost_mode(self):
+        """④ BOSS 段即使队伍页有次数气泡，也**不许**置「据点模式」。
+
+        2026-11-12 22:11 实跑：地狱级队伍页也有次数气泡（那一档要打 5 次），
+        `outpost_team` 照样命中 ⇒ 打完一把落回场景页被当成「据点打完」直接点「离开」
+        回地图 —— 本该「重新进行」把 5 次打满。
+        """
+
+        machine = build_side_story_machine(TEMPLATES)
+        machine._segment = _SEG_BOSS
+
+        machine.next_action(outpost_team())
+
+        self.assertFalse(machine._in_outpost)
+
+    def test_results_confirm_accepts_side_scene_pages(self):
+        """结算确认的落点白名单必须含本路线自有场景页（据点/地狱级）。
+
+        2026-11-12 20:38 实跑：摩罗戈拉打完落回据点场景页（只剩「离开/大厅/重新进行」），
+        这一页不在主线那五个落点里 ⇒ 主循环判「没点成功」⇒ 状态机刚给出的「离开」被
+        整个丢掉 ⇒ 干等 45 秒、退出码 1。漏声明的代价与主线 11-01 那两次同类。
+        """
+
+        machine = build_side_story_machine(TEMPLATES)
+
+        action = machine.next_action(results_page())
+
+        self.assertIsNotNone(action)
+        self.assertEqual("results_confirm", action.name)
+        self.assertIn("据点场景页", action.target_pages)
+        self.assertIn("地狱级场景页", action.target_pages)
+        # 2026-11-12 21:43 实跑：打完上级落回「难度场景页」（有「下一个难度」的那一屏），
+        # 前两版名单漏了它 ⇒ 同样干等 45 秒。三个自有场景页一个都不能少。
+        self.assertIn("难度场景页", action.target_pages)
 
 
 class OutpostExhaustedTests(unittest.TestCase):
@@ -211,7 +262,12 @@ class OutpostExhaustedTests(unittest.TestCase):
         self.assertEqual(_SEG_OUTPOST_2, machine._segment)
         self.assertFalse(machine._final_leave)
 
-    def test_outpost2_exhausted_backs_out_then_map_terminates(self):
+    def test_outpost2_exhausted_backs_out_then_map_switches_to_boss(self):
+        """据点②（哥布林）次数用尽退场回地图 ⇒ 切 ④BOSS，**不收工**。
+
+        ⚠️ 2026-11-12 顺序订正：哥布林不是最后一段，后面还有骷髅阶梯。
+        """
+
         machine = build_side_story_machine(TEMPLATES)
         machine._segment = _SEG_OUTPOST_2
 
@@ -219,9 +275,12 @@ class OutpostExhaustedTests(unittest.TestCase):
         self.assertEqual("outpost_done_back", action.name)
         self.assertTrue(machine._outpost_done)
 
-        # 最后一个据点也打满了 ⇒ 回地图才是真收工。
-        with pytest.raises(SideStoryCleared):
+        try:
             machine.next_action(map_page())
+        except SideStoryCleared:
+            self.fail("哥布林用尽后退场回地图不应收工（后面还有 BOSS）")
+        self.assertEqual(_SEG_BOSS, machine._segment)
+        self.assertFalse(machine._final_leave)
 
     def test_outpost_scene_after_exhaustion_advances_only_once(self):
         """「返回」落回据点场景页时，段落只推进一次（否则据点②会被跳过）。"""

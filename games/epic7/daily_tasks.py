@@ -27,6 +27,7 @@
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Mapping, Optional
@@ -94,14 +95,35 @@ DAILY_TASKS: tuple[DailyTask, ...] = (
 )
 
 
+# 给人看的状态词。**不复用 summary_line 里的 ✓ / ✗**：那一行是给进度条/存档的
+# 紧凑记号，人看结果时要能分清「做完 / 没东西可做 / 根本没跑」。
+STATUS_WORDS: dict[str, str] = {
+    "completed": "完成",
+    "resource": "没得做了",
+    "failed": "失败",
+    "skipped": "没跑",
+    "not_supported": "本环境跑不了",
+}
+
+
 @dataclass
 class DailyOutcome:
-    """一条任务的结局。"""
+    """一条任务的结局。
+
+    后面几个字段是 2026-11-12 补的**展示用事实**：这条到底跑了几轮、本来说好
+    几轮、卡了多久、竞技场那种现成战绩、路线自己那句结果（如刷书签买到了什么）。
+    都只由编排层从 ``run_mode`` 的返回值抄过来，路线内部不用为结算改判据。
+    """
 
     mode: str
     label: str
-    status: str  # "completed" | "resource" | "failed" | "skipped"
+    status: str  # "completed" | "resource" | "failed" | "skipped" | "not_supported"
     detail: str = ""
+    cycles: int | None = None
+    target_cycles: int | None = None
+    elapsed_seconds: int | None = None
+    outcome_summary: str | None = None
+    note: str | None = None
 
     @property
     def ok(self) -> bool:
@@ -125,6 +147,23 @@ def _short_failure(detail: str, limit: int = 90) -> str:
     return text if len(text) <= limit else text[: limit - 1] + "…"
 
 
+def _human_reason(detail: str) -> str:
+    """给人看的失败原因：``RuntimeError: xxx`` 里的异常类型不写给玩家看。"""
+    text = _short_failure(detail, 48)
+    prefix, sep, rest = text.partition(": ")
+    return rest if sep and prefix.isidentifier() and rest else text
+
+
+def _format_duration(seconds: int) -> str:
+    total = max(0, int(seconds))
+    minutes, rest = divmod(total, 60)
+    return f"{minutes}分{rest:02d}秒" if minutes else f"{rest}秒"
+
+
+def _elapsed_since(started_at: float) -> int:
+    return max(0, round(time.monotonic() - started_at))
+
+
 @dataclass
 class DailyReport:
     """整轮每日任务的结果汇总。"""
@@ -132,6 +171,12 @@ class DailyReport:
     outcomes: list[DailyOutcome] = field(default_factory=list)
     aborted_reason: Optional[str] = None
     stopped_by_user: bool = False
+    # 整轮用时。由 ``main._run_daily`` 在拿到报告后填一次（通知、明细、结果卡共用）。
+    elapsed_seconds: int = 0
+    # 收尾巡检读回来的那句「支线刷新还剩多久」（见 ``run_daily_tasks`` 的 ``inspect``）。
+    # **不是一条路线**，所以不进 ``outcomes``：它既没有成功/失败之分，也不该让
+    # 「今天的每日任务」因为「没读到一行字」变成有失败的一轮。
+    countdown_note: Optional[str] = None
 
     @property
     def any_failed(self) -> bool:
@@ -162,6 +207,73 @@ class DailyReport:
         if self.aborted_reason:
             line += f" ｜ 已中止：{self.aborted_reason}"
         return line
+
+    def _headline(self) -> str:
+        """总账：一眼看出今天勾了几条、哪几条没做成、整轮花了多久。"""
+        parts = [f"共 {len(self.outcomes)} 条"]
+        for status, word in (
+            ("completed", "做完"),
+            ("resource", "没得做"),
+            ("failed", "失败"),
+            ("not_supported", "本环境跑不了"),
+            ("skipped", "没跑"),
+        ):
+            count = sum(1 for outcome in self.outcomes if outcome.status == status)
+            if count:
+                parts.append(f"{word} {count} 条")
+        parts.append(f"用时 {_format_duration(self.elapsed_seconds)}")
+        return " · ".join(parts)
+
+    def _outcome_line(self, outcome: DailyOutcome) -> str:
+        """一条明细：做了什么、做了多少、用了多久、为什么没做成。"""
+        parts = [outcome.label, STATUS_WORDS.get(outcome.status, "状态不明")]
+        if outcome.cycles is not None:
+            if outcome.target_cycles is not None:
+                parts.append(f"{outcome.cycles}/{outcome.target_cycles} 轮")
+            else:
+                parts.append(f"{outcome.cycles} 轮")
+        if outcome.outcome_summary:
+            parts.append(outcome.outcome_summary)
+        if outcome.note:
+            parts.append(outcome.note)
+        if outcome.elapsed_seconds is not None:
+            parts.append(_format_duration(outcome.elapsed_seconds))
+        if outcome.status in {"failed", "skipped"} and outcome.detail:
+            parts.append(_human_reason(outcome.detail))
+        if outcome.status == "not_supported":
+            parts.append("当前环境没有这条的素材")
+        return " · ".join(parts)
+
+    def result_lines(self) -> list[str]:
+        """界面结果卡 / 日志用的逐条明细。第一行是总账，后面一条任务一行。"""
+        lines = [self._headline()]
+        lines.extend(self._outcome_line(outcome) for outcome in self.outcomes)
+        if self.aborted_reason:
+            lines.append(f"已中止：{self.aborted_reason}")
+        if self.countdown_note:
+            lines.append(self.countdown_note)
+        return lines
+
+    def brief_lines(self) -> list[str]:
+        """QQ 通知用的精简版：不带分项耗时，但失败原因和中止原因必须留着。"""
+        lines = [self._headline()]
+        for outcome in self.outcomes:
+            parts = [outcome.label, STATUS_WORDS.get(outcome.status, "状态不明")]
+            if outcome.cycles is not None:
+                if outcome.target_cycles is not None:
+                    parts.append(f"{outcome.cycles}/{outcome.target_cycles}轮")
+                else:
+                    parts.append(f"{outcome.cycles}轮")
+            if outcome.outcome_summary:
+                parts.append(outcome.outcome_summary)
+            if outcome.note:
+                parts.append(outcome.note)
+            if outcome.status in {"failed", "skipped"} and outcome.detail:
+                parts.append(_human_reason(outcome.detail))
+            lines.append(" ".join(parts))
+        if self.aborted_reason:
+            lines.append(f"中止原因：{self.aborted_reason}")
+        return lines
 
 
 def normalize_selection(selected: object) -> tuple[str, ...]:
@@ -241,6 +353,10 @@ def run_daily_tasks(
     build_home_return: Optional[
         Callable[[object, object, str], Callable[..., object]]
     ] = None,
+    # 整轮跑完之后的**收尾巡检**（用户 2026-11-12 要求）：现在只有一项 ——
+    # 走一趟支线故事、把刷新倒计时读下来。**不跑游戏、不占次数的纯读**，
+    # 失败绝不影响本轮结论（读不到就是"这次没读到"，不是"今天没做完"）。
+    inspect: Optional[Callable[[], object]] = None,
 ) -> DailyReport:
     """把 ``selected`` 里的路线**按它给的次序**逐条跑完，返回汇总。
 
@@ -283,6 +399,7 @@ def run_daily_tasks(
     overrides = dict(cycles_override or {})
 
     for mode in modes:
+        segment_started = time.monotonic()
         spec = get_mode(mode)
         label = spec.label
         cycles = overrides.get(mode, spec.default_cycles)
@@ -323,6 +440,7 @@ def run_daily_tasks(
                             label=label,
                             status="skipped",
                             detail="上一段之后回不到首页，为避免连锁失败未执行",
+                            elapsed_seconds=_elapsed_since(segment_started),
                         )
                     )
                     break
@@ -347,6 +465,7 @@ def run_daily_tasks(
                     label=label,
                     status="skipped",
                     detail="用户手动停止",
+                    elapsed_seconds=_elapsed_since(segment_started),
                 )
             )
             break
@@ -357,11 +476,15 @@ def run_daily_tasks(
                     label=label,
                     status="failed",
                     detail=f"{type(error).__name__}: {error}",
+                    elapsed_seconds=_elapsed_since(segment_started),
                 )
             )
             continue
 
         exhausted = bool(getattr(result, "resource_exhausted", False))
+        completed = getattr(result, "completed_cycles", None)
+        summary = getattr(result, "outcome_summary", None)
+        note = getattr(result, "note", None)
         report.outcomes.append(
             DailyOutcome(
                 mode=mode,
@@ -369,13 +492,58 @@ def run_daily_tasks(
                 status="resource" if exhausted else "completed",
                 detail=(
                     f"轮次={getattr(result, 'completed_cycles', '?')}"
-                    + (
-                        f" 战绩={result.outcome_summary}"
-                        if getattr(result, "outcome_summary", None)
-                        else ""
-                    )
+                    + (f" 战绩={summary}" if summary else "")
                 ),
+                cycles=completed if isinstance(completed, int) else None,
+                target_cycles=cycles,
+                elapsed_seconds=_elapsed_since(segment_started),
+                outcome_summary=summary if isinstance(summary, str) and summary else None,
+                note=note if isinstance(note, str) and note else None,
             )
         )
 
+    if inspect is not None and _should_inspect(report, dry_run=dry_run):
+        report.countdown_note = _run_inspect(inspect, report)
+
     return report
+
+
+def _should_inspect(report: DailyReport, *, dry_run: bool) -> bool:
+    """这一轮跑完还值不值得做收尾巡检。
+
+    三种情况跳过（**不是失败，是"这趟不做了"**）：
+
+    - 干跑：本来就没碰游戏，巡检要真点真读，做不了；
+    - 用户按了 P：他的意思是「别动了」，这时候再点进游戏是添乱；
+    - 中途中止（回不了首页）：连大厅都爬不回去，巡检只会再撞同一堵墙。
+    """
+
+    if dry_run or report.stopped_by_user or report.aborted_reason:
+        return False
+    return True
+
+
+def _run_inspect(
+    inspect: Callable[[], object], report: DailyReport
+) -> str:
+    """跑收尾巡检，把结果压成一行给人看的文案（**绝不抛异常**）。
+
+    ⚠️ 这里是 ``ManualStop`` 的唯一例外处理点：巡检途中用户按了 P 也算「整轮手动停止」
+    （``stopped_by_user``），因为那时游戏已经被他撂在那儿了 —— 但**不改已跑完那几条的
+    结论**，与主循环里那条一样。
+    """
+
+    try:
+        payload = inspect()
+    except ManualStop:
+        report.stopped_by_user = True
+        return "支线刷新：巡检被手动停止，这次没读"
+    except Exception as error:  # noqa: BLE001 —— 巡检失败不许影响整轮结论
+        return f"支线刷新：没读到（{_human_reason(f'{type(error).__name__}: {error}')}）"
+    if (
+        isinstance(payload, dict)
+        and isinstance(payload.get("days"), int)
+        and isinstance(payload.get("hours"), int)
+    ):
+        return f"支线刷新：剩余 {payload['days']} 天 {payload['hours']} 小时"
+    return "支线刷新：没读到（这一页的文字没认出来）"

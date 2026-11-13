@@ -1320,6 +1320,17 @@ class WorldBossRunner(ModeRunnerBase):
         self._battle_attempts = 0
         # 「宝箱真的点了几次」，见 ``WEEKLY_CHEST_MAX_CLICKS`` 与 ``_after_action_click``。
         self._chest_clicks = 0
+        # 真正打到结算页的场次。这条路线靠「今日次数用完」收工，
+        # machine.completed_cycles 恒为 0，不能拿它当场次。
+        self.battles_done = 0
+
+    def route_note(self) -> str:
+        """给每日任务结算用的一句话收获：打了今天几次里的几场。"""
+        if self.runtime.dry_run:
+            return ""
+        if not self.battles_done:
+            return "今天没有可打的场次（次数已用完）"
+        return f"打了 {self.battles_done} 场"
 
     def _state_label(self, state: WorldBossState) -> str:
         return state_label(state)
@@ -1399,6 +1410,7 @@ class WorldBossRunner(ModeRunnerBase):
             return outcome
         if outcome is not BattleOutcome.RESULT_REACHED:
             raise RuntimeError(f"世界首领战战斗出现意外结果：{outcome.value}")
+        self.battles_done += 1
         self.machine.state = WorldBossState.RESULT
         return outcome
 
