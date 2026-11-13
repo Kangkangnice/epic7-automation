@@ -31,7 +31,6 @@ from pathlib import Path
 
 import pytest
 
-from auto_game_unified.core import countdown
 from auto_game_unified.desktop import catalog, onboarding, run_progress
 from auto_game_unified.games.epic7 import daily_tasks
 from auto_game_unified.games.epic7.modes import MODE_SPECS
