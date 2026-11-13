@@ -29,3 +29,22 @@ psutil==5.9.8
 # PySide6-Fluent-Widgets（改成 PySide6 原生控件 + QSS）。
 PySide6>=6.8,<7
 PySide6-Fluent-Widgets>=1.7
+
+# 次元探查：内置第三方 chaos 流程（vendor/e7auto）额外要的包。
+# 全是新增依赖，不覆盖 numpy / OpenCV / PySide6 —— 现有路线在原版本上验过。
+# 已有 Python 3.13 的 wheel；OpenCV 仍用上面那版 4.11，不装对方的 5.0。
+PyYAML==6.0.3
+typing_extensions==4.16.0
+winrt-runtime==3.2.1
+winrt-Windows.Foundation==3.2.1
+winrt-Windows.Graphics==3.2.1
+winrt-Windows.Graphics.Capture==3.2.1
+winrt-Windows.Graphics.Capture.Interop==3.2.1
+winrt-Windows.Graphics.DirectX==3.2.1
+winrt-Windows.Graphics.DirectX.Direct3D11==3.2.1
+winrt-Windows.Graphics.DirectX.Direct3D11.Interop==3.2.1
+winrt-Windows.Graphics.Imaging==3.2.1
+
+# 支线刷新倒计时（Episode 详情页左下角「剩余 X天 Y小时」）靠它读文字。
+# 2026-11-12 实装：纯 pip、无外部 exe，模型约 15 MB，单帧识别约 1.1 秒。
+rapidocr-onnxruntime==1.2.3

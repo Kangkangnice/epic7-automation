@@ -30,7 +30,7 @@ from auto_game_unified.games.epic7.modes import MODE_SPECS
 from auto_game_unified.games.epic7.side_story import (
     _ARROW_MISS_LIMIT,
     _ARROW_PIXELS_MIN,
-    _SEG_BOSS,
+    _SEG_OUTPOST_1,
     _SIDE_MATCH_MODES,
     SideStoryRunner,
     SideStoryStateMachine,
@@ -89,7 +89,9 @@ PERIOD = (
 )
 
 PERIOD_ACTIONS = (
-    "enter_quick_entry",
+    # 2026-11-12 起：支线故事页不再点「快速入场」（有活动会被顶掉），改点右侧
+    # 「支线故事」标签进列表，由 `enter_normal_sub_story` 挑普通支线。
+    "open_sub_story_list",
     "enter_adventure",
     "pick_stage",
     "select_team",
@@ -122,7 +124,7 @@ PERIOD_ACTIONS = (
 # 本路线自己的动作名（其余是 `super().next_action` 委托给主线的）。
 SIDE_ACTIONS = frozenset(
     {
-        "enter_quick_entry",
+        "open_sub_story_list",
         "enter_adventure",
         "pick_stage",
         "dismiss_battle_clear",
@@ -645,9 +647,12 @@ class SideStoryTerminalTests(unittest.TestCase):
     def test_consecutive_arrowless_frames_chain_into_boss_segment(self):
         """① 打完（连续无箭头）⇒ **不再收工**（2026-11-01 语义更改）：点「离开」接力去 ②。
 
-        旧断言是「抛 SideStoryCleared 收工」；连打链路下（用户明确要求 ①→②→③
-        一条龙）改为点「离开」回地图、段落切到 `_SEG_BOSS`。新的收工点只剩
-        「最后一个据点点完离开回地图」与「③ 段次数用尽」。
+        旧断言是「抛 SideStoryCleared 收工」；连打链路下（用户明确要求一条龙）改为
+        点「离开」回地图、段落切到 `_SEG_OUTPOST_1`。
+
+        ⚠️ 2026-11-12 顺序订正：② 现在是**摩罗戈拉据点**（不是 BOSS 段）。
+        用户是按实跑顺序定的：摩罗戈拉 → 哥布林 → 骷髅头（BOSS 收尾）。
+        新的收工点只剩「④ BOSS 打满后点完离开回地图」。
         """
 
         machine = SideStoryStateMachine(templates())
@@ -661,7 +666,7 @@ class SideStoryTerminalTests(unittest.TestCase):
 
         self.assertIsNotNone(action)
         self.assertEqual("scene_leave", action.name)
-        self.assertEqual(_SEG_BOSS, machine._segment)
+        self.assertEqual(_SEG_OUTPOST_1, machine._segment)
         self.assertTrue(machine._leaving)
 
     def test_the_arrowless_scene_page_is_not_reported_as_an_unknown_screen(self):

@@ -4,7 +4,8 @@
 
 - 清单来自 ``controller.resolve_plan()``（用户勾了哪几条、按什么顺序）；
 - 运行时子进程会打印 ``模式=<路线名>`` 这类行，出现下一条就把上一条记作完成；
-- 整轮结束那行「每日任务汇总：…」把状态一次补齐。
+- 整轮结束那行「每日任务汇总：…」把状态一次补齐；
+- 同一次结算的「每日任务结果：…」逐条明细，由 ``extract_run_result`` 收给结果卡。
 
 ⚠️ 这里刻意不碰 ``games/``：解析只用于「给人看」，认错了也不会影响任何点击、
 判据、阈值或收工条件。日志格式哪天变了，最坏结果是进度停在原地，不会误操作。
@@ -93,3 +94,36 @@ class RunProgress:
         self._finished = True
         if 0 <= self._current < len(self._statuses):
             self._statuses[self._current] = DONE
+
+
+SUMMARY_PREFIX = "每日任务汇总："
+RESULT_PREFIX = "每日任务结果："
+
+
+def extract_run_result(
+    lines: Iterable[str],
+) -> tuple[str | None, tuple[str, ...]]:
+    """从最近日志里取**最后一次**整轮结算：一行老摘要 + 逐条明细。
+
+    只认 ``main._run_daily`` 打印的这两组前缀。以最后一行「每日任务汇总」为界，
+    往后的明细才算数 —— 免得把上一次运行残留的行混进结果卡。
+    认不出来返回 ``(None, ())``，界面回落成不显示，不会误操作。
+    """
+    items = list(lines)
+    start = next(
+        (
+            index
+            for index in range(len(items) - 1, -1, -1)
+            if items[index].startswith(SUMMARY_PREFIX)
+        ),
+        None,
+    )
+    if start is None:
+        return None, ()
+    summary = items[start].split("：", 1)[1].strip()
+    details = tuple(
+        line.split("：", 1)[1].strip()
+        for line in items[start + 1 :]
+        if line.startswith(RESULT_PREFIX)
+    )
+    return summary, details

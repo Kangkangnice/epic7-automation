@@ -84,6 +84,7 @@ from auto_game_unified.desktop.catalog import (
     routes_in_group,
     visible_backends,
 )
+from auto_game_unified.desktop.chaos_bridge import ChaosBridge
 from auto_game_unified.desktop.controller import DesktopController
 from auto_game_unified.desktop.diagnostics import export_diagnostics
 from auto_game_unified.desktop.onboarding import has_consent, record_consent
@@ -92,9 +93,15 @@ from auto_game_unified.desktop.preflight import (
     template_root_for_backend,
     validate_start_plan,
 )
+from auto_game_unified.desktop.run_progress import extract_run_result
+from auto_game_unified.desktop.shutdown import (
+    SHUTDOWN_DELAY_SECONDS,
+    ShutdownScheduler,
+)
 from auto_game_unified.desktop.update_check import check_for_update
 from auto_game_unified.desktop.worker import WorkerController
 from auto_game_unified.desktop_qt.autoclicker import AutoClickerPage
+from auto_game_unified.desktop_qt.dimension_probe import DimensionProbePage
 from auto_game_unified.desktop_qt.floating import FloatingRunner
 from auto_game_unified.desktop_qt.onboarding import prompt_consent
 from auto_game_unified.desktop_qt.style import SPIN_BOX_QSS
@@ -166,6 +173,19 @@ class QtDesktopWindow(FluentWindow):
         # 业务状态全在 core/autoclicker.py。这里只持有它，好让两件事互斥：
         # 每日任务在跑时不许开连点，连点在跑时不许开始任务。
         self.autoclicker = AutoClicker()
+        # 次元探查：第三方 chaos 流程内置在同进程里跑，不进路线名单。
+        # 这里持有运行控制器，好让三方互斥（每日任务 / 连点器 / 次元探查）。
+        self.dimension = ChaosBridge()
+        # 「跑完自动关机」：默认关闭，而且**不写进会话存档** —— 关机是不可逆操作，
+        # 「上次开着」不该让下一次也开着（用户 2026-11-12 要求「默认是关闭的」）。
+        # 每次打开助手都是关的，要关机的那个晚上自己拨一下。
+        self.shutdown = ShutdownScheduler()
+        # 用户点过「安全停止」⇒ 这一轮不是「跑完」，不触发关机。
+        # 单独记标记而不是只看退出码：卡死被强杀时退出码是 1（与「运行失败」同码），
+        # 光看退出码会把「我按了停止」误判成「它自己跑失败了」。
+        self._stop_requested_by_user = False
+        # 关机倒计时的收尾计时器（到点就把「取消关机」按钮收起来）。第一次排定才建。
+        self._shutdown_timer: QTimer | None = None
         # 停止兜底的计时器（见 _start_stop_watchdog）。第一次点停止时才建。
         self._stop_timer: QTimer | None = None
         self._stop_deadline = 0.0
@@ -177,9 +197,17 @@ class QtDesktopWindow(FluentWindow):
         self._build_task_page()
         self._build_log_page()
         self._build_tools_page()
+        self._build_dimension_page()
         self._build_about_page()
         self._sync_from_controller()
         self._show_group_detail(grouped_routes()[0][0])
+        # 上次跑完的结算留在存档里：打开软件就能看到，不用先跑一轮。
+        if previous is not None and previous.last_run is not None:
+            self._show_run_result(
+                previous.last_run.at,
+                previous.last_run.summary,
+                previous.last_run.details,
+            )
 
         self.setWindowTitle(f"{PRODUCT_NAME}  {PRODUCT_VERSION}")
         # 首屏默认只占可用屏幕的一半左右，用户自己拖大；不要一开就铺满。
@@ -354,7 +382,25 @@ class QtDesktopWindow(FluentWindow):
         bar.setSpacing(12)
         self.run_state_label = CaptionLabel("准备就绪", self)
         bar.addWidget(self.run_state_label)
+        bar.addSpacing(16)
+        # 「跑完自动关机」是**本次运行之后做什么**，和「开始任务」放在一起，
+        # 点开始前一眼能看见；不放进上面的环境卡（那张卡说的是怎么连游戏）。
+        bar.addWidget(BodyLabel("跑完自动关机", self))
+        self.shutdown_switch = SwitchButton(self)
+        self.shutdown_switch.setToolTip(
+            "每日任务结束后自动关机（倒计时 "
+            f"{SHUTDOWN_DELAY_SECONDS} 秒，期间可取消）。"
+            "自己点「安全停止」不会触发。"
+        )
+        self.shutdown_switch.checkedChanged.connect(self._on_shutdown_toggled)
+        bar.addWidget(self.shutdown_switch)
         bar.addStretch(1)
+        # 排定关机之后才出现：给还在电脑前的用户一个明确的撤销入口，
+        # 而不是让他去命令行记 shutdown /a。
+        self.cancel_shutdown_button = PushButton("取消关机", self)
+        self.cancel_shutdown_button.clicked.connect(self._on_cancel_shutdown_clicked)
+        self.cancel_shutdown_button.setVisible(False)
+        bar.addWidget(self.cancel_shutdown_button)
         self.export_button = PushButton(FluentIcon.SAVE, "导出诊断包", self)
         self.export_button.clicked.connect(self._on_export_clicked)
         bar.addWidget(self.export_button)
@@ -379,6 +425,21 @@ class QtDesktopWindow(FluentWindow):
         layout.setContentsMargins(24, 16, 24, 16)
         layout.setSpacing(12)
         layout.addWidget(StrongBodyLabel("实时日志", page))
+
+        # 运行结果卡：跑完就停在这一页，抬头先看到结论，不用去翻日志。
+        # 只做只读展示，不放按钮、不做历史；没有结果时整张卡收起，不占地方。
+        self.result_card = CardWidget(page)
+        result_layout = QVBoxLayout(self.result_card)
+        result_layout.setContentsMargins(16, 12, 16, 12)
+        result_layout.setSpacing(6)
+        self.result_title = StrongBodyLabel("运行结果", self.result_card)
+        result_layout.addWidget(self.result_title)
+        self.result_text = BodyLabel("", self.result_card)
+        self.result_text.setWordWrap(True)
+        result_layout.addWidget(self.result_text)
+        self.result_card.setVisible(False)
+        layout.addWidget(self.result_card)
+
         self.log_text = TextEdit(page)
         self.log_text.setReadOnly(True)
         self.log_text.document().setMaximumBlockCount(2000)
@@ -413,6 +474,24 @@ class QtDesktopWindow(FluentWindow):
         """
         if self.worker.running:
             return "每日任务正在运行。先停下它再开连点器，两套点击同时发会互相干扰。"
+        return None
+
+    def _build_dimension_page(self) -> None:
+        """「次元探查」：内置第三方 chaos 流程，不进路线名单（见 chaos_bridge.py）。"""
+        page = DimensionProbePage(
+            bridge=self.dimension,
+            busy_reason=self._dimension_block_reason,
+            parent=self,
+        )
+        page.setObjectName("dimensionView")
+        self.addSubInterface(page, FluentIcon.PLAY, "次元探查")
+
+    def _dimension_block_reason(self) -> str | None:
+        """两套点击会抢同一个游戏窗口，谁在跑都不许再开另一套。"""
+        if self.worker.running:
+            return "每日任务正在运行。先停下它再开次元探查，两套点击会互相干扰。"
+        if self.autoclicker.running:
+            return "连点器还开着。先到「实用工具」里停止连点，再开次元探查。"
         return None
 
     def _build_about_page(self) -> None:
@@ -500,6 +579,8 @@ class QtDesktopWindow(FluentWindow):
         self.background_switch.setEnabled(
             not running and self.controller.selected_backend == "pc"
         )
+        # 运行中不许改：点开始之后主窗口就收成球了，这时候改只会让人以为生效了。
+        self.shutdown_switch.setEnabled(not running)
         for box in self._route_checks.values():
             box.setEnabled(not running)
         for mode, spin in self._route_spins.items():
@@ -667,6 +748,17 @@ class QtDesktopWindow(FluentWindow):
         self._refresh_actions()
 
     def _on_start_clicked(self) -> None:
+        # 人已经在点「开始任务」了 ⇒ 先把上一轮排定的关机撤掉，否则跑到一半电脑会关。
+        # 放在最前面：后面任何一步不通过（没勾路线、复检失败）也照样撤销 ——
+        # 只要有人坐在这儿操作，就不该倒计时关机。跑完仍按开关重新排定。
+        self._cancel_shutdown()
+        if self.dimension.running:
+            self._notify(
+                "warning",
+                "次元探查还在运行",
+                "先到「次元探查」页停止它，再开始任务 —— 两个程序会抢同一个游戏窗口。",
+            )
+            return
         if self.autoclicker.running:
             self._notify(
                 "warning",
@@ -772,6 +864,9 @@ class QtDesktopWindow(FluentWindow):
         session.save(self._session_path, replace(previous, ball_pos={"x": x, "y": y}))
 
     def _on_stop_clicked(self) -> None:
+        if self.worker.running:
+            # 「我让它停的」⇒ 结束后不自动关机（见 _maybe_schedule_shutdown）。
+            self._stop_requested_by_user = True
         self.controller.stop()
         self._append_log("已发出安全停止请求。")
         self._start_stop_watchdog()
@@ -868,6 +963,10 @@ class QtDesktopWindow(FluentWindow):
                 self._append_log(event.message)
                 self.floating.note_line(event.message)
             elif event.kind == "started":
+                # 新一轮开跑：先把上一次的结果收起来，免得两轮结论叠在一起。
+                self.result_card.setVisible(False)
+                # 上一轮的「手动停止」标记不带到这一轮来。
+                self._stop_requested_by_user = False
                 self._append_log("自动化已启动。")
             elif event.kind == "stopping":
                 self._append_log("正在安全停止……")
@@ -879,6 +978,7 @@ class QtDesktopWindow(FluentWindow):
                 self.floating.hide_all()
                 self.switchTo(self.log_page)
                 self.showNormal()
+                self._maybe_schedule_shutdown(event.exit_code)
         running = self.worker.running
         if running != self._last_running:
             self._last_running = running
@@ -901,27 +1001,110 @@ class QtDesktopWindow(FluentWindow):
         from datetime import datetime
 
         previous = session.load(self._session_path) or session.SessionState()
-        summary = next(
-            (
-                line.split("：", 1)[1].strip()
-                for line in reversed(self.worker.recent_output)
-                if line.startswith("每日任务汇总：")
-            ),
-            None,
-        )
+        summary, detail_lines = extract_run_result(self.worker.recent_output)
         if summary is None:
             return
+        details = "\n".join(detail_lines)
+        at = datetime.now().strftime("%Y-%m-%d %H:%M")
         session.save(
             self._session_path,
             replace(
                 previous,
                 last_run=session.LastRun(
-                    at=datetime.now().strftime("%Y-%m-%d %H:%M"),
+                    at=at,
                     summary=summary,
                     exit_code=exit_code,
+                    details=details,
                 ),
             ),
         )
+        self._show_run_result(at, summary, details)
+
+    def _show_run_result(self, at: str, summary: str, details: str) -> None:
+        """结果卡只显示文字：有逐条明细就用明细，没有就回落成那一行老摘要。"""
+        text = details.strip() or summary.strip()
+        if not text:
+            return
+        self.result_title.setText(f"运行结果 · {at}" if at else "运行结果")
+        self.result_text.setText(text)
+        self.result_card.setVisible(True)
+
+    # ── 跑完自动关机 ────────────────────────────────────────────────────────
+
+    def _on_shutdown_toggled(self, checked: bool) -> None:
+        if self._suspend_events:
+            return
+        if checked:
+            self._append_log(
+                f"已打开「跑完自动关机」：本次任务结束后 {SHUTDOWN_DELAY_SECONDS} 秒关机，"
+                "期间可以点「取消关机」。"
+            )
+            return
+        self._append_log("已关闭「跑完自动关机」。")
+        # 跑完之后回来把开关关掉：顺手撤销已经排定的关机，别让它偷偷关。
+        self._cancel_shutdown()
+
+    def _maybe_schedule_shutdown(self, exit_code: int | None) -> None:
+        """这一轮跑完了，按开关决定要不要关机。
+
+        只有**用户没插手**的结束才排定（2026-11-12 用户拍板）：
+        正常完成、某条路线失败、资源耗尽都算「跑完了」—— 夜里挂着没有任何收益，
+        第二天打开助手就能在「运行结果」卡里看到跑到哪、错在哪；
+        但自己点过「安全停止」的不算，那说明人就在电脑前。
+        """
+        if not self.shutdown_switch.isChecked():
+            return
+        if exit_code == 130 or self._stop_requested_by_user:
+            self._append_log("这一轮是手动停止的，不自动关机。")
+            return
+        if not self.shutdown.schedule():
+            self._append_log("自动关机没有排上（关机命令执行失败），电脑保持开机。")
+            return
+        self.cancel_shutdown_button.setVisible(True)
+        self._start_shutdown_timer()
+        self._append_log(
+            f"每日任务已结束，{SHUTDOWN_DELAY_SECONDS} 秒后自动关机；"
+            "还在电脑前就点「取消关机」。"
+        )
+        self._notify(
+            "warning",
+            "任务已结束",
+            f"{SHUTDOWN_DELAY_SECONDS} 秒后自动关机。还在电脑前请点「取消关机」。",
+        )
+
+    def _start_shutdown_timer(self) -> None:
+        if self._shutdown_timer is None:
+            self._shutdown_timer = QTimer(self)
+            self._shutdown_timer.setSingleShot(True)
+            self._shutdown_timer.timeout.connect(self._on_shutdown_deadline)
+        self._shutdown_timer.start(SHUTDOWN_DELAY_SECONDS * 1000)
+
+    def _on_shutdown_deadline(self) -> None:
+        """到点了：电脑马上要关，按钮留着只会让人误会还来得及。"""
+        self.shutdown.scheduled = False
+        self.cancel_shutdown_button.setVisible(False)
+
+    def _on_cancel_shutdown_clicked(self) -> None:
+        if self._cancel_shutdown():
+            self._notify("success", "已取消自动关机", "电脑会保持开机。")
+        else:
+            self._notify("error", "取消关机失败", "请在命令行手动执行 shutdown /a。")
+
+    def _cancel_shutdown(self) -> bool:
+        """撤销排定的关机；返回「现在确实没有待执行的关机」。
+
+        没排定过就什么都不做（不执行 ``shutdown /a``），返回 ``True``。
+        """
+        if self._shutdown_timer is not None:
+            self._shutdown_timer.stop()
+        self.cancel_shutdown_button.setVisible(False)
+        if not self.shutdown.scheduled:
+            return True
+        if self.shutdown.cancel():
+            self._append_log("已取消自动关机，电脑会保持开机。")
+            return True
+        self._append_log("取消自动关机没有成功；请在命令行执行 shutdown /a。")
+        return False
 
     def _initial_size(self) -> tuple[int, int]:
         """首屏尺寸：可用屏幕的一半左右，用户自己再拖大。
@@ -977,6 +1160,15 @@ class QtDesktopWindow(FluentWindow):
         # 关窗口必须先把连点线程停掉：它是 daemon，进程退出时也会消失，
         # 但「点完 Close 到进程真正退出」之间还有几百毫秒，这期间鼠标不该还在点。
         self.autoclicker.stop()
+        if self.dimension.running:
+            # 次元探查就在本进程里：关窗口会直接把它的线程带走，游戏停在半路。
+            self._notify(
+                "warning",
+                "次元探查还在运行",
+                "先到「次元探查」页点停止，再关闭窗口。",
+            )
+            event.ignore()
+            return
         if self.worker.running:
             # 任务还在跑：关窗口不能顺手把任务带走，收成球留在桌面上。
             event.ignore()

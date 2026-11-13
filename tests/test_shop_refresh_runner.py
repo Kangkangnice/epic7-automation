@@ -266,6 +266,49 @@ def test_stop_reason_is_preserved_for_summary():
     assert "金币不足" in machine.stats.summary()
 
 
+def test_bookmark_note_adds_initial_and_refreshed_purchases():
+    """结算里「买到几张」要把开局那批和刷新后买的加起来，不能只报一半。"""
+    stats = ShopRunStats(
+        target_refreshes=2,
+        initial_covenant=2, paid_covenant=1,
+        initial_mystic=1, paid_mystic=1,
+    )
+
+    assert stats.bookmark_note() == "买到 5 张书签（誓约 3 / 神秘 2）"
+
+
+def test_bookmark_note_when_nothing_was_bought():
+    stats = ShopRunStats(target_refreshes=0)
+
+    assert stats.bookmark_note() == "这轮没买到书签"
+
+
+def test_bookmark_note_never_reports_gold_or_skystone():
+    """结算只报收获；金币、天空石、刷新次数留在过程日志里。"""
+    stats = ShopRunStats(
+        target_refreshes=3,
+        initial_covenant=1,
+        covenant_gold=COVENANT_PRICE,
+        completed_refreshes=3,
+    )
+
+    note = stats.bookmark_note()
+
+    assert "金币" not in note
+    assert "钻石" not in note
+    assert "刷新" not in note
+
+
+def test_route_note_stays_empty_on_a_dry_run():
+    """干跑没碰游戏，结算里不该冒出「这轮没买到书签」这种假消息。"""
+    from types import SimpleNamespace
+
+    runner = object.__new__(ShopRefreshRunner)
+    runner.runtime = SimpleNamespace(dry_run=True)
+
+    assert runner.route_note() == ""
+
+
 def test_purchase_transaction_confirms_once_and_commits_after_shop_returns():
     row = _row(ShopItemKind.COVENANT)
     source = ShopObservation(

@@ -1293,6 +1293,15 @@ class MoonlightRunner(ModeRunnerBase):
         self.machine.state = MoonlightState.STORY
         return outcome
 
+    def route_note(self) -> str:
+        """给每日任务结算用的一句话收获：复用现成、带幂等保护的「完成几幕」。"""
+        if self.runtime.dry_run:
+            return ""
+        acts = self.machine.completed_cycles
+        if not acts:
+            return "本周免费与门票都已处理完，没有新看的幕"
+        return f"看了 {acts} 幕"
+
     def _log_cycle_completed(self) -> None:
         self.runtime.log(
             f"模式=月光剧场 完成第 {self.machine.completed_cycles} 幕"

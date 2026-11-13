@@ -3,12 +3,13 @@ import json
 import os
 import sys
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Callable, Mapping, Optional
 
 import numpy as np
 
+from auto_game_unified.core.countdown import save_countdown
 from auto_game_unified.core.data_paths import data_root
 from auto_game_unified.core.matcher import set_active_backend
 from auto_game_unified.core.hotkey import WindowsPStopHotkey
@@ -47,6 +48,7 @@ from auto_game_unified.games.epic7.modes import (
     get_mode,
 )
 from auto_game_unified.games.epic7.navigation import Epic7Navigator, build_navigation_templates
+from auto_game_unified.games.epic7.side_story import build_side_story_machine
 from auto_game_unified.games.epic7.global_popups import (
     Epic7GlobalPopupGuard,
     load_account_rank_up_templates,
@@ -96,6 +98,9 @@ class RunResult:
     resource_exhausted: bool = False
     # 只有竞技场会给：一行「胜 2 / 负 1」的战绩文案；别的路线留 None，通知里就不显示。
     outcome_summary: str | None = None
+    # 路线自己那句结果（竞技场以外的收获说明，如「买到 5 张书签…」「打了 2 场」）。
+    # 由各 Runner 的 route_note() 提供，没有就留 None；只给每日任务结算用。
+    note: str | None = None
 
 
 def _elapsed_seconds(started_at: float) -> int:
@@ -658,12 +663,14 @@ def run_mode(
         if home_return is not None:
             _try_return_home_after_failure(home_return, runtime, mode=spec.name)
         raise
-    # 战绩文案只有竞技场会给；别的路线拿不到这个方法，就留 None（通知里不显示）。
+    # 竞技场给胜负；每天会跑的那几条给「这条干成了什么」。没有这两个方法就留 None。
     summary = getattr(runner, "outcome_summary", None)
+    note = getattr(runner, "route_note", None)
     return RunResult(
         completed_cycles=completed,
         resource_exhausted=bool(getattr(runner, "resource_exhausted", False)),
         outcome_summary=summary() if summary is not None else None,
+        note=note() if note is not None else None,
     )
 
 
@@ -806,6 +813,78 @@ def _build_daily_probe(
     return runtime, navigator
 
 
+def inspect_side_story_countdown(
+    *,
+    window_backend: str,
+    stop_file: Path | None,
+) -> dict[str, Any] | None:
+    """跑一趟**只读巡检**：走进支线 Episode 详情页，把刷新倒计时读下来并落盘。
+
+    用户 2026-11-12 的要求原话是「在所有的路线跑完的最后，额外跑一次这个支线路线，
+    进入到这个页面看一下它还有多长时间，把它记下来」。所以：
+
+    - **只在每日任务整轮跑完之后**跑（挂载点是 ``_run_daily`` 传下去的 ``inspect``）；
+    - **一步战斗都不打**：状态机带 ``countdown_only=True``，只点「支线故事标签」和
+      「普通支线的入场」两下，到了 Episode 详情页读完就抛
+      ``SideStoryCountdownRead`` 收工（安全边界写在 `_countdown_decision` 里）；
+    - 读到的数写进 ``side_story_countdown.json``（见 ``core/countdown.py``），界面上
+      挂在「今日游戏便签」的待办下面那一行。
+
+    ⚠️ **为什么复用 ``run_mode`` + 一个改过的 ModeSpec，而不是另起一条路线**：
+    进这条路要的东西（大厅导航链、全局弹窗守卫、收尾回首页、按平台挑模板）与
+    「支线故事」那条路线**一模一样**，唯一差别是状态机多一个开关。另起一条路线得
+    在 ``MODE_SPECS`` / ``ROUTES`` / 界面名单 / 前检 / 打包清单里各登记一遍
+    （见 ``docs/maintenance/route_admission.md`` 那张「登记四处」的表），而它对用户
+    根本不是一个可选的任务 —— 它只是每日任务的收尾动作。
+
+    ⚠️ **``name`` 必须保持 ``side_story``**：导航链是按 ``MODE_SPECS[名字]`` 查的
+    （``navigation._plan_for``），换个名字第一跳就抛「导航不支持的模式」。
+    代价只是日志与诊断目录跟那条路线共用一份 —— 它们本来就是同一件事的两面，
+    日志里那一行 ``停止=支线刷新倒计时已读取`` 足够把两者分开。
+
+    返回读到的 ``{"days", "hours", "raw"}``；读不到（OCR 缺依赖 / 没认出字）返回
+    ``None``。**任何失败都不该影响整轮每日任务的结论** —— 由调用方兜住。
+    """
+
+    base = get_mode("side_story")
+    # 状态机是 ``run_mode`` 内部建的，外面拿不到；用一个一格字典把它递出来。
+    # （``countdown_read`` 记在状态机账本上，不在 ``RunResult`` 里 —— 那是路线结论，
+    # 这里要的是「读到的数」，两者语义不同，硬塞会让 RunResult 长出一条只服务一次的字段。）
+    built: dict[str, Any] = {}
+
+    def build_countdown_machine(template_root: Path, state: str) -> Any:
+        machine = build_side_story_machine(
+            template_root / "side_story", state, countdown_only=True
+        )
+        built["machine"] = machine
+        return machine
+
+    spec = replace(
+        base,
+        # 巡检**不做接力**：接力点是「用户上次停在哪一步」，而巡检只认「从大厅重新走进去
+        # 读数」这一条路。半路接着跑会把「停在关卡地图」变成「以为要打图」。
+        resume_probe=None,
+        build_machine=build_countdown_machine,
+    )
+    run_mode(
+        spec=spec,
+        dry_run=False,
+        # 只读：一次就够。真实终点是状态机读完就抛 ``SideStoryCountdownRead``。
+        max_cycles=1,
+        start_state=base.default_state,
+        window_backend=window_backend,
+        stop_file=stop_file,
+    )
+    machine = built.get("machine")
+    payload = getattr(machine, "countdown_read", None)
+    if not isinstance(payload, dict):
+        return None
+    save_countdown(
+        int(payload["days"]), int(payload["hours"]), raw=str(payload.get("raw", ""))
+    )
+    return payload
+
+
 def _notify_daily(
     *,
     live: bool,
@@ -815,6 +894,9 @@ def _notify_daily(
     """每日任务整轮的通知（与单路线分开，标题/内容都是汇总口径）。"""
     if not live:
         return
+    # 整轮耗时以 ``_run_daily`` 记的为准；调用方没填时用传进来的这份兜底。
+    if report.elapsed_seconds <= 0:
+        report.elapsed_seconds = elapsed_seconds
     # ⚠️ **用户手动按停止键 ⇒ 不发通知**（2026-10-30 用户要求）。
     #
     # 那是他自己做的事，人就在电脑前面 —— 再推一条"已手动停止"纯属打扰。
@@ -830,15 +912,9 @@ def _notify_daily(
         title = "第七史诗：每日任务完成（有失败）"
     else:
         title = "第七史诗：每日任务已完成"
-    lines = [f"耗时：{elapsed_seconds} 秒"]
-    for outcome in report.outcomes:
-        mark = "✓" if outcome.ok else "✗"
-        detail = f"（{outcome.detail}）" if outcome.detail else ""
-        lines.append(f"{outcome.label} {mark}{detail}")
-    if report.aborted_reason:
-        lines.append(f"中止原因：{report.aborted_reason}")
+    # 通知是精简版：总账 + 每条一行，不带分项耗时。逐条明细留在界面结果卡里。
     try:
-        send_qqbot_c2c(title, "\n".join(lines))
+        send_qqbot_c2c(title, "\n".join(report.brief_lines()))
     except Exception as notification_error:  # noqa: BLE001 —— 通知挂了不改结论
         print(f"QQ 通知失败：{type(notification_error).__name__}", flush=True)
 
@@ -880,10 +956,23 @@ def _run_daily(args: argparse.Namespace) -> int:
         build_home_return=lambda navigator, runtime, mode: HomeReturn(
             navigator, runtime, mode=mode
         ),
+        # 收尾巡检（用户 2026-11-12 要求）：所有路线跑完之后，额外走一趟支线故事，
+        # 把「剩余 N 天 N 小时」读下来。**只读**，一步战斗都不打；
+        # 读不到不影响本轮结论（编排层兜住了，见 daily_tasks._run_inspect）。
+        inspect=lambda: inspect_side_story_countdown(
+            window_backend=args.window_backend,
+            stop_file=Path(args.stop_file) if args.stop_file else None,
+        ),
     )
     elapsed = _elapsed_seconds(started_at)
+    if report.elapsed_seconds <= 0:
+        report.elapsed_seconds = elapsed
     _notify_daily(live=args.live, report=report, elapsed_seconds=elapsed)
+    # 「每日任务汇总：」这一行是进度条与会话存档的老契约，格式不动。
     print(f"每日任务汇总：{report.summary_line()}", flush=True)
+    # 逐条明细另走一组行：界面结果卡只读这些行，不去解析任何路线日志。
+    for line in report.result_lines():
+        print(f"每日任务结果：{line}", flush=True)
     if report.stopped_by_user:
         return 130
     if report.aborted_reason or report.any_failed:

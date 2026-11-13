@@ -486,6 +486,19 @@ class AchievementRunner(ModeRunnerBase):
     )
     _SHORT_RETRY_SECONDS = 8.0
 
+    def route_note(self) -> str:
+        """给每日任务结算用的一句话收获：复用状态机里现成的领取次数。"""
+        if self.runtime.dry_run:
+            return ""
+        claims = self.machine._claims
+        effects = self.machine._effects
+        if not claims and not effects:
+            return "4 个分类都没有新成就，没有可领的奖励"
+        text = f"全部领取 {claims} 次"
+        if effects:
+            text += f"，持续效果升级 {effects} 次"
+        return text
+
     def _state_label(self, state: AchievementState) -> str:
         """日志/诊断里的页面名用中文（基类默认会输出 ``state.value`` 那种英文）。"""
         return STATE_LABELS.get(state, str(state))
