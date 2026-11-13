@@ -71,6 +71,13 @@ def map_goblin_selected() -> np.ndarray:
     return _load(FIXTURES / "epic7_side_story" / "map_goblin_selected.png")
 
 
+def map_without_any_node() -> np.ndarray:
+    # map.png：三个节点模板**都不命中**的一张地图帧 —— 钉「有界平移扫寻」用它。
+    # ⚠️ 别用 map_default_view：2026-11-12 补了「S.哥布林据点」名条模板后，
+    # 那张图上哥布林也能识别（0.856），平移分支根本走不到。
+    return _load(FIXTURES / "epic7_side_story" / "map.png")
+
+
 def boss_helper_page() -> np.ndarray:
     # 选择辅助英雄页（03_helper）：左下「变更」(155,1070) + 右下「选择队伍」。
     return _load(FIXTURES / "epic7_side_story" / "boss_helper_page.png")
@@ -92,8 +99,11 @@ def boss_scene() -> np.ndarray:
 
 
 class NormalToBossChainTests(unittest.TestCase):
-    def test_normal_done_clicks_leave_and_switches_to_boss(self):
-        """① 场景页连续 12 帧无箭头 ⇒ 点「离开」（不再抛收工），段落切 ②。"""
+    def test_normal_done_clicks_leave_and_switches_to_first_outpost(self):
+        """① 场景页连续 12 帧无箭头 ⇒ 点「离开」（不再抛收工），段落切 ②摩罗戈拉。
+
+        ⚠️ 2026-11-12 顺序订正：②是摩罗戈拉据点（旧版是 BOSS 段）。
+        """
 
         machine = build_side_story_machine(TEMPLATES)
         action = None
@@ -101,7 +111,7 @@ class NormalToBossChainTests(unittest.TestCase):
             action = machine.next_action(scene_without_arrow())
         self.assertIsNotNone(action)
         self.assertEqual("scene_leave", action.name)
-        self.assertEqual(_SEG_BOSS, machine._segment)
+        self.assertEqual(_SEG_OUTPOST_1, machine._segment)
         self.assertTrue(machine._leaving)
 
     def test_map_after_normal_done_picks_boss_node(self):
@@ -134,15 +144,19 @@ class NormalToBossChainTests(unittest.TestCase):
         self.assertFalse(machine._node_clicked)
 
     def test_node_not_on_screen_pans_with_bounded_attempts(self):
-        """目标节点不在视野（默认视角下 goblin 被顶栏挡住）⇒ 有界平移扫寻。"""
+        """目标节点不在视野 ⇒ 有界平移扫寻。
+
+        ⚠️ 2026-11-12 顺序订正：③哥布林是 `_SEG_OUTPOST_2`（旧版是 `_SEG_OUTPOST_1`）。
+        用的帧换成 `map.png`（三个节点模板都不命中）；`map_default_view` 现在能认出哥布林。
+        """
 
         machine = build_side_story_machine(TEMPLATES)
-        machine._segment = _SEG_OUTPOST_1  # 找哥布林，map_default_view 上没有
+        machine._segment = _SEG_OUTPOST_2  # 找哥布林，map.png 上没有
 
         names = []
         first_point = None
         for _ in range(_PAN_LIMIT):
-            action = machine.next_action(map_default_view())
+            action = machine.next_action(map_without_any_node())
             self.assertIsNotNone(action)
             self.assertTrue(action.name.startswith("pan_map_"), action.name)
             if first_point is None:
@@ -152,14 +166,17 @@ class NormalToBossChainTests(unittest.TestCase):
         # （终点语义，由 Runner 的 _perform_action 换发成 swipe）。
         self.assertEqual((_PAN_START[0], _PAN_START[1] + 340), first_point)
         # 超过上限 ⇒ 返回 None（原地等状态超时兜底，绝不瞎点）。
-        self.assertIsNone(machine.next_action(map_default_view()))
+        self.assertIsNone(machine.next_action(map_without_any_node()))
         self.assertEqual(len(set(names)), _PAN_LIMIT)  # 每次动作名都不同，防重发
 
     def test_panned_map_picks_goblin_when_visible(self):
-        """哥布林在视野内时（01_selected），③a 段直接点中它。"""
+        """哥布林在视野内时（01_selected），③③段直接点中它。
+
+        ⚠️ 2026-11-12 顺序订正：③哥布林是 `_SEG_OUTPOST_2`。
+        """
 
         machine = build_side_story_machine(TEMPLATES)
-        machine._segment = _SEG_OUTPOST_1
+        machine._segment = _SEG_OUTPOST_2
 
         action = machine.next_action(map_goblin_selected())
 
@@ -225,19 +242,23 @@ class BossExhaustedChainTests(unittest.TestCase):
         self.assertEqual("boss_done_back", action.name)
         self.assertTrue(machine._boss_done)
 
-    def test_boss_done_scene_clicks_leave_and_switches_to_outpost(self):
-        """② 打满退场：地狱级场景页点「离开」，段落切 ③a。"""
+    def test_boss_done_scene_clicks_leave_and_terminates(self):
+        """④ BOSS 打满退场（最后一段）：地狱级场景页点「离开」，回地图即收工。
+
+        ⚠️ 2026-11-12 顺序订正：BOSS 从"第二段"改成"最后一段"，
+        打满后不再切去据点（那是旧顺序的行为），而是置 `_final_leave`。
+        """
 
         machine = build_side_story_machine(TEMPLATES)
         machine._segment = _SEG_BOSS
-        machine._boss_advances = 2  # 地狱级：⓪b 不再点「下一个难度」
+        machine._boss_advances = 3  # 已站上地狱级（档位序号 3）：⓪b 不再点「下一个难度」
         machine._boss_done = True
 
         action = machine.next_action(boss_scene())
 
         self.assertIsNotNone(action)
         self.assertEqual("boss_scene_leave", action.name)
-        self.assertEqual(_SEG_OUTPOST_1, machine._segment)
+        self.assertTrue(machine._final_leave)
         self.assertFalse(machine._boss_done)
         self.assertTrue(machine._leaving)
 
@@ -251,26 +272,42 @@ class BossExhaustedChainTests(unittest.TestCase):
 
 class BossFirstEntryTests(unittest.TestCase):
     def test_helper_page_clicks_change(self):
-        """BOSS 首进场第一拍：helper 页点左下「变更」。"""
+        """BOSS 首进场第一拍：helper 页点左下「变更」。
+
+        ⚠️ 2026-11-12 21:52 实跑：这一页是**慢转场**（页面滑入），必须等画面停稳再点，
+        否则点到还没就位的按钮 ⇒ 落到「助手选择」⇒ 45 秒超时。
+        所以第一帧只建稳定基准、不点；第二帧（同一画面）才点。
+        """
 
         machine = build_side_story_machine(TEMPLATES)
         machine._segment = _SEG_BOSS
+        frame = boss_helper_page()
 
-        action = machine.next_action(boss_helper_page())
+        # 稳定判定要连续 2 帧一致（第一帧只建基准）⇒ 前两帧不点，第三帧才点。
+        self.assertIsNone(machine.next_action(frame))
+        self.assertIsNone(machine.next_action(frame))
+
+        action = machine.next_action(frame)
 
         self.assertIsNotNone(action)
         self.assertEqual("boss_open_difficulty", action.name)
         self.assertFalse(machine._boss_entered)
 
-    def test_difficulty_list_clicks_mid_row_then_confirm(self):
-        """BOSS 首进场第二/三拍：列表页先点中级行（同页停留），下一拍点「选择队伍」。"""
+    def test_difficulty_list_clicks_the_unchecked_tier_then_confirm(self):
+        """BOSS 进场第二/三拍：列表页点**没打勾的那一档**，下一拍点「选择队伍」。
+
+        ⚠️ 2026-11-12 用户口径：不再死点「中级行」，而是看勾 —— 夹具
+        `boss_difficulty_list.png` 上初级/中级打勾、上级没勾，所以该点的是**上级**。
+        中途从上级接力时计数器是 0（以为还在中级），但勾是游戏画的真相。
+        """
 
         machine = build_side_story_machine(TEMPLATES)
         machine._segment = _SEG_BOSS
 
         pick = machine.next_action(boss_difficulty_list())
         self.assertIsNotNone(pick)
-        self.assertEqual("boss_pick_mid", pick.name)
+        self.assertEqual("boss_pick_tier", pick.name)
+        self.assertIn("上级", pick.reason)
         self.assertTrue(machine._boss_row_clicked)
 
         confirm = machine.next_action(boss_difficulty_list())
@@ -278,17 +315,38 @@ class BossFirstEntryTests(unittest.TestCase):
         self.assertEqual("boss_confirm_team", confirm.name)
         self.assertTrue(machine._boss_entered)
 
-    def test_first_entry_only_runs_in_boss_segment(self):
-        """① 段的 helper 页（主线自己的「助手选择」）绝不触发首进场拦截。
+    def test_no_check_at_all_means_judgement_broken(self):
+        """**一个勾都没有 ⇒ 判据失效，停手**（用户口径：初级一定是打勾的）。
 
-        断言层级定在 ``_side_decision``：支线独有的判据都**不**接管这一页
-        （交给主线），首进场三拍只在 `_SEG_BOSS` 段生效。
+        2026-11-12 22:10 用户纠正：这期活动初级打完就永远打勾，下次进来最少从中级开始，
+        所以"四档全没勾"在实际游戏里不会出现 —— 只可能是勾模板失效（换皮/缩放/遮挡）。
+        这种时候必须停在原地等超时，**绝不默认从初级打起**（白烧一整轮体力）。
         """
 
         machine = build_side_story_machine(TEMPLATES)
-        handled, action = machine._side_decision(boss_helper_page())
-        self.assertFalse(handled)
-        self.assertIsNone(action)
+        screen = boss_difficulty_list().copy()
+        bg = screen[300, 900].copy()  # 面板底色
+        for y0 in (288, 505):        # 抹掉初级/中级那两颗勾
+            screen[y0 - 8 : y0 + 40, 925:990] = bg
+
+        self.assertIsNone(machine._first_unchecked_tier(screen))
+
+    def test_helper_page_is_taken_over_without_segment_state(self):
+        """接力/中途启动时 `_segment` 是普通段 —— 只要画面自证是 BOSS 进场页就接管。
+
+        2026-11-12 22:19 用户拍板：「中断之后再往下走也要走得通」。
+        旧写法要求 `_segment == _SEG_BOSS`，接力进来就漏接 ⇒ 主线把难度列表
+        误认成「助手选择」⇒ 卡死。新契约：画面能证明身份，就不依赖状态位，并顺手把
+        段位拨到 BOSS（自愈）。
+        """
+
+        machine = build_side_story_machine(TEMPLATES)
+        self.assertNotEqual(_SEG_BOSS, machine._segment)  # 新机器默认是①段
+
+        handled, _action = machine._side_decision(boss_helper_page())
+
+        self.assertTrue(handled)
+        self.assertEqual(_SEG_BOSS, machine._segment)  # 段位自愈
 
 
 class LedgerHygieneTests(unittest.TestCase):

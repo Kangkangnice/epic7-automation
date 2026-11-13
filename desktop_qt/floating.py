@@ -26,6 +26,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from auto_game_unified.core.countdown import countdown_text
 from auto_game_unified.desktop.run_progress import (
     DONE,
     PENDING,
@@ -58,6 +59,9 @@ QWidget#runPanel {{
 }}
 QLabel {{ color: {TEXT}; font-size: 13px; }}
 QLabel#panelTitle {{ font-size: 14px; font-weight: 500; }}
+QLabel#countdownLine {{
+    color: {MUTED}; font-size: 11px; padding-left: 18px;
+}}
 QLabel#statePill {{
     color: #FFFFFF; background-color: {BLUE};
     border-radius: 10px; padding: 2px 10px; font-size: 12px;
@@ -231,6 +235,13 @@ class RunPanel(QWidget):
             layout.addLayout(row)
             self._todos.append(editor)
 
+        # 支线刷新倒计时：挂在待办下面（2026-11-12 用户指定位置）。
+        # 只读一次文件，读不到就显示「还没读过」——它是便签，不参与任何业务判断。
+        self._countdown = QLabel(countdown_text(), self)
+        self._countdown.setObjectName("countdownLine")
+        self._countdown.setWordWrap(True)
+        layout.addWidget(self._countdown)
+
         layout.addWidget(_divider(self))
         layout.addLayout(_legend(self))
         layout.addWidget(_divider(self))
@@ -261,6 +272,17 @@ class RunPanel(QWidget):
         self._state.setText("任务进行中" if running else "本次运行已结束")
         self._state.setObjectName("statePill" if running else "statePillIdle")
         self.setStyleSheet(_PANEL_QSS)
+
+    def refresh_countdown(self) -> None:
+        """重读倒计时那一行（跑完一轮 / 用户展开面板时各刷一次）。
+
+        ⚠️ 只在创建时读一次是不够的：`countdown_text()` 读的是
+        ``side_story_countdown.json``，而那个文件是**这一轮跑完**才写的 —— 面板对象
+        却比它活得久（`FloatingRunner` 全程复用同一个面板）。不重读，用户看到的
+        永远是上一次启动时那行旧数。文件读不到时它自己返回「还没读过」，不抛错。
+        """
+
+        self._countdown.setText(countdown_text())
 
     def set_progress(self, items: Sequence[RouteProgress]) -> None:
         self._items = tuple(items)
@@ -409,6 +431,8 @@ class FloatingRunner(QObject):
     def expand(self) -> None:
         self.ball.hide()
         self._place_panel_near_ball()
+        # 展开前先刷一遍倒计时：这一轮可能刚把它写新（面板比那个文件活得久）。
+        self.panel.refresh_countdown()
         self.panel.show()
         # 展开后才有真实宽度：按两列的实际列宽重排一次，名字该省略就省略。
         self.panel.set_progress(self._progress.items)
@@ -432,6 +456,8 @@ class FloatingRunner(QObject):
         self._progress.finish()
         self.panel.set_progress(self._progress.items)
         self.panel.set_running(False)
+        # 这一轮刚跑完：收尾巡检可能刚把倒计时写新，趁现在同步那一行。
+        self.panel.refresh_countdown()
         self.ball.set_running(False)
 
     def hide_all(self) -> None:

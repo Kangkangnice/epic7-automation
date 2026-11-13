@@ -1031,6 +1031,19 @@ class KnightsDonationRunner(ModeRunnerBase):
     )
     _SHORT_RETRY_SECONDS = 8.0
 
+    def route_note(self) -> str:
+        """给每日任务结算用的一句话结论。
+
+        这条路线没有「支援成功几行 / 领了几个档位」的累计计数：状态机每帧会试算
+        动作，在那里加计数必须同步改预览快照。宁可只报由收工判据保证的结论，
+        也不编一个看着像真的数字。
+        """
+        if self.runtime.dry_run or self.machine.completed_cycles < 1:
+            return ""
+        if self.machine.request_done:
+            return "今天的下级精灵之花已请求，逐行支援和每周任务领奖都处理完了"
+        return "逐行支援和每周任务领奖都处理完了"
+
     def __init__(
         self,
         machine: KnightsDonationStateMachine,

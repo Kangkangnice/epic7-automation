@@ -8,6 +8,7 @@ from auto_game_unified.desktop.run_progress import (
     PENDING,
     RUNNING,
     RunProgress,
+    extract_run_result,
 )
 
 ROUTES = (
@@ -83,3 +84,31 @@ def test_empty_plan_is_safe() -> None:
     progress.finish()
     assert progress.items == ()
     assert progress.active_label == ""
+
+
+def test_extract_run_result_takes_only_the_latest_summary_block() -> None:
+    lines = [
+        "每日任务汇总：旧的一次",
+        "每日任务结果：旧明细，不该被读到",
+        "模式=arena 状态=收尾",
+        "每日任务汇总：竞技场 ✓",
+        "每日任务结果：共 1 条 · 做完 1 条 · 用时 2分10秒",
+        "每日任务结果：竞技场 · 完成 · 10/10 轮 · 胜 7 / 负 3",
+    ]
+
+    summary, details = extract_run_result(lines)
+
+    assert summary == "竞技场 ✓"
+    assert details == (
+        "共 1 条 · 做完 1 条 · 用时 2分10秒",
+        "竞技场 · 完成 · 10/10 轮 · 胜 7 / 负 3",
+    )
+
+
+def test_extract_run_result_without_a_summary_is_empty() -> None:
+    assert extract_run_result(["模式=arena 状态=收尾"]) == (None, ())
+
+
+def test_extract_run_result_tolerates_a_summary_without_details() -> None:
+    """旧版子进程 / 干跑异常时只有那一行汇总，界面回落成一行即可。"""
+    assert extract_run_result(["每日任务汇总：竞技场 ✓"]) == ("竞技场 ✓", ())

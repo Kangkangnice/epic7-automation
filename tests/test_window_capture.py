@@ -573,6 +573,138 @@ class WindowViewportTests(unittest.TestCase):
             calls,
         )
 
+    def test_reboot_rebuilds_the_connection_service_after_the_emulator_restarts(self):
+        """重启模拟器之后必须再重建一次连接服务，否则设备一直「查无此设备」。
+
+        2026-09-24 / 09-28 两次实机的根因都是「模拟器重启后连接服务没跟着重建」；
+        旧代码只在重启前重建，重启完直接干等，白等 90 秒。
+        """
+        game = Epic7Window()
+        calls: list[list[str]] = []
+
+        def run(args, **_kwargs):
+            calls.append(list(args))
+            if "shell echo ping" in args:
+                return subprocess.CompletedProcess(
+                    args=[],
+                    returncode=0,
+                    stdout=b"adb.exe: device 'emulator-5554' not found\n",
+                    stderr=b"",
+                )
+            return subprocess.CompletedProcess(
+                args=[], returncode=0, stdout=b"", stderr=b""
+            )
+
+        with (
+            patch.object(
+                game,
+                "_instance_channel",
+                return_value=(Path("D:/epic7/ldconsole.exe"), "0", 456),
+            ),
+            patch.object(Path, "exists", return_value=True),
+            patch("auto_game_unified.core.window.subprocess.run", side_effect=run),
+            patch("auto_game_unified.core.window.sleep"),
+            self.assertRaisesRegex(RuntimeError, "重启模拟器内部系统后仍未恢复"),
+        ):
+            game.ensure_input_channel()
+
+        reboot_at = next(
+            i for i, call in enumerate(calls) if "reboot" in call
+        )
+        after_reboot = calls[reboot_at + 1 :]
+        adb = str(Path("D:/epic7/adb.exe"))
+        self.assertIn([adb, "kill-server"], after_reboot, "重启后必须重建连接服务")
+        self.assertIn([adb, "start-server"], after_reboot, "重启后必须重建连接服务")
+
+    def test_repair_progress_is_visible_and_tells_the_user_not_to_stop(self):
+        """修复全程要有进度和明确指引，不能 90 秒一行字都不出。
+
+        今早实际现场：用户看到界面长时间静止、反复刷「不可用」，以为卡死就按停止，
+        把本来需要 30 秒以上的恢复流程打断，两次都这样。
+        """
+        game = Epic7Window()
+        messages: list[str] = []
+        game.set_event_sink(messages.append)
+        probes = [
+            b"adb.exe: device offline\n",
+            b"adb.exe: device offline\n",
+            b"adb.exe: device offline\n",
+            b"adb.exe: device offline\n",
+            b"adb.exe: device offline\n",
+            b"ping\n",
+        ]
+
+        def run(args, **_kwargs):
+            if "shell echo ping" in args:
+                return subprocess.CompletedProcess(
+                    args=[], returncode=0, stdout=probes.pop(0), stderr=b""
+                )
+            if any("shell pidof" in item for item in args):
+                return subprocess.CompletedProcess(
+                    args=[], returncode=0, stdout=b"4321\n", stderr=b""
+                )
+            return subprocess.CompletedProcess(
+                args=[], returncode=0, stdout=b"", stderr=b""
+            )
+
+        with (
+            patch.object(
+                game,
+                "_instance_channel",
+                return_value=(Path("D:/epic7/ldconsole.exe"), "0", 456),
+            ),
+            patch.object(Path, "exists", return_value=True),
+            patch("auto_game_unified.core.window.subprocess.run", side_effect=run),
+            patch("auto_game_unified.core.window.sleep"),
+            self.assertRaisesRegex(RuntimeError, "本次运行不续跑"),
+        ):
+            game.ensure_input_channel()
+
+        joined = "\n".join(messages)
+        self.assertIn("请勿点", joined, "必须明确告诉用户别在修复中途按停止")
+        self.assertIn("安全停止", joined)
+        progress = [line for line in messages if "进度=" in line]
+        self.assertGreaterEqual(
+            len(progress), 2, "等待模拟器恢复期间必须持续报进度，不能静默"
+        )
+        self.assertIn("已修好", joined, "修好必须明确报喜，不能只留一句技术日志")
+        self.assertIn("开始任务", joined, "修好后要告诉用户下一步做什么")
+
+    def test_failed_repair_tells_the_user_the_manual_next_step(self):
+        """自动修复确实没救回来时，要给一句用户能照做的操作，而不是只报失败。"""
+        game = Epic7Window()
+        messages: list[str] = []
+        game.set_event_sink(messages.append)
+
+        def run(args, **_kwargs):
+            if "shell echo ping" in args:
+                return subprocess.CompletedProcess(
+                    args=[],
+                    returncode=0,
+                    stdout=b"adb.exe: device offline\n",
+                    stderr=b"",
+                )
+            return subprocess.CompletedProcess(
+                args=[], returncode=0, stdout=b"", stderr=b""
+            )
+
+        with (
+            patch.object(
+                game,
+                "_instance_channel",
+                return_value=(Path("D:/epic7/ldconsole.exe"), "0", 456),
+            ),
+            patch.object(Path, "exists", return_value=True),
+            patch("auto_game_unified.core.window.subprocess.run", side_effect=run),
+            patch("auto_game_unified.core.window.sleep"),
+            self.assertRaisesRegex(RuntimeError, "重启模拟器内部系统后仍未恢复"),
+        ):
+            game.ensure_input_channel()
+
+        joined = "\n".join(messages)
+        self.assertIn("关闭雷电模拟器", joined)
+        self.assertIn("重新打开", joined)
+
     def test_legacy_swipe_is_converted_and_sent_through_indexed_adb(self):
         game = Epic7Window()
         with (

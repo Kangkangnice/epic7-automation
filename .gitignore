@@ -36,3 +36,4 @@ docs/manual_review/arena/
 /update_check.json
 # 会话存档（勾选/次数/上次结果）。源码运行时落在包目录，别让它把工作区弄脏。
 /session.json
+/side_story_countdown.json

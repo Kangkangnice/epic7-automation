@@ -432,6 +432,14 @@ class Epic7Window:
            一级完全无效（端口在听、adb 连上就是 offline），只有 `reboot` 能救回来
            （约 30 秒），代价是**游戏会被一并关掉**，所以救完必须重新拉起游戏。
 
+        重启后还会再重建一次连接服务：2026-09-24 / 09-28 两次实机的根因都是
+        「模拟器重启了、连接服务没跟着重建」，旧代码只在重启前重建，重启完直接干等，
+        设备就一直查无此设备。
+
+        全程给用户报进度：这类修复要等 30 秒以上，界面不说话用户会以为卡死而按停止，
+        反而把恢复流程打断（2026-11-12 早上连着两次都是这样）。判据一个字没放宽，
+        仍然必须探到 `ping` 回显才算修好。
+
         ⚠️ 恢复成功也照旧抛错退出（本次运行不续跑）：模拟器重启后游戏停在大厅，
         原来那条路线已经跑不下去了，继续跑只会瞎点；让外部重新跑一整轮才是安全的。
 
@@ -445,8 +453,14 @@ class Epic7Window:
                 self._probe_input_channel()
             except (RuntimeError, subprocess.SubprocessError, OSError) as error:
                 last_error = error
+                if attempt == 1:
+                    self._emit(
+                        "提示=检测到模拟器连接中断，正在自动修复：先重建连接，"
+                        "不行再重启模拟器内部系统，通常需要 1 到 3 分钟；"
+                        "期间请勿点「安全停止」。游戏会被暂时关闭，修好后会自动重新打开。"
+                    )
                 self._emit(
-                    f"模拟器通道 状态=不可用 尝试={attempt}/{attempts} 动作=重启adb服务"
+                    f"模拟器通道 状态=修复中 尝试={attempt}/{attempts} 动作=重启adb服务"
                 )
                 self._restart_adb_server()
                 sleep(settle_seconds)
@@ -458,18 +472,38 @@ class Epic7Window:
             )
             return
         # 一级试满仍不可用 ⇒ 二级：重启模拟器内部系统。
-        self._emit("模拟器通道 状态=不可用 动作=重启模拟器内部系统")
-        self._reboot_instance()
+        self._emit(
+            "提示=快速重建没生效，正在彻底重启模拟器内部系统；"
+            "这一步需要约 30 到 90 秒，游戏会被暂时关闭，期间请勿点「安全停止」。"
+        )
+        self._emit("模拟器通道 状态=修复中 动作=重启模拟器内部系统")
+        # reboot 会换掉模拟器进程号，窗口也可能短暂消失，所以重启后重建连接服务
+        # 要复用 reboot 自己取到的控制台路径，不能再去查一遍实例。
+        console_path = self._reboot_instance()
+        self._restart_adb_server(console_path)
         for attempt in range(1, self._REBOOT_CHANNEL_ATTEMPTS + 1):
             try:
                 self._probe_input_channel()
             except (RuntimeError, subprocess.SubprocessError, OSError) as error:
                 last_error = error
+                waited = int(attempt * self._REBOOT_POLL_SECONDS)
+                remaining = int(
+                    (self._REBOOT_CHANNEL_ATTEMPTS - attempt)
+                    * self._REBOOT_POLL_SECONDS
+                )
+                self._emit(
+                    f"连接修复 进度=已等 {waited} 秒 最多还需 {remaining} 秒 "
+                    "动作=等模拟器重新上线；请勿点「安全停止」"
+                )
                 sleep(self._REBOOT_POLL_SECONDS)
                 continue
             self._emit(
                 f"模拟器通道 状态=已恢复 尝试={attempt}/{self._REBOOT_CHANNEL_ATTEMPTS} "
                 "动作=重启模拟器内部系统"
+            )
+            self._emit(
+                "提示=连接已修好，正在重新打开游戏；本次任务会安全结束，"
+                "请等游戏回到大厅后重新点「开始任务」。"
             )
             self._launch_game()
             raise RuntimeError(
@@ -477,16 +511,22 @@ class Epic7Window:
                 f"本次运行不续跑：已重新拉起 {self._GAME_PACKAGE}，"
                 "请确认它停在大厅后重跑整轮"
             )
+        self._emit(
+            "提示=自动修复没能恢复连接。请手动关闭雷电模拟器再重新打开，"
+            "等游戏进入大厅后再点「开始任务」；如果仍然不行，请重启一次电脑。"
+        )
         raise RuntimeError(
             f"模拟器输入通道不可用，重启 adb 服务 {attempts} 次并重启模拟器内部系统后"
             f"仍未恢复：{last_error}"
         )
 
-    def _reboot_instance(self) -> None:
-        """重启模拟器内部系统（`ldconsole reboot --index N`）。
+    def _reboot_instance(self) -> Path:
+        """重启模拟器内部系统（`ldconsole reboot --index N`），返回重启前的控制台路径。
 
         ⚠️ 这个动作会**关掉游戏**：dnplayer 进程号会变，安卓回到桌面。
         只在通道确实探不通时才由 `ensure_input_channel` 调用，别单独拿来用。
+        返回路径是为了让调用方在重启后直接重建 adb 服务，不必再去查一遍实例
+        （那时窗口可能还没回来，进程号也变了）。
         """
         console_path, instance_index, _ = self._instance_channel()
         subprocess.run(
@@ -496,6 +536,7 @@ class Epic7Window:
             timeout=30,
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
+        return console_path
 
     def _launch_game(self) -> None:
         """把被模拟器重启关掉的游戏拉起来，等它进程出现，再留一段加载时间。
@@ -535,6 +576,10 @@ class Epic7Window:
             )
             if result.stdout.strip():
                 self._emit(f"游戏已拉起 包名={self._GAME_PACKAGE} 尝试={attempt}")
+                self._emit(
+                    "提示=游戏已打开，正在等它加载进大厅（约 60 秒）；"
+                    "请勿点「安全停止」，等它回到大厅后重新点「开始任务」。"
+                )
                 sleep(self._GAME_LOBBY_SETTLE_SECONDS)
                 return
             sleep(self._REBOOT_POLL_SECONDS)
@@ -570,14 +615,18 @@ class Epic7Window:
                 + output.decode("utf-8", "replace").strip()
             )
 
-    def _restart_adb_server(self) -> None:
+    def _restart_adb_server(self, console_path: Path | None = None) -> None:
         """`adb kill-server` → `start-server`，只重建 host 侧 adb 服务。
 
         **不动模拟器、不重启游戏**（两次实测都是一步到位）。
         这里刻意 `check=False`：server 没在跑时 `kill-server` 也可能给非 0，
         真正的判据是重建之后再探一次通道有没有回显。
+
+        `console_path` 可选：模拟器刚重启时窗口和进程号都可能还没回来，
+        那时不能再查一遍实例，直接用重启前取好的路径。
         """
-        console_path, _, _ = self._instance_channel()
+        if console_path is None:
+            console_path, _, _ = self._instance_channel()
         adb_path = console_path.with_name("adb.exe")
         if not adb_path.exists():
             raise RuntimeError(f"未在 {console_path.parent} 找到 adb.exe，无法重建输入通道")

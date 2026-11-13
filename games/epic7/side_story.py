@@ -169,6 +169,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 from pathlib import Path
+import re
 from time import sleep as default_sleep
 from typing import Any, Callable, Optional
 
@@ -184,11 +185,12 @@ from auto_game_unified.core.matcher import (
     MATCH_MODE_RAW,
     MATCH_MODE_WHITE_MASK,
     Match,
+    find_all_templates,
     find_template,
     load_template,
 )
 from auto_game_unified.core.recovery import RecoveryGate
-from auto_game_unified.core.runtime import Runtime, StaminaExhausted
+from auto_game_unified.core.runtime import ResourceExhausted, Runtime, StaminaExhausted
 from auto_game_unified.games.epic7.battle_controls import battle_scene_visible
 from auto_game_unified.games.epic7.resume_probe import ResumePoint
 from auto_game_unified.games.epic7.story import (
@@ -210,6 +212,28 @@ class SideStoryCleared(StaminaExhausted):
     没得跑了」）：对用户来说这不是失败，是「这一期已经通到底」。走这条出口会让基类
     顺手把游戏带回首页（``_close_out``），不用人工收拾。
     """
+
+
+class SideStoryCountdownRead(ResourceExhausted):
+    """【只读巡检】刷新倒计时已经读到了，本可以就此收工。
+
+    为什么借用 ``ResourceExhausted`` 这条通道（退出码 2 = 「没得干了」）：它是基类
+    主循环**唯一**认识的「正常业务终止」出口 —— 挂 ``RuntimeError`` 会被当成
+    「页面没认出来」，只 sleep 一轮然后 continue，同一帧反复抛、磨到状态超时才报错
+    （见 ``SideStoryCleared`` 与 ``MoonlightCleared`` 的同一段说明）。
+    走这条出口顺带把游戏带回首页，正是巡检收尾想要的效果。
+
+    ``stop_label`` 是写进日志 ``停止=`` 后面的文案，与其它路线的口径一致。
+    """
+
+    stop_label = "支线刷新倒计时已读取"
+
+    def __init__(self, payload: dict[str, Any]) -> None:
+        super().__init__(
+            f"剩余 {payload.get('days')} 天 {payload.get('hours')} 小时"
+            f"（原文 {payload.get('raw', '')}）"
+        )
+        self.payload = payload
 
 
 # ── 关卡地图上「当前角色的光标」───────────────────────────────────────────────
@@ -286,6 +310,10 @@ _SIDE_TEMPLATE_NAMES = (
     "helper_change",
     "diff_mid",
     "boss_select_team",
+    # 支线故事页右侧「支线故事」标签（2026-11-12）：绕开会被活动顶掉的「快速入场」，
+    # 点它进「可进入的支线故事」列表。本页 1.0000 / 列表页 0.6637。
+    "sub_story_tab",
+    "sub_story_list_title",
     # ── 期次主页「故事/奖励/PV」（2026-11-06，PC 专属、可选）──
     # 点了「快速入场」后**先**落到这一页，右侧是三颗标签，不是关卡地图也不是
     # Episode 详情。两张图都是「只放 pc/」的可选模板：模拟器解析不到 ⇒ 空元组
@@ -365,6 +393,11 @@ _SIDE_REGIONS = {
     # 区域罩住整条左下按钮带（离开/大厅）。⚠️ ①/BOSS 场景页也有「离开」按钮、同一位置也会命中，
     # 但本判据只在 `_in_outpost` 模式下使用（见 `_side_decision`），不会误触①。
     "outpost_leave": (40, 960, 320, 172),
+    # 支线故事页右侧那颗「支线故事」标签（模板 165x38 @ (1630,348)）。
+    # 只在支线故事页命中（1.0000），列表页 0.6637 ⇒ 区域给右侧整列。
+    "sub_story_tab": (1480, 240, 502, 340),
+    # 「可进入的支线故事」标题：列表顶部（模板 230x42 @ (1490,170)）。
+    "sub_story_list_title": (1380, 110, 602, 220),
     # ── 连打链路 ── 地图节点区域 = 整个地图视野（不含顶部 HUD y<90 与右侧任务栏 x>1740）。
     # ⚠️ 必须给大区域：视角会平移（相机跟角色走），节点可能出现在视野任何位置；
     #    默认视角下 goblin 中心 y≈62、大半被顶部 HUD 挡住 ⇒ 平移后才能匹配到。
@@ -422,6 +455,10 @@ _SIDE_THRESHOLDS = {
     # 负例 ① 队伍页 team.png / 选择队伍页 02_team 均 no-match@0.6。0.70 离天花板余量充足
     # （已知负例全 < 0.6）。⚠️ 阈值 0.70 先按经验填，未跑全库负例扫描复核。
     "outpost_team": 0.70,
+    # 支线故事页「支线故事」标签：本页 1.0000、列表页 0.6637 ⇒ 0.85 干净隔开。
+    "sub_story_tab": 0.85,
+    # 列表页标题：列表页 1.0000、支线故事页 0.5238、Episode 页 0.5126 ⇒ 0.85。
+    "sub_story_list_title": 0.85,
     # ③ 据点场景页「离开」按钮：原样 RGB。真阳性 1.0000（哥布林据点场景页 05_after_confirm）；
     # ① 场景页 scene.png 同样命中 0.9577（同一按钮、同一位置，符合预期），
     # 但本判据只在 `_in_outpost` 模式下使用，故 ① 误触不构成风险。0.70 余量充足。
@@ -501,32 +538,70 @@ _SIDE_MATCH_MODES: dict[str, str] = {
 }
 
 
-# ── 连打链路的段落账本（2026-11-01）─────────────────────────────────────────
-# 用户口径：①正常关卡打完 → ②BOSS 难度阶梯（地狱级 ×5）→ ③两个一次性据点 → 收工，
-# **一条运行内连起来**，段与段之间不再要求用户手动导航。
+# ── 连打链路的段落账本（2026-11-01 建；2026-11-12 用户订正顺序）─────────────
+# 用户口径（**2026-11-12 20:55 亲口订正**，以这条为准）：
+#   ①正常关卡 → ②摩罗戈拉据点 → ③哥布林据点 → ④BOSS 骷髅阶梯 → 收工，
+#   **一条运行内连起来**，段与段之间不再要求用户手动导航。
+#
+# ⚠️ 旧版把顺序写反了（骷髅②→哥布林③→摩罗戈拉④）。那不是口误：11-01 的
+# 地图夹具 `map_default_view.png` 上「S.摩罗戈拉生长地 入场限制 **0/1**」、
+# 「S.哥布林据点 **1/1**」—— 摩罗戈拉早已打完、哥布林还没打，说明真实顺序
+# 就是「摩罗戈拉在前、哥布林在后」。旧代码先点哥布林、把已打完的摩罗戈拉
+# 当终点（进去只看到「次数耗尽」→ 退场收工），凑巧能收尾，所以一直没暴露。
 #
 # 段的推进点（全部发生在「有明确证据的动作」上，不靠猜）：
-#   ①→②  场景页连续 12 帧无箭头（= ① 打完）⇒ 点「离开」回地图，段落切到 _SEG_BOSS；
-#   ②→③  队伍准备页「可入场次数已全部耗尽。」⇒ 点「返回」→ 地狱级场景页点「离开」，
-#         段落切到 _SEG_OUTPOST_1（不再就地收工——这是对旧语义的**有意更改**）；
-#   ③a→③b 据点场景页点「离开」⇒ 段落切到 _SEG_OUTPOST_2；
-#   ③b→收工 最后一个据点点「离开」回地图 ⇒ ``SideStoryCleared``。
+#   ①→②  场景页连续 12 帧无箭头（= ① 打完）⇒ 点「离开」回地图，段落切到 _SEG_OUTPOST_1；
+#   ②→③  摩罗戈拉场景页点「离开」回地图 ⇒ 段落切到 _SEG_OUTPOST_2；
+#   ③→④  哥布林场景页点「离开」回地图 ⇒ 段落切到 _SEG_BOSS；
+#   ④→收工 队伍准备页「可入场次数已全部耗尽。」⇒ 点「返回」→ 场景页点「离开」→ 回地图 ⇒
+#         ``SideStoryCleared``。
 _SEG_NORMAL = 0
 _SEG_BOSS = 1
 _SEG_OUTPOST_1 = 2
 _SEG_OUTPOST_2 = 3
 _SEG_LABELS = {
     _SEG_NORMAL: "①正常关卡",
-    _SEG_BOSS: "②BOSS阶梯",
-    _SEG_OUTPOST_1: "③哥布林据点",
-    _SEG_OUTPOST_2: "③摩罗戈拉据点",
+    _SEG_OUTPOST_1: "②摩罗戈拉据点",
+    _SEG_OUTPOST_2: "③哥布林据点",
+    _SEG_BOSS: "④BOSS阶梯",
 }
 # 段 → 地图上要点的节点图标模板。
 _NODE_TEMPLATES = {
+    _SEG_OUTPOST_1: "morola_node",
+    _SEG_OUTPOST_2: "goblin_node",
     _SEG_BOSS: "boss_node",
-    _SEG_OUTPOST_1: "goblin_node",
-    _SEG_OUTPOST_2: "morola_node",
 }
+# 「入场限制 0/1」白气泡的阈值。同一张模板在两个据点上实测 **1.0000 / 0.949**
+# （两处气泡的排版有细微差异），0.90 留 0.05 余量；数字一旦变成 1/1 会大幅掉分 ⇒
+# 不命中就代表"这一处还没打完"，方向是安全的（宁可重复打，绝不跳过）。
+_ENTRY_ZERO_THRESHOLD = 0.90
+# 地图主体区（顶部 HUD 之下、底部按钮之上）。节点图标与「入场限制」气泡都在这里。
+_MAP_NODE_REGION = (0, 90, 1740, 900)
+# ── 难度列表「勾」判据（2026-11-12 用户点破）────────────────────────────────
+# 每行右上角一颗绿勾 = 这一档已经通关。选档就看**谁没勾**。
+# 四行的勾中心 y（画布 1982x1132，实测夹具 `boss_difficulty_list.png`：
+# 初级 306 / 中级 523，行距 217 ⇒ 上级 740 / 地狱级 957）。
+_TIER_ROWS: tuple[tuple[str, int], ...] = (
+    ("初级", 306),
+    ("中级", 523),
+    ("上级", 740),
+    ("地狱级", 957),
+)
+_TIER_ROW_TOLERANCE = 70        # 勾中心与行心允许的纵向偏差
+_TIER_CHECK_THRESHOLD = 0.90    # 同一张图上两个勾实测 1.0000 / 0.9873
+_TIER_LIST_REGION = (0, 150, 1300, 1132)   # 难度列表占左半边
+_TIER_CLICK_X = 220             # 点行落在名称区，不点勾本身
+# ── 「可进入的支线故事」列表：挑普通支线（2026-11-12 用户口径）────────────
+# 活动条目左下角有亮绿色「剩余 N 天」，普通条目只有右下角「入场」。
+# 两块都是同一种亮绿，用**横坐标**分开：右下（入场）x≥1700、左下（剩余标记）x≤1650。
+_GREEN_LO = (45, 120, 120)      # HSV：亮绿（文字描边）
+_GREEN_HI = (75, 255, 255)
+_ENTRY_BTN_MIN_X = 1700         # 「入场」两个字所在的位置
+_EVENT_MARK_MAX_X = 1650        # 「剩余 N 天」所在的位置
+_SUB_STORY_BLOCK_MIN_AREA = 20  # 绿色连通块最小面积（滤掉噪点）
+# ⚠️ **必须给面积上限**：地图/场景页有大片绿色草地，不设上限会被当成「入场」按钮。
+# 实测「入」22x23≈250、「场」22x21≈180，一套两个字都在 100~400 之间；600 够宽也够安全。
+_SUB_STORY_BLOCK_MAX_AREA = 600
 # 视角平移扫寻序列（找不到目标节点时的拖动增量，手指拖动方向 = 内容跟随方向：
 # 往下拖 (+y) 露出上面的地图）。整轮 y 方向净位移为 0，扫完回到出发点附近；
 # 上限 _PAN_LIMIT 次，找不到大不了原地等状态超时兜底（fail-closed，绝不瞎点）。
@@ -549,6 +624,9 @@ _PAN_SWEEPS: tuple[tuple[int, int], ...] = (
 _PAN_LIMIT = 6
 _PAN_START = (990, 560)     # 滑动起点（屏幕中部地图区）
 _PAN_DURATION_MS = 600
+# 点地图节点时**连点两下**的间隔（2026-11-12 用户要求）。
+# 游戏里双击节点 = 角色瞬间移动过去，人类也是这么点的；单点要眼睁睁看它走一路。
+_NODE_DOUBLE_TAP_GAP_SECONDS = 0.12
 # 滑动起终点允许出现的范围：(x0, y0, x1, y1)。画布 1982x1132（见 `_CURSOR_REGION`
 # 与夹具裁剪）；四边各留 60px，避免贴边触发系统手势/被窗口层裁掉。
 _PAN_SAFE = (60, 60, 1922, 1072)
@@ -603,14 +681,36 @@ class SideStoryTemplates:
     # ③ 据点：场景页左下「离开」按钮（打完后离开回地图，不进箭头逻辑/不误判收工）。
     outpost_leave: np.ndarray
     # ── 连打链路 ──
-    # BOSS 节点的**骷髅徽章**（56x74）。⚠️ 只裁徽章：城堡主体会被角色遮挡（实测掉到
+    # BOSS 节点的**骷髅徽章**。⚠️ 只裁徽章：城堡主体会被角色遮挡（实测掉到
     # 0.60），红标签横幅所有节点同形（混出 0.60 假阳性）；徽章 BOSS 独有、遮挡态仍 0.973。
-    boss_node: np.ndarray
-    # 哥布林据点节点图标（营地图标 90x90）。
-    goblin_node: np.ndarray
-    # 摩罗戈拉据点节点图标，**双候选**：清晰态（probe 帧）+ 雾态（14_map 帧）。
-    # 单候选跨帧只有 0.574、被负例 0.638 反超；双候选后 13 张地图帧全 0.965~1.000。
+    # **双候选**（2026-11-12 补）：旧图来自 11-01 那期（74x56），本期同一颗骷髅改成
+    # 68x68 的正方形，旧图整帧最高只有 0.721（门槛 0.80）⇒ 地图上明明有骷髅却认不出、
+    # 六次平移全空。新图由用户直接截取（68x68），在本帧 **0.9941**。
+    boss_node: tuple[np.ndarray, ...]
+    # 哥布林据点：**双候选**（2026-11-12 补第二张）。
+    # 旧图 = 营地图标（90x90）；新图 = 用户截的**「S.哥布林据点」名条**（162x46）。
+    # 为什么用名条而不是图标：角色通常正站在目标节点上，图标被腿挡掉一半（实测旧图
+    # 在本期地图上 MISS）；名条挂在节点下方，不会被挡，且文字恒定、不随次数变化。
+    goblin_node: tuple[np.ndarray, ...]
+    # 摩罗戈拉据点节点图标，**三候选**：清晰态（probe 帧）+ 雾态（14_map 帧）
+    # + 用户截的**「S.魔罗戈拉生长地」名条**（196x42，本帧 0.9861）。
+    # 单候选跨帧只有 0.574、被负例 0.638 反超；多候选后 13 张地图帧全 0.965~1.000。
     morola_node: tuple[np.ndarray, ...]
+    # 地图上的「入场限制 0/1」白气泡（2026-11-12 新增，接力判进度用）。
+    # 命中它 = 那一处据点**次数已用完**。两个据点各有一个，数出两个就说明
+    # ①②③ 全打完、只剩④BOSS —— 这是接力时唯一能自动读到的"进度真相"。
+    # ⚠️ 只裁气泡本体（164x40）：外面的草地色随位置变，装进模板会掉到 0.8 出头。
+    entry_zero: np.ndarray
+    # 支线故事页右侧那颗「支线故事」标签（165x38，2026-11-12 实测本页 1.0000、
+    # 列表页只有 0.6637 ⇒ 能干净区分两页）。
+    # 为什么要它：**「快速入场」在有活动时会被活动顶掉**（用户 2026-11-12 拍板），
+    # 改成「点标签 → 进可进入列表 → 点普通支线的入场」，绕开快速入场。
+    sub_story_tab: np.ndarray
+    # 「可进入的支线故事」列表页标题（230x42）。列表页 1.0000、支线故事页 0.5238、
+    # Episode 详情页 0.5126 ⇒ 0.85 干净隔开。
+    # ⚠️ **必须先认标题再挑条目**：只靠"有绿字"会在队伍准备页误命中（2026-11-12 实跑），
+    # 那页的「战斗开始」也是绿的。
+    sub_story_list_title: np.ndarray
     # 地图右下「准备战斗」绿按钮。**常显**（角色永远站在某节点上），只在
     # 「已点目标节点 + 画面稳定」后由 `_map_navigation_action` 使用。
     prepare_battle_map: np.ndarray
@@ -620,6 +720,11 @@ class SideStoryTemplates:
     helper_change: np.ndarray
     diff_mid: np.ndarray
     boss_select_team: np.ndarray
+    # 难度列表每行右上角的**绿色勾**（46x36，2026-11-12 用户点破的判据）。
+    # 勾 = 这一档已经通关过。用户原话：「初级和中级都打勾了对不对？那我现在再点进去打，
+    # 你选择不打勾的，肯定是打上级」—— 这比"记点过几次下一个难度"可靠得多：
+    # 中途从上级接力时，计数器是 0（以为还在中级），而勾是游戏自己画的真相。
+    tier_check: np.ndarray
     # ── 期次主页（2026-11-06，PC 专属可选）──
     # 空元组 = 模拟器（共享目录里没有这两张图）⇒ `_locate` 直接返回 None，
     # 运行期动作与接力落点都自动不启用，模拟器行为一个字节不变。
@@ -661,18 +766,31 @@ def build_side_story_templates(template_dir: Path) -> SideStoryTemplates:
         entry_exhausted=load_template(str(template_dir / "entry_exhausted.png")),
         outpost_team=load_template(str(template_dir / "outpost_team.png")),
         outpost_leave=load_template(str(template_dir / "outpost_leave.png")),
-        boss_node=load_template(str(template_dir / "boss_node.png")),
-        goblin_node=load_template(str(template_dir / "goblin_node.png")),
+        boss_node=(
+            load_template(str(template_dir / "boss_node.png")),
+            load_template(str(template_dir / "boss_node_alt.png")),
+        ),
+        goblin_node=(
+            load_template(str(template_dir / "goblin_node.png")),
+            load_template(str(template_dir / "goblin_node_alt.png")),
+        ),
         morola_node=(
             load_template(str(template_dir / "morola_node.png")),
             load_template(str(template_dir / "morola_node_foggy.png")),
+            load_template(str(template_dir / "morola_node_alt.png")),
         ),
+        entry_zero=load_template(str(template_dir / "entry_zero.png")),
         prepare_battle_map=load_template(str(template_dir / "prepare_battle_map.png")),
         # 返回键**复用主线 navigation 的模板文件**（实测 0.999），不复制第二份。
         story_back=load_template(str(root / "navigation" / "story_back.png")),
         helper_change=load_template(str(template_dir / "helper_change.png")),
         diff_mid=load_template(str(template_dir / "diff_mid.png")),
         boss_select_team=load_template(str(template_dir / "boss_select_team.png")),
+        tier_check=load_template(str(template_dir / "tier_check.png")),
+        sub_story_tab=load_template(str(template_dir / "sub_story_tab.png")),
+        sub_story_list_title=load_template(
+            str(template_dir / "sub_story_list_title.png")
+        ),
         event_home_reward=load_optional("event_home_reward"),
         event_home_pv=load_optional("event_home_pv"),
     )
@@ -733,6 +851,8 @@ class SideStoryStateMachine(StoryStateMachine):
         self,
         templates: SideStoryTemplates,
         initial_state: StoryState = StoryState.STAGE,
+        *,
+        countdown_only: bool = False,
     ) -> None:
         super().__init__(templates.story, initial_state=initial_state)
         self.side = templates
@@ -745,12 +865,13 @@ class SideStoryStateMachine(StoryStateMachine):
         # 「连着多少帧没看到蓝箭头」的账本。只在场景页上累加（见 ``_scene_action``），
         # 离开场景页立刻清零 —— 否则跨关卡会把两次无关的缺失连成一次收工。
         self._arrow_misses = 0
-        # ── BOSS 难度阶梯账本（②）──
-        # ``_boss_advances``：已经点过几次「下一个难度」。中级→上级→地狱级最多推进
-        # 2 次（中级是第 1 次进场就打的那一档，不算推进），到 2 即站上地狱级。
-        # 之后地狱级场景页改走「重新进行」，终点由 ``entry_exhausted`` 文案判定
-        # （见 ``_side_decision``），不在这里数次数。普通关卡（①）永远停在 0，
-        # 不会污染 ① 的箭头收工逻辑。
+        # ── BOSS 难度阶梯账本（④）──
+        # ``_boss_advances``：**当前站在第几档**（0=初级 1=中级 2=上级 3=地狱级）。
+        # 2026-11-12 语义订正：原来记的是「点过几次下一个难度」，一切从 0 起算；
+        # 但中途从上级接力时实际已在第 3 档，计数器却是 0 ⇒ 会多点两次空按钮。
+        # 现在初值由难度列表上的**绿勾**推出来（`_first_unchecked_tier`），
+        # 之后每点一次「下一个难度」+1（在 `action_clicked` 里记，空转不算）。
+        # 到 3（地狱级）即到顶，改走「重新进行」，终点由 ``entry_exhausted`` 判定。
         self._boss_advances = 0
         # ── 据点（③）状态账本 ──
         # ``_in_outpost``：当前是否处在「据点战斗中」（由据点队伍页的「可完成1次。」
@@ -786,6 +907,27 @@ class SideStoryStateMachine(StoryStateMachine):
         # ``_prev_screen`` / ``_settle_streak``：走路结束判定（连续稳定帧）用的上一帧。
         self._prev_screen: np.ndarray | None = None
         self._settle_streak = 0
+        # 「进入新页面」的通用稳定账本（与地图走路那套**分开**，互不污染）。
+        # 2026-11-12 21:52 实跑：进 BOSS「选择辅助英雄」页是慢转场（页面滑入），
+        # 在动画中点了左下角「变更」，点到了还没就位的按钮，落到「助手选择」，
+        # 整条链路 45 秒超时 —— 用户的原话是「感觉它没长眼睛」。
+        self._ui_prev_screen: np.ndarray | None = None
+        self._ui_settle_streak = 0
+        # ── 【只读巡检】支线刷新倒计时（2026-11-12 用户要求）──
+        # ``_countdown_only``：**只走到 Episode 详情页读数，一步战斗都不打**。
+        # 由 ``build_side_story_machine(..., countdown_only=True)`` 打开，日常任务是
+        # 在「所有路线跑完」之后额外跑这一趟（见 ``daily_tasks.run_daily_tasks`` 的
+        # ``inspect``）。打开后 ``_side_decision`` 整段换成分支，主线的点击一个都发不出去。
+        self._countdown_only = countdown_only
+        # 读到的数（`{"days": 13, "hours": 12, "raw": ...}`）。**由调用方落盘** ——
+        # 判据函数不写业务文件，这里只负责把它交出去。
+        self.countdown_read: dict[str, Any] | None = None
+        # 同一帧只跑一次 OCR：主循环对一帧会连问两遍（``preview`` 一遍、``next_action``
+        # 一遍），OCR 单次约 1.1 秒，不缓存就白烧一倍时间。
+        # 用 ndarray 的**对象身份**做键（同一帧传的是同一个对象），不比较像素 ——
+        # 比较像素反而会把「画面没变但确实是新一帧」误当成同一帧。
+        self._countdown_frame: np.ndarray | None = None
+        self._countdown_payload: dict[str, Any] | None = None
 
     # ── 判据 ────────────────────────────────────────────────────────────────
 
@@ -924,11 +1066,55 @@ class SideStoryStateMachine(StoryStateMachine):
         if handled:
             return action
         try:
-            return super().next_action(screen)
+            action = super().next_action(screen)
         except UnrecognizedScreen as error:
             raise UnrecognizedScreen(
                 f"支线故事画面[{state_label(self.state)}]未识别"
             ) from error
+        return self._widen_results_confirm_targets(action)
+
+    def action_clicked(self, action: StoryAction) -> None:
+        """**真正点出去之后**才记的账（累加型状态一律写这里，别写进 `next_action`）。
+
+        主循环在执行完 `runtime.click` 之后才会调这个钩子
+        （`StoryRunner._after_action_click` → `machine.action_clicked`）；
+        而 `next_action` 在「上一动作还没验收通过」时会被每帧空跑一次、算出来的动作
+        直接丢掉 —— 在那里做 `+= 1` 就是"没点也算做过"。
+        2026-11-12 21:21 实跑：「一直打中级、从不点下一个难度」就是这么来的。
+        """
+
+        super().action_clicked(action)
+        if action.name == "next_difficulty":
+            self._boss_advances += 1
+
+    # 结算确认点完，游戏可能直接回**本路线自己的场景页**：据点打完只剩「重新进行」、
+    # 地狱级打满也只有「重新进行」，两页都没有蓝箭头。主线那五个落点一个都不命中 ⇒
+    # 主循环判「这一下没点成功」，把状态机刚给出的「离开」动作整个丢掉 ⇒ 干等 45 秒
+    # ⇒ 退出码 1。2026-11-12 两次实跑各撞一次：20:38 落在**据点场景页**（摩罗戈拉打完，
+    # 画面只剩「离开/大厅/重新进行」）、20:07 落在**难度场景页**。这与主线注释里
+    # 09-18 漏「通关提示」、11-01 漏「结算确认/通关结算」是同一类事故 ——
+    # **不是判据问题，是落点名单漏了**。判据仍用主线那一份，这里只把本路线自有的
+    # 场景页身份补进白名单（名字与 `_outpost_scene_action` / `_boss_done_scene_action`
+    # 写进 `source_page` 的那两个字符串必须逐字一致）。
+    _RESULTS_CONFIRM_EXTRA_TARGETS = ("据点场景页", "地狱级场景页", "难度场景页")
+
+    def _widen_results_confirm_targets(self, action: Any) -> Any:
+        """把本路线自有场景页补进「结算确认」的落点白名单（其余动作原样返回）。
+
+        纯函数、不改任何状态：`preview` 走的是同一个 `next_action`，扩展必须两边一致，
+        否则预览与提交会对同一帧给出不同的转场契约。
+        """
+
+        if action is None or getattr(action, "name", "") != "results_confirm":
+            return action
+        extra = tuple(
+            page
+            for page in self._RESULTS_CONFIRM_EXTRA_TARGETS
+            if page not in action.target_pages
+        )
+        if not extra:
+            return action
+        return replace(action, target_pages=action.target_pages + extra)
 
     def _side_decision(
         self, screen: np.ndarray
@@ -939,7 +1125,15 @@ class SideStoryStateMachine(StoryStateMachine):
         「完成故事」弹窗是模态遮罩 → 场景页 → 战斗关 CLEAR → 剧情关 CLEAR →
         关卡地图 → Episode 详情页 → 期次主页（PC）→ 支线故事页。
         都不命中才返回 ``(False, None)``。
+
+        ⚠️ **只读巡检（``_countdown_only``）整段换道**，排在所有判据之前：
+        那条路只许点「支线故事标签 / 普通支线的入场」两下，主线与本路线原有的
+        任何一键（准备战斗、下一个难度、重新进行…）都不许发出去 —— 用户要的是
+        「进那个页面看一眼还剩多久」，不是「顺手打一把」。
         """
+
+        if self._countdown_only:
+            return self._countdown_decision(screen)
 
         # ③ 据点模式探活（**副作用，不返回**）：据点队伍页有「可完成1次。」白气泡，
         # ①/BOSS 队伍页都没有 ⇒ 命中即确认「当前在据点里」，置位 ``_in_outpost``。
@@ -947,7 +1141,13 @@ class SideStoryStateMachine(StoryStateMachine):
         # 都没箭头、都没「下一个难度」），纯页面识别分不出两者，只能靠这个状态位：
         # 置位后场景页改点「离开」回地图，否则会走①的箭头收工逻辑（见下方 replay 分支）。
         # 置位后一直保持，直到「离开」回地图（见地图分支重置）。
-        if self._locate(screen, "outpost_team") is not None:
+        #
+        # ⚠️ **④ BOSS 段一律不置位**（2026-11-12 22:11 实跑实锤）：地狱级队伍页也有
+        # 次数气泡（那一档要打 5 次），`outpost_team` 照样命中。置位后打完一把落回场景页，
+        # 会被当成「据点打完」直接点「离开」回地图 —— 本该「重新进行」打满 5 次。
+        # 日志特征：`完成=results_confirm 目标页面=据点场景页` + `outpost_leave`
+        # 判断依据写着「③ 哥布林据点打完」。
+        if self._segment != _SEG_BOSS and self._locate(screen, "outpost_team") is not None:
             self._in_outpost = True
 
         # ⓪ 「完成故事」弹窗，**必须最先判**。它每关通关都会弹一次（实测第 1~4 关全弹），
@@ -965,14 +1165,13 @@ class SideStoryStateMachine(StoryStateMachine):
                 target_states=(StoryState.WAIT_RESULTS, StoryState.WAIT_COMPLETE),
             )
 
-        # ⓪a 「可入场次数已全部耗尽。」——**段落感知的终点**（2026-11-01 语义更改）。
-        # 这一句出现 = 「当前这一段打不了了」。在连打链路下它的含义由 `_segment` 决定：
-        #   * `_SEG_BOSS`：地狱级打满 ⇒ **不再收工**，点「返回」退场接 ③（用户明确要求
-        #     ①→②→③ 连起来）。回程两条路都接得住：落到地狱级场景页 → `_boss_done`
-        #     分支点「离开」；直接落回地图 → 地图分支的 `_boss_done` 兜底切 ③。
-        #   * `_SEG_OUTPOST_*`：据点打满 ⇒ 同样不退化成收工，点「返回」退场后由地图
-        #     分支推进到下一段（据点① → 据点②，据点② → 收工）。旧行为在这里直接
-        #     抛 `SideStoryCleared`，据点①已用尽时会**静默跳过据点②**。
+        # ⓪a 「可入场次数已全部耗尽。」——**段落感知的终点**（2026-11-01 语义更改，
+        # 2026-11-12 顺序订正）。这一句出现 = 「当前这一段打不了了」，含义由 `_segment` 决定：
+        #   * `_SEG_BOSS`（**最后一段**）：打满 ⇒ 点「返回」退场 → 场景页「离开」→ 回地图
+        #     即收工（`_boss_done` / `_final_leave` 两条回程都接得住）。
+        #   * `_SEG_OUTPOST_*`：据点打满 ⇒ 不退化成收工，点「返回」退场后由地图
+        #     分支推进到下一段（摩罗戈拉 → 哥布林 → BOSS）。旧行为在这里直接
+        #     抛 `SideStoryCleared`，前一个据点已用尽时会**静默跳过后面整段**。
         #   * `_SEG_NORMAL`：理论上不可能出现（普通关卡不显示次数），维持收工。
         exhausted = self._locate(screen, "entry_exhausted")
         if exhausted is not None:
@@ -984,18 +1183,15 @@ class SideStoryStateMachine(StoryStateMachine):
                 if self._segment == _SEG_BOSS:
                     self._boss_done = True
                     name = "boss_done_back"
-                    reason = "② BOSS 次数用尽：点「返回」退场接③据点（不再就地收工）"
+                    reason = "④ BOSS 次数用尽（最后一段）：点「返回」退场，回地图即收工"
                 else:
-                    # ③ 据点用尽 ⇒ 同样是「这一段打完了」，但**不能收工**：
-                    # 旧行为在这里直接 `SideStoryCleared`，于是「中途重跑 + 据点①已用尽」
-                    # 会把据点②整个跳过（代码里原来就写着这条已知局限）。
-                    # 现在改成点「返回」退场，回地图后由地图分支推进到下一段：
-                    # 据点① → 据点②，据点② → 收工。
+                    # 据点用尽 ⇒ 同样是「这一段打完了」，但**不能收工**（后面还有段）：
+                    # 点「返回」退场，回地图后由地图分支推进到下一段。
                     self._outpost_done = True
                     name = "outpost_done_back"
                     reason = (
-                        "③ 据点次数用尽：点「返回」退场，回地图后接下一个据点"
-                        "（不再就地收工，旧行为会跳过据点②）"
+                        "据点次数用尽：点「返回」退场，回地图后接下一段"
+                        "（摩罗戈拉 → 哥布林 → BOSS；旧行为会跳过后面整段）"
                     )
                 return True, self._action(
                     name,
@@ -1023,15 +1219,43 @@ class SideStoryStateMachine(StoryStateMachine):
         # 推满之后再遇到这一屏，必须交给下方 `replay` 分支走「重新进行」把地狱级打满，
         # 否则会一直点「下一个难度」空转（地狱级已是最高档，点了游戏侧大概率无反应，
         # 这一屏又没箭头，最终会被箭头缺失逻辑误判成「本期打完」提前收工）。
+        #
+        # ⚠️ **必须带段位门禁 `_segment == _SEG_BOSS`**（2026-11-12 实跑实锤）：
+        # 这一页在①段**最后一关打完后也会出现**（同一页还有蓝箭头 + 重新进行；
+        # 箭头是闪烁的，超时诊断帧常拍到暗帧 —— 实测暗帧 791 像素 / 亮帧 5142）。
+        # 旧代码只判「按钮在不在 + 推过几次」，没有段位条件 ⇒ ①段一遇到它就抢在
+        # 箭头前面点了「下一个难度」，返回身份「难度场景页」；而 `results_confirm`
+        # 的落点白名单是（剧情播放/通关提示/额外奖励/下一关入口/无法前往下一关），
+        # 里面没有「难度场景页」⇒ 转场验收不过 ⇒ 干等 45 秒，整条路线以退出码 1 收场
+        # （2026-11-12 20:07 那次 8 分 31 秒失败就是这条）。
+        # ①段的正确出口只有两个：箭头（有箭头 = 还有下一关）/ 「离开」（12 帧无箭头
+        # = 本段打完，回地图接②BOSS），两者报的身份都是「下一关入口」，验收能过。
         next_difficulty = self._locate(screen, "next_difficulty")
-        if next_difficulty is not None and self._boss_advances < 2:
-            self._boss_advances += 1
+        if (
+            next_difficulty is not None
+            and self._segment == _SEG_BOSS
+            and self._boss_advances < 3
+            # ⚠️ **有蓝箭头就让路**（2026-11-12 用户明确口径）：BOSS 关只是关卡链上的一环，
+            # 图还没走完的时候场景页是有蓝箭头的 —— 那时该顺着箭头继续打下一关，
+            # **不是**就地升难度。只有箭头没了（图走完了）才轮到「下一个难度」。
+            # 同理，这一条也保证了"第一次进来只打初级、打完继续走图"的原始节奏。
+            and self._arrow_pixels(screen) < _ARROW_PIXELS_MIN
+        ):
+            # ⚠️ **不在这里累加**（2026-11-12 21:21 实跑实锤）：`next_action` 在
+            # 「上一动作还没验收通过」时会被主循环每帧空跑一次，而那次算出来的动作
+            # 是**丢掉不执行**的。在这里 `+= 1` 等于"没点也算推过一档" ——
+            # 点完结算确认、等场景页出现的那 8 秒里就被顶到 2，之后一路「重新进行」，
+            # 中级打了一遍又一遍，「下一个难度」一次都没点到。
+            # 记账改到 `action_clicked`（真正点出去之后才 +1）。
             return True, self._action(
                 "next_difficulty",
                 next_difficulty.center,
                 source_page="难度场景页",
                 target_pages=("选择辅助英雄", "队伍准备"),
-                reason=f"BOSS 场景页「下一个难度」已识别（推进第 {self._boss_advances} 档）",
+                reason=(
+                    f"BOSS 场景页「下一个难度」已识别"
+                    f"（当前第 {self._boss_advances + 1} 档 ⇒ 推进到第 {self._boss_advances + 2} 档）"
+                ),
                 target_states=(StoryState.STAGE, StoryState.TEAM),
             )
 
@@ -1040,11 +1264,25 @@ class SideStoryStateMachine(StoryStateMachine):
         # 上一次的遗留（可能是初级/上一期的地狱级），**不能**交给主线直接确认。
         # 只在 ② 段且 `_boss_entered` 未置位时接管，三拍走完：变更 → 中级行 → 选择队伍；
         # 完成后交还主线 —— 之后每档由「下一个难度」把粘性档位推上去，主线直接确认即可。
-        if self._segment == _SEG_BOSS and not self._boss_entered:
+        # ④ BOSS 进场（选难度）——**不看"我打到第几段"的状态位，靠画面自证**。
+        # 2026-11-12 22:19 用户拍板：「中断之后再往下走也要走得通」。接力/中途启动时
+        # `_segment` 可能是普通段（接力猜不出来），旧写法 `_segment == _SEG_BOSS` 直接把
+        # 这两页让给主线，主线把难度列表误认成「助手选择」⇒ 卡死。
+        # 两条画面判据任一成立就接管，并**顺手把段位拨到 BOSS**（自愈）：
+        #   ① 认出「变更」按钮 ⇒ BOSS 的 helper 页（该判据对 team 页 no-match）；
+        #   ② 认出绿勾 / 「中级」行 ⇒ 难度列表页。
+        if not self._boss_entered:
             change = self._locate(screen, "helper_change")
-            if change is not None:
+            is_tier_list = (
+                self._first_unchecked_tier(screen) is not None
+                or self._locate(screen, "diff_mid") is not None
+            )
+            if change is not None or is_tier_list:
+                # 画面证明"我在 BOSS 进场这一环" ⇒ 段位自愈，接力也能接上。
+                self._segment = _SEG_BOSS
                 # 这页归我管（连等待也返回 (True, None)，不给主线误点「选择队伍」的机会）。
                 return True, self._boss_first_entry_action(screen, change)
+                return True, self._boss_first_entry_action(screen, None)
 
         # ① 场景页：点箭头进下一关；箭头连着多帧不见 ⇒ **不再收工**，接力去 ②。
         # ③ 在据点模式里，这同一页是「据点场景页」，必须改点「离开」回地图，
@@ -1113,23 +1351,27 @@ class SideStoryStateMachine(StoryStateMachine):
             # 回到地图 = 不在任何据点里、「离开」已完成。
             self._in_outpost = False
             self._leaving = False
-            # ② 打满后若「返回」直接落回地图（没经过地狱级场景页），在这里兜底切 ③。
+            # ④ BOSS 打满后若「返回」直接落回地图（没经过地狱级场景页）⇒ 全程完成。
+            # ⚠️ 2026-11-12 顺序订正后 BOSS 是**最后一段**，落到这里就该收工，
+            # 不再"切去据点"（旧顺序下它是第二段，才需要接力）。
             if self._boss_done:
                 self._boss_done = False
-                self._segment = _SEG_OUTPOST_1
-            # ③ 据点打满后若「返回」直接落回地图（没经过据点场景页），在这里推进：
-            # 据点① → 据点②；据点② → 收工。⚠️ 必须排在 `_final_leave` 判断**之前**，
+                self._final_leave = True
+            # ②③ 据点打满后若「返回」直接落回地图（没经过据点场景页），在这里推进：
+            # 摩罗戈拉 → 哥布林 → BOSS。⚠️ 必须排在 `_final_leave` 判断**之前**，
             # 它可能会把 `_final_leave` 置起来 —— 那一帧就该收工。
             if self._outpost_done:
                 self._outpost_done = False
                 if self._segment == _SEG_OUTPOST_1:
                     self._segment = _SEG_OUTPOST_2
+                elif self._segment == _SEG_OUTPOST_2:
+                    self._segment = _SEG_BOSS
                 else:
                     self._final_leave = True
-            # 最后一个据点点完「离开」回地图 ⇒ 全程完成，收工（退出码 2）。
+            # BOSS 打满、点完「离开」回地图 ⇒ 全程完成，收工（退出码 2）。
             if self._final_leave:
                 raise SideStoryCleared(
-                    "两个据点均已打完并离开回地图，支线故事①②③全程完成"
+                    "①正常关卡、②③两个据点、④BOSS 均已打完，支线故事全程完成"
                 )
             if self._segment == _SEG_NORMAL:
                 # ① 段：按光标走（原逻辑不动）。
@@ -1206,21 +1448,188 @@ class SideStoryStateMachine(StoryStateMachine):
                 target_states=(StoryState.STAGE,),
             )
 
-        # ⑥ 支线故事页。⚠️ 它的落点白名单必须含「期次主页」：PC 上「快速入场」
-        # 点下去先到的是上面那一页，不是 Episode 详情（2026-11-06 12:58 真机日志）。
+        # ⑤ 可进入的支线故事列表：点**普通支线**的「入场」（跳过活动条目）。
+        # 用户口径（2026-11-12）：活动条目左下角有绿色「剩余 N 天」，普通条目只有「入场」。
+        # ⚠️ 必须先认「可进入的支线故事」标题再挑条目 —— 只靠"有绿字"会在队伍准备页
+        # 误命中（那页的「战斗开始」也是绿的，2026-11-12 实跑）。
+        if self._locate(screen, "sub_story_list_title") is not None:
+            normal_entry = self._pick_normal_sub_story(screen)
+            if normal_entry is not None:
+                return True, self._action(
+                    "enter_normal_sub_story",
+                    normal_entry,
+                    source_page="支线列表",
+                    target_pages=("Episode详情", "关卡地图", "期次主页"),
+                    reason="支线列表：跳过带「剩余 N 天」的活动条目，点普通支线的「入场」",
+                    target_states=(StoryState.STAGE,),
+                )
+
+        # ⑥ 支线故事页（有「快速入场」那一页）：**不再点快速入场** ——
+        # 用户 2026-11-12：有活动时这颗按钮会被活动顶掉，怎么点都进不去普通支线。
+        # 改点右侧「支线故事」标签，进「可进入的支线故事」列表，由上面 ⑤ 挑普通那条。
         entry = self._locate(screen, "quick_entry")
         if entry is not None:
+            tab = self._locate(screen, "sub_story_tab")
+            if tab is not None:
+                return True, self._action(
+                    "open_sub_story_list",
+                    tab.center,
+                    source_page="支线故事",
+                    target_pages=("支线列表",),
+                    reason="支线故事页：点右上「支线故事」标签，进可进入列表（不走快速入场）",
+                    target_states=(StoryState.STAGE,),
+                )
+            # 标签没认出来：保留旧路（快速入场），失败关闭而不是干等。
             return True, self._action(
                 "enter_quick_entry",
                 entry.center,
                 source_page="支线故事",
                 target_pages=("Episode详情", "关卡地图", "期次主页"),
-                reason="支线故事页的快速入场按钮已识别",
+                reason="支线故事页的快速入场按钮已识别（标签未认出，退回旧路）",
                 target_states=(StoryState.STAGE,),
             )
 
-        # 七条判据都不命中 ⇒ 这一页不归我管，交给主线状态机。
+        # 判据都不命中 ⇒ 这一页不归我管，交给主线状态机。
         return False, None
+
+    # ── 【只读巡检】支线刷新倒计时 ──────────────────────────────────────────
+    #
+    # 用户 2026-11-12 的要求：每天跑完所有路线之后，**额外跑一趟**，走进 Episode
+    # 详情页把「剩余 N 天 N 小时」读下来记着，不打图、不消耗任何次数。
+    #
+    # 这条支不新增任何判据：认页用的还是上面那三张（`sub_story_tab` /
+    # `sub_story_list_title` / `adventure`），绿字挑条目的规则也是同一份
+    # `_pick_normal_sub_story`。它只做两件事 —— **少走几步**、**多读一行字**。
+
+    def _countdown_decision(
+        self, screen: np.ndarray
+    ) -> tuple[bool, Optional[StoryAction]]:
+        """只读巡检的决策：只走「支线故事页 → 支线列表 → Episode 详情」这三页。
+
+        返回契约与 ``_side_decision`` 一致，是 ``(是否归我管, 动作)``。
+
+        ⚠️ **任何不在这条链上的页面都返回 ``(True, None)``** —— 语义是「这一页归我管，
+        但我不动手」。宁可让主循环按状态超时收场，也绝不把主线或本路线原有的点击
+        放出来：那些点击在这一趟里**全都是「开始打图」**（准备战斗 / 下一个难度 /
+        重新进行 / 跳过剧情…），与「只是看一眼还剩多久」完全相反。
+        这条是安全铁律的直接落地，别为了「顺手修一下」放宽它。
+        """
+
+        adventure = self._locate(screen, "adventure")
+        if adventure is not None:
+            payload = self._countdown_of_frame(screen)
+            if payload is None:
+                # 读不到（没装 OCR / 这一帧还没画完 / 文字换了）：**不猜、不乱点**，
+                # 再等一帧；一直读不到就交给状态超时收场（失败关闭）。
+                return True, None
+            # 先记在账本上再抛：抛出去之后 `run()` 只会打一行日志就收工，
+            # 没人能再从栈上把它捞回来 —— 落盘由调用方在 run 返回后读这个字段。
+            self.countdown_read = payload
+            raise SideStoryCountdownRead(payload)
+
+        # 期次主页（**PC 专属**的中间页，2026-11-06）：点了「入场」后先落在这里，
+        # 右侧「故事」标签才是 Episode 详情页。模拟器上这两颗模板都是空元组 ⇒
+        # 两条 `_locate` 恒 None ⇒ 对模拟器零影响。
+        # 不接这一步的话，PC 上巡检会永远停在「期次主页」等到状态超时 ——
+        # 那样这条功能在 PC 就是个死代码（`side_story` 在 `PC_READY_ROUTES` 里）。
+        event_home = self._locate(screen, "event_home_reward")
+        if event_home is None:
+            event_home = self._locate(screen, "event_home_pv")
+        if event_home is not None:
+            return True, self._action(
+                "enter_event_story",
+                self._scaled_point(screen, _EVENT_HOME_STORY_POINT),
+                source_page="期次主页",
+                target_pages=_EVENT_HOME_TARGET_PAGES,
+                reason="倒计时巡检：期次主页的「故事」入口已识别，进去读数",
+                target_states=(StoryState.STAGE,),
+            )
+
+        if self._locate(screen, "sub_story_list_title") is not None:
+            normal_entry = self._pick_normal_sub_story(screen)
+            if normal_entry is None:
+                return True, None
+            return True, self._action(
+                "enter_normal_sub_story",
+                normal_entry,
+                source_page="支线列表",
+                target_pages=("Episode详情", "关卡地图", "期次主页"),
+                reason="倒计时巡检：点普通支线的「入场」，进 Episode 详情页读数",
+                target_states=(StoryState.STAGE,),
+            )
+
+        entry = self._locate(screen, "quick_entry")
+        if entry is not None:
+            tab = self._locate(screen, "sub_story_tab")
+            if tab is None:
+                return True, None
+            return True, self._action(
+                "open_sub_story_list",
+                tab.center,
+                source_page="支线故事",
+                target_pages=("支线列表",),
+                reason="倒计时巡检：点右上「支线故事」标签，进可进入列表",
+                target_states=(StoryState.STAGE,),
+            )
+
+        # 关卡地图 / 队伍准备 / 战斗 / 结算 —— 一律不动手（那上面任何一键都在打图）。
+        return True, None
+
+    def _countdown_of_frame(self, screen: np.ndarray) -> dict[str, Any] | None:
+        """同一帧只跑一次 OCR（理由见 ``__init__`` 里的 ``_countdown_frame``）。
+
+        ⚠️ **别把结果缓存到下一帧**：主循环两帧之间可能已经换了页面，把上一页的读数
+        当成这一页的，等于让「没读到」变成「读到了旧值」。
+        """
+
+        if self._countdown_frame is screen:
+            return self._countdown_payload
+        payload = read_period_countdown(screen)
+        self._countdown_frame = screen
+        self._countdown_payload = payload
+        return payload
+
+    def _pick_normal_sub_story(
+        self, screen: np.ndarray
+    ) -> Optional[tuple[int, int]]:
+        """在「可进入的支线故事」列表里挑**普通支线**的「入场」按钮位置。
+
+        判据（用户 2026-11-12 口径）：活动条目左下角有一串亮绿色「剩余 N 天」，
+        普通条目只有右下角「入场」。两块同色，用横坐标分开 ——
+        右下（≥1700）= 入场，左下（≤1650）= 活动标记。
+        某条入场上方 ±70px 内没有活动标记 ⇒ 它就是普通支线。
+
+        返回 ``None`` 表示"这页不是列表 / 认不出"，**不猜**。
+        """
+
+        hsv = cv2.cvtColor(screen, cv2.COLOR_RGB2HSV)
+        mask = cv2.inRange(hsv, np.array(_GREEN_LO), np.array(_GREEN_HI))
+        count, _, stats, centroids = cv2.connectedComponentsWithStats(mask, 8)
+        entries: list[tuple[int, int]] = []
+        marks: list[tuple[int, int]] = []
+        for index in range(1, count):
+            area = int(stats[index][4])
+            if not (
+                _SUB_STORY_BLOCK_MIN_AREA <= area <= _SUB_STORY_BLOCK_MAX_AREA
+            ):
+                continue
+            cx, cy = int(centroids[index][0]), int(centroids[index][1])
+            if cx >= _ENTRY_BTN_MIN_X:
+                entries.append((cx, cy))
+            elif cx <= _EVENT_MARK_MAX_X:
+                marks.append((cx, cy))
+        if not entries:
+            return None
+        normal = [
+            (cx, cy)
+            for cx, cy in entries
+            if not any(abs(my - cy) <= 70 for _mx, my in marks)
+        ]
+        if not normal:
+            return None
+        top_y = min(cy for _cx, cy in normal)
+        same_row = [(cx, cy) for cx, cy in normal if abs(cy - top_y) <= 70]
+        return max(cx for cx, _cy in same_row) + 6, top_y
 
     def _scene_action(self, screen: np.ndarray, replay: Match) -> Optional[StoryAction]:
         """场景页（打完一关站着的那个场景）上的决策。
@@ -1235,7 +1644,7 @@ class SideStoryStateMachine(StoryStateMachine):
         轮询并再次提交，后者会去委托主线、被 ``UnrecognizedScreen`` 打断记账。
 
         ⚠️ **BOSS 地狱级场景页优先于此处的箭头逻辑**：地狱级场景页既没有蓝箭头、
-        也没有「下一个难度」可推进（``_boss_advances`` 已到 2），唯一能做的就是
+        也没有「下一个难度」可推进（``_boss_advances`` 已到 3 = 地狱级），唯一能做的就是
         「重新进行」把地狱级打满。必须先认这一支，否则会掉进下面的「箭头缺失 12 帧
         ⇒ 本期打完」把整条路线提前收工（2026-11-01 实测 BOSS 场景页箭头像素恒为 0）。
         """
@@ -1245,7 +1654,7 @@ class SideStoryStateMachine(StoryStateMachine):
         # 那一页会出现「可入场次数已全部耗尽。」（见 `_side_decision` 的 entry_exhausted
         # 分支），由那一支判定收工 —— 那是游戏自身的真相源，比数 5 次更稳。
         # 这里只负责「站在地狱级场景页就点重新进行」。
-        if self._boss_advances >= 2:
+        if self._boss_advances >= 3:
             return self._action(
                 "replay",
                 replay.center,
@@ -1263,12 +1672,13 @@ class SideStoryStateMachine(StoryStateMachine):
             self._arrow_misses += 1
             if self._arrow_misses >= _ARROW_MISS_LIMIT:
                 # ① 正常关卡打完 ⇒ **不再收工**（2026-11-01 语义更改）：点「离开」
-                # 回地图，段落切到 ②，由地图导航去点骷髅节点。场景页这一帧还没有
-                # 「离开」命中就先等（``_arrow_misses`` 会继续累加，本分支每帧重进）。
+                # 回地图，段落切到 ②摩罗戈拉据点，由地图导航去点那株植物图标。
+                # 场景页这一帧还没有「离开」命中就先等（``_arrow_misses`` 会继续累加，
+                # 本分支每帧重进）。
                 leave = self._locate(screen, "outpost_leave")
                 if leave is None:
                     return None
-                self._segment = _SEG_BOSS
+                self._segment = _SEG_OUTPOST_1
                 self._leaving = True
                 self._arrow_misses = 0
                 return self._action(
@@ -1276,7 +1686,7 @@ class SideStoryStateMachine(StoryStateMachine):
                     leave.center,
                     source_page="下一关入口",
                     target_pages=("关卡地图",),
-                    reason="① 正常关卡打完（连续12帧无箭头）：点「离开」回地图接② BOSS",
+                    reason="① 正常关卡打完（连续12帧无箭头）：点「离开」回地图接②摩罗戈拉",
                     target_states=(StoryState.STAGE,),
                 )
             return None
@@ -1299,19 +1709,63 @@ class SideStoryStateMachine(StoryStateMachine):
     # ── 连打链路的新方法（②③ 段导航 / 退场 / BOSS 首进场）────────────────────
 
     def _boss_first_entry_action(
-        self, screen: np.ndarray, change: Match
+        self, screen: np.ndarray, change: Optional[Match]
     ) -> Optional[StoryAction]:
-        """BOSS 首进场三拍：变更 → 中级行 → 选择队伍（同页推进，靠子状态防重按）。
+        """BOSS 进场：**先判是不是已经在难度列表页**，是就直接选档；不是才点「变更」。
 
-        ⚠️ 「变更」在 helper 视图（左下）与列表视图（中下）都会命中 —— 用命中点
-        x 坐标区分（<400 = helper 视图）。中级行点完会**同页停留**，靠
-        ``_boss_row_clicked`` 防止下一帧又点行；点「选择队伍」后置 ``_boss_entered``，
-        之后的 helper 页（上级/地狱级进场）交还主线（粘性档位已被「下一个难度」推好）。
-        ⚠️ 已知薄弱点：若「中级行」那一击被吃掉，这里会在下一拍直接点「选择队伍」，
-        确认的就是当时高亮的那一行 —— 行点击失败属罕见路径，真跑若复现再加选中态复核。
+        ⚠️ 2026-11-12 22:01 实拍定案：难度列表页左下角**也会**命中 ``helper_change``
+        （那页 0.948~0.986），所以不能再按「x<400 = helper 视图」一刀切 ——
+        旧逻辑在列表页上点了 (151,1071) 的空白处，初级✓中级✓上级✓ 的页面上
+        该点的是「地狱级」，结果 45 秒点不动。
+        现在的判据：**能认出绿勾 ⇒ 已经在列表页**（helper 页没有勾）。
+        点行之后同页停留，靠 ``_boss_row_clicked`` 防重按；点「选择队伍」后置
+        ``_boss_entered``，之后交还主线。
         """
 
-        if change.center[0] < 400:
+        # ⚠️ **先判「是不是已经站在难度列表页」，再谈点「变更」**（2026-11-12 22:01 实拍）：
+        # 难度列表页左下角**也会**命中 `helper_change`（那页实测 0.948~0.986），
+        # 旧逻辑按「x<400 就是 helper 视图」一刀切，于是在列表页上点了 (151,1071) 的
+        # **空白处**（真实画面：初级✓中级✓上级✓，该点的是没打勾的地狱级），
+        # 一直点不动 ⇒ 45 秒超时。
+        # 判据：能认出「勾」就说明已经在列表页（helper 页没有勾）。
+        picked = self._first_unchecked_tier(screen)
+        if picked is not None:
+            if self._boss_row_clicked:
+                confirm = self._locate(screen, "boss_select_team")
+                if confirm is None:
+                    return None
+                self._boss_entered = True
+                return self._action(
+                    "boss_confirm_team",
+                    confirm.center,
+                    source_page="选择难度",
+                    target_pages=("队伍准备", "助手选择"),
+                    reason="BOSS 进场：点「选择队伍」进队伍准备",
+                    target_states=(StoryState.TEAM,),
+                )
+            index, name, row_y = picked
+            self._boss_row_clicked = True
+            # 档位账直接由勾推出：0=初级 1=中级 2=上级 3=地狱级。
+            # 这样中途从上级接力时，`_boss_advances` 就是 2，不会再多点空按钮。
+            self._boss_advances = index
+            return self._action(
+                "boss_pick_tier",
+                (_TIER_CLICK_X, row_y),
+                source_page="选择难度",
+                target_pages=("选择难度",),
+                reason=(
+                    f"难度列表：选「{name}」"
+                    f"（优先没打勾的；四档全勾时选地狱级把次数打满）"
+                ),
+                target_states=(StoryState.TEAM,),
+            )
+
+        if change is not None and change.center[0] < 400:
+            # ⚠️ **先等画面停稳再点**（2026-11-12 21:52 实跑）：这一页是慢转场、
+            # 页面滑入，上一版在动画当中就点了「变更」，点到还没就位的按钮 ⇒
+            # 落到「助手选择」⇒ 45 秒超时。稳定判定见 `_ui_settled`。
+            if not self._ui_settled(screen):
+                return None
             # helper 视图：点「变更」展开难度列表（落点仍在 helper 页族）。
             return self._action(
                 "boss_open_difficulty",
@@ -1321,34 +1775,48 @@ class SideStoryStateMachine(StoryStateMachine):
                 reason="BOSS 首进场：点「变更」展开难度列表",
                 target_states=(StoryState.TEAM,),
             )
-        row = self._locate(screen, "diff_mid")
-        if row is not None and not self._boss_row_clicked:
-            self._boss_row_clicked = True
-            return self._action(
-                "boss_pick_mid",
-                row.center,
-                source_page="选择难度",
-                target_pages=("选择难度",),
-                reason="BOSS 首进场：点中级行（同页停留，下一拍点「选择队伍」）",
-                target_states=(StoryState.TEAM,),
-            )
-        if self._boss_row_clicked:
-            confirm = self._locate(screen, "boss_select_team")
-            if confirm is not None:
-                self._boss_entered = True
-                return self._action(
-                    "boss_confirm_team",
-                    confirm.center,
-                    source_page="选择难度",
-                    target_pages=("队伍准备", "助手选择"),
-                    reason="BOSS 首进场：点「选择队伍」进队伍准备（中级）",
-                    target_states=(StoryState.TEAM,),
-                )
-        # 列表视图但行/确认键这一帧没认出来：等。
+        # 既认不出勾（不是列表页），又不是 helper 视图：等。
         return None
 
+    def _first_unchecked_tier(
+        self, screen: np.ndarray
+    ) -> Optional[tuple[int, str, int]]:
+        """难度列表里**第一个没打勾**的档位（= 这次该打的那一档）。
+
+        返回 ``(序号, 档名, 该行勾中心 y)``。**认不出就返回 None**：
+        一个勾都没命中说明判据失效（或四档全打完）—— 宁可停下等超时，
+        也不拿初级去顶，点错档等于白打一轮。
+        """
+
+        hits = find_all_templates(
+            screen,
+            self.side.tier_check,
+            _TIER_CHECK_THRESHOLD,
+            region=_TIER_LIST_REGION,
+            reference_size=self._REFERENCE_SIZE,
+            min_gap=100,
+        )
+        if not hits:
+            # 用户口径（2026-11-12 22:10）：「**初级一定是打勾的**」—— 这期活动里
+            # 初级打完就永远打勾，下次进来最少也是从中级开始。所以「一个勾都没有」
+            # 在实际游戏里不会出现，只可能是判据失效（换皮 / 缩放 / 遮挡）。
+            # ⇒ 必须停手，**绝不默认从初级打起**（那是白烧一整轮体力）。
+            return None
+        checked_y = [hit.center[1] for hit in hits]
+        for index, (name, row_y) in enumerate(_TIER_ROWS):
+            if not any(abs(cy - row_y) <= _TIER_ROW_TOLERANCE for cy in checked_y):
+                return index, name, row_y
+        # 四档**全部打勾**：初级/中级/上级都是一次性关卡，勾了就是通关；
+        # 但**地狱级要打满 N 次**（实拍是 5 次），它打完一次就会打勾 ——
+        # 勾在这里只代表"打过"，真正的进度是那一行左边的「入场限制 4/5」。
+        # ⇒ 仍然选地狱级，让它一直「重新进行」到队伍页出现「次数已全部耗尽」为止
+        #   （那一天进不去，`entry_exhausted` 会接住并收工）。
+        # 2026-11-12 22:18 实拍：初级✓ 中级✓ 上级✓ 地狱级✓ + 入场限制 4/5，
+        # 旧逻辑在这里返回 None ⇒ 停在难度页 60 秒超时。
+        return len(_TIER_ROWS) - 1, _TIER_ROWS[-1][0], _TIER_ROWS[-1][1]
+
     def _outpost_scene_action(self, screen: np.ndarray) -> Optional[StoryAction]:
-        """据点场景页：点「离开」回地图并推进段落（③a→③b→收工）。"""
+        """据点场景页：点「离开」回地图并推进段落（摩罗戈拉 → 哥布林 → BOSS）。"""
 
         if self._leaving:
             # 已点过「离开」、正在等回地图：这一屏先不做事，让主循环轮询。
@@ -1359,12 +1827,12 @@ class SideStoryStateMachine(StoryStateMachine):
             return None
         if self._segment == _SEG_OUTPOST_1:
             self._segment = _SEG_OUTPOST_2
-            reason = "据点①（哥布林）打完，点「离开」回地图接摩罗戈拉据点"
+            reason = "② 摩罗戈拉据点打完，点「离开」回地图接③哥布林据点"
         else:
-            self._final_leave = True
-            reason = "据点②（摩罗戈拉）打完，点「离开」回地图收工"
+            self._segment = _SEG_BOSS
+            reason = "③ 哥布林据点打完，点「离开」回地图接④BOSS 骷髅阶梯"
         # 场景页这条路已经推进过段落了 ⇒ 清掉 `_outpost_done`，别让地图分支再推一次
-        # （再推一次会把据点②整个跳过去）。这条对「正常打完」和「次数用尽后退场」
+        # （再推一次会把下一段整个跳过去）。这条对「正常打完」和「次数用尽后退场」
         # 两种来路都成立。
         self._outpost_done = False
         self._leaving = True
@@ -1378,7 +1846,7 @@ class SideStoryStateMachine(StoryStateMachine):
         )
 
     def _boss_done_scene_action(self, screen: np.ndarray) -> Optional[StoryAction]:
-        """② 打满退场：地狱级场景页点「离开」回地图，段落切 ③。"""
+        """④ BOSS 打满退场：地狱级场景页点「离开」回地图 ⇒ 全程收工。"""
 
         if self._leaving:
             return None
@@ -1386,16 +1854,41 @@ class SideStoryStateMachine(StoryStateMachine):
         if leave is None:
             return None
         self._boss_done = False
-        self._segment = _SEG_OUTPOST_1
+        self._final_leave = True
         self._leaving = True
         return self._action(
             "boss_scene_leave",
             leave.center,
             source_page="地狱级场景页",
             target_pages=("关卡地图",),
-            reason="② BOSS 打满：点「离开」回地图接③据点",
+            reason="④ BOSS 打满（最后一段）：点「离开」回地图即收工",
             target_states=(StoryState.STAGE,),
         )
+
+    def _segment_from_map(self, screen: np.ndarray) -> int:
+        """接力落在地图页时，按「入场限制 0/1」的个数推断该去哪个节点。
+
+        2026-11-12 用户明确要求：两个据点都显示 0/1（次数用完）= ①②③ 全打完，
+        只剩 ④BOSS，接力就该直接去骷髅头，而不是从头再点一遍据点。
+        **认不出就不跳段**（fail-closed）：回落到 ②摩罗戈拉，最多重复打一次，
+        绝不跳过还没打的段。
+        """
+
+        used = self._entry_zero_count(screen)
+        return _SEG_BOSS if used >= 2 else _SEG_OUTPOST_1
+
+    def _entry_zero_count(self, screen: np.ndarray) -> int:
+        """数地图上「入场限制 0/1」气泡有几个（= 已打完的据点个数）。"""
+
+        hits = find_all_templates(
+            screen,
+            self.side.entry_zero,
+            _ENTRY_ZERO_THRESHOLD,
+            region=_MAP_NODE_REGION,
+            reference_size=self._REFERENCE_SIZE,
+            min_gap=200,
+        )
+        return len(hits)
 
     def _map_navigation_action(self, screen: np.ndarray) -> Optional[StoryAction]:
         """②③ 段的地图导航：找目标节点 → 点它 → 等走路结束 → 点「准备战斗」。
@@ -1489,11 +1982,46 @@ class SideStoryStateMachine(StoryStateMachine):
             self._settle_streak = 0
         return self._settle_streak >= _SETTLE_STREAK_NEED
 
+    def _ui_settled(self, screen: np.ndarray) -> bool:
+        """通用「画面稳定」判定：中部内容区连续两帧几乎不变（算法同 `_map_settled`）。
+
+        与地图那套用**独立**的上一帧/计数：地图的账本在走路时被反复清零，
+        混用会让两条判据互相打断。
+
+        为什么需要它：进 BOSS「选择辅助英雄」页是慢转场，页面从侧面滑入；
+        上一版在动画当中就点了左下角「变更」，点到还没就位的按钮 ⇒ 落到「助手选择」⇒
+        45 秒转场超时（2026-11-12 21:52 实跑）。「等画面不动了再点」比任何固定延迟都准。
+        """
+
+        prev = self._ui_prev_screen
+        self._ui_prev_screen = screen.copy()
+        if prev is None or prev.shape != screen.shape:
+            self._ui_settle_streak = 0
+            return False
+        x, y, width, height = _SETTLE_REGION
+        diff = cv2.absdiff(
+            screen[y : y + height, x : x + width], prev[y : y + height, x : x + width]
+        )
+        changed = int((diff.max(axis=2) > 24).sum())
+        if changed <= _SETTLE_CHANGED_MAX:
+            self._ui_settle_streak += 1
+        else:
+            self._ui_settle_streak = 0
+        return self._ui_settle_streak >= _SETTLE_STREAK_NEED
+
     def preview(self, screen: np.ndarray):
         """观察一帧但不留下痕迹（含本路线自己的账本）。"""
 
+        # ⚠️ `_boss_advances` 必须一起还原（2026-11-12 实跑实锤）：它由 `_side_decision`
+        # 的「下一个难度」分支自增，而这里每帧都会空跑一次 `next_action` —— 不还原就会
+        # 几帧内从 0 漂到 2（实测同一帧连喂 5 次就到顶），把①段场景页误判成
+        # 「地狱级场景页 → 重新进行」。超时日志里那句「当前已确认页面=地狱级场景页」
+        # 就是这么来的，并不是真的站在地狱级。
         saved = (
             self._arrow_misses,
+            self._boss_advances,
+            self._ui_settle_streak,
+            self._ui_prev_screen,
             self._in_outpost,
             self._segment,
             self._leaving,
@@ -1512,6 +2040,9 @@ class SideStoryStateMachine(StoryStateMachine):
         finally:
             (
                 self._arrow_misses,
+                self._boss_advances,
+                self._ui_settle_streak,
+                self._ui_prev_screen,
                 self._in_outpost,
                 self._segment,
                 self._leaving,
@@ -1561,6 +2092,67 @@ _SIDE_RESUME_ORDER: tuple[tuple[str, StoryState, str], ...] = (
 )
 
 
+# ── 支线刷新倒计时（OCR，2026-11-12 用户要求）──────────────────────────────
+# Episode 详情页左下角：闹钟+感叹号图标，右边两行字
+#   「距可开启其他支线故事」
+#   「剩余 13天 12小时」
+# 普通支线每两周刷新一次，刷新要用户手动换期 ⇒ 每天跑完给他留个倒计时。
+# 实测（`_live_3_episode.png`）：裁剪 (40,1020)-(520,1110) 放大 2 倍，
+# rapidocr 读成 '剩余 13天 12小时'，置信度 0.81，耗时约 1.1 秒。
+_COUNTDOWN_REGION = (40, 1020, 480, 90)
+_COUNTDOWN_PATTERN = re.compile(r"剩余\s*(\d+)\s*天\s*(\d+)\s*小时")
+_OCR_ENGINE: Any = None
+
+
+def _ocr_engine() -> Any:
+    """懒加载 OCR 引擎（首次约 1~2 秒建模型；之后复用同一个实例）。
+
+    ⚠️ 依赖是可选的：没装 `rapidocr-onnxruntime` 就返回 None，
+    调用方按"这次读不到"处理，主流程一个字节都不受影响。
+    """
+
+    global _OCR_ENGINE
+    if _OCR_ENGINE is None:
+        try:
+            from rapidocr_onnxruntime import RapidOCR
+        except Exception:  # noqa: BLE001 - 可选依赖，缺了就退化成"读不到"
+            return None
+        _OCR_ENGINE = RapidOCR()
+    return _OCR_ENGINE
+
+
+def read_period_countdown(screen: np.ndarray) -> Optional[dict[str, Any]]:
+    """从 Episode 详情页左下角读出普通支线的刷新倒计时。
+
+    返回 ``{"days": 13, "hours": 12, "raw": "剩余 13天 12小时"}``；
+    读不到（没装 OCR / 不在这一页 / 文字换了）返回 ``None`` —— **绝不猜**。
+    """
+
+    engine = _ocr_engine()
+    if engine is None:
+        return None
+    x, y, width, height = _COUNTDOWN_REGION
+    crop = screen[y : y + height, x : x + width]
+    if crop.size == 0:
+        return None
+    # 放大两倍再喂 OCR：这一行字在 1982x1132 画布上只有 ~24px 高，原尺寸召回率低。
+    crop = cv2.resize(crop, (width * 2, height * 2), interpolation=cv2.INTER_CUBIC)
+    try:
+        result, _elapse = engine(crop)
+    except Exception:  # noqa: BLE001 - OCR 内部错误不该把整条路线打挂
+        return None
+    for item in result or []:
+        text = str(item[1])
+        match = _COUNTDOWN_PATTERN.search(text)
+        if match is not None:
+            return {
+                "days": int(match.group(1)),
+                "hours": int(match.group(2)),
+                "raw": text.strip(),
+            }
+    return None
+
+
 def detect_resume_point(
     machine: SideStoryStateMachine, screen: np.ndarray
 ) -> Optional[ResumePoint]:
@@ -1571,10 +2163,17 @@ def detect_resume_point(
 
     接力用的一帧**没有运行期上下文**，所以这里只认页面上真有专属锚点的页；
     落点状态按 `_SIDE_RESUME_ORDER` 逐条写好，理由见模块头。
+
+    **落在地图页时要顺手拨段落**（2026-11-12 用户要求）：接力的 `_segment` 默认是
+    ①普通段，可用户往往停在「据点都打完、只剩 BOSS」的收尾期 —— 不拨就是回地图后
+    从②摩罗戈拉重新点一遍。判据用地图上的「入场限制 0/1」气泡数，见
+    `_segment_from_map`（认不出就不跳段）。
     """
 
     for name, state, label in _SIDE_RESUME_ORDER:
         if machine._locate(screen, name) is not None:
+            if name == "map_panel":
+                machine._segment = machine._segment_from_map(screen)
             return ResumePoint(label, state)
     # ⚠️ 局内**排在最后**：本路线有页面会被这条判成局内（见模块头），
     # 前面十四个锚点先认完，剩下还像战斗的才当「用户停在战斗里」交给战斗监督。
@@ -1607,17 +2206,25 @@ class SideStoryRunner(StoryRunner):
     }
 
     def _perform_action(self, action: Any) -> None:
-        """把动作发出去；``pan_map_*`` 走 ``runtime.swipe``（主循环没有滑动通道）。
+        """把动作发出去（平移、节点双击这两个特殊通道都在这里换发）。
 
-        动作字段里 ``point`` 装的是**滑动终点**（起点 = ``_PAN_START``），这与基类
-        「point = 点击点」的约定不同，所以**必须**在这里拦下换发 —— 否则视角平移
-        会被当成「在终点点一下」（2026-10-07 社区点赞三遍全废就是这一类错）。
+        * ``pan_map_*`` 走 ``runtime.swipe``（主循环没有滑动通道）。动作字段里
+          ``point`` 装的是**滑动终点**（起点 = ``_PAN_START``），这与基类
+          「point = 点击点」的约定不同，所以**必须**在这里拦下换发 —— 否则视角平移
+          会被当成「在终点点一下」（2026-10-07 社区点赞三遍全废就是这一类错）。
+        * ``pick_node_*`` 连点**两下**（2026-11-12 用户要求）：游戏里双击节点 =
+          角色瞬间移动过去，人类也是这么点的；单点要等角色一路走过去，慢一大截。
         """
 
         if action.name.startswith("pan_map_"):
             self.runtime.swipe(
                 _PAN_START, action.point, _PAN_DURATION_MS, action.name
             )
+            return
+        if action.name.startswith("pick_node_"):
+            self.runtime.click(action.point, action.name)
+            self.sleep(_NODE_DOUBLE_TAP_GAP_SECONDS)
+            self.runtime.click(action.point, f"{action.name}_2")
             return
         super()._perform_action(action)
 
@@ -1673,12 +2280,19 @@ class SideStoryRunner(StoryRunner):
 def build_side_story_machine(
     template_dir: Path,
     state: str = StoryState.STAGE.value,
+    *,
+    countdown_only: bool = False,
 ) -> SideStoryStateMachine:
-    """装配入口：``template_dir`` 是 ``templates/side_story``。"""
+    """装配入口：``template_dir`` 是 ``templates/side_story``。
+
+    ``countdown_only=True`` 装上「只读巡检」那一支（见 ``_countdown_decision``）：
+    只走到 Episode 详情页读数，一步战斗都不打。
+    """
 
     return SideStoryStateMachine(
         build_side_story_templates(template_dir),
         initial_state=StoryState(state),
+        countdown_only=countdown_only,
     )
 
 

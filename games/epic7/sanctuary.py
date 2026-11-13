@@ -495,6 +495,17 @@ class SanctuaryRunner(ModeRunnerBase):
     _SHORT_RETRY_ACTIONS = frozenset({"claim-row", "dismiss-claim", "care"})
     _SHORT_RETRY_SECONDS = 8.0
 
+    def route_note(self) -> str:
+        """给每日任务结算用的一句话结论。
+
+        收工条件本身就是「三行都没有可领的了 + 照料按钮不亮」，所以这句是判据
+        保证的事实。它没有「领了几行」的累计计数（要加得改每帧试算的预览快照），
+        不编数字。
+        """
+        if self.runtime.dry_run or self.machine.completed_cycles < 1:
+            return ""
+        return "精灵之森三行都收完了，照料按钮也在冷却"
+
     def __init__(
         self,
         machine: SanctuaryStateMachine,

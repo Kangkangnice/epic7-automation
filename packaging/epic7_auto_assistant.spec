@@ -36,9 +36,15 @@ a = Analysis(
             str(REPO / "games" / "epic7" / "templates"),
             "auto_game_unified/games/epic7/templates",
         ),
+        # 次元探查：第三方 chaos 源码、配置与模板整包原样随助手分发。
+        (str(WORKSPACE / "vendor" / "e7auto"), "vendor/e7auto"),
     ]
     + _QFLUENT_DATAS,
-    hiddenimports=list(_QFLUENT_MODULES),
+    hiddenimports=(
+        list(_QFLUENT_MODULES)
+        + collect_submodules("winrt")
+        + ["yaml", "win32gui", "win32api", "win32con", "pywintypes"]
+    ),
     hookspath=[],
     runtime_hooks=[],
     # ⚠️ 整个包按**源码**收集，不压成 pyc。

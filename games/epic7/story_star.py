@@ -1072,6 +1072,17 @@ class StoryStarRunner(ModeRunnerBase):
         # 每次开跑都先武装开场两步：回最外层「选取Episode」+ 选左列第 1 项。
         machine.begin()
         self._actions = 0
+        # 打完的未满星小节数。放在 Runner 上：每局战斗恰好走一次，
+        # 不像状态机的 next_action 那样每帧被试算。
+        self._stages_fought = 0
+
+    def route_note(self) -> str:
+        """给每日任务结算用的一句话收获。只报「打了几个小节」，不谎报补了几颗星。"""
+        if self.runtime.dry_run:
+            return ""
+        if not self._stages_fought:
+            return "扫完 6 个章节，所有小节已满星、无需开打"
+        return f"扫完 6 个章节，打了 {self._stages_fought} 个未满星小节"
 
     def _state_label(self, state: StoryStarState) -> str:
         return STATE_LABELS.get(getattr(state, "value", state), str(state))
@@ -1132,3 +1143,4 @@ class StoryStarRunner(ModeRunnerBase):
             return
         if outcome is not BattleOutcome.RESULT_REACHED:
             raise RuntimeError(f"主线补星战斗出现意外结果：{outcome.value}")
+        self._stages_fought += 1

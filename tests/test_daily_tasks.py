@@ -260,6 +260,304 @@ def test_the_summary_drops_the_long_diagnostics_path():
 
 
 # --------------------------------------------------------------------------
+# 结算明细（2026-11-12 用户要求：别只报「完成没完成」）
+#
+# 这里只守「把已经记录下来的事实摆出来」：做了几轮、用了多久、为什么没做成。
+# 不新增任何路线判据，也不统计花了多少资源 / 拿到多少奖励。
+# --------------------------------------------------------------------------
+
+
+def _mixed_report() -> DailyReport:
+    return DailyReport(
+        outcomes=[
+            DailyOutcome(
+                "arena", "竞技场", "completed",
+                cycles=10, target_cycles=10, elapsed_seconds=130,
+                outcome_summary="胜 7 / 负 3",
+            ),
+            DailyOutcome(
+                "shop_refresh", "刷书签", "resource",
+                cycles=1, target_cycles=1, elapsed_seconds=42,
+            ),
+            DailyOutcome(
+                "sanctuary", "圣域收菜", "failed",
+                "RuntimeError: 认不出页面", elapsed_seconds=63,
+            ),
+            DailyOutcome("achievement", "成就领取", "not_supported"),
+            DailyOutcome("tower", "月塔", "skipped", "上一段之后回不到首页"),
+        ],
+        elapsed_seconds=372,
+    )
+
+
+def test_result_lines_put_the_totals_first():
+    lines = _mixed_report().result_lines()
+    assert "共 5 条" in lines[0]
+    assert "做完 1 条" in lines[0]
+    assert "没得做 1 条" in lines[0]
+    assert "失败 1 条" in lines[0]
+    assert "本环境跑不了 1 条" in lines[0]
+    assert "没跑 1 条" in lines[0]
+    assert "6分12秒" in lines[0]
+
+
+def test_result_lines_show_what_each_route_actually_did():
+    text = "\n".join(_mixed_report().result_lines())
+    assert "竞技场 · 完成 · 10/10 轮 · 胜 7 / 负 3 · 2分10秒" in text
+    assert "刷书签 · 没得做了 · 1/1 轮 · 42秒" in text
+    assert "圣域收菜 · 失败 · 1分03秒 · 认不出页面" in text
+    assert "成就领取 · 本环境跑不了" in text
+    assert "月塔 · 没跑 · 上一段之后回不到首页" in text
+
+
+def test_result_lines_do_not_count_non_success_as_done():
+    report = _mixed_report()
+    assert report.any_failed is True
+    assert "做完 1 条" in report.result_lines()[0]
+
+
+def test_brief_lines_drop_per_route_time_but_keep_the_failure_reason():
+    brief = "\n".join(_mixed_report().brief_lines())
+    assert "6分12秒" in brief
+    assert "2分10秒" not in brief, "通知是精简版，不带分项耗时"
+    assert "1分03秒" not in brief
+    assert "认不出页面" in brief, "失败原因必须留着"
+    assert "竞技场 完成 10/10轮" in brief
+
+
+def test_notify_daily_sends_the_brief_version(monkeypatch):
+    from auto_game_unified import main as main_module
+
+    sent: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        main_module, "send_qqbot_c2c",
+        lambda title, body: sent.append((title, body)),
+    )
+
+    main_module._notify_daily(
+        live=True, report=_mixed_report(), elapsed_seconds=372
+    )
+
+    assert len(sent) == 1
+    title, body = sent[0]
+    assert "有失败" in title
+    assert "竞技场 完成" in body
+    assert "2分10秒" not in body
+
+
+def test_result_lines_show_what_the_shop_bought():
+    """刷书签的全部意义就是买到书签，只报「完成 1 轮」等于没说。"""
+    report = DailyReport(
+        outcomes=[
+            DailyOutcome(
+                "shop_refresh", "刷书签", "completed",
+                cycles=1, target_cycles=1, elapsed_seconds=42,
+                note="买到 5 张书签（誓约 3 / 神秘 2）",
+            )
+        ],
+        elapsed_seconds=42,
+    )
+
+    line = report.result_lines()[1]
+    assert "买到 5 张书签（誓约 3 / 神秘 2）" in line
+    assert "42秒" in line
+
+
+def test_brief_lines_also_show_what_the_shop_bought():
+    """通知是精简版，但「买到了什么」是这条路线的结果，不能省掉。"""
+    report = DailyReport(
+        outcomes=[
+            DailyOutcome(
+                "shop_refresh", "刷书签", "completed",
+                note="买到 5 张书签（誓约 3 / 神秘 2）",
+            )
+        ]
+    )
+
+    assert "买到 5 张书签" in "\n".join(report.brief_lines())
+
+
+def test_run_daily_tasks_carries_the_route_note_through():
+    class FakeResult:
+        completed_cycles = 1
+        resource_exhausted = False
+        outcome_summary = None
+        note = "买到 5 张书签（誓约 3 / 神秘 2）"
+
+    report = run_daily_tasks(
+        selected=("shop_refresh",),
+        dry_run=True,
+        run_mode=lambda **kwargs: FakeResult(),
+    )
+
+    assert report.outcomes[0].note == "买到 5 张书签（誓约 3 / 神秘 2）"
+
+
+def test_run_daily_tasks_fills_cycles_time_and_outcome():
+    class FakeResult:
+        completed_cycles = 3
+        resource_exhausted = False
+        outcome_summary = "胜 2 / 负 1"
+
+    report = run_daily_tasks(
+        selected=("arena",),
+        cycles_override={"arena": 3},
+        dry_run=True,
+        run_mode=lambda **kwargs: FakeResult(),
+    )
+
+    outcome = report.outcomes[0]
+    assert outcome.status == "completed"
+    assert outcome.cycles == 3
+    assert outcome.target_cycles == 3
+    assert outcome.outcome_summary == "胜 2 / 负 1"
+    assert outcome.elapsed_seconds is not None
+
+
+def test_failed_route_also_records_how_long_it_was_stuck():
+    def boom(**kwargs):
+        raise RuntimeError("认不出页面")
+
+    report = run_daily_tasks(
+        selected=("arena",), dry_run=True, run_mode=boom
+    )
+
+    outcome = report.outcomes[0]
+    assert outcome.status == "failed"
+    assert outcome.elapsed_seconds is not None
+
+
+def test_run_daily_prints_result_lines(monkeypatch, capsys):
+    from auto_game_unified import main as main_module
+
+    monkeypatch.setattr(
+        main_module, "run_daily_tasks", lambda **kwargs: _mixed_report()
+    )
+    monkeypatch.setattr(main_module, "_notify_daily", lambda **kwargs: None)
+
+    code = main_module._run_daily(main_module.parse_args(["--daily"]))
+    out = capsys.readouterr().out
+
+    assert "每日任务汇总：" in out, "进度条还靠这一行收尾，不能删"
+    assert "每日任务结果：共 5 条" in out
+    assert "每日任务结果：竞技场 · 完成" in out
+    assert code == 1
+
+
+# --------------------------------------------------------------------------
+# 各路线「这条干成了什么」的一句话（2026-11-12 补齐每天会跑的 7 条）
+#
+# 用空壳 Runner 测：route_note() 只读状态机上的现成字段，不跑主循环、不碰判据。
+# --------------------------------------------------------------------------
+
+
+NOTE_RUNNERS = {
+    "achievement": "AchievementRunner",
+    "labyrinth_stone": "LabyrinthStoneRunner",
+    "moonlight_theater": "MoonlightRunner",
+    "story_star": "StoryStarRunner",
+    "world_boss": "WorldBossRunner",
+    "knights_donation": "KnightsDonationRunner",
+    "sanctuary": "SanctuaryRunner",
+}
+
+
+def _note_runner(module_name: str, *, dry_run: bool = False, **machine):
+    import importlib
+    from types import SimpleNamespace
+
+    module = importlib.import_module(
+        f"auto_game_unified.games.epic7.{module_name}"
+    )
+    runner = object.__new__(getattr(module, NOTE_RUNNERS[module_name]))
+    runner.runtime = SimpleNamespace(dry_run=dry_run)
+    runner.machine = SimpleNamespace(**machine)
+    return runner
+
+
+@pytest.mark.parametrize("route", tuple(NOTE_RUNNERS))
+def test_every_daily_route_exposes_a_note_hook(route):
+    import importlib
+
+    module = importlib.import_module(
+        f"auto_game_unified.games.epic7.{route}"
+    )
+    assert callable(getattr(getattr(module, NOTE_RUNNERS[route]), "route_note", None))
+
+
+@pytest.mark.parametrize("route", tuple(NOTE_RUNNERS))
+def test_note_is_empty_on_a_dry_run(route):
+    """干跑没碰游戏，不该冒出「领了 N 次 / 打了 N 场」这种假消息。"""
+    assert _note_runner(route, dry_run=True, completed_cycles=0).route_note() == ""
+
+
+def test_achievement_note_reports_claims_and_effects():
+    runner = _note_runner("achievement", _claims=5, _effects=1)
+    assert runner.route_note() == "全部领取 5 次，持续效果升级 1 次"
+
+
+def test_achievement_note_when_nothing_new():
+    runner = _note_runner("achievement", _claims=0, _effects=0)
+    assert "没有新成就" in runner.route_note()
+
+
+def test_labyrinth_note_reports_what_was_bought():
+    runner = _note_runner(
+        "labyrinth_stone", already_explored=False, bought=3,
+        purchase_rows=[1, 3, 5],
+    )
+    assert runner.route_note() == (
+        "买到 3 件目标商品（强化石 / 友情点数 / 书签，第 1 行、第 3 行、第 5 行）"
+    )
+
+
+def test_labyrinth_note_distinguishes_already_explored():
+    runner = _note_runner(
+        "labyrinth_stone", already_explored=True, bought=0, purchase_rows=[]
+    )
+    assert "今天已经探险过" in runner.route_note()
+
+
+def test_moonlight_note_reports_acts():
+    assert _note_runner("moonlight_theater", completed_cycles=4).route_note() == "看了 4 幕"
+
+
+def test_moonlight_note_when_no_new_act():
+    runner = _note_runner("moonlight_theater", completed_cycles=0)
+    assert "没有新看的幕" in runner.route_note()
+
+
+def test_story_star_note_never_claims_star_counts():
+    """代码只能证明「打完一个未满星小节」，不能证明补成了星，别写「补了 N 颗」。"""
+    runner = _note_runner("story_star", completed_cycles=1)
+    runner._stages_fought = 3
+    text = runner.route_note()
+    assert "打了 3 个未满星小节" in text
+    assert "颗星" not in text
+
+
+def test_world_boss_note_reports_battles_not_cycles():
+    """这条路线 completed_cycles 恒为 0，场次得用另记的 battles_done。"""
+    runner = _note_runner("world_boss", completed_cycles=0)
+    runner.battles_done = 2
+    assert runner.route_note() == "打了 2 场"
+
+
+def test_knights_note_reports_the_request():
+    runner = _note_runner(
+        "knights_donation", completed_cycles=1, request_done=True
+    )
+    assert "已请求" in runner.route_note()
+
+
+def test_sanctuary_note_only_after_a_finished_round():
+    runner = _note_runner("sanctuary", completed_cycles=0)
+    assert runner.route_note() == ""
+    runner.machine.completed_cycles = 1
+    assert "三行都收完了" in runner.route_note()
+
+
+# --------------------------------------------------------------------------
 # 执行器：真入口
 # --------------------------------------------------------------------------
 
@@ -810,3 +1108,277 @@ def test_manual_stop_does_not_send_a_notification(monkeypatch):
     )
 
     assert sent == [], f"手动停止不该发通知，实际发了：{sent}"
+
+
+# --------------------------------------------------------------------------
+# 收尾巡检（2026-11-12 用户要求）
+#
+# 「所有路线跑完的最后，额外跑一次这个支线路线，把刷新倒计时读下来」。
+# 它是**收尾动作**，不是一条路线 ⇒ 不进 ``outcomes``、不参与成功/失败判定，
+# 读数只落在 ``countdown_note`` 那一行上（界面把它挂在待办下面）。
+# --------------------------------------------------------------------------
+
+
+def _ok_result():
+    class FakeResult:
+        completed_cycles = 1
+        resource_exhausted = False
+        outcome_summary = None
+        note = None
+
+    return FakeResult()
+
+
+class _LobbyProbe:
+    """「段间检查」的替身：永远答"人在大厅"。
+
+    真 probe 是 ``(runtime, navigator)``：前者要 ``capture()``、后者要 ``observe()``。
+    这里同一个对象两件事都能干，省掉一层嵌套。
+    """
+
+    class _Observation:
+        name = "lobby"
+
+    def capture(self):
+        return None
+
+    def observe(self, screen):  # noqa: ARG002 - 契约形参
+        return self._Observation()
+
+    def log(self, line: str) -> None:  # noqa: ARG002 - 契约形参
+        return None
+
+
+class _BrokenProbe:
+    """取不到图（窗口被关掉之类）⇒ 段间检查必然失败 ⇒ 整轮中止。"""
+
+    def capture(self):
+        raise RuntimeError("窗口没了")
+
+    def observe(self, screen):  # pragma: no cover - 走不到
+        raise RuntimeError("窗口没了")
+
+
+def _run_with_inspect(inspect, **overrides):
+    options = dict(
+        selected=("arena",),
+        dry_run=False,
+        build_probe=lambda: (_LobbyProbe(), _LobbyProbe()),
+        run_mode=lambda **kwargs: _ok_result(),
+        inspect=inspect,
+    )
+    options.update(overrides)
+    return run_daily_tasks(**options)
+
+
+def test_inspect_runs_once_after_the_routes_and_records_the_note():
+    calls: list[int] = []
+
+    def inspect():
+        calls.append(1)
+        return {"days": 13, "hours": 12, "raw": "剩余 13天 12小时"}
+
+    report = _run_with_inspect(inspect)
+
+    assert calls == [1], "收尾巡检必须跑且只跑一次"
+    assert report.countdown_note == "支线刷新：剩余 13 天 12 小时"
+    # 读数出现在明细里，但**不是一条任务** —— 总账那行仍然只数路线。
+    lines = report.result_lines()
+    assert lines[-1] == "支线刷新：剩余 13 天 12 小时"
+    assert "共 1 条" in lines[0]
+    assert all("支线刷新" not in line for line in lines[1:-1])
+
+
+def test_inspect_is_skipped_on_a_dry_run():
+    """干跑本来就没碰游戏，巡检要真点真读 —— 硬做只会假报一次失败。"""
+
+    calls: list[int] = []
+    report = _run_with_inspect(lambda: calls.append(1), dry_run=True)
+
+    assert calls == []
+    assert report.countdown_note is None
+
+
+def test_inspect_is_skipped_when_the_user_pressed_stop():
+    """按了 P 就是「别动了」，这时候再点进游戏是添乱。"""
+
+    calls: list[int] = []
+
+    def stop(**kwargs):
+        raise ManualStop()
+
+    report = _run_with_inspect(lambda: calls.append(1), run_mode=stop)
+
+    assert report.stopped_by_user is True
+    assert calls == []
+    assert report.countdown_note is None
+
+
+def test_inspect_is_skipped_when_the_run_aborted():
+    """回不到首页（整轮中止）⇒ 巡检只会再撞同一堵墙。"""
+
+    calls: list[int] = []
+
+    report = run_daily_tasks(
+        selected=("arena", "world_boss"),
+        dry_run=False,
+        # 第二条之前的段间检查取不到图 ⇒ 中止剩余任务（与真跑撞上「窗口没了」同一条路）。
+        build_probe=lambda: (_BrokenProbe(), _BrokenProbe()),
+        run_mode=lambda **kwargs: _ok_result(),
+        inspect=lambda: calls.append(1),
+    )
+
+    assert report.aborted_reason is not None
+    assert calls == []
+    assert report.countdown_note is None
+
+
+def test_a_failed_route_does_not_stop_the_inspect():
+    """某条路线失败 ≠ 整轮中止：后面照跑，收尾巡检也照做。"""
+
+    def boom_once(**kwargs):
+        if not boom_once.called:
+            boom_once.called = True
+            raise RuntimeError("认不出页面")
+        return _ok_result()
+
+    boom_once.called = False
+
+    report = run_daily_tasks(
+        selected=("arena", "world_boss"),
+        dry_run=False,
+        build_probe=lambda: (_LobbyProbe(), _LobbyProbe()),
+        run_mode=boom_once,
+        inspect=lambda: {"days": 1, "hours": 2},
+    )
+
+    assert report.any_failed is True
+    assert report.aborted_reason is None
+    assert report.countdown_note == "支线刷新：剩余 1 天 2 小时"
+
+
+def test_inspect_failure_never_turns_the_run_into_a_failure():
+    """读不到就是「这次没读到」，不是「今天没做完」。"""
+
+    def boom():
+        raise RuntimeError("等待动作[enter_normal_sub_story]目标画面超时")
+
+    report = _run_with_inspect(boom)
+
+    assert report.any_failed is False, "巡检失败把整轮判成失败 → 通知里会误报"
+    assert report.countdown_note is not None
+    assert report.countdown_note.startswith("支线刷新：没读到")
+    assert "等待动作" in report.countdown_note
+
+
+def test_inspect_reporting_nothing_is_a_miss_not_a_zero():
+    """OCR 没认出那一行字 ⇒ 说"没读到"，绝不写成「剩余 0 天 0 小时」。"""
+
+    report = _run_with_inspect(lambda: None)
+
+    assert report.countdown_note == "支线刷新：没读到（这一页的文字没认出来）"
+
+
+def test_inspect_pressing_stop_is_recorded_as_a_manual_stop():
+    """巡检途中按 P 也算整轮手动停止（游戏已经被他撂在那儿了）。"""
+
+    def stop():
+        raise ManualStop()
+
+    report = _run_with_inspect(stop)
+
+    assert report.stopped_by_user is True
+    assert report.countdown_note == "支线刷新：巡检被手动停止，这次没读"
+    assert report.any_failed is False
+
+
+# --------------------------------------------------------------------------
+# 巡检的**接线**：`main.inspect_side_story_countdown`
+#
+# 它把「每日任务收尾」和「支线只读巡检」接起来：用改过的 ModeSpec 复用
+# `run_mode`（导航链 / 弹窗守卫 / 收尾回首页全都不用另写一份），跑完把读数落盘。
+# 这里不碰游戏窗口 —— `run_mode` 被替身顶掉，只验「拿到的 spec 对不对」。
+# --------------------------------------------------------------------------
+
+
+def test_countdown_inspect_reuses_the_side_story_spec_but_drops_resume(monkeypatch, tmp_path):
+    from auto_game_unified import main as main_module
+    from auto_game_unified.core import countdown as countdown_module
+    from auto_game_unified.games.epic7 import modes as modes_module
+    from auto_game_unified.games.epic7.side_story import SideStoryStateMachine
+
+    monkeypatch.setenv("EPIC7_DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(countdown_module, "DATA_DIR_ENV", "EPIC7_DATA_DIR", raising=False)
+
+    templates_root = main_module.ROOT / "games" / "epic7" / "templates"
+    seen: dict[str, object] = {}
+
+    def fake_run_mode(*, spec, start_state, max_cycles, **kwargs):
+        machine = spec.build_machine(templates_root, start_state)
+        seen["spec"] = spec
+        seen["machine"] = machine
+        seen["start_state"] = start_state
+        seen["max_cycles"] = max_cycles
+        seen["machine_countdown_only"] = machine._countdown_only
+        # 真跑里这一步由状态机在 Episode 详情页完成；这里直接给答案。
+        machine.countdown_read = {"days": 13, "hours": 12, "raw": "剩余 13天 12小时"}
+
+        class _Result:
+            completed_cycles = 0
+            resource_exhausted = True
+            outcome_summary = None
+            note = None
+
+        return _Result()
+
+    monkeypatch.setattr(main_module, "run_mode", fake_run_mode)
+
+    payload = main_module.inspect_side_story_countdown(
+        window_backend="emulator", stop_file=None
+    )
+
+    spec = seen["spec"]
+    assert spec.name == "side_story", (
+        "模式名必须保持 side_story —— 导航链是按 MODE_SPECS[名字] 查的"
+        "（navigation._plan_for），改名第一跳就抛「导航不支持的模式」"
+    )
+    assert spec.resume_probe is None, "巡检不做接力：半路接着跑会把读数变成打图"
+    assert spec.navigation_plan is modes_module.MODE_SPECS["side_story"].navigation_plan
+    assert seen["start_state"] == modes_module.MODE_SPECS["side_story"].default_state
+    assert seen["max_cycles"] == 1
+    assert isinstance(seen["machine"], SideStoryStateMachine)
+    assert seen["machine_countdown_only"] is True, "装配时没打开只读开关"
+
+    assert payload == {"days": 13, "hours": 12, "raw": "剩余 13天 12小时"}
+    saved = countdown_module.load_countdown()
+    assert (saved["days"], saved["hours"]) == (13, 12)
+
+
+def test_countdown_inspect_returns_none_when_nothing_was_read(monkeypatch, tmp_path):
+    """状态机没读到（OCR 没认出字 / 走岔了）⇒ 返回 None，**不写盘、不编一个 0**。"""
+
+    from auto_game_unified import main as main_module
+    from auto_game_unified.core import countdown as countdown_module
+
+    monkeypatch.setenv("EPIC7_DATA_DIR", str(tmp_path))
+
+    def fake_run_mode(*, spec, start_state, **kwargs):
+        spec.build_machine(
+            main_module.ROOT / "games" / "epic7" / "templates", start_state
+        )
+
+        class _Result:
+            completed_cycles = 0
+            resource_exhausted = False
+
+        return _Result()
+
+    monkeypatch.setattr(main_module, "run_mode", fake_run_mode)
+
+    assert (
+        main_module.inspect_side_story_countdown(
+            window_backend="emulator", stop_file=None
+        )
+        is None
+    )
+    assert countdown_module.load_countdown() is None
