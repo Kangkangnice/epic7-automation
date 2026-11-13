@@ -1081,8 +1081,8 @@ class StoryStarRunner(ModeRunnerBase):
         if self.runtime.dry_run:
             return ""
         if not self._stages_fought:
-            return "扫完 6 个章节，所有小节已满星、无需开打"
-        return f"扫完 6 个章节，打了 {self._stages_fought} 个未满星小节"
+            return "六个章节扫描完毕，小节均已满星"
+        return f"六个章节扫描完毕，完成未满星小节 {self._stages_fought} 个"
 
     def _state_label(self, state: StoryStarState) -> str:
         return STATE_LABELS.get(getattr(state, "value", state), str(state))

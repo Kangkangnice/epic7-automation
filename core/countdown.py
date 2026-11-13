@@ -67,14 +67,14 @@ def countdown_text() -> str:
 
     payload = load_countdown()
     if not payload:
-        return "支线刷新：还没读过"
+        return "支线刷新倒计时：尚未读取"
     days = payload.get("days")
     hours = payload.get("hours")
     read_at = str(payload.get("read_at", ""))
     if isinstance(days, int) and isinstance(hours, int):
-        stamp = f"（{_short_stamp(read_at)} 读）" if read_at else ""
-        return f"支线刷新：剩余 {days} 天 {hours} 小时{stamp}"
-    return "支线刷新：读数异常"
+        stamp = f"（读取时间 {_short_stamp(read_at)}）" if read_at else ""
+        return f"支线刷新倒计时：剩余 {days} 天 {hours} 小时{stamp}"
+    return "支线刷新倒计时：读数异常"
 
 
 def _short_stamp(read_at: str) -> str:
