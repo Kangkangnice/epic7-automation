@@ -493,10 +493,10 @@ class AchievementRunner(ModeRunnerBase):
         claims = self.machine._claims
         effects = self.machine._effects
         if not claims and not effects:
-            return "4 个分类都没有新成就，没有可领的奖励"
-        text = f"全部领取 {claims} 次"
+            return "无可领取的成就奖励"
+        text = f"领取成就奖励 {claims} 次"
         if effects:
-            text += f"，持续效果升级 {effects} 次"
+            text += f"；持续效果升级 {effects} 次"
         return text
 
     def _state_label(self, state: AchievementState) -> str:

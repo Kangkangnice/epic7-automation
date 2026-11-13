@@ -1299,8 +1299,8 @@ class MoonlightRunner(ModeRunnerBase):
             return ""
         acts = self.machine.completed_cycles
         if not acts:
-            return "本周免费与门票都已处理完，没有新看的幕"
-        return f"看了 {acts} 幕"
+            return "本周免费观览与门票均已处理完毕"
+        return f"完成观览 {acts} 幕"
 
     def _log_cycle_completed(self) -> None:
         self.runtime.log(

@@ -203,9 +203,9 @@ class DesktopController:
             unsupported = [mode for mode, _ in plan if mode not in PC_READY_ROUTES]
             reason = "还没有在 PC 客户端上通过验收"
         else:
-            # 反过来：只有 PC 素材的路线在模拟器上构造期就缺图。
+            # 反过来：只在 PC 提供、模拟器上构造期就缺图的路线。
             unsupported = [mode for mode, _ in plan if mode in PC_ONLY_ROUTES]
-            reason = "目前只有 PC 客户端版素材，模拟器上还没有图"
+            reason = "该路线当前仅在 PC 客户端提供"
 
         skipped = tuple(unsupported)
         runnable = tuple((mode, cycles) for mode, cycles in plan if mode not in skipped)
@@ -213,19 +213,19 @@ class DesktopController:
             names = "、".join(route_by_name(mode).label for mode in skipped)
             raise RuntimeError(
                 f"所选路线在当前窗口后端都不可用：{names}（{reason}）；"
-                "请切换窗口后端，或改勾别的路线。"
+                "需切换窗口后端，或改选其它路线。"
             )
         return runnable, skipped
 
     def start(self) -> None:
         if not self.can_start:
-            raise RuntimeError("请先完成环境检测")
+            raise RuntimeError("需先完成环境检测")
         plan, skipped = self.resolve_plan()
         if skipped:
             names = "、".join(route_by_name(mode).label for mode in skipped)
             self.worker.notice(
                 f"已跳过 {len(skipped)} 条当前后端不可用的路线：{names}"
-                "（其余勾选照常运行；要跑它们请切换窗口后端）。"
+                "（其余勾选照常运行；需切换窗口后端方可执行）。"
             )
         self.worker.start(
             RunRequest(

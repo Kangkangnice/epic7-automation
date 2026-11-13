@@ -504,7 +504,7 @@ class SanctuaryRunner(ModeRunnerBase):
         """
         if self.runtime.dry_run or self.machine.completed_cycles < 1:
             return ""
-        return "精灵之森三行都收完了，照料按钮也在冷却"
+        return "精灵之森三行产出与照料均已处理"
 
     def __init__(
         self,

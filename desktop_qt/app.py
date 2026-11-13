@@ -74,7 +74,6 @@ from auto_game_unified.core.pc_window import (
 from auto_game_unified.desktop import session
 from auto_game_unified.desktop.catalog import (
     BACKEND_LABELS,
-    PC_READY_ROUTES,
     PRODUCT_NAME,
     PRODUCT_VERSION,
     STARTUP_HINTS,
@@ -82,6 +81,7 @@ from auto_game_unified.desktop.catalog import (
     grouped_routes,
     route_by_name,
     routes_in_group,
+    unavailable_note,
     visible_backends,
 )
 from auto_game_unified.desktop.chaos_bridge import ChaosBridge
@@ -162,6 +162,9 @@ class QtDesktopWindow(FluentWindow):
         self._route_checks: dict[str, CheckBox] = {}
         self._route_spins: dict[str, QSpinBox] = {}
         self._group_checks: dict[str, CheckBox] = {}
+        # 说明卡当前显示的是哪条路线（None = 显示的是分组说明）。
+        # 切窗口后端时要靠它重算标题下面那行「这条能不能跑」。
+        self._detail_mode: str | None = None
         self._suspend_events = False
         self._checking = False
         self._last_running = False
@@ -266,7 +269,7 @@ class QtDesktopWindow(FluentWindow):
         layout.setSpacing(8)
         layout.addWidget(StrongBodyLabel("运行环境", card))
 
-        self.status_label = BodyLabel("尚未检测。请点击「检测环境」。", card)
+        self.status_label = BodyLabel("尚未执行环境检测。", card)
         self.status_label.setWordWrap(True)
         layout.addWidget(self.status_label)
         self.hint_label = CaptionLabel("", card)
@@ -368,13 +371,17 @@ class QtDesktopWindow(FluentWindow):
         layout.setSpacing(12)
         self.detail_title = StrongBodyLabel("", card)
         layout.addWidget(self.detail_title)
+        # 「这条路线在当前后端跑不了」放在**标题正下方**，不放到卡片最底下 ——
+        # 说明正文现在写的是业务动作，读者看完才知道会被跳过就已经点过开始任务了。
+        # 没有这行提示时整块隐藏，免得留一条空白把标题与正文撑开。
+        self.pc_note = CaptionLabel("", card)
+        self.pc_note.setWordWrap(True)
+        self.pc_note.setVisible(False)
+        layout.addWidget(self.pc_note)
         self.detail_body = BodyLabel("", card)
         self.detail_body.setWordWrap(True)
         self.detail_body.setAlignment(Qt.AlignTop)
         layout.addWidget(self.detail_body, 1)
-        self.pc_note = CaptionLabel("", card)
-        self.pc_note.setWordWrap(True)
-        layout.addWidget(self.pc_note)
         return card
 
     def _build_action_bar(self) -> QHBoxLayout:
@@ -388,9 +395,9 @@ class QtDesktopWindow(FluentWindow):
         bar.addWidget(BodyLabel("跑完自动关机", self))
         self.shutdown_switch = SwitchButton(self)
         self.shutdown_switch.setToolTip(
-            "每日任务结束后自动关机（倒计时 "
+            "每日任务结束后执行自动关机（倒计时 "
             f"{SHUTDOWN_DELAY_SECONDS} 秒，期间可取消）。"
-            "自己点「安全停止」不会触发。"
+            "主动执行「安全停止」时不触发。"
         )
         self.shutdown_switch.checkedChanged.connect(self._on_shutdown_toggled)
         bar.addWidget(self.shutdown_switch)
@@ -503,9 +510,10 @@ class QtDesktopWindow(FluentWindow):
         layout.addWidget(TitleLabel(PRODUCT_NAME, page))
         layout.addWidget(CaptionLabel(f"版本 {PRODUCT_VERSION}", page))
         about = BodyLabel(
-            "基于窗口截图与 OpenCV 模板匹配的 PVE 自动化。"
-            "只在认出预期页面时点击；陌生页面、黑屏、遮挡、转场超时一律留证停止。\n\n"
-            "默认干跑，实跑必须显式确认；危险按钮与付费购买路径在代码里被禁止。",
+            "本助手用于《第七史诗》单人 PVE 内容的自动化执行。"
+            "仅在确认游戏处于预期环节时执行下一步；页面无法确认、画面被遮挡或"
+            "转场未完成时，保留现场并停止。\n\n"
+            "默认执行干跑，实跑需显式确认。涉及付费购买与不可逆操作的路径不予执行。",
             page,
         )
         about.setWordWrap(True)
@@ -560,6 +568,8 @@ class QtDesktopWindow(FluentWindow):
             )
             self.background_switch.setEnabled(backend == "pc")
             self.hint_label.setText(STARTUP_HINTS.get(backend, ""))
+            if self._detail_mode is not None:
+                self._update_pc_note(self._detail_mode)
             self._refresh_actions()
         finally:
             self._suspend_events = False
@@ -586,8 +596,8 @@ class QtDesktopWindow(FluentWindow):
         for mode, spin in self._route_spins.items():
             spin.setEnabled(not running and route_by_name(mode).cycles_editable)
         self.run_state_label.setText(
-            "正在运行…" if running else
-            f"已勾选 {len(self.controller.selection)} 条 · "
+            "执行中" if running else
+            f"已选 {len(self.controller.selection)} 项 · "
             "按勾选顺序执行"
         )
 
@@ -604,14 +614,14 @@ class QtDesktopWindow(FluentWindow):
         if not prompt_consent(self):
             self._append_log(
                 "尚未确认使用须知，「开始任务」保持禁用。"
-                "想重新阅读请点「关于」页里的「重新查看使用须知」。"
+                "如需重新阅读，可在「关于」页执行「重新查看使用须知」。"
             )
             return
         self.consented = True
         if not record_consent(self.data_root):
             # 落盘失败**照样放行**：用户刚刚确实点了同意，写不进去是这个目录的问题。
             self._append_log(
-                f"提示：无法保存确认记录（{self.data_root} 不可写），下次启动会再问一次。"
+                f"确认记录未保存（{self.data_root} 不可写）；下次启动时将再次显示使用须知。"
             )
         self._refresh_actions()
 
@@ -636,7 +646,7 @@ class QtDesktopWindow(FluentWindow):
         self._update_info = info
         self.update_label.setText(
             f'发现新版本 {info.latest}（当前 {info.current}），'
-            f'<a href="{info.url}">点这里查看</a>'
+            f'<a href="{info.url}">查看更新说明</a>'
         )
         self.update_label.setVisible(True)
         self._append_log(f"发现新版本 {info.latest}（当前 {info.current}）：{info.url}")
@@ -685,11 +695,11 @@ class QtDesktopWindow(FluentWindow):
         try:
             self.controller.select_backend(backend)
         except Exception as error:
-            self._notify("error", "无法切换窗口后端", str(error))
+            self._notify("error", "无法切换运行环境", str(error))
             self._sync_from_controller()
             return
-        self.status_label.setText("尚未检测。请点击「检测环境」。")
-        self._append_log(f"窗口后端已切换为 {BACKEND_LABELS.get(backend, backend)}。")
+        self.status_label.setText("尚未执行环境检测。")
+        self._append_log(f"运行环境已切换为 {BACKEND_LABELS.get(backend, backend)}。")
         self._sync_from_controller()
         self._save_session()
 
@@ -700,17 +710,16 @@ class QtDesktopWindow(FluentWindow):
         try:
             self.controller.select_pc_input_mode(mode)
         except Exception as error:
-            self._notify("error", "无法切换输入通道", str(error))
+            self._notify("error", "无法切换前台占用模式", str(error))
             self._sync_from_controller()
             return
         if checked:
             self._append_log(
-                "输入通道=不占用前台：点击走后台，不抢前台；"
-                "滑动没法后台做（Raw Input 只认前台），含滑动的路线会短暂把窗口切到前面，"
-                "滑完立刻把前台还原；Esc 返回会自动改走前台。"
+                "前台占用=不占用：常规点击不切换窗口；涉及滑动或返回键的环节"
+                "临时切换窗口，完成后还原。"
             )
         else:
-            self._append_log("输入通道=抢前台。")
+            self._append_log("前台占用=占用：全部操作在前台执行。")
         self._sync_from_controller()
         self._save_session()
 
@@ -718,7 +727,7 @@ class QtDesktopWindow(FluentWindow):
         if self._checking or self.worker.running:
             return
         self._checking = True
-        self.status_label.setText("正在检测环境……")
+        self.status_label.setText("正在执行环境检测……")
         self._refresh_actions()
         backend = self.controller.selected_backend
 
@@ -734,7 +743,7 @@ class QtDesktopWindow(FluentWindow):
     def _on_check_done(self, result: object) -> None:
         self._checking = False
         if isinstance(result, Exception):
-            self.status_label.setText(f"检测失败：{result}")
+            self.status_label.setText(f"环境检测失败：{result}")
             self._notify("error", "环境检测失败", str(result))
             self._refresh_actions()
             return
@@ -742,7 +751,7 @@ class QtDesktopWindow(FluentWindow):
         self.status_label.setText(result.message)
         self._append_log(f"环境检测：{result.message}")
         if result.warning:
-            self._notify("warning", "能跑，但可能点不动", result.warning)
+            self._notify("warning", "可执行，但输入通道可能无效", result.warning)
         else:
             self._notify("success", "检测通过", result.message)
         self._refresh_actions()
@@ -755,28 +764,28 @@ class QtDesktopWindow(FluentWindow):
         if self.dimension.running:
             self._notify(
                 "warning",
-                "次元探查还在运行",
+                "次元探查正在运行",
                 "先到「次元探查」页停止它，再开始任务 —— 两个程序会抢同一个游戏窗口。",
             )
             return
         if self.autoclicker.running:
             self._notify(
                 "warning",
-                "连点器还开着",
+                "连点器正在运行",
                 "先到「实用工具」里停止连点，再开始任务 —— 两套点击同时发会互相干扰。",
             )
             return
         if not self.consented:
             # 按钮本来就该是灰的（见 _refresh_actions）。走到这里只可能是
             # 事件顺序异常，仍然守住这条线。
-            self._notify("warning", "使用须知", "请先阅读并同意《使用须知》再开始。")
+            self._notify("warning", "使用须知", "需先阅读并同意《使用须知》后方可执行。")
             return
         if not self.controller.can_start:
-            self._notify("warning", "请先完成环境检测", "点右上角「检测环境」后再开始。")
+            self._notify("warning", "尚未完成环境检测", "需先执行环境检测。")
             return
         plan = self.controller.plan()
         if not plan:
-            self._notify("warning", "还没有勾选路线", "至少勾一条再开始。")
+            self._notify("warning", "未选择路线", "至少选择一项后方可执行。")
             return
         self._checking = True
         self.status_label.setText("正在复检运行环境……")
@@ -803,8 +812,8 @@ class QtDesktopWindow(FluentWindow):
     def _on_start_done(self, report: object, error: object) -> None:
         self._checking = False
         if error is not None:
-            self.status_label.setText(f"复检失败：{error}")
-            self._notify("error", "未能开始", str(error))
+            self.status_label.setText(f"环境复检失败：{error}")
+            self._notify("error", "无法开始执行", str(error))
             self._refresh_actions()
             return
         self.controller.apply_preflight(report)
@@ -899,14 +908,14 @@ class QtDesktopWindow(FluentWindow):
         seconds = STOP_GRACE_MS / 1000
         if self.worker.force_stop():
             self._append_log(
-                f"等待 {seconds:.0f} 秒仍无响应，已强行结束这个卡住的运行。"
-                "它卡在一次底层调用里读不到停止信号，这次走不完回家流程，"
-                "游戏可能停在半路；重新开始前请先确认模拟器运行正常。"
+                f"等待 {seconds:.0f} 秒仍无响应，已强制结束本次运行。"
+                "本次未执行收尾回大厅流程，游戏可能停留在中途；"
+                "重新执行前需确认模拟器运行状态。"
             )
         else:
             self._append_log(
-                f"等待 {seconds:.0f} 秒仍无响应，并且无法结束这个运行；"
-                "请在任务管理器中手动结束助手进程。"
+                f"等待 {seconds:.0f} 秒仍无响应且无法结束本次运行；"
+                "需在任务管理器中手动结束助手进程。"
             )
         # 强行结束时读输出的线程可能还卡在那条阻塞的管道上（``事件=结束`` 不会来），
         # 所以这里必须自己把按钮状态收回来，不能等 finished 事件。
@@ -915,7 +924,7 @@ class QtDesktopWindow(FluentWindow):
     def _on_export_clicked(self) -> None:
         selection = self.controller.selection
         if not selection:
-            self._notify("warning", "没有可导出的路线", "先勾一条路线。")
+            self._notify("warning", "无可导出的路线", "需先选择一项路线。")
             return
         try:
             path = export_diagnostics(
@@ -932,26 +941,36 @@ class QtDesktopWindow(FluentWindow):
     # ── 说明区 / 日志 / 会话 ────────────────────────────────────────────────
 
     def _show_group_detail(self, group: str) -> None:
+        self._detail_mode = None
         self.detail_title.setText(f"{group} · 整组说明")
         self.detail_body.setText(group_description(group))
         self._update_pc_note()
 
     def _show_route_detail(self, mode: str) -> None:
         route = route_by_name(mode)
+        # 记下当前在看哪一条：切换窗口后端时要重算标题下面那行「能不能跑」，
+        # 否则会把上一个后端的结论留在屏幕上（切换后不点别的路线就会看到假提示）。
+        self._detail_mode = mode
         self.detail_title.setText(route.label)
         self.detail_body.setText(route.description)
         self._update_pc_note(mode)
 
     def _update_pc_note(self, mode: str | None = None) -> None:
-        if self.controller.selected_backend != "pc":
-            self.pc_note.setText("")
-            return
-        if mode is not None and mode not in PC_READY_ROUTES:
-            self.pc_note.setText(
-                "⚠️ 这条路线还没在 PC 客户端上通过验收，界面会拦下它；请切回模拟器。"
-            )
+        """路线标题下面那行「这条能不能在当前后端跑」。
+
+        ⚠️ 2026-11-13 起由 ``catalog.unavailable_note()`` 按名单算，**不再写死
+        在任何一条路线的说明里** —— 写死的那些句子在 PC 放行新路线后必然过期，
+        用户照说明勾上、跑起来才发现被跳过。这里只负责显示。
+        """
+        backend = self.controller.selected_backend
+        note = unavailable_note(mode, backend) if mode is not None else ""
+        if note:
+            self.pc_note.setText(note)
+        elif backend == "pc":
+            self.pc_note.setText("PC 客户端：运行计划仅包含已通过验收的路线。")
         else:
-            self.pc_note.setText("PC 客户端：界面只放行已通过验收的路线。")
+            self.pc_note.setText("")
+        self.pc_note.setVisible(bool(self.pc_note.text()))
 
     def _append_log(self, line: str) -> None:
         # 行数上限由 QTextDocument.setMaximumBlockCount(2000) 兜住，这里只管追加。
@@ -1036,8 +1055,8 @@ class QtDesktopWindow(FluentWindow):
             return
         if checked:
             self._append_log(
-                f"已打开「跑完自动关机」：本次任务结束后 {SHUTDOWN_DELAY_SECONDS} 秒关机，"
-                "期间可以点「取消关机」。"
+                f"已启用「跑完自动关机」：本次任务结束后 {SHUTDOWN_DELAY_SECONDS} 秒"
+                "执行关机，期间可通过「取消关机」撤销。"
             )
             return
         self._append_log("已关闭「跑完自动关机」。")
@@ -1055,21 +1074,22 @@ class QtDesktopWindow(FluentWindow):
         if not self.shutdown_switch.isChecked():
             return
         if exit_code == 130 or self._stop_requested_by_user:
-            self._append_log("这一轮是手动停止的，不自动关机。")
+            self._append_log("本次为手动停止，不执行自动关机。")
             return
         if not self.shutdown.schedule():
-            self._append_log("自动关机没有排上（关机命令执行失败），电脑保持开机。")
+            self._append_log("自动关机未排定（关机命令执行失败），设备保持开机。")
             return
         self.cancel_shutdown_button.setVisible(True)
         self._start_shutdown_timer()
         self._append_log(
-            f"每日任务已结束，{SHUTDOWN_DELAY_SECONDS} 秒后自动关机；"
-            "还在电脑前就点「取消关机」。"
+            f"每日任务已结束，{SHUTDOWN_DELAY_SECONDS} 秒后执行自动关机；"
+            "期间可通过「取消关机」撤销。"
         )
         self._notify(
             "warning",
             "任务已结束",
-            f"{SHUTDOWN_DELAY_SECONDS} 秒后自动关机。还在电脑前请点「取消关机」。",
+            f"{SHUTDOWN_DELAY_SECONDS} 秒后执行自动关机。"
+            "如需取消，可使用「取消关机」。",
         )
 
     def _start_shutdown_timer(self) -> None:
@@ -1086,9 +1106,9 @@ class QtDesktopWindow(FluentWindow):
 
     def _on_cancel_shutdown_clicked(self) -> None:
         if self._cancel_shutdown():
-            self._notify("success", "已取消自动关机", "电脑会保持开机。")
+            self._notify("success", "自动关机已取消", "设备保持开机。")
         else:
-            self._notify("error", "取消关机失败", "请在命令行手动执行 shutdown /a。")
+            self._notify("error", "取消自动关机失败", "需手动撤销已排定的关机。")
 
     def _cancel_shutdown(self) -> bool:
         """撤销排定的关机；返回「现在确实没有待执行的关机」。
@@ -1101,9 +1121,9 @@ class QtDesktopWindow(FluentWindow):
         if not self.shutdown.scheduled:
             return True
         if self.shutdown.cancel():
-            self._append_log("已取消自动关机，电脑会保持开机。")
+            self._append_log("已取消自动关机，设备保持开机。")
             return True
-        self._append_log("取消自动关机没有成功；请在命令行执行 shutdown /a。")
+        self._append_log("取消自动关机未成功；需手动执行 shutdown /a。")
         return False
 
     def _initial_size(self) -> tuple[int, int]:
@@ -1164,7 +1184,7 @@ class QtDesktopWindow(FluentWindow):
             # 次元探查就在本进程里：关窗口会直接把它的线程带走，游戏停在半路。
             self._notify(
                 "warning",
-                "次元探查还在运行",
+                "次元探查正在运行",
                 "先到「次元探查」页点停止，再关闭窗口。",
             )
             event.ignore()
@@ -1172,7 +1192,7 @@ class QtDesktopWindow(FluentWindow):
         if self.worker.running:
             # 任务还在跑：关窗口不能顺手把任务带走，收成球留在桌面上。
             event.ignore()
-            self._append_log("窗口已收成悬浮球，任务继续运行；要退出请先安全停止。")
+            self._append_log("窗口已收至悬浮球，任务继续运行；退出前需先执行「安全停止」。")
             self._enter_floating_mode_again()
             return
         # 悬浮球 / 窄条是独立窗口，主窗口关了它们不会自动消失。

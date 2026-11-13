@@ -117,7 +117,8 @@ def test_risk_points_state_the_real_boundaries():
     assert len(onboarding.RISK_POINTS) == 1
     assert "非官方" in risk
     # 合成的几点各自都要在里面 —— 少一条就不是他要的那一条了。
-    assert "视觉识别" in risk
+    assert "依据游戏画面" in risk
+    assert "常规点击" in risk
     assert "不读取" in risk
     # ⚠️ 2026-10-21 用户拍板**去掉「非商业用途」**（「别人随便怎么用都行，
     # 许可也不用换，把措辞删掉就行」）。代码是 MIT，界面不该再说反话。
@@ -148,7 +149,7 @@ def test_setup_points_cover_the_limits_users_actually_hit():
     # 对模拟器不成立 —— 别把它写回来。
     assert "不支持后台运行" not in setup
     assert "必须保持前台" not in setup
-    assert "挡住" in setup
+    assert "遮挡" in setup
     # 「建议不要最小化」是保守留的（最小化后 PrintWindow 还灵不灵要看显卡驱动），
     # 不是硬限制；这条只保证那句话还在，别悄悄升级成「必须」。
     assert "建议不要" in setup

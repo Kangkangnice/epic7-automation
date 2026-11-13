@@ -1329,8 +1329,8 @@ class WorldBossRunner(ModeRunnerBase):
         if self.runtime.dry_run:
             return ""
         if not self.battles_done:
-            return "今天没有可打的场次（次数已用完）"
-        return f"打了 {self.battles_done} 场"
+            return "当日挑战次数已用尽"
+        return f"完成首领战 {self.battles_done} 场"
 
     def _state_label(self, state: WorldBossState) -> str:
         return state_label(state)
