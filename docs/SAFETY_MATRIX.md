@@ -77,7 +77,7 @@
 | 圣域 `sanctuary` | ✅ `epic7_sanctuary` | ⚠️ | ✅ 11-02 连跑三轮 | ✅ 同左 | ⚠️ 领奖完成弹窗支路无 PC 实跑 |
 | 迷宫强化石 `labyrinth_stone` | ✅ `epic7_labyrinth_stone` + `_pc` | ⚠️ | ✅ 11-06 批量 | ⚠️ | ✅ 双候选判据 + 点击点 |
 | 月光剧场 `moonlight_theater` | ✅ `epic7_moonlight_theater` + `_pc` | ⚠️ | ✅ 11-03 第 1 幕 | ⚠️ | ✅ 无免费额度走门票 |
-| 支线故事 `side_story` | ✅ `epic7_side_story` + `_boss` | ⚠️ | ✅ 单关连打 | ⚠️ | ⚠️ 三期特殊链路从没走到 |
+| 支线故事 `side_story` | ✅ `epic7_side_story` + `_boss` | ⚠️ | ✅ 11-12 模拟器整条连打 | ⚠️ | ⚠️ PC 侧特殊链路仍未走到 |
 | 活动剧情 `activity_story` | ✅ `epic7_activity_story` | ⚠️ | ✅ 连看多段 + 战斗关 | ⚠️ | ⚠️ `ticket_free` 未采到样本 |
 | 社区签到 `community` | ✅ `epic7_community` | ⚠️ | ✅ 模拟器 | — 未在 PC 上做过 | ✅ 竖屏通道 |
 | 成就领取 `achievement` | ✅ `epic7_achievement` + `_pc` | ✅ 11-09 干跑 | ✅ 11-09 模拟器两轮 | ✅ 同左 | ✅ 奖励弹窗 / 空奖收工 |
