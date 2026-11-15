@@ -126,6 +126,8 @@ PAGE_LABELS = {
     "quick_menu": "快捷菜单",
     # 成就页（2026-11-08，成就领取路线的落点）。
     "achievement": "成就页",
+    # 宠物小屋（2026-11-15，宠物领养路线的导航终点）。
+    "pet_house": "宠物小屋",
     "story_ready": "主线入口",
     "arena_ready": "竞技场入口",
     "shop_refresh": "秘密商店",
@@ -246,6 +248,14 @@ class NavigationTemplates:
     # ⚠️ 同理：``achievement/page_title.png`` 也是 PC 图副本，只为让共享导航器
     # 能构建；模拟器那条路线在构造期就会因缺图报错。
     achievement_page_title: np.ndarray
+    # 快捷菜单第 2 行中间「宠物小屋」的小房子图标（进宠物小屋，2026-11-15）。
+    # ⚠️ 只裁图标本体（爪印 + 烟囱 + 门 + 底横线），不含左上角会出现的红点角标。
+    # 与第 4 行中间「英雄休息室」的城堡图标**不是同一形状**：全库扫下来
+    # 本页 1.0000、那个图标 0.5610 ⇒ 0.80 门槛能证伪，不靠顺序蒙。
+    pet_house_entry: np.ndarray
+    # 宠物小屋左上「宠物小屋」标题，给 observe() 认「现在是宠物小屋」。
+    # 复用 templates/pet_adoption/house_title.png（不另存第二份）。
+    pet_house_page_title: np.ndarray
     # 装备子页（英雄界面左侧那个剑盾图标）的选中态。
     # ⚠️ **必需模板，不是可选的**：它是 ``observe()`` 区分「英雄列表」与
     # 「英雄装备子页」的**唯一依据**。历史上这里写成 ``Optional`` 并配
@@ -541,6 +551,10 @@ def build_navigation_templates(template_root: Path) -> NavigationTemplates:
         achievement_page_title=load_template(
             str(template_root / "achievement" / "page_title.png")
         ),
+        pet_house_entry=load_template(str(navigation / "pet_house_entry.png")),
+        pet_house_page_title=load_template(
+            str(template_root / "pet_adoption" / "house_title.png")
+        ),
         # 直接 load_template：模板缺失就抛 FileNotFoundError（fail closed）。
         # 这里**不许**再写 ``if path.exists() else None`` —— 那会让判据静默降级。
         hero_equipment_tab_active=load_template(
@@ -825,6 +839,11 @@ class Epic7Navigator:
         "achievement_entry": (1395, 750, 90, 100),
         # 成就页左上角「成就」标题。区域比两个字大一圈给抗锯齿留余量。
         "achievement_page_title": (55, 50, 210, 95),
+        # 快捷菜单第 2 行中间「宠物小屋」。区域只罩这一格（y 360~500），
+        # 不碰第 4 行中间「英雄休息室」（y 750~850）。
+        "pet_house_entry": (1540, 360, 160, 140),
+        # 宠物小屋左上「宠物小屋」四字，避开返回箭头与会变的 FPS 数字。
+        "pet_house_page_title": (60, 45, 240, 100),
         # 骑士团主页的「世界首领战」入口图标（骷髅盾牌）。排他性实测：本页 0.9890，
         # 跨页最高 0.4210（远征海报）。
         "worldboss_entry": (380, 620, 180, 140),
@@ -1151,6 +1170,13 @@ class Epic7Navigator:
         achievement_title = self._locate(screen, "achievement_page_title")
         if achievement_title is not None:
             return PageObservation("achievement", achievement_title.score)
+
+        # 宠物小屋（2026-11-15）。排在快捷菜单之后：菜单开着时两个入口图标
+        # 就是身份。这一页标题是「宠物小屋」四字，与「宠物商店」形近但
+        # 实测互相只有 0.6472，0.80 门槛不会串。
+        pet_house_title = self._locate(screen, "pet_house_page_title")
+        if pet_house_title is not None:
+            return PageObservation("pet_house", pet_house_title.score)
 
         shop_observation = self.templates.shop_refresh_observer.observe(screen)
         if shop_observation.page is ShopPage.SHOP:

@@ -37,6 +37,31 @@ def _on_disk() -> str:
     return gen_status.STATUS_PATH.read_text(encoding="utf-8")
 
 
+def test_tracked_pngs_reads_git_output_as_bytes(monkeypatch) -> None:
+    """``ls-files -z`` 给的是原始字节，不能用系统代码页解码。
+
+    Windows CI 的区域设置是 cp1252，中文路径里的 0x90 会让 ``text=True`` 的
+    读线程抛 UnicodeDecodeError，最终 ``stdout`` 变成 None。
+    """
+    raw = (
+        "games/epic7/templates/arena/heroes_pokedex/中文.png".encode()
+        + b"\0"
+        + b"tests/fixtures/penguin_purchase/quantity_max.png\0"
+    )
+    seen: dict[str, object] = {}
+
+    def fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[bytes]:
+        seen.update(kwargs)
+        return subprocess.CompletedProcess(command, 0, stdout=raw, stderr=b"")
+
+    monkeypatch.setattr(gen_status.subprocess, "run", fake_run)
+    tracked = gen_status._tracked_pngs()
+
+    assert seen.get("text") is False
+    assert "games/epic7/templates/arena/heroes_pokedex/中文.png" in tracked
+    assert "tests/fixtures/penguin_purchase/quantity_max.png" in tracked
+
+
 def test_the_status_page_matches_the_code() -> None:
     """核心门禁：磁盘上的内容必须等于此刻代码渲染出来的内容。"""
     expected = gen_status.render()
@@ -272,12 +297,12 @@ def test_an_untracked_local_frame_cannot_change_the_page(monkeypatch) -> None:
 def test_the_fixture_number_is_independently_the_tracked_count() -> None:
     """用另一条 git 命令独立算一遍，防止生成器悄悄改回「数本机文件」。"""
     result = subprocess.run(
-        ["git", "-C", str(ROOT), "ls-files", "tests/fixtures/*.png"],
+        ["git", "-C", str(ROOT), "ls-files", "-z", "tests/fixtures/*.png"],
         capture_output=True,
-        text=True,
+        text=False,
         check=True,
     )
-    expected = len([name for name in result.stdout.splitlines() if name.strip()])
+    expected = len([name for name in result.stdout.split(b"\0") if name.strip()])
     assert f"现场夹具 **{expected}** 张" in _on_disk(), (
         "现状页的夹具数与 git 入库清单对不上 —— "
         "注意这一页只能描述仓库现状，不能描述本机目录"

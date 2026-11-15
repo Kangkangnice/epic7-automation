@@ -719,7 +719,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--stop-file", help=argparse.SUPPRESS)
     # 界面传下来的路线参数（``{路线名: {参数名: 值}}`` 的 JSON）。
     # 走文件不走命令行：Windows 命令行过一遍引号与编码，中文容易被吃掉。
-    # 现在没有任何路线消费它 —— 通道先通，将来加参数不用回头改这里。
+    # 每日任务与单路线两条路径都会读它；缺省值由路线自己的声明补齐。
     parser.add_argument("--params-file", help=argparse.SUPPRESS)
     return parser.parse_args(argv)
 
@@ -1080,6 +1080,8 @@ def main(argv: list[str] | None = None) -> int:
             start_state=start_state,
             window_backend=args.window_backend,
             stop_file=Path(args.stop_file) if args.stop_file else None,
+            # 单路线命令行同样读路线可选项；没有该文件时按默认行为执行。
+            params=_load_params(args.params_file).get(args.mode, {}),
         )
     except ManualStop as error:
         print(f"手动停止 模式={args.mode} 原因={error}", flush=True)

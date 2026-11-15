@@ -44,8 +44,10 @@ def test_daily_list_keeps_the_agreed_order():
         # 周的存量内容，但用户 2026-10-17 拍板放进日常：每天顺手看一眼，
         # 没额度时三秒收工（resource，不是失败），有额度时才是长流程。
         "moonlight_theater",
-        # 成就领取（2026-11-08）：有就领、没有就走，几秒收工 ⇒ 排最后。
+        # 成就领取（2026-11-08）：有就领、没有就走，几秒收工。
         "achievement",
+        # 宠物领养（2026-11-15）：用户明确要求进默认清单，方便次日实测采图。
+        "pet_adoption",
     ]
     # 名字从 ``modes.MODE_SPECS.label`` 派生 —— 这里改叫「刷书签」是用户
     # 2026-09-27 拍板的（原先是「商店刷新」，与别处的「刷书签」不一致）。
@@ -58,6 +60,7 @@ def test_daily_list_keeps_the_agreed_order():
         "竞技场",
         "月光剧场",
         "成就领取",
+        "宠物领养",
     ]
 
 
@@ -142,6 +145,7 @@ def test_no_selection_means_the_default_list():
         "arena",
         "moonlight_theater",
         "achievement",
+        "pet_adoption",
     )
 
 
@@ -627,10 +631,11 @@ def test_runs_each_selected_mode_once_in_order():
         "arena",
         "moonlight_theater",
         "achievement",
+        "pet_adoption",
     ]
     # 2026-11-09 起「成就领取」两边都能跑：模拟器图补齐后模拟器也会真的派发它，
-    # 不再记 ``not_supported``。
-    assert [o.status for o in report.outcomes] == ["completed"] * 8
+    # 不再记 ``not_supported``。2026-11-15 起默认清单多一条宠物领养。
+    assert [o.status for o in report.outcomes] == ["completed"] * 9
     assert report.any_failed is False
     assert report.aborted_reason is None
 
@@ -672,6 +677,7 @@ def test_cycles_are_passed_from_the_daily_list():
         ("arena", 10),
         ("moonlight_theater", 99),
         ("achievement", 1),
+        ("pet_adoption", 1),
     ]
 
 
@@ -702,6 +708,7 @@ def test_cycles_override_replaces_only_the_named_modes():
         ("arena", 5),
         ("moonlight_theater", 99),
         ("achievement", 1),
+        ("pet_adoption", 1),
     ]
 
 
@@ -747,10 +754,12 @@ def test_a_failing_task_is_skipped_and_the_rest_still_run():
         "arena",
         "moonlight_theater",
         "achievement",
+        "pet_adoption",
     ]
     assert [o.status for o in report.outcomes] == [
         "completed",
         "failed",
+        "completed",
         "completed",
         "completed",
         "completed",

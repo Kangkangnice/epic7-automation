@@ -21,6 +21,7 @@ from auto_game_unified.core.matcher import find_best_template, load_template
 from auto_game_unified.core.runtime import Runtime
 from auto_game_unified.games.epic7.evidence.tower import build_tower_evidence
 from auto_game_unified.games.epic7.navigation import REFERENCE_SIZE
+from auto_game_unified.games.epic7.stamina import StaminaBudget
 from auto_game_unified.games.epic7.template_paths import resolve_template_dir
 from auto_game_unified.games.epic7.tower import (
     FloorTooHard,
@@ -1435,12 +1436,16 @@ if __name__ == "__main__":
 
 
 class StaminaShortageTests(unittest.TestCase):
-    """「行动力不足」= 正常收工，不是转场失败（2026-11-04 14:05 真机）。
+    """「行动力不足」：能补就按选项补，不许补就正常收工（2026-11-04 14:05 真机）。
 
     点「战斗开始」时行动力不够，游戏弹一层模态框盖住准备战斗页。旧代码
     ``_overlay_kind`` 只认「战斗指南 / 英雄恢复」⇒ 主循环把「来源=准备战斗仍在」
     当成「没点动」，对 (1726,1040) 补点 4 次（全被弹窗吞掉），45 秒后报
     ``动作[battle-start]未稳定进入[...]``，每日任务记 ✗。
+
+    2026-11-15 起口径与主线 / 狗粮 / 支线一致：弹窗是同一个，补充走
+    ``stamina.py`` 的两段式决策；只有「关掉补充」或「达到上限」时才抛
+    ``StaminaShortage``（退出码 2，正常业务退出）。
     """
 
     PC_FIXTURES = ROOT / "tests" / "fixtures" / "epic7_tower_pc"
@@ -1449,28 +1454,125 @@ class StaminaShortageTests(unittest.TestCase):
         path = self.PC_FIXTURES / f"{name}.png"
         return cv2.cvtColor(cv2.imread(str(path)), cv2.COLOR_BGR2RGB)[:1132, :1982]
 
-    def pc_machine(self, state=TowerState.TEAM) -> TowerStateMachine:
+    def pc_machine(
+        self, state=TowerState.TEAM, *, stamina_enabled=True, stamina_limit=None
+    ) -> TowerStateMachine:
+        """按**路线选项的参数名**构造（与 Runner 关键字一致，不暴露预算类字段）。"""
         root = resolve_template_dir(TEMPLATES_DIR.parent, "pc")
-        return TowerStateMachine(
+        machine = TowerStateMachine(
             build_tower_templates(root / "tower"), initial_state=state
         )
+        machine.stamina_budget = StaminaBudget(
+            enabled=stamina_enabled, limit=stamina_limit
+        )
+        return machine
 
     def test_shortage_is_a_resource_exhaustion_with_its_own_label(self):
         from auto_game_unified.core.runtime import StaminaExhausted
 
         self.assertTrue(issubclass(StaminaShortage, StaminaExhausted))
-        self.assertEqual("行动力不足（月塔不补充体力）", StaminaShortage.stop_label)
+        # 文案必须写实情、且**不再暗示「月塔一律不补」**：补不补由路线选项决定，
+        # 写死在那句里会随选项过期。
+        self.assertEqual("行动力不足", StaminaShortage.stop_label)
         self.assertNotEqual(StaminaExhausted.stop_label, StaminaShortage.stop_label)
 
-    def test_pc_popup_stops_the_route_and_blocks_the_retry_path(self):
+    def test_popup_with_budget_off_stops_the_route(self):
+        """关掉补充 ⇒ 一个购买按钮都不点，按资源耗尽正常收工。"""
+        machine = self.pc_machine(stamina_enabled=False)
+        screen = self.pc_frame("stamina_shortage_pc_20261104")
+
+        with self.assertRaises(StaminaShortage) as caught:
+            machine.next_action(screen)
+        self.assertIn("不再补充", str(caught.exception))
+
+    def test_popup_with_budget_on_asks_for_the_material_first(self):
+        """默认口径（使用、不限）⇒ 第一拍点素材，不是点购买、更不是收工。"""
         machine = self.pc_machine()
+        screen = self.pc_frame("stamina_shortage_pc_20261104")
+
+        action = machine.next_action(screen)
+
+        self.assertIsNotNone(action)
+        assert action is not None
+        self.assertEqual("stamina-material", action.name)
+        material = machine._find_stamina(screen, "stamina_material")
+        self.assertIsNotNone(material)
+        assert material is not None
+        self.assertEqual(material.center, action.point)
+
+    def test_two_stage_purchase_is_recorded_only_after_the_click(self):
+        """素材 → 购买 → 弹窗关掉才记账：决策阶段账本不许动。"""
+        machine = self.pc_machine()
+        popup = self.pc_frame("stamina_shortage_pc_20261104")
+        prepare = self.pc_frame("prepare_pc_live_20261103")
+
+        material = machine.next_action(popup)
+        assert material is not None
+        # ⚠️ 决策阶段账本必须不动 —— 主循环每一拍都会先跑一次 ``preview()``，
+        # 若在决策时就置位，素材会被永久判成「已点过」。
+        self.assertFalse(machine._stamina_material_clicked)
+        machine.commit(material, TowerState.TEAM)
+        self.assertTrue(machine._stamina_material_clicked)
+
+        confirm = machine.next_action(popup)
+        assert confirm is not None
+        self.assertEqual("stamina-confirm", confirm.name)
+        self.assertFalse(machine._stamina_purchase_pending)
+        machine.commit(confirm, TowerState.TEAM)
+        self.assertTrue(machine._stamina_purchase_pending)
+
+        # 弹窗关掉的那一拍才记账，且只记一次。
+        self.assertEqual("battle-start", machine.next_action(prepare).name)
+        self.assertEqual(1, machine.stamina_replenished)
+        self.assertEqual(1, machine.stamina_budget.used)
+        self.assertEqual("battle-start", machine.next_action(prepare).name)
+        self.assertEqual(1, machine.stamina_replenished)
+
+    def test_preview_does_not_swallow_the_purchase_bookkeeping(self):
+        """``preview()`` 里那趟空跑必须把账本原样还回来。"""
+        machine = self.pc_machine()
+        popup = self.pc_frame("stamina_shortage_pc_20261104")
+        prepare = self.pc_frame("prepare_pc_live_20261103")
+
+        material = machine.next_action(popup)
+        assert material is not None
+        machine.commit(material, TowerState.TEAM)
+        confirm = machine.next_action(popup)
+        assert confirm is not None
+        machine.commit(confirm, TowerState.TEAM)
+
+        machine.preview(prepare)
+        self.assertTrue(machine._stamina_purchase_pending)
+        self.assertEqual(0, machine.stamina_replenished)
+        machine.next_action(prepare)
+        self.assertEqual(1, machine.stamina_replenished)
+
+    def test_budget_limit_stops_after_one_purchase(self):
+        """上限 1 片：补过一次之后再弹窗就收工，绝不再点购买。"""
+        machine = self.pc_machine(stamina_enabled=True, stamina_limit=1)
+        popup = self.pc_frame("stamina_shortage_pc_20261104")
+        prepare = self.pc_frame("prepare_pc_live_20261103")
+
+        material = machine.next_action(popup)
+        assert material is not None
+        machine.commit(material, TowerState.TEAM)
+        confirm = machine.next_action(popup)
+        assert confirm is not None
+        machine.commit(confirm, TowerState.TEAM)
+        machine.next_action(prepare)
+
+        self.assertEqual(1, machine.stamina_budget.used)
+        with self.assertRaises(StaminaShortage):
+            machine.next_action(popup)
+
+    def test_pc_popup_stops_the_route_and_blocks_the_retry_path(self):
+        machine = self.pc_machine(stamina_enabled=False)
         screen = self.pc_frame("stamina_shortage_pc_20261104")
 
         self.assertTrue(machine._stamina_shortage(screen))
         self.assertEqual("stamina-shortage", machine._overlay_kind(screen))
-        with self.assertRaises(StaminaShortage) as caught:
+        with self.assertRaises(StaminaShortage):
             machine.next_action(screen)
-        self.assertIn("不购买体力", str(caught.exception))
 
         action = machine._action(
             "battle-start",
@@ -1480,9 +1582,24 @@ class StaminaShortageTests(unittest.TestCase):
             reason="test",
         )
         # 转场等待期间不会重新问 next_action，只问这两处；必须靠 overlay 把
-        # 「来源还在」挡掉、把落点收成 TEAM，下一拍才轮得到 StaminaShortage。
+        # 「来源还在」挡掉、把落点收成 TEAM，下一拍才轮得到体力分支。
         self.assertFalse(machine.action_source_visible(screen, action))
         self.assertIs(TowerState.TEAM, machine.action_target_state(screen, action))
+
+    def test_purchase_action_never_gets_a_second_click(self):
+        """购买类动作**绝不允许重复点击**：来源恒判「已离开」，不走重试通道。"""
+        machine = self.pc_machine()
+        popup = self.pc_frame("stamina_shortage_pc_20261104")
+        material = machine.next_action(popup)
+        assert material is not None
+        machine.commit(material, TowerState.TEAM)
+        confirm = machine.next_action(popup)
+        assert confirm is not None
+
+        self.assertFalse(machine.action_source_visible(popup, confirm))
+        # 弹窗还在 ⇒ 目标不算达成（不许当成买成功），下一拍继续等。
+        self.assertIsNone(machine.action_target_state(popup, confirm))
+        self.assertTrue(machine.action_source_visible(popup, material))
 
     def test_shortage_requires_all_three_stamina_atoms(self):
         """证伪：三颗缺一就不认 —— 不许拿「弹窗标题像」当判据。"""
@@ -1517,8 +1634,8 @@ class StaminaShortageTests(unittest.TestCase):
 
         self.assertFalse(machine._stamina_shortage(screen))
 
-    def test_runner_exits_cleanly_without_clicking_anything(self):
-        """真 Runner 级：退出码 2 那条通道接通，且**一次都没点**（不许买体力）。"""
+    def test_runner_exits_cleanly_when_top_up_is_off(self):
+        """真 Runner 级：关掉补充 ⇒ 退出码 2 那条通道接通，且**一次都没点**。"""
         frame = self.pc_frame("stamina_shortage_pc_20261104")
         runtime = RetrySuppressionTests._FakeRuntime((frame,))
         runner = TowerRunner(
@@ -1526,6 +1643,7 @@ class StaminaShortageTests(unittest.TestCase):
             runtime,  # type: ignore[arg-type]
             sleep=lambda _seconds: None,
             poll_seconds=0.0,
+            stamina_enabled=False,
         )
 
         runner.run(max_cycles=1)
@@ -1536,6 +1654,61 @@ class StaminaShortageTests(unittest.TestCase):
             any("行动力不足" in message for message in runtime.messages),
             runtime.messages,
         )
+
+    def test_runner_clicks_material_then_confirm_and_keeps_going(self):
+        """真 Runner 级：两段式点击真的**点出去两次**，之后接着点战斗开始。"""
+
+        class _ScriptedRuntime(RetrySuppressionTests._FakeRuntime):
+            """买完才关弹窗的假运行时；脚本演完抛 ``_EndOfScript`` 收场。
+
+            ⚠️ 不用「按固定序列循环回帧」的写法：那要求测试算准主循环第几帧截到了
+            什么，改一次 ``_SETTLE_SECONDS`` 就集体失效。这里按**点击事件**驱动。
+            """
+
+            class _EndOfScript(Exception):
+                pass
+
+            def __init__(self, popup: np.ndarray, prepare: np.ndarray) -> None:
+                super().__init__((popup,))
+                self._popup = popup
+                self._prepare = prepare
+                self.purchased = False
+                self._after_purchase = 0
+
+            def capture(self) -> np.ndarray:
+                if not self.purchased:
+                    return self._popup
+                self._after_purchase += 1
+                if self._after_purchase > 4:
+                    raise self._EndOfScript()
+                return self._prepare
+
+            def click(self, point, name) -> None:
+                super().click(point, name)
+                if name == "stamina-confirm":
+                    self.purchased = True
+
+        popup = self.pc_frame("stamina_shortage_pc_20261104")
+        prepare = self.pc_frame("prepare_pc_live_20261103")
+        machine = self.pc_machine()
+        runtime = _ScriptedRuntime(popup, prepare)
+        runner = TowerRunner(
+            machine,
+            runtime,  # type: ignore[arg-type]
+            sleep=lambda _seconds: None,
+            poll_seconds=0.0,
+        )
+
+        with self.assertRaises(_ScriptedRuntime._EndOfScript):
+            runner.run(max_cycles=1)
+
+        names = [name for _point, name in runtime.clicks]
+        self.assertEqual(["stamina-material", "stamina-confirm"], names[:2])
+        # 记账发生在弹窗关掉之后，且恰好一次。
+        self.assertEqual(1, machine.stamina_replenished)
+        self.assertEqual(1, machine.stamina_budget.used)
+        # 补完回到准备战斗页，路线继续 —— 没有停在弹窗上。
+        self.assertIn("battle-start", names)
 
 
 class ClearPageEndsTheBattleOnPcOnlyTests(unittest.TestCase):

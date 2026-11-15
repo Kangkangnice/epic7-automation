@@ -211,7 +211,7 @@ def test_pc_ticket_popup_on_team_page_auto_buys_green_leaf_flags():
 
     现在 PC 补了 ``friendship_ticket_offer`` / ``ticket_purchase_button`` 两张同名图，
     与模拟器一样自动买绿叶旗帜（100 友情点 → 5 旗帜）继续刷，不再停。判定仍是
-    「标题/取消 任一命中 ⇒ 弹窗在场」+「友情点报价 + 购买按钮都认得出才买」，避免误扣钻石。
+    「标题/取消 任一命中 ⇒ 弹窗在场」+「友情点报价 + 购买按钮都认得出才买」，仅在证据完整时执行购买。
 
     正例：TEAM 状态下这张弹窗页应给出 ``purchase-friendship-ticket``，不得抛 ``TicketExhausted``。
     反例：同一张弹窗页不得触发 VS 确认放行（绿色「购买」在顶部区域，与 VS 按钮区不重叠）。

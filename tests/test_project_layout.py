@@ -586,6 +586,10 @@ class ProjectLayoutTests(unittest.TestCase):
             # 它同时是两件事的唯一物证：① 陌生页逃生门的入口用例；
             # ② 「作者名行跨度 251px < 500」那条通栏门槛的反例。
             "stranger_account_page_live_20261018.png",
+            # 2026-11-15：积分余额「950」读不出的现场帧 —— 5 的字模与真机渲染
+            # 只匹配到 0.6969（阈值 0.70），整串因此弃权、兑换中心无法决策。
+            # 它钉住「余额里的 5 必须读得出」这条：字模换回旧版就会变红（0.697）。
+            "exchange_balance_950_live_20261115.png",
         }
         fixture_dir = ROOT / "tests" / "fixtures" / "epic7_community"
         self.assertEqual(expected, {path.name for path in fixture_dir.glob("*.png")})

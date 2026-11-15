@@ -87,6 +87,7 @@ from auto_game_unified.desktop.catalog import (
 from auto_game_unified.desktop.chaos_bridge import ChaosBridge
 from auto_game_unified.desktop.controller import DesktopController
 from auto_game_unified.desktop.diagnostics import export_diagnostics
+from auto_game_unified.desktop.graceful_exit import EmulatorQuitGate
 from auto_game_unified.desktop.onboarding import has_consent, record_consent
 from auto_game_unified.desktop.preflight import (
     run_preflight,
@@ -100,6 +101,8 @@ from auto_game_unified.desktop.shutdown import (
 )
 from auto_game_unified.desktop.update_check import check_for_update
 from auto_game_unified.desktop.worker import WorkerController
+from auto_game_unified.desktop_qt.route_options_dialog import RouteOptionsDialog
+from auto_game_unified.games.epic7.route_options import options_for
 from auto_game_unified.desktop_qt.autoclicker import AutoClickerPage
 from auto_game_unified.desktop_qt.dimension_probe import DimensionProbePage
 from auto_game_unified.desktop_qt.floating import FloatingRunner
@@ -162,6 +165,8 @@ class QtDesktopWindow(FluentWindow):
         self._route_checks: dict[str, CheckBox] = {}
         self._route_spins: dict[str, QSpinBox] = {}
         self._group_checks: dict[str, CheckBox] = {}
+        # 只给声明了可选项的路线建「设置」入口。
+        self._route_option_buttons: dict[str, PushButton] = {}
         # 说明卡当前显示的是哪条路线（None = 显示的是分组说明）。
         # 切窗口后端时要靠它重算标题下面那行「这条能不能跑」。
         self._detail_mode: str | None = None
@@ -183,12 +188,17 @@ class QtDesktopWindow(FluentWindow):
         # 「上次开着」不该让下一次也开着（用户 2026-11-12 要求「默认是关闭的」）。
         # 每次打开助手都是关的，要关机的那个晚上自己拨一下。
         self.shutdown = ShutdownScheduler()
+        # 关机前先把模拟器请出去（2026-11-14 事故：模拟器还开着就被 shutdown，
+        # 强关留下半截的驱动状态，次日开机进「启动修复」）。
+        self.emulator_quit = EmulatorQuitGate()
         # 用户点过「安全停止」⇒ 这一轮不是「跑完」，不触发关机。
         # 单独记标记而不是只看退出码：卡死被强杀时退出码是 1（与「运行失败」同码），
         # 光看退出码会把「我按了停止」误判成「它自己跑失败了」。
         self._stop_requested_by_user = False
         # 关机倒计时的收尾计时器（到点就把「取消关机」按钮收起来）。第一次排定才建。
         self._shutdown_timer: QTimer | None = None
+        # 等模拟器退出的轮询计时器（每秒问一次）。第一次用到才建。
+        self._shutdown_wait_timer: QTimer | None = None
         # 停止兜底的计时器（见 _start_stop_watchdog）。第一次点停止时才建。
         self._stop_timer: QTimer | None = None
         self._stop_deadline = 0.0
@@ -353,6 +363,14 @@ class QtDesktopWindow(FluentWindow):
                 )
                 self._route_spins[route.mode] = spin
                 line.addWidget(spin)
+                if options_for(route.mode):
+                    settings = PushButton("设置", card)
+                    settings.setFixedWidth(64)
+                    settings.clicked.connect(
+                        lambda _checked=False, m=route.mode: self._on_route_options_clicked(m)
+                    )
+                    self._route_option_buttons[route.mode] = settings
+                    line.addWidget(settings)
                 card_layout.addLayout(line)
 
                 box.clicked.connect(
@@ -397,6 +415,7 @@ class QtDesktopWindow(FluentWindow):
         self.shutdown_switch.setToolTip(
             "每日任务结束后执行自动关机（倒计时 "
             f"{SHUTDOWN_DELAY_SECONDS} 秒，期间可取消）。"
+            "关机前会先让雷电模拟器自己退出，退干净再关。"
             "主动执行「安全停止」时不触发。"
         )
         self.shutdown_switch.checkedChanged.connect(self._on_shutdown_toggled)
@@ -595,6 +614,8 @@ class QtDesktopWindow(FluentWindow):
             box.setEnabled(not running)
         for mode, spin in self._route_spins.items():
             spin.setEnabled(not running and route_by_name(mode).cycles_editable)
+        for button in self._route_option_buttons.values():
+            button.setEnabled(not running)
         self.run_state_label.setText(
             "执行中" if running else
             f"已选 {len(self.controller.selection)} 项 · "
@@ -688,6 +709,25 @@ class QtDesktopWindow(FluentWindow):
             return
         self._save_session()
 
+    def _on_route_options_clicked(self, mode: str) -> None:
+        """打开单条路线的设置；保存时由 controller 清洗并写入会话存档。"""
+
+        def save(target: str, values: dict[str, object]) -> None:
+            try:
+                self.controller.set_options(target, values)
+            except Exception as error:
+                self._notify("error", "无法保存设置", str(error))
+                return
+            self._save_session()
+
+        RouteOptionsDialog(
+            self,
+            mode,
+            route_by_name(mode).label,
+            self.controller.options[mode],
+            save,
+        ).exec()
+
     def _on_backend_changed(self, index: int) -> None:
         if self._suspend_events or index < 0:
             return
@@ -757,6 +797,19 @@ class QtDesktopWindow(FluentWindow):
         self._refresh_actions()
 
     def _on_start_clicked(self) -> None:
+        # 正在请模拟器退出：这时开跑会跟它抢，而且模拟器马上就要没了。
+        # 拦在这里、并且**不撤销**等待流程，让它按自己的节奏收尾。
+        if (
+            self._shutdown_wait_timer is not None
+            and self._shutdown_wait_timer.isActive()
+        ):
+            self._append_log("正在关闭模拟器，等它退出后再开始新任务。")
+            self._notify(
+                "warning",
+                "正在关闭模拟器",
+                "等模拟器退出后再开始新任务，否则两边会互相干扰。",
+            )
+            return
         # 人已经在点「开始任务」了 ⇒ 先把上一轮排定的关机撤掉，否则跑到一半电脑会关。
         # 放在最前面：后面任何一步不通过（没勾路线、复检失败）也照样撤销 ——
         # 只要有人坐在这儿操作，就不该倒计时关机。跑完仍按开关重新排定。
@@ -836,10 +889,16 @@ class QtDesktopWindow(FluentWindow):
         self._refresh_actions()
 
     def _enter_floating_mode(self, routes: tuple[tuple[str, str], ...]) -> None:
-        """开始成功后：主窗口收起，右上角只留一颗球；日志页是回来时的落点。"""
+        """开始成功后：主窗口收起，**先展开便签面板**（能看进度和日志）；
+        点面板上的「收起」才变成右上角那颗球。
+
+        ⚠️ 顺序不能倒：`start_run` 只负责把球摆好、把面板清空，真正的显示交给
+        `expand()`。先 `hide()` 主窗口再展开，避免两个窗口同框闪一下。
+        """
         self.switchTo(self.log_page)
         self.floating.start_run(routes)
         self.hide()
+        self.floating.expand()
 
     def _return_to_main_window(self) -> None:
         """点面板「主界面」：只收面板，球留在原地，随时能再点回来。"""
@@ -1013,6 +1072,10 @@ class QtDesktopWindow(FluentWindow):
                 cycles=dict(self.controller.cycles),
                 backend=self.controller.selected_backend,
                 pc_input_mode=self.controller.pc_input_mode,
+                params={
+                    mode: dict(values)
+                    for mode, values in self.controller.options.items()
+                },
             ),
         )
 
@@ -1076,6 +1139,21 @@ class QtDesktopWindow(FluentWindow):
         if exit_code == 130 or self._stop_requested_by_user:
             self._append_log("本次为手动停止，不执行自动关机。")
             return
+        # 2026-11-14 事故：模拟器还开着就关机，它被强行结束后驱动状态留在半截，
+        # 次日开机 Windows 进「启动修复」。所以先请它自己退出，退干净再关。
+        action = self.emulator_quit.begin()
+        if action == "waiting":
+            self._append_log("关机前等待雷电模拟器自行退出，退出后进入关机倒计时。")
+            self._start_shutdown_wait_timer()
+            return
+        if action == "quit_failed":
+            self._append_log(
+                "未能请求模拟器退出（找不到雷电控制台或命令执行失败），按原流程关机。"
+            )
+        self._schedule_shutdown_now()
+
+    def _schedule_shutdown_now(self) -> None:
+        """模拟器已退（或本来就没开）：排定关机并开始倒计时。"""
         if not self.shutdown.schedule():
             self._append_log("自动关机未排定（关机命令执行失败），设备保持开机。")
             return
@@ -1091,6 +1169,29 @@ class QtDesktopWindow(FluentWindow):
             f"{SHUTDOWN_DELAY_SECONDS} 秒后执行自动关机。"
             "如需取消，可使用「取消关机」。",
         )
+
+    def _start_shutdown_wait_timer(self) -> None:
+        if self._shutdown_wait_timer is None:
+            self._shutdown_wait_timer = QTimer(self)
+            self._shutdown_wait_timer.setInterval(1000)
+            self._shutdown_wait_timer.timeout.connect(self._on_shutdown_wait_tick)
+        self._shutdown_wait_timer.start()
+
+    def _on_shutdown_wait_tick(self) -> None:
+        state = self.emulator_quit.poll()
+        if state == "waiting":
+            return
+        assert self._shutdown_wait_timer is not None
+        self._shutdown_wait_timer.stop()
+        if state == "timeout":
+            self._append_log(
+                f"模拟器 {int(self.emulator_quit.timeout_seconds)} 秒内未退出，"
+                "仍按原流程关机 —— 本次可能不干净；"
+                "下次开机若进入修复界面，按 Enter 选择继续启动即可。"
+            )
+        else:
+            self._append_log("模拟器已退出。")
+        self._schedule_shutdown_now()
 
     def _start_shutdown_timer(self) -> None:
         if self._shutdown_timer is None:
@@ -1117,6 +1218,12 @@ class QtDesktopWindow(FluentWindow):
         """
         if self._shutdown_timer is not None:
             self._shutdown_timer.stop()
+        # 还在等模拟器退出时也要能叫停：停掉轮询就不会再排定关机。
+        # 但已经发出去的 quitall 收不回来 —— 模拟器仍会关，日志要说清楚。
+        if self._shutdown_wait_timer is not None:
+            if self._shutdown_wait_timer.isActive():
+                self._append_log("已停止等待关机；已经发出的模拟器关闭请求收不回来。")
+            self._shutdown_wait_timer.stop()
         self.cancel_shutdown_button.setVisible(False)
         if not self.shutdown.scheduled:
             return True

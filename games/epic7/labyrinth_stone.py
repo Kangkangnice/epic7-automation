@@ -448,6 +448,8 @@ class LabyrinthStoneStateMachine:
         )
         self.state = initial_state
         self.completed_cycles = 0
+        # 友情点数买不买由路线选项注入；默认买 = 改动前行为。
+        self.buy_friendship = True
         # 「已经点过战斗开始、人在迷宫里了」。见类 docstring。
         self.entered = False
         self.teleported = False
@@ -648,13 +650,13 @@ class LabyrinthStoneStateMachine:
         categories = self._locate_all(screen, "stone_category")
         stones = self._locate_all(screen, "stone_in_name")
         # 图标路：三张图共用同一个搜索区、同一把尺子，命中任意一个就算目标商品。
+        # 友情点数可关闭；关闭后它不进入目标名单，也不会被当成「缺购买按钮」。
+        icon_names = ["covenant_candidate", "mystic_candidate"]
+        if self.buy_friendship:
+            icon_names.append("friendship_candidate")
         icons = [
             match
-            for name in (
-                "covenant_candidate",
-                "mystic_candidate",
-                "friendship_candidate",
-            )
+            for name in icon_names
             for match in self._locate_all(screen, name)
         ]
         buttons = self._locate_all(screen, "buy_button")
@@ -1362,6 +1364,7 @@ class LabyrinthStoneRunner(ModeRunnerBase):
         sleep: Callable[[float], None] = default_sleep,
         poll_seconds: float = 1.0,
         recovery_gate: RecoveryGate | None = None,
+        buy_friendship: bool = True,
     ) -> None:
         super().__init__(
             machine,
@@ -1370,6 +1373,7 @@ class LabyrinthStoneRunner(ModeRunnerBase):
             poll_seconds=poll_seconds,
             recovery_gate=recovery_gate,
         )
+        machine.buy_friendship = buy_friendship
 
     def _state_label(self, state: LabyrinthStoneState) -> str:
         return state_label(state)

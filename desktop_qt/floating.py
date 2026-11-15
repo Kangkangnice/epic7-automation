@@ -293,6 +293,12 @@ class RunPanel(QWidget):
             child = self._progress_grid.takeAt(0)
             widget = child.widget()
             if widget is not None:
+                # ⚠️ 光 deleteLater 不够：它是**延迟**释放，旧行会原地继续绘制到事件
+                # 循环处理删除为止 —— 连续两次 set_progress（开始任务时先建一次、
+                # 展开后按真实宽度重建一次）就会看到新旧两行叠在一起（2026-11-14 抓图）。
+                # 用 hide() 立刻停画；**别用 setParent(None)**：那会触发父布局连锁重排，
+                # 实测把刚建好的新行一起挤没了（同一次抓图里进度区整个空白）。
+                widget.hide()
                 widget.deleteLater()
         count = len(self._items)
         columns = 2 if count > PROGRESS_COLUMN_THRESHOLD else 1
