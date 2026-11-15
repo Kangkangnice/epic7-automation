@@ -186,12 +186,18 @@ from auto_game_unified.core.matcher import (
     MATCH_MODE_WHITE_MASK,
     Match,
     find_all_templates,
+    find_best_template,
     find_template,
     load_template,
 )
 from auto_game_unified.core.recovery import RecoveryGate
 from auto_game_unified.core.runtime import ResourceExhausted, Runtime, StaminaExhausted
 from auto_game_unified.games.epic7.battle_controls import battle_scene_visible
+from auto_game_unified.games.epic7.evidence.moonlight_theater import (
+    REFERENCE_SIZE as _MOONLIGHT_REFERENCE_SIZE,
+    REGIONS as _MOONLIGHT_REGIONS,
+    THRESHOLDS as _MOONLIGHT_THRESHOLDS,
+)
 from auto_game_unified.games.epic7.resume_probe import ResumePoint
 from auto_game_unified.games.epic7.story import (
     StoryAction,
@@ -709,6 +715,11 @@ class SideStoryTemplates:
     # 为什么要它：**「快速入场」在有活动时会被活动顶掉**（用户 2026-11-12 拍板），
     # 改成「点标签 → 进可进入列表 → 点普通支线的入场」，绕开快速入场。
     sub_story_tab: np.ndarray
+    # 同一页右侧「月光剧场」入口卡**左上角的绿色 F 角标**（2026-11-15 用户要求）。
+    # 它长在**外面**这张卡上，不用进剧场就能看见 ⇒ 只读巡检顺手读一下，记进便签。
+    # 图**复用月光剧场那一条的**（``../moonlight_theater/entry_free.png``，不复制副本），
+    # 区域与阈值也沿用它的（``evidence/moonlight_theater.py``）—— 同一个控件只有一份判据。
+    moonlight_free: np.ndarray
     # 「可进入的支线故事」列表页标题（230x42）。列表页 1.0000、支线故事页 0.5238、
     # Episode 详情页 0.5126 ⇒ 0.85 干净隔开。
     # ⚠️ **必须先认标题再挑条目**：只靠"有绿字"会在队伍准备页误命中（2026-11-12 实跑），
@@ -786,6 +797,10 @@ def build_side_story_templates(template_dir: Path) -> SideStoryTemplates:
         prepare_battle_map=load_template(str(template_dir / "prepare_battle_map.png")),
         # 返回键**复用主线 navigation 的模板文件**（实测 0.999），不复制第二份。
         story_back=load_template(str(root / "navigation" / "story_back.png")),
+        # 月光剧场入口卡的绿 F 角标：**复用** moonlight_theater 那一张，不复制副本。
+        moonlight_free=load_template(
+            str(root / "moonlight_theater" / "entry_free.png")
+        ),
         helper_change=load_template(str(template_dir / "helper_change.png")),
         diff_mid=load_template(str(template_dir / "diff_mid.png")),
         boss_select_team=load_template(str(template_dir / "boss_select_team.png")),
@@ -931,6 +946,10 @@ class SideStoryStateMachine(StoryStateMachine):
         # 比较像素反而会把「画面没变但确实是新一帧」误当成同一帧。
         self._countdown_frame: np.ndarray | None = None
         self._countdown_payload: dict[str, Any] | None = None
+        # 月光剧场入口卡左上角有没有绿色 F（2026-11-15 用户要求）：
+        # ``True`` / ``False`` = 在"外面"那一页看到过；``None`` = 这一趟没走到那页。
+        # ⚠️ **只写第一次**：别的页面上没有这张卡，每帧重读会把 True 洗成 False。
+        self.moonlight_free: bool | None = None
 
     # ── 判据 ────────────────────────────────────────────────────────────────
 
@@ -1539,6 +1558,8 @@ class SideStoryStateMachine(StoryStateMachine):
         if event_home is None:
             event_home = self._locate(screen, "event_home_pv")
         if event_home is not None:
+            # 期次主页同样在「外面」：右侧那三张入口卡（含月光剧场）照样可见。
+            self._note_moonlight_free(screen)
             return True, self._action(
                 "enter_event_story",
                 self._scaled_point(screen, _EVENT_HOME_STORY_POINT),
@@ -1563,6 +1584,8 @@ class SideStoryStateMachine(StoryStateMachine):
 
         entry = self._locate(screen, "quick_entry")
         if entry is not None:
+            # 这一页就是「外面」：右边那张月光剧场入口卡连绿 F 一起可见，顺手记一下。
+            self._note_moonlight_free(screen)
             tab = self._locate(screen, "sub_story_tab")
             if tab is None:
                 return True, None
@@ -1577,6 +1600,30 @@ class SideStoryStateMachine(StoryStateMachine):
 
         # 关卡地图 / 队伍准备 / 战斗 / 结算 —— 一律不动手（那上面任何一键都在打图）。
         return True, None
+
+    def _note_moonlight_free(self, screen: np.ndarray) -> None:
+        """登记「月光剧场入口卡左上角有没有绿色 F」（用户 2026-11-15 要求）。
+
+        用户原话：「不要进到里面，就看外面这个 F 就行」。所以这一趟**一步都不进剧场**：
+        那张卡就长在支线故事页（或期次主页）右侧，站在原地看着读即可。
+
+        判据整份**沿用它自己那条路线**（``evidence/moonlight_theater.py`` 的区域、
+        阈值与模板），本处不另立一套 —— 同一颗控件抄两份判据，改的那份生产走不到。
+        离线审计（全库 433 张整帧，比例不符的 43 张除外）：带角标的 5 张
+        0.9587~1.0000，其余最高 0.4229 ⇒ 阈值 0.80 两头各留 0.38 的空档。
+        """
+
+        if self.moonlight_free is not None:
+            return
+        match = find_best_template(
+            screen,
+            self.side.moonlight_free,
+            _MOONLIGHT_REGIONS["entry_free"],
+            reference_size=_MOONLIGHT_REFERENCE_SIZE,
+        )
+        if match is None:
+            return
+        self.moonlight_free = match.score >= _MOONLIGHT_THRESHOLDS["entry_free"]
 
     def _countdown_of_frame(self, screen: np.ndarray) -> dict[str, Any] | None:
         """同一帧只跑一次 OCR（理由见 ``__init__`` 里的 ``_countdown_frame``）。
