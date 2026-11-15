@@ -1171,6 +1171,36 @@ def _run_with_inspect(inspect, **overrides):
     return run_daily_tasks(**options)
 
 
+def test_inspect_note_carries_the_moonlight_free_badge_when_it_was_read():
+    """巡检顺手读到的绿 F 要挨着倒计时那一句出现（2026-11-15 用户要求）。"""
+
+    def inspect():
+        return {
+            "days": 13,
+            "hours": 12,
+            "raw": "剩余 13天 12小时",
+            "moonlight_free": True,
+        }
+
+    report = _run_with_inspect(inspect)
+
+    assert report.countdown_note == (
+        "支线刷新倒计时：剩余 13 天 12 小时｜月光剧场免费已更新"
+    )
+    assert report.result_lines()[-1].endswith("｜月光剧场免费已更新")
+
+
+def test_inspect_note_omits_the_badge_when_it_was_not_read():
+    """没走到那张卡所在的那一页 ⇒ 一个字都不多写（``None`` 不等于"没有"）。"""
+
+    def inspect():
+        return {"days": 13, "hours": 12, "raw": "剩余 13天 12小时"}
+
+    report = _run_with_inspect(inspect)
+
+    assert "月光剧场" not in report.countdown_note
+
+
 def test_inspect_runs_once_after_the_routes_and_records_the_note():
     calls: list[int] = []
 
@@ -1322,6 +1352,8 @@ def test_countdown_inspect_reuses_the_side_story_spec_but_drops_resume(monkeypat
         seen["machine_countdown_only"] = machine._countdown_only
         # 真跑里这一步由状态机在 Episode 详情页完成；这里直接给答案。
         machine.countdown_read = {"days": 13, "hours": 12, "raw": "剩余 13天 12小时"}
+        # 同一趟在支线故事页顺手读到的绿 F。
+        machine.moonlight_free = True
 
         class _Result:
             completed_cycles = 0
@@ -1352,6 +1384,7 @@ def test_countdown_inspect_reuses_the_side_story_spec_but_drops_resume(monkeypat
     assert payload == {"days": 13, "hours": 12, "raw": "剩余 13天 12小时"}
     saved = countdown_module.load_countdown()
     assert (saved["days"], saved["hours"]) == (13, 12)
+    assert saved["moonlight_free"] is True, "巡检读到的绿 F 没落盘"
 
 
 def test_countdown_inspect_returns_none_when_nothing_was_read(monkeypatch, tmp_path):

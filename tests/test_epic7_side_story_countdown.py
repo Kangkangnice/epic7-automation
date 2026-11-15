@@ -283,3 +283,49 @@ def test_normal_mode_is_untouched_by_the_countdown_branch():
     action = build_side_story_machine(TEMPLATES).next_action(episode_page())
     assert action is not None
     assert action.name == "enter_adventure"
+
+
+# --------------------------------------------------------------------------
+# ③ 顺手读「月光剧场入口卡左上角有没有绿 F」（2026-11-15 用户要求）
+#
+# 用户原话：「同时看下月光剧场左上是否有绿 F 记录下来，写在刷新时间旁边」，
+# 补一句「不要进到里面，就看外面这个 F 就行」。所以这一趟**一步都不进剧场** ——
+# 那张卡就长在支线故事页右侧，站在原地看着读。
+# --------------------------------------------------------------------------
+
+
+def test_moonlight_free_badge_is_read_on_the_story_hub_page():
+    """支线故事页：既能点「支线故事」标签，也能读到绿 F = 今天的免费已更新。"""
+
+    machine = _machine()
+    action = machine.next_action(story_hub_page())
+
+    assert action is not None and action.name == "open_sub_story_list"
+    assert machine.moonlight_free is True
+
+
+def test_missing_badge_reads_as_used_not_as_yesterday_s_value():
+    """**反向验证**：把角标那块抹掉，同一页必须读成 ``False``。
+
+    这条钉子防的是「判据写成了恒真」—— 恒真的话，用户第二天会看到"免费已更新"
+    却点了没有免费，那比不显示更糟。
+    """
+
+    blank = story_hub_page().copy()
+    blank[400:500, 1520:1660] = blank[500:600, 1520:1660]
+    machine = _machine()
+    machine.next_action(blank)
+
+    assert machine.moonlight_free is False
+
+
+def test_moonlight_free_stays_unknown_when_the_card_was_never_seen():
+    """只走到列表页（那张卡根本不在这一页）⇒ 留 ``None``。
+
+    不拿"没看见"冒充"没有"：便签上宁可少一句，也不写一句没读到的结论。
+    """
+
+    machine = _machine()
+    machine.next_action(list_page())
+
+    assert machine.moonlight_free is None

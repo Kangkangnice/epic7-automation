@@ -106,3 +106,43 @@ def test_display_keeps_an_unrecognised_stamp_verbatim(_isolated_data_dir):
     )
 
     assert "（读取时间 昨天）" in countdown.countdown_text()
+
+
+# ---- 月光剧场免费额度（2026-11-15 用户要求）----------------------------------
+def test_free_badge_shows_up_next_to_the_countdown(_isolated_data_dir):
+    """有绿 F ⇒ 那一行末尾挨着写「月光剧场免费已更新」。"""
+
+    countdown.save_countdown(13, 12, moonlight_free=True)
+
+    text = countdown.countdown_text()
+    assert text.endswith("｜月光剧场免费已更新"), text
+    assert "读取时间" in text, "倒计时与读取时间那半句不许被挤掉"
+
+
+def test_used_free_badge_says_it_was_used(_isolated_data_dir):
+    """没有绿 F ⇒ 同一位置写「月光剧场免费已用」（用户口径：有 F 才叫"已更新"）。"""
+
+    countdown.save_countdown(13, 12, moonlight_free=False)
+
+    assert countdown.countdown_text().endswith("｜月光剧场免费已用")
+
+
+def test_old_file_without_the_key_shows_nothing_extra(_isolated_data_dir):
+    """11-15 之前写的旧文件没有这个键 ⇒ 一个字都不多写（不拿"没读到"冒充"没有"）。"""
+
+    countdown.countdown_path().write_text(
+        json.dumps({"days": 3, "hours": 4, "read_at": "2026-11-12 23:40"}),
+        encoding="utf-8",
+    )
+
+    text = countdown.countdown_text()
+    assert "月光剧场" not in text, text
+    assert text.startswith("支线刷新倒计时：剩余 3 天 4 小时")
+
+
+def test_unknown_badge_state_does_not_invent_a_value(_isolated_data_dir):
+    """这趟没走到能看见那张卡的那一页（``None``）⇒ 不写。"""
+
+    countdown.save_countdown(3, 4, moonlight_free=None)
+
+    assert "月光剧场" not in countdown.countdown_text()

@@ -880,7 +880,11 @@ def inspect_side_story_countdown(
     if not isinstance(payload, dict):
         return None
     save_countdown(
-        int(payload["days"]), int(payload["hours"]), raw=str(payload.get("raw", ""))
+        int(payload["days"]),
+        int(payload["hours"]),
+        raw=str(payload.get("raw", "")),
+        # 同一趟顺手登记的「月光剧场入口卡有没有绿 F」；没走到那页就是 None。
+        moonlight_free=getattr(machine, "moonlight_free", None),
     )
     return payload
 

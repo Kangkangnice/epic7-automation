@@ -32,6 +32,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Mapping, Optional
 
+from auto_game_unified.core.countdown import moonlight_suffix
 from auto_game_unified.core.runtime import ManualStop
 from auto_game_unified.games.epic7.modes import (
     MODE_SPECS,
@@ -546,5 +547,8 @@ def _run_inspect(
         and isinstance(payload.get("days"), int)
         and isinstance(payload.get("hours"), int)
     ):
-        return f"支线刷新倒计时：剩余 {payload['days']} 天 {payload['hours']} 小时"
+        return (
+            f"支线刷新倒计时：剩余 {payload['days']} 天 {payload['hours']} 小时"
+            f"{moonlight_suffix(payload)}"
+        )
     return "支线刷新倒计时：未读取（页面未显示倒计时信息）"
