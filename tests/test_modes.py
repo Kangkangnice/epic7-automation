@@ -33,6 +33,8 @@ class Epic7ModeRegistryTests(unittest.TestCase):
                 "activity_story",
                 "achievement",
                 "story_star",
+                "pet_adoption",
+                "penguin_purchase",
             },
             set(MODE_SPECS),
         )
@@ -187,25 +189,51 @@ class RouteHookRegistryTests(unittest.TestCase):
             self.assertIsNone(shop.preflight("shop_refresh", False))
 
     def test_arena_runner_options_carry_the_live_path_and_nothing_on_dry_run(self):
-        """竞技场实跑要落一个盘（买票记账），干跑一个都不落。"""
+        """竞技场实跑要落一个盘（买票记账），干跑一个都不落；可选项按声明传入。"""
         arena = get_mode("arena")
         self.assertIsNotNone(arena.runner_options, "竞技场的落盘参数从注册项上掉了")
 
-        self.assertEqual({}, arena.runner_options(ROOT, True, {}))
-        self.assertEqual(
+        expected = {
+            # 偏好默认「不指定」= 改动前的行为（random.choice 挑一行）。
+            "opponent_preference": "none",
+            # 名单默认两份都空 = 不筛选；冲突处置默认黑名单优先。
+            "hero_blacklist": (),
+            "hero_whitelist": (),
+            "hero_list_conflict": "blacklist",
+            "refresh_mode": "free",
+            "max_gold_refreshes": 0,
+            "ticket_mode": "friendship",
+            "max_skystone_purchases": 0,
+        }
+        self.assertEqual(expected, arena.runner_options(ROOT, True, {}))
+        live = dict(expected)
+        live["purchase_stamp_path"] = ROOT / "runtime_logs" / "arena_ticket_purchase.txt"
+        self.assertEqual(live, arena.runner_options(ROOT, False, {}))
+
+        # 可选项生效：只把声明过的键交给 Runner，非法值与未满足依赖在 clean 里退回默认。
+        chosen = arena.runner_options(
+            ROOT,
+            True,
             {
-                "purchase_stamp_path": ROOT / "runtime_logs" / "arena_ticket_purchase.txt",
+                "refresh_mode": "gold",
+                "max_gold_refreshes": 3,
+                "ticket_mode": "skystone",
+                "max_skystone_purchases": 2,
+                "opponent_preference": "highest",
+                "hero_blacklist": ["维多丽卡", "维多丽卡", " 安洁莉卡 "],
+                "hero_list_conflict": "whitelist",
+                "only_npc": True,
             },
-            arena.runner_options(ROOT, False, {}),
         )
-        # 参数通道通了，但**不许**把参数原样塞进 Runner 构造函数 ——
-        # 那会让不接受这个关键字的路线直接 TypeError（14 条路线都没接）。
-        self.assertEqual(
-            {
-                "purchase_stamp_path": ROOT / "runtime_logs" / "arena_ticket_purchase.txt",
-            },
-            arena.runner_options(ROOT, False, {"only_npc": True}),
-        )
+        self.assertEqual("gold", chosen["refresh_mode"])
+        self.assertEqual(3, chosen["max_gold_refreshes"])
+        self.assertEqual("skystone", chosen["ticket_mode"])
+        self.assertEqual(2, chosen["max_skystone_purchases"])
+        self.assertEqual("highest", chosen["opponent_preference"])
+        # 名单去重、去空白，按声明清洗；冲突处置照样透传。
+        self.assertEqual(("维多丽卡", "安洁莉卡"), chosen["hero_blacklist"])
+        self.assertEqual("whitelist", chosen["hero_list_conflict"])
+        self.assertNotIn("only_npc", chosen)
 
     def test_routes_without_special_needs_declare_no_hooks(self):
         """没需求的路线不该挂钩子 —— 挂了就是「空转的配置」，读的人会以为它有意义。
@@ -214,18 +242,33 @@ class RouteHookRegistryTests(unittest.TestCase):
         挂一个空转的闸门比不挂更糟（用户以为被拦住了，其实什么都没拦）。
         """
         hooks = {
-            # 「会真花钱」：目标商品与购买价格没在当前客户端实证过就不许实跑。
-            "shop_refresh": "preflight",
+            # 「会真花钱」：目标商品与购买价格没在当前客户端实证过就不许实跑；
+            # 同时友情点数买不买、买几个已交给路线选项。
+            "shop_refresh": {"preflight", "runner_options"},
             # 社区签到同理，而且更硬：竖屏段那三条每日任务的坐标根本还没采到，
             # 放进实跑就是一次**必然失败**。
-            "community": "preflight",
+            "community": {"preflight", "runner_options"},
             # 竞技场实跑要落一个盘（买票记账），路径只有 main 知道。
-            "arena": "runner_options",
+            "arena": {"runner_options"},
+            # 以下六条都会消耗体力：把「是否使用生命之叶 / 用几片」交给执行层，
+            # 默认值与改动前一致（使用、不限）。月塔 2026-11-15 起并入这一组
+            # ——它撞上的是同一个「行动力不足」弹窗，模板与区域全部复用主线。
+            "story": {"runner_options"},
+            "story_star": {"runner_options"},
+            "fodder": {"runner_options"},
+            "world_boss": {"runner_options"},
+            "side_story": {"runner_options"},
+            "tower": {"runner_options"},
+            # 迷宫：友情点数买不买交给使用者；其余目标商品固定购入。
+            "labyrinth_stone": {"runner_options"},
+            # 宠物领养：一般饲料与宠物玩具的购入各自独立开关，默认都不买。
+            "pet_adoption": {"runner_options"},
         }
         for name, spec in MODE_SPECS.items():
-            if hooks.get(name) != "preflight":
+            expected = hooks.get(name, set())
+            if "preflight" not in expected:
                 self.assertIsNone(spec.preflight, f"{name} 不该有 preflight")
-            if hooks.get(name) != "runner_options":
+            if "runner_options" not in expected:
                 self.assertIsNone(spec.runner_options, f"{name} 不该有 runner_options")
 
 

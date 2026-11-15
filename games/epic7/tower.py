@@ -6,8 +6,11 @@
   **点下一层**那一刻 +1。
 - **每层耗 15 点体力**（实测 1318→1303→1288→1273，逐层 -15）。
 - **共约 25 层**，默认打满 25 层 = 正常停止。
-- **不允许补充体力**：体力不够时**只识别、不购买**（`StaminaExhausted`，
-  退出码 2，正常业务退出）。月塔没有「叶子不够就买」这条路 —— 补充不值。
+- **体力不足时用生命之叶补充**（2026-11-15 起，与主线 / 狗粮 / 支线等五条路线
+  同一份口径）：弹窗是同一个「行动力不足」，模板、区域、阈值全部复用
+  `stamina.py`，本路线只负责把补充完成翻译成记账。补充的开关与上限由路线选项
+  决定（默认「使用、不限」）；关闭或达到上限后仍弹窗时走 `StaminaShortage`
+  （退出码 2，正常业务退出），**一次都不点购买**。
 - **三选一固定选中间那张**（用户拍板）。
 - **这一层打不过（FAILED 结算页）= 正常业务退出**（`FloorTooHard`，退出码 2，
   文案「月塔这一层打不过」）：监督在 FAILED 页收手，状态机认出即收工，
@@ -57,7 +60,8 @@
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import Optional
+from time import sleep as default_sleep
+from typing import Callable, Optional
 
 import numpy as np
 
@@ -65,6 +69,7 @@ from auto_game_unified.core.battle_supervisor import (
     AutoBattleState,
     BattleConfig,
     BattleObservation,
+    BattleSupervisor,
     valid_game_frame,
 )
 from auto_game_unified.core.matcher import (
@@ -74,8 +79,13 @@ from auto_game_unified.core.matcher import (
     load_template,
     locate_with_fallback,
 )
-from auto_game_unified.games.epic7.stamina import STAMINA_REGIONS
-from auto_game_unified.core.runtime import StaminaExhausted
+from auto_game_unified.core.recovery import RecoveryGate
+from auto_game_unified.games.epic7.stamina import (
+    STAMINA_REGIONS,
+    StaminaBudget,
+    next_stamina_decision,
+)
+from auto_game_unified.core.runtime import Runtime, StaminaExhausted
 from auto_game_unified.core.supervisor import meaningful_change
 from auto_game_unified.games.epic7.battle_controls import (
     BattleControls,
@@ -155,7 +165,7 @@ class FloorTooHard(StaminaExhausted):
 
 
 class StaminaShortage(StaminaExhausted):
-    """弹出了「行动力不足」（2026-11-04 14:05 真机）。
+    """弹出了「行动力不足」，且**已不许再补**（2026-11-04 14:05 真机）。
 
     点「战斗开始」时行动力不够，游戏会弹这层模态框把准备战斗页盖住；旧代码里
     ``_overlay_kind`` 只认「战斗指南 / 英雄恢复」两种子页面 ⇒ 主循环仍按
@@ -163,12 +173,15 @@ class StaminaShortage(StaminaExhausted):
     干等 45 秒后报 ``动作[battle-start]未稳定进入[...]``，整条每日任务记 ✗；
     收尾回家时又因为这层框不认页面、ESC 连按无效，多烧 70 秒。
 
-    ⚠️ 月塔**明令不补充体力**（见模块 docstring）：这里只识别、**绝不点购买**。
+    ⚠️ 抛出它有两个前提，缺一不可：弹窗确实在屏上、**补充已经不许再发生**
+    （路线选项关掉了补充，或已达到使用上限）。能补的时候走
+    ``_handle_stamina`` 的两段式点击，不会走到这里。
+
     「没本钱了」是正常业务结论，走 ``StaminaExhausted`` 的退出码 2，不是故障。
     ``stop_label`` 必须写实情，否则日志会写「生命之叶耗尽」把人带去买叶子。
     """
 
-    stop_label = "行动力不足（月塔不补充体力）"
+    stop_label = "行动力不足"
 
 
 @dataclass(frozen=True)
@@ -207,7 +220,8 @@ class TowerTemplates:
     auto_off: np.ndarray
     # 「行动力不足」弹窗三件套：复用主线那三张（同一个弹窗、同一套渲染），
     # 与 ``battle_guide_title`` / ``auto_off`` 同一条跨目录复用规矩。
-    # ⚠️ 只用来**认出这层模态框**，不用来点「购买」—— 月塔不补充体力。
+    # ⚠️ 三张都要：``popup`` 判「弹窗在不在」，``material`` / ``confirm`` 是两段式
+    # 补充的两个落点（见 ``_handle_stamina``）。
     stamina_popup: np.ndarray
     stamina_material: np.ndarray
     stamina_confirm: np.ndarray
@@ -346,6 +360,13 @@ class TowerStateMachine:
             else templates
         )
         self.state = initial_state
+        # 体力预算由 Runner 按路线选项注入；默认「使用、不限」。
+        self.stamina_budget = StaminaBudget()
+        # 本进程补充了几次、素材是否已点过、购买是否已点过（记账只在真正点出去
+        # 之后的 ``commit()`` 里发生，见那里）。
+        self.stamina_replenished = 0
+        self._stamina_material_clicked = False
+        self._stamina_purchase_pending = False
         if self.templates.evidence is not None:
             self._REGIONS = {
                 key: atom.region for key, atom in self.templates.evidence.atoms.items()
@@ -500,33 +521,108 @@ class TowerStateMachine:
         # 新的一层开始点卡：把本层的选卡闸门复位。
         if target is TowerState.CARD:
             self.card_picked = False
+        # ---- 体力补充的记账：只在**真正点出去之后**发生 ----
+        # ``commit()`` 只在目标页连续两帧确认后才被调用 ⇒ 写在这里天然满足
+        # 「点过才记」。写成决策时就记（``next_action`` 里）会被 ``preview()``
+        # 的空跑污染：那一趟也会调 ``next_action``，于是素材永远「已点过」。
+        if action.name == "stamina-material":
+            self._stamina_material_clicked = True
+        elif action.name == "stamina-confirm":
+            self._stamina_material_clicked = False
+            self._stamina_purchase_pending = True
 
     # 「行动力不足」三件套共用主线口径：区域 / 阈值都在 ``stamina.py`` 里，
     # 这里只做「三颗同时过阈」这一道 AND。全库 521 帧扫描：只有 3 张真·体力
     # 弹窗帧三颗全过（最低 0.9148），其余 518 帧至少缺一颗 ⇒ 零冒牌。
     _STAMINA_POPUP_THRESHOLD = 0.80
 
-    def _stamina_shortage(self, screen: np.ndarray) -> bool:
-        """「行动力不足」模态框在不在屏上（三颗判据 AND，缺一不可）。
+    def _find_stamina(self, screen: np.ndarray, name: str) -> Optional[Match]:
+        """体力三件套的定位入口。
 
         这三颗不走 ``_locate``：它们是**另一条路线（主线）的判据模板**，
         搜索区域/阈值写在 ``games/epic7/stamina.py``，不属于月塔的证据画像。
         走独立入口可以避免为了「复用一张图」就往月塔画像里塞三个假原子。
+
+        签名与 ``next_stamina_decision`` 要的 ``locate`` 一致，所以两段式决策
+        可以直接拿它当参数，不必在路线里复刻一遍预处理。
         """
-        # PC 上才观察到的新情形；模拟器不进这条分支，保持改动前的判定路径。
-        if not self.templates.pc:
-            return False
-        for name in ("stamina_popup", "stamina_material", "stamina_confirm"):
-            hit = find_template(
-                screen,
-                getattr(self.templates, name),
-                self._STAMINA_POPUP_THRESHOLD,
-                region=STAMINA_REGIONS[name],
-                reference_size=self._REFERENCE_SIZE,
+        return find_template(
+            screen,
+            getattr(self.templates, name),
+            self._STAMINA_POPUP_THRESHOLD,
+            region=STAMINA_REGIONS[name],
+            reference_size=self._REFERENCE_SIZE,
+        )
+
+    def _stamina_shortage(self, screen: np.ndarray) -> bool:
+        """「行动力不足」模态框在不在屏上（三颗判据 AND，缺一不可）。
+
+        ⚠️ 这道判据**不分后端**。它原先挂过 ``if not self.templates.pc`` 的短路，
+        理由是「PC 上才观察到月塔撞上这层框」；但弹窗本身与主线是同一条 UI、
+        同一批模拟器帧（``stamina.py`` 的三张模板就是从模拟器画面裁的），
+        短路等于「模拟器上认不出、白白干等到转场超时」，方向反了。
+        实跑影响的只有「撞上弹窗」这一种情形，其余帧的判定逐字节不变。
+        """
+        return all(
+            self._find_stamina(screen, name) is not None
+            for name in ("stamina_popup", "stamina_material", "stamina_confirm")
+        )
+
+    def _handle_stamina(self, screen: np.ndarray) -> Optional[TowerAction]:
+        """「行动力不足」的两段式补充：先点生命之叶素材，再点购买确认。
+
+        与主线 / 狗粮共用 ``next_stamina_decision``（纯决策函数），本路线只做三件事：
+
+        1. **弹窗消失时记账**：购买那一下只有点了才会让弹窗关掉，所以「弹窗不在了
+           且上一拍点过购买」= 这一次补充成功 ⇒ 计入 ``stamina_replenished`` 并
+           消耗一格预算。把记账放在这里而不是点完就记，是因为点完可能被游戏吞掉。
+        2. **预算用尽就收工**：关闭补充或达到上限时抛 ``StaminaShortage``
+           （退出码 2、正常业务退出），一个购买按钮都不点。
+        3. **确认按钮未渲染时等待**：素材点完到确认按钮出现之间有一段渲染延迟，
+           这期间返回 ``None`` 让主循环下一拍再看，不当成故障。
+
+        ⚠️ 只有弹窗在屏时才产生动作；否则返回 ``None``，状态分派照常往下走。
+        """
+        if not self._stamina_shortage(screen):
+            self._stamina_material_clicked = False
+            if self._stamina_purchase_pending:
+                self.stamina_replenished += 1
+                self.stamina_budget.consume()
+                self._stamina_purchase_pending = False
+            return None
+        if self.stamina_budget.exhausted:
+            raise StaminaShortage(
+                f"月塔补充体力{self.stamina_replenished}次后弹出「行动力不足」，"
+                "按设置不再补充，本轮收工"
             )
-            if hit is None:
-                return False
-        return True
+        decision = next_stamina_decision(
+            screen, self._find_stamina, material_clicked=self._stamina_material_clicked
+        )
+        if decision.status == "material":
+            # 素材卡片与「是否已选中」没有可裁的判据，所以这一段的落点就是
+            # **弹窗仍在同一页**（见 ``action_target_state``），不是「进了新页面」。
+            return self._action(
+                "stamina-material", decision.point,
+                source_page="体力弹窗",
+                target_states=(self.state,),
+                reason="体力弹窗已识别，点击生命之叶",
+            )
+        if decision.status == "confirm":
+            return self._action(
+                "stamina-confirm", decision.point,
+                source_page="体力弹窗（生命之叶已选中）",
+                # 买完弹窗关掉后，游戏可能仍停在准备战斗页，也可能直接开打
+                # （那一拍点击本来就是「战斗开始」，购买只是补上它缺的体力）。
+                # 两种落点都写进合同，靠「先出现哪一屏」自己分。
+                target_states=(
+                    (TowerState.TEAM, TowerState.BATTLE, TowerState.CARD)
+                    if self.templates.pc
+                    else (TowerState.TEAM, TowerState.BATTLE)
+                ),
+                reason="生命之叶已选中且购买确认按钮已识别",
+            )
+        # "waiting"：素材已点、确认按钮还没渲染出来 —— 下一拍再看。
+        return None
 
     def _overlay_kind(self, screen: np.ndarray) -> Optional[str]:
         """准备战斗页上是不是**盖了一层子页面**（目前三种，都是半透明的）。
@@ -555,6 +651,15 @@ class TowerStateMachine:
     def action_source_visible(self, screen: np.ndarray, action: TowerAction) -> bool:
         if action.name == "enable-auto-battle":
             return self._locate(screen, "auto_off") is not None
+        if action.name == "stamina-material":
+            # 「来源还在」= 弹窗还没消失。素材卡片点了之后弹窗不会关，
+            # 所以这一条是**同一页内的验证**（落点见 `action_target_state`）。
+            return self._stamina_shortage(screen)
+        if action.name == "stamina-confirm":
+            # ⚠️ 购买类动作**绝不允许重复点击**：这里恒报「来源已离开」，
+            # 主循环就不会对同一个坐标补第二下。真被吞掉时由转场超时暴露成
+            # 故障（退出码 1），而不是刷成两次购买。
+            return False
         if action.name in ("confirm-battle-guide", "restore-heroes"):
             # 「来源还在不在」要按**那层子页面**判，不能按 TEAM 判：子页面关掉之后
             # 底下仍然是准备战斗页，`is_in_state(TEAM)` 照样成立 ⇒ 会被当成没点动。
@@ -574,6 +679,20 @@ class TowerStateMachine:
     def action_target_state(
         self, screen: np.ndarray, action: TowerAction
     ) -> TowerState | None:
+        if action.name == "stamina-material":
+            # 素材卡片没有「已选中」这种可裁的判据（选中态只是描边变化），
+            # 所以这一下的落点只能是**弹窗仍在同一页**。这是可证伪的：
+            # 弹窗消失 ⇒ 返回 None（不认），不会把「关掉了」当成功。
+            return action.source_state if self._stamina_shortage(screen) else None
+        if action.name == "stamina-confirm":
+            # 弹窗关掉才算买成功。关掉之后落到哪一页，交给合同里的候选自己分：
+            # 停在准备战斗页（还要重新点战斗开始）与直接开打两种都合法。
+            if self._stamina_shortage(screen):
+                return None
+            for target in action.target_states:
+                if self.is_in_state(screen, target):
+                    return target
+            return None
         if action.name == "enable-auto-battle":
             # 自动战斗开启后这个图标会消失；用「图标没了但仍在局内」判成功。
             if (
@@ -677,12 +796,12 @@ class TowerStateMachine:
         # ⚠️ 模态框优先于一切状态分派：它压在哪一页上，那一页的按钮都点不动。
         # 2026-11-04 14:05 真机：点「战斗开始」弹出「行动力不足」，主循环连点
         # 4 次 (1726,1040) 全被弹窗吞掉，45 秒后报转场失败、每日任务记 ✗。
-        # 月塔不补充体力（模块 docstring 的红线）⇒ 不点购买、不点礼包，直接按
-        # 「还能干但没本钱了」正常收工：退出码 2、汇总记 ✓(资源耗尽)。
-        # 弹窗本身由收尾回家流程的 ESC 关掉（同一次真机 14:06:11 的现场帧
-        # 已经证明 ESC 能关掉它、落回月塔结算页），不需要在这里乱点。
-        if self._stamina_shortage(screen):
-            raise StaminaShortage("月塔准备战斗时弹出「行动力不足」；不购买体力，本轮收工")
+        # 处理分两条：能补就按选项补（两段式点击，见 ``_handle_stamina``）；
+        # 关闭补充或达到上限则抛 ``StaminaShortage`` 正常收工（退出码 2）。
+        # 两条都不会去点被弹窗盖住的那个按钮。
+        stamina_action = self._handle_stamina(screen)
+        if stamina_action is not None:
+            return stamina_action
         if self.state == TowerState.HOME:
             # ⚠️⚠️ **先看是不是「确认重置阶段」弹窗**（2026-10-30）。
             #
@@ -929,12 +1048,20 @@ class TowerStateMachine:
         )
 
     def preview(self, screen: np.ndarray):
+        # ⚠️ 快照必须覆盖 ``next_action`` 会**改写**的每一个字段，
+        # 否则空跑那一趟会把真实状态带偏。「弹窗不在了就记账」那一段
+        # （``_handle_stamina``）是 ``next_action`` 里唯一会写状态的地方，
+        # 三个体力字段因此必须一起进快照。
         snapshot = (
             self.state,
             self.completed_cycles,
             self.card_picked,
             self.auto_click_attempted,
             self._confirmed_page,
+            self.stamina_replenished,
+            self._stamina_material_clicked,
+            self._stamina_purchase_pending,
+            self.stamina_budget.used,
         )
         try:
             action = self.next_action(screen)
@@ -946,6 +1073,10 @@ class TowerStateMachine:
                 self.card_picked,
                 self.auto_click_attempted,
                 self._confirmed_page,
+                self.stamina_replenished,
+                self._stamina_material_clicked,
+                self._stamina_purchase_pending,
+                self.stamina_budget.used,
             ) = snapshot
 
 
@@ -1101,6 +1232,43 @@ class TowerRunner(TransactionalRunnerBase):
     # 它只是让第一帧尽量落在转场窗口之外、少空转几帧。取 3.0 的参照是竞技场（1.5）
     # —— 月塔转场更慢；再大意义有限，反而会拖慢「真·点击失效」的发现。
     _SETTLE_SECONDS = 3.0
+
+    def __init__(
+        self,
+        machine: TowerStateMachine,
+        runtime: Runtime,
+        *,
+        sleep: Callable[[float], None] = default_sleep,
+        poll_seconds: float = 1.0,
+        now: Callable[[], float] | None = None,
+        recovery_gate: RecoveryGate | None = None,
+        battle_supervisor: BattleSupervisor | None = None,
+        stamina_enabled: bool = True,
+        stamina_limit: int | None = None,
+    ) -> None:
+        """构造 Runner：体力补充的开关与上限在这里落成状态机上的预算。
+
+        ``now`` / ``unknown_screen_wake`` / ``resource_exhausted`` / ``finish_home``
+        全部由基类建好，这里一个都不重复建（重复就会有两份、迟早各改各的）。
+
+        ⚠️ 默认值与 ``games/epic7/route_options.py`` 的声明必须一致：
+        「使用、不限」。命令行单跑、干跑、旧会话存档三条路径都走同一份清洗，
+        这里再兜一次是为了让「直接构造 Runner」的调用方也拿到同一套默认值。
+        """
+        super().__init__(
+            machine,
+            runtime,
+            sleep=sleep,
+            poll_seconds=poll_seconds,
+            now=now,
+            recovery_gate=recovery_gate,
+            battle_supervisor=battle_supervisor,
+        )
+        self.stamina_enabled = stamina_enabled
+        self.stamina_limit = stamina_limit
+        self.machine.stamina_budget = StaminaBudget(
+            enabled=stamina_enabled, limit=stamina_limit
+        )
 
     def _battle_config(self) -> BattleConfig:
         """战斗看护的两条时限放宽到 20 分钟。

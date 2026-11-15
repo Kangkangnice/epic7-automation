@@ -112,7 +112,7 @@ from auto_game_unified.core.recovery import RecoveryGate
 from auto_game_unified.core.runtime import ManualStop, ResourceExhausted, Runtime
 from auto_game_unified.core.window import Epic7Window
 from auto_game_unified.games.epic7 import community_pages as pages
-from auto_game_unified.games.epic7.community_numbers import Readout, read_digits, read_pair
+from auto_game_unified.games.epic7.community_numbers import Readout, read_pair
 from auto_game_unified.games.epic7.route_action import RouteAction
 from auto_game_unified.games.epic7.runner_base import NOT_STABLE, ModeRunnerBase
 
@@ -399,7 +399,6 @@ _EXIT_CLOSE_POINTS = (FEED_CLOSE, EXCHANGE_CLOSE, NETWORK_PAGE_CLOSE)
 #: 收尾里**每一颗** ⊗ 的等转屏预算。三颗全试满也才 15 秒（原来的总预算 8 秒一个都不够试）；
 #: 正常情况第一颗就该成功（转屏实测 1~3 秒），所以这个数只对「试错了」那一档有意义。
 _EXIT_CLOSE_ATTEMPT_SECONDS = 5.0
-EXCHANGE_BALANCE_BOX = (160, 246, 92, 46)
 EXCHANGE_GAIN_POINTS_CARD = (800, 270)
 
 TASKS_BACK = (35, 130)
@@ -861,18 +860,20 @@ REDEMPTION_PLAN: tuple[RedemptionTarget, ...] = (
 
 @dataclass(frozen=True)
 class ExchangeReadout:
-    """兑换中心一帧上读到的数。
+    """兑换中心一帧上读到的「每日限购」。
 
     ``limits`` 里每张卡是 ``(已兑, 限购上限)``；读不出来的卡是 ``None``。
     **读不出就是 None，不填 0** —— 后者会让路线以为「一次都没兑过」而重复兑换。
+
+    ⚠️ 2026-11-15 起**不再读积分余额**（用户拍板）：余额是任意数字，字形识别偶发
+    擦边就会让整轮兑换卡死（当天「5」只差 0.003），而余额本身每次兑换都在变。
+    改成「兑到失败为止」——失败时存现场帧，判据不必再围着余额转。
     """
 
-    balance: Optional[int]
-    balance_score: float
     limits: dict[int, Optional[tuple[int, int]]]
 
     def describe(self) -> str:
-        parts = [f"余额={self.balance if self.balance is not None else '读不出'}"]
+        parts: list[str] = []
         for card in sorted(self.limits):
             value = self.limits[card]
             parts.append(
@@ -882,17 +883,12 @@ class ExchangeReadout:
 
 
 def read_exchange(screen: np.ndarray, glyphs: dict[int, np.ndarray]) -> ExchangeReadout:
-    """读兑换中心：积分余额 + 四张卡各自的「每日限购 x/y」。"""
-    balance = read_digits(screen, EXCHANGE_BALANCE_BOX, glyphs)
+    """读兑换中心：四张卡各自的「每日限购 x/y」。**不读积分余额**（理由见上）。"""
     limits: dict[int, Optional[tuple[int, int]]] = {}
     for card, box in CARD_LIMIT_BOXES.items():
         pair: Readout = read_pair(screen, box, glyphs)
         limits[card] = pair.value if isinstance(pair.value, tuple) else None
-    return ExchangeReadout(
-        balance=balance.value if isinstance(balance.value, int) else None,
-        balance_score=balance.score,
-        limits=limits,
-    )
+    return ExchangeReadout(limits=limits)
 
 
 @dataclass(frozen=True)
@@ -926,8 +922,6 @@ def plan_redeem(
     """
     if readout is None:
         return RedeemStep("retry_empty", reason="兑换中心还没读到商品（多半是空列表态）")
-    if readout.balance is None:
-        return RedeemStep("blocked", reason="积分余额读不出来，不敢决定要不要花")
     for target in plan:
         current = readout.limits.get(target.card)
         if current is None:
@@ -947,14 +941,6 @@ def plan_redeem(
                 reason=(
                     f"卡{target.card}（{target.name}）游戏限购只有 {limit}，"
                     f"清单却要求 {target.daily_limit} —— 两边对不上"
-                ),
-            )
-        if readout.balance < target.price:
-            return RedeemStep(
-                "insufficient",
-                card=target.card,
-                reason=(
-                    f"余额 {readout.balance} 不够换「{target.name}」（要 {target.price} 积分）"
                 ),
             )
         return RedeemStep(
@@ -1108,7 +1094,8 @@ class CommunityProgress:
     signed_in: Optional[bool] = None
     tasks: dict[str, str] = field(default_factory=dict)
     redeemed: dict[int, int] = field(default_factory=dict)
-    balance: Optional[int] = None
+    # ⚠️ 2026-11-15 起不再记余额：余额不读了（改成「兑到失败为止」），
+    # 留一个永远 None 的字段只会让后来的人以为还在读。
 
     def tasks_all_done(self) -> bool:
         return bool(self.tasks) and all(state == "done" for state in self.tasks.values())
@@ -1141,9 +1128,15 @@ class CommunityStateMachine:
         # 上一帧「为什么没出手 / 为什么这么出手」。给主循环的等待心跳用：
         # 判据沉默时日志不能是空的（2026-10-04 那次的坑）。
         self.last_reason = ""
-        # 非空表示「要点码 2 退出」的原因（积分不够）。为什么用字段而不是直接抛：
+        # 非空表示「要点码 2 退出」的原因（兑换失败 / 积分不够）。为什么用字段而不是直接抛：
         # 见 ``_on_exchange_center`` 的 insufficient 分支 —— 得先把社区关掉转回横屏。
         self.stop_reason = ""
+        # 这次兑换**没兑成**：订单确认页那颗「确认兑换」一进来就是灰的（多半积分不够）。
+        # 置位后不再重试（否则「限购没满 + 兑不了」会原地死循环），直接退社区收工。
+        self.redeem_failed = False
+        # 本页**已经点过**「确认兑换」没有。用来区分两种「按钮是灰的」：
+        # 一进来就灰 = 兑不了；点过之后变灰 = 正在等结果（实测 3~40 秒），必须等。
+        self._confirm_clicked = False
         # 这一次运行里**拉活 H5**（下加拉活）了几次。按「页面刚死」那一次记一笔，
         # 不是按帧 —— 按帧记的话计数器几秒就穿（旧写法实跑 21 秒涨了 3）。
         self._network_refreshes = 0
@@ -1522,7 +1515,6 @@ class CommunityStateMachine:
             self.state,
             dict(self.progress.tasks),
             dict(self.progress.redeemed),
-            self.progress.balance,
             self.progress.signed_in,
             self.last_redeem,
             self.last_page,
@@ -1566,7 +1558,6 @@ class CommunityStateMachine:
             self.state,
             self.progress.tasks,
             self.progress.redeemed,
-            self.progress.balance,
             self.progress.signed_in,
             self.last_redeem,
             self.last_page,
@@ -1727,6 +1718,22 @@ class CommunityStateMachine:
         self.state = CommunityState.ORDER_CONFIRM
         point = locate_green_button(screen)
         if point is None:
+            if not self._confirm_clicked:
+                # ⚠️ 2026-11-15：**一进来按钮就是灰的** ⇒ 这次兑不了（多半积分不够）。
+                # 这与「点过之后变灰」是两件事，后者是正常的等结果。
+                # 不再读余额之后，「兑到失败为止」就靠这一条收口：置位 → 退社区 → 正常收工。
+                self.redeem_failed = True
+                self.stop_reason = (
+                    "兑换失败：订单确认页的「确认兑换」是灰的（多半积分不够）"
+                )
+                self.state = CommunityState.CLOSING
+                return CommunityAction(
+                    "back_from_redeem_failed",
+                    REDEEM_CONFIRM,
+                    source_page=page.name,
+                    press_back=True,
+                    reason="兑换点不动 —— 先退回上一页；失败现场已在发出前存图",
+                )
             # ⚠️ 点过「确认兑换」之后按钮会变禁用暗绿（颜色定位找不到），而结果要
             # **>7 秒**（实测 3~40 秒）才弹。这**不是**故障，是正常的「等结果」——
             # 所以这里返回 None（不出手、等下一帧），**不要**报错：
@@ -1734,6 +1741,7 @@ class CommunityStateMachine:
             # 状态超时（`_TIMEOUT_SECONDS` 里给得比最长等待更宽）才是这条等待的上限。
             self.last_reason = "订单确认页按钮已是禁用态，等兑换结果（实测 3~40 秒）"
             return None
+        self._confirm_clicked = True
         return CommunityAction(
             "confirm_redeem",
             point,
@@ -1743,7 +1751,21 @@ class CommunityStateMachine:
         )
 
     def _on_item_detail(self, screen: np.ndarray, page) -> CommunityAction:
+        if self.redeem_failed:
+            # 兑换失败后还要再退一级（订单确认 → 商品详情 → 兑换中心），
+            # 由 ``_on_exchange_center`` 接着点 ✕ 关社区。
+            self.state = CommunityState.CLOSING
+            return CommunityAction(
+                "back_from_item_failed",
+                ITEM_BACK,
+                source_page=page.name,
+                press_back=True,
+                reason="兑换失败，从商品详情退回兑换中心",
+            )
         self.state = CommunityState.ITEM_DETAIL
+        # 即将进订单确认页：把「点过确认没有」清零，好让下一页区分
+        # 「一进来就灰」（兑不了）和「点过之后变灰」（等结果）。
+        self._confirm_clicked = False
         point = locate_bottom_green_button(screen)
         return CommunityAction(
             "open_order_confirm",
@@ -1778,9 +1800,21 @@ class CommunityStateMachine:
                 target_pages=("tasks_page",),
                 reason="路过兑换中心，点「获取积分卡」进我的任务（这一帧不做兑换决策）",
             )
+        if self.redeem_failed:
+            # 上一次兑换没成（多半是积分不够）⇒ 不再试，直接退社区收工。
+            # 失败现场已经在 ``back_from_redeem_failed`` 那一下存过图。
+            self.state = CommunityState.CLOSING
+            return CommunityAction(
+                "leave_exchange",
+                EXCHANGE_CLOSE,
+                source_page=page.name,
+                target_pages=("web_activity_list",),
+                reason=(
+                    f"{self.stop_reason}；点兑换中心右上角 ✕ 退出社区"
+                    "（真机实测：这一下关的是**整个社区**，一步回到横屏）"
+                ),
+            )
         readout = read_exchange(screen, self.glyphs)
-        if readout.balance is not None:
-            self.progress.balance = readout.balance
         for card, value in readout.limits.items():
             if value is not None:
                 self.progress.redeemed[card] = value[0]
@@ -3054,6 +3088,8 @@ class CommunityRunner(ModeRunnerBase):
         poll_seconds: float = 1.0,
         recovery_gate: RecoveryGate | None = None,
         portrait: Optional[PortraitChannel] = None,
+        redeem_energy: bool = True,
+        redeem_stone: bool = True,
     ) -> None:
         super().__init__(
             machine,
@@ -3062,6 +3098,15 @@ class CommunityRunner(ModeRunnerBase):
             poll_seconds=poll_seconds,
             recovery_gate=recovery_gate,
         )
+        # 兑换清单按选项过滤：行动力 = card 1，两类强化石 = card 2 / 4。
+        # 测试替身可能没有 plan，跳过过滤即可。
+        if hasattr(machine, "plan"):
+            machine.plan = tuple(
+                target
+                for target in machine.plan
+                if (redeem_energy or target.card != 1)
+                and (redeem_stone or target.card not in (2, 4))
+            )
         self.machine = machine
         # 竖屏通道可以在测试里注入（免得真去连模拟器）。
         self._portrait = portrait
@@ -3163,6 +3208,10 @@ class CommunityRunner(ModeRunnerBase):
         - 其余 —— 照旧点击（``super()._perform_action``）。
         """
         if getattr(action, "press_back", False):
+            if action.name == "back_from_redeem_failed":
+                # 动作还没发出去，此刻的画面就是「兑不了」的现场 —— 用户点名要的
+                # 「失败那一下的截图」，趁这一帧存掉。
+                self._save_redeem_failure_frame()
             # 走 ``runtime.back`` 而不是 ``_back``：前者会 ``_stop_if_requested()``
             # 并把这一下写进日志（「安全停止」要能在等待期间生效），后者是裸通道。
             # 竖屏段由 ``_install_dual_channel`` 打的补丁自动转成 ``portrait.back()``
@@ -3193,6 +3242,22 @@ class CommunityRunner(ModeRunnerBase):
                 "处理=浏览帖子要在详情里停住一会儿才算一次"
             )
             self.sleep(dwell)
+
+    def _save_redeem_failure_frame(self) -> None:
+        """把「兑不了」那一帧存成诊断图（用户点名要的失败现场）。
+
+        存图失败**绝不能挡住收尾**：此刻人还在社区竖屏页里，把社区关掉、转回横屏
+        比留一张图重要得多。
+        """
+        try:
+            path = self.runtime.save_diagnostic("redeem_failed", self._capture_frame())
+        except Exception as error:  # noqa: BLE001 —— 见 docstring
+            self.runtime.log(
+                f"模式={self._MODE_LABEL} 兑换失败现场存图失败 "
+                f"原因={type(error).__name__}: {error}"
+            )
+            return
+        self.runtime.log(f"模式={self._MODE_LABEL} 兑换失败现场={path}")
 
     def _capture_frame(self) -> np.ndarray:
         """取一帧；**换向那一两秒里取不到图属于转场中，不是失败**。

@@ -49,8 +49,10 @@ def test_catalog_lists_every_route_in_menu_order():
         "community",
         "moonlight_theater",
         "achievement",
-        "story_star",
-    ]
+            "story_star",
+            "pet_adoption",
+            "penguin_purchase",
+        ]
     # 2026-10-20 用户拍板：路线不再分「正式 / 实验」—— 十五条他都实机验证过了。
     # 这条守着「分级彻底没有」：字段、属性都不该回来（不是把值都改成「正式功能」）。
     assert all(not hasattr(route, "status") for route in ROUTES)
@@ -307,16 +309,18 @@ def test_group_membership_is_what_the_user_asked_for():
             "sanctuary",
             "community",
             "achievement",
+            "pet_adoption",
         ],
         catalog.GROUP_ONDEMAND: [
             "hero_synthesis",
             "story",
             "fodder",
             "side_story",
-            "moonlight_theater",
-            "story_star",
-        ],
-        catalog.GROUP_SEASON: ["expedition", "tower"],
+                "moonlight_theater",
+                "story_star",
+                "penguin_purchase",
+            ],
+            catalog.GROUP_SEASON: ["expedition", "tower"],
         catalog.GROUP_EVENT: ["survivor", "activity_story"],
     }
     for group, modes in expected.items():

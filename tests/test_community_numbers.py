@@ -81,6 +81,10 @@ class CommunityNumberTests(unittest.TestCase):
             ("exchange_after_redeem_live_20261006", BALANCE_EXCHANGE, 880),
             ("tasks_all_done_live_20261006", BALANCE_TASKS, 880),
             ("tasks_one_browse_done_live_20261006", BALANCE_TASKS, 920),
+            # 2026-11-15 现场：余额 950 里的「5」用旧字模只有 0.6969（阈值 0.70），
+            # 整串弃权 ⇒ 兑换中心报 CommunityDataMissing、签到整轮超时。
+            # 字模已按这张帧重采（同帧 0.979）；换回旧版这条会红。
+            ("exchange_balance_950_live_20261115", BALANCE_EXCHANGE, 950),
         ]
         for name, region, expected in cases:
             with self.subTest(fixture=name, region=region):

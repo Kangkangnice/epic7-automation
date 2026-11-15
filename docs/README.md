@@ -45,13 +45,14 @@
 | 转场五段证据 / 判据唯一 / 陌生页可恢复 | [`TRANSITION_CONTRACTS.md`](TRANSITION_CONTRACTS.md) | `topics/transitions.md` · `lessons.md` |
 | 模板采集 / 判据纪律 / 锚点 / 夹具 / 反向验证 | [`TEMPLATE_CAPTURE.md`](TEMPLATE_CAPTURE.md) · [`../AGENTS.md`](../AGENTS.md) | `topics/discipline.md` · `anchors.md` · `hazards.md` · `fixtures.md` |
 | 全局弹窗（新弹窗的 10 个接触点） | [`TRANSITION_CONTRACTS.md`](TRANSITION_CONTRACTS.md) + 下方逐路线手册 | `topics/global_popups.md` |
-| 新增路线 / 开工读什么、改完改哪节 / 两道准入关 | [`EXTENDING.md`](EXTENDING.md) · `doc_review --scenario new-route`（清单唯一来源） | `topics/route_admission.md` · `route_metadata.md` |
+| 新增路线 / 开工读什么、改完改哪节 / 两道准入关 / **总轮数上限由谁决定** | [`EXTENDING.md`](EXTENDING.md) 第 4 节 · `doc_review --scenario new-route`（清单唯一来源） | `topics/route_admission.md` · `route_metadata.md` |
 | 主循环 / 点击通道 / 战斗移交 / 时间源 | [`ARCHITECTURE.md`](ARCHITECTURE.md) | `topics/runner_loop.md` · `click_channel.md` · `battle_auto_flip.md` |
 | 开局接力 / 断点恢复 | [`RESUME_COVERAGE.md`](RESUME_COVERAGE.md) · [`TRANSITION_CONTRACTS.md`](TRANSITION_CONTRACTS.md) | `topics/resume.md` |
 | 实机权限 / 鼠标 / 截图 / 失败判定 | [`howto/live_verification.md`](howto/live_verification.md) | `topics/env.md` |
 | **PC 移植**（结论 + 作业流水线） | [`PC_TEMPLATE_MIGRATION.md`](PC_TEMPLATE_MIGRATION.md) · [`maintenance/pc_page_capture_checklist.md`](maintenance/pc_page_capture_checklist.md) | 技能 `~/.workbuddy/skills/epic7-pc-route-port/` · `topics/pc_templates.md` · `pc_port_pitfalls.md` |
 | 验证门槛 / 提交钩子 / 打包 / 并发协作 | [`../CONTRIBUTING.md`](../CONTRIBUTING.md) · [`../AGENTS.md`](../AGENTS.md) · 本页第三、四节 | `topics/engineering_gate.md` · `env.md` |
 | 桌面界面 / 通知 / 快捷方式 | [`USER_GUIDE.md`](USER_GUIDE.md) | `topics/desktop.md` · `notify.md` |
+| **界面文案 / 说明体（含助手输出的方案与结论）** | [`UI_COPY_STYLE.md`](UI_COPY_STYLE.md) | — |
 | 逐路线细节 | 下一节那张表 | `topics/side_story.md` · `tower_retry.md` · `arena_outcome.md` · `survivor.md` · `routes_entry.md` |
 | 为什么当初这么定 | [`decisions/`](decisions/) | — |
 
@@ -81,6 +82,8 @@
 | 社区签到 `community` | [`maintenance/community_checkin.md`](maintenance/community_checkin.md) |
 | 成就领取 `achievement` | [`maintenance/achievement.md`](maintenance/achievement.md) |
 | 主线补星 `story_star` | [`maintenance/story_star.md`](maintenance/story_star.md) |
+| 宠物领养 `pet_adoption` | [`maintenance/pet_adoption.md`](maintenance/pet_adoption.md) |
+| 企鹅批量购买 `penguin_purchase` | [`maintenance/penguin_purchase.md`](maintenance/penguin_purchase.md) |
 
 ---
 
@@ -287,7 +290,7 @@ CI 的 `Governance gate` 会在干净检出上再跑一遍治理门禁。
 | [`story.md`](maintenance/story.md) | 主线/刷图循环，含战前「快速战斗」切换与各类结算页 |
 | [`arena.md`](maintenance/arena.md) | 竞技场：选对手、打、失败轮换、免费刷新；含每周排名的两层弹窗 |
 | [`expedition.md`](maintenance/expedition.md) | 远征：三阶段选择、战斗、公开招募 |
-| [`tower.md`](maintenance/tower.md) | 月塔：连打 25 层，每层 15 体力且**明令不补体力** |
+| [`tower.md`](maintenance/tower.md) | 月塔：连打 25 层，每层 15 体力，体力不足按选项补充 |
 | [`hero_synthesis.md`](maintenance/hero_synthesis.md) | 英雄合成：逐张检查、SSS 优先保护、材料不可逆、SSS 副本走传送 |
 | [`knights_donation.md`](maintenance/knights_donation.md) | 骑士团捐赠：资源支援 + 每周任务领奖 |
 | [`sanctuary.md`](maintenance/sanctuary.md) | 圣域收菜：三行材料里把「领取奖励」点掉，「照料」亮着也点 |
@@ -297,6 +300,8 @@ CI 的 `Governance gate` 会在干净检出上再跑一遍治理门禁。
 | [`community_checkin.md`](maintenance/community_checkin.md) | 社区签到：模拟器转竖屏，签到 + 三条每日任务 + 兑换按上限兑满 |
 | [`achievement.md`](maintenance/achievement.md) | 成就领取：4 个分类**逐个进去**领完（不是看红点），两端素材都有 |
 | [`story_star.md`](maintenance/story_star.md) | 主线补星：按星数找未满篇章、按绿勾找未满小节，复用主线战斗链路 |
+| [`pet_adoption.md`](maintenance/pet_adoption.md) | 宠物领养：每日一次免费领养（不碰付费领养按钮），再检查宠物商店底部三种用品；购入默认关闭 |
+| [`penguin_purchase.md`](maintenance/penguin_purchase.md) | 企鹅批量购买：成长祭坛第一列企鹅蛋，数量补足 50/50、报价核对后才购入；一轮 50 只，默认 10 轮 |
 
 ⚠️ 没有手册的路线：狗粮、刷书签、活动小游戏、活动剧情、世界首领战。
 它们不是没人管，是还没人写——补的时候照上面六节写，别再攒施工流水。

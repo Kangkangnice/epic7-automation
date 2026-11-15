@@ -216,6 +216,7 @@ from auto_game_unified.games.epic7.route_action import RouteAction
 from auto_game_unified.games.epic7.runner_base import ModeRunnerBase
 from auto_game_unified.games.epic7.stamina import (
     STAMINA_REGIONS,
+    StaminaBudget,
     load_stamina_templates,
     next_stamina_decision,
 )
@@ -699,6 +700,8 @@ class WorldBossStateMachine:
             )
         self.completed_cycles = 0
         self.stamina_replenished = 0
+        # 体力预算由 Runner 按路线选项注入；默认「使用、不限」= 改动前行为。
+        self.stamina_budget = StaminaBudget()
         self.auto_click_attempted = False
         self._confirmed_page = ""
         self._stamina_material_clicked = False
@@ -849,8 +852,11 @@ class WorldBossStateMachine:
         if decision.status == "idle":
             if self._stamina_material_clicked:
                 self.stamina_replenished += 1
+                self.stamina_budget.consume()
                 self._stamina_material_clicked = False
             return None
+        if self.stamina_budget.exhausted:
+            raise StaminaExhausted("生命之叶补充已按设置停止")
         # 体力弹窗的两个步骤都在弹窗内完成、**不换页**，所以不声明 target_pages
         # （同页写本页会让验收永远通过，见 TEAM_CONFIG 分支的说明）。
         # 验收依据写进 ``in_page_evidence``；实际判定仍由「下一帧重判画面」承担：
@@ -1292,6 +1298,8 @@ class WorldBossRunner(ModeRunnerBase):
         poll_seconds: float = 1.0,
         recovery_gate: RecoveryGate | None = None,
         battle_supervisor: BattleSupervisor | None = None,
+        stamina_enabled: bool = True,
+        stamina_limit: int | None = None,
     ) -> None:
         super().__init__(
             machine,
@@ -1299,6 +1307,9 @@ class WorldBossRunner(ModeRunnerBase):
             sleep=sleep,
             poll_seconds=poll_seconds,
             recovery_gate=recovery_gate,
+        )
+        machine.stamina_budget = StaminaBudget(
+            enabled=stamina_enabled, limit=stamina_limit
         )
         self.battle_supervisor = battle_supervisor or BattleSupervisor(
             runtime,

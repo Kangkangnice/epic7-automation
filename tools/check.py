@@ -176,6 +176,10 @@ ROUTE_KEYWORDS = {
     # 主线补星（2026-11-09）。主模块 `story_star.py`、证据 `evidence/story_star.py`、
     # 测试 `test_story_star.py` —— 文件名都带 story_star ⇒ 一条就够。
     "story_star": "story_star",
+    # 宠物领养（2026-11-15）：主模块、证据、模板、测试文件名都带这个词。
+    "pet_adoption": "pet_adoption",
+    # 企鹅批量购买（2026-11-15）：主模块、证据、模板、测试文件名都带这个词。
+    "penguin_purchase": "penguin_purchase",
     # 社区签到这一组：主模块 + 两个判据模块。`route_of()` 是按**文件名**查表的，
     # 所以三个都要登记 —— 漏了 `community_pages` 会让「只改了判据模板区」这种
     # 最小的改动静默退回全量（9 分钟），而且理由看不出来。

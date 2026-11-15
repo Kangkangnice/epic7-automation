@@ -67,6 +67,7 @@ from auto_game_unified.core.matcher import (
     find_best_template,
     load_template,
 )
+from auto_game_unified.core.runtime import StaminaExhausted
 from auto_game_unified.games.epic7.evidence.common import EvidenceProfile
 from auto_game_unified.games.epic7.evidence.story_star import (
     REFERENCE_SIZE,
@@ -85,7 +86,10 @@ from auto_game_unified.games.epic7.evidence.story_star import (
 )
 from auto_game_unified.games.epic7.route_action import RouteAction
 from auto_game_unified.games.epic7.runner_base import ModeRunnerBase
-from auto_game_unified.games.epic7.stamina import next_stamina_decision
+from auto_game_unified.games.epic7.stamina import (
+    StaminaBudget,
+    next_stamina_decision,
+)
 from auto_game_unified.games.epic7.story import (
     StoryStateMachine,
     build_story_templates,
@@ -317,7 +321,10 @@ class StoryStarStateMachine:
         self._rewind_signature: Optional[np.ndarray] = None
         self._rewind_steps = 0
         # 体力弹窗的两段式购买：素材点过之后下一帧才找确认按钮。
+        # 体力预算由 Runner 按路线选项注入；默认「使用、不限」= 改动前行为。
+        self.stamina_budget = StaminaBudget()
         self._stamina_material_clicked = False
+        self._stamina_purchase_pending = False
         # 打过回来还是没满星的小节，报给下一个动作的日志看（不静默略过）。
         self._unclear_stage_note = ""
         # 点完小节之后，下一帧要先点「准备战斗」再谈别的 —— 点小节只是「选中」，
@@ -464,8 +471,13 @@ class StoryStarStateMachine:
             material_clicked=self._stamina_material_clicked,
         )
         if decision.status == "idle":
+            if self._stamina_purchase_pending:
+                self.stamina_budget.consume()
+                self._stamina_purchase_pending = False
             self._stamina_material_clicked = False
             return None
+        if self.stamina_budget.exhausted:
+            raise StaminaExhausted("生命之叶补充已按设置停止")
         if decision.status == "waiting":
             raise UnrecognizedScreen(
                 "主线补星：体力弹窗已出现，等待购买确认按钮"
@@ -482,6 +494,7 @@ class StoryStarStateMachine:
                 reason="体力不足：点生命之叶素材（按设计不限次数补充）",
             )
         self._stamina_material_clicked = False
+        self._stamina_purchase_pending = True
         return RouteAction(
             "stamina-confirm",
             decision.point,
@@ -1067,8 +1080,19 @@ class StoryStarRunner(ModeRunnerBase):
     # 也只是多开几次，不会无限循环。取 200 足够覆盖 6 章 × 10 篇章 × 若干小节。
     _MAX_ACTIONS = 200
 
-    def __init__(self, machine: StoryStarStateMachine, runtime, **kwargs):
+    def __init__(
+        self,
+        machine: StoryStarStateMachine,
+        runtime,
+        *,
+        stamina_enabled: bool = True,
+        stamina_limit: int | None = None,
+        **kwargs,
+    ):
         super().__init__(machine, runtime, **kwargs)
+        machine.stamina_budget = StaminaBudget(
+            enabled=stamina_enabled, limit=stamina_limit
+        )
         # 每次开跑都先武装开场两步：回最外层「选取Episode」+ 选左列第 1 项。
         machine.begin()
         self._actions = 0

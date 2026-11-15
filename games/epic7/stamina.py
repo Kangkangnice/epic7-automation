@@ -51,6 +51,29 @@ def load_stamina_templates(story_template_dir: Path) -> StaminaTemplates:
     )
 
 
+@dataclass
+class StaminaBudget:
+    """生命之叶预算：用不用、最多用几片。``limit=None`` 表示不限。
+
+    六条会消耗体力的路线共用这一份口径；每条路线只负责把「补充完成」翻译成
+    ``consume()``，不各写一套开关与上限判断。
+    """
+
+    enabled: bool = True
+    limit: int | None = None
+    used: int = 0
+
+    @property
+    def exhausted(self) -> bool:
+        """是否已不允许再补：关闭了补充，或已达到上限。"""
+        return not self.enabled or (
+            self.limit is not None and self.used >= self.limit
+        )
+
+    def consume(self) -> None:
+        self.used += 1
+
+
 @dataclass(frozen=True)
 class StaminaDecision:
     """体力弹窗决策结果，由各模式解释为点击或等待。
