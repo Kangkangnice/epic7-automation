@@ -64,7 +64,6 @@ class CommunityRedeemPlanTests(unittest.TestCase):
 
     def test_reads_the_real_exchange_page(self):
         readout = cm.read_exchange(fixture("exchange_after_redeem_live_20261006"), self.glyphs)
-        self.assertEqual(readout.balance, 880)
         self.assertEqual(readout.limits[1], (1, 2))
         self.assertEqual(readout.limits[2], (1, 1))
         self.assertEqual(readout.limits[3], (0, 1))
@@ -80,41 +79,18 @@ class CommunityRedeemPlanTests(unittest.TestCase):
 
     def test_stops_when_the_plan_is_full(self):
         full = cm.ExchangeReadout(
-            balance=999,
-            balance_score=1.0,
             limits={1: (2, 2), 2: (1, 1), 3: (0, 1), 4: (1, 1)},
         )
         self.assertEqual(cm.plan_redeem(full).kind, "done")
 
-    def test_stops_cleanly_when_points_are_short(self):
-        """余额不够下一件 ⇒ 停（不是故障，是正常业务退出）。"""
-        poor = cm.ExchangeReadout(
-            balance=10,
-            balance_score=1.0,
-            limits={1: (1, 2), 2: (1, 1), 3: (0, 1), 4: (1, 1)},
-        )
-        step = cm.plan_redeem(poor)
-        self.assertEqual(step.kind, "insufficient")
-        self.assertTrue(step.is_terminal)
-
     def test_refuses_to_decide_when_a_limit_is_unreadable(self):
         """限购读不出来 ⇒ 报 blocked。**不许默认成 0**（会重复兑换）。"""
         blind = cm.ExchangeReadout(
-            balance=999,
-            balance_score=1.0,
             limits={1: None, 2: (1, 1), 3: (0, 1), 4: (1, 1)},
         )
         step = cm.plan_redeem(blind)
         self.assertEqual(step.kind, "blocked")
         self.assertEqual(step.card, 1)
-
-    def test_refuses_to_decide_when_the_balance_is_unreadable(self):
-        blind = cm.ExchangeReadout(
-            balance=None,
-            balance_score=0.0,
-            limits={1: (0, 2), 2: (0, 1), 3: (0, 1), 4: (0, 1)},
-        )
-        self.assertEqual(cm.plan_redeem(blind).kind, "blocked")
 
     def test_empty_shelf_asks_for_a_retry(self):
         self.assertEqual(cm.plan_redeem(None).kind, "retry_empty")
@@ -122,8 +98,6 @@ class CommunityRedeemPlanTests(unittest.TestCase):
     def test_flags_a_plan_that_disagrees_with_the_game(self):
         """游戏限购比清单目标还小 ⇒ 两边对不上，必须报出来而不是硬点。"""
         mismatch = cm.ExchangeReadout(
-            balance=999,
-            balance_score=1.0,
             limits={1: (1, 1), 2: (1, 1), 3: (0, 1), 4: (1, 1)},
         )
         step = cm.plan_redeem(mismatch)
@@ -225,37 +199,33 @@ class CommunityStateMachineTests(unittest.TestCase):
         self.assertEqual(action.name, "ack_redeem_done")
         self.assertEqual(action.point, cm.REDEEM_CONFIRM)
 
-    def test_raises_a_business_stop_when_points_run_out(self):
-        """余额不够 ⇒ 走「资源耗尽」通道（退出码 2），**不是故障**。
+    def test_a_redeem_that_cannot_confirm_is_a_business_stop(self):
+        """兑换点不动（订单确认页一进来「确认兑换」就是灰的）⇒ 走「资源耗尽」通道。
 
-        用替换读数的方式测：真机夹具余额是 880（够），要构造「不够」得把读数换掉。
+        2026-11-15 起**不再读余额**：改成「兑到失败为止」，失败信号就是
+        「按钮一进来就灰」——它和「点过之后变灰」（正常等结果）是两件事。
 
-        ⚠️ 这条用例钉的是**时序**，不是「抛不抛」：余额不够时人还停在社区的竖屏
-        页面里，当场抛出去，收尾那步就会拿横屏通道去取竖屏画面（直接抛
-        「render size changed」），而且模拟器会被留在竖屏。所以正确次序是
-        **先按正常出口退出社区 → 等转回横屏 → 才抛**。
+        ⚠️ 这条用例钉的是**时序**：失败时人还停在社区竖屏页面里，当场抛出去，
+        收尾那步会拿横屏通道去取竖屏画面（直接抛「render size changed」），
+        模拟器也会被留在竖屏。正确次序是**先退出社区 → 转回横屏 → 才抛**。
         """
-        machine = self.machine(state=cm.CommunityState.EXCHANGE)
-        poor = cm.ExchangeReadout(
-            balance=5,
-            balance_score=1.0,
-            limits={1: (1, 2), 2: (1, 1), 3: (0, 1), 4: (1, 1)},
-        )
-        with unittest.mock.patch.object(cm, "read_exchange", return_value=poor):
-            # ① 兑换中心：不抛，点右上角 ✕ 退出社区（并记下停止原因）
-            action = machine.next_action(fixture("exchange_after_redeem_live_20261006"))
-            self.assertEqual(action.name, "leave_exchange")
-            self.assertEqual(action.point, (989, 123))
-            self.assertIn("不够", machine.stop_reason)
-            # ② 画面转回横屏那一帧：这时才抛，且必须是「资源耗尽」家族
-            landscape = np.zeros((1132, 1982, 3), np.uint8)
-            with self.assertRaises(cm.RedeemBudgetExhausted) as ctx:
-                machine.next_action(landscape)
-        self.assertIn("不够", str(ctx.exception))
-        self.assertEqual(cm.RedeemBudgetExhausted.stop_label, "积分不足")
-        # 退出码 2 靠的是**继承关系**：挂在 RuntimeError 下会被当成「画面认不出」，
-        # 白等一轮超时再报退出码 1（故障）。
+        machine = self.machine(state=cm.CommunityState.ORDER_CONFIRM)
+        frame = fixture("order_confirm_live_20261006").copy()
+        x, y, width, height = cm.GREEN_BUTTON_BAND
+        frame[y : y + height, x : x + width] = 0  # 绿按钮抹掉 = 一进来就是灰的
+
+        action = machine.next_action(frame)
+        self.assertEqual(action.name, "back_from_redeem_failed")
+        self.assertTrue(action.press_back, "退这一步走系统返回，不猜坐标")
+        self.assertTrue(machine.redeem_failed)
+        self.assertIn("灰", machine.stop_reason)
+
+        # ② 画面转回横屏那一帧：这时才抛，且必须是「资源耗尽」家族
+        landscape = np.zeros((1132, 1982, 3), np.uint8)
+        with self.assertRaises(cm.RedeemBudgetExhausted) as ctx:
+            machine.next_action(landscape)
         self.assertIsInstance(ctx.exception, cm.ResourceExhausted)
+        self.assertEqual(cm.RedeemBudgetExhausted.stop_label, "积分不足")
 
     def test_the_finished_exchange_closes_the_community_in_one_click(self):
         """兑换跑满 ⇒ 点兑换中心**右上角的 ✕**，社区**一步关掉**、直接回横屏。
@@ -285,8 +255,6 @@ class CommunityStateMachineTests(unittest.TestCase):
         # 所以直接摆好事实（``_finishing()`` 要它才肯收工）。
         machine.progress.tasks = {"browse": "done", "like": "done", "share": "done"}
         full = cm.ExchangeReadout(
-            balance=880,
-            balance_score=1.0,
             limits={1: (2, 2), 2: (1, 1), 3: (0, 1), 4: (1, 1)},
         )
         with unittest.mock.patch.object(cm, "read_exchange", return_value=full):
@@ -1692,6 +1660,10 @@ class CommunityEntryAndCloseTests(unittest.TestCase):
         报错会被主循环当成「画面认不出」去重试 —— 白等一轮，还容易误判方向。
         """
         machine = self.machine(state=cm.CommunityState.ITEM_DETAIL)
+        # 模拟「本页已经点过确认」：这时按钮变灰是**正常的等结果**，不是兑不了。
+        # （2026-11-15 起「一进来就灰」才判失败，见
+        #  ``test_a_redeem_that_cannot_confirm_is_a_business_stop``。）
+        machine._confirm_clicked = True
         frame = fixture("order_confirm_live_20261006").copy()
         x, y, width, height = cm.GREEN_BUTTON_BAND
         frame[y : y + height, x : x + width] = 0

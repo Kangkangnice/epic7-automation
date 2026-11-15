@@ -190,6 +190,14 @@ tests/test_hunt_runner.py
 里**不许**再出现 `if args.mode == "hunt": args.max_cycles = 3` 这种写法（同样会被
 `route_metadata.py` 拦下）。
 
+⚠️ **总轮数上限只有一个来源：`Runner.run(max_cycles)` 收到的填写值**。状态机只在
+「一轮业务做完」时把 `completed_cycles` 加一，不许自己记一份总轮数、也不许判
+「跑够 N 轮就收工」。内部确实需要保留轮数口径时，Runner 必须在 `run()` 开跑前把
+`max_cycles` 同步给它（`shop_refresh.py::run`、`penguin_purchase.py::run` 是既有先例）。
+两处不一致的表现是：跑满默认轮数后状态机提前不给动作，主循环仍在等更大的填写值，
+安静等到状态超时（2026-11-15 企鹅批量购买填 20 轮的实跑事故）。新增可调次数路线
+必须验证「填写值 > 默认值」这一档，不能只测 1 轮、2 轮与默认值。
+
 ⚠️ **「接力」是注册模式的必填项**：新路线要么挂 `resume_probe`，要么进 `RESUME_EXEMPT` 并写明
 「为什么不做」—— **两者都缺的话 `modes.py` 在 import 阶段直接抛错**（`_assert_resume_declared()`），
 启动都到不了。`needs_navigation=False` 的路线自动豁免（起点本来就是人工推进到活动内部再启动）。

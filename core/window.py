@@ -18,22 +18,6 @@ import pyautogui
 import pygetwindow
 
 
-def render_is_usable(rgb: np.ndarray) -> bool:
-    """窗口级截图（PrintWindow）拿到的画面是否可用。
-
-    全黑或纯色的画面说明 PrintWindow 对这个窗口无效，调用方要回退屏幕截图。
-
-    判据用 uint8 上的极差 `max() - min()`，**不要用 `rgb.std()`**：
-    两者对整数像素几乎等价（std < 1 意味着所有取值与均值相差不到 1，
-    也就是极差 <= 1 左右），但 `np.std` 会按 float64 累加，
-    在 1920×1080×3 上每帧多分配约 47.5 MiB ——
-    实跑与测试并发时曾因此报 `_ArrayMemoryError: Unable to allocate 47.5 MiB`。
-    极差判据略严于 std（极差 2 但分布极度偏斜的帧会被判不可用），
-    这时走屏幕截图回退路径，比冒险用一张近乎纯色的帧更安全。
-    """
-    return int(rgb.max()) - int(rgb.min()) > 1
-
-
 class _BITMAPINFOHEADER(ctypes.Structure):
     _fields_ = [
         ("biSize", wintypes.DWORD),
@@ -101,6 +85,10 @@ class Epic7Window:
     _LEGACY_SIZE = (1982, 1132)
     _LEGACY_TOP = 52
     _PW_RENDERFULLCONTENT = 0x00000002  # PrintWindow：含 DirectX 渲染内容
+    # 窗口截图**调用失败**（不是画面黑）时重试几次再报错。
+    # 2026-11-14 竞技场接力事故：一帧取不到就改走屏幕截图，拍到了别人的窗口。
+    _CAPTURE_ATTEMPTS = 3
+    _CAPTURE_RETRY_SECONDS = 0.12
     _SW_SHOWNOACTIVATE = 4  # 还原但不抢前台：用户可能正在别的窗口里做事
     _SW_RESTORE = 9  # 还原并置前，仅在不抢前台的还原没生效时用
     # 还原后等窗口真的退出最小化状态：每次 0.05s，最多约 1s。
@@ -241,21 +229,41 @@ class Epic7Window:
         return canvas
 
     def capture(self) -> np.ndarray:
+        """只走窗口截图；**调用失败**就报错，绝不退化成屏幕截图。
+
+        2026-11-14 竞技场接力事故：旧实现在 ``PrintWindow`` 拿不到画面时回退
+        ``pyautogui.screenshot``（按屏幕坐标拍照）。那一帧模拟器正好被别人窗口盖住，
+        拍到的是一张聊天界面；接力判据把它当成了「战斗中的游戏」
+        （左侧行动条白占比 0.98，阈值 0.12），于是跳过回大厅、直奔战斗监督，
+        60 秒后报「战斗画面持续无法识别」。
+
+        ⚠️ 这里说的「取不到」**只指调用失败**（句柄/GDI/``PrintWindow`` 返回 0）。
+        **黑屏不算失败** —— 游戏转场、加载本来就是黑的，那张图要原样交给判据，
+        判据认不出会等下一帧。把黑屏当故障，才会退到那条会抓错人的路。
+
+        屏幕截图那条路的问题不是「可能抓错」，而是**抓错了没人知道**：
+        它不抛异常、不停机，判据拿着别人的窗口继续做决定。
+        按项目红线（判据不许静默降级），这里改成 fail-closed：
+        连续几次调用失败就明确报错，让上层重试或把问题暴露给用户。
+        """
         _, _, bind_handle = self._instance_channel()
-        render = self._print_window_render(bind_handle)
-        if render is not None:
-            return self._legacy_canvas(render)
-        # 窗口级截图不可用（老系统/驱动不支持）时回退屏幕截图，
-        # 该路径要求模拟器置前，被遮挡会截到其他窗口内容。
-        self.activate()
-        rect = self._window_rect_from_handle(bind_handle)
-        image = pyautogui.screenshot(region=(rect.left, rect.top, rect.width, rect.height))
-        return self._legacy_canvas(np.asarray(image.convert("RGB")))
+        for attempt in range(self._CAPTURE_ATTEMPTS):
+            render = self._print_window_render(bind_handle)
+            if render is not None:
+                return self._legacy_canvas(render)
+            if attempt + 1 < self._CAPTURE_ATTEMPTS:
+                sleep(self._CAPTURE_RETRY_SECONDS)
+        raise RuntimeError(
+            f"模拟器窗口截图调用失败（连续 {self._CAPTURE_ATTEMPTS} 次取不到画面）。"
+            "请确认雷电窗口没有被最小化；若仍复现，请重启模拟器后再试。"
+        )
 
     def _print_window_render(self, handle: int) -> np.ndarray | None:
-        """窗口级截图：模拟器被遮挡/失焦时仍能取到正确画面。
+        """窗口级截图：模拟器被遮挡/失焦时仍能取到它自己的画面。
 
-        返回 None 表示窗口级截图不可用（失败或全黑），调用方回退屏幕截图。
+        返回 ``None`` 只表示**这次调用没拿到画面**（句柄、尺寸、GDI 或
+        ``PrintWindow`` 失败）。⚠️ **画面是黑屏也照样返回** —— 黑屏是游戏
+        转场/加载的正常状态，不是故障；判据看到黑图会判「认不出」，然后等下一帧。
         """
         user32 = ctypes.windll.user32
         gdi32 = ctypes.windll.gdi32
@@ -303,10 +311,7 @@ class Epic7Window:
         render = np.frombuffer(memoryview(buffer), dtype=np.uint8).reshape(
             height, width, 4
         )
-        rgb = np.ascontiguousarray(render[:, :, :3][:, :, ::-1])
-        if not render_is_usable(rgb):
-            return None
-        return rgb
+        return np.ascontiguousarray(render[:, :, :3][:, :, ::-1])
 
     def click(self, point: tuple[int, int]) -> None:
         # ld.exe 通过实例通道发送点击，不依赖前台焦点；先直接发送，避免

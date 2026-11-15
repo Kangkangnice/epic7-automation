@@ -12,6 +12,8 @@
 
 from __future__ import annotations
 
+from typing import Mapping
+
 from auto_game_unified.core.pc_window import (
     PC_INPUT_BACKGROUND,
     PC_INPUT_FOREGROUND,
@@ -33,6 +35,7 @@ from auto_game_unified.desktop.worker import (
     WorkerEvent,
 )
 from auto_game_unified.games.epic7.modes import MODE_SPECS
+from auto_game_unified.games.epic7.route_options import ROUTE_OPTIONS, clean, clean_all, defaults_for
 
 class DesktopController:
     """界面状态：勾了哪几条路线、每条跑几次。
@@ -56,6 +59,10 @@ class DesktopController:
         self.cycles: dict[str, int] = {
             route.mode: route.default_cycles for route in ROUTES
         }
+        # 每条路线的可选项。默认值与执行层读的是同一份声明；旧存档缺字段按默认补齐。
+        self.options: dict[str, dict[str, object]] = {
+            mode: defaults_for(mode) for mode in ROUTE_OPTIONS
+        }
 
     def apply_session(self, state: session.SessionState) -> None:
         """把上次的勾选 / 次数 / 后端套回来（界面打开时调一次）。
@@ -72,10 +79,20 @@ class DesktopController:
         for mode, cycles in state.cycles.items():
             if mode in MODE_SPECS:
                 self.cycles[mode] = cycles
+        for mode, values in clean_all(state.params).items():
+            self.options[mode] = values
         if state.backend in BACKENDS:
             self.selected_backend = state.backend
         if state.pc_input_mode in PC_INPUT_MODES:
             self.pc_input_mode = state.pc_input_mode
+
+    def set_options(self, mode: str, values: Mapping[str, object]) -> None:
+        """改某条路线的可选项。非法值、越界值与未满足依赖按声明退回默认。"""
+        if self.worker.running:
+            raise RuntimeError("运行期间不能修改任务")
+        if mode not in ROUTE_OPTIONS:
+            raise ValueError(f"该路线未声明可选项：{mode!r}")
+        self.options[mode] = clean(mode, values)
 
     @property
     def can_start(self) -> bool:
@@ -238,6 +255,7 @@ class DesktopController:
                     if self.selected_backend == "pc"
                     else PC_INPUT_FOREGROUND
                 ),
+                params={mode: dict(values) for mode, values in self.options.items()},
             )
         )
 

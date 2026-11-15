@@ -2,7 +2,6 @@ import unittest
 from unittest.mock import MagicMock, patch
 from pathlib import Path
 import subprocess
-import tracemalloc
 
 import numpy as np
 import pygetwindow
@@ -11,7 +10,6 @@ from auto_game_unified.core.window import (
     Epic7Window,
     WindowRect,
     WindowViewport,
-    render_is_usable,
 )
 
 
@@ -175,33 +173,84 @@ class WindowViewportTests(unittest.TestCase):
         self.assertEqual((1132, 1982, 3), captured.shape)
         self.assertTrue(np.all(captured[52:, :1920] == 127))
 
-    def test_live_capture_falls_back_to_screen_capture_when_print_fails(self):
+    def test_live_capture_retries_after_a_failed_call(self):
+        """一次「调用失败」不代表这条路走不通：等一会儿再问一次。
+
+        2026-11-14 竞技场接力事故：旧的「一帧定生死」把一次取不到画面的瞬间判成
+        「窗口截图不可用」，于是退回屏幕截图，拍到了盖在模拟器上面的别的窗口。
+        """
         game = Epic7Window()
-        calls: list[str] = []
-        fake_image = np.full((1080, 1920, 3), 127, dtype=np.uint8)
+        render = np.full((1080, 1920, 3), 127, dtype=np.uint8)
 
         with (
-            patch.object(game, "activate", side_effect=lambda: calls.append("activate")),
             patch.object(
                 game,
                 "_instance_channel",
                 return_value=(Path("D:/epic7/ldconsole.exe"), "0", 456),
             ),
-            patch.object(game, "_print_window_render", return_value=None),
-            patch.object(
-                game,
-                "_window_rect_from_handle",
-                return_value=WindowRect(5, 80, 1920, 1080),
-            ),
+            patch.object(game, "_print_window_render", side_effect=[None, render]) as print_window,
+            patch("auto_game_unified.core.window.sleep") as wait,
             patch("auto_game_unified.core.window.pyautogui.screenshot") as screenshot,
         ):
-            screenshot.side_effect = lambda **_: calls.append("screenshot") or _FakeImage(fake_image)
             captured = game.capture()
 
-        self.assertEqual(["activate", "screenshot"], calls)
-        screenshot.assert_called_once_with(region=(5, 80, 1920, 1080))
-        self.assertEqual((1132, 1982, 3), captured.shape)
+        self.assertEqual(2, print_window.call_count)
+        wait.assert_called_once_with(Epic7Window._CAPTURE_RETRY_SECONDS)
+        screenshot.assert_not_called()
         self.assertTrue(np.all(captured[52:, :1920] == 127))
+
+    def test_black_frame_is_returned_instead_of_treated_as_a_failure(self):
+        """**黑屏是正常画面，不是故障。**
+
+        游戏转场、加载本来就是黑的。这张图必须原样交给判据（判据会判「认不出」、
+        然后等下一帧），既不该重试也不该报错 —— 2026-11-14 的旧实现正是把一帧黑屏
+        当成「截图不可用」，才退到屏幕截图拍到了别人的窗口。
+        """
+        game = Epic7Window()
+        black = np.zeros((1080, 1920, 3), dtype=np.uint8)
+
+        with (
+            patch.object(
+                game,
+                "_instance_channel",
+                return_value=(Path("D:/epic7/ldconsole.exe"), "0", 456),
+            ),
+            patch.object(game, "_print_window_render", return_value=black) as print_window,
+            patch("auto_game_unified.core.window.sleep") as wait,
+            patch("auto_game_unified.core.window.pyautogui.screenshot") as screenshot,
+        ):
+            captured = game.capture()
+
+        print_window.assert_called_once_with(456)
+        wait.assert_not_called()
+        screenshot.assert_not_called()
+        self.assertEqual((1132, 1982, 3), captured.shape)
+        self.assertTrue(np.all(captured == 0))
+
+    def test_live_capture_fails_loudly_instead_of_capturing_another_window(self):
+        """调用失败就报错，**绝不退回屏幕截图**。
+
+        屏幕截图拍的是「屏幕上那块矩形」，模拟器被遮挡时就是别人的窗口。
+        它不抛异常、不留痕，判据会拿着错画面继续做决定 —— 2026-11-14 就是这么
+        把聊天界面判成「战斗中」的。宁可这一帧失败，也不能静默用错图。
+        """
+        game = Epic7Window()
+
+        with (
+            patch.object(
+                game,
+                "_instance_channel",
+                return_value=(Path("D:/epic7/ldconsole.exe"), "0", 456),
+            ),
+            patch.object(game, "_print_window_render", return_value=None) as print_window,
+            patch("auto_game_unified.core.window.sleep"),
+            patch("auto_game_unified.core.window.pyautogui.screenshot") as screenshot,
+            self.assertRaisesRegex(RuntimeError, "窗口截图调用失败"),
+        ):
+            game.capture()
+
+        self.assertEqual(Epic7Window._CAPTURE_ATTEMPTS, print_window.call_count)
+        screenshot.assert_not_called()
 
     def test_render_frame_is_embedded_in_the_legacy_canvas(self):
         render = np.full((1080, 1920, 3), 127, dtype=np.uint8)
@@ -896,51 +945,6 @@ class WindowViewportTests(unittest.TestCase):
         render_tap.assert_not_called()
 
 
-class RenderIsUsableTests(unittest.TestCase):
-    """判「这一帧是不是纯色」必须走 uint8 极差，不能退化成 np.std。
-
-    背景：np.std 按 float64 累加，1920×1080×3 每帧多分配约 47.5 MiB，
-    与模拟器抢内存时会出现 _ArrayMemoryError。极差法每帧只多分配几十字节。
-    """
-
-    def test_uniform_frame_is_rejected(self):
-        rgb = np.full((1080, 1920, 3), 17, dtype=np.uint8)
-        self.assertFalse(render_is_usable(rgb))
-
-    def test_black_frame_is_rejected(self):
-        rgb = np.zeros((1080, 1920, 3), dtype=np.uint8)
-        self.assertFalse(render_is_usable(rgb))
-
-    def test_one_level_spread_is_still_rejected(self):
-        # max-min == 1 视为纯色：单级量化噪声不足以说明画面画出来了
-        rgb = np.zeros((4, 4, 3), dtype=np.uint8)
-        rgb[0, 0, 0] = 1
-        self.assertFalse(render_is_usable(rgb))
-
-    def test_two_level_spread_is_accepted(self):
-        rgb = np.zeros((4, 4, 3), dtype=np.uint8)
-        rgb[0, 0, 0] = 2
-        self.assertTrue(render_is_usable(rgb))
-
-    def test_normal_picture_is_accepted(self):
-        rgb = np.arange(1080 * 1920 * 3, dtype=np.uint8).reshape(1080, 1920, 3)
-        self.assertTrue(render_is_usable(rgb))
-
-    def test_does_not_allocate_a_float64_copy_of_the_frame(self):
-        """守住内存回归：极差法不该像 np.std 那样按 float64 复制整帧。"""
-        rgb = np.random.default_rng(0).integers(
-            0, 256, size=(1080, 1920, 3), dtype=np.uint8
-        )
-        tracemalloc.start()
-        try:
-            render_is_usable(rgb)
-            _, peak = tracemalloc.get_traced_memory()
-        finally:
-            tracemalloc.stop()
-        # 极差法实测峰值 ~0.01 MiB；np.std 路线是 47.5 MiB，留足余量仍能抓住回归
-        self.assertLess(peak, 8 * 1024 * 1024, f"峰值 {peak / 1024 / 1024:.2f} MiB")
-
-
 class MinimizedWindowRestoreTests(unittest.TestCase):
     """窗口被最小化（含误触）时应当自动还原，而不是立刻报错终止整条路线。"""
 
@@ -1022,17 +1026,6 @@ class MinimizedWindowRestoreTests(unittest.TestCase):
         ):
             with self.assertRaisesRegex(RuntimeError, "自动还原未生效"):
                 game._window()
-
-
-class _FakeImage:
-    def __init__(self, array: np.ndarray) -> None:
-        self.array = array
-
-    def convert(self, _: str) -> "_FakeImage":
-        return self
-
-    def __array__(self, dtype=None):
-        return self.array.astype(dtype) if dtype is not None else self.array
 
 
 if __name__ == "__main__":

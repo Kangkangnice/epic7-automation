@@ -403,6 +403,8 @@ class ShopRefreshRunner:
         transaction_timeout: float = 20.0,
         open_retry_seconds: float = 2.0,
         recovery_gate=None,
+        friendship_enabled: bool = True,
+        friendship_limit: int = FRIENDSHIP_PURCHASE_LIMIT,
     ) -> None:
         # 本路线没有战斗 ⇒ 用不上战斗锁；main 统一注入的选项在这里显式丢弃。
         del recovery_gate
@@ -415,6 +417,9 @@ class ShopRefreshRunner:
         self.poll_seconds = poll_seconds
         self.transaction_timeout = transaction_timeout
         self.open_retry_seconds = open_retry_seconds
+        # 友情点数：买不买、最多买几个；默认与改动前一致（买、最多 10 个）。
+        self.friendship_enabled = friendship_enabled
+        self.friendship_limit = friendship_limit
         self.now = runtime.now
         self.resource_exhausted = False
         self._sold_slots: set[tuple[int, ShopPhase, ShopItemKind, int]] = set()
@@ -1038,14 +1043,19 @@ class ShopRefreshRunner:
                 # 友情点数买到上限之后，**两种名单都不再收它**：
                 # 收进 targets 会继续买；收进 unavailable_targets 会因为「目标商品
                 # 缺少同行购买按钮」把整轮判死 —— 可我们已经不打算买它了。
-                friendship_full = (
-                    self.machine.stats.friendship_bought
-                    >= FRIENDSHIP_PURCHASE_LIMIT
+                friendship_stopped = (
+                    not self.friendship_enabled
+                    or self.machine.stats.friendship_bought
+                    >= self.friendship_limit
                 )
-                if friendship_full and not friendship_cap_logged:
+                if friendship_stopped and not friendship_cap_logged:
+                    reason = (
+                        "已关闭购买"
+                        if not self.friendship_enabled
+                        else f"达到上限（{self.friendship_limit} 个）"
+                    )
                     self.runtime.log(
-                        f"模式=刷书签 友情点数=达到上限"
-                        f"（{FRIENDSHIP_PURCHASE_LIMIT} 个）本轮不再购买"
+                        f"模式=刷书签 友情点数={reason}，本轮不再购买"
                     )
                     friendship_cap_logged = True
                 targets = [
@@ -1058,7 +1068,7 @@ class ShopRefreshRunner:
                     }
                     and row.buy_point is not None
                     and not (
-                        friendship_full and row.kind is ShopItemKind.FRIENDSHIP
+                        friendship_stopped and row.kind is ShopItemKind.FRIENDSHIP
                     )
                 ]
                 unavailable_targets = [
@@ -1072,7 +1082,7 @@ class ShopRefreshRunner:
                     and row.buy_point is None
                     and not self._is_known_sold(row)
                     and not (
-                        friendship_full and row.kind is ShopItemKind.FRIENDSHIP
+                        friendship_stopped and row.kind is ShopItemKind.FRIENDSHIP
                     )
                 ]
                 if unavailable_targets:

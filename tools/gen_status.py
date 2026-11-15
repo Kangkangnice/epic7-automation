@@ -27,6 +27,7 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
 from pathlib import Path
 
@@ -56,11 +57,21 @@ def _tracked_pngs() -> set[str]:
     打包产物不会调用本函数（现状页是开发期生成的静态文档），开发/CI 一定有 git；
     万一没有就 fail-closed 报错，绝不悄悄给一个可能错的数字。
     """
+    # ⚠️ 必须带 ``-z``：默认 ``core.quotepath=true`` 会把**非 ASCII 路径**写成
+    # 八进制转义并用双引号包起来（``"games/.../\344\270\200....png"``），
+    # 于是 ``endswith(".png")`` 全部落空 —— 2026-11-15 恢复图鉴头像库时实测：
+    # 381 张中文名头像只算进 4 张（只有 ASCII 名的那几个）。这是**静默少算**，
+    # 数字偏小却一切正常，没人会去查。``-z`` 用 NUL 分隔且不转义。
+    #
+    # ``-z`` 输出的是**原始路径字节**，不能再交给 ``text=True`` 按系统代码页解码：
+    # Windows CI runner 用 cp1252，中文路径里的 0x90 会直接让 subprocess 读线程
+    # 抛 UnicodeDecodeError，``stdout`` 变成 None（2026-11-15 PR 治理门禁实测）。
+    # 按字节收、再用 ``os.fsdecode`` 按文件系统编码还原，跟系统区域设置无关。
     try:
         result = subprocess.run(
-            ["git", "-C", str(PACKAGE_ROOT), "ls-files", "*.png"],
+            ["git", "-C", str(PACKAGE_ROOT), "ls-files", "-z", "*.png"],
             capture_output=True,
-            text=True,
+            text=False,
             check=True,
         )
     except (OSError, subprocess.CalledProcessError) as exc:
@@ -69,15 +80,29 @@ def _tracked_pngs() -> set[str]:
             "打包产物不会调用本函数；开发/CI 环境一定有 git。原始错误：" + str(exc)
         ) from exc
     return {
-        line.strip().replace("\\", "/")
-        for line in result.stdout.splitlines()
-        if line.strip()
+        os.fsdecode(raw).strip().replace("\\", "/")
+        for raw in result.stdout.split(b"\0")
+        if raw.strip()
     }
+
+
+# 不计入「识别模板」张数的素材目录（按前缀）。
+#
+# 图鉴头像库是给「英雄名单」用的比对资产：385 张、按英雄名索引、与路线判据无关。
+# 混进路线模板数会把「这条路线有多少张判据图」这个指标冲掉，所以显式排除 ——
+# 排除要写在这里，别靠文件名或后缀去猜。
+_NOT_TEMPLATES = ("games/epic7/templates/arena/heroes_pokedex/",)
 
 
 def _count_under(directory: str, tracked: set[str]) -> int:
     prefix = directory.rstrip("/") + "/"
-    return sum(1 for name in tracked if name.startswith(prefix) and name.endswith(".png"))
+    return sum(
+        1
+        for name in tracked
+        if name.startswith(prefix)
+        and name.endswith(".png")
+        and not name.startswith(_NOT_TEMPLATES)
+    )
 
 
 def _count_pc_templates(tracked: set[str]) -> int:

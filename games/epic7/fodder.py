@@ -34,6 +34,7 @@ from auto_game_unified.games.epic7.pre_battle import (
 )
 from auto_game_unified.games.epic7.stamina import (
     STAMINA_REGIONS,
+    StaminaBudget,
     load_stamina_templates,
     next_stamina_decision,
 )
@@ -134,6 +135,8 @@ class FodderStateMachine:
         self.state = initial_state
         self.completed_cycles = 0
         self.stamina_replenished = 0
+        # 体力预算由 Runner 按路线选项注入；默认「使用、不限」= 改动前行为。
+        self.stamina_budget = StaminaBudget()
         self._stamina_material_clicked = False
 
     def _locate(self, screen: np.ndarray, name: str, threshold: float | None = None):
@@ -187,8 +190,11 @@ class FodderStateMachine:
         if decision.status == "idle":
             if self._stamina_material_clicked:
                 self.stamina_replenished += 1
+                self.stamina_budget.consume()
                 self._stamina_material_clicked = False
             return None
+        if self.stamina_budget.exhausted:
+            raise StaminaExhausted("生命之叶补充已按设置停止")
         if decision.status == "material":
             self._stamina_material_clicked = True
             return FodderAction("stamina_material", decision.point)
@@ -348,6 +354,8 @@ class FodderRunner(ModeRunnerBase):
         poll_seconds: float = 1.0,
         recovery_gate: RecoveryGate | None = None,
         battle_supervisor: BattleSupervisor | None = None,
+        stamina_enabled: bool = True,
+        stamina_limit: int | None = None,
     ) -> None:
         super().__init__(
             machine,
@@ -355,6 +363,9 @@ class FodderRunner(ModeRunnerBase):
             sleep=sleep,
             poll_seconds=poll_seconds,
             recovery_gate=recovery_gate,
+        )
+        machine.stamina_budget = StaminaBudget(
+            enabled=stamina_enabled, limit=stamina_limit
         )
         self.battle_supervisor = battle_supervisor or BattleSupervisor(
             runtime,
