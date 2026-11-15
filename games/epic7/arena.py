@@ -23,7 +23,7 @@ from auto_game_unified.core.matcher import (
     locate_with_fallback,
 )
 from auto_game_unified.core.recovery import RecoveryGate
-from auto_game_unified.core.runtime import ManualStop, Runtime
+from auto_game_unified.core.runtime import ManualStop, ResourceExhausted, Runtime
 from auto_game_unified.core.supervisor import (
     ConclusionGate,
     StableObservation,
@@ -34,6 +34,14 @@ from auto_game_unified.games.epic7.battle_controls import (
     battle_scene_visible,
     observe_battle_controls,
     resolve_auto_state,
+)
+from auto_game_unified.games.epic7.arena_points import read_opponent_points
+from auto_game_unified.games.epic7.hero_match import (
+    TIER_NORMAL,
+    TIER_WHITE,
+    HeroMatcher,
+    default_library_dir,
+    judge_row,
 )
 from auto_game_unified.games.epic7.pre_battle import (
     PreBattleMode,
@@ -214,6 +222,40 @@ def find_free_refresh_confirm(
     )
 
 
+_SKYSTONE_OFFER_REGION = (1000, 470, 440, 230)
+
+
+def find_skystone_offer(
+    screen: np.ndarray,
+    template: Optional[np.ndarray],
+    threshold: float = 0.92,
+) -> Optional[Match]:
+    """「购买旗帜」右侧天空石报价的区域匹配；缺图时返回 None。
+
+    这两张报价图是按需采集的可选素材，**不登记进证据画像**：诊断工具会遍历画像里的
+    每个模板，缺图会让整条路线的证据检查一起失败。搜索区域与缩放沿用免费刷新的口径。
+    """
+    if template is None:
+        return None
+    scale_x = screen.shape[1] / _RANK_PROMOTION_REFERENCE_SIZE[0]
+    scale_y = screen.shape[0] / _RANK_PROMOTION_REFERENCE_SIZE[1]
+    ref_x, ref_y, ref_width, ref_height = _SKYSTONE_OFFER_REGION
+    x = round(ref_x * scale_x)
+    y = round(ref_y * scale_y)
+    width = round(ref_width * scale_x)
+    height = round(ref_height * scale_y)
+    search = screen[y : y + height, x : x + width]
+    match = find_template(
+        search,
+        template,
+        threshold,
+        reference_size=(ref_width, ref_height),
+    )
+    if match is None:
+        return None
+    return Match((x + match.center[0], y + match.center[1]), match.score)
+
+
 class ArenaState(Enum):
     LIST = "list"
     SELECTED = "selected"
@@ -279,6 +321,17 @@ class TicketExhausted(RuntimeError):
     """The game presented its ticket-purchase popup instead of entering battle."""
 
 
+class NoEligibleOpponent(ResourceExhausted):
+    """黑白名单把整页可挑战的对手全否掉了，刷了几页仍没有 —— 正常业务退出。
+
+    为什么不「忽略名单随便打一个」：那等于用户设的名单被悄悄作废，
+    与「判据不许静默降级」同一条纪律。也不把它算失败：名单本身是用户设的，
+    今天这批对手不合条件属于正常结果，退出码 2、汇总里能看出缺的是什么。
+    """
+
+    stop_label = "名单条件下无对手"
+
+
 @dataclass(frozen=True)
 class Action(RouteAction):
     """竞技场的一个动作。
@@ -327,6 +380,11 @@ class ArenaTemplates:
     # `rank_confirm` 会命中它 ⇒ 点在盖住的按钮上纹丝不动 ⇒ 42 秒转场超时。
     # 只有 pc/ 有图 ⇒ 模拟器为 None ⇒ 仍走老的 `rank_confirm`，行为一字不变。
     rank_close_hint: "np.ndarray | None" = None
+    # 付费刷新与天空石报价的画面证据。缺图时加载成 None：对应动作不执行，
+    # 路线按「证据不足」安全停止，绝不猜测点击。
+    # ⚠️ 带默认值的字段必须排在所有无默认值字段之后（dataclass 约束）。
+    refresh_gold: "np.ndarray | None" = None
+    skystone_ticket_offer: "np.ndarray | None" = None
     threshold: float = 0.98
     quick_battle: QuickBattleDetector | None = None
     evidence: EvidenceProfile | None = None
@@ -368,6 +426,18 @@ def build_templates(template_dir: Path) -> ArenaTemplates:
         refresh_title=load_template(str(template_dir / "arena_refresh_title.png")),
         refresh_free=load_template(str(template_dir / "arena_refresh_free.png")),
         refresh_confirm=load_template(str(template_dir / "arena_refresh_confirm.png")),
+        # 两张新报价图是**可选素材**：没采到就不加载，对应付费动作直接不执行。
+        # 这样默认路径一字不变，也不会出现「认不出还硬点」的情况。
+        refresh_gold=(
+            load_template(str(template_dir / "arena_refresh_gold.png"))
+            if (template_dir / "arena_refresh_gold.png").is_file()
+            else None
+        ),
+        skystone_ticket_offer=(
+            load_template(str(template_dir / "skystone_ticket_offer.png"))
+            if (template_dir / "skystone_ticket_offer.png").is_file()
+            else None
+        ),
         result_rating=load_template(str(template_dir / "arena_result_rating.png")),
         result_victory=load_template(str(template_dir / "arena_result_victory.png")),
         result_defeat=load_template(str(template_dir / "arena_result_defeat.png")),
@@ -408,6 +478,27 @@ class ArenaStateMachine:
     _AVAILABLE_RED_MAX_RATIO = 0.05
     _REGIONS = ARENA_REGIONS
 
+    # 路线可选项由 Runner 装配后注入；默认值与 ``route_options`` 的声明一致。
+    # 放在类上是为了让「不经过 Runner」的状态机测试也保持改动前的行为。
+    refresh_mode = "free"
+    max_gold_refreshes = 0
+    ticket_mode = "friendship"
+    max_skystone_purchases = 0
+    gold_refresh_count = 0
+    skystone_purchase_count = 0
+    # 对手偏好：``none`` / ``highest`` / ``lowest``。改的是「挑哪一行」，
+    # 不改「这一行能不能打」（后者仍是 ``opponent_availability`` 的三态判据）。
+    opponent_preference = "none"
+    # 名单过滤器返回有序行时，顺手把「为什么是这一行」写在这里，供动作依据引用。
+    filter_note = ""
+
+    # 积分读数最多尝试几帧。第一次读往往撞上列表还在渲染（数字未出），
+    # 只读一次会把「暂时没画出来」误当「读不出」；读满了还缺就按缺的处理。
+    _POINTS_MAX_ATTEMPTS = 3
+
+    # 「购买旗帜」右侧天空石报价的点击位置（画布 1982x1132 内）。
+    _SKYSTONE_OFFER_POINT = (1200, 610)
+
     _OPPONENT_OFFSETS = (
         (-210, -639),
         (-210, -448),
@@ -441,12 +532,20 @@ class ArenaStateMachine:
         *,
         initial_state: ArenaState = ArenaState.LIST,
         choose_opponent: Callable[[Sequence[int]], int] = random.choice,
+        opponent_filter: Optional[
+            Callable[[np.ndarray, Sequence[int]], Sequence[int]]
+        ] = None,
         pc_rules: bool = False,
     ) -> None:
         self.templates = templates
         self.state = initial_state
         self.completed_cycles = 0
         self.choose_opponent = choose_opponent
+        # 黑白名单筛选：给 (当前帧, 可挑战行号) 返回其中**通过名单**的行号。
+        # None = 未启用，行为与从前逐字相同。由 ``ArenaRunner`` 在拿到用户参数后注入
+        # （机器工厂不接参数，这条通道是 ``ModeSpec.runner_options`` 设计好的落点）。
+        # ⚠️ 过滤器只许**收窄**集合：返回入参之外的行号等于越过安全分类点人。
+        self.opponent_filter = opponent_filter
         # PC 专属规则开关：由装配点（``modes.py::_build_arena``）按模板目录注入。
         # 默认 **False** ⇒ 模拟器走 2026-11-07 之前的原代码路径，行为一个字节不变。
         # 目前只有一处消费：``_wait_until_safe_list`` 里「刷新确认弹窗在场时
@@ -460,6 +559,10 @@ class ArenaStateMachine:
                 key: atom.threshold for key, atom in templates.evidence.atoms.items()
             }
         self._selected_opponent: int | None = None
+        # 本页三行积分的读数缓存（OCR 一次约 0.4 秒，不能每帧都跑）。
+        # ``None`` = 还没读；``_points_attempts`` 记已试过几帧，避免「一直在读」。
+        self._points: tuple[Optional[int], Optional[int], Optional[int]] | None = None
+        self._points_attempts = 0
         self._cycle_pending = initial_state == ArenaState.CONFIRMING
         # 「接力」进来的落点；None = 本轮是正常从入口开始的。Runner 靠它判断
         # 「局内接力」要不要跳过状态机直接把这一局交给战斗监督。
@@ -482,6 +585,10 @@ class ArenaStateMachine:
         ):
             self.completed_cycles += 1
             self._cycle_pending = False
+        if target is ArenaState.LIST:
+            # 回到对手列表 = 这一页的对手已经换过（打完一轮 / 段位确认后），
+            # 上一页的积分读数作废，免得拿旧分数去比新一批对手。
+            self._reset_points()
 
     def resume_from(self, state: ArenaState) -> None:
         """拨到用户停下的那一步，原样接管进度继续往下跑。
@@ -503,6 +610,7 @@ class ArenaStateMachine:
         self.state = state
         self.resumed_from = state
         self._selected_opponent = None
+        self._reset_points()
         self._cycle_pending = state is ArenaState.CONFIRMING
 
     def _locate(self, screen: np.ndarray, template_name: str) -> Optional[Match]:
@@ -583,7 +691,95 @@ class ArenaStateMachine:
         return tuple(availability)
 
     def has_safe_opponent(self, screen: np.ndarray) -> bool:
-        return any(value is True for value in self.opponent_availability(screen))
+        # 「安全」的口径与 ``_list_action`` 完全一致：可挑战**且**（若启用筛选）
+        # 不被黑白名单否掉 —— 否则刷新确认循环会把「可挑战但全被名单否掉」的列表
+        # 当成到位，与 ``_list_action`` 的判定来回打架（乒乓刷新）。
+        safe = [
+            index
+            for index, value in enumerate(self.opponent_availability(screen))
+            if value is True
+        ]
+        if self.opponent_filter is not None and safe:
+            safe = list(self.opponent_filter(screen, safe))
+        return bool(safe)
+
+    def opponent_points(
+        self, screen: np.ndarray
+    ) -> tuple[Optional[int], Optional[int], Optional[int]]:
+        """本页三行积分（带缓存）。读数的区域与口径见 ``games/epic7/arena_points``。
+
+        ⚠️ 缓存是**派生数据**，不参与 ``preview()`` 的快照还原：空跑那一趟读过一次，
+        真实循环就该直接用，不必再 OCR 一遍（一次约 0.4 秒，每帧跑会拖慢整条路线）。
+
+        只读「还算干净」的次数：列表刚刷出来那一两帧数字还没画，读到全 None 不等于
+        「这一页没有积分」。读满 ``_POINTS_MAX_ATTEMPTS`` 帧仍缺就按缺的处理，
+        不再无休止地读下去。
+        """
+        if self.opponent_preference == "none":
+            return (None, None, None)
+        if self._points is not None:
+            return self._points
+        points = read_opponent_points(screen)
+        self._points_attempts += 1
+        if all(value is not None for value in points) or (
+            self._points_attempts >= self._POINTS_MAX_ATTEMPTS
+        ):
+            self._points = points
+        return points
+
+    def _reset_points(self) -> None:
+        """列表换了一批（刷新 / 打完回列表）⇒ 旧读数作废。"""
+        self._points = None
+        self._points_attempts = 0
+
+    def rank_opponents(
+        self, screen: np.ndarray, safe: Sequence[int]
+    ) -> tuple[list[int], str]:
+        """按「对手偏好」给可挑战的行排序，并给出**能写进日志的依据**。
+
+        返回值第一项是排好序的行号（读不出积分的行被排除），第二项是依据文案。
+
+        偏好只做**排序**，不做否决：
+        - 三行都读得出 ⇒ 按积分高低排，取第一个；
+        - 只读出一部分 ⇒ 在读得出的行里排（读不出的行本轮不参与）；
+        - 一个都读不出 ⇒ 返回空列表，调用方退回原来的随机挑选，并在依据里说明。
+          「读不出就退回随机」是有意的：偏好是择优，不是安全判据；
+          「这一行能不能打」另有三态判据管着，缺一不可。
+        """
+        if self.opponent_preference == "none":
+            return [], "未指定对手偏好"
+        points = self.opponent_points(screen)
+        known = [(points[index], index) for index in safe if points[index] is not None]
+        if not known:
+            missing = "/".join(str(index + 1) for index in safe)
+            return [], f"对手偏好未生效：第{missing}行积分读不出，本页按原顺序挑选"
+        highest = self.opponent_preference == "highest"
+        known.sort(key=lambda item: (item[0], item[1]), reverse=highest)
+        ranked = [index for _value, index in known]
+        shown = "、".join(f"第{index + 1}行 {points[index]}" for index in ranked)
+        label = "积分最高" if highest else "积分最低"
+        skipped = len(safe) - len(known)
+        suffix = f"（另有{skipped}行积分读不出，未参与）" if skipped else ""
+        return ranked, f"对手偏好={label}：{shown}{suffix}"
+
+    def order_by_preference(
+        self, screen: np.ndarray, rows: Sequence[int]
+    ) -> list[int]:
+        """按积分偏好给**给定的几行**排序；读不出积分的行排到最后。
+
+        ⚠️ 与 ``rank_opponents`` 的分工：那个是「没有名单时，从可挑战行里挑一行」，
+        会连带生成日志文案；这个是给「已经按白名单分好组」的调用方用的纯排序，
+        只负责组内先后。读不出积分的行不丢弃 —— 它们仍然能打，只是排后面。
+        """
+        ordered = list(rows)
+        if self.opponent_preference == "none" or len(ordered) < 2:
+            return ordered
+        points = self.opponent_points(screen)
+        known = [(points[index], index) for index in ordered if points[index] is not None]
+        unknown = [index for index in ordered if points[index] is None]
+        highest = self.opponent_preference == "highest"
+        known.sort(key=lambda item: (item[0], item[1]), reverse=highest)
+        return [index for _value, index in known] + unknown
 
     @property
     def pc_rules(self) -> bool:
@@ -598,6 +794,22 @@ class ArenaStateMachine:
             self.templates.refresh_confirm,
             self._THRESHOLDS["refresh_confirm"],
         )
+
+    def paid_refresh_confirm(self, screen: np.ndarray) -> Optional[Match]:
+        """金币报价的「更新交战对手」确认。缺图时不作数。"""
+        if self.templates.refresh_gold is None:
+            return None
+        return find_free_refresh_confirm(
+            screen,
+            self.templates.refresh_title,
+            self.templates.refresh_gold,
+            self.templates.refresh_confirm,
+            self._THRESHOLDS["refresh_confirm"],
+        )
+
+    def skystone_offer_selected(self, screen: np.ndarray) -> Optional[Match]:
+        """「购买旗帜」右侧天空石报价已选中。缺图时不作数。"""
+        return find_skystone_offer(screen, self.templates.skystone_ticket_offer)
 
     def is_in_state(self, screen: np.ndarray, state: "ArenaState") -> bool:
         """True when the screen has actually settled into ``state``.
@@ -624,6 +836,11 @@ class ArenaStateMachine:
         return self._visible(screen, self._STATE_TEMPLATE[state])
 
     def action_source_visible(self, screen: np.ndarray, action: Action) -> bool:
+        if action.name in ("select-skystone-offer", "purchase-skystone-ticket"):
+            # 来源仍在 = 旗帜购买弹窗未关闭；此时不可重复执行不可逆的购买。
+            return self._visible(screen, "no_ticket") or (
+                self.templates.pc and self._visible(screen, "purchase_cancel")
+            )
         if action.name == "purchase-friendship-ticket":
             return (
                 self._visible(screen, "no_ticket")
@@ -705,24 +922,64 @@ class ArenaStateMachine:
     def _list_action(self, screen: np.ndarray) -> Action:
         availability = self.opponent_availability(screen)
         safe = [index for index, value in enumerate(availability) if value is True]
+        filtered_out = False
+        note = ""
+        if self.opponent_filter is not None and safe:
+            # 过滤器返回的是**排好序**的行：白名单优先组在前，普通组在后。
+            filtered = list(self.opponent_filter(screen, safe))
+            filtered_out = len(filtered) < len(safe)
+            safe = filtered
+            note = self.filter_note
         if safe:
-            if self._selected_opponent not in safe:
-                self._selected_opponent = self.choose_opponent(safe)
+            if self._selected_opponent in safe:
+                # 已经选定了行（重试 / 转场未确认）：原样返回，不再读一次积分。
+                return Action(
+                    name="select-opponent",
+                    point=self._opponent_point(screen, self._selected_opponent),
+                    source_state=ArenaState.LIST,
+                    target_states=(ArenaState.SELECTED,),
+                    reason="已选定对手行，等待对手详情页",
+                )
+            if self.opponent_filter is not None:
+                # 顺序已由过滤器定好（白名单优先组 → 组内按积分），直接取第一行。
+                self._selected_opponent = safe[0]
+                why = note or "已按白名单优先与积分偏好排序"
+            else:
+                ranked, why = self.rank_opponents(screen, safe)
+                self._selected_opponent = (
+                    ranked[0] if ranked else self.choose_opponent(safe)
+                )
             return Action(
                 name="select-opponent",
                 point=self._opponent_point(screen, self._selected_opponent),
                 source_state=ArenaState.LIST,
                 target_states=(ArenaState.SELECTED,),
-                reason="安全对手行已确认，等待对手详情页",
+                reason=f"{why}；安全对手行已确认，等待对手详情页",
             )
         if all(value is False for value in availability):
             self._selected_opponent = None
+            # 刷新之后列表整批换掉，上一页的积分读数必须作废。
+            self._reset_points()
             return Action(
                 name="refresh-opponents",
                 point=self._refresh_point(screen),
                 source_state=ArenaState.LIST,
                 target_states=(ArenaState.LIST,),
                 reason="三名对手均不可挑战，等待刷新后的安全列表",
+            )
+        if filtered_out:
+            # 与「均不可挑战」同一个出口：整页没有一行是「可挑战且通过名单」的。
+            # 刷新的确认弹窗只认**免费**那一档（``find_free_refresh_confirm``），
+            # 付费弹窗不会被点 ⇒ 不会因为名单太长而顺手烧掉金币/天空石。
+            # 刷几次仍无可用行由 Runner 侧的有界计数收尾（见 ``_install_opponent_filter``）。
+            self._selected_opponent = None
+            self._reset_points()
+            return Action(
+                name="refresh-opponents",
+                point=self._refresh_point(screen),
+                source_state=ArenaState.LIST,
+                target_states=(ArenaState.LIST,),
+                reason="可挑战的对手均被黑白名单否掉，等待刷新出新一批",
             )
         raise RuntimeError("竞技场对手行无法安全分类")
 
@@ -832,6 +1089,38 @@ class ArenaStateMachine:
             )
         )
         if ticket_popup:
+            if self.ticket_mode == "skystone":
+                # 右侧报价必须带选中框的独立证据；缺图、超上限、证据不全一律收工，
+                # 不退回友情点分支把资源花在没授权的选项上。
+                if self.templates.skystone_ticket_offer is None:
+                    raise TicketExhausted("已开启天空石购旗，但缺少右侧报价的画面证据")
+                if self.skystone_purchase_count >= self.max_skystone_purchases:
+                    raise TicketExhausted("天空石购旗次数已达上限")
+                selected = self.skystone_offer_selected(screen)
+                if selected is None:
+                    return Action(
+                        name="select-skystone-offer",
+                        point=self._SKYSTONE_OFFER_POINT,
+                        source_state=self.state,
+                        target_states=(ArenaState.TEAM, ArenaState.BATTLE),
+                        reason="切换至天空石报价；尚未执行购买",
+                    )
+                purchase = self._locate(screen, "ticket_purchase_button")
+                if purchase is None:
+                    raise TicketExhausted("天空石报价已选中，但购买入口证据不完整")
+                self.skystone_purchase_count += 1
+                return Action(
+                    name="purchase-skystone-ticket",
+                    point=purchase.center,
+                    source_state=self.state,
+                    target_states=(ArenaState.TEAM,),
+                    reason=(
+                        "资源=天空石 报价=30 获得旗帜=5 选择=右侧已确认 "
+                        f"次数={self.skystone_purchase_count}/{self.max_skystone_purchases} "
+                        f"报价匹配={selected.score:.3f}"
+                    ),
+                    irreversible=True,
+                )
             offer = self._locate(screen, "friendship_ticket_offer")
             purchase = self._locate(screen, "ticket_purchase_button")
             if offer is None or purchase is None:
@@ -1171,6 +1460,15 @@ class ArenaRunner(TransactionalRunnerBase):
         recovery_gate: RecoveryGate | None = None,
         battle_supervisor: BattleSupervisor | None = None,
         purchase_stamp_path: Path | None = None,
+        refresh_mode: str = "free",
+        max_gold_refreshes: int = 0,
+        ticket_mode: str = "friendship",
+        max_skystone_purchases: int = 0,
+        opponent_preference: str = "none",
+        hero_blacklist: Sequence[str] | None = None,
+        hero_whitelist: Sequence[str] | None = None,
+        hero_list_conflict: str = "blacklist",
+        hero_library_dir: Path | None = None,
     ) -> None:
         # ⚠️ ``now`` / ``recovery_gate`` / ``unknown_screen_wake`` /
         # ``battle_supervisor`` / ``resource_exhausted`` / ``finish_home`` 全部由基类
@@ -1184,8 +1482,146 @@ class ArenaRunner(TransactionalRunnerBase):
             battle_supervisor=battle_supervisor,
         )
         self.purchase_stamp_path = purchase_stamp_path
+        # 可选项：同一份值交给 Runner 与状态机（动作由状态机生成，上限在这里守）。
+        # 默认值与 route_options 的声明一致，未开启时所有分支都与改动前相同。
+        self.refresh_mode = refresh_mode
+        self.max_gold_refreshes = max_gold_refreshes
+        self.ticket_mode = ticket_mode
+        self.max_skystone_purchases = max_skystone_purchases
+        # 对手偏好只写状态机：排序发生在「挑哪一行」，而点击与判据都在状态机里。
+        self.opponent_preference = opponent_preference
+        self.machine.refresh_mode = refresh_mode
+        self.machine.max_gold_refreshes = max_gold_refreshes
+        self.machine.ticket_mode = ticket_mode
+        self.machine.max_skystone_purchases = max_skystone_purchases
+        self.machine.opponent_preference = opponent_preference
+        self.machine.gold_refresh_count = 0
+        self.machine.skystone_purchase_count = 0
         # 本进程的战绩：胜 / 负 / 认不出。「认不出」单列，不并入负（见 ArenaOutcome）。
         self.outcome_tally = {outcome: 0 for outcome in ArenaOutcome}
+        # 黑白名单：两份都空就不挂筛选器，行为与改动前逐字相同。
+        self.hero_blacklist = tuple(hero_blacklist or ())
+        self.hero_whitelist = tuple(hero_whitelist or ())
+        self.hero_list_conflict = hero_list_conflict
+        self._hero_filter_empty_streak = 0
+        self._hero_matcher = None
+        if self.hero_blacklist or self.hero_whitelist:
+            self._install_opponent_filter(hero_library_dir)
+
+    # 名单把整页否掉时允许连续刷新的页数。3 页足够过滤「恰好撞上」的情况，
+    # 再多就是名单与当前段位的对手池不匹配，该告诉用户而不是无限刷。
+    _HERO_FILTER_MAX_EMPTY_PAGES = 3
+
+    def _install_opponent_filter(self, library_dir: Path | None) -> None:
+        """按名单建识别器并注入 ``machine.opponent_filter``。
+
+        缺图**不静默跳过**：点名了却认不出的英雄会打进日志 —— 否则用户以为受保护，
+        实际那个英雄根本没在认。全部缺失时同样如实记录（名单未生效、选敌回到原逻辑），
+        而不是让路线起不来：名单是偏好，不是安全闸门。
+
+        ⚠️ 识别一页 = 12 个头像 × N 个模板的 ORB 比对（实测 6.5 秒 / 354 模板）。
+        主循环每秒都问一次「下一步点哪」，所以必须**按帧缓存**：画面一个像素没变就
+        直接复用上一次的结论。
+        """
+        names = list(dict.fromkeys([*self.hero_blacklist, *self.hero_whitelist]))
+        matcher = HeroMatcher(library_dir or default_library_dir(), names)
+        self._hero_matcher = matcher
+        if matcher.missing_names:
+            self.runtime.log(
+                "模式=竞技场 英雄名单 图鉴缺图（认不出，未生效）="
+                + "、".join(matcher.missing_names)
+            )
+        if matcher.loaded_count == 0:
+            self.runtime.log("模式=竞技场 英雄名单 全部缺图，选敌回退原逻辑")
+            return
+        blacklist = set(self.hero_blacklist) & set(matcher.loaded_names)
+        whitelist = set(self.hero_whitelist) & set(matcher.loaded_names)
+        self.runtime.log(
+            f"模式=竞技场 英雄名单 已生效 黑名单={sorted(blacklist)} "
+            f"白名单={sorted(whitelist)} 冲突时={self.hero_list_conflict}"
+        )
+        if not blacklist and not whitelist:
+            self.runtime.log("模式=竞技场 英雄名单 加载成功但两份名单都为空，不启用")
+            return
+        cache: dict[str, object] = {
+            "screen": None,
+            "kept": None,
+            "signature": None,
+        }
+
+        def filter_opponents(
+            screen: np.ndarray, safe: Sequence[int]
+        ) -> Sequence[int]:
+            """把可挑战的行按「白名单优先组 → 普通组」排序，组内再按积分偏好。
+
+            ⚠️ **白名单是偏好，不是门槛**（用户 2026-11-15 纠正）：没有命中白名单
+            的行不是出局，只是排到后面。真正出局的只有黑名单与「黑多／相等」那些。
+
+            返回的是**有序列表**，行数可能少于入参（被否掉的那些）。
+            """
+            last = cache["screen"]
+            if last is not None and np.array_equal(screen, last):
+                return cache["kept"]  # type: ignore[return-value]
+            teams = matcher.identify_screen(screen)
+            white_hits: list[tuple[int, int]] = []
+            normal_rows: list[int] = []
+            reasons: list[str] = []
+            for index in safe:
+                verdict = judge_row(
+                    teams[index],
+                    blacklist=blacklist,
+                    whitelist=whitelist,
+                    conflict=self.hero_list_conflict,
+                )
+                if verdict.tier == TIER_WHITE:
+                    white_hits.append((index, verdict.white_hits))
+                elif verdict.tier == TIER_NORMAL:
+                    normal_rows.append(index)
+                else:
+                    reasons.append(f"第{index + 1}行{verdict.reason}")
+            white_rows = [
+                index for index, _hits in sorted(
+                    white_hits, key=lambda item: (-item[1], item[0])
+                )
+            ]
+            # 白名单组内**先比命中数**（命中两名英雄的队比命中一名的更想打），
+            # 命中数相同的再按积分偏好；普通组只有积分这一维。
+            ordered: list[int] = []
+            for hits in sorted({hit for _index, hit in white_hits}, reverse=True):
+                same = [index for index, hit in white_hits if hit == hits]
+                ordered.extend(self.machine.order_by_preference(screen, same))
+            ordered.extend(self.machine.order_by_preference(screen, normal_rows))
+            signature = tuple(tuple(sorted(team.heroes)) for team in teams)
+            if signature != cache["signature"]:
+                cache["signature"] = signature
+                tier = (
+                    f"白名单优先组={white_rows}"
+                    f"（命中数={'/'.join(str(hit) for _index, hit in sorted(white_hits, key=lambda item: (-item[1], item[0])))}）"
+                    if white_rows
+                    else "无白名单命中"
+                )
+                self.runtime.log(
+                    f"模式=竞技场 英雄名单 {tier} 普通组={normal_rows} 选中={ordered[:1]}"
+                    + (f" 出局={'；'.join(reasons)}" if reasons else "")
+                )
+            self.machine.filter_note = (
+                f"白名单优先组={white_rows} 普通组={normal_rows}"
+                if white_rows
+                else "无白名单命中，按常规挑选"
+            )
+            if not ordered and safe:
+                self._hero_filter_empty_streak += 1
+                if self._hero_filter_empty_streak >= self._HERO_FILTER_MAX_EMPTY_PAGES:
+                    raise NoEligibleOpponent(
+                        f"连续{self._hero_filter_empty_streak}页可挑战的对手都被黑名单否掉"
+                    )
+            else:
+                self._hero_filter_empty_streak = 0
+            cache["screen"] = screen.copy()
+            cache["kept"] = ordered
+            return ordered
+
+        self.machine.opponent_filter = filter_opponents
 
     # ---- 基类钩子：竞技场口径 ----
 
@@ -1616,7 +2052,21 @@ class ArenaRunner(TransactionalRunnerBase):
             # （唯一差别是这一帧多调了一次 ``free_refresh_confirm`` —— 纯匹配计算、
             #  无副作用；它本来在下面也会被调，属提前而非新增。）
             refresh_confirm = self.machine.free_refresh_confirm(screen)
-            signature = "free-refresh" if refresh_confirm is not None else "other"
+            using_paid = False
+            if (
+                refresh_confirm is None
+                and self.refresh_mode == "gold"
+                and self.machine.gold_refresh_count < self.max_gold_refreshes
+            ):
+                paid_confirm = self.machine.paid_refresh_confirm(screen)
+                if paid_confirm is not None:
+                    refresh_confirm = paid_confirm
+                    using_paid = True
+            signature = (
+                "paid-refresh" if using_paid
+                else "free-refresh" if refresh_confirm is not None
+                else "other"
+            )
             confirm_is_stable = refresh_confirm_stable.update(signature)
             safe_list = (
                 (refresh_confirm is None or not self.machine.pc_rules)
@@ -1660,10 +2110,13 @@ class ArenaRunner(TransactionalRunnerBase):
             if confirm_is_stable and refresh_confirm is not None:
                 if refresh_confirm_clicks >= 4:
                     return False
+                if using_paid:
+                    self.machine.gold_refresh_count += 1
                 refresh_confirm_clicks += 1
                 self.runtime.log(
-                    "模式=竞技场 页面=免费刷新确认 "
+                    f"模式=竞技场 页面={'金币' if using_paid else '免费'}刷新确认 "
                     f"动作=confirm-free-refresh 尝试={refresh_confirm_clicks}/4 "
+                    f"金币刷新={self.machine.gold_refresh_count}/{self.max_gold_refreshes} "
                     f"置信度={refresh_confirm.score:.3f}"
                 )
                 self.runtime.click(

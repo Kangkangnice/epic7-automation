@@ -1,0 +1,310 @@
+"""竞技场对手队伍的英雄识别。
+
+用途：判断竞技场对手列表里，每个对手的防守队是否包含用户指定的英雄，
+从而支持「避开某些英雄」的选敌策略。
+
+判据（四个条件必须同时满足，缺一即判未命中）：
+    1. ORB good 匹配数 >= ``MIN_GOOD``
+    2. RANSAC 内点数 >= ``MIN_INLIERS``
+    3. 第二名 good <= 第一名 / ``RIVAL_RATIO``（能证伪：必须甩开同类候选）
+    4. 单应变换后的像素相关 >= ``MIN_WARP_CORR``
+
+不用绝对分数定阈值：不同英雄提取到的特征点数差异可达一倍（实测 468~1049），
+绝对 good 数在英雄之间不可比，必须配相对优势条件。
+
+为什么用 ORB 而不是模板匹配：
+    图鉴头像与竞技场头像存在渲染差异（色调、光照）与尺度差异（150 vs 112）。
+    实测模板匹配 ``TM_CCOEFF_NORMED`` 在这类图上基线过高——库内不同英雄之间
+    相似度中位数就有 0.914，正确答案反而淹没其中。ORB 比的是局部特征点的
+    几何关系，不受整体色调影响。
+
+只加载用户指定要避开的英雄，避免每次都比对全库（385 个），把单次识别
+控制在几十次匹配内。
+"""
+
+from __future__ import annotations
+
+import re
+from dataclasses import dataclass, field
+from pathlib import Path
+
+import cv2
+import numpy as np
+
+# 竞技场对手列表页的头像网格（1982x1132 画布口径，实测标定）
+OPPONENT_COLUMNS = (917, 1045, 1168, 1292)
+OPPONENT_ROWS = (390, 583, 775)
+OPPONENT_RADIUS = 56
+
+MIN_GOOD = 40
+MIN_INLIERS = 30
+RIVAL_RATIO = 3.0
+MIN_WARP_CORR = 0.60
+
+ORB_FEATURES = 1500
+RATIO_TEST = 0.75
+RANSAC_REPROJ = 5.0
+
+
+def _imread(path: Path) -> np.ndarray | None:
+    """读取图片，兼容中文路径（``cv2.imread`` 在 Windows 下不认非 ASCII 路径）。"""
+
+    data = np.fromfile(str(path), dtype=np.uint8)
+    return cv2.imdecode(data, cv2.IMREAD_COLOR)
+
+
+@dataclass
+class HeroHit:
+    """一个待判定头像对某个英雄模板的比对结果。"""
+
+    name: str
+    good: int
+    inliers: int
+    warp_corr: float
+    rival_good: int
+
+    @property
+    def matched(self) -> bool:
+        return (
+            self.good >= MIN_GOOD
+            and self.inliers >= MIN_INLIERS
+            and self.rival_good <= self.good / RIVAL_RATIO
+            and self.warp_corr >= MIN_WARP_CORR
+        )
+
+
+@dataclass
+class OpponentTeam:
+    """一个对手行的识别结果。"""
+
+    index: int
+    heroes: list[str] = field(default_factory=list)
+    unknown: int = 0
+
+    def contains(self, names: set[str]) -> bool:
+        return bool(names & set(self.heroes))
+
+
+class HeroMatcher:
+    """在竞技场列表页识别对手队伍中的指定英雄。"""
+
+    def __init__(self, library_dir: Path, watch_names: list[str]) -> None:
+        self._dir = Path(library_dir)
+        self._watch = [n for n in watch_names if n]
+        self._orb = cv2.ORB_create(
+            nfeatures=ORB_FEATURES, edgeThreshold=5, patchSize=31
+        )
+        self._bf = cv2.BFMatcher(cv2.NORM_HAMMING)
+        self._templates: list[tuple[str, np.ndarray]] = []
+        self._desc: list[tuple[list, np.ndarray | None]] = []
+        self._keypoints: list[tuple[list, np.ndarray | None]] = []
+        self.missing_names: list[str] = []
+        self._load()
+
+    def _load(self) -> None:
+        """只加载被点名的英雄，缺文件的记进 ``missing_names``（不静默跳过）。"""
+
+        for name in self._watch:
+            path = self._dir / f"{name}.png"
+            if not path.exists():
+                self.missing_names.append(name)
+                continue
+            image = _imread(path)
+            if image is None:
+                self.missing_names.append(name)
+                continue
+            keypoints, desc = self._orb.detectAndCompute(image, None)
+            self._templates.append((name, image))
+            self._keypoints.append((keypoints, desc))
+        self._desc = self._keypoints
+
+    @property
+    def loaded_count(self) -> int:
+        return len(self._templates)
+
+    @property
+    def loaded_names(self) -> list[str]:
+        """已成功加载、会在识别时生效的英雄名（缺图的不在其中）。"""
+
+        return [name for name, _ in self._templates]
+
+    def _score(
+        self,
+        target: np.ndarray,
+        target_keypoints,
+        target_desc: np.ndarray | None,
+        index: int,
+    ) -> tuple[int, int, float]:
+        """比对目标头像与第 ``index`` 个模板，返回 (good, 内点, 变换后相关)。
+
+        ⚠️ 目标头像的特征点由调用方算好传进来 —— ``identify_one`` 要拿同一个头像
+        比对**全部**模板，在 ``_score`` 里算会把同一张图的特征点重复算 N 遍
+        （N 个被点名的英雄），识别一页（12 头像 x N 模板）时差 N 倍时间。
+        """
+
+        template = self._templates[index][1]
+        kp_t, desc_t = self._keypoints[index]
+        if desc_t is None or target_desc is None:
+            return 0, 0, 0.0
+        matches = self._bf.knnMatch(target_desc, desc_t, k=2)
+        good = [
+            pair[0]
+            for pair in matches
+            if len(pair) == 2 and pair[0].distance < RATIO_TEST * pair[1].distance
+        ]
+        if len(good) < 8:
+            return len(good), 0, 0.0
+        src = np.float32([target_keypoints[m.queryIdx].pt for m in good])
+        dst = np.float32([kp_t[m.trainIdx].pt for m in good])
+        homography, mask = cv2.findHomography(src, dst, cv2.RANSAC, RANSAC_REPROJ)
+        if homography is None:
+            return len(good), 0, 0.0
+        inliers = int(mask.sum())
+        height, width = target.shape[:2]
+        # homography 是 竞技场->模板 方向；把模板拉回竞技场视角要用逆变换。
+        warped = cv2.warpPerspective(template, np.linalg.inv(homography), (width, height))
+        gray_w = cv2.cvtColor(warped, cv2.COLOR_BGR2GRAY)
+        gray_t = cv2.cvtColor(target, cv2.COLOR_BGR2GRAY)
+        valid = gray_w > 0
+        if valid.sum() < height * width * 0.3:
+            return len(good), inliers, 0.0
+        corr = float(np.corrcoef(gray_w[valid], gray_t[valid])[0, 1])
+        return len(good), inliers, corr
+
+    def identify_one(self, crop: np.ndarray) -> HeroHit | None:
+        """判定单个头像是否命中被点名的英雄。"""
+
+        if not self._templates:
+            return None
+        keypoints, desc = self._orb.detectAndCompute(crop, None)
+        scored: list[tuple[int, int, float, int]] = []
+        for index in range(len(self._templates)):
+            good, inliers, corr = self._score(crop, keypoints, desc, index)
+            scored.append((good, inliers, corr, index))
+        scored.sort(key=lambda item: item[0], reverse=True)
+        best = scored[0]
+        rival = scored[1][0] if len(scored) > 1 else 0
+        name = self._templates[best[3]][0]
+        return HeroHit(name=name, good=best[0], inliers=best[1], warp_corr=best[2], rival_good=rival)
+
+    def identify_screen(self, screen: np.ndarray) -> list[OpponentTeam]:
+        """识别整页（3 个对手 x 4 个英雄）。"""
+
+        teams: list[OpponentTeam] = []
+        for row_index, cy in enumerate(OPPONENT_ROWS):
+            team = OpponentTeam(index=row_index)
+            for cx in OPPONENT_COLUMNS:
+                y0, y1 = cy - OPPONENT_RADIUS, cy + OPPONENT_RADIUS
+                x0, x1 = cx - OPPONENT_RADIUS, cx + OPPONENT_RADIUS
+                if y0 < 0 or x0 < 0 or y1 > screen.shape[0] or x1 > screen.shape[1]:
+                    team.unknown += 1
+                    continue
+                crop = screen[y0:y1, x0:x1]
+                hit = self.identify_one(crop)
+                if hit is None or not hit.matched:
+                    team.unknown += 1
+                    continue
+                team.heroes.append(hit.name)
+            teams.append(team)
+        return teams
+
+
+def library_names(library_dir: Path) -> list[str]:
+    """列出库内可用的英雄名（去掉 ``unknown_*`` 与扩展名）。"""
+
+    directory = Path(library_dir)
+    if not directory.is_dir():
+        return []
+    names = []
+    for path in sorted(directory.glob("*.png")):
+        stem = path.stem
+        if stem.startswith("unknown"):
+            continue
+        if re.search(r"_\d+$", stem):
+            continue
+        names.append(stem)
+    return sorted(names)
+
+
+def default_library_dir() -> Path:
+    """图鉴库随包位置（与本模块同级）。
+
+    图鉴是**游戏内的百科页**渲染，与 PC / 模拟器无关，所以只有这一份，
+    不走 ``templates/pc/`` 那套平台覆盖。打包时由 spec 的 datas 一并收进去。
+    """
+    return Path(__file__).resolve().parent / "templates" / "arena" / "heroes_pokedex"
+
+
+# 一行判定的三个去向。
+#
+# ⚠️ **白名单是「优先打」，不是「只打」**（2026-11-15 用户纠正）。
+# 名单里没命中 ≠ 出局 —— 那只是「这名对手没有特别想打」，回到常规挑法（按积分）。
+# 早期实现按「白名单 = 只打含名单英雄的队伍」写，会导致开了白名单却一个都没撞上时
+# 整页无人可打、只能反复刷新，与用户意图相反。
+TIER_WHITE = "white"
+TIER_NORMAL = "normal"
+TIER_OUT = "out"
+
+
+@dataclass(frozen=True)
+class RowVerdict:
+    """一行对手的筛选结论：进白名单优先组 / 进普通组 / 出局，以及理由。
+
+    ``white_hits`` 是白名单命中数，白名单组内**先比它、再比积分**
+    （用户 2026-11-15 拍板：命中两名白名单英雄的队比命中一名的更想打）。
+    """
+
+    tier: str
+    reason: str
+    white_hits: int = 0
+
+    @property
+    def keep(self) -> bool:
+        return self.tier != TIER_OUT
+
+
+def judge_row(
+    team: "OpponentTeam",
+    *,
+    blacklist: set[str],
+    whitelist: set[str],
+    conflict: str,
+) -> RowVerdict:
+    """单行结论。纯函数：只吃识别结果与两份名单，不看画面。
+
+    口径（2026-11-15 用户拍板）：
+
+    1. **黑名单命中就出局**，除非白名单命中更多（下一行）。
+    2. **白名单命中数量 > 黑名单命中数量 ⇒ 进「白名单优先组」**。
+       用户原话：「一个黑名单、两个白名单，那就按白名单走」。
+    3. **数量相等且都 ≥1 ⇒ 按 ``conflict``**：``blacklist``（默认）出局、
+       ``whitelist`` 进白名单优先组。用户原话：「相等的时候才优先走黑名单」。
+    4. **只命中白名单 ⇒ 白名单优先组**；**两边都没命中 ⇒ 普通组**（不是出局）。
+    5. 认不出的头像不计入任何一边；四个全认不出本身就是「两边都没命中」，
+       进普通组 —— 白名单只是偏好，没有理由因为认不出就把它排除。
+
+    数量按**不同英雄名**计（``set`` 交集大小）：同一名英雄重复出现只算一次，
+    上限 4（一行只有四个槽位）。
+    """
+
+    heroes = set(team.heroes)
+    black = len(heroes & blacklist)
+    white = len(heroes & whitelist)
+    if black and white:
+        if white > black:
+            return RowVerdict(TIER_WHITE, f"白多（白{white}／黑{black}）", white)
+        if white < black:
+            return RowVerdict(TIER_OUT, f"黑多（黑{black}／白{white}）", white)
+        if conflict == "whitelist":
+            return RowVerdict(TIER_WHITE, f"相等（{white}／{black}），按设置照打", white)
+        return RowVerdict(TIER_OUT, f"相等（{black}／{white}），按设置跳过", white)
+    if black:
+        return RowVerdict(
+            TIER_OUT, "命中黑名单：" + "、".join(sorted(heroes & blacklist)), white
+        )
+    if white:
+        return RowVerdict(
+            TIER_WHITE, "命中白名单：" + "、".join(sorted(heroes & whitelist)), white
+        )
+    return RowVerdict(TIER_NORMAL, "两边都没命中")
+

@@ -1,5 +1,5 @@
 import inspect
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Callable, Mapping, Optional
 
@@ -127,6 +127,22 @@ from auto_game_unified.games.epic7.achievement import (
     AchievementStateMachine,
     build_achievement_templates,
     detect_achievement_resume_point,
+)
+from auto_game_unified.games.epic7.pet_adoption import (
+    PET_HOUSE_PAGE,
+    PetAdoptionRunner,
+    PetAdoptionState,
+    PetAdoptionStateMachine,
+    build_pet_adoption_templates,
+    detect_resume_point as detect_pet_adoption_resume_point,
+)
+from auto_game_unified.games.epic7.penguin_purchase import (
+    DEFAULT_CYCLES as PENGUIN_DEFAULT_CYCLES,
+    PenguinPage,
+    PenguinPurchaseRunner,
+    PenguinPurchaseStateMachine,
+    build_penguin_purchase_templates,
+    detect_resume_point as detect_penguin_purchase_resume_point,
 )
 from auto_game_unified.games.epic7.moonlight_theater import (
     MoonlightRunner,
@@ -424,6 +440,20 @@ def _build_achievement(template_root: Path, state: str) -> AchievementStateMachi
     )
 
 
+def _build_pet_adoption(template_root: Path, state: str) -> PetAdoptionStateMachine:
+    # 与成就同构：模板在 templates/pet_adoption，工厂吃总根由构建器自己拼。
+    return PetAdoptionStateMachine(
+        build_pet_adoption_templates(template_root),
+        initial_state=PetAdoptionState(state),
+    )
+
+
+def _build_penguin_purchase(template_root: Path, state: str) -> PenguinPurchaseStateMachine:
+    # 模板在 templates/penguin_purchase，另复用 templates/sanctuary/forest_row.png。
+    # 状态机每帧重判页面，default_state 只用于加载期校验，不拨状态。
+    return PenguinPurchaseStateMachine(build_penguin_purchase_templates(template_root))
+
+
 def _build_story_star(template_root: Path, state: str) -> StoryStarStateMachine:
     # 与成就同一种口径：工厂吃**总根**，由 ``build_story_star_templates`` 自己拼
     # ``story_star/`` 与 ``story/``（战斗链路复用主线那套模板）。
@@ -488,17 +518,102 @@ def _preflight_community(mode: str, dry_run: bool) -> Optional[str]:
 def _arena_runner_options(
     root: Path, dry_run: bool, params: Mapping[str, Any]
 ) -> dict[str, Any]:
-    """竞技场实跑才需要的落盘位置（干跑一个盘都不写）。
+    """把竞技场可选项翻译成 Runner 构造参数。
 
-    ``params`` 现在没有消费者 —— 竞技场还没有任何可调参数。签名先接上，
-    等它真要加（打不打 NPC / 输几场换人）时只改这个函数，不用动上层。
+    键名与默认值来自 ``games/epic7/route_options.py``：干跑、命令行单跑、
+    旧会话存档缺字段三条路径都走同一份清洗，不会出现界面与执行各读一套。
     """
-    del params  # 显式声明「暂时不用」，免得下一个人以为漏读了
-    if dry_run:
-        return {}
+    from auto_game_unified.games.epic7.route_options import clean
+
+    values = clean("arena", params)
+    options: dict[str, Any] = {
+        "refresh_mode": values["refresh_mode"],
+        "max_gold_refreshes": values["max_gold_refreshes"],
+        "ticket_mode": values["ticket_mode"],
+        "max_skystone_purchases": values["max_skystone_purchases"],
+        "opponent_preference": values["opponent_preference"],
+        "hero_blacklist": values["hero_blacklist"],
+        "hero_whitelist": values["hero_whitelist"],
+        "hero_list_conflict": values["hero_list_conflict"],
+    }
+    if not dry_run:
+        # 买票「今天买过没有」的记账文件（干跑一个盘都不写）。
+        options["purchase_stamp_path"] = (
+            root / "runtime_logs" / "arena_ticket_purchase.txt"
+        )
+    return options
+
+
+def _stamina_runner_options(mode: str) -> Callable[..., dict[str, Any]]:
+    """把「是否使用生命之叶 / 用几片」翻译成 Runner 构造参数。
+
+    六条消耗体力的路线共用一份口径；``0`` 在上限里表示不限，这里转成 ``None``，
+    与 ``StaminaBudget`` 的语义一致。
+    """
+
+    def translate(
+        root: Path, dry_run: bool, params: Mapping[str, Any]
+    ) -> dict[str, Any]:
+        from auto_game_unified.games.epic7.route_options import clean
+
+        values = clean(mode, params)
+        options: dict[str, Any] = {
+            "stamina_enabled": values["stamina_enabled"] == "yes",
+            "stamina_limit": values["stamina_limit"] or None,
+        }
+        if mode == "story":
+            options["repeat_after_last"] = values["repeat_after_last"] == "yes"
+        return options
+
+    return translate
+
+
+def _shop_refresh_runner_options(
+    root: Path, dry_run: bool, params: Mapping[str, Any]
+) -> dict[str, Any]:
+    """刷书签的友情点数开关与上限；誓约、神秘固定购入。"""
+    from auto_game_unified.games.epic7.route_options import clean
+
+    values = clean("shop_refresh", params)
     return {
-        # 买票「今天买过没有」的记账文件。
-        "purchase_stamp_path": root / "runtime_logs" / "arena_ticket_purchase.txt",
+        "friendship_enabled": values["friendship_enabled"] == "yes",
+        "friendship_limit": values["friendship_limit"],
+    }
+
+
+def _pet_adoption_runner_options(
+    root: Path, dry_run: bool, params: Mapping[str, Any]
+) -> dict[str, Any]:
+    """宠物商店用品的两个独立开关；免费领养不设开关，每天固定执行。"""
+    from auto_game_unified.games.epic7.route_options import clean
+
+    values = clean("pet_adoption", params)
+    return {
+        "buy_food": values["buy_food"] == "yes",
+        "buy_toys": values["buy_toys"] == "yes",
+    }
+
+
+def _labyrinth_runner_options(
+    root: Path, dry_run: bool, params: Mapping[str, Any]
+) -> dict[str, Any]:
+    """迷宫的友情点数开关；强化石与两类书签固定购入。"""
+    from auto_game_unified.games.epic7.route_options import clean
+
+    values = clean("labyrinth_stone", params)
+    return {"buy_friendship": values["buy_friendship"] == "yes"}
+
+
+def _community_runner_options(
+    root: Path, dry_run: bool, params: Mapping[str, Any]
+) -> dict[str, Any]:
+    """社区签到的兑换清单开关：行动力与两类强化石各自独立。"""
+    from auto_game_unified.games.epic7.route_options import clean
+
+    values = clean("community", params)
+    return {
+        "redeem_energy": values["redeem_energy"] == "yes",
+        "redeem_stone": values["redeem_stone"] == "yes",
     }
 
 
@@ -714,8 +829,9 @@ MODE_SPECS = {
         runner_type=TowerRunner,
         # ⚠️ 默认 **25 层**（用户 2026-10-08 拍板）：月塔一个赛季总共约 25 层，
         # 「默认打满」就是连打 25 层。每层耗 **15 点体力**（实测逐层 -15），
-        # 所以 25 层不是「次数」而是「打满整座塔」—— 体力不够时走
-        # `StaminaExhausted`（退出码 2），**不补充体力、不买叶子**。
+        # 所以 25 层不是「次数」而是「打满整座塔」。
+        # 体力不足时按路线选项补充（默认使用、不限），关闭或达到上限后走
+        # `StaminaShortage`（退出码 2，正常业务退出）。
         default_cycles=25,
         # 次数可改：用户想只打几层清个体力也合理。
         cycles_editable=True,
@@ -1213,6 +1329,73 @@ MODE_SPECS = {
             ready_note="成就页已就绪",
         ),
     ),
+    # 2026-11-15：宠物领养（模拟器实机走查；PC 未放行）。
+    "pet_adoption": ModeSpec(
+        name="pet_adoption",
+        label="宠物领养",
+        # 导航停在宠物小屋，第一步是点底部「领养」确认当日免费额度。
+        default_state=PetAdoptionState.HOUSE.value,
+        # 终态 FINISHED 不是一页画面，不给当起始状态。
+        states=frozenset(
+            state.value
+            for state in PetAdoptionState
+            if state is not PetAdoptionState.FINISHED
+        ),
+        build_machine=_build_pet_adoption,
+        runner_type=PetAdoptionRunner,
+        # 每天免费领养一次、商店用品按周刷新，跑一遍就够，不给用户选次数。
+        cycles_editable=False,
+        # 接力：停在宠物小屋 / 领养弹窗 / 宠物商店都能就地接管。
+        resume_probe=_resume_probe(detect_pet_adoption_resume_point),
+        # 导航链：大厅 → 快捷菜单 → 第 2 行中间「宠物小屋」。
+        navigation_plan=NavigationPlan(
+            mode="pet_adoption",
+            steps=(
+                NavigationStep(
+                    "lobby", ("quick_menu",), "lobby_quick_menu_button", "打开快捷菜单"
+                ),
+                NavigationStep(
+                    "quick_menu", (PET_HOUSE_PAGE,), "pet_house_entry", "进入宠物小屋"
+                ),
+            ),
+            resume_entries=frozenset({PET_HOUSE_PAGE}),
+            resume_action="跳过回大厅与进入宠物小屋",
+            resume_state_done="已在宠物小屋",
+            ready_note="宠物小屋已就绪",
+        ),
+    ),
+    # 2026-11-15：企鹅批量购买（模拟器实机闭环；PC 未放行）。
+    "penguin_purchase": ModeSpec(
+        name="penguin_purchase",
+        label="企鹅批量购买",
+        default_state=PenguinPage.HOME.value,
+        states=frozenset(
+            page.value
+            for page in PenguinPage
+            if page not in (PenguinPage.UNKNOWN, PenguinPage.CURRENCY_SHORT)
+        ),
+        build_machine=_build_penguin_purchase,
+        runner_type=PenguinPurchaseRunner,
+        # 一轮 = 50 只，默认 10 轮 = 500 只；次数框表达的是轮数，可调整。
+        default_cycles=PENGUIN_DEFAULT_CYCLES,
+        cycles_editable=True,
+        # 接力只落在不会扣费的圣域主页 / 精灵之森 / 成长祭坛。
+        resume_probe=_resume_probe(detect_penguin_purchase_resume_point),
+        # 前半段完全沿用圣域收菜的导航链：大厅 → 圣域主页。
+        navigation_plan=NavigationPlan(
+            mode="penguin_purchase",
+            steps=(
+                NavigationStep(
+                    "lobby", (SANCTUARY_HOME_PAGE,), "lobby_sanctuary", "进入圣域"
+                ),
+            ),
+            resume_entries=frozenset({SANCTUARY_HOME_PAGE}),
+            resume_log_mode="企鹅批量购买",
+            resume_action="跳过回大厅与进入圣域",
+            resume_state_done="已在圣域主页",
+            ready_note="圣域主页已就绪",
+        ),
+    ),
     # 2026-11-09：主线补星（PC 端；素材只有 PC，业务逻辑与模拟器共通）。
     "story_star": ModeSpec(
         name="story_star",
@@ -1351,6 +1534,45 @@ MODE_SPECS = {
             ),
     ),
 }
+
+# 六条消耗体力的路线：把「是否使用生命之叶 / 用几片」挂到执行层。
+# 统一在这里补挂，避免在 MODE_SPECS 里逐条抄同一段翻译函数。
+for _stamina_mode in (
+    "story",
+    "story_star",
+    "fodder",
+    "world_boss",
+    "side_story",
+    "tower",
+):
+    MODE_SPECS[_stamina_mode] = replace(
+        MODE_SPECS[_stamina_mode],
+        runner_options=_stamina_runner_options(_stamina_mode),
+    )
+
+# 刷书签：友情点数买不买、买几个交给使用者；誓约与神秘固定购入。
+MODE_SPECS["shop_refresh"] = replace(
+    MODE_SPECS["shop_refresh"],
+    runner_options=_shop_refresh_runner_options,
+)
+
+# 迷宫：友情点数买不买交给使用者；强化石与两类书签固定购入。
+MODE_SPECS["labyrinth_stone"] = replace(
+    MODE_SPECS["labyrinth_stone"],
+    runner_options=_labyrinth_runner_options,
+)
+
+# 社区签到：兑换行动力与两类强化石各自独立开关。
+MODE_SPECS["community"] = replace(
+    MODE_SPECS["community"],
+    runner_options=_community_runner_options,
+)
+
+# 宠物领养：一般饲料与宠物玩具各自独立开关，默认都不买。
+MODE_SPECS["pet_adoption"] = replace(
+    MODE_SPECS["pet_adoption"],
+    runner_options=_pet_adoption_runner_options,
+)
 
 # 中文名的**唯一来源**。``main`` / ``navigation`` 直接用它；桌面助手的
 # 菜单与面板也从这里取（见 ``desktop/catalog.py``）。⚠️ 别在别处再抄一份名字表 —— 抄了就会漂移，

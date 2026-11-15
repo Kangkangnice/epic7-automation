@@ -63,6 +63,10 @@ RESOURCE_ROUTES = (
     "knights_donation",
     "world_boss",
     "labyrinth_stone",
+    # 宠物领养券（领养按钮点错即消耗）、宠物用品购入开关开启后花货币
+    "pet_adoption",
+    # 购入 50 只企鹅消耗 5,100 红叶，不可撤销
+    "penguin_purchase",
 )
 
 BLACK = np.zeros((1132, 1982, 3), dtype=np.uint8)

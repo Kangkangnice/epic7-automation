@@ -46,6 +46,7 @@ from auto_game_unified.games.epic7.global_popups import (  # noqa: F401
     find_friendship_points_popup_close,
 )
 from auto_game_unified.games.epic7.stamina import (
+    StaminaBudget,
     load_stamina_templates,
     next_stamina_decision,
 )
@@ -529,6 +530,10 @@ class StoryStateMachine:
         self.completed_cycles = 0
         self.stamina_replenished = 0
         self.stamina_replenish_max: int | None = None
+        # 体力预算由 Runner 按路线选项注入；默认「使用、不限」= 改动前行为。
+        self.stamina_budget = StaminaBudget()
+        # 无后续关卡时是否执行「重新进行」；默认重复 = 改动前行为。
+        self.repeat_after_last = True
         self._stamina_material_clicked = False
         self._stamina_purchase_pending = False
         self._confirmed_page = ""
@@ -846,15 +851,12 @@ class StoryStateMachine:
             self._stamina_material_clicked = False
             if self._stamina_purchase_pending:
                 self.stamina_replenished += 1
+                self.stamina_budget.consume()
                 self._stamina_purchase_pending = False
             return None
-        if (
-            self.stamina_replenish_max is not None
-            and self.stamina_replenished >= self.stamina_replenish_max
-        ):
+        if self.stamina_budget.exhausted:
             raise StaminaExhausted(
-                f"生命之叶已补充{self.stamina_replenished}次"
-                f"（上限{self.stamina_replenish_max}次），停止运行"
+                f"生命之叶已补充{self.stamina_replenished}次，按设置停止运行"
             )
         if (
             self.templates.stamina_material is None
@@ -1185,6 +1187,10 @@ class StoryStateMachine:
         # 再选队、开战 —— 所以这里按「回到关卡入口 / 助手选择」声明契约。
         match = self._locate(screen, "retry_stage")
         if match is not None:
+            if not self.repeat_after_last:
+                raise StaminaExhausted(
+                    "本关没有下一关，按设置不重复同一关"
+                )
             if self._confirmed_page != "无法前往下一关":
                 # 这一屏本身 = 一局刚打完。只记一次：点歪重试（尝试 2/4、3/4）
                 # 时同一屏还会再判一次，不许把一轮算成两轮。
@@ -1351,6 +1357,9 @@ class StoryRunner(ModeRunnerBase):
         poll_seconds: float = 1.0,
         recovery_gate: RecoveryGate | None = None,
         battle_supervisor: BattleSupervisor | None = None,
+        stamina_enabled: bool = True,
+        stamina_limit: int | None = None,
+        repeat_after_last: bool = True,
     ) -> None:
         super().__init__(
             machine,
@@ -1359,6 +1368,11 @@ class StoryRunner(ModeRunnerBase):
             poll_seconds=poll_seconds,
             recovery_gate=recovery_gate,
         )
+        # 路线选项注入状态机：默认值与改动前完全一致。
+        machine.stamina_budget = StaminaBudget(
+            enabled=stamina_enabled, limit=stamina_limit
+        )
+        machine.repeat_after_last = repeat_after_last
         self.battle_supervisor = battle_supervisor or BattleSupervisor(
             runtime,
             self.recovery_gate,

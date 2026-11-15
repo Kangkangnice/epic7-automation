@@ -89,6 +89,7 @@ DOC_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("games/epic7/moonlight_theater.py", ("docs/maintenance/moonlight_theater.md",)),
     ("games/epic7/sanctuary.py", ("docs/maintenance/sanctuary.md",)),
     ("games/epic7/achievement.py", ("docs/maintenance/achievement.md",)),
+    ("games/epic7/pet_adoption.py", ("docs/maintenance/pet_adoption.md",)),
     ("games/epic7/", ("docs/STATUS.md",)),
     # PC 移植这条线（2026-11-08 补）：主文档自称「PC 结论唯一权威」，但此前
     # DOC_RULES 里 0 条指向它 —— 改了窗口层、补了 pc 图都不会提醒复审那份 666 行文档。

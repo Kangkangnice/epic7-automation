@@ -2287,6 +2287,8 @@ class SideStoryRunner(StoryRunner):
         poll_seconds: float = 1.0,
         recovery_gate: RecoveryGate | None = None,
         battle_supervisor: BattleSupervisor | None = None,
+        stamina_enabled: bool = True,
+        stamina_limit: int | None = None,
     ) -> None:
         super().__init__(
             machine,
@@ -2295,6 +2297,8 @@ class SideStoryRunner(StoryRunner):
             poll_seconds=poll_seconds,
             recovery_gate=recovery_gate,
             battle_supervisor=battle_supervisor,
+            stamina_enabled=stamina_enabled,
+            stamina_limit=stamina_limit,
         )
         if battle_supervisor is None:
             # 只换掉名字：兵线/自理逻辑原样用主线的，只是日志与诊断目录该按本路线落。
