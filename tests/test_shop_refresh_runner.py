@@ -274,17 +274,18 @@ def test_bookmark_note_adds_initial_and_refreshed_purchases():
         initial_mystic=1, paid_mystic=1,
     )
 
-    assert stats.bookmark_note() == "购入书签 5 张（誓约 3 / 神秘 2）"
+    # 2026-11-16 用户要求：三类数量要齐（补上友情），并带刷新次数与钻石花费。
+    assert stats.bookmark_note() == "购入 5 件（誓约 3 / 神秘 2 / 友情 0）｜刷新 0 次 · 钻石 0"
 
 
 def test_bookmark_note_when_nothing_was_bought():
     stats = ShopRunStats(target_refreshes=0)
 
-    assert stats.bookmark_note() == "本轮未购入书签"
+    assert stats.bookmark_note() == "本轮未购入｜刷新 0 次 · 钻石 0"
 
 
-def test_bookmark_note_never_reports_gold_or_skystone():
-    """结算只报收获；金币、天空石、刷新次数留在过程日志里。"""
+def test_bookmark_note_reports_skystone_but_never_gold():
+    """结算报收获 + 钻石花费（2026-11-16 用户要求），金币仍留在过程日志里。"""
     stats = ShopRunStats(
         target_refreshes=3,
         initial_covenant=1,
@@ -295,8 +296,8 @@ def test_bookmark_note_never_reports_gold_or_skystone():
     note = stats.bookmark_note()
 
     assert "金币" not in note
-    assert "钻石" not in note
-    assert "刷新" not in note
+    assert "钻石" in note and "刷新 3 次" in note
+    assert note.endswith(f"钻石 {stats.skystone_spent}")
 
 
 def test_route_note_stays_empty_on_a_dry_run():

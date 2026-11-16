@@ -147,18 +147,31 @@ class ShopRunStats:
         )
 
     def bookmark_note(self) -> str:
-        """给结算用的一句话收获：买到哪两类书签、各几张。
+        """给结算用的一句话收获：三类各几件，外加刷新花掉的钻石。
 
-        只报收获。金币 / 天空石 / 刷新次数 / 命中率留在 ``summary()`` 的过程日志里，
-        不进每日任务结算（2026-11-12 用户口径：结算不做收支账）。
-        开局那一批和刷新后买的要**加起来**，否则只报了一半。
+        ⚠️ 口径变过两次，改之前先读：
+
+        - 2026-11-12 用户口径「结算只报收获、不做收支账」⇒ 原来只报誓约 / 神秘两张，
+          金币与命中率留在 ``summary()`` 的过程日志里。
+        - 2026-11-16 用户补了两条：**钻石花费要显示**（这是本路线唯一的硬支出），
+          **三类数量要齐**（原来漏了友情点数）。
+
+        所以现在这一行 = 三类件数 + 刷新次数 + 钻石，仍然不报金币。
         """
+
         covenant = self.initial_covenant + self.paid_covenant
         mystic = self.initial_mystic + self.paid_mystic
-        total = covenant + mystic
-        if not total:
-            return "本轮未购入书签"
-        return f"购入书签 {total} 张（誓约 {covenant} / 神秘 {mystic}）"
+        friendship = self.friendship_bought
+        total = covenant + mystic + friendship
+        head = (
+            f"购入 {total} 件（誓约 {covenant} / 神秘 {mystic} / 友情 {friendship}）"
+            if total
+            else "本轮未购入"
+        )
+        return (
+            f"{head}｜刷新 {self.completed_refreshes} 次 · "
+            f"钻石 {self.skystone_spent}"
+        )
 
 
 @dataclass
