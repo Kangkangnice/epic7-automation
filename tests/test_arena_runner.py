@@ -435,6 +435,24 @@ class NpcTabTests(unittest.TestCase):
             "switch-to-challenge-tab", machine.next_action(fixture("npc_list")).name
         )
 
+    def test_the_machine_records_which_tab_the_round_came_from(self):
+        """结算行要写清打的是玩家还是 NPC（用户 2026-11-16 要求）。"""
+        npc_machine = _npc_machine()
+        npc_machine.next_action(fixture("npc_list"))          # 先试切页签
+        npc_machine.next_action(fixture("npc_list"))          # 切不过去 ⇒ 按 NPC 页选行
+
+        normal_machine = _npc_machine()
+        normal_machine.next_action(fixture("list"))
+
+        self.assertEqual({"npc"}, npc_machine.battle_kinds)
+        self.assertEqual({"player"}, normal_machine.battle_kinds)
+
+    def test_preview_does_not_pollute_the_battle_kinds(self):
+        machine = _npc_machine()
+        machine.preview(fixture("list"))
+
+        self.assertEqual(set(), machine.battle_kinds)
+
     def test_missing_template_keeps_the_old_behaviour(self):
         """没采到 NPC 标题图时恒当「不在 NPC 页」，行为与旧版一致。"""
         templates = build_templates(TEMPLATES)
