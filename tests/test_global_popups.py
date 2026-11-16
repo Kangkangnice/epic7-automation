@@ -2309,6 +2309,36 @@ def test_weekly_rank_select_popup_points_at_the_diamond_card_first():
     assert 620 <= match.center[1] <= 655, match.center
 
 
+def test_weekly_rank_select_popup_can_be_switched_to_the_mystic_card():
+    """2026-11-16 用户要求：周结算奖励可选，改选神秘书签时点右侧那张卡。
+
+    默认仍是钻石（上一条钉着），这条只验"换了偏好就点对地方" ——
+    一周只能领一次，点错等于白丢一张。
+    """
+    popup = _arena_screen("weekly_rank_select_popup.png")
+    templates = load_weekly_rank_select_templates(NAVIGATION_TEMPLATES)
+
+    choice = find_weekly_rank_select_action(popup, templates, reward="mystic")
+
+    assert choice is not None
+    match, action = choice
+    assert action == "select-weekly-rank-mystic"
+    # 右侧神秘奖励卡整块是 (1021,568,127,127)，中心约 (1084,631)。
+    assert 1060 <= match.center[0] <= 1105, match.center
+    assert 610 <= match.center[1] <= 655, match.center
+
+
+def test_weekly_rank_select_popup_never_falls_back_to_the_other_card():
+    """要的那张卡认不出来时不点另一张：一周一次，领错就没了。"""
+    popup = _arena_screen("weekly_rank_select_popup.png")
+    templates = load_weekly_rank_select_templates(NAVIGATION_TEMPLATES)
+    broken = popup.copy()
+    broken[535:735, 1000:1160] = 0     # 抹掉右侧神秘卡
+
+    assert find_weekly_rank_select_action(broken, templates, reward="mystic") is None
+    assert find_weekly_rank_select_action(broken, templates) is not None
+
+
 def test_weekly_rank_select_popup_claims_only_after_the_button_lights_up():
     popup = _arena_screen("weekly_rank_select_popup.png")
     lit = _lit_claim_confirm(popup)

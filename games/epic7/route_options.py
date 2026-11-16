@@ -56,6 +56,17 @@ _STAMINA_OPTIONS = (
 ROUTE_OPTIONS: dict[str, tuple[RouteOption, ...]] = {
     "arena": (
         RouteOption(
+            key="weekly_reward",
+            label="周结算奖励选哪个",
+            kind="choice",
+            default="diamond",
+            note="每周结算后进竞技场会弹「每周排名选择奖励」，二选一。默认领钻石（800 天空石），也可以改领神秘书签。",
+            choices=(
+                ("diamond", "钻石（800）"),
+                ("mystic", "神秘书签"),
+            ),
+        ),
+        RouteOption(
             key="opponent_preference",
             label="对手偏好",
             kind="choice",
