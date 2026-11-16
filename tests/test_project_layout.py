@@ -111,6 +111,8 @@ class ProjectLayoutTests(unittest.TestCase):
     def test_epic7_arena_fixture_set_exists(self):
         expected = {
             "list.png",
+            # 2026-11-16：NPC 对战页签（与「交战对手」是同一页的两个列表）。
+            "npc_list.png",
             # 2026-11-09 模拟器：进竞技场时弹出的「新的每周排名开始！」覆盖层。
             # 它不在守卫清单里 ⇒ 导航只等 106 秒后报「转场失败」。
             "weekly_rank_start_popup.png",
