@@ -64,6 +64,11 @@ def machine(templates, **kwargs) -> PetAdoptionStateMachine:
         ("shop_bottom_still", PetAdoptionState.SHOP),
         # 两轮连跑时列表停在略有不同的滚动位置（2026-11-15 实跑超时帧）。
         ("shop_bottom_scrolled", PetAdoptionState.SHOP),
+        # 2026-11-16 额度刷新后采到的亮态与购买确认框。
+        ("shop_bottom_bright", PetAdoptionState.SHOP),
+        ("purchase_modal", PetAdoptionState.PURCHASE),
+        ("adopt_popup_free", PetAdoptionState.ADOPT_POPUP),
+        ("adopt_result", PetAdoptionState.ADOPT_RESULT),
     ],
 )
 def test_recognizes_its_own_pages(templates, fixture, expected):
@@ -156,16 +161,26 @@ def test_preview_does_not_advance_progress(templates):
 
 
 def test_unknown_adopt_popup_stops_without_any_click(templates):
-    """认不出免费 / 付费两态：安全停止，绝不点任何领养按钮。
-
-    把券图标涂黑，模拟明天免费额度刷新后（免费标记尚未登记）的画面。
-    """
+    """三条证据互相矛盾（只抹掉券图标）：安全停止，绝不点任何领养按钮。"""
     frame = load("adopt_popup_paid").copy()
     frame[935:1003, 565:627] = 0
     m = machine(templates)
-    with pytest.raises(UnrecognizedScreen, match="免费领养判据尚未登记"):
+    with pytest.raises(UnrecognizedScreen, match="三条证据对不上"):
         m.next_action(frame)
     assert m.adopt_checked is False
+
+
+def test_mixed_free_evidence_stops_instead_of_guessing(templates):
+    """只认出「免费」但提示条没了 ⇒ 证据不齐，安全停止（不点免费也不点关闭）。
+
+    这条守的是"宁可少领一次，也不在两种解释之间猜"：免费窗口一天只有一次，
+    猜错就是花券或者白丢。
+    """
+    frame = load("adopt_popup_free").copy()
+    frame[868:920, 700:866] = 0
+    m = machine(templates)
+    with pytest.raises(UnrecognizedScreen, match="三条证据对不上"):
+        m.next_action(frame)
 
 
 def test_black_frame_does_not_produce_a_click(templates):
@@ -180,18 +195,118 @@ def test_paid_state_never_clicks_a_ticket_button(templates):
     action = m.next_action(load("adopt_popup_paid"))
     assert action.name == "close-adopt"
     assert action.point == (992, 1090)
-    assert "不碰任何领养按钮" in action.reason
+    assert "只点底部「点击关闭」" in action.reason
 
 
-def test_buy_options_enabled_on_bright_rows_stops_safely(templates):
-    """开启购入但出现亮态（今天未采到判据）：停下留证，不猜坐标。"""
-    frame = load("shop_bottom").copy()
-    # 抹掉三行冷却文字，模拟「有可购买行」。
-    for top in (540, 760, 980):
-        frame[top : top + 60, 730:1030] = 0
+def test_free_state_adopts_without_spending_anything(templates):
+    """免费态（券图标也在）：点的是「免费」二字，目标是领养结果，不花券。"""
+    m = machine(templates)
+    action = m.next_action(load("adopt_popup_free"))
+    assert action.name == "adopt-free"
+    assert action.target_pages == ("领养结果",)
+    assert action.point == (640, 965)
+    assert m.adopt_checked is True
+
+
+def test_result_popup_only_closes_never_adopts_again(templates):
+    """结果弹窗只点「点击关闭」；右下「再领养一次」要花券，坐标不在动作里。"""
+    m = machine(templates)
+    action = m.next_action(load("adopt_result"))
+    assert action.name == "dismiss-result"
+    # 关掉结果弹窗露出的是下面的领养弹窗（2026-11-16 实跑实测），不是小屋。
+    assert action.target_pages == ("领养宠物",)
+    assert action.point == (992, 1090)
+    assert "再领养一次" in action.reason
+
+
+def test_bright_row_opens_the_purchase_dialog(templates):
+    """亮态 + 开饲料购入 ⇒ 先开确认框；落点由商品名派生，且在画布内。"""
+    m = machine(templates, buy_food=True)
+    action = m.next_action(load("shop_bottom_bright"))
+    assert action.name == "open-purchase"
+    assert action.target_pages == ("购买确认",)
+    assert 0 <= action.point[0] < 1982 and 0 <= action.point[1] < 1132
+    assert "一般饲料" in action.reason
+    assert m.pending_buy is not None and m.pending_buy[0] == "food"
+
+
+def test_purchase_dialog_confirms_on_the_green_button(templates):
+    """确认框里点绿「购买」，点完记下这一轮已经买过饲料、清掉待确认标记。"""
+    m = machine(templates, buy_food=True)
+    m.pending_buy = ("food", 587)
+    action = m.next_action(load("purchase_modal"))
+    assert action.name == "confirm-purchase"
+    assert action.target_pages == ("宠物商店",)
+    # 落点必须在绿色按钮里（实测按钮 x 880..1370 / y 885..985，「购买」两字在 1253 一带）。
+    assert 1180 <= action.point[0] <= 1360 and 900 <= action.point[1] <= 980, action.point
+    assert m.bought_rows == [("food", 587)]
+    assert m.pending_buy is None
+
+
+def test_purchase_dialog_without_a_pending_buy_stops(templates):
+    """不是本路线发起的确认框：两颗按钮都不许点。"""
+    m = machine(templates)
+    with pytest.raises(UnrecognizedScreen, match="并没有发起购买"):
+        m.next_action(load("purchase_modal"))
+
+
+def test_grey_rows_never_buy_even_with_options_on(templates):
+    """三行全灰（0/3、0/1、0/1）⇒ 开了购入也不买，正常收工。"""
     m = machine(templates, buy_food=True, buy_toys=True)
-    with pytest.raises(UnrecognizedScreen, match="亮态购买判据尚未登记"):
-        m.next_action(frame)
+    assert m.next_action(load("shop_bottom")) is None
+    assert m.completed_cycles == 1
+
+
+def test_switches_off_means_no_click_on_bright_rows(templates):
+    """亮态但两个开关都关着 ⇒ 一个点击都不发。"""
+    m = machine(templates)
+    assert m.next_action(load("shop_bottom_bright")) is None
+    assert m.pending_buy is None
+
+
+def test_same_row_is_never_bought_twice_in_one_cycle(templates):
+    """同一行一轮只买一次：饲料买完仍是 2/3 亮态，不许在同一行回购。"""
+    m = machine(templates, buy_food=True)
+    m.bought_rows.append(("food", 587))
+    assert m.next_action(load("shop_bottom_bright")) is None
+
+
+def test_both_toy_rows_get_their_own_purchase(templates):
+    """两行宠物玩具是两种商品：买掉第一行之后，第二行照样要买。"""
+    m = machine(templates, buy_toys=True)
+    m.bought_rows.append(("toys", 805))
+    action = m.next_action(load("shop_bottom_bright"))
+    assert action.name == "open-purchase"
+    # 第二行玩具的按钮在画面更下方（名字 1023 + 40）。
+    assert abs(action.point[1] - 1063) <= 8, action.point
+
+
+def test_toys_buy_the_topmost_bright_row(templates):
+    """玩具有两行：一轮只买最上面那行，点的是它自己的购买按钮（名字 +531/+40）。"""
+    m = machine(templates, buy_toys=True)
+    action = m.next_action(load("shop_bottom_bright"))
+    assert action.name == "open-purchase"
+    assert m.pending_buy == ("toys", 805)
+    assert abs(action.point[0] - 1651) <= 6 and abs(action.point[1] - 845) <= 6, action.point
+
+
+def test_row_still_looks_buyable_after_one_purchase(templates):
+    """买过一次的饲料行仍是亮态（2/3）—— 挡住回购的是按行记账，不是冷却文字。
+
+    这张帧（2026-11-16 08:00 真机，确认购买后 1 秒）就是证据：次数从 3/3 变 2/3，
+    行还是绿的、还是可点的。所以「一轮只买一次」必须落在账本上。
+    """
+    m = machine(templates, buy_food=True)
+    assert m.observe_page(load("purchase_done")) is PetAdoptionState.SHOP
+    assert m.next_action(load("purchase_done")).name == "open-purchase"
+
+
+def test_preview_does_not_mark_the_row_as_bought(templates):
+    """试算两帧稳定确认不许把「已购买」提前记上，否则真跑就不买了。"""
+    m = machine(templates, buy_food=True)
+    m.preview(load("shop_bottom_bright"))
+    assert m.pending_buy is None and m.bought_rows == []
+    assert m.next_action(load("shop_bottom_bright")).name == "open-purchase"
 
 
 def test_scroll_is_bounded(templates):

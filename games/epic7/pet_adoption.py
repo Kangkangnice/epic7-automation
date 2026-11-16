@@ -7,8 +7,9 @@
 大厅 → 右上角蓝四格 → 快捷菜单第 2 行中间「宠物小屋」
 宠物小屋
   ├ 底部绿色「领养」 → 领养宠物弹窗
-  │    ├ 有「免费」标记 → 点免费领养 → 弹出领养结果（宠物）→ 点掉 → 回小屋
-  │    └ 左按钮是券图标 + 数量（今日免费已用完）→ 点「点击关闭」→ 回小屋
+  │    ├ 「免费」二字 + 「可免费领养！」→ 点免费领养 → 领养结果 → 点掉 → 回弹窗
+  │    │      → 弹窗此时已变成券态 → 「点击关闭」→ 回小屋
+  │    └ 只剩券图标 + 数量（今日免费已用完）→ 点「点击关闭」→ 回小屋
   └ 左下蓝色「宠物商店」 → 商店
        ├ 上半部：宠物领养券（金币 / 天空石购入）→ 一律不买
        └ 滑到底：一般饲料（一周 3 次）、宠物玩具（一周 1 次）×2
@@ -24,17 +25,43 @@
 * 免费态：按钮写「免费」，不花任何资源，每天一次 —— 这是路线要点的。
 * 付费态：按钮上是紫色券图标 + 数量，点下去会**消耗宠物领养券**。
 
-今天采集时用户当天已领过，画面停在付费态，所以免费态的模板尚未采到。
-按项目「判据不许静默降级」的口径，本路线**不靠「没找到付费态」反推免费态**：
+**⚠️ 券图标不是「已领完」的证据**（2026-11-16 更正）。两态左按钮上都有那张紫色券：
 
-* 认出付费态（券图标命中）→ 明确记「今日免费已用完」，关弹窗走商店。
-* 认不出付费态 → 视为陌生页，**安全停止并留证**，绝不点任何领养按钮。
+* 付费态：`[券] 1 领养` —— 券 + 数量。
+* 免费态：`[券] 免费 领养`，按钮上方还有绿色气泡「1/1可免费领养！」。
 
-明天补一张免费态模板后，在 ``_at_adopt_popup`` 加一个正向分支即可，
-现有「付费态」判据一行都不用改。这是刻意留的缺口，不是降级。
+2026-11-15 首版拿券图标当「今日已用完」的正向证据，11-16 免费额度刷新当天就把
+免费窗口判成已用完、**白丢一次领养**。现在的三条判据（`_at_adopt_popup`）：
 
-同理，商店三件用品的「亮态可购买」今天也没采到（本周额度已用完，三行全灰）。
-两个购入选项默认关闭；开启后若看到亮态，同样安全停止留证，不猜坐标、不盲点。
+* 「免费」二字 **且** 「可免费领养！」提示条同时命中 → 点免费领养（不花任何资源）；
+* 两条都不命中、只剩券图标 → 今日已领完，只点「点击关闭」；
+* 其余组合 → 证据矛盾，**安全停止留证**，一个领养按钮都不点。
+
+两条免费证据的余量（2026-11-16 全库审计）：「免费」二字在免费帧 1.0000、付费帧
+0.6490；「可免费领养！」提示条 1.0000、全库其它帧最高 0.5912。所以**要求两条同时成立**，
+单条掉下去只会变成"安全停止"，不会误点付费按钮。
+
+关掉结果弹窗露出的是**下面的领养弹窗**（不是小屋）：结果页是盖在弹窗上的第二层，
+`dismiss-result` 的出口因此写「领养宠物」，再由它走 `close-adopt` 回小屋。
+
+同理，商店三件用品的「亮态可购买」到 2026-11-15 还没采到（本周额度已用完，
+三行全灰）。2026-11-16 早晨额度刷新后已补采，见下面「亮态购入」。
+
+## 亮态购入（2026-11-16 采集后接线）
+
+点某一行「购买」会先弹「购买商品」确认框（物品名 + 剩余次数 + 数量滑杆 +
+取消/购买两颗按钮）。所以购入是**两步**：``open-purchase`` 开框，
+``confirm-purchase`` 点框里的绿「购买」。三条硬规矩：
+
+* **商品名定位，不用「购买」二字**：上面两行宠物领养券也有「购买」，
+  拿它定位会误点到 500 天空石的礼包。
+* **一行一单、一类一轮最多一件**：饲料一周 3 次、玩具一周 1 次，买完那一行
+  仍是亮态，不设上限就会在同一行反复回购，把一周额度一口气花光。
+* **确认框只认自己发起的那一单**：``pending_buy`` 为空时出现确认框，
+  说明是上次中断留下的，两颗按钮都不点，安全停止留证。
+
+判定「这一行能不能买」不用 OCR 读 ``N/N``：同一行里**没有**「小时后可购买」
+就是亮态（灰态那行必然带这串字，实测 1.000/0.995/0.956）。
 
 ## 判据为什么这么设计
 
@@ -43,17 +70,21 @@
 * 「点击关闭」是全游戏通用控件，跨页同形分数可到 0.9971 ⇒ 只在已确认
   领养弹窗页才用它定位，不拿它判页。
 * 商店滑到底的判据是「一般饲料」那行固定文字出现，不是滑动次数。
+* 购买确认框是**全游戏通用**的（企鹅批量购买同一个）⇒ 页面组合加一条
+  「底页还得是宠物商店」（遮罩下商店标题 0.9998，别的路线底页不是商店）。
 
 ## 转场契约（``_REQUIRE_TRANSITION_CONTRACT = True``）
 
 | 动作 | 来源页 | 出口验收 |
 |---|---|---|
 | ``open-adopt`` | 宠物小屋 | ``target_pages`` = 领养弹窗 |
+| ``adopt-free`` | 领养弹窗 | ``target_pages`` = 领养结果 |
 | ``close-adopt`` | 领养弹窗 | ``target_pages`` = 宠物小屋 |
-| ``dismiss-result`` | 领养结果 | ``target_pages`` = 宠物小屋 |
+| ``dismiss-result`` | 领养结果 | ``target_pages`` = 领养弹窗 |
 | ``open-shop`` | 宠物小屋 | ``target_pages`` = 宠物商店 |
 | ``scroll-shop`` | 宠物商店 | ``in_page_evidence`` = 三件宠物用品进入视口 |
-| ``buy-supply`` | 宠物商店 | ``in_page_evidence`` = 该行转为已购入 / 次数减一 |
+| ``open-purchase`` | 宠物商店 | ``target_pages`` = 购买确认 |
+| ``confirm-purchase`` | 购买确认 | ``target_pages`` = 宠物商店 |
 
 ``close-adopt`` 用 ``target_pages`` 而不是 ``in_page_evidence``：弹窗关掉是
 一个可靠的换页证据。若某次点击没生效，弹窗不消失，主循环会用同一坐标重试
@@ -75,7 +106,12 @@ from typing import Callable, Optional
 
 import numpy as np
 
-from auto_game_unified.core.matcher import Match, load_template, locate_with_fallback
+from auto_game_unified.core.matcher import (
+    Match,
+    find_all_templates,
+    load_template,
+    locate_with_fallback,
+)
 from auto_game_unified.core.recovery import RecoveryGate
 from auto_game_unified.core.runtime import Runtime
 from auto_game_unified.games.epic7.evidence.common import EvidenceState
@@ -95,14 +131,18 @@ from auto_game_unified.games.epic7.unknown_screen import UnrecognizedScreen
 class PetAdoptionState(Enum):
     HOUSE = "house"
     ADOPT_POPUP = "adopt_popup"
+    ADOPT_RESULT = "adopt_result"
     SHOP = "shop"
+    PURCHASE = "purchase"
     FINISHED = "finished"
 
 
 STATE_LABELS = {
     PetAdoptionState.HOUSE: "宠物小屋",
     PetAdoptionState.ADOPT_POPUP: "领养宠物",
+    PetAdoptionState.ADOPT_RESULT: "领养结果",
     PetAdoptionState.SHOP: "宠物商店",
+    PetAdoptionState.PURCHASE: "购买确认",
     PetAdoptionState.FINISHED: "本轮已结束",
 }
 
@@ -111,6 +151,8 @@ PET_HOUSE_PAGE = "pet_house"
 
 # evidence 页面键 -> 状态。弹窗必须排在小屋前面（半透明遮罩，见模块 docstring）。
 _PAGE_STATES = (
+    ("pet_adoption.adopt_result", PetAdoptionState.ADOPT_RESULT),
+    ("pet_adoption.purchase", PetAdoptionState.PURCHASE),
     ("pet_adoption.adopt_popup", PetAdoptionState.ADOPT_POPUP),
     ("pet_adoption.shop_bottom", PetAdoptionState.SHOP),
     ("pet_adoption.shop_top", PetAdoptionState.SHOP),
@@ -119,7 +161,13 @@ _PAGE_STATES = (
 
 # 开局接力可落脚的页面。终态 FINISHED 不是画面，不在名单里。
 _RESUMABLE_STATES = frozenset(
-    {PetAdoptionState.HOUSE, PetAdoptionState.ADOPT_POPUP, PetAdoptionState.SHOP}
+    {
+        PetAdoptionState.HOUSE,
+        PetAdoptionState.ADOPT_POPUP,
+        # 结果弹窗只点「点击关闭」，不花钱 ⇒ 接力过去是安全的，还能省掉重进小屋。
+        PetAdoptionState.ADOPT_RESULT,
+        PetAdoptionState.SHOP,
+    }
 )
 
 # 商店下滑手势（实机验证：一次 500px 就能从上半部滑到底）。
@@ -127,6 +175,15 @@ SHOP_SCROLL_START = (1400, 900)
 SHOP_SCROLL_END = (1400, 400)
 SHOP_SCROLL_DURATION_MS = 600
 MAX_SHOP_SCROLLS = 3
+
+# 商品名中心 -> 该行绿色「购买」按钮的偏移（2026-11-16 亮态帧实测三行）：
+# (1115,587)->(1647,627)、(1119,804)->(1647,844)、(1114,1022)->(1647,1062)，
+# 三行一致的 (531, 40)，纵向抖动 ±1。
+SHOP_BUY_DX = 531
+SHOP_BUY_DY = 40
+# 同一行「名字」与「小时后可购买」的纵向容差：行距 217，取 90 既不会跨行，
+# 也容得下滚动落点差几十像素。
+SHOP_ROW_TOLERANCE = 90
 
 
 @dataclass(frozen=True)
@@ -144,9 +201,16 @@ class PetAdoptionTemplates:
     adopt_modal_title: np.ndarray
     paid_ticket_icon: np.ndarray
     adopt_modal_close: np.ndarray
+    free_adopt_text: np.ndarray
+    free_adopt_hint: np.ndarray
+    adopt_result_title: np.ndarray
     shop_title: np.ndarray
     shop_supplies_section: np.ndarray
     shop_cooldown: np.ndarray
+    supply_food_name: np.ndarray
+    supply_toy_name: np.ndarray
+    confirm_title: np.ndarray
+    confirm_buy: np.ndarray
     evidence: object = None
     pc: bool = False
 
@@ -165,9 +229,22 @@ def build_pet_adoption_templates(template_root: Path) -> PetAdoptionTemplates:
         adopt_modal_title=one("adopt_modal_title"),
         paid_ticket_icon=one("paid_ticket_icon"),
         adopt_modal_close=one("adopt_modal_close"),
+        free_adopt_text=one("free_adopt_text"),
+        free_adopt_hint=one("free_adopt_hint"),
+        adopt_result_title=one("adopt_result_title"),
         shop_title=one("shop_title"),
         shop_supplies_section=one("shop_supplies_section"),
         shop_cooldown=one("shop_cooldown"),
+        supply_food_name=one("supply_food_name"),
+        supply_toy_name=one("supply_toy_name"),
+        # 购买确认框的两颗图**复用企鹅批量购买那条路线**的（同一个「购买商品」弹窗），
+        # 不复制副本 —— 同一颗控件只留一份判据图。
+        confirm_title=load_template(
+            str(template_root / "penguin_purchase" / "quantity_title.png")
+        ),
+        confirm_buy=load_template(
+            str(template_root / "penguin_purchase" / "quantity_buy_text.png")
+        ),
         evidence=build_pet_adoption_evidence(folder),
         pc=is_pc(template_root),
     )
@@ -207,6 +284,15 @@ class PetAdoptionStateMachine:
         self.finish_reason = ""
         self.adopt_checked = False
         self.shop_scrolls = 0
+        # 本轮已经买过的**行**：``(品类键, 商品名中心 y)``。为什么要记到行：
+        # 饲料一周 3 次，买一次只是 3/3 → 2/3，那一行**仍然是亮态**，
+        # 不按行记账就会在同一行上反复回购，把一周额度一口气花光；
+        # 玩具一周 1 次，买完那一行自己会变灰，另一行照常买 —— 所以上限落在「行」上，
+        # 不落在「品类」上（宠物玩具有两行，两种都要买）。
+        self.bought_rows: list[tuple[str, int]] = []
+        # 点了某行「购买」之后记下``(品类, 行 y)``。确认框那一帧靠它回答
+        # 「这一单是不是本路线自己发起的」—— 不是我发起的就绝不动那颗绿按钮。
+        self.pending_buy: Optional[tuple[str, int]] = None
         self._confirmed_page = ""
 
     # ---- 视觉判据 ----
@@ -293,24 +379,71 @@ class PetAdoptionStateMachine:
         )
 
     def _at_adopt_popup(self, screen: np.ndarray):
+        """领养弹窗：**免费优先**，认不准就停。
+
+        ⚠️ 券图标两态都有（付费态是「券 + 数字」，免费态是「券 + 免费」），
+        所以它只能证明"这是个领养弹窗"，**不能证明"今日已领完"**。
+        2026-11-15 版拿券图标当"已用完"的正向证据，2026-11-16 免费额度刷新当天
+        就把免费窗口判成了已用完、白丢一次领养 —— 判据已按下面三条重写：
+
+        * 「免费」二字 + 「可免费领养！」提示条**同时命中** ⇒ 点免费领养；
+        * 两条都不命中、券图标命中 ⇒ 今日已领完，只点「点击关闭」；
+        * 其余组合（只中一条 / 一条都不中）⇒ 证据互相矛盾，安全停止留证。
+        """
+
+        free_text = self._locate(screen, "free_adopt_text")
+        free_hint = self._locate(screen, "free_adopt_hint")
         paid = self._locate(screen, "paid_ticket_icon")
-        if paid is None:
-            # 免费态模板尚未采集。绝不靠「没看见券图标」反推可领 —— 那颗按钮
-            # 在付费态就是要花券的。安全停止并留证，等补图后加正向分支。
-            raise UnrecognizedScreen(
-                "领养弹窗里既没认出「免费」标记、也没认出付费券图标；"
-                "免费领养判据尚未登记，为避免消耗宠物领养券已安全停止"
+
+        if free_text is not None and free_hint is not None:
+            self.adopt_checked = True
+            return self._action(
+                "adopt-free",
+                point=free_text.center,
+                source_page=state_label(PetAdoptionState.ADOPT_POPUP),
+                target_pages=(state_label(PetAdoptionState.ADOPT_RESULT),),
+                reason=(
+                    f"左按钮写「免费」@{free_text.center}、上方有「可免费领养！」"
+                    f"@{free_hint.center} ⇒ 点免费领养，不消耗任何券"
+                ),
             )
+        if free_text is None and free_hint is None and paid is not None:
+            close = self._required(screen, "adopt_modal_close")
+            self.adopt_checked = True
+            return self._action(
+                "close-adopt",
+                point=close.center,
+                source_page=state_label(PetAdoptionState.ADOPT_POPUP),
+                target_pages=(state_label(PetAdoptionState.HOUSE),),
+                reason=(
+                    f"免费标记与免费提示都没出现、只剩付费券@{paid.center}，"
+                    f"今日免费额度已用完；只点底部「点击关闭」@{close.center}"
+                ),
+            )
+        raise UnrecognizedScreen(
+            "领养弹窗的三条证据对不上（免费二字 / 可免费领养提示 / 付费券图标）："
+            f"免费={free_text is not None}、提示={free_hint is not None}、"
+            f"券={paid is not None}；为避免消耗宠物领养券已安全停止"
+        )
+
+    def _at_adopt_result(self, screen: np.ndarray):
+        """领养结果弹窗：只点底部「点击关闭」。
+
+        ⚠️ 右下那颗「再领养一次 · 1」会**消耗 1 张宠物领养券**，绝不当成"继续"。
+        """
+
         close = self._required(screen, "adopt_modal_close")
-        self.adopt_checked = True
         return self._action(
-            "close-adopt",
+            "dismiss-result",
             point=close.center,
-            source_page=state_label(PetAdoptionState.ADOPT_POPUP),
-            target_pages=(state_label(PetAdoptionState.HOUSE),),
+            source_page=state_label(PetAdoptionState.ADOPT_RESULT),
+            # ⚠️ 关掉结果弹窗露出的是**下面的领养弹窗**，不是小屋（2026-11-16 08:24
+            # 实跑实测：期望小屋、实际停在「领养宠物」，转场超时）。结果页是盖在
+            # 领养弹窗上的第二层，所以出口写「领养宠物」，再由它走 close-adopt 回小屋。
+            target_pages=(state_label(PetAdoptionState.ADOPT_POPUP),),
             reason=(
-                f"左按钮是付费券领养@{paid.center}，今日免费额度已用完；"
-                f"只点底部「点击关闭」@{close.center}，不碰任何领养按钮"
+                f"领养结果已出，点底部「点击关闭」@{close.center} 回到领养弹窗；"
+                "右下「再领养一次」要花券，不碰"
             ),
         )
 
@@ -335,28 +468,118 @@ class PetAdoptionStateMachine:
             )
 
         cooldowns = self._cooldowns(screen)
-        all_grey = len(cooldowns) >= COOLDOWN_ROW_COUNT
-        wanted = []
-        if self.buy_food:
-            wanted.append("一般饲料")
-        if self.buy_toys:
-            wanted.append("宠物玩具")
-        if wanted and not all_grey:
-            # 亮态「可购买」判据尚未采集：不猜、不点，留证等补图。
-            raise UnrecognizedScreen(
-                f"已开启购入（{'、'.join(wanted)}），但宠物用品出现可购买状态 "
-                f"（认出 {len(cooldowns)}/{COOLDOWN_ROW_COUNT} 行冷却）；"
-                "亮态购买判据尚未登记，为避免误购已安全停止"
+        wanted = self._wanted_items()
+        pick = self._pick_bright_item(screen, cooldowns, wanted)
+        if pick is not None:
+            key, label, row_y, point = pick
+            self.pending_buy = (key, row_y)
+            return self._action(
+                "open-purchase",
+                point=point,
+                source_page=state_label(PetAdoptionState.SHOP),
+                target_pages=(state_label(PetAdoptionState.PURCHASE),),
+                reason=(
+                    f"「{label}」这一行可购买（{len(cooldowns)}/{COOLDOWN_ROW_COUNT} 行在冷却），"
+                    f"点该行的「购买」@ {point}"
+                ),
             )
         self._finish(self._shop_done_reason(cooldowns, wanted))
         return None
 
-    @staticmethod
-    def _shop_done_reason(cooldowns: list[Match], wanted: list[str]) -> str:
-        if not wanted:
+    def _wanted_items(self) -> list[tuple[str, str, str]]:
+        """这一轮想买的品类：``(品类键, 中文名, 名字锚点)``。两个开关默认都关。"""
+
+        wanted: list[tuple[str, str, str]] = []
+        if self.buy_food:
+            wanted.append(("food", "一般饲料", "supply_food_name"))
+        if self.buy_toys:
+            wanted.append(("toys", "宠物玩具", "supply_toy_name"))
+        return wanted
+
+    def _pick_bright_item(
+        self,
+        screen: np.ndarray,
+        cooldowns: list[Match],
+        wanted: list[tuple[str, str, str]],
+    ) -> Optional[tuple[str, str, int, tuple[int, int]]]:
+        """挑一行「可购买」的用品，返回 ``(品类键, 中文名, 名字中心 y, 点击点)``。
+
+        三条判据缺一不可：
+
+        1. **商品名先命中** —— 上面两行领养券也有「购买」，只有商品名能把
+           用品行与券行分开（误点就是 500 天空石）。
+        2. 这一行**没有**「小时后可购买」—— 冷却文字与名字同一行（±90 px）。
+        3. 算出来的按钮落点**必须在画布内** —— 越界点击在窗口层是致命错误。
+        """
+
+        height, width = screen.shape[:2]
+        for key, label, atom in wanted:
+            evidence = self.templates.evidence.atom(atom)
+            for name_match in find_all_templates(
+                screen,
+                getattr(self.templates, atom),
+                evidence.threshold,
+                region=evidence.region,
+                reference_size=self._REFERENCE_SIZE,
+                min_gap=SHOP_ROW_TOLERANCE,
+            ):
+                if any(
+                    abs(name_match.center[1] - row.center[1]) < SHOP_ROW_TOLERANCE
+                    for row in cooldowns
+                ):
+                    continue
+                if any(
+                    kind == key
+                    and abs(name_match.center[1] - bought_y) < SHOP_ROW_TOLERANCE
+                    for kind, bought_y in self.bought_rows
+                ):
+                    continue
+                point = (
+                    name_match.center[0] + SHOP_BUY_DX,
+                    name_match.center[1] + SHOP_BUY_DY,
+                )
+                if not (0 <= point[0] < width and 0 <= point[1] < height):
+                    continue
+                return key, label, name_match.center[1], point
+        return None
+
+    def _at_purchase(self, screen: np.ndarray):
+        """购买确认框：先确认这一单是自己发起的，再点右下绿色「购买」。"""
+
+        if self.pending_buy is None:
+            raise UnrecognizedScreen(
+                "屏幕上出现了「购买商品」确认框，但本轮并没有发起购买"
+                "（多半是上次中断留下的）；确认与取消都不点，安全停止留证"
+            )
+        buy = self._required(screen, "confirm_buy")
+        key, row_y = self.pending_buy
+        label = "一般饲料" if key == "food" else "宠物玩具"
+        self.bought_rows.append((key, row_y))
+        self.pending_buy = None
+        return self._action(
+            "confirm-purchase",
+            point=buy.center,
+            source_page=state_label(PetAdoptionState.PURCHASE),
+            target_pages=(state_label(PetAdoptionState.SHOP),),
+            reason=f"确认框里点绿色「购买」@ {buy.center}，购入「{label}」1 件",
+        )
+
+    def _shop_done_reason(
+        self, cooldowns: list[Match], wanted: list[tuple[str, str, str]]
+    ) -> str:
+        if self.bought_rows:
+            food = sum(1 for key, _y in self.bought_rows if key == "food")
+            toys = sum(1 for key, _y in self.bought_rows if key == "toys")
+            parts = []
+            if food:
+                parts.append(f"一般饲料 {food} 件")
+            if toys:
+                parts.append(f"宠物玩具 {toys} 件")
+            tail = f"本轮已购入 {'、'.join(parts)}（同一行一轮只买一次）"
+        elif not wanted:
             tail = "饲料与玩具购入均未开启，本轮只确认状态、不购买"
         else:
-            tail = f"{'、'.join(wanted)}本轮无可购买项"
+            tail = f"{'、'.join(label for _key, label, _atom in wanted)}本轮无可购买项"
         return (
             f"三件宠物用品中 {len(cooldowns)}/{COOLDOWN_ROW_COUNT} 行在冷却或本周已购入，"
             + tail
@@ -389,7 +612,9 @@ class PetAdoptionStateMachine:
         handler = {
             PetAdoptionState.HOUSE: self._at_house,
             PetAdoptionState.ADOPT_POPUP: self._at_adopt_popup,
+            PetAdoptionState.ADOPT_RESULT: self._at_adopt_result,
             PetAdoptionState.SHOP: self._at_shop,
+            PetAdoptionState.PURCHASE: self._at_purchase,
         }[page]
         return handler(screen)
 
@@ -402,6 +627,10 @@ class PetAdoptionStateMachine:
             self.adopt_checked,
             self.shop_scrolls,
             self._confirmed_page,
+            # ⚠️ ``bought_rows`` 必须**拷一份**再还原：试算里那句 ``append`` 会改到
+            # 同一个 list 上，不拷贝就等于试算把"已购买"提前记上，真跑时反而不买了。
+            list(self.bought_rows),
+            self.pending_buy,
         )
         try:
             action = self.next_action(screen)
@@ -414,6 +643,8 @@ class PetAdoptionStateMachine:
                 self.adopt_checked,
                 self.shop_scrolls,
                 self._confirmed_page,
+                self.bought_rows,
+                self.pending_buy,
             ) = snapshot
 
 
@@ -448,14 +679,27 @@ class PetAdoptionRunner(ModeRunnerBase):
     _TIMEOUT_SECONDS = {
         PetAdoptionState.HOUSE: 45,
         PetAdoptionState.ADOPT_POPUP: 45,
+        PetAdoptionState.ADOPT_RESULT: 45,
         PetAdoptionState.SHOP: 60,
+        PetAdoptionState.PURCHASE: 45,
         PetAdoptionState.FINISHED: 45,
     }
     # 这条路线不打架。
     _BATTLE_ENTRY_ACTION = None
     _SETTLED_BATTLE_STATE = None
     # 这几个动作点完一两秒就能看出生效，不给 45 秒白等。
-    _SHORT_RETRY_ACTIONS = frozenset({"open-adopt", "close-adopt", "open-shop", "scroll-shop"})
+    _SHORT_RETRY_ACTIONS = frozenset(
+        {
+            "open-adopt",
+            "adopt-free",
+            "dismiss-result",
+            "close-adopt",
+            "open-shop",
+            "scroll-shop",
+            "open-purchase",
+            "confirm-purchase",
+        }
+    )
     _SHORT_RETRY_SECONDS = 8.0
 
     def __init__(

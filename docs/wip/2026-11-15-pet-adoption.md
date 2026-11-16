@@ -3,7 +3,7 @@ route: pet_adoption
 status: in-progress
 owner: WorkBuddy
 started: 2026-11-15
-next_step: 明天免费领养额度刷新后，手工走进领养弹窗采「免费」按钮与领养结果弹窗两张整屏帧，按本单第四节接线，再跑一轮实机
+next_step: 本单两条缺口（免费态 / 亮态购入）都已在 2026-11-16 补采并接线；剩下的只有 PC 客户端迁移与「买满 3 次后转灰」的收尾形态
 ---
 
 # 交接单：宠物领养路线首版，缺免费态素材
@@ -41,13 +41,17 @@ next_step: 明天免费领养额度刷新后，手工走进领养弹窗采「免
 
 ## 三、没做完的是什么
 
-- [ ] 采「免费领养」按钮模板与「领养结果弹窗」整屏帧（免费额度刷新当天）。
-- [ ] 在 `evidence/pet_adoption.py` 加 `free_adopt_button` / `result_popup_title` /
-      `result_popup_close` 三个原子与对应页面组合。
-- [ ] 在 `pet_adoption.py::_at_adopt_popup` 加免费态正向分支（点免费领养），
-      并新增 `dismiss-result` 动作处理结果弹窗；付费态分支一行都不用改。
-- [ ] 采宠物用品「可购买」亮态整屏帧，补亮态判据后 `buy-supply` 动作才接得上。
-      当前开启开关遇到亮态是安全停止，不会误买。
+- [x] 采「免费领养」按钮与「领养结果弹窗」整帧（2026-11-16，免费额度刷新当天）；
+      三张模板入 `templates/pet_adoption/`，判据见状态机 docstring。
+- [x] 加 `free_adopt_text` / `free_adopt_hint` / `adopt_result_title` 三个原子与
+      `pet_adoption.adopt_result` 页面组合；结果页的关闭复用 `adopt_modal_close`。
+- [x] `_at_adopt_popup` 改成三条证据（免费二字 / 提示条 / 券图标）的判定，
+      新增 `adopt-free` 与 `dismiss-result` 两个动作；顺手纠正「券图标 = 已领完」的旧判据。
+- [x] 采宠物用品「可购买」亮态整屏帧 + 购买确认框 + 购买后回列表（2026-11-16）。
+      商品名两张模板（`supply_food_name` / `supply_toy_name`）、
+      确认框复用企鹅批量购买那套、按行记账防回购，`open-purchase` /
+      `confirm-purchase` 两个动作已接进转场契约；实机跑通「开框 → 确认 → 回列表
+      → 收工」（退出码 0，购入一般饲料 1 件）。
 - [x] 跑 `--live --confirm RUN --max-cycles 1` 一轮与两轮连续实跑（2026-11-15，均退出码 0）。
 - [ ] PC 客户端移植（按用户「PC 端 90% 沿用」原则，先采页、再换图）。
 - [x] 把 `pet_adoption` 加进 `daily_tasks.DAILY_TASKS`（2026-11-15 用户要求，
