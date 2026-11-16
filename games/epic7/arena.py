@@ -586,6 +586,9 @@ class ArenaStateMachine:
         # 「停在 NPC 页签时先试着切回交战对手」这件事一轮只做一次。切不过去
         # （结算日该页签变灰点不动）就直接按 NPC 页打 —— 两者后面的流程完全一样。
         self._npc_tab_checked = False
+        # 本轮打过哪几种：``player`` = 交战对手，``npc`` = NPC 对战。
+        # 结算行要写清是哪一种（用户 2026-11-16 要求）；两种都打过就都写。
+        self.battle_kinds: set[str] = set()
 
     def commit(self, action: Action, target: ArenaState) -> None:
         if action.source_state is not self.state:
@@ -997,6 +1000,8 @@ class ArenaStateMachine:
                 self._selected_opponent = (
                     ranked[0] if ranked else self.choose_opponent(safe)
                 )
+            # 记下这一局是从哪个页签选的：结算行要能说清打的是玩家还是 NPC。
+            self.battle_kinds.add("npc" if self._on_npc_page(screen) else "player")
             return Action(
                 name="select-opponent",
                 point=self._opponent_point(screen, self._selected_opponent),
@@ -1309,6 +1314,7 @@ class ArenaStateMachine:
             self._cycle_pending,
             # 试算那一趟会把「已看过页签」记上，不还回去的话真跑时就不再切页签了。
             self._npc_tab_checked,
+            set(self.battle_kinds),
         )
         try:
             action = self.next_action(screen)
@@ -1320,6 +1326,7 @@ class ArenaStateMachine:
                 self._selected_opponent,
                 self._cycle_pending,
                 self._npc_tab_checked,
+                self.battle_kinds,
             ) = snapshot
 
 
@@ -1927,7 +1934,12 @@ class ArenaRunner(TransactionalRunnerBase):
             pass
 
     def outcome_summary(self) -> str:
-        """给通知与控制台用的一行战绩：``胜 2 / 负 1``（认不出时补 ``（未知 1）``）。"""
+        """给通知与控制台用的一行战绩：``玩家对战 · 胜 2 / 负 1``。
+
+        用户 2026-11-16 要求结算时说明打的是玩家还是 NPC：竞技场两个页签的对手
+        来源完全不同（结算日「交战对手」会变灰，那几场只能打 NPC）。不知道就
+        **不写**这一段（局内接力进来的那一局不知道是从哪个页签开的），不猜。
+        """
         parts = [
             f"{OUTCOME_LABELS[outcome]} {self.outcome_tally[outcome]}"
             for outcome in (ArenaOutcome.WIN, ArenaOutcome.LOSE)
@@ -1936,6 +1948,15 @@ class ArenaRunner(TransactionalRunnerBase):
         text = " / ".join(parts)
         if unknown:
             text += f"（未知 {unknown}）"
+        kinds = getattr(self.machine, "battle_kinds", set())
+        if kinds:
+            if kinds == {"npc"}:
+                label = "NPC 对战"
+            elif kinds == {"player"}:
+                label = "玩家对战"
+            else:
+                label = "玩家对战 + NPC 对战"
+            text = f"{label} · {text}"
         return text
 
     # ``_save_failure_diagnostic`` 不再自己实现：基类那份是**本族口径**（收 label、
