@@ -347,6 +347,8 @@ class MainStoryTests(unittest.TestCase):
                     battle_record_templates=battle_record_templates,
                     weekly_rank_start_templates=weekly_rank_start_templates,
                     weekly_rank_select_templates=weekly_rank_select_templates,
+                    # 「每周排名选择奖励」选哪一张：默认钻石（2026-11-16 做成选项）。
+                    weekly_reward="diamond",
                     knights_growth_rank_templates=knights_growth_rank_templates,
                     side_story_notice_templates=side_story_notice_templates,
                     reward_notice_templates=reward_notice_templates,

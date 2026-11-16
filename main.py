@@ -443,6 +443,25 @@ def _install_finish_home(
         runner.finish_home = finish_at_home
 
 
+def _popup_preference(
+    mode: str,
+    params: Optional[Mapping[str, Any]],
+    key: str,
+    default: str,
+) -> str:
+    """读一条「路线选项 → 弹窗守卫偏好」。
+
+    ⚠️ 走 ``route_options.clean`` 而不是直接 ``params.get``：界面存档里可能是旧值
+    / 空串 / 手改坏的字符串，清洗过的才算数。路线没声明这个键时返回空表 ⇒ 用默认值，
+    所有老路线行为不变。
+    """
+
+    from auto_game_unified.games.epic7 import route_options
+
+    values = route_options.clean(mode, params or {})
+    return str(values.get(key, default))
+
+
 def run_mode(
     *,
     spec: ModeSpec,
@@ -555,10 +574,15 @@ def run_mode(
                     template_root / "navigation"
                 ),
                 # 「每周排名选择奖励」：紧跟在上面那道通知之后，要选一个奖励再领取。
-                # ⚠️ 它点一下关不掉 —— 守卫按「领取按钮亮没亮」决定先点钻石还是点领取；
-                # 选哪个奖励是用户 2026-11-09 拍板的（默认钻石，即左侧 800 天空石）。
+                # ⚠️ 它点一下关不掉 —— 守卫按「领取按钮亮没亮」决定先点卡片还是点领取。
+                # 选哪一张：2026-11-09 拍板默认钻石（左侧 800 天空石）；2026-11-16
+                # 用户要求做成可选项（``weekly_reward``，另一个值是神秘书签）。
+                # 路线没声明这个选项时 ``clean`` 返回空表 ⇒ 回落钻石，行为与旧版一致。
                 weekly_rank_select_templates=load_weekly_rank_select_templates(
                     template_root / "navigation"
+                ),
+                weekly_reward=str(
+                    _popup_preference(spec.name, params, "weekly_reward", "diamond")
                 ),
                 # 「骑士团成长Rank提升」弹窗：只在骑士团成长等级提升时出现（低频），
                 # 但撞上就必然卡住整条路线 —— 2026-10-30 19:48 世界首领战那次 ✗ 就是它：
