@@ -7,8 +7,9 @@
 大厅 → 右上角蓝四格 → 快捷菜单第 2 行中间「宠物小屋」
 宠物小屋
   ├ 底部绿色「领养」 → 领养宠物弹窗
-  │    ├ 有「免费」标记 → 点免费领养 → 弹出领养结果（宠物）→ 点掉 → 回小屋
-  │    └ 左按钮是券图标 + 数量（今日免费已用完）→ 点「点击关闭」→ 回小屋
+  │    ├ 「免费」二字 + 「可免费领养！」→ 点免费领养 → 领养结果 → 点掉 → 回弹窗
+  │    │      → 弹窗此时已变成券态 → 「点击关闭」→ 回小屋
+  │    └ 只剩券图标 + 数量（今日免费已用完）→ 点「点击关闭」→ 回小屋
   └ 左下蓝色「宠物商店」 → 商店
        ├ 上半部：宠物领养券（金币 / 天空石购入）→ 一律不买
        └ 滑到底：一般饲料（一周 3 次）、宠物玩具（一周 1 次）×2
@@ -24,14 +25,24 @@
 * 免费态：按钮写「免费」，不花任何资源，每天一次 —— 这是路线要点的。
 * 付费态：按钮上是紫色券图标 + 数量，点下去会**消耗宠物领养券**。
 
-今天采集时用户当天已领过，画面停在付费态，所以免费态的模板尚未采到。
-按项目「判据不许静默降级」的口径，本路线**不靠「没找到付费态」反推免费态**：
+**⚠️ 券图标不是「已领完」的证据**（2026-11-16 更正）。两态左按钮上都有那张紫色券：
 
-* 认出付费态（券图标命中）→ 明确记「今日免费已用完」，关弹窗走商店。
-* 认不出付费态 → 视为陌生页，**安全停止并留证**，绝不点任何领养按钮。
+* 付费态：`[券] 1 领养` —— 券 + 数量。
+* 免费态：`[券] 免费 领养`，按钮上方还有绿色气泡「1/1可免费领养！」。
 
-明天补一张免费态模板后，在 ``_at_adopt_popup`` 加一个正向分支即可，
-现有「付费态」判据一行都不用改。这是刻意留的缺口，不是降级。
+2026-11-15 首版拿券图标当「今日已用完」的正向证据，11-16 免费额度刷新当天就把
+免费窗口判成已用完、**白丢一次领养**。现在的三条判据（`_at_adopt_popup`）：
+
+* 「免费」二字 **且** 「可免费领养！」提示条同时命中 → 点免费领养（不花任何资源）；
+* 两条都不命中、只剩券图标 → 今日已领完，只点「点击关闭」；
+* 其余组合 → 证据矛盾，**安全停止留证**，一个领养按钮都不点。
+
+两条免费证据的余量（2026-11-16 全库审计）：「免费」二字在免费帧 1.0000、付费帧
+0.6490；「可免费领养！」提示条 1.0000、全库其它帧最高 0.5912。所以**要求两条同时成立**，
+单条掉下去只会变成"安全停止"，不会误点付费按钮。
+
+关掉结果弹窗露出的是**下面的领养弹窗**（不是小屋）：结果页是盖在弹窗上的第二层，
+`dismiss-result` 的出口因此写「领养宠物」，再由它走 `close-adopt` 回小屋。
 
 同理，商店三件用品的「亮态可购买」到 2026-11-15 还没采到（本周额度已用完，
 三行全灰）。2026-11-16 早晨额度刷新后已补采，见下面「亮态购入」。
@@ -67,8 +78,9 @@
 | 动作 | 来源页 | 出口验收 |
 |---|---|---|
 | ``open-adopt`` | 宠物小屋 | ``target_pages`` = 领养弹窗 |
+| ``adopt-free`` | 领养弹窗 | ``target_pages`` = 领养结果 |
 | ``close-adopt`` | 领养弹窗 | ``target_pages`` = 宠物小屋 |
-| ``dismiss-result`` | 领养结果 | ``target_pages`` = 宠物小屋 |
+| ``dismiss-result`` | 领养结果 | ``target_pages`` = 领养弹窗 |
 | ``open-shop`` | 宠物小屋 | ``target_pages`` = 宠物商店 |
 | ``scroll-shop`` | 宠物商店 | ``in_page_evidence`` = 三件宠物用品进入视口 |
 | ``open-purchase`` | 宠物商店 | ``target_pages`` = 购买确认 |
@@ -119,6 +131,7 @@ from auto_game_unified.games.epic7.unknown_screen import UnrecognizedScreen
 class PetAdoptionState(Enum):
     HOUSE = "house"
     ADOPT_POPUP = "adopt_popup"
+    ADOPT_RESULT = "adopt_result"
     SHOP = "shop"
     PURCHASE = "purchase"
     FINISHED = "finished"
@@ -127,6 +140,7 @@ class PetAdoptionState(Enum):
 STATE_LABELS = {
     PetAdoptionState.HOUSE: "宠物小屋",
     PetAdoptionState.ADOPT_POPUP: "领养宠物",
+    PetAdoptionState.ADOPT_RESULT: "领养结果",
     PetAdoptionState.SHOP: "宠物商店",
     PetAdoptionState.PURCHASE: "购买确认",
     PetAdoptionState.FINISHED: "本轮已结束",
@@ -137,6 +151,7 @@ PET_HOUSE_PAGE = "pet_house"
 
 # evidence 页面键 -> 状态。弹窗必须排在小屋前面（半透明遮罩，见模块 docstring）。
 _PAGE_STATES = (
+    ("pet_adoption.adopt_result", PetAdoptionState.ADOPT_RESULT),
     ("pet_adoption.purchase", PetAdoptionState.PURCHASE),
     ("pet_adoption.adopt_popup", PetAdoptionState.ADOPT_POPUP),
     ("pet_adoption.shop_bottom", PetAdoptionState.SHOP),
@@ -146,7 +161,13 @@ _PAGE_STATES = (
 
 # 开局接力可落脚的页面。终态 FINISHED 不是画面，不在名单里。
 _RESUMABLE_STATES = frozenset(
-    {PetAdoptionState.HOUSE, PetAdoptionState.ADOPT_POPUP, PetAdoptionState.SHOP}
+    {
+        PetAdoptionState.HOUSE,
+        PetAdoptionState.ADOPT_POPUP,
+        # 结果弹窗只点「点击关闭」，不花钱 ⇒ 接力过去是安全的，还能省掉重进小屋。
+        PetAdoptionState.ADOPT_RESULT,
+        PetAdoptionState.SHOP,
+    }
 )
 
 # 商店下滑手势（实机验证：一次 500px 就能从上半部滑到底）。
@@ -180,6 +201,9 @@ class PetAdoptionTemplates:
     adopt_modal_title: np.ndarray
     paid_ticket_icon: np.ndarray
     adopt_modal_close: np.ndarray
+    free_adopt_text: np.ndarray
+    free_adopt_hint: np.ndarray
+    adopt_result_title: np.ndarray
     shop_title: np.ndarray
     shop_supplies_section: np.ndarray
     shop_cooldown: np.ndarray
@@ -205,6 +229,9 @@ def build_pet_adoption_templates(template_root: Path) -> PetAdoptionTemplates:
         adopt_modal_title=one("adopt_modal_title"),
         paid_ticket_icon=one("paid_ticket_icon"),
         adopt_modal_close=one("adopt_modal_close"),
+        free_adopt_text=one("free_adopt_text"),
+        free_adopt_hint=one("free_adopt_hint"),
+        adopt_result_title=one("adopt_result_title"),
         shop_title=one("shop_title"),
         shop_supplies_section=one("shop_supplies_section"),
         shop_cooldown=one("shop_cooldown"),
@@ -352,24 +379,71 @@ class PetAdoptionStateMachine:
         )
 
     def _at_adopt_popup(self, screen: np.ndarray):
+        """领养弹窗：**免费优先**，认不准就停。
+
+        ⚠️ 券图标两态都有（付费态是「券 + 数字」，免费态是「券 + 免费」），
+        所以它只能证明"这是个领养弹窗"，**不能证明"今日已领完"**。
+        2026-11-15 版拿券图标当"已用完"的正向证据，2026-11-16 免费额度刷新当天
+        就把免费窗口判成了已用完、白丢一次领养 —— 判据已按下面三条重写：
+
+        * 「免费」二字 + 「可免费领养！」提示条**同时命中** ⇒ 点免费领养；
+        * 两条都不命中、券图标命中 ⇒ 今日已领完，只点「点击关闭」；
+        * 其余组合（只中一条 / 一条都不中）⇒ 证据互相矛盾，安全停止留证。
+        """
+
+        free_text = self._locate(screen, "free_adopt_text")
+        free_hint = self._locate(screen, "free_adopt_hint")
         paid = self._locate(screen, "paid_ticket_icon")
-        if paid is None:
-            # 免费态模板尚未采集。绝不靠「没看见券图标」反推可领 —— 那颗按钮
-            # 在付费态就是要花券的。安全停止并留证，等补图后加正向分支。
-            raise UnrecognizedScreen(
-                "领养弹窗里既没认出「免费」标记、也没认出付费券图标；"
-                "免费领养判据尚未登记，为避免消耗宠物领养券已安全停止"
+
+        if free_text is not None and free_hint is not None:
+            self.adopt_checked = True
+            return self._action(
+                "adopt-free",
+                point=free_text.center,
+                source_page=state_label(PetAdoptionState.ADOPT_POPUP),
+                target_pages=(state_label(PetAdoptionState.ADOPT_RESULT),),
+                reason=(
+                    f"左按钮写「免费」@{free_text.center}、上方有「可免费领养！」"
+                    f"@{free_hint.center} ⇒ 点免费领养，不消耗任何券"
+                ),
             )
+        if free_text is None and free_hint is None and paid is not None:
+            close = self._required(screen, "adopt_modal_close")
+            self.adopt_checked = True
+            return self._action(
+                "close-adopt",
+                point=close.center,
+                source_page=state_label(PetAdoptionState.ADOPT_POPUP),
+                target_pages=(state_label(PetAdoptionState.HOUSE),),
+                reason=(
+                    f"免费标记与免费提示都没出现、只剩付费券@{paid.center}，"
+                    f"今日免费额度已用完；只点底部「点击关闭」@{close.center}"
+                ),
+            )
+        raise UnrecognizedScreen(
+            "领养弹窗的三条证据对不上（免费二字 / 可免费领养提示 / 付费券图标）："
+            f"免费={free_text is not None}、提示={free_hint is not None}、"
+            f"券={paid is not None}；为避免消耗宠物领养券已安全停止"
+        )
+
+    def _at_adopt_result(self, screen: np.ndarray):
+        """领养结果弹窗：只点底部「点击关闭」。
+
+        ⚠️ 右下那颗「再领养一次 · 1」会**消耗 1 张宠物领养券**，绝不当成"继续"。
+        """
+
         close = self._required(screen, "adopt_modal_close")
-        self.adopt_checked = True
         return self._action(
-            "close-adopt",
+            "dismiss-result",
             point=close.center,
-            source_page=state_label(PetAdoptionState.ADOPT_POPUP),
-            target_pages=(state_label(PetAdoptionState.HOUSE),),
+            source_page=state_label(PetAdoptionState.ADOPT_RESULT),
+            # ⚠️ 关掉结果弹窗露出的是**下面的领养弹窗**，不是小屋（2026-11-16 08:24
+            # 实跑实测：期望小屋、实际停在「领养宠物」，转场超时）。结果页是盖在
+            # 领养弹窗上的第二层，所以出口写「领养宠物」，再由它走 close-adopt 回小屋。
+            target_pages=(state_label(PetAdoptionState.ADOPT_POPUP),),
             reason=(
-                f"左按钮是付费券领养@{paid.center}，今日免费额度已用完；"
-                f"只点底部「点击关闭」@{close.center}，不碰任何领养按钮"
+                f"领养结果已出，点底部「点击关闭」@{close.center} 回到领养弹窗；"
+                "右下「再领养一次」要花券，不碰"
             ),
         )
 
@@ -538,6 +612,7 @@ class PetAdoptionStateMachine:
         handler = {
             PetAdoptionState.HOUSE: self._at_house,
             PetAdoptionState.ADOPT_POPUP: self._at_adopt_popup,
+            PetAdoptionState.ADOPT_RESULT: self._at_adopt_result,
             PetAdoptionState.SHOP: self._at_shop,
             PetAdoptionState.PURCHASE: self._at_purchase,
         }[page]
@@ -604,6 +679,7 @@ class PetAdoptionRunner(ModeRunnerBase):
     _TIMEOUT_SECONDS = {
         PetAdoptionState.HOUSE: 45,
         PetAdoptionState.ADOPT_POPUP: 45,
+        PetAdoptionState.ADOPT_RESULT: 45,
         PetAdoptionState.SHOP: 60,
         PetAdoptionState.PURCHASE: 45,
         PetAdoptionState.FINISHED: 45,
@@ -615,6 +691,8 @@ class PetAdoptionRunner(ModeRunnerBase):
     _SHORT_RETRY_ACTIONS = frozenset(
         {
             "open-adopt",
+            "adopt-free",
+            "dismiss-result",
             "close-adopt",
             "open-shop",
             "scroll-shop",
