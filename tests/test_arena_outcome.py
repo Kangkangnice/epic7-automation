@@ -86,15 +86,29 @@ def erase_victory_banner(screen: np.ndarray) -> np.ndarray:
     return screen
 
 
+class _ReplayLast:
+    """按顺序给帧，给完之后一直返回最后一帧（模拟"画面没变"）。"""
+
+    def __init__(self, frames: list[np.ndarray]) -> None:
+        self._frames = frames or [np.zeros((1132, 1982, 3), np.uint8)]
+
+    def __call__(self):
+        if len(self._frames) > 1:
+            return self._frames.pop(0)
+        return self._frames[0]
+
+
 def make_runner(
     frames: list[np.ndarray] | None = None,
 ) -> tuple[ArenaRunner, mock.MagicMock, ArenaStateMachine]:
     """搭一个「战斗监督直接宣布到结算页」的 Runner。
 
-    ``frames`` 按顺序喂给 ``runtime.capture``：``_record_outcome`` 每局读一帧。
+    ``frames`` 按顺序喂给 ``runtime.capture``：``_record_outcome`` 每局至少读一帧，
+    认不出时还会再补两帧（2026-11-16 起），所以候选用完后**一直重放最后一帧**，
+    不让 StopIteration 冒充业务结论。
     """
     runtime = mock.MagicMock()
-    runtime.capture.side_effect = list(frames or [])
+    runtime.capture.side_effect = _ReplayLast(list(frames or []))
     machine = new_machine()
     supervisor = mock.MagicMock()
     supervisor.run.return_value = BattleOutcome.RESULT_REACHED
@@ -212,6 +226,42 @@ class OutcomeRecordingTests(unittest.TestCase):
         self.assertEqual(0, runner.outcome_tally[ArenaOutcome.WIN])
         self.assertEqual(0, runner.outcome_tally[ArenaOutcome.LOSE])
         self.assertEqual(1, runner.outcome_tally[ArenaOutcome.UNKNOWN])
+
+class UnknownOutcomeEvidenceTests(unittest.TestCase):
+    """认不出胜负时必须留证：三个锚点的分数进日志、整帧存成诊断。"""
+
+    def test_unknown_logs_the_three_scores_and_saves_the_frame(self):
+        runner, runtime, _machine = make_runner([np.zeros((1132, 1982, 3), np.uint8)])
+
+        runner._run_committed_battle(cycle=3)
+
+        self.assertEqual(1, runner.outcome_tally[ArenaOutcome.UNKNOWN])
+        logged = " ".join(str(call.args[0]) for call in runtime.log.call_args_list)
+        self.assertIn("战绩认不出 锚点分数", logged)
+        self.assertIn("result_victory=", logged)
+        self.assertIn("result_defeat=", logged)
+        runtime.save_diagnostic.assert_called_once()
+        self.assertIn("outcome_unknown_round3", runtime.save_diagnostic.call_args.args[0])
+
+    def test_missing_diagnostic_dir_never_breaks_the_tally(self):
+        """没配诊断目录（单测 / 干跑）只跳过留证，不许反过来带崩记账。"""
+        runner, runtime, _machine = make_runner([np.zeros((1132, 1982, 3), np.uint8)])
+        runtime.save_diagnostic.side_effect = RuntimeError("未配置诊断截图目录")
+
+        runner._run_committed_battle(cycle=4)
+
+        self.assertEqual(1, runner.outcome_tally[ArenaOutcome.UNKNOWN])
+
+    def test_a_fading_banner_is_read_again_before_calling_it_unknown(self):
+        """第一帧两个横幅都没画完、第二帧 VICTORY 出现 ⇒ 记成胜，不是未知。"""
+        blank = np.zeros((1132, 1982, 3), np.uint8)
+        runner, runtime, _machine = make_runner([blank, blank, arena_fixture("result")])
+
+        runner._record_outcome(cycle=5)
+
+        self.assertEqual(1, runner.outcome_tally[ArenaOutcome.WIN])
+        runtime.save_diagnostic.assert_not_called()
+
 
 class OutcomeSummaryTests(unittest.TestCase):
     """给通知/控制台用的那一行文案。"""

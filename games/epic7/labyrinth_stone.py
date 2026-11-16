@@ -1433,15 +1433,19 @@ class LabyrinthStoneRunner(ModeRunnerBase):
         return done
 
     def route_note(self) -> str:
-        """给每日任务结算用的一句话收获：复用收尾账单里现成的件数与行号。"""
+        """给每日任务结算用的一句话收获：只报件数。
+
+        ⚠️ 不写「第 N 行」（用户 2026-11-16 明确要求）：行号是程序内部的落点，
+        结算行是给人看收获的，混进去只是噪音。行号仍在过程日志与收尾账单里。
+        """
+
         if self.runtime.dry_run:
             return ""
         if getattr(self.machine, "already_explored", False):
             return "1 区域当日探险已完成"
         if not self.machine.bought:
             return "本轮未购入目标商品"
-        rows = "、".join(f"第 {row} 行" for row in self.machine.purchase_rows)
-        return f"购入目标商品 {self.machine.bought} 件（强化石 / 友情点数 / 书签，{rows}）"
+        return f"购入目标商品 {self.machine.bought} 件（强化石 / 友情点数 / 书签）"
 
     def _log_cycle_completed(self) -> None:
         reason = getattr(self.machine, "finish_reason", "")
