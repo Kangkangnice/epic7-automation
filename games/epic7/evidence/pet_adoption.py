@@ -50,6 +50,9 @@ from auto_game_unified.games.epic7.evidence.common import (
     EvidenceProfile,
     PageEvidence,
 )
+from auto_game_unified.games.epic7.evidence.penguin_purchase import (
+    REGIONS as _PENGUIN_REGIONS,
+)
 
 REFERENCE_SIZE = (1982, 1132)
 DEFAULT_THRESHOLD = 0.80
@@ -80,6 +83,16 @@ REGIONS: dict[str, tuple[int, int, int, int]] = {
     # 灰态「小时后可购买」固定文字；三行共用一个宽区域逐行检出。
     # 同理放宽到整列，避免滚动位置变化后漏检某几行。
     "shop_cooldown": (720, 200, 320, 920),
+    # 三件用品的**商品名**（2026-11-16 采到的亮态帧）：「一般饲料」1 行、
+    # 「宠物玩具」2 行。为什么用名字定位而不是「购买」两个字：领养券那两行也有
+    # 「购买」，只有商品名能把"用品行"与"券行"分开，避免误点 500 天空石的礼包。
+    # 区域罩整列（高 620）而不是只罩某一行：滚动落点差几十像素是常态。
+    "supply_food_name": (1020, 500, 210, 620),
+    "supply_toy_name": (1020, 500, 210, 620),
+    # 购买确认框「购买商品」标题与右下绿色「购买」两字：**复用企鹅批量购买那一套**
+    # （同一个弹窗、同一处字），区域也直接用它的，不抄第二份数字。
+    "confirm_title": _PENGUIN_REGIONS["quantity_title"],
+    "confirm_buy": _PENGUIN_REGIONS["quantity_buy_text"],
 }
 
 THRESHOLDS = {key: DEFAULT_THRESHOLD for key in REGIONS}
@@ -90,8 +103,18 @@ THRESHOLDS["adopt_modal_close"] = 0.80
 _TEMPLATE_PATHS = {key: f"{key}.png" for key in REGIONS}
 # 三行冷却共用同一张模板；逐行检出用 ``cooldown_rows``，不走页面组合。
 _TEMPLATE_PATHS["shop_cooldown"] = "shop_cooldown.png"
+# 购买确认框的两颗图**复用企鹅批量购买**的（同一个弹窗），不复制副本。
+_TEMPLATE_PATHS["confirm_title"] = "../penguin_purchase/quantity_title.png"
+_TEMPLATE_PATHS["confirm_buy"] = "../penguin_purchase/quantity_buy_text.png"
 
 _PAGES = (
+    # 购买确认框在最前：它盖住商店，底页标题仍是 0.9998（2026-11-16 实测），
+    # 所以「标题 + 购买两字 + 商店标题」同时命中才认，别的路线的同一个弹窗
+    # （企鹅批量购买）底页没有「宠物商店」⇒ 不会串。
+    PageEvidence(
+        "pet_adoption.purchase",
+        required=("confirm_title", "confirm_buy", "shop_title"),
+    ),
     # 弹窗在前：半透明遮罩下小屋标题仍是 0.9996（见模块 docstring）。
     PageEvidence("pet_adoption.adopt_popup", required=("adopt_modal_title",)),
     # 商店滑到底：标题 + 三件用品区同时出现。
