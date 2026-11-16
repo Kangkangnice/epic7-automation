@@ -180,8 +180,9 @@ class WeeklyRankSelectTemplates:
 
     ``title`` = 排他锚点（紧裁「每周排名选择奖励」白字 366x52；真帧 1.0000，
     442 张夹具在同一 ROI 口径下最高 0.5267）；``sky_stone`` = 左侧天空石卡片整块
-    127x127（真帧 1.0000，反例最高 0.7357）；``confirm`` = 底部按钮文字 213x38
-    （真帧 1.0000，反例最高 0.3730）。
+    127x127（真帧 1.0000，反例最高 0.7357）；``mystic`` = 右侧神秘奖励卡片整块
+    127x127（2026-11-16 用户要求「可选神秘书签」时补采，同一夹具真帧 1.0000）；
+    ``confirm`` = 底部按钮文字 213x38（真帧 1.0000，反例最高 0.3730）。
 
     ⚠️ 三张图都裁自**模拟器**现场帧。PC 端会压低文字类锚点（见
     ``PC_TEMPLATE_MIGRATION.md``），真要在 PC 上跑这条时，先量一次分数再决定是否补
@@ -190,6 +191,7 @@ class WeeklyRankSelectTemplates:
 
     title: np.ndarray
     sky_stone: np.ndarray
+    mystic: np.ndarray
     confirm: np.ndarray
 
 
@@ -469,7 +471,10 @@ _WEEKLY_RANK_START_THRESHOLD = 0.88
 # 现场：11:41 模拟器每日任务，紧跟在上一类通知之后；标题在 y ~307、两张卡片在
 # y 575~702、领取按钮文字在 y ~837。三块 ROI 都按这一层自己定。
 _WEEKLY_RANK_SELECT_TITLE_REGION = (740, 275, 460, 110)
-_WEEKLY_RANK_SELECT_CARD_REGION = (735, 535, 210, 200)
+# 两张奖励卡并排：左边天空石、右边神秘。区域**必须同时罩住两张** —— 2026-11-16 加
+# 神秘选项时实测：只罩左边那张，右侧的模板根本搜不到。两张模板交叉分数只有 0.3273，
+# 所以放宽区域不会出现「要 A 却匹配到 B」。
+_WEEKLY_RANK_SELECT_CARD_REGION = (735, 535, 430, 200)
 _WEEKLY_RANK_SELECT_CONFIRM_REGION = (820, 800, 300, 100)
 # 亮度判据的区域：正好框住「领取选择的奖励」这六个字（不掺按钮底色）。
 _WEEKLY_RANK_SELECT_CONFIRM_TEXT_REGION = (853, 831, 213, 38)
@@ -698,6 +703,7 @@ def load_weekly_rank_select_templates(
     return WeeklyRankSelectTemplates(
         title=load_template(str(template_dir / "weekly_rank_select_title.png")),
         sky_stone=load_template(str(template_dir / "weekly_rank_select_sky_stone.png")),
+        mystic=load_template(str(template_dir / "weekly_rank_select_mystic.png")),
         confirm=load_template(str(template_dir / "weekly_rank_select_confirm.png")),
     )
 
@@ -1475,6 +1481,8 @@ def _weekly_rank_select_confirm_lit(screen: np.ndarray) -> bool:
 def find_weekly_rank_select_action(
     screen: np.ndarray,
     templates: WeeklyRankSelectTemplates,
+    *,
+    reward: str = "diamond",
 ) -> tuple[Match, str] | None:
     """认「每周排名选择奖励」弹窗，返回**这一次该点哪里**和动作名。
 
@@ -1504,16 +1512,23 @@ def find_weekly_rank_select_action(
         return None
     if _weekly_rank_select_confirm_lit(screen):
         return Match(confirm.center, min(title.score, confirm.score)), "claim-weekly-rank-select"
-    stone = find_template(
+    # 用户 2026-11-16：默认仍选钻石（左侧 800 天空石），但可改成神秘书签。
+    # 认不出要选的那张卡就返回 None（守卫按"没认出"处理），**绝不退回另一张**——
+    # 一周只能领一次，领错就没了。
+    wish_mystic = reward == "mystic"
+    card = find_template(
         screen,
-        templates.sky_stone,
+        templates.mystic if wish_mystic else templates.sky_stone,
         _WEEKLY_RANK_SELECT_THRESHOLD,
         region=_WEEKLY_RANK_SELECT_CARD_REGION,
         reference_size=_REFERENCE_SIZE,
     )
-    if stone is None:
+    if card is None:
         return None
-    return Match(stone.center, min(title.score, stone.score)), "select-weekly-rank-diamond"
+    action = (
+        "select-weekly-rank-mystic" if wish_mystic else "select-weekly-rank-diamond"
+    )
+    return Match(card.center, min(title.score, card.score)), action
 
 
 def find_web_network_error_close(
@@ -1608,6 +1623,8 @@ class Epic7GlobalPopupGuard:
         battle_record_templates: BattleRecordTemplates | None = None,
         weekly_rank_start_templates: WeeklyRankStartTemplates | None = None,
         weekly_rank_select_templates: WeeklyRankSelectTemplates | None = None,
+        # 「每周排名选择奖励」二选一里要哪一张：``diamond``（默认）/ ``mystic``。
+        weekly_reward: str = "diamond",
         knights_growth_rank_templates: KnightsGrowthRankTemplates | None = None,
         pet_gift_templates: PetGiftTemplates | None = None,
         web_network_error_templates: WebNetworkErrorTemplates | None = None,
@@ -1642,6 +1659,8 @@ class Epic7GlobalPopupGuard:
         self.battle_record_templates = battle_record_templates
         self.weekly_rank_start_templates = weekly_rank_start_templates
         self.weekly_rank_select_templates = weekly_rank_select_templates
+        # 只认两个值：``mystic`` 才换卡，其余（含手改坏的存档值）一律回落到钻石。
+        self.weekly_reward = "mystic" if weekly_reward == "mystic" else "diamond"
         self.knights_growth_rank_templates = knights_growth_rank_templates
         self.pet_gift_templates = pet_gift_templates
         self.web_network_error_templates = web_network_error_templates
@@ -1930,7 +1949,9 @@ class Epic7GlobalPopupGuard:
                 )
         if self.weekly_rank_select_templates is not None:
             choice = find_weekly_rank_select_action(
-                screen, self.weekly_rank_select_templates
+                screen,
+                self.weekly_rank_select_templates,
+                reward=self.weekly_reward,
             )
             if choice is not None:
                 match, action = choice

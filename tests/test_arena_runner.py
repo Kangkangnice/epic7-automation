@@ -1,3 +1,4 @@
+from dataclasses import replace
 from pathlib import Path
 import unittest
 from unittest.mock import MagicMock
@@ -22,6 +23,10 @@ from auto_game_unified.games.epic7.template_paths import TemplateDir
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURES = ROOT / "tests" / "fixtures" / "epic7_arena"
 TEMPLATES = ROOT / "games" / "epic7" / "templates"
+
+
+def _npc_machine() -> ArenaStateMachine:
+    return ArenaStateMachine(build_templates(TEMPLATES))
 
 
 def fixture(name: str) -> np.ndarray:
@@ -387,3 +392,55 @@ class ArenaRunnerTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class NpcTabTests(unittest.TestCase):
+    """「交战对手」与「NPC对战」是同一页的两个页签，只差入口那一下点击。
+
+    2026-11-16 用户口径：结算日「交战对手」页签变灰点不动，那就退回 NPC 对战；
+    两者后面的选行 / 挑战 / 队伍选择 / 结算完全一样（实机逐帧核对过）。
+    """
+
+    def test_npc_tab_is_switched_back_to_challenge_first(self):
+        machine = _npc_machine()
+        action = machine.next_action(fixture("npc_list"))
+
+        self.assertEqual("switch-to-challenge-tab", action.name)
+        # 右菜单「交战对手」页签的落点（2026-11-16 实测 1661,228）。
+        self.assertEqual((1661, 228), action.point)
+        # 目标仍写列表：NPC 页也满足这条判据 ⇒ 点不动时转场照样成立，不报超时。
+        self.assertEqual((ArenaState.LIST,), action.target_states)
+
+    def test_after_the_tab_check_the_npc_page_plays_like_a_normal_list(self):
+        """切不过去（结算日变灰）时，第二次问就该按 NPC 页直接选行。"""
+        machine = _npc_machine()
+        machine.next_action(fixture("npc_list"))
+        action = machine.next_action(fixture("npc_list"))
+
+        self.assertEqual("select-opponent", action.name)
+        self.assertEqual(ArenaState.LIST, action.source_state)
+
+    def test_a_normal_list_never_triggers_the_tab_switch(self):
+        machine = _npc_machine()
+        action = machine.next_action(fixture("list"))
+
+        self.assertEqual("select-opponent", action.name)
+
+    def test_preview_does_not_consume_the_one_shot_tab_check(self):
+        machine = _npc_machine()
+        machine.preview(fixture("npc_list"))
+
+        self.assertFalse(machine._npc_tab_checked)
+        self.assertEqual(
+            "switch-to-challenge-tab", machine.next_action(fixture("npc_list")).name
+        )
+
+    def test_missing_template_keeps_the_old_behaviour(self):
+        """没采到 NPC 标题图时恒当「不在 NPC 页」，行为与旧版一致。"""
+        templates = build_templates(TEMPLATES)
+        without = replace(templates, npc_title=None)
+        machine = ArenaStateMachine(without)
+
+        action = machine.next_action(fixture("npc_list"))
+
+        self.assertEqual("select-opponent", action.name)

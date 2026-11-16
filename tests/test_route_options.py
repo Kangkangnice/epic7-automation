@@ -20,6 +20,8 @@ class OptionDeclarationTests(unittest.TestCase):
     def test_defaults_keep_previous_behaviour(self):
         self.assertEqual(
             {
+                # 2026-11-16 用户要求：周结算奖励可选，默认仍是钻石。
+                "weekly_reward": "diamond",
                 "opponent_preference": "none",
                 # 两份名单默认为空 = 不筛选（改动前的行为）；冲突处置默认黑名单优先。
                 "hero_blacklist": (),
