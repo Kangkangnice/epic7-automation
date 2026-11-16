@@ -311,6 +311,13 @@ OUTCOME_LABELS = {
     ArenaOutcome.UNKNOWN: "未知",
 }
 
+# 「NPC交战对手」页标题的搜索区与阈值（2026-11-16 实测：NPC 页 1.0000、
+# 普通列表 0.3898、队伍选择 0.2141 ⇒ 0.88 两侧余量都厚）。
+_NPC_TITLE_REGION = (400, 170, 340, 120)
+_NPC_TITLE_THRESHOLD = 0.88
+# 右菜单「交战对手」页签的中心（2026-11-16 实测；与「NPC对战」页签同一列）。
+_CHALLENGE_TAB_POINT = (1661, 228)
+
 # VS 段位确认页（PC 独有）的搜索区与阈值。
 # 区取底部居中（x[700,1480] y[930,1132]），与结算页右下角的「确认」(x[1500,1920]) 不重叠；
 # 只裁绿色「确认」按钮本身，段位（铜牌/银牌…）文字一律不进模板，保证普适。
@@ -381,6 +388,9 @@ class ArenaTemplates:
     # `rank_confirm` 会命中它 ⇒ 点在盖住的按钮上纹丝不动 ⇒ 42 秒转场超时。
     # 只有 pc/ 有图 ⇒ 模拟器为 None ⇒ 仍走老的 `rank_confirm`，行为一字不变。
     rank_close_hint: "np.ndarray | None" = None
+    # 「NPC交战对手」页标题（2026-11-16 采）：用来判断当前停在哪个页签。
+    # 可选素材：没采到就当成「不在 NPC 页」，行为与旧版一致。
+    npc_title: "np.ndarray | None" = None
     # 付费刷新与天空石报价的画面证据。缺图时加载成 None：对应动作不执行，
     # 路线按「证据不足」安全停止，绝不猜测点击。
     # ⚠️ 带默认值的字段必须排在所有无默认值字段之后（dataclass 约束）。
@@ -412,6 +422,11 @@ def build_templates(template_dir: Path) -> ArenaTemplates:
         ),
         rank_promotion_arrow=load_template(
             str(template_dir / "global" / "arena_rank_promotion_arrow.png")
+        ),
+        npc_title=(
+            load_template(str(template_dir / "arena_npc_title.png"))
+            if (template_dir / "arena_npc_title.png").is_file()
+            else None
         ),
         list_ready=load_template(str(template_dir / "list_ready.png")),
         challenge=load_template(str(template_dir / "challenge.png")),
@@ -568,6 +583,9 @@ class ArenaStateMachine:
         # 「接力」进来的落点；None = 本轮是正常从入口开始的。Runner 靠它判断
         # 「局内接力」要不要跳过状态机直接把这一局交给战斗监督。
         self.resumed_from: Optional[ArenaState] = None
+        # 「停在 NPC 页签时先试着切回交战对手」这件事一轮只做一次。切不过去
+        # （结算日该页签变灰点不动）就直接按 NPC 页打 —— 两者后面的流程完全一样。
+        self._npc_tab_checked = False
 
     def commit(self, action: Action, target: ArenaState) -> None:
         if action.source_state is not self.state:
@@ -630,6 +648,21 @@ class ArenaStateMachine:
 
     def _visible(self, screen: np.ndarray, template_name: str) -> bool:
         return self._locate(screen, template_name) is not None
+
+    def _on_npc_page(self, screen: np.ndarray) -> bool:
+        """当前是不是停在「NPC交战对手」页签上（缺图时恒 False，行为同旧版）。"""
+
+        template = self.templates.npc_title
+        if template is None:
+            return False
+        match = find_template(
+            screen,
+            template,
+            _NPC_TITLE_THRESHOLD,
+            region=_NPC_TITLE_REGION,
+            reference_size=self._REFERENCE_SIZE,
+        )
+        return match is not None
 
     def outcome_scores(self, screen: np.ndarray) -> dict[str, float]:
         """三个结果锚点的原始最高分（只给"认不出"时的诊断用，不参与判定）。"""
@@ -1211,6 +1244,29 @@ class ArenaStateMachine:
             self.state = ArenaState.LIST
             return self._list_action(screen)
 
+        # 「交战对手」与「NPC对战」是同一页的两个页签，后面的选行 / 挑战 / 队伍选择 /
+        # 结算完全一样（2026-11-16 实机逐帧核对：选中后两颗判据分数逐位相同）。
+        # 所以这里只做一件事：**先试着停在交战对手**。
+        #   * 正常日子：点一下页签就切过去，后面照旧打玩家；
+        #   * 结算日：交战对手变灰点不动，画面仍停在 NPC 页 ⇒ 判定为「切不过去」，
+        #     直接按 NPC 页打（`_list_action` 在 NPC 页上量过：三行"能不能打"全是 True）。
+        if self._on_npc_page(screen) and not self._npc_tab_checked:
+            self._npc_tab_checked = True
+            return Action(
+                name="switch-to-challenge-tab",
+                point=_CHALLENGE_TAB_POINT,
+                # 转场契约要求来源/目标都写清：来源是列表（NPC 页也是列表），
+                # 目标是同一个列表 —— 这一下本来就不换页，只换页签。
+                source_state=ArenaState.LIST,
+                # 目标仍写「对手列表」：NPC 页本身也满足这条判据，所以点不动时
+                # 转场照样算成立，不会因为"点不动"而报超时 —— 这正是要的语义。
+                target_states=(ArenaState.LIST,),
+                reason=(
+                    "当前停在「NPC交战对手」页签；先点右菜单「交战对手」切回玩家对战"
+                    "（结算日该页签会变灰点不动，那就直接打 NPC）"
+                ),
+            )
+
         if not self.is_in_state(screen, self.state):
             raise UnrecognizedScreen(
                 f"竞技场画面[{state_label(self.state)}]未识别"
@@ -1251,6 +1307,8 @@ class ArenaStateMachine:
             self.completed_cycles,
             self._selected_opponent,
             self._cycle_pending,
+            # 试算那一趟会把「已看过页签」记上，不还回去的话真跑时就不再切页签了。
+            self._npc_tab_checked,
         )
         try:
             action = self.next_action(screen)
@@ -1260,8 +1318,9 @@ class ArenaStateMachine:
                 self.state,
                 self.completed_cycles,
                 self._selected_opponent,
-            self._cycle_pending,
-        ) = snapshot
+                self._cycle_pending,
+                self._npc_tab_checked,
+            ) = snapshot
 
 
 # 「接力」探测顺序 —— **顺序即优先级**，不能改。
