@@ -50,6 +50,9 @@ from auto_game_unified.games.epic7.evidence.common import (
     EvidenceProfile,
     PageEvidence,
 )
+from auto_game_unified.games.epic7.evidence.penguin_purchase import (
+    REGIONS as _PENGUIN_REGIONS,
+)
 
 REFERENCE_SIZE = (1982, 1132)
 DEFAULT_THRESHOLD = 0.80
@@ -67,6 +70,14 @@ REGIONS: dict[str, tuple[int, int, int, int]] = {
     "paid_ticket_icon": (545, 910, 110, 110),
     # 领养弹窗底部「点击关闭」。
     "adopt_modal_close": (850, 1040, 300, 80),
+    # 免费态（2026-11-16 采到，额度刷新当天）：左按钮上的**金色「免费」二字**，
+    # 以及按钮上方「N/N可免费领养！」的提示条 —— 模板只裁「可免费领养！」，
+    # 不含会变的数字。⚠️ 券图标两态都有（付费态是券 + 数字，免费态是券 + 免费），
+    # **不能拿它判"今日已领完"**：2026-11-15 版就是这么误判的，白丢一天免费领养。
+    "free_adopt_text": (580, 920, 320, 100),
+    "free_adopt_hint": (650, 850, 260, 80),
+    # 领养结果弹窗顶部紫色横幅「领养结果」。
+    "adopt_result_title": (820, 160, 280, 90),
     # 商店左上「宠物商店」四字。
     "shop_title": (60, 45, 240, 100),
     # 滑到底的证据：第一行「宠物用品 / 一般饲料」固定文字。
@@ -80,6 +91,16 @@ REGIONS: dict[str, tuple[int, int, int, int]] = {
     # 灰态「小时后可购买」固定文字；三行共用一个宽区域逐行检出。
     # 同理放宽到整列，避免滚动位置变化后漏检某几行。
     "shop_cooldown": (720, 200, 320, 920),
+    # 三件用品的**商品名**（2026-11-16 采到的亮态帧）：「一般饲料」1 行、
+    # 「宠物玩具」2 行。为什么用名字定位而不是「购买」两个字：领养券那两行也有
+    # 「购买」，只有商品名能把"用品行"与"券行"分开，避免误点 500 天空石的礼包。
+    # 区域罩整列（高 620）而不是只罩某一行：滚动落点差几十像素是常态。
+    "supply_food_name": (1020, 500, 210, 620),
+    "supply_toy_name": (1020, 500, 210, 620),
+    # 购买确认框「购买商品」标题与右下绿色「购买」两字：**复用企鹅批量购买那一套**
+    # （同一个弹窗、同一处字），区域也直接用它的，不抄第二份数字。
+    "confirm_title": _PENGUIN_REGIONS["quantity_title"],
+    "confirm_buy": _PENGUIN_REGIONS["quantity_buy_text"],
 }
 
 THRESHOLDS = {key: DEFAULT_THRESHOLD for key in REGIONS}
@@ -90,8 +111,21 @@ THRESHOLDS["adopt_modal_close"] = 0.80
 _TEMPLATE_PATHS = {key: f"{key}.png" for key in REGIONS}
 # 三行冷却共用同一张模板；逐行检出用 ``cooldown_rows``，不走页面组合。
 _TEMPLATE_PATHS["shop_cooldown"] = "shop_cooldown.png"
+# 购买确认框的两颗图**复用企鹅批量购买**的（同一个弹窗），不复制副本。
+_TEMPLATE_PATHS["confirm_title"] = "../penguin_purchase/quantity_title.png"
+_TEMPLATE_PATHS["confirm_buy"] = "../penguin_purchase/quantity_buy_text.png"
 
 _PAGES = (
+    # 领养结果弹窗在最前：它盖在领养弹窗上，领养弹窗标题在这帧掉到 0.7815，
+    # 顺序反了就会把结果页当成"还可以领"的弹窗。
+    PageEvidence("pet_adoption.adopt_result", required=("adopt_result_title",)),
+    # 购买确认框：它盖住商店，底页标题仍是 0.9998（2026-11-16 实测），
+    # 所以「标题 + 购买两字 + 商店标题」同时命中才认，别的路线的同一个弹窗
+    # （企鹅批量购买）底页没有「宠物商店」⇒ 不会串。
+    PageEvidence(
+        "pet_adoption.purchase",
+        required=("confirm_title", "confirm_buy", "shop_title"),
+    ),
     # 弹窗在前：半透明遮罩下小屋标题仍是 0.9996（见模块 docstring）。
     PageEvidence("pet_adoption.adopt_popup", required=("adopt_modal_title",)),
     # 商店滑到底：标题 + 三件用品区同时出现。

@@ -205,7 +205,7 @@ ROUTE_OPTIONS: dict[str, tuple[RouteOption, ...]] = {
             label="购买一般饲料",
             kind="choice",
             default="no",
-            note="宠物商店底部的一般饲料可购买时购入。一周可购买 3 次，由游戏内次数决定。",
+            note="宠物商店底部的一般饲料可购买时购入，每轮最多 1 件。一周可购买 3 次，由游戏内次数决定。",
             choices=(("yes", "购买"), ("no", "不购买")),
         ),
         RouteOption(
@@ -213,7 +213,7 @@ ROUTE_OPTIONS: dict[str, tuple[RouteOption, ...]] = {
             label="购买宠物玩具",
             kind="choice",
             default="no",
-            note="宠物商店底部的两种宠物玩具可购买时购入。每种一周可购买 1 次。",
+            note="宠物商店底部的两种宠物玩具可购买时各购入 1 件，每轮每种最多 1 件。每种一周可购买 1 次。",
             choices=(("yes", "购买"), ("no", "不购买")),
         ),
     ),
