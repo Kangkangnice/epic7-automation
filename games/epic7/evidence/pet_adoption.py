@@ -70,6 +70,14 @@ REGIONS: dict[str, tuple[int, int, int, int]] = {
     "paid_ticket_icon": (545, 910, 110, 110),
     # 领养弹窗底部「点击关闭」。
     "adopt_modal_close": (850, 1040, 300, 80),
+    # 免费态（2026-11-16 采到，额度刷新当天）：左按钮上的**金色「免费」二字**，
+    # 以及按钮上方「N/N可免费领养！」的提示条 —— 模板只裁「可免费领养！」，
+    # 不含会变的数字。⚠️ 券图标两态都有（付费态是券 + 数字，免费态是券 + 免费），
+    # **不能拿它判"今日已领完"**：2026-11-15 版就是这么误判的，白丢一天免费领养。
+    "free_adopt_text": (580, 920, 320, 100),
+    "free_adopt_hint": (650, 850, 260, 80),
+    # 领养结果弹窗顶部紫色横幅「领养结果」。
+    "adopt_result_title": (820, 160, 280, 90),
     # 商店左上「宠物商店」四字。
     "shop_title": (60, 45, 240, 100),
     # 滑到底的证据：第一行「宠物用品 / 一般饲料」固定文字。
@@ -108,7 +116,10 @@ _TEMPLATE_PATHS["confirm_title"] = "../penguin_purchase/quantity_title.png"
 _TEMPLATE_PATHS["confirm_buy"] = "../penguin_purchase/quantity_buy_text.png"
 
 _PAGES = (
-    # 购买确认框在最前：它盖住商店，底页标题仍是 0.9998（2026-11-16 实测），
+    # 领养结果弹窗在最前：它盖在领养弹窗上，领养弹窗标题在这帧掉到 0.7815，
+    # 顺序反了就会把结果页当成"还可以领"的弹窗。
+    PageEvidence("pet_adoption.adopt_result", required=("adopt_result_title",)),
+    # 购买确认框：它盖住商店，底页标题仍是 0.9998（2026-11-16 实测），
     # 所以「标题 + 购买两字 + 商店标题」同时命中才认，别的路线的同一个弹窗
     # （企鹅批量购买）底页没有「宠物商店」⇒ 不会串。
     PageEvidence(

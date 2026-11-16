@@ -67,6 +67,8 @@ def machine(templates, **kwargs) -> PetAdoptionStateMachine:
         # 2026-11-16 额度刷新后采到的亮态与购买确认框。
         ("shop_bottom_bright", PetAdoptionState.SHOP),
         ("purchase_modal", PetAdoptionState.PURCHASE),
+        ("adopt_popup_free", PetAdoptionState.ADOPT_POPUP),
+        ("adopt_result", PetAdoptionState.ADOPT_RESULT),
     ],
 )
 def test_recognizes_its_own_pages(templates, fixture, expected):
@@ -159,16 +161,26 @@ def test_preview_does_not_advance_progress(templates):
 
 
 def test_unknown_adopt_popup_stops_without_any_click(templates):
-    """认不出免费 / 付费两态：安全停止，绝不点任何领养按钮。
-
-    把券图标涂黑，模拟明天免费额度刷新后（免费标记尚未登记）的画面。
-    """
+    """三条证据互相矛盾（只抹掉券图标）：安全停止，绝不点任何领养按钮。"""
     frame = load("adopt_popup_paid").copy()
     frame[935:1003, 565:627] = 0
     m = machine(templates)
-    with pytest.raises(UnrecognizedScreen, match="免费领养判据尚未登记"):
+    with pytest.raises(UnrecognizedScreen, match="三条证据对不上"):
         m.next_action(frame)
     assert m.adopt_checked is False
+
+
+def test_mixed_free_evidence_stops_instead_of_guessing(templates):
+    """只认出「免费」但提示条没了 ⇒ 证据不齐，安全停止（不点免费也不点关闭）。
+
+    这条守的是"宁可少领一次，也不在两种解释之间猜"：免费窗口一天只有一次，
+    猜错就是花券或者白丢。
+    """
+    frame = load("adopt_popup_free").copy()
+    frame[868:920, 700:866] = 0
+    m = machine(templates)
+    with pytest.raises(UnrecognizedScreen, match="三条证据对不上"):
+        m.next_action(frame)
 
 
 def test_black_frame_does_not_produce_a_click(templates):
@@ -183,7 +195,28 @@ def test_paid_state_never_clicks_a_ticket_button(templates):
     action = m.next_action(load("adopt_popup_paid"))
     assert action.name == "close-adopt"
     assert action.point == (992, 1090)
-    assert "不碰任何领养按钮" in action.reason
+    assert "只点底部「点击关闭」" in action.reason
+
+
+def test_free_state_adopts_without_spending_anything(templates):
+    """免费态（券图标也在）：点的是「免费」二字，目标是领养结果，不花券。"""
+    m = machine(templates)
+    action = m.next_action(load("adopt_popup_free"))
+    assert action.name == "adopt-free"
+    assert action.target_pages == ("领养结果",)
+    assert action.point == (640, 965)
+    assert m.adopt_checked is True
+
+
+def test_result_popup_only_closes_never_adopts_again(templates):
+    """结果弹窗只点「点击关闭」；右下「再领养一次」要花券，坐标不在动作里。"""
+    m = machine(templates)
+    action = m.next_action(load("adopt_result"))
+    assert action.name == "dismiss-result"
+    # 关掉结果弹窗露出的是下面的领养弹窗（2026-11-16 实跑实测），不是小屋。
+    assert action.target_pages == ("领养宠物",)
+    assert action.point == (992, 1090)
+    assert "再领养一次" in action.reason
 
 
 def test_bright_row_opens_the_purchase_dialog(templates):
