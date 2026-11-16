@@ -510,9 +510,10 @@ def test_labyrinth_note_reports_what_was_bought():
         "labyrinth_stone", already_explored=False, bought=3,
         purchase_rows=[1, 3, 5],
     )
-    assert runner.route_note() == (
-        "购入目标商品 3 件（强化石 / 友情点数 / 书签，第 1 行、第 3 行、第 5 行）"
-    )
+    # 2026-11-16 用户要求：结算行不许出现「第 N 行」。
+    note = runner.route_note()
+    assert note == "购入目标商品 3 件（强化石 / 友情点数 / 书签）"
+    assert "行" not in note
 
 
 def test_labyrinth_note_distinguishes_already_explored():
