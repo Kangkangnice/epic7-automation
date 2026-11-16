@@ -18,6 +18,7 @@ from auto_game_unified.core.battle_supervisor import (
 )
 from auto_game_unified.core.matcher import (
     Match,
+    find_best_template,
     find_template,
     load_template,
     locate_with_fallback,
@@ -629,6 +630,20 @@ class ArenaStateMachine:
 
     def _visible(self, screen: np.ndarray, template_name: str) -> bool:
         return self._locate(screen, template_name) is not None
+
+    def outcome_scores(self, screen: np.ndarray) -> dict[str, float]:
+        """三个结果锚点的原始最高分（只给"认不出"时的诊断用，不参与判定）。"""
+
+        scores: dict[str, float] = {}
+        for name in ("result_victory", "result_defeat", "result_rating"):
+            match = find_best_template(
+                screen,
+                getattr(self.templates, name),
+                self._REGIONS[name],
+                reference_size=self._REFERENCE_SIZE,
+            )
+            scores[name] = 0.0 if match is None else match.score
+        return scores
 
     def observe_outcome(self, screen: np.ndarray) -> ArenaOutcome:
         """读出这一局是赢、输，还是认不出。
@@ -1822,8 +1837,35 @@ class ArenaRunner(TransactionalRunnerBase):
         """
         screen = self.runtime.capture()
         result = self.machine.observe_outcome(screen)
+        # 结算页刚确认的那一拍，VICTORY / DEFEAT 横幅可能还在淡入 —— 两个都认不出时
+        # 再看两帧（间隔半秒），别把「还没画完」记成「不知道」。三次都认不出才是真认不出。
+        for _ in range(2):
+            if result is not ArenaOutcome.UNKNOWN:
+                break
+            self.sleep(0.5)
+            screen = self.runtime.capture()
+            result = self.machine.observe_outcome(screen)
         self.outcome_tally[result] += 1
         self.runtime.log(f"模式=竞技场 轮次={cycle} 战绩={OUTCOME_LABELS[result]}")
+        if result is ArenaOutcome.UNKNOWN:
+            self._save_unknown_outcome(cycle=cycle, screen=screen)
+
+    def _save_unknown_outcome(self, *, cycle: int, screen) -> None:
+        """认不出胜负时留证：三个锚点的真实分数 + 当帧（用户 2026-11-16 追问「未知」）。
+
+        以前只记一个「未知」就过去了，事后谁也说不清它当时看到的到底是什么画面。
+        现在把分数写进日志、把整帧存成诊断，下一次遇到能直接定性（横幅没淡入 /
+        结算页换了皮 / 根本不是结算页）。
+        """
+
+        scores = self.machine.outcome_scores(screen)
+        detail = " ".join(f"{name}={value:.4f}" for name, value in scores.items())
+        self.runtime.log(f"模式=竞技场 轮次={cycle} 战绩认不出 锚点分数 {detail}")
+        try:
+            self.runtime.save_diagnostic(f"outcome_unknown_round{cycle}", screen)
+        except RuntimeError:
+            # 没配诊断目录（单测 / 干跑）就不留证 —— 这条不是业务，不许反过来带崩记账。
+            pass
 
     def outcome_summary(self) -> str:
         """给通知与控制台用的一行战绩：``胜 2 / 负 1``（认不出时补 ``（未知 1）``）。"""
