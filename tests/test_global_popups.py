@@ -19,6 +19,7 @@ from auto_game_unified.games.epic7.global_popups import (
     find_knights_signin_close,
     find_knights_weekly_reward_close,
     find_date_change_close,
+    find_equipment_bag_full_close,
     find_login_reward_close,
     find_network_retry,
     find_account_rank_up_close,
@@ -42,6 +43,7 @@ from auto_game_unified.games.epic7.global_popups import (
     load_knights_signin_templates,
     load_knights_weekly_reward_templates,
     load_date_change_templates,
+    load_equipment_bag_full_templates,
     load_login_reward_templates,
     load_network_reconnect_templates,
     load_account_rank_up_templates,
@@ -2422,3 +2424,72 @@ def test_guard_selects_the_diamond_then_claims_the_reward():
     assert 830 <= clicks[1][1] <= 875, clicks
     assert any("动作=select-weekly-rank-diamond" in line for line in logs)
     assert any("动作=claim-weekly-rank-select" in line for line in logs)
+
+
+# ── 「装备背包已满」模拟器口径（2026-11-18）──────────────────────────────────
+#
+# 2026-11-17 首版只有 PC 素材（``global/pc/``）：模拟器加载成 None ⇒ 守卫整段跳过。
+# 11-18 早上就撞上了 —— 迷宫「战斗开始」连点 4 次画面不动，诊断帧里弹的正是这一屏
+# 「背包空间不足 / 装备背包已满」，而没人认得它。
+# PC 那颗按钮写「确认」，模拟器是三颗（取消 / 整理 / 扩充）⇒ 只点「取消」：
+# 整理与扩充都会改用户的背包，这条路线无权替用户决定。
+
+
+def test_equipment_bag_full_emulator_frame_closes_with_cancel():
+    templates = load_equipment_bag_full_templates(TEMPLATES)
+    assert templates is not None
+    screen = _global_screen("equipment_bag_full_emulator_live_20261118.png")
+
+    match = find_equipment_bag_full_close(screen, templates)
+
+    assert match is not None
+    assert 590 <= match.center[0] <= 690, match.center  # 左侧那颗「取消」
+    assert 760 <= match.center[1] <= 830, match.center
+
+
+def test_equipment_bag_full_does_not_fire_on_an_unrelated_page():
+    templates = load_equipment_bag_full_templates(TEMPLATES)
+    # 弹窗关掉之后落回的准备战斗页：同一屏、弹窗没了 —— 模板必须一个都不命中。
+    screen = _global_screen("equipment_bag_full_dismissed_emulator_live_20261118.png")
+
+    assert find_equipment_bag_full_close(screen, templates) is None
+
+
+def test_guard_closes_the_bag_full_popup_and_records_the_stop():
+    """守卫层闭环：点「取消」一次、记下阻断、把干净帧交给路线。
+
+    2026-11-18 之前的模拟器口径下这条守卫整段跳过，弹窗会一直盖在准备战斗页上，
+    路线只能对着被遮住的按钮重试到超时。
+    """
+    popup = _global_screen("equipment_bag_full_emulator_live_20261118.png")
+    # 阻断弹窗**不追求交还干净帧**：点掉这一层，主循环立刻按资源耗尽收工，
+    # 所以守卫原样返回触发那一帧（对比普通弹窗会一直 recapture 到干净为止）。
+    screens = iter([popup, popup])
+    clicks: list[tuple[int, int]] = []
+    logs: list[str] = []
+    clock = FakeClock()
+    runtime = Runtime(
+        lambda: next(screens),
+        clicks.append,
+        monotonic=clock.now,
+        emit=logs.append,
+    )
+    runtime.set_capture_guard(
+        Epic7GlobalPopupGuard(
+            load_network_reconnect_templates(TEMPLATES),
+            equipment_bag_full_templates=load_equipment_bag_full_templates(TEMPLATES),
+            sleep=clock.sleep,
+            now=clock.now,
+            poll_seconds=0.1,
+            retry_interval_seconds=0.0,
+        )
+    )
+
+    received = runtime.capture()
+
+    assert np.array_equal(received, popup)
+    assert len(clicks) == 1, clicks
+    assert 590 <= clicks[0][0] <= 690, clicks
+    assert 760 <= clicks[0][1] <= 830, clicks
+    assert runtime.consume_blocking_popup() == "装备背包已满"
+    assert any("弹出=装备背包已满" in line for line in logs)

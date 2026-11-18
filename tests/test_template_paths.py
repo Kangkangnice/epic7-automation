@@ -266,6 +266,9 @@ def test_real_template_root_only_has_the_reviewed_pc_overrides():
         "global/pc/date_change_close.png",
         "global/pc/login_reward_title.png",
         "global/pc/login_reward_close.png",
+        # 装备背包已满（2026-11-18）：旧的两张（正文小 1% + 蓝色「确认」）已删除，
+        # 现在只有共享目录一套 `global/equipment_bag_full_{message,cancel}.png`
+        # （正文 0.9737、取消按钮 0.9718）。将来补 PC 素材时放同名文件到 pc/ 即可。
         # 导航（2026-11-02）：大厅左侧「圣域」入口标签，PC 原样 0.7457（阈 0.82）。
         "navigation/pc/lobby_sanctuary.png",
         # 导航（2026-11-04）：迷宫强化石「战斗」菜单的「一般」页签在 PC 上原样只有

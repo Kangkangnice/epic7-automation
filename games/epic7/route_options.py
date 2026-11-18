@@ -57,12 +57,12 @@ ROUTE_OPTIONS: dict[str, tuple[RouteOption, ...]] = {
     "arena": (
         RouteOption(
             key="weekly_reward",
-            label="周结算奖励选哪个",
+            label="周结算奖励",
             kind="choice",
             default="diamond",
-            note="每周结算后进竞技场会弹「每周排名选择奖励」，二选一。默认领钻石（800 天空石），也可以改领神秘书签。",
+            note="每周结算后进入竞技场时弹出「每周排名选择奖励」，二选一。默认选择钻石，可改为神秘书签。",
             choices=(
-                ("diamond", "钻石（800）"),
+                ("diamond", "钻石"),
                 ("mystic", "神秘书签"),
             ),
         ),
@@ -80,27 +80,27 @@ ROUTE_OPTIONS: dict[str, tuple[RouteOption, ...]] = {
         ),
         RouteOption(
             key="hero_blacklist",
-            label="英雄黑名单",
+            label="避战名单",
             kind="roster",
             default=(),
-            note="对手队伍里出现这些英雄就不打。勾进这份名单的英雄会自动从另一份移出。",
+            note="对手队伍里出现这些英雄时跳过该场。勾入这份名单的英雄会自动从另一份移出。",
         ),
         RouteOption(
             key="hero_whitelist",
-            label="英雄白名单",
+            label="优先名单",
             kind="roster",
             default=(),
-            note="优先打含这些英雄的队伍；一个都没碰到时按常规挑选（不是不打）。勾进这份名单的英雄会自动从另一份移出。",
+            note="含这些英雄的对手优先开战；一个都没有出现时按常规挑选，不是只打这些。勾入这份名单的英雄会自动从另一份移出。",
         ),
         RouteOption(
             key="hero_list_conflict",
-            label="黑白数量相同时",
+            label="两份名单命中数相同时",
             kind="choice",
             default="blacklist",
-            note="同一支队伍里黑名单与白名单命中同样多时如何处置；命中数量不等时以多的一方为准。",
+            note="同一支队伍里避战名单与优先名单的命中数相同时如何处置；命中数不等时以多的一方为准。",
             choices=(
-                ("blacklist", "按黑名单处理（跳过）"),
-                ("whitelist", "按白名单处理（优先打）"),
+                ("blacklist", "按避战名单处理（跳过）"),
+                ("whitelist", "按优先名单处理（优先开战）"),
             ),
         ),
         RouteOption(
@@ -226,6 +226,50 @@ ROUTE_OPTIONS: dict[str, tuple[RouteOption, ...]] = {
             default="no",
             note="宠物商店底部的两种宠物玩具可购买时各购入 1 件，每轮每种最多 1 件。每种一周可购买 1 次。",
             choices=(("yes", "购买"), ("no", "不购买")),
+        ),
+    ),
+    # 2026-11-17：装备制作。一次运行只做一个「讨伐 × 部位」组合。
+    "craft_equipment": (
+        RouteOption(
+            key="hunt",
+            label="讨伐",
+            kind="choice",
+            default="dragon",
+            note="决定消耗哪一种讨伐材料，也决定可制作的套装范围。名称以游戏内钢铁工坊顶行为准。",
+            choices=(
+                ("dragon", "双足飞龙（龙讨伐）"),
+                ("golem", "魔像（木讨伐）"),
+                ("banshee", "报丧妖（水讨伐）"),
+                ("azimanak", "阿吉玛纳克（暗讨伐）"),
+                ("caides", "卡戴斯（光讨伐）"),
+            ),
+        ),
+        RouteOption(
+            key="slot",
+            label="部位",
+            kind="choice",
+            default="weapon",
+            note="一次运行只做一个部位。左侧为武器、头盔、铠甲，右侧为项链、戒指、鞋子。",
+            choices=(
+                ("weapon", "武器"),
+                ("helmet", "头盔"),
+                ("armor", "铠甲"),
+                ("necklace", "项链"),
+                ("ring", "戒指"),
+                ("boots", "鞋子"),
+            ),
+        ),
+        RouteOption(
+            key="tidy",
+            label="制作后整理",
+            kind="choice",
+            default="none",
+            note="出售与萃取均不可撤销，勾选范围由游戏内「快速选择」的预设规则决定，本助手不判断装备价值。不整理时装备留在背包，轮数多会触发背包已满而提前结束。",
+            choices=(
+                ("none", "不整理"),
+                ("sell", "出售"),
+                ("extract", "萃取"),
+            ),
         ),
     ),
 }

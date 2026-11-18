@@ -598,8 +598,9 @@ class LabyrinthStoneStateMachine:
         全库 520 帧扫描：3 张真·完成探险帧 1.0000，非目标页最高 0.2995
         （阈值 0.80），「1 区域还可选」的模拟器详情页 0.2321。
         """
-        # PC 上才观察到的新状态；模拟器不进这条分支，保持改动前的判定路径。
-        if not self.templates.pc or self.templates.region1_completed is None:
+        # 素材在哪个平台采到就只对哪个平台生效（模板根已经分平台挑图）：
+        # 没有这张图 ⇒ 判不了，按「没完成」走老路，绝不猜。
+        if self.templates.region1_completed is None:
             return False
         done = self._locate(screen, "region1_completed")
         label = self._locate(screen, "region_row1_label")

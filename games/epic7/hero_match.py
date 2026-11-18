@@ -7,7 +7,7 @@
     1. ORB good 匹配数 >= ``MIN_GOOD``
     2. RANSAC 内点数 >= ``MIN_INLIERS``
     3. 第二名 good <= 第一名 / ``RIVAL_RATIO``（能证伪：必须甩开同类候选）
-    4. 单应变换后的像素相关 >= ``MIN_WARP_CORR``
+    4. 单应变换后**中心区域**的像素相关 >= ``MIN_WARP_CORR``
 
 不用绝对分数定阈值：不同英雄提取到的特征点数差异可达一倍（实测 468~1049），
 绝对 good 数在英雄之间不可比，必须配相对优势条件。
@@ -39,11 +39,43 @@ OPPONENT_RADIUS = 56
 MIN_GOOD = 40
 MIN_INLIERS = 30
 RIVAL_RATIO = 3.0
-MIN_WARP_CORR = 0.60
+
+# 单应变换后的像素相关只在**中心区域**内算（2026-11-17 改）。
+#
+# ⚠️ 原来用整图算，被构图差异拖垮：图鉴库的图是方形、带边框与职业/属性角标，
+# 换成外部图鉴的圆形裁切后，四角内容与游戏内头像毫无关系。实测同一名英雄、同一张
+# 实机竞技场截图：整图相关 0.32~0.37（判未命中），只取中心 50% 是 0.95~0.99。
+# 而错误英雄的中心相关最高只有 0.645、内点最高 7，正确样本内点 98 起 —— 取中心
+# 不是放宽，反而更容易证伪。阈值随之从 0.60 提到 0.80，两头各留 0.12 以上余量。
+CORR_CENTER_RATIO = 0.5
+MIN_WARP_CORR = 0.80
 
 ORB_FEATURES = 1500
 RATIO_TEST = 0.75
 RANSAC_REPROJ = 5.0
+
+
+def _center_corr(warped: np.ndarray, target: np.ndarray) -> float:
+    """把模板拉回目标视角后，只比中心区域的灰度相关。
+
+    模板里的纯黑像素（圆形头像的透明四角）不计入，避免空区域把相关稀释掉。
+    """
+
+    gray_w = cv2.cvtColor(warped, cv2.COLOR_BGR2GRAY)
+    gray_t = cv2.cvtColor(target, cv2.COLOR_BGR2GRAY)
+    height, width = gray_w.shape[:2]
+    side_h = int(height * CORR_CENTER_RATIO)
+    side_w = int(width * CORR_CENTER_RATIO)
+    if side_h <= 0 or side_w <= 0:
+        return 0.0
+    y0 = (height - side_h) // 2
+    x0 = (width - side_w) // 2
+    gray_w = gray_w[y0:y0 + side_h, x0:x0 + side_w]
+    gray_t = gray_t[y0:y0 + side_h, x0:x0 + side_w]
+    valid = gray_w > 0
+    if valid.sum() < gray_w.size * 0.3:
+        return 0.0
+    return float(np.corrcoef(gray_w[valid], gray_t[valid])[0, 1])
 
 
 def _imread(path: Path) -> np.ndarray | None:
@@ -163,12 +195,7 @@ class HeroMatcher:
         height, width = target.shape[:2]
         # homography 是 竞技场->模板 方向；把模板拉回竞技场视角要用逆变换。
         warped = cv2.warpPerspective(template, np.linalg.inv(homography), (width, height))
-        gray_w = cv2.cvtColor(warped, cv2.COLOR_BGR2GRAY)
-        gray_t = cv2.cvtColor(target, cv2.COLOR_BGR2GRAY)
-        valid = gray_w > 0
-        if valid.sum() < height * width * 0.3:
-            return len(good), inliers, 0.0
-        corr = float(np.corrcoef(gray_w[valid], gray_t[valid])[0, 1])
+        corr = _center_corr(warped, target)
         return len(good), inliers, corr
 
     def identify_one(self, crop: np.ndarray) -> HeroHit | None:
@@ -237,9 +264,9 @@ def default_library_dir() -> Path:
 
 # 一行判定的三个去向。
 #
-# ⚠️ **白名单是「优先打」，不是「只打」**（2026-11-15 用户纠正）。
+# ⚠️ **优先名单是「优先打」，不是「只打」**（2026-11-15 用户纠正）。
 # 名单里没命中 ≠ 出局 —— 那只是「这名对手没有特别想打」，回到常规挑法（按积分）。
-# 早期实现按「白名单 = 只打含名单英雄的队伍」写，会导致开了白名单却一个都没撞上时
+# 早期实现按「优先名单 = 只打含名单英雄的队伍」写，会导致开了优先名单却一个都没撞上时
 # 整页无人可打、只能反复刷新，与用户意图相反。
 TIER_WHITE = "white"
 TIER_NORMAL = "normal"
@@ -248,10 +275,10 @@ TIER_OUT = "out"
 
 @dataclass(frozen=True)
 class RowVerdict:
-    """一行对手的筛选结论：进白名单优先组 / 进普通组 / 出局，以及理由。
+    """一行对手的筛选结论：进优先名单组 / 进普通组 / 出局，以及理由。
 
-    ``white_hits`` 是白名单命中数，白名单组内**先比它、再比积分**
-    （用户 2026-11-15 拍板：命中两名白名单英雄的队比命中一名的更想打）。
+    ``white_hits`` 是优先名单命中数，优先名单组内**先比它、再比积分**
+    （用户 2026-11-15 拍板：命中两名优先名单英雄的队比命中一名的更想打）。
     """
 
     tier: str
@@ -274,14 +301,14 @@ def judge_row(
 
     口径（2026-11-15 用户拍板）：
 
-    1. **黑名单命中就出局**，除非白名单命中更多（下一行）。
-    2. **白名单命中数量 > 黑名单命中数量 ⇒ 进「白名单优先组」**。
-       用户原话：「一个黑名单、两个白名单，那就按白名单走」。
+    1. **避战名单命中就出局**，除非优先名单命中更多（下一行）。
+    2. **优先名单命中数量 > 避战名单命中数量 ⇒ 进「优先名单组」**。
+       用户原话（当时叫黑 / 白名单）：「一个黑名单、两个白名单，那就按白名单走」。
     3. **数量相等且都 ≥1 ⇒ 按 ``conflict``**：``blacklist``（默认）出局、
-       ``whitelist`` 进白名单优先组。用户原话：「相等的时候才优先走黑名单」。
-    4. **只命中白名单 ⇒ 白名单优先组**；**两边都没命中 ⇒ 普通组**（不是出局）。
+       ``whitelist`` 进优先名单组。用户原话：「相等的时候才优先走黑名单」。
+    4. **只命中优先名单 ⇒ 优先名单组**；**两边都没命中 ⇒ 普通组**（不是出局）。
     5. 认不出的头像不计入任何一边；四个全认不出本身就是「两边都没命中」，
-       进普通组 —— 白名单只是偏好，没有理由因为认不出就把它排除。
+       进普通组 —— 优先名单只是偏好，没有理由因为认不出就把它排除。
 
     数量按**不同英雄名**计（``set`` 交集大小）：同一名英雄重复出现只算一次，
     上限 4（一行只有四个槽位）。
@@ -292,19 +319,25 @@ def judge_row(
     white = len(heroes & whitelist)
     if black and white:
         if white > black:
-            return RowVerdict(TIER_WHITE, f"白多（白{white}／黑{black}）", white)
+            return RowVerdict(
+                TIER_WHITE, f"优先命中更多（优先{white}／避战{black}）", white
+            )
         if white < black:
-            return RowVerdict(TIER_OUT, f"黑多（黑{black}／白{white}）", white)
+            return RowVerdict(
+                TIER_OUT, f"避战命中更多（避战{black}／优先{white}）", white
+            )
         if conflict == "whitelist":
-            return RowVerdict(TIER_WHITE, f"相等（{white}／{black}），按设置照打", white)
-        return RowVerdict(TIER_OUT, f"相等（{black}／{white}），按设置跳过", white)
+            return RowVerdict(
+                TIER_WHITE, f"命中数相等（{white}／{black}），按设置照打", white
+            )
+        return RowVerdict(TIER_OUT, f"命中数相等（{black}／{white}），按设置跳过", white)
     if black:
         return RowVerdict(
-            TIER_OUT, "命中黑名单：" + "、".join(sorted(heroes & blacklist)), white
+            TIER_OUT, "命中避战名单：" + "、".join(sorted(heroes & blacklist)), white
         )
     if white:
         return RowVerdict(
-            TIER_WHITE, "命中白名单：" + "、".join(sorted(heroes & whitelist)), white
+            TIER_WHITE, "命中优先名单：" + "、".join(sorted(heroes & whitelist)), white
         )
     return RowVerdict(TIER_NORMAL, "两边都没命中")
 

@@ -390,6 +390,92 @@ class ArenaRunnerTests(unittest.TestCase):
         runtime.save_diagnostic.assert_called_once()
 
 
+class ArenaWeeklyRewardRunnerTests(unittest.TestCase):
+    """周奖励领取不换页，靠红点消失证伪；失败留诊断，不猜着连点。"""
+
+    def test_claim_sets_the_one_shot_flag_after_red_dot_clears(self):
+        machine = MagicMock()
+        machine.state = ArenaState.LIST
+        machine.completed_cycles = 0
+        machine.weekly_reward_checked = False
+        claim = Action("claim-weekly-reward", (245, 696))
+        machine.preview.return_value = (claim, None)
+        machine.next_action.return_value = claim
+        clicks: list[tuple[int, int]] = []
+        runner = ArenaRunner(
+            machine,
+            Runtime(
+                lambda: np.full((60, 100, 3), 30, dtype=np.uint8),
+                clicks.append,
+                emit=lambda line: None,
+            ),
+            sleep=lambda seconds: None,
+        )
+
+        def claimed(action: Action) -> bool:
+            machine.completed_cycles = 1
+            return True
+
+        runner._wait_until_weekly_reward_claimed = MagicMock(side_effect=claimed)
+
+        completed = runner.run(max_cycles=1)
+
+        self.assertEqual(1, completed)
+        self.assertEqual([(245, 696)], clicks)
+        self.assertTrue(machine.weekly_reward_checked)
+        runner._wait_until_weekly_reward_claimed.assert_called_once_with(claim)
+
+    def test_waiter_requires_two_stable_frames_without_the_red_dot(self):
+        machine = ArenaStateMachine(build_templates(TEMPLATES))
+        action = Action("claim-weekly-reward", (245, 696))
+        claimed = fixture("weekly_reward_claimed_live_20261117")
+        screens = iter([claimed, claimed])
+        runner = ArenaRunner(
+            machine,
+            Runtime(lambda: next(screens), lambda point: None, emit=lambda line: None),
+            sleep=lambda seconds: None,
+        )
+
+        self.assertTrue(runner._wait_until_weekly_reward_claimed(action))
+
+    def test_waiter_rejects_a_persistent_red_dot(self):
+        machine = ArenaStateMachine(build_templates(TEMPLATES))
+        action = Action("claim-weekly-reward", (245, 696))
+        claimable = fixture("weekly_reward_claimable_live_20261117")
+        runner = ArenaRunner(
+            machine,
+            Runtime(lambda: claimable, lambda point: None, emit=lambda line: None),
+            sleep=lambda seconds: None,
+        )
+        runner._TIMEOUT_SECONDS = {**runner._TIMEOUT_SECONDS, ArenaState.LIST: 0}
+
+        self.assertFalse(runner._wait_until_weekly_reward_claimed(action))
+        self.assertFalse(machine.weekly_reward_checked)
+
+    def test_claim_that_never_clears_stops_with_a_diagnostic(self):
+        machine = MagicMock()
+        machine.state = ArenaState.LIST
+        machine.completed_cycles = 0
+        machine.weekly_reward_checked = False
+        claim = Action("claim-weekly-reward", (245, 696))
+        machine.preview.return_value = (claim, None)
+        machine.next_action.return_value = claim
+        runtime = MagicMock()
+        runtime.dry_run = False
+        runtime.diagnostic_dir = Path("diagnostics")
+        runtime.capture.return_value = np.full((60, 100, 3), 30, dtype=np.uint8)
+        runtime.save_diagnostic.return_value = Path("claim.png")
+        runner = ArenaRunner(machine, runtime, sleep=lambda seconds: None)
+        runner._TIMEOUT_SECONDS = {**runner._TIMEOUT_SECONDS, ArenaState.LIST: 0}
+        runner._wait_until_weekly_reward_claimed = MagicMock(return_value=False)
+
+        with self.assertRaisesRegex(RuntimeError, "领取每周对战奖励后红点未消失"):
+            runner.run(max_cycles=1)
+
+        runtime.save_diagnostic.assert_called_once()
+        self.assertFalse(machine.weekly_reward_checked)
+
+
 if __name__ == "__main__":
     unittest.main()
 
