@@ -1,0 +1,2731 @@
+{
+ "source": "epic7db.com 官方头像 + 国服 wiki/官方公告中文名（2026-11-17 全量替换）",
+ "count": 389,
+ "heroes": {
+  "Ae-GISELLE": {
+   "en": "ae-GISELLE",
+   "job": "魔导士",
+   "element": "木",
+   "stars": 5
+  },
+  "Ae-KARINA": {
+   "en": "ae-KARINA",
+   "job": "骑士",
+   "element": "水",
+   "stars": 5
+  },
+  "Ae-NINGNING": {
+   "en": "ae-NINGNING",
+   "job": "精灵师",
+   "element": "火",
+   "stars": 5
+  },
+  "Ae-WINTER": {
+   "en": "ae-WINTER",
+   "job": "盗贼",
+   "element": "火",
+   "stars": 5
+  },
+  "一轮孤月维尔萝娜": {
+   "en": "Lone Crescent Bellona",
+   "job": "战士",
+   "element": "暗",
+   "stars": 5
+  },
+  "不法之徒克罗泽": {
+   "en": "Troublemaker Crozet",
+   "job": "骑士",
+   "element": "暗",
+   "stars": 4
+  },
+  "不灭神机悟空": {
+   "en": "Immortal Wukong",
+   "job": "战士",
+   "element": "木",
+   "stars": 5
+  },
+  "丽希": {
+   "en": "Lethe",
+   "job": "战士",
+   "element": "水",
+   "stars": 5
+  },
+  "丽迪卡": {
+   "en": "Lidica",
+   "job": "射手",
+   "element": "火",
+   "stars": 5
+  },
+  "义贼鲁兹德": {
+   "en": "Righteous Thief Roozid",
+   "job": "盗贼",
+   "element": "木",
+   "stars": 3
+  },
+  "亚奇": {
+   "en": "Aki",
+   "job": "战士",
+   "element": "火",
+   "stars": 5
+  },
+  "亚敏": {
+   "en": "Armin",
+   "job": "骑士",
+   "element": "木",
+   "stars": 4
+  },
+  "亚洁理亚": {
+   "en": "Azalea",
+   "job": "战士",
+   "element": "火",
+   "stars": 3
+  },
+  "亚澜": {
+   "en": "Aram",
+   "job": "精灵师",
+   "element": "火",
+   "stars": 5
+  },
+  "亚迪赖": {
+   "en": "Adlay",
+   "job": "魔导士",
+   "element": "木",
+   "stars": 3
+  },
+  "亚露嘉": {
+   "en": "Arunka",
+   "job": "战士",
+   "element": "木",
+   "stars": 5
+  },
+  "仁慈的洛曼": {
+   "en": "Benevolent Romann",
+   "job": "魔导士",
+   "element": "光",
+   "stars": 4
+  },
+  "仆人克萝爱": {
+   "en": "Maid Chloe",
+   "job": "精灵师",
+   "element": "光",
+   "stars": 5
+  },
+  "伊凡娜": {
+   "en": "Ivana",
+   "job": "精灵师",
+   "element": "火",
+   "stars": 5
+  },
+  "伊利欧斯教斧兵": {
+   "en": "Church of Ilryos Axe",
+   "job": "战士",
+   "element": "暗",
+   "stars": 3
+  },
+  "伊安": {
+   "en": "Ian",
+   "job": "射手",
+   "element": "水",
+   "stars": 3
+  },
+  "伊莉娜芙": {
+   "en": "Ilynav",
+   "job": "骑士",
+   "element": "火",
+   "stars": 5
+  },
+  "伊赛丽亚": {
+   "en": "Iseria",
+   "job": "射手",
+   "element": "木",
+   "stars": 5
+  },
+  "伊顿": {
+   "en": "Eaton",
+   "job": "骑士",
+   "element": "光",
+   "stars": 3
+  },
+  "休塔尔克": {
+   "en": "Stark",
+   "job": "战士",
+   "element": "火",
+   "stars": 5
+  },
+  "优芬妮": {
+   "en": "Yufine",
+   "job": "战士",
+   "element": "木",
+   "stars": 5
+  },
+  "传道者卡麦萝兹": {
+   "en": "Zealot Carmainerose",
+   "job": "魔导士",
+   "element": "火",
+   "stars": 3
+  },
+  "伯纳德": {
+   "en": "Bernard",
+   "job": "精灵师",
+   "element": "木",
+   "stars": 3
+  },
+  "伯里安": {
+   "en": "Belian",
+   "job": "骑士",
+   "element": "光",
+   "stars": 5
+  },
+  "佛里蒂丝": {
+   "en": "Politis",
+   "job": "魔导士",
+   "element": "火",
+   "stars": 5
+  },
+  "佩里斯": {
+   "en": "Fenris",
+   "job": "射手",
+   "element": "木",
+   "stars": 5
+  },
+  "保健室老师律荷": {
+   "en": "School Nurse Yulha",
+   "job": "盗贼",
+   "element": "暗",
+   "stars": 5
+  },
+  "修尼尔": {
+   "en": "Schniel",
+   "job": "精灵师",
+   "element": "木",
+   "stars": 5
+  },
+  "修拉杜": {
+   "en": "Hurado",
+   "job": "魔导士",
+   "element": "暗",
+   "stars": 3
+  },
+  "修里": {
+   "en": "Schuri",
+   "job": "射手",
+   "element": "火",
+   "stars": 4
+  },
+  "先锋队长里科黎思": {
+   "en": "Captain Rikoris",
+   "job": "战士",
+   "element": "光",
+   "stars": 3
+  },
+  "光之天使安洁莉卡": {
+   "en": "Angel of Light Angelica",
+   "job": "魔导士",
+   "element": "光",
+   "stars": 4
+  },
+  "光之瑞儿": {
+   "en": "Ruele of Light",
+   "job": "精灵师",
+   "element": "光",
+   "stars": 5
+  },
+  "克劳乌": {
+   "en": "Krau",
+   "job": "骑士",
+   "element": "水",
+   "stars": 5
+  },
+  "克劳蒂亚": {
+   "en": "Claudia",
+   "job": "骑士",
+   "element": "火",
+   "stars": 3
+  },
+  "克洛泽": {
+   "en": "Crozet",
+   "job": "骑士",
+   "element": "水",
+   "stars": 4
+  },
+  "克莉丝媞": {
+   "en": "Christy",
+   "job": "骑士",
+   "element": "木",
+   "stars": 3
+  },
+  "克莱莉莎": {
+   "en": "Clarissa",
+   "job": "战士",
+   "element": "水",
+   "stars": 4
+  },
+  "克萝爱": {
+   "en": "Chloe",
+   "job": "战士",
+   "element": "水",
+   "stars": 5
+  },
+  "兔菈玫": {
+   "en": "Tori",
+   "job": "盗贼",
+   "element": "火",
+   "stars": 5
+  },
+  "兰蒂": {
+   "en": "Landy",
+   "job": "射手",
+   "element": "木",
+   "stars": 5
+  },
+  "冒险家拉斯": {
+   "en": "Adventurer Ras",
+   "job": "骑士",
+   "element": "火",
+   "stars": 3
+  },
+  "凯隆": {
+   "en": "Kayron",
+   "job": "盗贼",
+   "element": "火",
+   "stars": 5
+  },
+  "利姆鲁": {
+   "en": "Rimuru",
+   "job": "战士",
+   "element": "木",
+   "stars": 5
+  },
+  "利纳柯": {
+   "en": "Rinak",
+   "job": "盗贼",
+   "element": "木",
+   "stars": 5
+  },
+  "制偶师波萝莱珍": {
+   "en": "Doll Maker Pearlhorizon",
+   "job": "魔导士",
+   "element": "木",
+   "stars": 3
+  },
+  "午时戏水芙兰": {
+   "en": "Afternoon Soak Flan",
+   "job": "射手",
+   "element": "火",
+   "stars": 5
+  },
+  "协调者卡威利": {
+   "en": "Mediator Kawerik",
+   "job": "战士",
+   "element": "暗",
+   "stars": 5
+  },
+  "南国的伊赛丽亚": {
+   "en": "Summertime Iseria",
+   "job": "射手",
+   "element": "火",
+   "stars": 5
+  },
+  "卡威利": {
+   "en": "Kawerik",
+   "job": "魔导士",
+   "element": "火",
+   "stars": 5
+  },
+  "卡尔图哈": {
+   "en": "Cartuja",
+   "job": "战士",
+   "element": "木",
+   "stars": 4
+  },
+  "卡琳": {
+   "en": "Karin",
+   "job": "盗贼",
+   "element": "水",
+   "stars": 4
+  },
+  "卡瓦娜": {
+   "en": "Khawana",
+   "job": "盗贼",
+   "element": "火",
+   "stars": 4
+  },
+  "卡瓦朱": {
+   "en": "Khawazu",
+   "job": "战士",
+   "element": "火",
+   "stars": 4
+  },
+  "卡萝": {
+   "en": "Carrot",
+   "job": "魔导士",
+   "element": "火",
+   "stars": 3
+  },
+  "卡蜜拉": {
+   "en": "Camilla",
+   "job": "战士",
+   "element": "光",
+   "stars": 3
+  },
+  "卡麦萝兹": {
+   "en": "Carmainerose",
+   "job": "魔导士",
+   "element": "火",
+   "stars": 3
+  },
+  "可丽": {
+   "en": "Coli",
+   "job": "盗贼",
+   "element": "水",
+   "stars": 4
+  },
+  "可露莉": {
+   "en": "Kluri",
+   "job": "骑士",
+   "element": "木",
+   "stars": 3
+  },
+  "史宾": {
+   "en": "Sven",
+   "job": "盗贼",
+   "element": "暗",
+   "stars": 3
+  },
+  "史瑞杰思": {
+   "en": "Straze",
+   "job": "战士",
+   "element": "暗",
+   "stars": 5
+  },
+  "司令官帕贝尔": {
+   "en": "Commander Pavel",
+   "job": "射手",
+   "element": "光",
+   "stars": 5
+  },
+  "吉祥物海兹": {
+   "en": "Mascot Hazel",
+   "job": "精灵师",
+   "element": "火",
+   "stars": 3
+  },
+  "和英": {
+   "en": "Hwayoung",
+   "job": "战士",
+   "element": "火",
+   "stars": 5
+  },
+  "哈坦": {
+   "en": "Hataan",
+   "job": "盗贼",
+   "element": "火",
+   "stars": 3
+  },
+  "圣炎的艾庭": {
+   "en": "Holy Flame Adin",
+   "job": "盗贼",
+   "element": "火",
+   "stars": 3
+  },
+  "坏猫猫亚敏": {
+   "en": "Bad Cat Armin",
+   "job": "战士",
+   "element": "暗",
+   "stars": 4
+  },
+  "坤特": {
+   "en": "Gunther",
+   "job": "战士",
+   "element": "光",
+   "stars": 3
+  },
+  "埃德勒": {
+   "en": "Aither",
+   "job": "精灵师",
+   "element": "水",
+   "stars": 3
+  },
+  "培妮拉": {
+   "en": "Pernilla",
+   "job": "战士",
+   "element": "暗",
+   "stars": 3
+  },
+  "堕落的塞西莉亚": {
+   "en": "Fallen Cecilia",
+   "job": "骑士",
+   "element": "暗",
+   "stars": 5
+  },
+  "塔拉诺尔王宫士兵": {
+   "en": "Taranor Royal Guard",
+   "job": "骑士",
+   "element": "水",
+   "stars": 3
+  },
+  "塔拉诺尔禁卫队员": {
+   "en": "Taranor Guard",
+   "job": "战士",
+   "element": "水",
+   "stars": 3
+  },
+  "塔玛林尔": {
+   "en": "Tamarinne",
+   "job": "精灵师",
+   "element": "火",
+   "stars": 5
+  },
+  "塞西莉亚": {
+   "en": "Cecilia",
+   "job": "骑士",
+   "element": "火",
+   "stars": 5
+  },
+  "夏提雅": {
+   "en": "Shalltear",
+   "job": "战士",
+   "element": "火",
+   "stars": 5
+  },
+  "夏日学生雅莉莎": {
+   "en": "Summer's Disciple Alexa",
+   "job": "盗贼",
+   "element": "水",
+   "stars": 3
+  },
+  "夏率": {
+   "en": "Hasol",
+   "job": "骑士",
+   "element": "暗",
+   "stars": 3
+  },
+  "夏绿蒂": {
+   "en": "Charlotte",
+   "job": "骑士",
+   "element": "火",
+   "stars": 5
+  },
+  "外太空的玫勒赛德丝": {
+   "en": "Celestial Mercedes",
+   "job": "魔导士",
+   "element": "暗",
+   "stars": 4
+  },
+  "多米妮尔": {
+   "en": "Dominiel",
+   "job": "魔导士",
+   "element": "水",
+   "stars": 4
+  },
+  "夜宴莉莉亚斯": {
+   "en": "Midnight Gala Lilias",
+   "job": "盗贼",
+   "element": "木",
+   "stars": 5
+  },
+  "大将法济斯": {
+   "en": "General Purrgis",
+   "job": "战士",
+   "element": "光",
+   "stars": 4
+  },
+  "大族长卡瓦娜": {
+   "en": "Great Chief Khawana",
+   "job": "战士",
+   "element": "暗",
+   "stars": 4
+  },
+  "天秤之主": {
+   "en": "Lady of the Scales",
+   "job": "精灵师",
+   "element": "光",
+   "stars": 5
+  },
+  "太悟": {
+   "en": "Taeyou",
+   "job": "战士",
+   "element": "水",
+   "stars": 5
+  },
+  "奇丽丝": {
+   "en": "Kiris",
+   "job": "射手",
+   "element": "木",
+   "stars": 3
+  },
+  "奇奇拉特V.2": {
+   "en": "Kikirat v2",
+   "job": "骑士",
+   "element": "光",
+   "stars": 3
+  },
+  "奥乐缇": {
+   "en": "Orte",
+   "job": "盗贼",
+   "element": "木",
+   "stars": 3
+  },
+  "奥缇莉尔": {
+   "en": "Otillie",
+   "job": "魔导士",
+   "element": "暗",
+   "stars": 3
+  },
+  "奥芙": {
+   "en": "Aube",
+   "job": "射手",
+   "element": "水",
+   "stars": 5
+  },
+  "孤狼沛伊拉": {
+   "en": "Lone Wolf Peira",
+   "job": "战士",
+   "element": "暗",
+   "stars": 5
+  },
+  "守护天使蒙茉朗西": {
+   "en": "Angelic Montmorancy",
+   "job": "精灵师",
+   "element": "水",
+   "stars": 3
+  },
+  "安兹·乌尔·恭": {
+   "en": "Ainz Ooal Gown",
+   "job": "魔导士",
+   "element": "暗",
+   "stars": 5
+  },
+  "安洁莉卡": {
+   "en": "Angelica",
+   "job": "精灵师",
+   "element": "水",
+   "stars": 4
+  },
+  "宝剑君主伊赛丽亚": {
+   "en": "Monarch of the Sword Iseria",
+   "job": "骑士",
+   "element": "光",
+   "stars": 5
+  },
+  "实验体赛兹": {
+   "en": "Specimen Sez",
+   "job": "盗贼",
+   "element": "光",
+   "stars": 5
+  },
+  "审判者绮世": {
+   "en": "Judge Kise",
+   "job": "战士",
+   "element": "光",
+   "stars": 5
+  },
+  "封眼苏琳": {
+   "en": "Sealed Eye Surin",
+   "job": "魔导士",
+   "element": "暗",
+   "stars": 4
+  },
+  "小小赛娜": {
+   "en": "Young Senya",
+   "job": "精灵师",
+   "element": "木",
+   "stars": 5
+  },
+  "小恶魔路雅": {
+   "en": "Hellion Lua",
+   "job": "射手",
+   "element": "暗",
+   "stars": 5
+  },
+  "小春": {
+   "en": "Haru",
+   "job": "战士",
+   "element": "水",
+   "stars": 5
+  },
+  "小泡芙": {
+   "en": "Choux",
+   "job": "战士",
+   "element": "水",
+   "stars": 5
+  },
+  "尤娜": {
+   "en": "Yuna",
+   "job": "射手",
+   "element": "水",
+   "stars": 5
+  },
+  "尤贝乌斯": {
+   "en": "Furious",
+   "job": "射手",
+   "element": "水",
+   "stars": 4
+  },
+  "尹凌": {
+   "en": "Yoonryoung",
+   "job": "骑士",
+   "element": "光",
+   "stars": 3
+  },
+  "尼姆拉斯": {
+   "en": "Nemunas",
+   "job": "射手",
+   "element": "火",
+   "stars": 3
+  },
+  "屠杀部队员": {
+   "en": "Butcher Corps Inquisitor",
+   "job": "骑士",
+   "element": "火",
+   "stars": 3
+  },
+  "岚": {
+   "en": "Ran",
+   "job": "盗贼",
+   "element": "水",
+   "stars": 5
+  },
+  "巴尔&塞尚": {
+   "en": "Baal & Sezan",
+   "job": "魔导士",
+   "element": "火",
+   "stars": 5
+  },
+  "巴思克": {
+   "en": "Bask",
+   "job": "骑士",
+   "element": "水",
+   "stars": 3
+  },
+  "巴托斯": {
+   "en": "Batisse",
+   "job": "战士",
+   "element": "暗",
+   "stars": 3
+  },
+  "巴萨尔": {
+   "en": "Basar",
+   "job": "魔导士",
+   "element": "木",
+   "stars": 5
+  },
+  "布里克": {
+   "en": "Brieg",
+   "job": "骑士",
+   "element": "水",
+   "stars": 5
+  },
+  "帕贝尔": {
+   "en": "Pavel",
+   "job": "射手",
+   "element": "木",
+   "stars": 5
+  },
+  "席可": {
+   "en": "Silk",
+   "job": "射手",
+   "element": "木",
+   "stars": 4
+  },
+  "席德": {
+   "en": "Cidd",
+   "job": "盗贼",
+   "element": "木",
+   "stars": 4
+  },
+  "平衡的尤贝乌斯": {
+   "en": "Peacemaker Furious",
+   "job": "射手",
+   "element": "暗",
+   "stars": 4
+  },
+  "年轻的女王夏绿蒂": {
+   "en": "Little Queen Charlotte",
+   "job": "战士",
+   "element": "光",
+   "stars": 5
+  },
+  "幻影的泰妮布里雅": {
+   "en": "Specter Tenebria",
+   "job": "魔导士",
+   "element": "暗",
+   "stars": 5
+  },
+  "庆典艾妲": {
+   "en": "Festive Eda",
+   "job": "魔导士",
+   "element": "火",
+   "stars": 5
+  },
+  "度假风优芬妮": {
+   "en": "Holiday Yufine",
+   "job": "战士",
+   "element": "火",
+   "stars": 5
+  },
+  "引导者捷娜": {
+   "en": "Shepherd Jena",
+   "job": "魔导士",
+   "element": "水",
+   "stars": 3
+  },
+  "弗莉达": {
+   "en": "Frida",
+   "job": "精灵师",
+   "element": "水",
+   "stars": 5
+  },
+  "律荷": {
+   "en": "Yulha",
+   "job": "骑士",
+   "element": "木",
+   "stars": 5
+  },
+  "悲叹萝季": {
+   "en": "Wretched Rose",
+   "job": "精灵师",
+   "element": "光",
+   "stars": 4
+  },
+  "战斗型玛雅": {
+   "en": "Fighter Maya",
+   "job": "骑士",
+   "element": "光",
+   "stars": 4
+  },
+  "战术型可丽": {
+   "en": "Tactical Archetype Coli",
+   "job": "盗贼",
+   "element": "水",
+   "stars": 5
+  },
+  "戴丝蒂娜": {
+   "en": "Destina",
+   "job": "精灵师",
+   "element": "木",
+   "stars": 5
+  },
+  "扎努塔": {
+   "en": "Januta",
+   "job": "战士",
+   "element": "火",
+   "stars": 3
+  },
+  "扎哈克": {
+   "en": "Zahhak",
+   "job": "战士",
+   "element": "木",
+   "stars": 5
+  },
+  "执行官维德瑞": {
+   "en": "Arbiter Vildred",
+   "job": "盗贼",
+   "element": "暗",
+   "stars": 5
+  },
+  "扭曲亡灵凯隆": {
+   "en": "Twisted Eidolon Kayron",
+   "job": "盗贼",
+   "element": "光",
+   "stars": 5
+  },
+  "护卫队长克劳乌": {
+   "en": "Guard Captain Krau",
+   "job": "战士",
+   "element": "火",
+   "stars": 5
+  },
+  "拉兹": {
+   "en": "Lots",
+   "job": "精灵师",
+   "element": "木",
+   "stars": 4
+  },
+  "拉姆": {
+   "en": "Ram",
+   "job": "魔导士",
+   "element": "木",
+   "stars": 5
+  },
+  "拉斯": {
+   "en": "Ras",
+   "job": "骑士",
+   "element": "火",
+   "stars": 3
+  },
+  "指挥型莱伊卡": {
+   "en": "Command Model Laika",
+   "job": "射手",
+   "element": "木",
+   "stars": 5
+  },
+  "指挥官萝里娜": {
+   "en": "Commander Lorina",
+   "job": "战士",
+   "element": "暗",
+   "stars": 3
+  },
+  "挑战者多米妮尔": {
+   "en": "Challenger Dominiel",
+   "job": "魔导士",
+   "element": "暗",
+   "stars": 4
+  },
+  "捷娜": {
+   "en": "Jena",
+   "job": "魔导士",
+   "element": "水",
+   "stars": 3
+  },
+  "操作员赛珂兰特": {
+   "en": "Operator Sigret",
+   "job": "射手",
+   "element": "暗",
+   "stars": 5
+  },
+  "支配者莉莉亚斯": {
+   "en": "Conqueror Lilias",
+   "job": "战士",
+   "element": "光",
+   "stars": 5
+  },
+  "救援者艾庭": {
+   "en": "Savior Adin",
+   "job": "盗贼",
+   "element": "光",
+   "stars": 3
+  },
+  "教母": {
+   "en": "Godmother",
+   "job": "射手",
+   "element": "火",
+   "stars": 3
+  },
+  "斐妮": {
+   "en": "Fenne",
+   "job": "精灵师",
+   "element": "水",
+   "stars": 5
+  },
+  "斯坦": {
+   "en": "Suthan",
+   "job": "魔导士",
+   "element": "暗",
+   "stars": 3
+  },
+  "新月舞姬玲儿": {
+   "en": "Crescent Moon Rin",
+   "job": "盗贼",
+   "element": "暗",
+   "stars": 4
+  },
+  "新月露娜": {
+   "en": "New Moon Luna",
+   "job": "魔导士",
+   "element": "光",
+   "stars": 5
+  },
+  "新绿的艾庭": {
+   "en": "Verdant Adin",
+   "job": "盗贼",
+   "element": "木",
+   "stars": 3
+  },
+  "旁观者和英": {
+   "en": "Bystander Hwayoung",
+   "job": "战士",
+   "element": "暗",
+   "stars": 5
+  },
+  "无神论者丽迪卡": {
+   "en": "Faithless Lidica",
+   "job": "射手",
+   "element": "光",
+   "stars": 5
+  },
+  "星辰神谕艾蕾娜": {
+   "en": "Astromancer Elena",
+   "job": "射手",
+   "element": "光",
+   "stars": 5
+  },
+  "智武": {
+   "en": "Zio",
+   "job": "魔导士",
+   "element": "暗",
+   "stars": 5
+  },
+  "暑假夏绿蒂": {
+   "en": "Summer Break Charlotte",
+   "job": "骑士",
+   "element": "水",
+   "stars": 5
+  },
+  "暗影萝季": {
+   "en": "Shadow Rose",
+   "job": "骑士",
+   "element": "暗",
+   "stars": 4
+  },
+  "暴击型卡农": {
+   "en": "Bomb Model Kanna",
+   "job": "射手",
+   "element": "火",
+   "stars": 5
+  },
+  "最后的碎片卡琳": {
+   "en": "Last Piece Karin",
+   "job": "盗贼",
+   "element": "光",
+   "stars": 4
+  },
+  "最后的骑士克劳乌": {
+   "en": "Last Rider Krau",
+   "job": "骑士",
+   "element": "光",
+   "stars": 5
+  },
+  "最强模特璐璐卡": {
+   "en": "Top Model Luluca",
+   "job": "魔导士",
+   "element": "暗",
+   "stars": 5
+  },
+  "月兔多米妮尔": {
+   "en": "Moon Bunny Dominiel",
+   "job": "精灵师",
+   "element": "光",
+   "stars": 4
+  },
+  "朗巴特": {
+   "en": "Ragnvald",
+   "job": "盗贼",
+   "element": "水",
+   "stars": 3
+  },
+  "未知可能性雅卡泰丝": {
+   "en": "Infinite Horizon Achates",
+   "job": "精灵师",
+   "element": "光",
+   "stars": 4
+  },
+  "未知的开拓者佛里蒂丝": {
+   "en": "Uncharted Pioneer Politis",
+   "job": "射手",
+   "element": "水",
+   "stars": 5
+  },
+  "末日指挥官查尔斯": {
+   "en": "Closer Charles",
+   "job": "盗贼",
+   "element": "暗",
+   "stars": 5
+  },
+  "末日萝菲": {
+   "en": "Apocalypse Ravi",
+   "job": "战士",
+   "element": "暗",
+   "stars": 5
+  },
+  "朱菜": {
+   "en": "Shuna",
+   "job": "精灵师",
+   "element": "火",
+   "stars": 5
+  },
+  "朱迪丝": {
+   "en": "Judith",
+   "job": "盗贼",
+   "element": "火",
+   "stars": 3
+  },
+  "朵莉思": {
+   "en": "Doris",
+   "job": "精灵师",
+   "element": "光",
+   "stars": 3
+  },
+  "杀手卡尔图哈": {
+   "en": "Assassin Cartuja",
+   "job": "战士",
+   "element": "暗",
+   "stars": 4
+  },
+  "杀手可丽": {
+   "en": "Assassin Coli",
+   "job": "盗贼",
+   "element": "暗",
+   "stars": 4
+  },
+  "杀手席德": {
+   "en": "Assassin Cidd",
+   "job": "盗贼",
+   "element": "暗",
+   "stars": 4
+  },
+  "杰克托": {
+   "en": "Jecht",
+   "job": "精灵师",
+   "element": "木",
+   "stars": 3
+  },
+  "杰拉图": {
+   "en": "Zerato",
+   "job": "魔导士",
+   "element": "水",
+   "stars": 4
+  },
+  "杰诺": {
+   "en": "Zeno",
+   "job": "魔导士",
+   "element": "水",
+   "stars": 5
+  },
+  "查尔斯": {
+   "en": "Charles",
+   "job": "骑士",
+   "element": "木",
+   "stars": 5
+  },
+  "格伦": {
+   "en": "Glenn",
+   "job": "射手",
+   "element": "木",
+   "stars": 3
+  },
+  "格鲁美兰": {
+   "en": "Gloomyrain",
+   "job": "魔导士",
+   "element": "光",
+   "stars": 3
+  },
+  "梅丽莎": {
+   "en": "Melissa",
+   "job": "魔导士",
+   "element": "火",
+   "stars": 5
+  },
+  "梅喧": {
+   "en": "Baiken",
+   "job": "盗贼",
+   "element": "木",
+   "stars": 5
+  },
+  "梅铃": {
+   "en": "Mei Lin",
+   "job": "盗贼",
+   "element": "火",
+   "stars": 5
+  },
+  "森之贤者薇薇安": {
+   "en": "Sylvan Sage Vivian",
+   "job": "魔导士",
+   "element": "光",
+   "stars": 5
+  },
+  "武斗家肯恩": {
+   "en": "Martial Artist Ken",
+   "job": "战士",
+   "element": "暗",
+   "stars": 5
+  },
+  "武蔚": {
+   "en": "Muwi",
+   "job": "盗贼",
+   "element": "水",
+   "stars": 3
+  },
+  "死亡探究者雷伊": {
+   "en": "Death Dealer Ray",
+   "job": "精灵师",
+   "element": "暗",
+   "stars": 5
+  },
+  "残影的菲奥雷托": {
+   "en": "Remnant Violet",
+   "job": "盗贼",
+   "element": "暗",
+   "stars": 5
+  },
+  "永劫漂流者鲁特比": {
+   "en": "Eternal Wanderer Ludwig",
+   "job": "魔导士",
+   "element": "暗",
+   "stars": 5
+  },
+  "永恒不变的黛莉亚": {
+   "en": "Free Spirit Tieria",
+   "job": "战士",
+   "element": "光",
+   "stars": 4
+  },
+  "汀果": {
+   "en": "Dingo",
+   "job": "战士",
+   "element": "火",
+   "stars": 4
+  },
+  "求道者埃德勒": {
+   "en": "Guider Aither",
+   "job": "魔导士",
+   "element": "光",
+   "stars": 4
+  },
+  "汪达": {
+   "en": "Wanda",
+   "job": "射手",
+   "element": "暗",
+   "stars": 3
+  },
+  "沙漠宝石巴萨尔": {
+   "en": "Desert Jewel Basar",
+   "job": "精灵师",
+   "element": "光",
+   "stars": 5
+  },
+  "沛伊拉": {
+   "en": "Peira",
+   "job": "盗贼",
+   "element": "水",
+   "stars": 5
+  },
+  "法济斯": {
+   "en": "Purrgis",
+   "job": "战士",
+   "element": "木",
+   "stars": 4
+  },
+  "波涛裂痕艾碧拉": {
+   "en": "Tidal Rift Elvira",
+   "job": "魔导士",
+   "element": "暗",
+   "stars": 5
+  },
+  "波萝莱珍": {
+   "en": "Pearlhorizon",
+   "job": "魔导士",
+   "element": "木",
+   "stars": 3
+  },
+  "注视者修里": {
+   "en": "Watcher Schuri",
+   "job": "射手",
+   "element": "光",
+   "stars": 4
+  },
+  "泰妮布里雅": {
+   "en": "Tenebria",
+   "job": "魔导士",
+   "element": "火",
+   "stars": 5
+  },
+  "泰温": {
+   "en": "Tywin",
+   "job": "骑士",
+   "element": "水",
+   "stars": 5
+  },
+  "洁克·欧": {
+   "en": "Jack-O'",
+   "job": "战士",
+   "element": "火",
+   "stars": 5
+  },
+  "洁若米亚": {
+   "en": "Cermia",
+   "job": "战士",
+   "element": "火",
+   "stars": 5
+  },
+  "洛曼": {
+   "en": "Romann",
+   "job": "魔导士",
+   "element": "水",
+   "stars": 4
+  },
+  "流星雅卡泰丝": {
+   "en": "Shooting Star Achates",
+   "job": "精灵师",
+   "element": "暗",
+   "stars": 4
+  },
+  "流浪王子席德": {
+   "en": "Wandering Prince Cidd",
+   "job": "魔导士",
+   "element": "光",
+   "stars": 4
+  },
+  "流浪者席可": {
+   "en": "Wanderer Silk",
+   "job": "射手",
+   "element": "光",
+   "stars": 4
+  },
+  "流浪者雷欧": {
+   "en": "Roaming Warrior Leo",
+   "job": "射手",
+   "element": "暗",
+   "stars": 4
+  },
+  "济纽亚": {
+   "en": "Jenua",
+   "job": "盗贼",
+   "element": "火",
+   "stars": 5
+  },
+  "海上幽灵佛里蒂丝": {
+   "en": "Sea Phantom Politis",
+   "job": "射手",
+   "element": "暗",
+   "stars": 5
+  },
+  "海伦": {
+   "en": "Helen",
+   "job": "骑士",
+   "element": "水",
+   "stars": 3
+  },
+  "海兹": {
+   "en": "Hazel",
+   "job": "精灵师",
+   "element": "火",
+   "stars": 3
+  },
+  "海军上校兰蒂": {
+   "en": "Navy Captain Landy",
+   "job": "骑士",
+   "element": "光",
+   "stars": 5
+  },
+  "海斯特": {
+   "en": "Haste",
+   "job": "盗贼",
+   "element": "火",
+   "stars": 5
+  },
+  "海洋香气璐璐卡": {
+   "en": "Ocean Breeze Luluca",
+   "job": "精灵师",
+   "element": "木",
+   "stars": 5
+  },
+  "海盗船长芙兰": {
+   "en": "Pirate Captain Flan",
+   "job": "射手",
+   "element": "暗",
+   "stars": 5
+  },
+  "海边的维尔萝娜": {
+   "en": "Seaside Bellona",
+   "job": "射手",
+   "element": "水",
+   "stars": 5
+  },
+  "深海之眼芙米尔": {
+   "en": "Eye of the Abyss Fumyr",
+   "job": "魔导士",
+   "element": "木",
+   "stars": 5
+  },
+  "深渊优芬妮": {
+   "en": "Abyssal Yufine",
+   "job": "骑士",
+   "element": "暗",
+   "stars": 5
+  },
+  "混沌教屠杀追击者": {
+   "en": "Chaos Inquisitor",
+   "job": "骑士",
+   "element": "火",
+   "stars": 3
+  },
+  "混沌教巨斧大将军": {
+   "en": "Chaos Sect Axe",
+   "job": "战士",
+   "element": "暗",
+   "stars": 3
+  },
+  "清玄的艾庭": {
+   "en": "Serene Purity Adin",
+   "job": "盗贼",
+   "element": "水",
+   "stars": 3
+  },
+  "湖畔魔女泰妮布里雅": {
+   "en": "Witch of the Mere Tenebria",
+   "job": "魔导士",
+   "element": "光",
+   "stars": 5
+  },
+  "潘尼罗佩": {
+   "en": "Penelope",
+   "job": "盗贼",
+   "element": "暗",
+   "stars": 3
+  },
+  "灰光森林的伊赛丽亚": {
+   "en": "Briar Witch Iseria",
+   "job": "射手",
+   "element": "暗",
+   "stars": 5
+  },
+  "灵眼的瑟琳": {
+   "en": "Spirit Eye Celine",
+   "job": "盗贼",
+   "element": "光",
+   "stars": 5
+  },
+  "烈火汀果": {
+   "en": "Blaze Dingo",
+   "job": "精灵师",
+   "element": "光",
+   "stars": 4
+  },
+  "烈焰的卡瓦朱": {
+   "en": "Inferno Khawazu",
+   "job": "战士",
+   "element": "暗",
+   "stars": 4
+  },
+  "爱尔菲特": {
+   "en": "Elphelt",
+   "job": "射手",
+   "element": "火",
+   "stars": 5
+  },
+  "爱德华·爱力克": {
+   "en": "Edward Elric",
+   "job": "战士",
+   "element": "火",
+   "stars": 5
+  },
+  "爱蜜莉雅": {
+   "en": "Emilia",
+   "job": "精灵师",
+   "element": "水",
+   "stars": 5
+  },
+  "狮心王洁若米亚": {
+   "en": "Lionheart Cermia",
+   "job": "战士",
+   "element": "光",
+   "stars": 5
+  },
+  "猫咪克莱莉莎": {
+   "en": "Kitty Clarissa",
+   "job": "战士",
+   "element": "暗",
+   "stars": 4
+  },
+  "玛雅": {
+   "en": "Maya",
+   "job": "骑士",
+   "element": "火",
+   "stars": 4
+  },
+  "玫勒赛德丝": {
+   "en": "Mercedes",
+   "job": "魔导士",
+   "element": "火",
+   "stars": 4
+  },
+  "玫拉妮": {
+   "en": "Melany",
+   "job": "战士",
+   "element": "火",
+   "stars": 3
+  },
+  "玲儿": {
+   "en": "Rin",
+   "job": "精灵师",
+   "element": "木",
+   "stars": 4
+  },
+  "珠妮": {
+   "en": "Juni",
+   "job": "战士",
+   "element": "火",
+   "stars": 3
+  },
+  "瑟琳": {
+   "en": "Celine",
+   "job": "盗贼",
+   "element": "木",
+   "stars": 5
+  },
+  "璐璐卡": {
+   "en": "Luluca",
+   "job": "魔导士",
+   "element": "水",
+   "stars": 5
+  },
+  "疑难杂症专家汪达": {
+   "en": "All-Rounder Wanda",
+   "job": "射手",
+   "element": "暗",
+   "stars": 3
+  },
+  "疾速赛车手赛珂兰特": {
+   "en": "Swift Flagbearer Sigret",
+   "job": "盗贼",
+   "element": "火",
+   "stars": 5
+  },
+  "白银刀刃的雅拉敏塔": {
+   "en": "Silver Blade Aramintha",
+   "job": "魔导士",
+   "element": "光",
+   "stars": 5
+  },
+  "研究者卡萝": {
+   "en": "Researcher Carrot",
+   "job": "魔导士",
+   "element": "火",
+   "stars": 3
+  },
+  "碧儿姬达": {
+   "en": "Birgitta",
+   "job": "精灵师",
+   "element": "水",
+   "stars": 5
+  },
+  "科尔布思": {
+   "en": "Corvus",
+   "job": "战士",
+   "element": "火",
+   "stars": 4
+  },
+  "穆卡察": {
+   "en": "Mucacha",
+   "job": "战士",
+   "element": "木",
+   "stars": 3
+  },
+  "童话泰妮布里雅": {
+   "en": "Fairytale Tenebria",
+   "job": "魔导士",
+   "element": "水",
+   "stars": 5
+  },
+  "策划者莱伊卡": {
+   "en": "Architect Laika",
+   "job": "魔导士",
+   "element": "光",
+   "stars": 5
+  },
+  "米勒莎": {
+   "en": "Mirsa",
+   "job": "盗贼",
+   "element": "光",
+   "stars": 3
+  },
+  "米莉姆": {
+   "en": "Milim",
+   "job": "魔导士",
+   "element": "火",
+   "stars": 5
+  },
+  "索尔": {
+   "en": "Sol",
+   "job": "战士",
+   "element": "火",
+   "stars": 5
+  },
+  "繆伊": {
+   "en": "Mui",
+   "job": "战士",
+   "element": "木",
+   "stars": 5
+  },
+  "红丸": {
+   "en": "Benimaru",
+   "job": "战士",
+   "element": "火",
+   "stars": 5
+  },
+  "红焰亚敏": {
+   "en": "Crimson Armin",
+   "job": "骑士",
+   "element": "光",
+   "stars": 4
+  },
+  "组长亚露嘉": {
+   "en": "Boss Arunka",
+   "job": "骑士",
+   "element": "光",
+   "stars": 5
+  },
+  "终结者杰拉图": {
+   "en": "Champion Zerato",
+   "job": "魔导士",
+   "element": "暗",
+   "stars": 4
+  },
+  "绊爱": {
+   "en": "Kizuna AI",
+   "job": "精灵师",
+   "element": "火",
+   "stars": 4
+  },
+  "继承人太悟": {
+   "en": "Successor Taeyou",
+   "job": "战士",
+   "element": "光",
+   "stars": 5
+  },
+  "继承人雅蜜琪": {
+   "en": "Inheritor Amiki",
+   "job": "战士",
+   "element": "水",
+   "stars": 3
+  },
+  "绮世": {
+   "en": "Kise",
+   "job": "盗贼",
+   "element": "水",
+   "stars": 5
+  },
+  "维多丽卡": {
+   "en": "Victorika",
+   "job": "骑士",
+   "element": "火",
+   "stars": 4
+  },
+  "维尔萝娜": {
+   "en": "Bellona",
+   "job": "射手",
+   "element": "木",
+   "stars": 5
+  },
+  "维德瑞": {
+   "en": "Vildred",
+   "job": "盗贼",
+   "element": "木",
+   "stars": 5
+  },
+  "维波里丝": {
+   "en": "Byblis",
+   "job": "射手",
+   "element": "水",
+   "stars": 5
+  },
+  "缪斯黎玛": {
+   "en": "Muse Rima",
+   "job": "射手",
+   "element": "水",
+   "stars": 3
+  },
+  "罗伊·马斯坦古": {
+   "en": "Roy Mustang",
+   "job": "魔导士",
+   "element": "火",
+   "stars": 5
+  },
+  "罗安纳": {
+   "en": "Roana",
+   "job": "精灵师",
+   "element": "木",
+   "stars": 5
+  },
+  "罪戾的安洁莉卡": {
+   "en": "Sinful Angelica",
+   "job": "精灵师",
+   "element": "暗",
+   "stars": 4
+  },
+  "美丝缇彩": {
+   "en": "Mistychain",
+   "job": "魔导士",
+   "element": "水",
+   "stars": 3
+  },
+  "肯恩": {
+   "en": "Ken",
+   "job": "战士",
+   "element": "火",
+   "stars": 5
+  },
+  "自卫队队长格伦": {
+   "en": "Vigilante Leader Glenn",
+   "job": "射手",
+   "element": "木",
+   "stars": 3
+  },
+  "自由自在的佣兵赫尔嘉": {
+   "en": "Mercenary Helga",
+   "job": "战士",
+   "element": "木",
+   "stars": 3
+  },
+  "自由骑士雅洛薇": {
+   "en": "Unbound Knight Arowell",
+   "job": "骑士",
+   "element": "光",
+   "stars": 3
+  },
+  "艾丝黛": {
+   "en": "Estelle",
+   "job": "骑士",
+   "element": "木",
+   "stars": 5
+  },
+  "艾利戈斯": {
+   "en": "Eligos",
+   "job": "射手",
+   "element": "火",
+   "stars": 5
+  },
+  "艾因兹": {
+   "en": "Ains",
+   "job": "战士",
+   "element": "木",
+   "stars": 3
+  },
+  "艾妲": {
+   "en": "Eda",
+   "job": "魔导士",
+   "element": "水",
+   "stars": 5
+  },
+  "艾尔巴伦": {
+   "en": "Ervalen",
+   "job": "盗贼",
+   "element": "木",
+   "stars": 5
+  },
+  "艾尔森": {
+   "en": "Elson",
+   "job": "精灵师",
+   "element": "光",
+   "stars": 3
+  },
+  "艾庭": {
+   "en": "Adin",
+   "job": "盗贼",
+   "element": "木",
+   "stars": 3
+  },
+  "艾碧拉": {
+   "en": "Elvira",
+   "job": "盗贼",
+   "element": "水",
+   "stars": 5
+  },
+  "艾自拉": {
+   "en": "Ezra",
+   "job": "盗贼",
+   "element": "木",
+   "stars": 3
+  },
+  "艾莉雅": {
+   "en": "Aria",
+   "job": "魔导士",
+   "element": "水",
+   "stars": 5
+  },
+  "艾莲西雅": {
+   "en": "Alencia",
+   "job": "战士",
+   "element": "木",
+   "stars": 5
+  },
+  "艾蕾娜": {
+   "en": "Elena",
+   "job": "精灵师",
+   "element": "水",
+   "stars": 5
+  },
+  "艾诺斯": {
+   "en": "Ainos",
+   "job": "精灵师",
+   "element": "暗",
+   "stars": 3
+  },
+  "艾诺斯2.0": {
+   "en": "Ainos 2.0",
+   "job": "精灵师",
+   "element": "暗",
+   "stars": 3
+  },
+  "艾诺特": {
+   "en": "Enott",
+   "job": "战士",
+   "element": "水",
+   "stars": 3
+  },
+  "芙兰": {
+   "en": "Flan",
+   "job": "射手",
+   "element": "水",
+   "stars": 5
+  },
+  "芙米尔": {
+   "en": "Fumyr",
+   "job": "魔导士",
+   "element": "水",
+   "stars": 5
+  },
+  "芙莉莲": {
+   "en": "Frieren",
+   "job": "魔导士",
+   "element": "木",
+   "stars": 5
+  },
+  "花园丽迪卡": {
+   "en": "Blooming Lidica",
+   "job": "盗贼",
+   "element": "木",
+   "stars": 5
+  },
+  "苍穹伊莉娜芙": {
+   "en": "Empyrean Ilynav",
+   "job": "骑士",
+   "element": "光",
+   "stars": 5
+  },
+  "苏尼娅": {
+   "en": "Sonia",
+   "job": "精灵师",
+   "element": "光",
+   "stars": 3
+  },
+  "苏琳": {
+   "en": "Surin",
+   "job": "盗贼",
+   "element": "火",
+   "stars": 4
+  },
+  "莉珈": {
+   "en": "Lilka",
+   "job": "射手",
+   "element": "木",
+   "stars": 3
+  },
+  "莉莉亚斯": {
+   "en": "Lilias",
+   "job": "骑士",
+   "element": "火",
+   "stars": 5
+  },
+  "莉莉贝": {
+   "en": "Lilibet",
+   "job": "战士",
+   "element": "木",
+   "stars": 5
+  },
+  "莉莎·霍克爱": {
+   "en": "Riza Hawkeye",
+   "job": "射手",
+   "element": "水",
+   "stars": 5
+  },
+  "莎伦": {
+   "en": "Sharun",
+   "job": "精灵师",
+   "element": "木",
+   "stars": 5
+  },
+  "莱娅": {
+   "en": "Laia",
+   "job": "战士",
+   "element": "木",
+   "stars": 5
+  },
+  "菲伦": {
+   "en": "Fern",
+   "job": "魔导士",
+   "element": "水",
+   "stars": 5
+  },
+  "菲奥雷托": {
+   "en": "Violet",
+   "job": "盗贼",
+   "element": "木",
+   "stars": 5
+  },
+  "萝季": {
+   "en": "Rose",
+   "job": "骑士",
+   "element": "水",
+   "stars": 4
+  },
+  "萝菲": {
+   "en": "Ravi",
+   "job": "战士",
+   "element": "火",
+   "stars": 5
+  },
+  "萝里娜": {
+   "en": "Lorina",
+   "job": "战士",
+   "element": "暗",
+   "stars": 3
+  },
+  "萨洛美": {
+   "en": "Salome",
+   "job": "战士",
+   "element": "暗",
+   "stars": 5
+  },
+  "萨若米亚": {
+   "en": "Saria",
+   "job": "射手",
+   "element": "木",
+   "stars": 5
+  },
+  "落月": {
+   "en": "Nahkwol",
+   "job": "射手",
+   "element": "火",
+   "stars": 5
+  },
+  "蒂姬": {
+   "en": "Dizzy",
+   "job": "魔导士",
+   "element": "水",
+   "stars": 5
+  },
+  "蒙茉朗西": {
+   "en": "Montmorancy",
+   "job": "精灵师",
+   "element": "水",
+   "stars": 3
+  },
+  "蕾姆": {
+   "en": "Rem",
+   "job": "战士",
+   "element": "水",
+   "stars": 5
+  },
+  "蕾娅": {
+   "en": "Leah",
+   "job": "射手",
+   "element": "木",
+   "stars": 3
+  },
+  "蕾娜": {
+   "en": "Lena",
+   "job": "战士",
+   "element": "水",
+   "stars": 3
+  },
+  "蕾芙娜": {
+   "en": "Revna",
+   "job": "盗贼",
+   "element": "暗",
+   "stars": 3
+  },
+  "蕾诺娅": {
+   "en": "Renoa",
+   "job": "射手",
+   "element": "暗",
+   "stars": 5
+  },
+  "薇薇安": {
+   "en": "Vivian",
+   "job": "魔导士",
+   "element": "木",
+   "stars": 5
+  },
+  "血剑卡琳": {
+   "en": "Blood Blade Karin",
+   "job": "盗贼",
+   "element": "暗",
+   "stars": 4
+  },
+  "西风处刑者修里": {
+   "en": "Westwind Executioner Schuri",
+   "job": "射手",
+   "element": "暗",
+   "stars": 4
+  },
+  "设计师莉莉贝": {
+   "en": "Designer Lilibet",
+   "job": "战士",
+   "element": "暗",
+   "stars": 5
+  },
+  "该隐": {
+   "en": "Kane",
+   "job": "战士",
+   "element": "火",
+   "stars": 5
+  },
+  "诺托斯": {
+   "en": "Notos",
+   "job": "骑士",
+   "element": "光",
+   "stars": 5
+  },
+  "调香师维波里丝": {
+   "en": "Perfumer Byblis",
+   "job": "精灵师",
+   "element": "火",
+   "stars": 5
+  },
+  "贝洛妮卡": {
+   "en": "Veronica",
+   "job": "射手",
+   "element": "火",
+   "stars": 4
+  },
+  "贤者巴尔&塞尚": {
+   "en": "Sage Baal & Sezan",
+   "job": "魔导士",
+   "element": "光",
+   "stars": 5
+  },
+  "费莉丝": {
+   "en": "Pyllis",
+   "job": "骑士",
+   "element": "暗",
+   "stars": 3
+  },
+  "赛丽拉": {
+   "en": "Serila",
+   "job": "魔导士",
+   "element": "火",
+   "stars": 4
+  },
+  "赛兹": {
+   "en": "Sez",
+   "job": "盗贼",
+   "element": "水",
+   "stars": 5
+  },
+  "赛娜": {
+   "en": "Senya",
+   "job": "骑士",
+   "element": "木",
+   "stars": 5
+  },
+  "赛珂兰特": {
+   "en": "Sigret",
+   "job": "战士",
+   "element": "水",
+   "stars": 5
+  },
+  "赛瑞丝": {
+   "en": "Cerise",
+   "job": "射手",
+   "element": "水",
+   "stars": 5
+  },
+  "赛雷斯特": {
+   "en": "Celeste",
+   "job": "射手",
+   "element": "光",
+   "stars": 3
+  },
+  "赤月贵族海斯特": {
+   "en": "Blood Moon Haste",
+   "job": "精灵师",
+   "element": "暗",
+   "stars": 5
+  },
+  "赫卡特": {
+   "en": "Hecate",
+   "job": "战士",
+   "element": "木",
+   "stars": 5
+  },
+  "赫尔嘉": {
+   "en": "Helga",
+   "job": "战士",
+   "element": "木",
+   "stars": 3
+  },
+  "赫尔赛蒂": {
+   "en": "Harsetti",
+   "job": "魔导士",
+   "element": "暗",
+   "stars": 5
+  },
+  "起源拉斯": {
+   "en": "Genesis Ras",
+   "job": "骑士",
+   "element": "光",
+   "stars": 5
+  },
+  "路雅": {
+   "en": "Lua",
+   "job": "射手",
+   "element": "水",
+   "stars": 5
+  },
+  "转学生艾庭": {
+   "en": "New Kid Adin",
+   "job": "盗贼",
+   "element": "暗",
+   "stars": 4
+  },
+  "辅助型拉兹": {
+   "en": "Auxiliary Lots",
+   "job": "魔导士",
+   "element": "暗",
+   "stars": 4
+  },
+  "达拉士": {
+   "en": "Talaz",
+   "job": "战士",
+   "element": "水",
+   "stars": 3
+  },
+  "达黎儿": {
+   "en": "Talia",
+   "job": "盗贼",
+   "element": "光",
+   "stars": 3
+  },
+  "迪埃妮": {
+   "en": "Diene",
+   "job": "精灵师",
+   "element": "水",
+   "stars": 5
+  },
+  "都市暗影小泡芙": {
+   "en": "Urban Shadow Choux",
+   "job": "战士",
+   "element": "暗",
+   "stars": 5
+  },
+  "里安娜&路西艾拉": {
+   "en": "Rhianna and Luciella",
+   "job": "盗贼",
+   "element": "暗",
+   "stars": 5
+  },
+  "里科黎思": {
+   "en": "Rikoris",
+   "job": "战士",
+   "element": "光",
+   "stars": 3
+  },
+  "野心分子泰温": {
+   "en": "Ambitious Tywin",
+   "job": "骑士",
+   "element": "光",
+   "stars": 5
+  },
+  "银光海啸和英": {
+   "en": "Argent Waves Hwayoung",
+   "job": "盗贼",
+   "element": "水",
+   "stars": 5
+  },
+  "银涛克莉丝媞": {
+   "en": "Silvertide Christy",
+   "job": "骑士",
+   "element": "木",
+   "stars": 3
+  },
+  "镇魂罗安纳": {
+   "en": "Requiem Roana",
+   "job": "魔导士",
+   "element": "暗",
+   "stars": 5
+  },
+  "雅儿贝德": {
+   "en": "Albedo",
+   "job": "骑士",
+   "element": "木",
+   "stars": 5
+  },
+  "雅卡泰丝": {
+   "en": "Achates",
+   "job": "精灵师",
+   "element": "火",
+   "stars": 4
+  },
+  "雅咪德": {
+   "en": "Amid",
+   "job": "精灵师",
+   "element": "水",
+   "stars": 5
+  },
+  "雅拉敏塔": {
+   "en": "Aramintha",
+   "job": "魔导士",
+   "element": "火",
+   "stars": 5
+  },
+  "雅洛薇": {
+   "en": "Arowell",
+   "job": "骑士",
+   "element": "光",
+   "stars": 3
+  },
+  "雅碧凯": {
+   "en": "Abigail",
+   "job": "战士",
+   "element": "火",
+   "stars": 5
+  },
+  "雅莉莎": {
+   "en": "Alexa",
+   "job": "盗贼",
+   "element": "水",
+   "stars": 3
+  },
+  "雅蜜琪": {
+   "en": "Amiki",
+   "job": "战士",
+   "element": "水",
+   "stars": 3
+  },
+  "雨修": {
+   "en": "Beehoo",
+   "job": "射手",
+   "element": "火",
+   "stars": 5
+  },
+  "雪国的苏莉塔妮亚": {
+   "en": "Solitaria of the Snow",
+   "job": "魔导士",
+   "element": "光",
+   "stars": 5
+  },
+  "雪花": {
+   "en": "Setsuka",
+   "job": "盗贼",
+   "element": "火",
+   "stars": 5
+  },
+  "雷伊": {
+   "en": "Ray",
+   "job": "精灵师",
+   "element": "木",
+   "stars": 5
+  },
+  "雷奎姆洛": {
+   "en": "Requiemroar",
+   "job": "精灵师",
+   "element": "暗",
+   "stars": 3
+  },
+  "雷欧": {
+   "en": "Leo",
+   "job": "射手",
+   "element": "木",
+   "stars": 4
+  },
+  "露娜": {
+   "en": "Luna",
+   "job": "战士",
+   "element": "水",
+   "stars": 5
+  },
+  "露彬": {
+   "en": "Robin",
+   "job": "射手",
+   "element": "火",
+   "stars": 5
+  },
+  "露易莎": {
+   "en": "Ruiza",
+   "job": "射手",
+   "element": "火",
+   "stars": 5
+  },
+  "露西": {
+   "en": "Lucy",
+   "job": "精灵师",
+   "element": "木",
+   "stars": 3
+  },
+  "风云苏琳": {
+   "en": "Tempest Surin",
+   "job": "盗贼",
+   "element": "光",
+   "stars": 4
+  },
+  "风纪委员艾莉雅": {
+   "en": "Disciplinary Prefect Aria",
+   "job": "战士",
+   "element": "暗",
+   "stars": 5
+  },
+  "魔勒": {
+   "en": "Mort",
+   "job": "骑士",
+   "element": "木",
+   "stars": 5
+  },
+  "魔法学者朵莉思": {
+   "en": "Magic Scholar Doris",
+   "job": "精灵师",
+   "element": "光",
+   "stars": 3
+  },
+  "魔神的暗影": {
+   "en": "Archdemon's Shadow",
+   "job": "魔导士",
+   "element": "暗",
+   "stars": 5
+  },
+  "鲁兹德": {
+   "en": "Roozid",
+   "job": "盗贼",
+   "element": "木",
+   "stars": 3
+  },
+  "鲁特比": {
+   "en": "Ludwig",
+   "job": "魔导士",
+   "element": "木",
+   "stars": 5
+  },
+  "鹰猎人可露莉": {
+   "en": "Falconer Kluri",
+   "job": "骑士",
+   "element": "木",
+   "stars": 3
+  },
+  "黎明序曲鲁特比": {
+   "en": "Aubade Ludwig",
+   "job": "射手",
+   "element": "水",
+   "stars": 5
+  },
+  "黎洁特": {
+   "en": "Lisette",
+   "job": "精灵师",
+   "element": "光",
+   "stars": 5
+  },
+  "黎玛": {
+   "en": "Rima",
+   "job": "射手",
+   "element": "水",
+   "stars": 3
+  },
+  "黑暗牧者迪埃妮": {
+   "en": "Shepherd of the Dark Diene",
+   "job": "魔导士",
+   "element": "暗",
+   "stars": 5
+  },
+  "黑暗的科尔布思": {
+   "en": "Dark Corvus",
+   "job": "战士",
+   "element": "暗",
+   "stars": 5
+  },
+  "黑骑士费莉丝": {
+   "en": "Shadow Knight Pyllis",
+   "job": "骑士",
+   "element": "暗",
+   "stars": 3
+  },
+  "黛莉亚": {
+   "en": "Tieria",
+   "job": "战士",
+   "element": "火",
+   "stars": 3
+  },
+  "龙之伴侣赛娜": {
+   "en": "Dragon Bride Senya",
+   "job": "骑士",
+   "element": "光",
+   "stars": 5
+  },
+  "龙王莎伦": {
+   "en": "Dragon King Sharun",
+   "job": "精灵师",
+   "element": "光",
+   "stars": 5
+  }
+ },
+ "catalog": [
+  "Abigail",
+  "Abyssal Yufine",
+  "Achates",
+  "Adin",
+  "Adlay",
+  "Adventurer Ras",
+  "Afternoon Soak Flan",
+  "Ainos",
+  "Ainos 2.0",
+  "Ains",
+  "Ainz Ooal Gown",
+  "Aither",
+  "Aki",
+  "Albedo",
+  "Alencia",
+  "Alexa",
+  "All-Rounder Wanda",
+  "Ambitious Tywin",
+  "Amid",
+  "Amiki",
+  "Angel of Light Angelica",
+  "Angelic Montmorancy",
+  "Angelica",
+  "Apocalypse Ravi",
+  "Aram",
+  "Aramintha",
+  "Arbiter Vildred",
+  "Archdemon's Shadow",
+  "Architect Laika",
+  "Argent Waves Hwayoung",
+  "Aria",
+  "Armin",
+  "Arowell",
+  "Arunka",
+  "Assassin Cartuja",
+  "Assassin Cidd",
+  "Assassin Coli",
+  "Astromancer Elena",
+  "Aubade Ludwig",
+  "Aube",
+  "Auxiliary Lots",
+  "Azalea",
+  "Baal & Sezan",
+  "Bad Cat Armin",
+  "Baiken",
+  "Basar",
+  "Bask",
+  "Batisse",
+  "Beehoo",
+  "Belian",
+  "Bellona",
+  "Benevolent Romann",
+  "Benimaru",
+  "Bernard",
+  "Birgitta",
+  "Blaze Dingo",
+  "Blood Blade Karin",
+  "Blood Moon Haste",
+  "Blooming Lidica",
+  "Bomb Model Kanna",
+  "Boss Arunka",
+  "Briar Witch Iseria",
+  "Brieg",
+  "Butcher Corps Inquisitor",
+  "Byblis",
+  "Bystander Hwayoung",
+  "Camilla",
+  "Captain Rikoris",
+  "Carmainerose",
+  "Carrot",
+  "Cartuja",
+  "Cecilia",
+  "Celeste",
+  "Celestial Mercedes",
+  "Celine",
+  "Cerise",
+  "Cermia",
+  "Challenger Dominiel",
+  "Champion Zerato",
+  "Chaos Inquisitor",
+  "Chaos Sect Axe",
+  "Charles",
+  "Charlotte",
+  "Chloe",
+  "Choux",
+  "Christy",
+  "Church of Ilryos Axe",
+  "Cidd",
+  "Clarissa",
+  "Claudia",
+  "Closer Charles",
+  "Coli",
+  "Command Model Laika",
+  "Commander Lorina",
+  "Commander Pavel",
+  "Conqueror Lilias",
+  "Corvus",
+  "Crescent Moon Rin",
+  "Crimson Armin",
+  "Crozet",
+  "Dark Corvus",
+  "Death Dealer Ray",
+  "Desert Jewel Basar",
+  "Designer Lilibet",
+  "Destina",
+  "Diene",
+  "Dingo",
+  "Disciplinary Prefect Aria",
+  "Dizzy",
+  "Doll Maker Pearlhorizon",
+  "Dominiel",
+  "Doris",
+  "Dragon Bride Senya",
+  "Dragon King Sharun",
+  "Eaton",
+  "Eda",
+  "Edward Elric",
+  "Elena",
+  "Eligos",
+  "Elphelt",
+  "Elson",
+  "Elvira",
+  "Emilia",
+  "Empyrean Ilynav",
+  "Enott",
+  "Ervalen",
+  "Estelle",
+  "Eternal Wanderer Ludwig",
+  "Eye of the Abyss Fumyr",
+  "Ezra",
+  "Fairytale Tenebria",
+  "Faithless Lidica",
+  "Falconer Kluri",
+  "Fallen Cecilia",
+  "Fenne",
+  "Fenris",
+  "Fern",
+  "Festive Eda",
+  "Fighter Maya",
+  "Flan",
+  "Free Spirit Tieria",
+  "Frida",
+  "Frieren",
+  "Fumyr",
+  "Furious",
+  "General Purrgis",
+  "Genesis Ras",
+  "Glenn",
+  "Gloomyrain",
+  "Godmother",
+  "Great Chief Khawana",
+  "Guard Captain Krau",
+  "Guider Aither",
+  "Gunther",
+  "Harsetti",
+  "Haru",
+  "Hasol",
+  "Haste",
+  "Hataan",
+  "Hazel",
+  "Hecate",
+  "Helen",
+  "Helga",
+  "Hellion Lua",
+  "Holiday Yufine",
+  "Holy Flame Adin",
+  "Hurado",
+  "Hwayoung",
+  "Ian",
+  "Ilynav",
+  "Immortal Wukong",
+  "Inferno Khawazu",
+  "Infinite Horizon Achates",
+  "Inheritor Amiki",
+  "Iseria",
+  "Ivana",
+  "Jack-O'",
+  "Januta",
+  "Jecht",
+  "Jena",
+  "Jenua",
+  "Judge Kise",
+  "Judith",
+  "Juni",
+  "Kane",
+  "Karin",
+  "Kawerik",
+  "Kayron",
+  "Ken",
+  "Khawana",
+  "Khawazu",
+  "Kikirat v2",
+  "Kiris",
+  "Kise",
+  "Kitty Clarissa",
+  "Kizuna AI",
+  "Kluri",
+  "Krau",
+  "Lady of the Scales",
+  "Laia",
+  "Landy",
+  "Last Piece Karin",
+  "Last Rider Krau",
+  "Leah",
+  "Lena",
+  "Leo",
+  "Lethe",
+  "Lidica",
+  "Lilias",
+  "Lilibet",
+  "Lilka",
+  "Lionheart Cermia",
+  "Lisette",
+  "Little Queen Charlotte",
+  "Lone Crescent Bellona",
+  "Lone Wolf Peira",
+  "Lorina",
+  "Lots",
+  "Lua",
+  "Lucy",
+  "Ludwig",
+  "Luluca",
+  "Luna",
+  "Magic Scholar Doris",
+  "Maid Chloe",
+  "Martial Artist Ken",
+  "Mascot Hazel",
+  "Maya",
+  "Mediator Kawerik",
+  "Mei Lin",
+  "Melany",
+  "Melissa",
+  "Mercedes",
+  "Mercenary Helga",
+  "Midnight Gala Lilias",
+  "Milim",
+  "Mirsa",
+  "Mistychain",
+  "Monarch of the Sword Iseria",
+  "Montmorancy",
+  "Moon Bunny Dominiel",
+  "Mort",
+  "Mucacha",
+  "Mui",
+  "Muse Rima",
+  "Muwi",
+  "Nahkwol",
+  "Navy Captain Landy",
+  "Nemunas",
+  "New Kid Adin",
+  "New Moon Luna",
+  "Notos",
+  "Ocean Breeze Luluca",
+  "Operator Sigret",
+  "Orte",
+  "Otillie",
+  "Pavel",
+  "Peacemaker Furious",
+  "Pearlhorizon",
+  "Peira",
+  "Penelope",
+  "Perfumer Byblis",
+  "Pernilla",
+  "Pirate Captain Flan",
+  "Politis",
+  "Purrgis",
+  "Pyllis",
+  "Ragnvald",
+  "Ram",
+  "Ran",
+  "Ras",
+  "Ravi",
+  "Ray",
+  "Rem",
+  "Remnant Violet",
+  "Renoa",
+  "Requiem Roana",
+  "Requiemroar",
+  "Researcher Carrot",
+  "Revna",
+  "Rhianna and Luciella",
+  "Righteous Thief Roozid",
+  "Rikoris",
+  "Rima",
+  "Rimuru",
+  "Rin",
+  "Rinak",
+  "Riza Hawkeye",
+  "Roaming Warrior Leo",
+  "Roana",
+  "Robin",
+  "Romann",
+  "Roozid",
+  "Rose",
+  "Roy Mustang",
+  "Ruele of Light",
+  "Ruiza",
+  "Sage Baal & Sezan",
+  "Salome",
+  "Saria",
+  "Savior Adin",
+  "Schniel",
+  "School Nurse Yulha",
+  "Schuri",
+  "Sea Phantom Politis",
+  "Sealed Eye Surin",
+  "Seaside Bellona",
+  "Senya",
+  "Serene Purity Adin",
+  "Serila",
+  "Setsuka",
+  "Sez",
+  "Shadow Knight Pyllis",
+  "Shadow Rose",
+  "Shalltear",
+  "Sharun",
+  "Shepherd Jena",
+  "Shepherd of the Dark Diene",
+  "Shooting Star Achates",
+  "Shuna",
+  "Sigret",
+  "Silk",
+  "Silver Blade Aramintha",
+  "Silvertide Christy",
+  "Sinful Angelica",
+  "Sol",
+  "Solitaria of the Snow",
+  "Sonia",
+  "Specimen Sez",
+  "Specter Tenebria",
+  "Spirit Eye Celine",
+  "Stark",
+  "Straze",
+  "Successor Taeyou",
+  "Summer Break Charlotte",
+  "Summer's Disciple Alexa",
+  "Summertime Iseria",
+  "Surin",
+  "Suthan",
+  "Sven",
+  "Swift Flagbearer Sigret",
+  "Sylvan Sage Vivian",
+  "Tactical Archetype Coli",
+  "Taeyou",
+  "Talaz",
+  "Talia",
+  "Tamarinne",
+  "Taranor Guard",
+  "Taranor Royal Guard",
+  "Tempest Surin",
+  "Tenebria",
+  "Tidal Rift Elvira",
+  "Tieria",
+  "Top Model Luluca",
+  "Tori",
+  "Troublemaker Crozet",
+  "Twisted Eidolon Kayron",
+  "Tywin",
+  "Unbound Knight Arowell",
+  "Uncharted Pioneer Politis",
+  "Urban Shadow Choux",
+  "Verdant Adin",
+  "Veronica",
+  "Victorika",
+  "Vigilante Leader Glenn",
+  "Vildred",
+  "Violet",
+  "Vivian",
+  "Wanda",
+  "Wanderer Silk",
+  "Wandering Prince Cidd",
+  "Watcher Schuri",
+  "Westwind Executioner Schuri",
+  "Witch of the Mere Tenebria",
+  "Wretched Rose",
+  "Yoonryoung",
+  "Young Senya",
+  "Yufine",
+  "Yulha",
+  "Yuna",
+  "Zahhak",
+  "Zealot Carmainerose",
+  "Zeno",
+  "Zerato",
+  "Zio",
+  "ae-GISELLE",
+  "ae-KARINA",
+  "ae-NINGNING",
+  "ae-WINTER"
+ ]
+}

@@ -17,6 +17,11 @@ from auto_game_unified.games.epic7.arena import (
     build_templates,
 )
 from auto_game_unified.games.epic7 import arena as arena_module
+from auto_game_unified.games.epic7.evidence.arena import (
+    WEEKLY_REWARD_DOT_MIN_PIXELS,
+    WEEKLY_REWARD_DOT_REGION,
+    weekly_reward_dot_pixels,
+)
 from auto_game_unified.games.epic7.template_paths import TemplateDir
 
 
@@ -506,6 +511,114 @@ class Epic7ArenaStateMachineTests(unittest.TestCase):
 
         with self.assertRaises(TicketExhausted):
             machine.next_action(screen)
+
+
+class Epic7ArenaWeeklyRewardTests(unittest.TestCase):
+    """2026-11-17 新增：对手列表左侧「每周对战奖励」有红点就先领取。"""
+
+    def setUp(self):
+        self.machine = ArenaStateMachine(build_templates(TEMPLATES))
+
+    def test_red_dot_alone_separates_claimable_from_claimed(self):
+        claimable = load_fixture("weekly_reward_claimable_live_20261117")
+        claimed = load_fixture("weekly_reward_claimed_live_20261117")
+
+        self.assertGreaterEqual(
+            weekly_reward_dot_pixels(claimable), WEEKLY_REWARD_DOT_MIN_PIXELS
+        )
+        self.assertEqual(0, weekly_reward_dot_pixels(claimed))
+        # 红点区域要盖住整颗红点（2026-11-18 前只盖到左半边 146 / 完整 241）。
+        self.assertGreaterEqual(weekly_reward_dot_pixels(claimable), 240)
+
+    def test_claim_point_lands_on_the_gem_not_on_the_counter_text(self):
+        """点击点必须落在宝石图案上。
+
+        2026-11-18 真机失败：旧实现把 `(1/3)` 次数文字当宝石模板，点击点
+        (245,696) 落在宝石左侧 74 像素的背景上 —— 点了 33 秒、红点一动没动。
+        宝石是青蓝色（蓝通道比红通道高 100 以上），背景/文字都做不到，用它证伪。
+        """
+        screen = load_fixture("weekly_reward_claimable_live_20261117")
+        x, y = self.machine.next_action(screen).point
+
+        def blue_minus_red(point: tuple[int, int]) -> float:
+            patch = screen[point[1] - 6 : point[1] + 6, point[0] - 6 : point[0] + 6]
+            return float(patch[..., 2].mean() - patch[..., 0].mean())
+
+        self.assertGreater(blue_minus_red((x, y)), 30)
+        self.assertLess(blue_minus_red((245, 696)), 30)  # 旧失败点
+
+    def test_claim_precedes_opponent_selection(self):
+        action = self.machine.next_action(
+            load_fixture("weekly_reward_claimable_live_20261117")
+        )
+
+        self.assertEqual("claim-weekly-reward", action.name)
+        self.assertTrue(300 <= action.point[0] <= 340)
+        self.assertTrue(680 <= action.point[1] <= 730)
+        self.assertEqual(ArenaState.LIST, action.source_state)
+        self.assertEqual((ArenaState.LIST,), action.target_states)
+        self.assertFalse(self.machine.weekly_reward_checked)
+
+    def test_claim_also_precedes_selection_when_regressing_from_selected(self):
+        machine = ArenaStateMachine(
+            build_templates(TEMPLATES), initial_state=ArenaState.SELECTED
+        )
+
+        action = machine.next_action(
+            load_fixture("weekly_reward_claimable_live_20261117")
+        )
+
+        self.assertEqual("claim-weekly-reward", action.name)
+        self.assertEqual(ArenaState.LIST, machine.state)
+
+    def test_claimed_reward_falls_through_to_normal_battle_flow(self):
+        action = self.machine.next_action(
+            load_fixture("weekly_reward_claimed_live_20261117")
+        )
+
+        self.assertEqual("select-opponent", action.name)
+        self.assertEqual(ArenaState.LIST, action.source_state)
+
+    def test_missing_red_dot_is_not_treated_as_claimable(self):
+        screen = load_fixture("weekly_reward_claimable_live_20261117").copy()
+        x, y, width, height = WEEKLY_REWARD_DOT_REGION
+        screen[y : y + height, x : x + width] = 0
+
+        self.assertEqual(0, weekly_reward_dot_pixels(screen))
+        self.assertEqual("select-opponent", self.machine.next_action(screen).name)
+
+    def test_claimed_flag_prevents_reclaim_on_a_stale_red_dot_frame(self):
+        self.machine.weekly_reward_checked = True
+
+        action = self.machine.next_action(
+            load_fixture("weekly_reward_claimable_live_20261117")
+        )
+
+        self.assertEqual("select-opponent", action.name)
+
+    def test_preview_does_not_consume_the_claim(self):
+        screen = load_fixture("weekly_reward_claimable_live_20261117")
+
+        preview, _ = self.machine.preview(screen)
+
+        self.assertEqual("claim-weekly-reward", preview.name)
+        self.assertFalse(self.machine.weekly_reward_checked)
+        self.assertEqual(
+            "claim-weekly-reward", self.machine.next_action(screen).name
+        )
+
+    def test_transition_contract_sees_source_and_target_on_the_same_page(self):
+        claimable = load_fixture("weekly_reward_claimable_live_20261117")
+        action = self.machine.next_action(claimable)
+
+        self.assertTrue(self.machine.action_source_visible(claimable, action))
+        self.assertIsNone(self.machine.action_target_state(claimable, action))
+
+        claimed = load_fixture("weekly_reward_claimed_live_20261117")
+        self.assertFalse(self.machine.action_source_visible(claimed, action))
+        self.assertEqual(
+            ArenaState.LIST, self.machine.action_target_state(claimed, action)
+        )
 
 
 if __name__ == "__main__":

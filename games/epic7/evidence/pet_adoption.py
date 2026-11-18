@@ -50,10 +50,6 @@ from auto_game_unified.games.epic7.evidence.common import (
     EvidenceProfile,
     PageEvidence,
 )
-from auto_game_unified.games.epic7.evidence.penguin_purchase import (
-    REGIONS as _PENGUIN_REGIONS,
-)
-
 REFERENCE_SIZE = (1982, 1132)
 DEFAULT_THRESHOLD = 0.80
 
@@ -97,10 +93,15 @@ REGIONS: dict[str, tuple[int, int, int, int]] = {
     # 区域罩整列（高 620）而不是只罩某一行：滚动落点差几十像素是常态。
     "supply_food_name": (1020, 500, 210, 620),
     "supply_toy_name": (1020, 500, 210, 620),
-    # 购买确认框「购买商品」标题与右下绿色「购买」两字：**复用企鹅批量购买那一套**
-    # （同一个弹窗、同一处字），区域也直接用它的，不抄第二份数字。
-    "confirm_title": _PENGUIN_REGIONS["quantity_title"],
-    "confirm_buy": _PENGUIN_REGIONS["quantity_buy_text"],
+    # 购买确认框（2026-11-17 实跑诊断帧采集）。
+    # ⚠️ 2026-11-16 曾**借用企鹅批量购买**的「数量」弹窗模板，实跑时标题只有
+    # 0.2736、购买按钮 0.0000 ⇒ 认不出弹窗、卡到超时（退出码 1）。两个弹窗
+    # 长得像但不是同一个：宠物商店是「购买商品 / 确定要购买该商品吗？」。
+    # 已从真机诊断帧重裁，本页 1.0000 / 商店底部 ≤0.25。
+    "confirm_title": (780, 220, 420, 130),
+    "confirm_buy": (1140, 740, 180, 100),
+    # 「确定要购买该商品吗？」固定提示，与标题一起证伪「相似但不同」的弹窗。
+    "confirm_question": (750, 340, 400, 90),
 }
 
 THRESHOLDS = {key: DEFAULT_THRESHOLD for key in REGIONS}
@@ -111,20 +112,17 @@ THRESHOLDS["adopt_modal_close"] = 0.80
 _TEMPLATE_PATHS = {key: f"{key}.png" for key in REGIONS}
 # 三行冷却共用同一张模板；逐行检出用 ``cooldown_rows``，不走页面组合。
 _TEMPLATE_PATHS["shop_cooldown"] = "shop_cooldown.png"
-# 购买确认框的两颗图**复用企鹅批量购买**的（同一个弹窗），不复制副本。
-_TEMPLATE_PATHS["confirm_title"] = "../penguin_purchase/quantity_title.png"
-_TEMPLATE_PATHS["confirm_buy"] = "../penguin_purchase/quantity_buy_text.png"
 
 _PAGES = (
     # 领养结果弹窗在最前：它盖在领养弹窗上，领养弹窗标题在这帧掉到 0.7815，
     # 顺序反了就会把结果页当成"还可以领"的弹窗。
     PageEvidence("pet_adoption.adopt_result", required=("adopt_result_title",)),
-    # 购买确认框：它盖住商店，底页标题仍是 0.9998（2026-11-16 实测），
-    # 所以「标题 + 购买两字 + 商店标题」同时命中才认，别的路线的同一个弹窗
-    # （企鹅批量购买）底页没有「宠物商店」⇒ 不会串。
+    # 购买确认框：标题 + 固定问句 + 绿色「购买」三锚点同时命中才认。
+    # ⚠️ 2026-11-16 用「标题 + 购买 + 商店标题」，买错了模板（企鹅数量弹窗）
+    # 且商店标题在遮罩下不稳；改成自采三锚点后正例全 1.0000、反例全 ≤0.25。
     PageEvidence(
         "pet_adoption.purchase",
-        required=("confirm_title", "confirm_buy", "shop_title"),
+        required=("confirm_title", "confirm_question", "confirm_buy"),
     ),
     # 弹窗在前：半透明遮罩下小屋标题仍是 0.9996（见模块 docstring）。
     PageEvidence("pet_adoption.adopt_popup", required=("adopt_modal_title",)),

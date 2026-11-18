@@ -73,7 +73,7 @@ class JudgeRowTests(unittest.TestCase):
     def test_black_hit_eliminates_the_row(self):
         verdict = self.judge(["A", "B"], black={"A"}, white=set())
         self.assertEqual(TIER_OUT, verdict.tier)
-        self.assertIn("命中黑名单", verdict.reason)
+        self.assertIn("命中避战名单", verdict.reason)
 
     def test_white_hit_puts_the_row_in_the_priority_group(self):
         verdict = self.judge(["A", "B"], black=set(), white={"B"})
@@ -88,12 +88,12 @@ class JudgeRowTests(unittest.TestCase):
     def test_more_white_than_black_goes_with_the_whitelist(self):
         verdict = self.judge(["A", "B", "C"], black={"A"}, white={"B", "C"})
         self.assertEqual(TIER_WHITE, verdict.tier)
-        self.assertIn("白多", verdict.reason)
+        self.assertIn("优先命中更多", verdict.reason)
 
     def test_more_black_than_white_is_eliminated(self):
         verdict = self.judge(["A", "B", "C"], black={"A", "C"}, white={"B"})
         self.assertEqual(TIER_OUT, verdict.tier)
-        self.assertIn("黑多", verdict.reason)
+        self.assertIn("避战命中更多", verdict.reason)
 
     def test_equal_counts_follow_the_setting(self):
         skipped = self.judge(["A", "B"], black={"A"}, white={"B"})
@@ -115,7 +115,12 @@ class JudgeRowTests(unittest.TestCase):
 class RecognitionTests(unittest.TestCase):
     """识别层：真帧上该认的认出、弱证据不许猜。"""
 
-    # 这一页实际出现的英雄（2026-11-15 用 354 模板全量比对确认）
+    # 这一页实际出现的英雄。
+    # ⚠️ 2026-11-17 修正：原记录是「2026-11-15 用 354 模板全量比对确认」，但当时库里的
+    # 「安洁莉卡.png」并不是安洁莉卡本人（与该英雄官方头像 ORB 内点 0），所以行 2 列 1、
+    # 行 3 列 2 两个格子被漏认。换成官方头像后，这两格对安洁莉卡模板 good=167/179、
+    # 内点 163/172、第二名仅 6/8，裁图目视也确认是同一人（粉发编发蓝眼）。
+    # 因此阵容以本文件为准，旧期望已订正。
     KNOWN = ["维多丽卡", "安洁莉卡", "蒙茉朗西", "泰妮布里雅", "卡麦萝兹", "克劳蒂亚"]
 
     def test_recorded_list_page_is_recognised(self):
@@ -124,22 +129,22 @@ class RecognitionTests(unittest.TestCase):
         teams = matcher.identify_screen(load_frame("list"))
 
         self.assertIn("维多丽卡", teams[0].heroes)
-        self.assertEqual({"维多丽卡", "蒙茉朗西", "泰妮布里雅"}, set(teams[1].heroes))
-        self.assertEqual({"维多丽卡", "卡麦萝兹", "克劳蒂亚"}, set(teams[2].heroes))
+        self.assertEqual({"安洁莉卡", "维多丽卡", "蒙茉朗西", "泰妮布里雅"}, set(teams[1].heroes))
+        self.assertEqual({"安洁莉卡", "维多丽卡", "卡麦萝兹", "克劳蒂亚"}, set(teams[2].heroes))
         # 第 1 行只有一名英雄，其余三个槽位是空的。
         self.assertEqual(3, teams[0].unknown)
 
-    def test_weak_match_is_reported_as_unknown_instead_of_guessed(self):
-        """证伪：good=15 的「安洁莉卡」不许被当成命中（阈值 + 相对优势一起拦）。
+    def test_empty_slots_are_not_guessed(self):
+        """空槽位不许被猜成任何英雄。
 
-        这一格实测 good=15 / 内点 14 / 相关 0.55，四个条件里三条不满足。
-        若哪天有人把门槛放宽到「有匹配就算」，这条会红。
+        ⚠️ 本条原先是「good=15 的安洁莉卡不许命中」，那是旧模板下的弱证据案例；
+        换官方头像后同一格变成强命中（内点 163），原前提已不存在。
+        改为盯空槽：第 1 行除首格外三个槽位都无人，必须全部计入 unknown。
         """
         matcher = HeroMatcher(default_library_dir(), self.KNOWN)
         teams = matcher.identify_screen(load_frame("list"))
-        self.assertNotIn("安洁莉卡", teams[0].heroes)
-        self.assertNotIn("安洁莉卡", teams[1].heroes)
-        self.assertNotIn("安洁莉卡", teams[2].heroes)
+        self.assertEqual(3, teams[0].unknown)
+        self.assertEqual({"维多丽卡"}, set(teams[0].heroes))
 
     def test_screen_cache_keeps_the_same_verdict_for_the_same_frame(self):
         """同一帧只识别一次：主循环每秒都问，重复识别会拖慢整条路线。"""
@@ -213,7 +218,7 @@ class RecognitionTests(unittest.TestCase):
             frame = load_frame("list")
             kept = list(runner.machine.opponent_filter(frame, [0, 1, 2]))
         self.assertEqual([0, 1, 2], kept)
-        self.assertIn("无白名单命中", runner.machine.filter_note)
+        self.assertIn("无优先名单命中", runner.machine.filter_note)
 
     def test_whitelist_hit_wins_over_the_points_preference(self):
         """白名单是**优先**：命中的行排在最前，积分偏好只在组内起作用。"""
@@ -266,7 +271,7 @@ class EmptyPageStopTests(unittest.TestCase):
                     frame = np.zeros((1132, 1982, 3), dtype=np.uint8)
                     frame[0, index] = 255
                     runner.machine.opponent_filter(frame, [0, 1, 2])
-        self.assertIn("都被黑名单否掉", str(caught.exception))
+        self.assertIn("都被避战名单否掉", str(caught.exception))
         self.assertEqual("名单条件下无对手", NoEligibleOpponent.stop_label)
 
 

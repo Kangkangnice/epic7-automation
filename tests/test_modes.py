@@ -35,6 +35,7 @@ class Epic7ModeRegistryTests(unittest.TestCase):
                 "story_star",
                 "pet_adoption",
                 "penguin_purchase",
+                "craft_equipment",
             },
             set(MODE_SPECS),
         )
@@ -263,6 +264,8 @@ class RouteHookRegistryTests(unittest.TestCase):
             "labyrinth_stone": {"runner_options"},
             # 宠物领养：一般饲料与宠物玩具的购入各自独立开关，默认都不买。
             "pet_adoption": {"runner_options"},
+            # 装备制作：讨伐 / 部位 / 整理方式三项由路线选项注入运行计划。
+            "craft_equipment": {"runner_options"},
         }
         for name, spec in MODE_SPECS.items():
             expected = hooks.get(name, set())

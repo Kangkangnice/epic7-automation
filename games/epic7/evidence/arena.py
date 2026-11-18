@@ -7,6 +7,9 @@ business decisions remain in ``games.epic7.arena``.
 from pathlib import Path
 from typing import Mapping
 
+import cv2
+import numpy as np
+
 from .common import (
     AtomEvidence,
     AtomObservation,
@@ -84,6 +87,11 @@ REGIONS = {
     "result_rating": ARENA_RESULT_RATING_REGION,
     "result_victory": ARENA_RESULT_VICTORY_REGION,
     "result_defeat": ARENA_RESULT_DEFEAT_REGION,
+    # 每周对战奖励：左侧「配置防御队」上方的「每周对战奖励」标题。
+    # ⚠️ 宝石图案不是锚点：可领是亮蓝、领完变暗，两态分数差得远；11-17 用过的
+    # `(1/3)` 次数文字更糟（会变，还把点击点带到宝石左侧 74 像素的空白上）。
+    # 所以只有标题做页面定位，能不能领全靠红点像素（evidence 里 WEEKLY_REWARD_DOT_*）。
+    "weekly_reward_title": (10, 670, 220, 60),
 }
 
 THRESHOLDS = {
@@ -105,6 +113,7 @@ THRESHOLDS = {
     "result_rating": 0.80,
     "result_victory": 0.80,
     "result_defeat": 0.80,
+    "weekly_reward_title": 0.90,
 }
 
 DEFAULT_THRESHOLD = 0.90
@@ -130,6 +139,7 @@ _TEMPLATE_PATHS = {
     "result_rating": "arena_result_rating.png",
     "result_victory": "arena_result_victory.png",
     "result_defeat": "arena_result_defeat.png",
+    "weekly_reward_title": "arena_weekly_reward_title.png",
 }
 
 
@@ -241,3 +251,33 @@ def build_arena_evidence(template_dir: Path) -> EvidenceProfile:
         config_path=str(Path(__file__).resolve()),
         template_root=template_dir,
     )
+
+
+# 每周对战奖励红点：宝石图标左上角的小橙点。
+# 2026-11-18 订正区域：红点实测 bbox (275,654)-(291,670)，旧区域 (245,645,40,50)
+# 只盖到它的左半边（146 / 完整 241 像素），红点圆心离右边界只剩 1 像素，
+# 界面横向位移几像素就整颗漏掉。现在四边各留余量，真机三帧实测 241 / 0。
+WEEKLY_REWARD_DOT_REGION = (265, 644, 45, 40)
+WEEKLY_REWARD_DOT_MIN_PIXELS = 60
+_WEEKLY_REWARD_DOT_HSV = ((0, 140, 140), (25, 255, 255))
+
+
+def weekly_reward_dot_pixels(
+    screen: np.ndarray,
+    *,
+    reference_size: tuple[int, int] = REFERENCE_SIZE,
+) -> int:
+    """左侧每周对战奖励图标上的橙红像素数；0 = 已领完。"""
+    scale_x = screen.shape[1] / reference_size[0]
+    scale_y = screen.shape[0] / reference_size[1]
+    x, y, width, height = WEEKLY_REWARD_DOT_REGION
+    patch = screen[
+        round(y * scale_y) : round((y + height) * scale_y),
+        round(x * scale_x) : round((x + width) * scale_x),
+    ]
+    if patch.size == 0:
+        return 0
+    hsv = cv2.cvtColor(patch, cv2.COLOR_RGB2HSV)
+    low, high = _WEEKLY_REWARD_DOT_HSV
+    mask = cv2.inRange(hsv, np.array(low), np.array(high))
+    return int(mask.sum()) // 255

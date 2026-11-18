@@ -49,6 +49,7 @@ class OptionDeclarationTests(unittest.TestCase):
                 "community",
                 "tower",
                 "pet_adoption",
+                "craft_equipment",
             ),
             tuple(ROUTE_OPTIONS),
         )
@@ -85,6 +86,22 @@ class OptionDeclarationTests(unittest.TestCase):
 
     def test_unknown_keys_are_dropped(self):
         self.assertEqual(defaults_for("arena"), clean("arena", {"only_npc": True}))
+
+    def test_weekly_reward_never_states_an_amount(self):
+        """周结算奖励不写具体数量：不同段位结算给的钻石不一样，写死就会失真。
+
+        2026-11-17 用户指出界面里出现「钻石（800）」，而段位不同拿到的数量不同。
+        """
+
+        option = next(item for item in options_for("arena") if item.key == "weekly_reward")
+        texts = (option.label, option.note) + tuple(
+            text for _value, text in option.choices
+        )
+        for text in texts:
+            self.assertFalse(
+                any(character.isdigit() for character in text),
+                f"周结算奖励的文案写死了数量：{text}",
+            )
 
     def test_labels_and_notes_use_guide_style(self):
         forbidden = (

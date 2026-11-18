@@ -113,6 +113,8 @@ class MainStoryTests(unittest.TestCase):
                 tutorial_unlock_templates = object()
                 # 2026-11-06 第 23 类：新手账号大厅右上角「跳过教学 ✕」（顶掉快捷菜单）。
                 tutorial_skip_templates = object()
+                # 2026-11-17 第 24 类：「装备背包已满」（模拟器缺图 ⇒ 这里用哨兵对象）。
+                equipment_bag_full_templates = object()
                 # ⚠️ 本文件三处 B023 抑制标记都是误报：events 虽然在外层循环里被重新赋值，
                 # 但这些 side_effect / on_call 都是**当轮同步调用**的（mock 在被调用的那一刻
                 # 就执行它），取不到下一轮的值。ruff 只看语法，看不出调用时机。
@@ -293,6 +295,10 @@ class MainStoryTests(unittest.TestCase):
                             load_tutorial_skip_templates=unittest.mock.MagicMock(
                                 return_value=tutorial_skip_templates
                             ),
+                            # 2026-11-17 第 24 类。
+                            load_equipment_bag_full_templates=unittest.mock.MagicMock(
+                                return_value=equipment_bag_full_templates
+                            ),
                         )
                     )
                     navigator_type = stack.enter_context(
@@ -359,6 +365,7 @@ class MainStoryTests(unittest.TestCase):
                     uncontrollable_templates=uncontrollable_templates,
                     tutorial_unlock_templates=tutorial_unlock_templates,
                     tutorial_skip_templates=tutorial_skip_templates,
+                    equipment_bag_full_templates=equipment_bag_full_templates,
                 )
                 self.assertEqual(["guard", "navigation"], events)
 
