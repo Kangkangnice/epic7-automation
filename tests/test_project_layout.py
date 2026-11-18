@@ -104,6 +104,12 @@ class ProjectLayoutTests(unittest.TestCase):
                 # 2026-09-28 就有、PC 也一直在用共享图；这里补的是**首个 PC 正例**
                 # ——此前全库只有模拟器帧，PC 侧没有人能证明它会点。
                 "pet_gift_pc_live_20261107.png",
+                # 2026-11-18 08:51 模拟器真机：装备背包已满弹窗（当天迷宫点
+                # 「战斗开始」连点 4 次不动的真因）与点「取消」后回准备战斗页。
+                # 旧素材（正文小 1%、按钮画「确认」）已删除，这两张现在是这条
+                # 全局弹窗的正例与「关掉后同页不误命中」的反例。
+                "equipment_bag_full_emulator_live_20261118.png",
+                "equipment_bag_full_dismissed_emulator_live_20261118.png",
             },
             {path.name for path in fixture_dir.glob("*.png")},
         )
@@ -167,6 +173,11 @@ class ProjectLayoutTests(unittest.TestCase):
             #    `has_safe_opponent` 会返回 True，而刷新前日志写的是三名均不可挑战。
             # 供 `test_safe_list_waiter_never_accepts_a_list_while_popup_is_up` 用。
             "free_refresh_confirm_pc_live_20261107.png",
+            # 2026-11-17 模拟器对手列表：每周对战奖励领取前 / 后。
+            # 图标两态都能命中，只有红点像素能把「可领」和「已领」分开；
+            # 同时是动作落点与「不连点」护栏的正反夹具。
+            "weekly_reward_claimable_live_20261117.png",
+            "weekly_reward_claimed_live_20261117.png",
         }
         fixture_dir = ROOT / "tests" / "fixtures" / "epic7_arena"
         self.assertEqual(expected, {path.name for path in fixture_dir.glob("*.png")})

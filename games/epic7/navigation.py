@@ -128,6 +128,8 @@ PAGE_LABELS = {
     "achievement": "成就页",
     # 宠物小屋（2026-11-15，宠物领养路线的导航终点）。
     "pet_house": "宠物小屋",
+    # 钢铁工坊·制作装备页（2026-11-17，装备制作路线的导航终点）。
+    "craft_home": "装备制作页",
     "story_ready": "主线入口",
     "arena_ready": "竞技场入口",
     "shop_refresh": "秘密商店",
@@ -256,6 +258,14 @@ class NavigationTemplates:
     # 宠物小屋左上「宠物小屋」标题，给 observe() 认「现在是宠物小屋」。
     # 复用 templates/pet_adoption/house_title.png（不另存第二份）。
     pet_house_page_title: np.ndarray
+    # 快捷菜单第 3 行第 3 列「钢铁工坊」入口（铁砧图标 + 四字标签，2026-11-17）。
+    # ⚠️ 裁了图标**和**文字：同排左侧是「宠物小屋」、上方是「招募」，
+    # 只要图标本体时与那两格的相似度都超过 0.80。
+    craft_workshop_entry: np.ndarray
+    # 制作装备页左侧竖排第 1 个图标（蓝底高亮态）。用高亮态而不是标题：
+    # 左上「钢铁工坊」在工坊所有子页都在，只有这个高亮框是「我正在制作装备」。
+    # 实测：制作页 1.0000、批量强化页 0.6707。
+    craft_home_tab: np.ndarray
     # 装备子页（英雄界面左侧那个剑盾图标）的选中态。
     # ⚠️ **必需模板，不是可选的**：它是 ``observe()`` 区分「英雄列表」与
     # 「英雄装备子页」的**唯一依据**。历史上这里写成 ``Optional`` 并配
@@ -555,6 +565,10 @@ def build_navigation_templates(template_root: Path) -> NavigationTemplates:
         pet_house_page_title=load_template(
             str(template_root / "pet_adoption" / "house_title.png")
         ),
+        craft_workshop_entry=load_template(
+            str(navigation / "craft_workshop_entry.png")
+        ),
+        craft_home_tab=load_template(str(navigation / "craft_home_tab.png")),
         # 直接 load_template：模板缺失就抛 FileNotFoundError（fail closed）。
         # 这里**不许**再写 ``if path.exists() else None`` —— 那会让判据静默降级。
         hero_equipment_tab_active=load_template(
@@ -844,6 +858,12 @@ class Epic7Navigator:
         "pet_house_entry": (1540, 360, 160, 140),
         # 宠物小屋左上「宠物小屋」四字，避开返回箭头与会变的 FPS 数字。
         "pet_house_page_title": (60, 45, 240, 100),
+        # 快捷菜单第 3 行第 3 列「钢铁工坊」。这一格上方是「招募」、左边是「骑士团」，
+        # 所以区域纵向从 y=555 起、只罩一格。
+        "craft_workshop_entry": (1750, 555, 130, 145),
+        # 制作装备页左侧竖排第 1 个图标（蓝底高亮）。整条竖排从 y=160 起，
+        # 这里只罩第一格，避免蹭到第二个（提炼）那一格。
+        "craft_home_tab": (10, 160, 120, 120),
         # 骑士团主页的「世界首领战」入口图标（骷髅盾牌）。排他性实测：本页 0.9890，
         # 跨页最高 0.4210（远征海报）。
         "worldboss_entry": (380, 620, 180, 140),
@@ -1177,6 +1197,12 @@ class Epic7Navigator:
         pet_house_title = self._locate(screen, "pet_house_page_title")
         if pet_house_title is not None:
             return PageObservation("pet_house", pet_house_title.score)
+
+        # 钢铁工坊·制作装备页（2026-11-17）。判据是左侧竖排第 1 格的蓝底高亮态：
+        # 左上「钢铁工坊」标题在工坊所有子页都有，区分不了制作 / 强化 / 提炼。
+        craft_tab = self._locate(screen, "craft_home_tab")
+        if craft_tab is not None:
+            return PageObservation("craft_home", craft_tab.score)
 
         shop_observation = self.templates.shop_refresh_observer.observe(screen)
         if shop_observation.page is ShopPage.SHOP:

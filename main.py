@@ -69,6 +69,7 @@ from auto_game_unified.games.epic7.global_popups import (
     load_tutorial_unlock_templates,
     load_date_change_templates,
     load_knights_activity_templates,
+    load_equipment_bag_full_templates,
     load_login_reward_templates,
     load_network_reconnect_templates,
     load_pet_gift_templates,
@@ -628,6 +629,11 @@ def run_mode(
                     template_root / "global"
                 ),
                 login_reward_templates=load_login_reward_templates(
+                    template_root / "global"
+                ),
+                # 「装备背包已满」：PC 用「确认」、模拟器用「取消」，两套图齐了。
+                # 文案区与关闭点区取两平台的并集，业务动作一致（关掉即按资源耗尽收工）。
+                equipment_bag_full_templates=load_equipment_bag_full_templates(
                     template_root / "global"
                 ),
             )

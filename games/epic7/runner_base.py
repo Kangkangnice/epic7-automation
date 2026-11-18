@@ -22,7 +22,12 @@ from auto_game_unified.core.evidence_diagnostics import (
     save_runtime_evidence_diagnostic,
 )
 from auto_game_unified.core.recovery import RecoveryGate
-from auto_game_unified.core.runtime import ManualStop, ResourceExhausted, Runtime
+from auto_game_unified.core.runtime import (
+    EquipmentBagFull,
+    ManualStop,
+    ResourceExhausted,
+    Runtime,
+)
 from auto_game_unified.core.supervisor import ConclusionGate, StableObservation
 from auto_game_unified.games.epic7.unknown_screen import (
     UnrecognizedScreen,
@@ -569,6 +574,17 @@ class ModeRunnerBase:
                     f"已保存诊断 {diagnostic}"
                 )
             try:
+                # 全局弹窗守卫认出「装备背包已满」时只点掉弹窗、留一句话，
+                # 由这里转成正常收工（退出码 2）。放进 try 内是因为取图那一行
+                # 在 try 之外，异常从那里冒出去会被记成「运行失败」。
+                # ⚠️ 用 getattr + 字符串双重判定，不是防御性冗余：
+                # 各路线测试的主循环替身（FakeRuntime）不实现这个方法，
+                # MagicMock 更是随便取个属性都返回真值 —— 直接调用会让
+                # 「所有主循环用例一开跑就资源耗尽」。
+                consume = getattr(self.runtime, "consume_blocking_popup", None)
+                blocked = consume() if callable(consume) else ""
+                if isinstance(blocked, str) and blocked:
+                    raise EquipmentBagFull(blocked)
                 action = self._stable_next_action(screen, stable)
             except ResourceExhausted as error:
                 # 「还能干、但没本钱了」：生命之叶 / 通缉传单 / 挑战次数……

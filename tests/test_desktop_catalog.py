@@ -52,6 +52,7 @@ def test_catalog_lists_every_route_in_menu_order():
             "story_star",
             "pet_adoption",
             "penguin_purchase",
+            "craft_equipment",
         ]
     # 2026-10-20 用户拍板：路线不再分「正式 / 实验」—— 十五条他都实机验证过了。
     # 这条守着「分级彻底没有」：字段、属性都不该回来（不是把值都改成「正式功能」）。
@@ -319,6 +320,7 @@ def test_group_membership_is_what_the_user_asked_for():
                 "moonlight_theater",
                 "story_star",
                 "penguin_purchase",
+                "craft_equipment",
             ],
             catalog.GROUP_SEASON: ["expedition", "tower"],
         catalog.GROUP_EVENT: ["survivor", "activity_story"],

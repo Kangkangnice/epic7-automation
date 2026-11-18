@@ -34,6 +34,17 @@ class StaminaExhausted(ResourceExhausted):
     stop_label = "生命之叶耗尽"
 
 
+class EquipmentBagFull(ResourceExhausted):
+    """装备背包已满：游戏弹窗明确说「请整理或扩充装备背包后再重试」。
+
+    它不是故障 —— 背包满了本来就不能继续做，所以走资源耗尽通道（退出码 2），
+    与「没门票」「红叶不足」同一档。由全局弹窗守卫识别、点掉弹窗后在
+    ``Runtime.blocking_popup`` 留一条标记，主循环读到就按这条异常收工。
+    """
+
+    stop_label = "装备背包已满"
+
+
 class ManualStop(RuntimeError):
     """Raised before the next action when the user presses the stop hotkey."""
 
@@ -90,6 +101,10 @@ class Runtime:
         self._stop_requested = stop_requested
         self._input_channel_probe = input_channel_probe
         self._last_screen: np.ndarray | None = None
+        # 全局弹窗守卫认出「这条弹窗意味着不能再继续」时写下的一句话。
+        # 主循环读到它就把这一轮按 ``ResourceExhausted`` 正常收工。
+        # 空串 = 没有阻断。
+        self.blocking_popup: str = ""
         self.diagnostic_limit = diagnostic_limit
         self.max_log_bytes = max_log_bytes
         self.log_backups = log_backups
@@ -120,6 +135,16 @@ class Runtime:
 
     def set_capture_guard(self, guard: CaptureGuard) -> None:
         self._capture_guard = guard
+
+    def note_blocking_popup(self, label: str) -> None:
+        """记下「这条弹窗出现后不能继续」的事实，由主循环转成正常收工。"""
+        self.blocking_popup = label
+
+    def consume_blocking_popup(self) -> str:
+        """取一次就清空：一条路线的阻断不该传染给下一条。"""
+        label = self.blocking_popup
+        self.blocking_popup = ""
+        return label
 
     def now(self) -> float:
         return self._monotonic() - self._paused_seconds

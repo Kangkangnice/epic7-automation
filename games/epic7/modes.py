@@ -144,6 +144,16 @@ from auto_game_unified.games.epic7.penguin_purchase import (
     build_penguin_purchase_templates,
     detect_resume_point as detect_penguin_purchase_resume_point,
 )
+from auto_game_unified.games.epic7.craft_equipment import (
+    CRAFT_HOME_PAGE,
+    DEFAULT_CYCLES as CRAFT_DEFAULT_CYCLES,
+    CraftEquipmentRunner,
+    CraftEquipmentStateMachine,
+    CraftPage,
+    CraftPlan,
+    build_craft_equipment_templates,
+    detect_resume_point as detect_craft_equipment_resume_point,
+)
 from auto_game_unified.games.epic7.moonlight_theater import (
     MoonlightRunner,
     MoonlightState,
@@ -452,6 +462,30 @@ def _build_penguin_purchase(template_root: Path, state: str) -> PenguinPurchaseS
     # 模板在 templates/penguin_purchase，另复用 templates/sanctuary/forest_row.png。
     # 状态机每帧重判页面，default_state 只用于加载期校验，不拨状态。
     return PenguinPurchaseStateMachine(build_penguin_purchase_templates(template_root))
+
+
+def _craft_equipment_runner_options(
+    root: Path, dry_run: bool, params: Mapping[str, Any]
+) -> dict[str, Any]:
+    """把「讨伐 / 部位 / 整理方式」翻译成运行计划。
+
+    轮数不在这里：它由界面次数框经 ``run(max_cycles)`` 传进来，与企鹅同一条通道。
+    """
+    from auto_game_unified.games.epic7.route_options import clean
+
+    values = clean("craft_equipment", params)
+    return {
+        "plan": CraftPlan(
+            hunt=values["hunt"],
+            slot=values["slot"],
+            tidy=values["tidy"],
+        )
+    }
+
+
+def _build_craft_equipment(template_root: Path, state: str) -> CraftEquipmentStateMachine:
+    # 状态机每帧重判页面，default_state 只用于加载期校验，不拨状态。
+    return CraftEquipmentStateMachine(build_craft_equipment_templates(template_root))
 
 
 def _build_story_star(template_root: Path, state: str) -> StoryStarStateMachine:
@@ -1394,6 +1428,43 @@ MODE_SPECS = {
             resume_action="跳过回大厅与进入圣域",
             resume_state_done="已在圣域主页",
             ready_note="圣域主页已就绪",
+        ),
+    ),
+    # 2026-11-17：装备制作（模拟器实机走查；PC 未放行）。
+    "craft_equipment": ModeSpec(
+        name="craft_equipment",
+        label="装备制作",
+        default_state=CraftPage.HOME.value,
+        states=frozenset(
+            page.value for page in CraftPage if page is not CraftPage.UNKNOWN
+        ),
+        build_machine=_build_craft_equipment,
+        runner_type=CraftEquipmentRunner,
+        # 一轮 = 10 件，默认 20 轮 = 200 件；次数框表达的是轮数，可调整。
+        default_cycles=CRAFT_DEFAULT_CYCLES,
+        cycles_editable=True,
+        # 接力只落在不会扣材料的制作页（未选部位 / 已选部位）。
+        resume_probe=_resume_probe(detect_craft_equipment_resume_point),
+        # 讨伐 / 部位 / 整理方式从路线可选项来。
+        runner_options=_craft_equipment_runner_options,
+        # 导航链：大厅 →（右上角蓝四格）快捷菜单 →（第 3 行第 3 列）钢铁工坊。
+        navigation_plan=NavigationPlan(
+            mode="craft_equipment",
+            steps=(
+                NavigationStep(
+                    "lobby", (QUICK_MENU_PAGE,), "lobby_quick_menu_button", "打开快捷菜单"
+                ),
+                NavigationStep(
+                    QUICK_MENU_PAGE,
+                    (CRAFT_HOME_PAGE,),
+                    "craft_workshop_entry",
+                    "进入钢铁工坊",
+                ),
+            ),
+            resume_entries=frozenset({CRAFT_HOME_PAGE}),
+            resume_action="跳过回大厅与进入钢铁工坊",
+            resume_state_done="已在制作装备页",
+            ready_note="制作装备页已就绪",
         ),
     ),
     # 2026-11-09：主线补星（PC 端；素材只有 PC，业务逻辑与模拟器共通）。
