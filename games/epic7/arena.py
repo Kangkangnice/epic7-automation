@@ -69,8 +69,10 @@ from auto_game_unified.games.epic7.evidence.arena import (
     REFERENCE_SIZE as ARENA_REFERENCE_SIZE,
     REGIONS as ARENA_REGIONS,
     THRESHOLDS as ARENA_THRESHOLDS,
+    WEEKLY_REWARD_DOT_MIN_PIXELS,
     build_arena_evidence,
     classify_arena_selected_scores,
+    weekly_reward_dot_pixels,
 )
 from auto_game_unified.games.epic7.evidence.common import EvidenceProfile, EvidenceState
 
@@ -330,7 +332,7 @@ class TicketExhausted(RuntimeError):
 
 
 class NoEligibleOpponent(ResourceExhausted):
-    """黑白名单把整页可挑战的对手全否掉了，刷了几页仍没有 —— 正常业务退出。
+    """名单筛选把整页可挑战的对手全否掉了，刷了几页仍没有 —— 正常业务退出。
 
     为什么不「忽略名单随便打一个」：那等于用户设的名单被悄悄作废，
     与「判据不许静默降级」同一条纪律。也不把它算失败：名单本身是用户设的，
@@ -380,6 +382,9 @@ class ArenaTemplates:
     result_rating: np.ndarray
     result_victory: np.ndarray
     result_defeat: np.ndarray
+    # 每周对战奖励（2026-11-17）：左侧「每周对战奖励」标题 + 红点。
+    # 领取前后宝石图案亮度不同，只有红点能区分，红点判据在 evidence/arena.py。
+    weekly_reward_title: np.ndarray
     # VS 段位确认页（PC 独有）：点完「战斗开始」后、真正进战斗前的一道拦截页。
     # 只裁绿色「确认」按钮本身（段位无关，满足"公共部分"要求）；模拟器无此页 → None。
     vs_confirm: "np.ndarray | None" = None
@@ -457,6 +462,9 @@ def build_templates(template_dir: Path) -> ArenaTemplates:
         result_rating=load_template(str(template_dir / "arena_result_rating.png")),
         result_victory=load_template(str(template_dir / "arena_result_victory.png")),
         result_defeat=load_template(str(template_dir / "arena_result_defeat.png")),
+        weekly_reward_title=load_template(
+            str(template_dir / "arena_weekly_reward_title.png")
+        ),
         # VS 段位确认页：PC 独有。``template_dir`` 已按平台挑图（pc/ 优先），
         # 模拟器回落共享目录本就没有这张图 → 加载成 None，业务上整段跳过，零影响。
         vs_confirm=(
@@ -522,6 +530,13 @@ class ArenaStateMachine:
     )
     _REFRESH_OFFSET = (383, -823)
 
+    # 每周对战奖励的点击点相对「每周对战奖励」标题中心的偏移（画布 1982x1132）。
+    # 2026-11-18 实测标定：标题中心 (115,701)、亮宝石图案中心 (319,709)。
+    # ⚠️ **不能再用模板定位宝石**：11-17 那张 `arena_weekly_reward_icon.png` 裁的是
+    # 标题右侧会变的次数文字 `(1/3)`，命中点落在文字上（245,696）在宝石左侧 74 像素，
+    # 真机点了一整轮 33 秒毫无反应，红点当然还在（当日唯一一处失败）。
+    _WEEKLY_REWARD_OFFSET = (204, 8)
+
     _NEXT_STATE = {
         ArenaState.LIST: ArenaState.SELECTED,
         ArenaState.SELECTED: ArenaState.TEAM,
@@ -557,7 +572,7 @@ class ArenaStateMachine:
         self.state = initial_state
         self.completed_cycles = 0
         self.choose_opponent = choose_opponent
-        # 黑白名单筛选：给 (当前帧, 可挑战行号) 返回其中**通过名单**的行号。
+        # 名单筛选：给 (当前帧, 可挑战行号) 返回其中**通过名单**的行号。
         # None = 未启用，行为与从前逐字相同。由 ``ArenaRunner`` 在拿到用户参数后注入
         # （机器工厂不接参数，这条通道是 ``ModeSpec.runner_options`` 设计好的落点）。
         # ⚠️ 过滤器只许**收窄**集合：返回入参之外的行号等于越过安全分类点人。
@@ -589,6 +604,8 @@ class ArenaStateMachine:
         # 本轮打过哪几种：``player`` = 交战对手，``npc`` = NPC 对战。
         # 结算行要写清是哪一种（用户 2026-11-16 要求）；两种都打过就都写。
         self.battle_kinds: set[str] = set()
+        # 每周对战奖励：点过一次就置真，防止主循环重试时重复领取。
+        self.weekly_reward_checked = False
 
     def commit(self, action: Action, target: ArenaState) -> None:
         if action.source_state is not self.state:
@@ -743,7 +760,7 @@ class ArenaStateMachine:
 
     def has_safe_opponent(self, screen: np.ndarray) -> bool:
         # 「安全」的口径与 ``_list_action`` 完全一致：可挑战**且**（若启用筛选）
-        # 不被黑白名单否掉 —— 否则刷新确认循环会把「可挑战但全被名单否掉」的列表
+        # 不被名单否掉 —— 否则刷新确认循环会把「可挑战但全被名单否掉」的列表
         # 当成到位，与 ``_list_action`` 的判定来回打架（乒乓刷新）。
         safe = [
             index
@@ -819,7 +836,7 @@ class ArenaStateMachine:
         """按积分偏好给**给定的几行**排序；读不出积分的行排到最后。
 
         ⚠️ 与 ``rank_opponents`` 的分工：那个是「没有名单时，从可挑战行里挑一行」，
-        会连带生成日志文案；这个是给「已经按白名单分好组」的调用方用的纯排序，
+        会连带生成日志文案；这个是给「已经按优先名单分好组」的调用方用的纯排序，
         只负责组内先后。读不出积分的行不丢弃 —— 它们仍然能打，只是排后面。
         """
         ordered = list(rows)
@@ -902,6 +919,10 @@ class ArenaStateMachine:
             return self.is_in_state(screen, ArenaState.LIST) and all(
                 value is False for value in self.opponent_availability(screen)
             )
+        if action.name == "claim-weekly-reward":
+            # 红点仍在 = 领取动作还没生效；它消失且仍在列表页 = 已达目标。
+            # 不把「图标变灰」当目标：实测领取后图标仍以 0.9137 命中。
+            return self._claimable_weekly_reward(screen) is not None
         if action.name == "confirm-result":
             return self._visible(screen, "confirm")
         if action.name == "confirm-rank":
@@ -925,6 +946,13 @@ class ArenaStateMachine:
             and self.action_source_visible(screen, action)
         ):
             return None
+        if action.name == "claim-weekly-reward":
+            return (
+                ArenaState.LIST
+                if self.is_in_state(screen, ArenaState.LIST)
+                and self._claimable_weekly_reward(screen) is None
+                else None
+            )
         if action.name == "confirm-result":
             if self.is_in_state(screen, ArenaState.LIST):
                 return ArenaState.LIST
@@ -970,13 +998,35 @@ class ArenaStateMachine:
             anchor.center[1] + self._REFRESH_OFFSET[1],
         )
 
+    def _claimable_weekly_reward(self, screen: np.ndarray) -> Optional[tuple[int, int]]:
+        """每周对战奖励是否可领；可领就返回**该点的点击坐标**。
+
+        判据两维：标题命中（页面定位，三帧都是 1.0000）+ 红点在（唯一能证伪的维度）。
+        ⚠️ 宝石图案本身不能当判据 —— 可领时是亮蓝、领完变暗，两态分数差得远；
+        而 11-17 拿来顶替的 `(1/3)` 次数文字既是会变的内容、又把点击点带到宝石左侧
+        74 像素的空白上（2026-11-18 真机原地点了 33 秒）。所以点击点改由标题锚点 +
+        固定偏移给出，偏移见 ``_WEEKLY_REWARD_OFFSET``（标题中心 (115,701) → 宝石中心
+        (319,709)，实测点下去 3.5 秒红点清零）。
+        """
+        if self.weekly_reward_checked:
+            return None
+        title = self._locate(screen, "weekly_reward_title")
+        if title is None:
+            return None
+        if weekly_reward_dot_pixels(screen) < WEEKLY_REWARD_DOT_MIN_PIXELS:
+            return None
+        return (
+            title.center[0] + self._WEEKLY_REWARD_OFFSET[0],
+            title.center[1] + self._WEEKLY_REWARD_OFFSET[1],
+        )
+
     def _list_action(self, screen: np.ndarray) -> Action:
         availability = self.opponent_availability(screen)
         safe = [index for index, value in enumerate(availability) if value is True]
         filtered_out = False
         note = ""
         if self.opponent_filter is not None and safe:
-            # 过滤器返回的是**排好序**的行：白名单优先组在前，普通组在后。
+            # 过滤器返回的是**排好序**的行：优先名单组在前，普通组在后。
             filtered = list(self.opponent_filter(screen, safe))
             filtered_out = len(filtered) < len(safe)
             safe = filtered
@@ -992,9 +1042,9 @@ class ArenaStateMachine:
                     reason="已选定对手行，等待对手详情页",
                 )
             if self.opponent_filter is not None:
-                # 顺序已由过滤器定好（白名单优先组 → 组内按积分），直接取第一行。
+                # 顺序已由过滤器定好（优先名单组 → 组内按积分），直接取第一行。
                 self._selected_opponent = safe[0]
-                why = note or "已按白名单优先与积分偏好排序"
+                why = note or "已按优先名单与积分偏好排序"
             else:
                 ranked, why = self.rank_opponents(screen, safe)
                 self._selected_opponent = (
@@ -1032,7 +1082,7 @@ class ArenaStateMachine:
                 point=self._refresh_point(screen),
                 source_state=ArenaState.LIST,
                 target_states=(ArenaState.LIST,),
-                reason="可挑战的对手均被黑白名单否掉，等待刷新出新一批",
+                reason="可挑战的对手均被避战名单否掉，等待刷新出新一批",
             )
         raise RuntimeError("竞技场对手行无法安全分类")
 
@@ -1247,7 +1297,27 @@ class ArenaStateMachine:
             and self.is_in_state(screen, ArenaState.LIST)
         ):
             self.state = ArenaState.LIST
-            return self._list_action(screen)
+            # 回到列表后重新走一遍列表分派：红点周奖励 / NPC 页签回切都要先于选对手。
+            # 直接 return _list_action(screen) 会绕过这两步。
+            return self.next_action(screen)
+
+        # 每周对战奖励：位于对手列表左侧、「配置防御队」上方。可领时宝石上有红点；
+        # 领取是即时的（无确认弹窗），完成后红点消失、次数 +1。必须先领再选对手：
+        # 动作本身不换页，领取成功只把红点清掉，所以由 Runner 的专门等待器确认。
+        if self.state is ArenaState.LIST:
+            weekly_reward = (
+                self._claimable_weekly_reward(screen)
+                if self.is_in_state(screen, ArenaState.LIST)
+                else None
+            )
+            if weekly_reward is not None:
+                return Action(
+                    name="claim-weekly-reward",
+                    point=weekly_reward,
+                    source_state=ArenaState.LIST,
+                    target_states=(ArenaState.LIST,),
+                    reason="每周对战奖励红点仍在，先领取再选对手",
+                )
 
         # 「交战对手」与「NPC对战」是同一页的两个页签，后面的选行 / 挑战 / 队伍选择 /
         # 结算完全一样（2026-11-16 实机逐帧核对：选中后两颗判据分数逐位相同）。
@@ -1314,6 +1384,7 @@ class ArenaStateMachine:
             self._cycle_pending,
             # 试算那一趟会把「已看过页签」记上，不还回去的话真跑时就不再切页签了。
             self._npc_tab_checked,
+            self.weekly_reward_checked,
             set(self.battle_kinds),
         )
         try:
@@ -1326,6 +1397,7 @@ class ArenaStateMachine:
                 self._selected_opponent,
                 self._cycle_pending,
                 self._npc_tab_checked,
+                self.weekly_reward_checked,
                 self.battle_kinds,
             ) = snapshot
 
@@ -1580,7 +1652,7 @@ class ArenaRunner(TransactionalRunnerBase):
         self.machine.skystone_purchase_count = 0
         # 本进程的战绩：胜 / 负 / 认不出。「认不出」单列，不并入负（见 ArenaOutcome）。
         self.outcome_tally = {outcome: 0 for outcome in ArenaOutcome}
-        # 黑白名单：两份都空就不挂筛选器，行为与改动前逐字相同。
+        # 名单筛选：两份都空就不挂筛选器，行为与改动前逐字相同。
         self.hero_blacklist = tuple(hero_blacklist or ())
         self.hero_whitelist = tuple(hero_whitelist or ())
         self.hero_list_conflict = hero_list_conflict
@@ -1618,8 +1690,8 @@ class ArenaRunner(TransactionalRunnerBase):
         blacklist = set(self.hero_blacklist) & set(matcher.loaded_names)
         whitelist = set(self.hero_whitelist) & set(matcher.loaded_names)
         self.runtime.log(
-            f"模式=竞技场 英雄名单 已生效 黑名单={sorted(blacklist)} "
-            f"白名单={sorted(whitelist)} 冲突时={self.hero_list_conflict}"
+            f"模式=竞技场 英雄名单 已生效 避战名单={sorted(blacklist)} "
+            f"优先名单={sorted(whitelist)} 冲突时={self.hero_list_conflict}"
         )
         if not blacklist and not whitelist:
             self.runtime.log("模式=竞技场 英雄名单 加载成功但两份名单都为空，不启用")
@@ -1633,10 +1705,11 @@ class ArenaRunner(TransactionalRunnerBase):
         def filter_opponents(
             screen: np.ndarray, safe: Sequence[int]
         ) -> Sequence[int]:
-            """把可挑战的行按「白名单优先组 → 普通组」排序，组内再按积分偏好。
+            """把可挑战的行按「优先名单组 → 普通组」排序，组内再按积分偏好。
 
-            ⚠️ **白名单是偏好，不是门槛**（用户 2026-11-15 纠正）：没有命中白名单
-            的行不是出局，只是排到后面。真正出局的只有黑名单与「黑多／相等」那些。
+            ⚠️ **优先名单是偏好，不是门槛**（用户 2026-11-15 纠正）：没有命中优先名单
+            的行不是出局，只是排到后面。真正出局的只有避战名单命中更多、或命中数相等
+            且按避战处理的那些。
 
             返回的是**有序列表**，行数可能少于入参（被否掉的那些）。
             """
@@ -1665,7 +1738,7 @@ class ArenaRunner(TransactionalRunnerBase):
                     white_hits, key=lambda item: (-item[1], item[0])
                 )
             ]
-            # 白名单组内**先比命中数**（命中两名英雄的队比命中一名的更想打），
+            # 优先名单组内**先比命中数**（命中两名英雄的队比命中一名的更想打），
             # 命中数相同的再按积分偏好；普通组只有积分这一维。
             ordered: list[int] = []
             for hits in sorted({hit for _index, hit in white_hits}, reverse=True):
@@ -1676,25 +1749,25 @@ class ArenaRunner(TransactionalRunnerBase):
             if signature != cache["signature"]:
                 cache["signature"] = signature
                 tier = (
-                    f"白名单优先组={white_rows}"
+                    f"优先名单组={white_rows}"
                     f"（命中数={'/'.join(str(hit) for _index, hit in sorted(white_hits, key=lambda item: (-item[1], item[0])))}）"
                     if white_rows
-                    else "无白名单命中"
+                    else "无优先名单命中"
                 )
                 self.runtime.log(
                     f"模式=竞技场 英雄名单 {tier} 普通组={normal_rows} 选中={ordered[:1]}"
                     + (f" 出局={'；'.join(reasons)}" if reasons else "")
                 )
             self.machine.filter_note = (
-                f"白名单优先组={white_rows} 普通组={normal_rows}"
+                f"优先名单组={white_rows} 普通组={normal_rows}"
                 if white_rows
-                else "无白名单命中，按常规挑选"
+                else "无优先名单命中，按常规挑选"
             )
             if not ordered and safe:
                 self._hero_filter_empty_streak += 1
                 if self._hero_filter_empty_streak >= self._HERO_FILTER_MAX_EMPTY_PAGES:
                     raise NoEligibleOpponent(
-                        f"连续{self._hero_filter_empty_streak}页可挑战的对手都被黑名单否掉"
+                        f"连续{self._hero_filter_empty_streak}页可挑战的对手都被避战名单否掉"
                     )
             else:
                 self._hero_filter_empty_streak = 0
@@ -2120,6 +2193,30 @@ class ArenaRunner(TransactionalRunnerBase):
                 conclusion_gate.reset()
                 continue
 
+            if action.name == "claim-weekly-reward":
+                self.runtime.click(action.point, action.name)
+                if not self._wait_until_weekly_reward_claimed(action):
+                    failure_screen = self.runtime.capture()
+                    diagnostic = self._save_failure_diagnostic(
+                        "claim_weekly_reward_failed",
+                        failure_screen,
+                        action=action,
+                        attempt=1,
+                        conclusion="点击每周对战奖励后红点未消失",
+                    )
+                    self.runtime.log(
+                        "模式=竞技场 页面=对手列表 动作=领取每周对战奖励 "
+                        f"停止=红点未消失 现场={diagnostic}"
+                    )
+                    raise RuntimeError(
+                        f"领取每周对战奖励后红点未消失；已保存诊断 {diagnostic}"
+                    )
+                self.machine.weekly_reward_checked = True
+                state_started = self.now()
+                stable.reset()
+                conclusion_gate.reset()
+                continue
+
             self._execute_transition(action)
             if action.name == "purchase-friendship-ticket":
                 self._record_purchase_today()
@@ -2141,6 +2238,37 @@ class ArenaRunner(TransactionalRunnerBase):
     # 竞技场的差异全部通过钩子注入，注入点见本类上半部分的「基类钩子」一节。
     # 删除前逐条对过：重构后竞技场在转场这一段的行为与 2026-09-26 之前**逐字一致**
     # （含日志文案），只有两处刻意保留的小差异，理由都写在钩子那边。
+
+    def _wait_until_weekly_reward_claimed(self, action: Action) -> bool:
+        """等待「每周对战奖励」红点消失（同页状态变化，不是转场）。
+
+        判据只用红点：宝石本体领取后仍以 0.9137 命中，次数文字 `(1/3)→(2/3)`
+        也是会变的内容，都不许当固定模板。这里要求「仍在列表页 + 红点像素低于阈值」
+        连续两帧成立，避免领取动画中间那一帧误判成功。
+
+        点击后不重试：这是即时领取，没有确认弹窗；连点第二下可能落到奖励图标
+        淡出后的空白区域。超时就保存诊断并安全停止，由人工看帧修判据。
+        """
+        self.sleep(self._SETTLE_SECONDS)
+        started = self.now()
+        stable = StableObservation(required=2)
+        absolute = min(30, self._TIMEOUT_SECONDS[ArenaState.LIST])
+        while self.now() - started < absolute:
+            screen = self.runtime.capture()
+            if self.runtime.diagnostic_dir is not None:
+                self.runtime.save_current_frame(screen)
+            claimed = (
+                self.machine.is_in_state(screen, ArenaState.LIST)
+                and weekly_reward_dot_pixels(screen) < WEEKLY_REWARD_DOT_MIN_PIXELS
+            )
+            if stable.update("claimed" if claimed else "other") and claimed:
+                self.runtime.log(
+                    "模式=竞技场 转场确认 动作=claim-weekly-reward "
+                    "目标=每周奖励红点消失 目标连续=2"
+                )
+                return True
+            self.sleep(self.poll_seconds)
+        return False
 
     def _wait_until_safe_list(self, action: Action | None = None) -> bool:
         self.sleep(self._SETTLE_SECONDS)

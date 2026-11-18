@@ -237,8 +237,9 @@ def test_purchase_dialog_confirms_on_the_green_button(templates):
     action = m.next_action(load("purchase_modal"))
     assert action.name == "confirm-purchase"
     assert action.target_pages == ("宠物商店",)
-    # 落点必须在绿色按钮里（实测按钮 x 880..1370 / y 885..985，「购买」两字在 1253 一带）。
-    assert 1180 <= action.point[0] <= 1360 and 900 <= action.point[1] <= 980, action.point
+    # 落点必须在绿色「购买」二字里：2026-11-17 真机诊断帧实测中心 (1227, 801)。
+    # 旧断言按 y 900..980 写，是自造的坐标，真机按钮根本不在那儿。
+    assert 1180 <= action.point[0] <= 1300 and 760 <= action.point[1] <= 850, action.point
     assert m.bought_rows == [("food", 587)]
     assert m.pending_buy is None
 

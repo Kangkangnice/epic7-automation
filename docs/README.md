@@ -44,7 +44,7 @@
 | 安全：危险按钮 / 干跑默认 / 退出码 / 回家 / **哪些动作花资源、靠什么拦住误点、哪条路线有哪些实机证据** | [`../AGENTS.md`](../AGENTS.md) · [`EXTENDING.md`](EXTENDING.md) 第 5 节 · [`SAFETY_MATRIX.md`](SAFETY_MATRIX.md) | `.workbuddy/memory/topics/safety.md` |
 | 转场五段证据 / 判据唯一 / 陌生页可恢复 | [`TRANSITION_CONTRACTS.md`](TRANSITION_CONTRACTS.md) | `topics/transitions.md` · `lessons.md` |
 | 模板采集 / 判据纪律 / 锚点 / 夹具 / 反向验证 | [`TEMPLATE_CAPTURE.md`](TEMPLATE_CAPTURE.md) · [`../AGENTS.md`](../AGENTS.md) | `topics/discipline.md` · `anchors.md` · `hazards.md` · `fixtures.md` |
-| 全局弹窗（新弹窗的 10 个接触点） | [`TRANSITION_CONTRACTS.md`](TRANSITION_CONTRACTS.md) + 下方逐路线手册 | `topics/global_popups.md` |
+| 全局弹窗（新弹窗的 10 个接触点 / **素材必须覆盖实际运行的后端** / 「点不动」先抓点击后 1 秒内的帧） | [`TRANSITION_CONTRACTS.md`](TRANSITION_CONTRACTS.md) + 下方逐路线手册 | `topics/global_popups.md` |
 | 新增路线 / 开工读什么、改完改哪节 / 两道准入关 / **总轮数上限由谁决定** | [`EXTENDING.md`](EXTENDING.md) 第 4 节 · `doc_review --scenario new-route`（清单唯一来源） | `topics/route_admission.md` · `route_metadata.md` |
 | 主循环 / 点击通道 / 战斗移交 / 时间源 | [`ARCHITECTURE.md`](ARCHITECTURE.md) | `topics/runner_loop.md` · `click_channel.md` · `battle_auto_flip.md` |
 | 开局接力 / 断点恢复 | [`RESUME_COVERAGE.md`](RESUME_COVERAGE.md) · [`TRANSITION_CONTRACTS.md`](TRANSITION_CONTRACTS.md) | `topics/resume.md` |
@@ -52,6 +52,7 @@
 | **PC 移植**（结论 + 作业流水线） | [`PC_TEMPLATE_MIGRATION.md`](PC_TEMPLATE_MIGRATION.md) · [`maintenance/pc_page_capture_checklist.md`](maintenance/pc_page_capture_checklist.md) | 技能 `~/.workbuddy/skills/epic7-pc-route-port/` · `topics/pc_templates.md` · `pc_port_pitfalls.md` |
 | 验证门槛 / 提交钩子 / 打包 / 并发协作 | [`../CONTRIBUTING.md`](../CONTRIBUTING.md) · [`../AGENTS.md`](../AGENTS.md) · 本页第三、四节 | `topics/engineering_gate.md` · `env.md` |
 | 桌面界面 / 通知 / 快捷方式 | [`USER_GUIDE.md`](USER_GUIDE.md) | `topics/desktop.md` · `notify.md` |
+| **英雄图鉴库 / 中英对照 / 新英雄怎么入库** | [`maintenance/hero_roster.md`](maintenance/hero_roster.md) | — |
 | **界面文案 / 说明体（含助手输出的方案与结论）** | [`UI_COPY_STYLE.md`](UI_COPY_STYLE.md) | — |
 | 逐路线细节 | 下一节那张表 | `topics/side_story.md` · `tower_retry.md` · `arena_outcome.md` · `survivor.md` · `routes_entry.md` |
 | 为什么当初这么定 | [`decisions/`](decisions/) | — |
@@ -84,6 +85,7 @@
 | 主线补星 `story_star` | [`maintenance/story_star.md`](maintenance/story_star.md) |
 | 宠物领养 `pet_adoption` | [`maintenance/pet_adoption.md`](maintenance/pet_adoption.md) |
 | 企鹅批量购买 `penguin_purchase` | [`maintenance/penguin_purchase.md`](maintenance/penguin_purchase.md) |
+| 装备制作 `craft_equipment` | [`maintenance/craft_equipment.md`](maintenance/craft_equipment.md) |
 
 ---
 
@@ -302,6 +304,7 @@ CI 的 `Governance gate` 会在干净检出上再跑一遍治理门禁。
 | [`story_star.md`](maintenance/story_star.md) | 主线补星：按星数找未满篇章、按绿勾找未满小节，复用主线战斗链路 |
 | [`pet_adoption.md`](maintenance/pet_adoption.md) | 宠物领养：每日一次免费领养（不碰付费领养按钮），再检查宠物商店底部三种用品；购入默认关闭 |
 | [`penguin_purchase.md`](maintenance/penguin_purchase.md) | 企鹅批量购买：成长祭坛第一列企鹅蛋，数量补足 50/50、报价核对后才购入；一轮 50 只，默认 10 轮 |
+| [`craft_equipment.md`](maintenance/craft_equipment.md) | 装备制作：钢铁工坊按讨伐与部位批量制作，一轮 10 件；整理可出售或萃取，范围由游戏内「快速选择」预设决定 |
 
 ⚠️ 没有手册的路线：狗粮、刷书签、活动小游戏、活动剧情、世界首领战。
 它们不是没人管，是还没人写——补的时候照上面六节写，别再攒施工流水。

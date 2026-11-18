@@ -1637,6 +1637,9 @@ class Epic7GlobalPopupGuard:
         # 2026-11-06：新手账号大厅右上角的「跳过教学 ✕」（顶掉快捷菜单的那块）。
         tutorial_skip_templates: TutorialSkipTemplates | None = None,
         login_reward_templates: LoginRewardTemplates | None = None,
+        # 2026-11-17：「装备背包已满」。它不止是「点掉继续」，命中后还要让本路线收工
+        # （见 Runtime.blocking_popup 与 EquipmentBagFull）。
+        equipment_bag_full_templates: "EquipmentBagFullTemplates | None" = None,
         sleep: Callable[[float], None] = default_sleep,
         now: Callable[[], float] = monotonic,
         poll_seconds: float = 1.0,
@@ -1670,6 +1673,7 @@ class Epic7GlobalPopupGuard:
         self.tutorial_unlock_templates = tutorial_unlock_templates
         self.tutorial_skip_templates = tutorial_skip_templates
         self.login_reward_templates = login_reward_templates
+        self.equipment_bag_full_templates = equipment_bag_full_templates
         self.sleep = sleep
         self.now = now
         self.poll_seconds = poll_seconds
@@ -1689,6 +1693,18 @@ class Epic7GlobalPopupGuard:
                 "network_retry_failed",
                 f"断网重连弹窗点击{_MAX_POPUP_CLICKS}次后仍未消失",
             )
+        if self.equipment_bag_full_templates is not None:
+            match = find_equipment_bag_full_close(
+                screen, self.equipment_bag_full_templates
+            )
+            if match is not None:
+                return (
+                    match,
+                    "equipment_bag_full",
+                    "dismiss-equipment-bag-full",
+                    "equipment_bag_full_failed",
+                    f"「装备背包已满」点关闭按钮{_MAX_POPUP_CLICKS}次后仍未消失",
+                )
         if self.web_network_error_templates is not None:
             match = find_web_network_error_close(
                 screen, self.web_network_error_templates
@@ -2031,6 +2047,15 @@ class Epic7GlobalPopupGuard:
             if match is None:
                 return screen, handled
             handled = True
+            if popup == "equipment_bag_full":
+                # 点掉这一层就**立刻收工**：背包满了，点掉也做不出下一件。
+                # 只点一次、不进点击预算循环 —— 再点也不会有新结果。
+                runtime.click(match.center, action)
+                runtime.note_blocking_popup("装备背包已满")
+                runtime.log(
+                    "模式=全局弹窗 弹出=装备背包已满 动作=关掉弹窗后按资源耗尽收工"
+                )
+                return screen, True
             if popup != active_popup:
                 active_popup = popup
                 stable_frames = 1
@@ -2376,4 +2401,66 @@ def find_login_reward_close(
         templates.close,
         _LOGIN_REWARD_TITLE_REGION,
         _LOGIN_REWARD_CLOSE_REGION,
+    )
+
+
+# ── 「装备背包已满」（2026-11-17 接，11-18 按模拟器真机帧重做素材）────────────────
+#
+# 文案：「装备背包已满。请整理或扩充装备背包后再重试。」
+#   这条弹窗：标题「背包空间不足」+ **取消 / 整理 / 扩充** 三颗按钮。
+#   只点「取消」—— 整理与扩充都会改用户的背包，这条路线无权替用户决定。
+#   素材两份，命名按平台覆盖约定（``<路线>/xxx.png`` 共享、``<路线>/pc/xxx.png`` 覆盖）：
+#   `equipment_bag_full_message.png`（正文两行）与 `equipment_bag_full_cancel.png`（「取消」）。
+# ⚠️ 2026-11-17 首版放的两张（正文 418x72 + 一颗蓝色「确认」）已删除：它们在真机弹窗帧上
+#   正文只有 0.8426（余量 0.023）、按钮 0.7100（阈 0.85）—— 弹窗根本没有「确认」这颗，
+#   最接近的反而是「整理」。留着只会让 PC 分支静默拿错图，比没有更危险。
+#   现在的两份素材：正文 0.9737、按钮 0.9718，四张无关帧最高 0.27 / 0.43。
+#   将来补 PC 素材时，放同名文件到 ``global/pc/`` 即可，代码一行不用改。
+# 触发者来自装备制作（一次做 10 件，几轮就撑满）与任何掉装备的战斗结算；
+# 2026-11-18 早上的每日任务里，迷宫「战斗开始」点了 4 次不动就是撞上它
+# （当时既没有可用素材、文件也放在 pc/ 下 ⇒ 守卫整段跳过 ⇒ 弹窗没人管 ⇒ 转场超时记 ✗）。
+#
+# ⚠️ 它和其它弹窗**语义不同**：别的弹窗点掉就能接着跑，这一条点掉了**也做不了事**
+# —— 背包还是满的。所以命中后不只点掉，还要在 ``Runtime.blocking_popup`` 留一句话，
+# 由主循环按 ``EquipmentBagFull``（ResourceExhausted 的子类）正常收工，退出码 2，
+# 不记失败。用户 2026-11-17 的原话：「这不是报错，就跟没门票一个意思」。
+
+
+@dataclass(frozen=True)
+class EquipmentBagFullTemplates:
+    """文案认事、关闭点认点，语义是「只关掉弹窗」，不改用户背包。"""
+
+    message: np.ndarray
+    close: np.ndarray
+
+
+# 文案两行实测 420x67；关闭点「取消」在左半（620,796）。区域都留足余量。
+_EQUIPMENT_BAG_FULL_MESSAGE_REGION = (560, 450, 660, 190)
+_EQUIPMENT_BAG_FULL_CLOSE_REGION = (450, 660, 900, 180)
+
+
+def load_equipment_bag_full_templates(
+    template_dir: Path,
+) -> EquipmentBagFullTemplates | None:
+    message = template_dir / "equipment_bag_full_message.png"
+    close = template_dir / "equipment_bag_full_cancel.png"
+    if not (message.exists() and close.exists()):
+        return None
+    return EquipmentBagFullTemplates(
+        message=load_template(str(message)),
+        close=load_template(str(close)),
+    )
+
+
+def find_equipment_bag_full_close(
+    screen: np.ndarray,
+    templates: EquipmentBagFullTemplates,
+) -> Match | None:
+    """「装备背包已满」的关闭点；文案不成立就不动手。"""
+    return _find_titled_popup_close(
+        screen,
+        templates.message,
+        templates.close,
+        _EQUIPMENT_BAG_FULL_MESSAGE_REGION,
+        _EQUIPMENT_BAG_FULL_CLOSE_REGION,
     )

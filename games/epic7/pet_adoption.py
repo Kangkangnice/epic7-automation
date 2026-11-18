@@ -210,6 +210,7 @@ class PetAdoptionTemplates:
     supply_food_name: np.ndarray
     supply_toy_name: np.ndarray
     confirm_title: np.ndarray
+    confirm_question: np.ndarray
     confirm_buy: np.ndarray
     evidence: object = None
     pc: bool = False
@@ -237,14 +238,12 @@ def build_pet_adoption_templates(template_root: Path) -> PetAdoptionTemplates:
         shop_cooldown=one("shop_cooldown"),
         supply_food_name=one("supply_food_name"),
         supply_toy_name=one("supply_toy_name"),
-        # 购买确认框的两颗图**复用企鹅批量购买那条路线**的（同一个「购买商品」弹窗），
-        # 不复制副本 —— 同一颗控件只留一份判据图。
-        confirm_title=load_template(
-            str(template_root / "penguin_purchase" / "quantity_title.png")
-        ),
-        confirm_buy=load_template(
-            str(template_root / "penguin_purchase" / "quantity_buy_text.png")
-        ),
+        # 购买确认框从 2026-11-17 实跑诊断帧自采：原先借企鹅那条路线的数量弹窗图，
+        # 分数只有 0.27 / 0.00 ⇒ 认不出，卡到超时。按钮模板只裁「购买」二字，
+        # 不含会变的金额 500 / 3 / 1000。
+        confirm_title=one("confirm_title"),
+        confirm_question=one("confirm_question"),
+        confirm_buy=one("confirm_buy"),
         evidence=build_pet_adoption_evidence(folder),
         pc=is_pc(template_root),
     )
