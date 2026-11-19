@@ -95,33 +95,41 @@ def _self_check() -> int:
 
     # 次元探查的第三方代码按清单分发（不在 Git 里）。自检要证明「产物里的这一份
     # 真能导入、配置真能解析」，否则文件缺了只会等到用户点「开始」才报错。
-    def vendor_problem() -> str:
-        from auto_game_unified.desktop.chaos_bridge import vendor_root
+    # ⚠️ 源码检出不是产物：干净 clone 里没有 vendor（构建前才取回），这时**明说
+    # 跳过**，不冒充通过；打包版（frozen）缺它仍然算失败。
+    from auto_game_unified.desktop.chaos_bridge import vendor_root
 
-        root = vendor_root()
-        source = root / "src"
-        config = root / "config" / "internal.yaml"
-        if not (source / "e7auto").is_dir():
-            return f"缺少第三方源码：{source}"
-        if not config.is_file():
-            return f"缺少第三方配置：{config}"
-        if str(source) not in sys.path:
-            sys.path.insert(0, str(source))
-        from e7auto.configuration.loader import load_config
-        from e7auto.features.chaos.configuration import with_chaos_config
-
-        with_chaos_config(
-            load_config(config, template_profile="chaos"),
-            target_stage=1,
-            lineup_id="dark_twins",
+    vendor_dir = vendor_root()
+    if not (vendor_dir / "src" / "e7auto").is_dir() and not getattr(sys, "frozen", False):
+        lines.append(
+            "[跳过] 第三方代码：源码检出未取回"
+            "（构建前运行 python tools/fetch_vendor.py）"
         )
-        return ""
+    else:
+        def vendor_problem() -> str:
+            source = vendor_dir / "src"
+            config = vendor_dir / "config" / "internal.yaml"
+            if not (source / "e7auto").is_dir():
+                return f"缺少第三方源码：{source}"
+            if not config.is_file():
+                return f"缺少第三方配置：{config}"
+            if str(source) not in sys.path:
+                sys.path.insert(0, str(source))
+            from e7auto.configuration.loader import load_config
+            from e7auto.features.chaos.configuration import with_chaos_config
 
-    try:
-        problem = vendor_problem()
-    except Exception as error:  # noqa: BLE001 —— 报清是哪一步加载不了
-        problem = f"{type(error).__name__}: {error}"
-    record(not problem, "第三方代码", problem or "e7auto 可导入，chaos 配置可加载")
+            with_chaos_config(
+                load_config(config, template_profile="chaos"),
+                target_stage=1,
+                lineup_id="dark_twins",
+            )
+            return ""
+
+        try:
+            problem = vendor_problem()
+        except Exception as error:  # noqa: BLE001 —— 报清是哪一步加载不了
+            problem = f"{type(error).__name__}: {error}"
+        record(not problem, "第三方代码", problem or "e7auto 可导入，chaos 配置可加载")
 
     def render(fail_count: int) -> str:
         return "\n".join(
@@ -148,8 +156,7 @@ def _use_utf8_stdio() -> None:
     """冻结版窗口程序不认 ``PYTHONIOENCODING``，输出按系统代码页编码。
 
     桌面端按 UTF-8 读子进程输出（``desktop/worker.py``），不统一就会整屏乱码；
-    所以 worker 分支在跑业务之前把标准输出重设为 UTF-8。源码模式下终端自己
-    决定编码，不动它。
+    所以冻结时先把标准输出重设为 UTF-8。源码模式下终端自己决定编码，不动它。
     """
     if not getattr(sys, "frozen", False):
         return
