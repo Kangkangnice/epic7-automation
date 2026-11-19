@@ -1400,6 +1400,97 @@ class CommunityStateMachineTests(unittest.TestCase):
         machine.preview(fixture("exchange_after_redeem_live_20261006"))
         self.assertEqual((machine.state, dict(machine.progress.redeemed)), before)
 
+    # ---- 预览快照：同帧幂等 / 试算与真跑一致 / 异常也还原 ----
+
+    @staticmethod
+    def _fingerprint(machine) -> dict[str, str]:
+        return {name: repr(value) for name, value in machine._snapshot().items()}
+
+    def test_snapshot_covers_completion_and_redeem_flags(self):
+        """快照按 ``vars`` 自动生成：以前漏掉的三个业务字段必须在内。"""
+        machine = self.machine()
+        snapshot = machine._snapshot()
+        for name in (
+            "completed_cycles",
+            "redeem_failed",
+            "_confirm_clicked",
+            "_pending_swipe_streak",
+            "progress",
+        ):
+            self.assertIn(name, snapshot)
+
+    def test_same_frame_preview_is_idempotent(self):
+        cases = [
+            ("exchange_after_redeem_live_20261006", cm.CommunityState.EXCHANGE),
+            ("order_confirm_live_20261006", cm.CommunityState.ITEM_DETAIL),
+            ("tasks_fresh_live_20261006", cm.CommunityState.FEED),
+            ("stranger_account_page_live_20261018", cm.CommunityState.FEED),
+        ]
+        for frame_name, state in cases:
+            with self.subTest(frame=frame_name):
+                machine = self.machine(state=state)
+                before = self._fingerprint(machine)
+                frame = fixture(frame_name)
+                machine.preview(frame)
+                machine.preview(frame)
+                self.assertEqual(self._fingerprint(machine), before)
+
+    def test_preview_does_not_commit_a_finished_cycle(self):
+        """试算里走到 ``_finish`` 也不许把轮次加一（真跑还要再加一次）。"""
+        machine = self.machine(state=cm.CommunityState.FEED)
+        machine.next_action = lambda screen: (
+            machine._finish("试算收工"),
+            None,
+        )[1]
+
+        machine.preview(fixture("tasks_all_done_live_20261006"))
+
+        self.assertEqual(machine.completed_cycles, 0)
+        self.assertNotEqual(machine.state, cm.CommunityState.DONE)
+
+    def test_multiple_previews_then_execute_match_a_direct_execute(self):
+        cases = [
+            ("exchange_after_redeem_live_20261006", cm.CommunityState.EXCHANGE),
+            ("order_confirm_live_20261006", cm.CommunityState.ITEM_DETAIL),
+            ("tasks_fresh_live_20261006", cm.CommunityState.FEED),
+        ]
+        for frame_name, state in cases:
+            with self.subTest(frame=frame_name):
+                frame = fixture(frame_name)
+                direct = self.machine(state=state)
+                previewed = self.machine(state=state)
+                for _ in range(3):
+                    previewed.preview(frame)
+
+                direct_action = direct.next_action(frame)
+                preview_action = previewed.next_action(frame)
+
+                def action_key(action):
+                    return None if action is None else (action.name, action.point)
+
+                self.assertEqual(
+                    action_key(preview_action), action_key(direct_action)
+                )
+                self.assertEqual(
+                    self._fingerprint(previewed), self._fingerprint(direct)
+                )
+
+    def test_preview_restores_state_when_next_action_raises(self):
+        machine = self.machine(state=cm.CommunityState.EXCHANGE)
+        before = self._fingerprint(machine)
+
+        def explode(screen):
+            machine.state = cm.CommunityState.DONE
+            machine.completed_cycles += 1
+            machine.redeem_failed = True
+            raise RuntimeError("试算炸了")
+
+        with unittest.mock.patch.object(machine, "next_action", side_effect=explode):
+            with self.assertRaises(RuntimeError):
+                machine.preview(fixture("exchange_after_redeem_live_20261006"))
+
+        self.assertEqual(self._fingerprint(machine), before)
+
     # ---- 动作契约 ----
 
     def test_every_action_carries_an_exit_check(self):
