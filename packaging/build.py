@@ -22,8 +22,8 @@
 
 ## 为什么冒烟要跑 ``--self-check`` 而不是「启动 GUI 看它有没有崩」
 
-窗口起不起来没法自动判定，而自检覆盖了真正会坏的三件事 ——
-运行产物目录能不能写、模板在不在、已登记路线的模板能不能全部加载。
+安装版自检覆盖运行产物目录、已登记路线的模板以及桌面模块和 Qt 动态库导入。
+它不创建窗口，界面启动需在发布验收中另行验证。
 另有一条 ``check_pruned_binaries`` 守着「spec 里剔掉的 videoio ffmpeg 真的没进产物」
 （那两个 DLL 原始 51.9 MB，是免安装版从 88 MB 降到 63 MB 的全部来源）。
 """
@@ -139,8 +139,9 @@ def check_pruned_binaries() -> None:
 
 def prepare_release_directory(app_dir: Path) -> None:
     """检查目录版的发布边界，并写入 ZIP 和安装包共用的许可文件。"""
+    blocked_names = {"e7auto", ".git", ".github", "icu.dll", "icuin.dll", "icuuc.dll"}
     for item in sorted(app_dir.rglob("*")):
-        if item.name.casefold() in {"e7auto", ".git", ".github"}:
+        if item.name.casefold() in blocked_names:
             raise SystemExit(
                 f"目录版含有禁止分发的目录或文件：{item.relative_to(app_dir)}\n"
                 "请去掉 --no-build，以干净输入重新构建。"

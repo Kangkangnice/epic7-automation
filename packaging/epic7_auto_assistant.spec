@@ -86,14 +86,18 @@ pyz = PYZ(a.pure)
 # 少了它程序起不来。这里只按文件名前缀剔 videoio 那两个。
 # `build.py` 的打包冒烟里有一条断言守着「它们真的不在产物里」，别绕过它。
 _VIDEOIO_FFMPEG_PREFIX = "opencv_videoio_ffmpeg"
+_WINDOWS_ICU_DLLS = {"icu.dll", "icuin.dll", "icuuc.dll"}
 
 
-def _is_videoio_ffmpeg(entry) -> bool:
-    return _VIDEOIO_FFMPEG_PREFIX in Path(entry[0]).name
+def _exclude_binary(name: str) -> bool:
+    # Qt 使用 Windows ICU 的无版本接口。同名的开发环境 DLL 会遮蔽系统库，
+    # 导致 QtCore 导入失败。独立 Qt 发行版的带版本库仍由分析器收集。
+    name = Path(name).name.casefold()
+    return _VIDEOIO_FFMPEG_PREFIX in name or name in _WINDOWS_ICU_DLLS
 
 
-a.binaries = [entry for entry in a.binaries if not _is_videoio_ffmpeg(entry)]
-a.datas = [entry for entry in a.datas if not _is_videoio_ffmpeg(entry)]
+a.binaries = [entry for entry in a.binaries if not _exclude_binary(entry[0])]
+a.datas = [entry for entry in a.datas if not _exclude_binary(entry[0])]
 
 exe = EXE(
     pyz,

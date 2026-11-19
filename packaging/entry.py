@@ -31,9 +31,7 @@ def _self_check() -> int:
     )
     from auto_game_unified.games.epic7.modes import PC_ONLY_ROUTES
 
-    # ⚠️ 这里**不许** import 界面模块来借一个常量：界面已经换成 Qt，导入它会
-    # 把 PySide6 一起拉起来（慢，而且自检失败时会淹没真正的原因）。
-    # 模板根就是包目录下的固定位置，和 desktop_qt/app.py 里的 TEMPLATE_ROOT 同一个算法。
+    # 自检独立定位模板。桌面入口在模板检查完成后单独导入，以便区分 DLL 和模板故障。
     TEMPLATE_ROOT = package_root() / "games" / "epic7" / "templates"
 
     lines: list[str] = []
@@ -83,6 +81,13 @@ def _self_check() -> int:
         "路线模板加载",
         f"{len(ROUTES)} 条全部可加载" if not broken else "；".join(broken),
     )
+
+    try:
+        from auto_game_unified.desktop_qt.app import main as run_app
+    except ImportError as error:
+        record(False, "桌面入口", str(error))
+    else:
+        record(True, "桌面入口", run_app.__module__)
 
     lines.append(f"结果：{'通过' if failures == 0 else f'{failures} 项失败'}")
     report = "\n".join(lines) + "\n"

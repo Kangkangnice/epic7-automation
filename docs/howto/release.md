@@ -16,7 +16,7 @@ GitHub 的 tag 标记代码版本，带 ZIP 的 GitHub Release 提供用户可�
    [`CHANGELOG.md`](../../CHANGELOG.md) 的版本说明。核对 [生成的现状页](../STATUS.md) 和用户手册。
    每个公开版本使用唯一的 `v<版本>` tag。已存在的 tag 和工件保留原记录，修复以新版本发布。
 2. 从待发布提交独立检出，目录命名为 `auto_game_unified`。安装贡献指南里的依赖并通过全量检查。
-   PC 或模拟器的新增支持以对应实机证据为准。软件无窗口自检覆盖内置导入与模板加载，桌面启动和
+   PC 或模拟器的新增支持以对应实机证据为准。软件无窗口自检覆盖桌面依赖和模板加载，桌面启动和
    游戏业务支持由各自的实机验收覆盖。
    声明达到[共享视觉迁移目标](../decisions/0009-universal-vision-contract.md)时，在 PR 和发行说明列出
    该版本发布范围内的模拟器路线、PC 完整通过数、使用默认策略数和已登记例外。默认策略占比按
@@ -25,6 +25,8 @@ GitHub 的 tag 标记代码版本，带 ZIP 的 GitHub Release 提供用户可�
    第三方库与外部扩展分别核对授权与发布条件。检查 Fluent Widgets 等组件的上游许可及随包文件。
    标准工件在可执行文件同目录随附 `LICENSE` 和 `NOTICE.md`。E7auto 为可选源码集成，
    不随标准工件分发。本机诊断、个人数据、令牌、Git 元数据和未经核对的外部源码与工件隔离。
+   Windows 系统 ICU 由操作系统提供，工件排除同名 DLL，避免构建环境中的版本覆盖系统接口。
+   [Windows ICU 文档](https://learn.microsoft.com/en-us/windows/win32/intl/international-components-for-unicode--icu-)
    [GitHub 许可证说明](https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/licensing-a-repository) ·
    [Fluent Widgets 上游许可](https://github.com/zhiyiYo/PyQt-Fluent-Widgets)
 
