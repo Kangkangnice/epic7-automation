@@ -69,6 +69,14 @@ def test_shared_templates_remind_you_of_both_backends() -> None:
     assert "docs/PC_TEMPLATE_MIGRATION.md" in docs
 
 
+def test_hero_roster_assets_point_only_to_their_actual_consumers() -> None:
+    docs = doc_review.affected_docs([
+        "games\\epic7\\templates\\arena\\heroes_pokedex\\英雄.png",
+        "games/epic7/templates/arena/heroes_pokedex/meta.json",
+    ])
+    assert docs == ["docs/maintenance/arena.md", "docs/maintenance/hero_roster.md"]
+
+
 def test_duplicates_are_collapsed() -> None:
     """多个模块映射到同一份文档时只出现一次。"""
     docs = doc_review.affected_docs(["games/epic7/arena.py", "games/epic7/arena.py"])
@@ -123,10 +131,12 @@ def test_staged_mode_reads_the_index_not_a_cursor(monkeypatch) -> None:
 
     def fake_git(*args: str) -> str:
         calls.append(args)
-        return "core/pc_window.py\n"
+        return "core/pc_window.py\0games/epic7/templates/arena/heroes_pokedex/英雄.png\0"
 
     monkeypatch.setattr(doc_review, "_git", fake_git)
-    assert doc_review.staged_files() == ["core/pc_window.py"]
+    files = doc_review.staged_files()
+    assert files == ["core/pc_window.py", "games/epic7/templates/arena/heroes_pokedex/英雄.png"]
+    assert "-z" in calls[0] and "--no-renames" in calls[0]
     assert calls[0][:2] == ("diff", "--cached")
 
 

@@ -120,6 +120,84 @@ class TargetedSelectionTests(unittest.TestCase):
         )
         self.assertIn("test_project_layout.py", picked)
 
+    def test_portrait_change_hits_catalog_and_arena_without_hero_synthesis(self):
+        all_tests = [
+            *self.ALL_TESTS, "test_hero_catalog.py", "test_arena_hero_lists.py",
+            "test_hero_roster_check.py", "test_add_hero.py", "test_hero_synthesis.py",
+        ]
+        picked, _reason, _warnings = check_module.plan_tests(
+            ["games/epic7/templates/arena/heroes_pokedex/英雄.png"], all_tests,
+        )
+        self.assertEqual([
+            "test_add_hero.py", "test_arena_hero_lists.py", "test_hero_catalog.py",
+            "test_hero_roster_check.py", "test_project_layout.py",
+        ], picked)
+
+    def test_shared_story_templates_include_their_consuming_routes(self):
+        all_tests = [
+            *self.ALL_TESTS, "test_story.py", "test_fodder.py",
+            "test_story_star.py", "test_navigation.py",
+        ]
+        picked, _reason, _warnings = check_module.plan_tests(
+            ["games/epic7/templates/story/pc/auto_off.png"], all_tests,
+        )
+        self.assertTrue({"test_fodder.py", "test_story_star.py", "test_navigation.py"}.issubset(picked))
+
+    def test_tool_and_spec_overrides_are_reachable(self):
+        picked, _reason, _warnings = check_module.plan_tests(
+            ["tools/add_hero.py", "packaging/epic7_auto_assistant.spec"],
+            [*self.ALL_TESTS, "test_add_hero.py", "test_release_packaging.py"],
+        )
+        self.assertEqual(["test_add_hero.py", "test_release_packaging.py"], picked)
+
+    def test_fixture_folder_prefers_the_most_specific_route(self):
+        picked, _reason, _warnings = check_module.plan_tests(
+            ["tests/fixtures/epic7_story_star_pc/lobby.png"],
+            [*self.ALL_TESTS, "test_main_story.py", "test_story_star.py"],
+        )
+        self.assertEqual(["test_project_layout.py", "test_story_star.py"], picked)
+
+    def test_shared_fixtures_select_consumers_outside_their_folder(self):
+        all_tests = [*self.ALL_TESTS, "test_navigation.py", "test_hero_synthesis.py"]
+        for folder in ("epic7_global", "epic7_navigation"):
+            with self.subTest(folder=folder):
+                picked, _reason, _warnings = check_module.plan_tests(
+                    [f"tests/fixtures/{folder}/popup.png"], all_tests,
+                )
+                self.assertIn("test_hero_synthesis.py", picked)
+                self.assertIn("test_navigation.py", picked)
+
+    def test_navigation_reuses_route_and_legacy_root_assets(self):
+        all_tests = [*self.ALL_TESTS, "test_navigation.py"]
+        for path in (
+            "games/epic7/templates/tower/pc/tower_home.png",
+            "games/epic7/evidence/world_boss.py",
+            "games/epic7/templates/list_ready.png",
+        ):
+            with self.subTest(path=path):
+                picked, _reason, _warnings = check_module.plan_tests([path], all_tests)
+                self.assertIn("test_navigation.py", picked)
+
+    def test_diff_preserves_unicode_and_reports_both_paths_of_a_move(self):
+        old = "games/epic7/templates/arena/heroes_pokedex/旧名.png"
+        new = "games/epic7/templates/arena/heroes_pokedex/新名.png"
+        result = mock.Mock(returncode=0, stdout=f"{old}\0{new}\0".encode())
+        with mock.patch.object(check_module.subprocess, "run", return_value=result) as run:
+            self.assertEqual([old, new], check_module.git("--cached"))
+        self.assertIn("-z", run.call_args.args[0])
+        self.assertIn("--no-renames", run.call_args.args[0])
+
+    def test_plan_prints_targets_without_compiling_or_executing(self):
+        argv = ["check.py", "--plan", "--files", "games/epic7/templates/tower/pc/card.png"]
+        with (
+            mock.patch.object(check_module.sys, "argv", argv),
+            mock.patch.object(check_module, "run") as execute,
+            mock.patch("builtins.print") as output,
+        ):
+            self.assertEqual(0, check_module.main())
+        execute.assert_not_called()
+        self.assertTrue(any("test_tower" in str(call) for call in output.call_args_list))
+
 
 class WorkspaceModeNoticeTests(unittest.TestCase):
     """暂存区为空、退化成「整个工作区判定」时的提醒。"""

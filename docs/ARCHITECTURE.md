@@ -275,6 +275,10 @@ auto_game_unified/
 
 详细采集规则见 [TEMPLATE_CAPTURE.md](TEMPLATE_CAPTURE.md)。
 
+竞技场图鉴资产由 `hero_catalog.py` 提供桌面筛选分类，由 `hero_match.py` 识别已配置的避战和优先目标。
+英雄合成使用 `templates/hero/` 的页面与控件判据。批量维护时用 `tools.check --plan` 从实际文件选定回归，
+执行顺序见[游戏更新手册](howto/game_update.md)。
+
 ## 视觉证据诊断
 
 正式路线失败时保留原有 `时间戳_原因.png`，并在同名无扩展名目录中追加：
