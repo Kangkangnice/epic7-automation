@@ -19,6 +19,7 @@
 
 import contextlib
 import unittest
+import unittest.mock
 
 import numpy as np
 
@@ -286,18 +287,80 @@ class ConclusionGateRegistryTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "CONCLUSION_GATE_DECLARATION"):
                 modes._assert_conclusion_gate_declared()
 
-    def test_the_check_refuses_a_route_that_bypasses_the_base_gate(self):
+    def test_a_route_that_bypasses_the_base_gate_fails_when_it_runs(self):
+        """注册期不再猜源码；绕开基类的路线在**跑起来**的第一帧失败关闭。"""
+
         class _Overriding(ModeRunnerBase):
             """继承了基类却重写判定入口 —— 门槛被自己绕过去了。"""
 
             _MODE_LABEL = "假路线"
 
+            def _timeout_for(self, state) -> float:
+                return 1e9
+
             def _stable_next_action(self, screen, stable):
                 return self.machine.next_action(screen)
 
         with self._fake_route(_Overriding):
-            with self.assertRaisesRegex(RuntimeError, "CONCLUSION_GATE_DECLARATION"):
-                modes._assert_conclusion_gate_declared()
+            modes._assert_conclusion_gate_declared()  # 注册可以通过
+
+        runner = _Overriding(
+            ScriptedMachine([]), FakeRuntime(), sleep=lambda _: None, poll_seconds=0.0
+        )
+        with self.assertRaisesRegex(RuntimeError, "结论门槛被绕过"):
+            runner.run(max_cycles=1)
+
+    def test_a_comment_that_looks_like_delegation_does_not_count(self):
+        """方法体里写一句 ``super()._stable_next_action`` 的注释，不算委托。
+
+        审查 C：旧判据用 ``inspect.getsource`` 找这串文字 —— 注释能骗过它，
+        真正委托的写法反而可能被误判。现在只看运行时有没有真的进基类。
+        """
+
+        class _CommentOnly(ModeRunnerBase):
+            """只把委托写进注释，实际绕开基类门槛。"""
+
+            _MODE_LABEL = "假路线"
+
+            def _stable_next_action(self, screen, stable):
+                # super()._stable_next_action(screen, stable)
+                return self.machine.next_action(screen)
+
+        with self._fake_route(_CommentOnly):
+            modes._assert_conclusion_gate_declared()  # 注册不再读方法体
+
+        runner = _CommentOnly(
+            ScriptedMachine([]), FakeRuntime(), sleep=lambda _: None, poll_seconds=0.0
+        )
+        with self.assertRaisesRegex(RuntimeError, "结论门槛被绕过"):
+            runner.run(max_cycles=1)
+
+    def test_registry_loads_without_source_text(self):
+        """拿不到源码文本时注册表仍可加载（判据不依赖 inspect）。"""
+
+        def unavailable(*_args, **_kwargs):
+            raise OSError("source not available")
+
+        with unittest.mock.patch("inspect.getsource", unavailable):
+            modes._assert_conclusion_gate_declared()
+
+    def test_an_override_that_skips_super_fails_closed_at_runtime(self):
+        """真实主循环里绕开基类 ⇒ 当场失败关闭，不带着未过门槛的结论继续跑。"""
+
+        class _Bypass(ModeRunnerBase):
+            _MODE_LABEL = "假路线"
+
+            def _timeout_for(self, state) -> float:
+                return 1e9
+
+            def _stable_next_action(self, screen, stable):
+                return self.machine.next_action(screen)
+
+        runner = _Bypass(
+            ScriptedMachine([]), FakeRuntime(), sleep=lambda _: None, poll_seconds=0.0
+        )
+        with self.assertRaisesRegex(RuntimeError, "结论门槛被绕过"):
+            runner.run(max_cycles=1)
 
     def test_the_check_refuses_saying_it_twice(self):
         with self._fake_route(_GateRunner):
