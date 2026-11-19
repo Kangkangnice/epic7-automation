@@ -1,5 +1,6 @@
 import json
 import os
+import sys
 import threading
 from pathlib import Path
 
@@ -548,3 +549,48 @@ def test_params_travel_through_a_file(tmp_path: Path) -> None:
     assert seen["payload"] == {"arena": {"只打NPC": True}}
     # 文件在这一次运行的临时目录里，进程收尾后随目录一起清掉。
     assert not Path(seen["path"]).exists()
+
+
+def test_frozen_worker_relaunches_the_exe_with_the_worker_flag(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """冻结后 ``sys.executable`` 是助手 exe：必须走 ``--worker``，不能再拼 ``-m``。
+
+    回归点（2026-11-19 审查 A1）：原命令固定 ``sys.executable -u -m
+    auto_game_unified.main``；冻结版首项是 exe，入口把它当界面参数，起第二个 GUI。
+    """
+    calls = []
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(sys, "executable", r"C:/dist/Epic7AutoAssistant.exe")
+    worker = WorkerController(
+        repo_parent=tmp_path,
+        popen=lambda command, **kwargs: calls.append((command, kwargs))
+        or FakeProcess(),
+    )
+
+    worker.start(RunRequest(("story",), {"story": 2}))
+    worker.join_reader()
+
+    command, options = calls[0]
+    assert command[:2] == [r"C:/dist/Epic7AutoAssistant.exe", "--worker"]
+    assert "-m" not in command
+    assert command[command.index("--daily-tasks") + 1] == "story:2"
+    # 冻结子进程没有 ``-u``，输出要靠环境变量关掉缓冲，否则界面看不到进度。
+    assert options["env"]["PYTHONUNBUFFERED"] == "1"
+
+
+def test_source_worker_keeps_the_module_entry(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.delattr(sys, "frozen", raising=False)
+    calls = []
+    worker = WorkerController(
+        repo_parent=tmp_path,
+        popen=lambda command, **kwargs: calls.append((command, kwargs))
+        or FakeProcess(),
+    )
+
+    worker.start(RunRequest(("story",), {"story": 1}))
+    worker.join_reader()
+
+    command = calls[0][0]
+    assert command[1:4] == ["-u", "-m", "auto_game_unified.main"]
+    assert "--worker" not in command

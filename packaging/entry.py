@@ -1,12 +1,18 @@
-"""打包入口：只做两件事 —— 能自检、能启动桌面界面。
+"""打包入口：自检、工作进程、桌面界面三条路。
 
 打包版是 ``console=False``（不给用户弹黑窗），所以自检结果不能只靠 ``print``：
 它同时写进 ``<运行产物根>/runtime_logs/self_check.txt``，并用退出码表示成败。
 ``packaging/build.py`` 打完包就靠这两样东西做冒烟验证。
 
+⚠️ 桌面端跑每日任务时，父进程会把**同一个 exe** 加上 ``--worker`` 再启动一次
+（``desktop/worker.py``）：冻结后没有独立的 ``python.exe``，不加这个分支就会把
+业务参数送进界面，弹出第二个窗口。``--worker`` 必须放在参数最前面。
+
 用法::
 
     Epic7AutoAssistant.exe --self-check
+    Epic7AutoAssistant.exe --worker --daily --daily-tasks arena:1 ...
+    Epic7AutoAssistant.exe
 """
 
 from __future__ import annotations
@@ -109,8 +115,15 @@ def _self_check() -> int:
 
 
 def main() -> int:
-    if "--self-check" in sys.argv[1:]:
+    argv = sys.argv[1:]
+    if "--self-check" in argv:
         return _self_check()
+    # 只认第一个参数：业务参数是界面生成的固定形状，不会把 --worker 塞到后面，
+    # 这样也避免把将来的路线参数误当成分流开关删掉。
+    if argv[:1] == ["--worker"]:
+        from auto_game_unified.main import main as run_cli
+
+        return run_cli(argv[1:])
 
     from auto_game_unified.desktop_qt.app import main as run_app
 
