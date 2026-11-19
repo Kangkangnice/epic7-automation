@@ -131,6 +131,17 @@ videoio ffmpeg 二进制真没进产物。
 
 `--no-build` 复用已有目录版，只重打 ZIP；`--skip-smoke` 跳过自检。
 
+**验证冻结版的 worker 交接**（离线，不需要游戏、不发任何输入）：
+
+```powershell
+python tools\verify_frozen_worker.py --exe packaging\dist\Epic7AutoAssistant\Epic7AutoAssistant.exe
+```
+
+它用桌面端同一条 `WorkerController.start()` 启动产物，记录子进程映像名、命令行、
+窗口与退出码；期望「只有 Epic7AutoAssistant.exe 一个子进程、命令行带 `--worker`、
+没有窗口、能收到业务输出」。业务进程会在窗口预检处失败退出（没有游戏窗口），
+这是正常结果，不是验证失败。
+
 **默认只出免安装版**（2026-10-20 起，用户拍板）：用户解压 ZIP、双击 `Epic7AutoAssistant.exe`
 就能跑。想要安装包再加 `--installer`，那一步要 **Inno Setup 6**，没装就自动跳过。单独编也可以：
 
