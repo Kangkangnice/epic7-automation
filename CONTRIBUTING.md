@@ -114,14 +114,22 @@ python tools/fetch_vendor.py --source D:\mirrors\E7auto.git   # 内网镜像/离
 缺文件、摘要不符、清单外文件都会返回非零并逐条列出；脚本**不会覆盖**已存在的目录。
 随包只收 `src`、`config`、`assets/templates` 三段，`.git`、测试、文档与缓存都不进产物。
 
+清单校验的是**固定 commit 的 Git blob 原始字节**：取回时用 `git ls-tree` +
+`git cat-file --batch` 直接写对象库里的字节，不经过 `git checkout` 或 `git archive`
+（这两者会按本机 `core.autocrlf` / `core.eol` 转换行）。所以 `core.autocrlf=true`
+与 `false` 取回的字节一致，**不需要改全局 Git 配置**。旧检出如果字节不同（例如早先
+用 CRLF 检出过），删掉 `..\vendor\e7auto` 重跑一次取回即可。
+
 ```powershell
 python packaging/build.py
 ```
 
-它会做五件事：校验第三方清单 → PyInstaller 目录版打包 → 核对产物里的第三方文件
-**正好**是清单那一份 → 跑一次 `Epic7AutoAssistant.exe --self-check`（检查运行产物
-目录可写、模板在不在、全部路线能不能加载、第三方模块与配置能不能加载）→ 打免安装
-ZIP 并写 `SHA256SUMS.txt`。另有一条 `check_pruned_binaries` 守着 spec 剔掉的
+它会先校验源码侧清单 → PyInstaller 目录版打包 → 核对产物里的第三方文件**正好**是
+清单那一份（多一个文件、少一个文件、同名文件改一个字节都会停下）→ 跑一次
+`Epic7AutoAssistant.exe --self-check`（检查运行产物目录可写、模板在不在、全部路线
+能不能加载、第三方模块与配置能不能加载）→ **打 ZIP 前再核对一次**，失败不产出新
+ZIP → 打免安装 ZIP 并写 `SHA256SUMS.txt`。`--no-build` 复用旧 dist 时没有源码可验，
+但压缩前同样过内容门禁。另有一条 `check_pruned_binaries` 守着 spec 剔掉的
 videoio ffmpeg 二进制真没进产物。
 
 ⚠️ 直接调 `python -m PyInstaller packaging/epic7_auto_assistant.spec` **不做**清单
@@ -129,7 +137,7 @@ videoio ffmpeg 二进制真没进产物。
 
 产物在 `packaging/dist/`（已 gitignore，不进历史）。
 
-`--no-build` 复用已有目录版，只重打 ZIP；`--skip-smoke` 跳过自检。
+`--no-build` 复用已有目录版，只重打 ZIP（仍会校验第三方内容）；`--skip-smoke` 跳过自检。
 
 **验证冻结版的 worker 交接**（离线，不需要游戏、不发任何输入）：
 
@@ -137,10 +145,11 @@ videoio ffmpeg 二进制真没进产物。
 python tools\verify_frozen_worker.py --exe packaging\dist\Epic7AutoAssistant\Epic7AutoAssistant.exe
 ```
 
-它用桌面端同一条 `WorkerController.start()` 启动产物，记录子进程映像名、命令行、
-窗口与退出码；期望「只有 Epic7AutoAssistant.exe 一个子进程、命令行带 `--worker`、
-没有窗口、能收到业务输出」。业务进程会在窗口预检处失败退出（没有游戏窗口），
-这是正常结果，不是验证失败。
+它用桌面端同一条 `WorkerController.start()` 启动产物，子进程跑隐藏参数
+`--offline-probe`：只观察停止信号，**不装配路线、不截图、不点击**，即使游戏已经打开
+也不会碰它。期望两次结果：到点正常结束（退出码 0）；父进程写 `stop.signal` 后，
+子进程读到并退出 130。同时核对只有 `Epic7AutoAssistant.exe` 一个子进程、命令行带
+`--worker`、没有窗口、输出能回传父进程。
 
 **默认只出免安装版**（2026-10-20 起，用户拍板）：用户解压 ZIP、双击 `Epic7AutoAssistant.exe`
 就能跑。想要安装包再加 `--installer`，那一步要 **Inno Setup 6**，没装就自动跳过。单独编也可以：
