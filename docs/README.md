@@ -10,6 +10,7 @@
 | 了解资源消耗的护栏和逐路线实机证据 | [安全与支持证据矩阵](SAFETY_MATRIX.md) |
 | 报告问题或提议功能 | [贡献指南](../CONTRIBUTING.md)、[安全政策](../SECURITY.md) |
 | 维护 Issues、PR、分支和版本 | [项目治理](../GOVERNANCE.md)、[发布流程](howto/release.md) |
+| 游戏更新、批量兼容故障或版本回退 | [游戏更新与多人维护](howto/game_update.md) |
 | 看懂代码分层、运行时和诊断 | [架构说明](ARCHITECTURE.md)、[架构图代码对照](architecture/auto_game_unified.code-map.md) |
 | 新增路线 | [新增路线指南](EXTENDING.md) |
 | 修改视觉判据、动作、重试或转场 | [页面转场契约](TRANSITION_CONTRACTS.md)、[截图与模板采集](TEMPLATE_CAPTURE.md) |

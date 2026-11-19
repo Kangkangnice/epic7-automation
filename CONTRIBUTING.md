@@ -8,6 +8,7 @@
 | 新增路线或移植 PC | [新增路线](docs/EXTENDING.md)、[PC 接入](docs/PC_TEMPLATE_MIGRATION.md) |
 | 修改识别、导航或点击 | [仓库约束](AGENTS.md)、[转场契约](docs/TRANSITION_CONTRACTS.md)、[实机验收](docs/howto/live_verification.md) |
 | 评审、决策或发布 | [项目治理](GOVERNANCE.md)、[发布手册](docs/howto/release.md) |
+| 游戏更新、维护旧路线或补英雄 | [游戏更新手册](docs/howto/game_update.md)、[英雄图鉴](docs/maintenance/hero_roster.md) |
 | 报告安全或隐私问题 | [安全政策](SECURITY.md) |
 
 接受日常路线、识别和输入修复、桌面与诊断改进。改动应能独立说明、验证和回退。
@@ -40,9 +41,11 @@ $env:Path = (Resolve-Path -LiteralPath .\.venv\Scripts).Path + ';' + $env:Path
 ```
 
 提交钩子按暂存内容定向验证。同一份暂存内容交给钩子检查，开发中途可直接跑目标测试。
+用 `& $python -m auto_game_unified.tools.check --plan --files <仓库相对路径>` 预览受影响的测试。
+已提交的改动可用 `--plan --since origin/main`。新增未跟踪的文件需显式列出或暂存。
 提交含需要复审的修改时，按钩子提示在提交消息加入 `Doc-reviewed:` 和实际复审结果。
 在仓库根目录可用 `python tools/doc_review.py --staged` 查看清单。
-CI 在活跃分支的 push 上跑编译、静态检查与治理门禁，PR、版本标签、手动和定期运行触发全量组。
+CI 在活跃分支的 push 上跑编译、静态检查、治理和图鉴校验，PR、版本标签、手动和定期运行触发全量组。
 
 ## 路线与素材
 

@@ -19,6 +19,7 @@
 
 1. 用户从 [Issue 表单](https://github.com/Kangkangnice/epic7-automation/issues/new/choose)报告问题或提议。
    维护者确认是否属于支持范围，并指出所需的最小复现证据。
+   游戏改版按[维护手册](docs/howto/game_update.md)统一追踪，每条兼容工作登记责任人和适用版本。
 2. 贡献者从 `main` 开分支，提交目标单一的 PR。文档、逻辑和测试一起随行为变更送审。
    涉及接口、数据格式、支持范围或安全边界的决定，用 [ADR 索引](docs/README.md)记录理由与影响。
 3. 合并前要求 PR 检查通过，并处理审阅意见。识别、点击和资源操作的行为承诺需要对应实机证据。

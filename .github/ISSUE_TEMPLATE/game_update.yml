@@ -1,0 +1,39 @@
+name: 游戏改版兼容跟踪
+description: 记录一次游戏更新影响的客户端、共享能力与路线
+title: "[游戏更新] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        请先查找同一游戏更新的跟踪 Issue。单个常规故障请使用 Bug 报告。
+        可能有误点、重复提交、资源误扣或隐私泄露时，请先安全停止并通过[安全政策](https://github.com/Kangkangnice/epic7-automation/security/policy)私密联系维护者。
+        公开内容只放脱敏片段。完整诊断包、账号标识、凭据、余额和本机路径请留在本机。
+  - type: input
+    id: game_update
+    attributes:
+      label: 游戏区服、版本与更新日期
+      description: 如版本未知，填可确认的更新日期与区服。可附官方公告链接。
+    validations:
+      required: true
+  - type: input
+    id: client
+    attributes:
+      label: 客户端系列和版本
+      description: 例如雷电 14、其他模拟器、STOVE 或 Steam。涉及多种时逐种列出。
+    validations:
+      required: true
+  - type: input
+    id: assistant_version
+    attributes:
+      label: 助手版本或提交号
+    validations:
+      required: true
+  - type: textarea
+    id: affected
+    attributes:
+      label: 已观察到的变化与影响
+      description: 写受影响的路线、最后成功页面和新页面或终点。只知道公告变化时，标注待验证。
+      placeholder: |
+        路线或共享能力 · 客户端 · 现象 · 已验证或待验证
+    validations:
+      required: true

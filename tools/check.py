@@ -4,15 +4,14 @@
 - **只改文档**：只做编译检查，不跑测试。
 - **只改某条路线内部**（`games/epic7/<route>.py`、`evidence/<route>.py`）：
   编译检查 + 该路线的测试（按文件名关键词匹配）。
-- **改了测试或夹具/模板**：跑改动到的测试文件，夹具/模板另外带上
-  `test_project_layout.py`（它断言各路线夹具的精确文件集）。
+- **改了测试或夹具/模板**：跑改动到的测试文件，夹具/模板带上布局检查和已知消费者的回归。
 - **改了共享模块**（`core/**`、`desktop/**`、`runner_base`、`navigation`、`modes`、
   `battle_controls`、`pre_battle`、`unknown_screen`、`global_popups`、`stamina`、
   `hero_transition`、`evidence/common`、`main.py`、`games/epic7/daily_tasks.py`）：
   按**文件 stem** 映射到定向测试（如 `daily_tasks.py` → `test_daily_tasks.py`，
   `core/matcher.py` → `test_matcher.py`）；映射不到的**只提示、不自动跑全量**，
   静态检查照常执行。
-- **只改 `tools/`、`.github/`**：只做编译检查（这些没有测试覆盖）。
+- **改了带显式映射的工具、依赖或打包规则**：跑对应回归。
 - **全量是显式选项**：`--full`（CI / 发布前 / 想一次兜底时用）。
 - **静态检查（2026-09-30 起，每次都跑）**：ruff + mypy，规则与范围见 `auto_game_unified/pyproject.toml`。
   没装就**大声跳过**（不阻塞提交），装了就必须过 —— CI 一定会装。
@@ -22,6 +21,7 @@
     python tools/check.py --files a.py b.py   # 小改动首选：只验改到的文件（约 1~2 分钟）
     python tools/check.py --vs HEAD      # 按工作区相对 HEAD 的改动（见下方警告）
     python tools/check.py --since origin/main
+    python tools/check.py --plan --files a.py b.py  # 只列出测试
     python tools/check.py --full         # 强制全量
     python tools/check.py --install-hook # 装上 pre-commit 钩子（每 clone 一次）
 
@@ -80,6 +80,8 @@ VISUAL_EVIDENCE_TESTS = (
     "arena_evidence", "expedition_evidence", "story_evidence", "tower_evidence",
     "world_boss_evidence", "shop_refresh_evidence", "survivor_evidence",
 )
+HERO_ROSTER_PREFIX = "games/epic7/templates/arena/heroes_pokedex/"
+HERO_ROSTER_TESTS = ("hero_catalog", "hero_roster_check", "arena_hero_lists", "add_hero")
 TEST_KEYWORD_OVERRIDES: dict[str, tuple[str, ...]] = {
     # 串跑编排层：主模块 + 桌面入口 + 圣域（它直接调用 daily_tasks 的编排）。
     "games/epic7/daily_tasks.py": (
@@ -122,6 +124,16 @@ TEST_KEYWORD_OVERRIDES: dict[str, tuple[str, ...]] = {
         "ticket_exhaustion", "story", "fodder", "arena", "world_boss", "tower",
     ),
     "games/epic7/hero_transition.py": ("hero",),
+    "games/epic7/hero_catalog.py": HERO_ROSTER_TESTS,
+    "games/epic7/hero_match.py": HERO_ROSTER_TESTS,
+    "desktop_qt/route_options_dialog.py": (*HERO_ROSTER_TESTS, "route_options", "ui_copy_style"),
+    "desktop_qt/floating.py": ("run_progress", "ui_copy_style"),
+    "desktop_qt/app.py": ("desktop_catalog", "desktop_session", "desktop_worker", "ui_copy_style"),
+    "tools/add_hero.py": ("add_hero", "hero_roster_check"),
+    "tools/refresh_hero_meta.py": ("refresh_hero_meta", "hero_catalog", "hero_roster_check"),
+    "tools/check_hero_roster.py": ("hero_roster_check",),
+    "tools/check_route_acceptance.py": ("route_acceptance",),
+    "tools/check.py": ("check_gate",),
     "games/epic7/evidence/common.py": VISUAL_EVIDENCE_TESTS,
     "core/visual_evidence.py": VISUAL_EVIDENCE_TESTS,
     "games/epic7/finish_home.py": ("finish_at_home", "home_return_failure"),
@@ -131,6 +143,8 @@ TEST_KEYWORD_OVERRIDES: dict[str, tuple[str, ...]] = {
     "packaging/build.py": ("release_packaging",),
     "packaging/entry.py": ("release_packaging",),
     "packaging/epic7_auto_assistant.spec": ("release_packaging",),
+    "requirements.txt": ("project_layout", "release_packaging", "desktop_preflight"),
+    "requirements-dev.txt": ("check_gate", "project_layout"),
     "main.py": (
         "main_story", "desktop_worker", "desktop_session", "daily_tasks",
         "navigation", "modes", "route_metadata", "public_flow_verification",
@@ -163,9 +177,7 @@ ROUTE_KEYWORDS = {
     "hero_synthesis": "hero",
     "shop_refresh": "shop_refresh",
     "survivor": "survivor",
-    # ⚠️ 漏登记的后果不是「测试漏跑」——恰恰相反，是**反向**的：`route_of()` 认不出这个
-    # 文件属于哪条路线 → 定向判定退回全量。全量本身安全，所以不会有测试因此变红，
-    # 只有改的人会奇怪「改一行怎么跑了 9 分半」（世界首领战 2026-09-23 实测）。
+    # 漏登记会失去路线定向。CI 全量仍保留，布局测试守住路线注册映射。
     # 护栏：`test_project_layout.py::test_every_route_is_known_to_the_local_check_gate`。
     "world_boss": "world_boss",
     "knights_donation": "knights_donation",
@@ -206,6 +218,13 @@ ROUTE_KEYWORDS = {
 DOC_SUFFIXES = (".md", ".txt", ".json", ".yaml", ".yml")
 ASSET_PREFIXES = ("tests/fixtures/", "games/epic7/templates/", "docs/manual_review/")
 LAYOUT_TEST = "test_project_layout.py"
+SHARED_TEMPLATE_TESTS = frozenset(ROUTE_KEYWORDS.values()) | {
+    "global_popups", "navigation", "template_paths", "safety_fail_closed", "desktop_preflight",
+}
+NAVIGATION_TEMPLATE_FOLDERS = frozenset({
+    "achievement", "fodder", "hero", "pet_adoption", "sanctuary",
+    "shop_refresh", "tower", "world_boss",
+})
 
 # 测试并行度：**按当下的可用内存自适应**（2026-09-30 起）。
 #
@@ -248,15 +267,15 @@ def full_run_notice(reason: str, changed: list[str]) -> str:
 
 def git(*args: str) -> list[str]:
     result = subprocess.run(
-        ["git", *args],
+        ["git", "diff", "--name-only", "-z", "--no-renames", *args, "--"],
         cwd=PACKAGE_DIR,
         capture_output=True,
-        text=True,
         check=False,
     )
     if result.returncode != 0:
-        return []
-    return [line.strip() for line in result.stdout.splitlines() if line.strip()]
+        detail = result.stderr.decode("utf-8", errors="replace").strip()
+        raise RuntimeError(f"无法读取 Git 变更：{detail}")
+    return [path for path in result.stdout.decode("utf-8").split("\0") if path]
 
 
 def normalise(path: str) -> str:
@@ -265,23 +284,23 @@ def normalise(path: str) -> str:
     git 输出与钩子给的都是相对根（`core/window.py`），但手工敲 `--files` 时
     常带上包名（`auto_game_unified/core/window.py`）或反斜杠，两种都认。
     """
-    cleaned = path.strip().replace("\\", "/").lstrip("./")
+    cleaned = path.strip().replace("\\", "/").removeprefix("./")
     if cleaned.startswith(PACKAGE + "/"):
         cleaned = cleaned[len(PACKAGE) + 1 :]
     return cleaned
 
 
 def changed_files(args: argparse.Namespace) -> list[str]:
-    if args.files:
+    if args.files is not None:
         return [normalise(path) for path in args.files]
     if args.since:
-        return git("diff", "--name-only", f"{args.since}...HEAD")
+        return git(f"{args.since}...HEAD")
     if args.vs:
-        return git("diff", "--name-only", args.vs)
-    staged = git("diff", "--cached", "--name-only")
+        return git(args.vs)
+    staged = git("--cached")
     if staged:
         return staged
-    return git("diff", "--name-only", "HEAD")
+    return git("HEAD")
 
 
 def route_of(path: str) -> str | None:
@@ -302,7 +321,7 @@ def test_keywords(path: str) -> set[str]:
         return set(override)
     route = route_of(path)
     if route:
-        return {route}
+        return route_consumer_tests(Path(path).stem)
     if path.startswith(("games/epic7/", "core/", "desktop/")) or path == "main.py":
         return {Path(path).stem}
     return set()
@@ -313,14 +332,47 @@ def route_tests(routes: set[str], all_tests: list[str]) -> list[str]:
     return sorted(name for name in all_tests if any(route in name for route in routes))
 
 
+def route_consumer_tests(route: str) -> set[str]:
+    keyword = ROUTE_KEYWORDS[route]
+    return {keyword, "navigation"} if route in NAVIGATION_TEMPLATE_FOLDERS else {keyword}
+
+
+def asset_test_keywords(path: str) -> set[str]:
+    if path.startswith(HERO_ROSTER_PREFIX):
+        return set(HERO_ROSTER_TESTS)
+    prefix = "games/epic7/templates/"
+    if path.startswith(prefix):
+        folder, separator, _leaf = path.removeprefix(prefix).partition("/")
+        # 主线模板也被导航、战斗公共动作和其他路线直接装配。
+        if folder in {"global", "navigation", "story", "pc"}:
+            return set(SHARED_TEMPLATE_TESTS)
+        if not separator:
+            # 旧根目录素材同时用于竞技场与跨路线导航。
+            return {"arena", "navigation", "global_popups"}
+        if folder in ROUTE_KEYWORDS:
+            return route_consumer_tests(folder)
+        return set()
+
+    fixture = path.removeprefix("tests/fixtures/epic7_").partition("/")[0]
+    if fixture in {"global", "navigation"}:
+        return set(SHARED_TEMPLATE_TESTS)
+    keys = [
+        key for key in ROUTE_KEYWORDS
+        if fixture == key or fixture.startswith(key + "_")
+    ]
+    if keys:
+        return route_consumer_tests(max(keys, key=len))
+    return set()
+
+
 def plan_tests(
     files: list[str], all_tests: list[str]
 ) -> tuple[list[str], str, list[str]]:
     """按改动文件选测试，返回 ``(测试文件名, 依据, 警告)``。
 
     - 改到的测试文件直接跑；
-    - 夹具/模板带上 ``test_project_layout.py``；
-    - 其余 .py 走 ``test_keywords()`` 定向；
+    - 夹具/模板同时选素材布局和对应路线或图鉴测试；
+    - 显式覆盖优先，包括有回归的工具和打包 spec；
     - 映射不到 / conftest 只记警告，**不自动跑全量**（全量用 ``--full``）。
     """
     changed_tests = sorted(
@@ -331,18 +383,27 @@ def plan_tests(
         and Path(path).name.startswith("test_")
         and (PACKAGE_DIR / path).exists()
     )
-    assets = [path for path in files if path.startswith(ASSET_PREFIXES)]
+    assets = {path for path in files if path.startswith(ASSET_PREFIXES)}
     keywords: set[str] = set()
     unmapped: list[str] = []
     warnings: list[str] = []
 
     for path in files:
+        if path in TEST_KEYWORD_OVERRIDES:
+            keywords.update(TEST_KEYWORD_OVERRIDES[path])
+            continue
+        if path in assets:
+            found = asset_test_keywords(path)
+            keywords.update(found)
+            if not found and path.startswith("games/epic7/templates/"):
+                unmapped.append(path)
+            continue
         if path in WARN_ONLY_PATHS:
             warnings.append(
                 f"{path} 会影响整个套件；默认不自动跑全量，需要时用 --full"
             )
             continue
-        if path.startswith(("tests/", "docs/")) or path.startswith(NO_TEST_PREFIXES):
+        if path.startswith(NO_TEST_PREFIXES):
             continue
         if not path.endswith(".py") or path.endswith(DOC_SUFFIXES):
             continue
@@ -765,6 +826,7 @@ def main() -> int:
     parser.add_argument("--files", nargs="*", default=None, help="直接指定改动文件")
     parser.add_argument("--vs", default=None, help="相对某个 revision 取改动（如 HEAD）")
     parser.add_argument("--since", default=None, help="相对某个分支取改动（三点比较）")
+    parser.add_argument("--plan", action="store_true", help="只显示影响的测试和选择理由")
     parser.add_argument(
         "--skip-tests", action="store_true", help="只做编译检查（手工排查用）"
     )
@@ -775,15 +837,32 @@ def main() -> int:
     )
     args = parser.parse_args()
 
+    if args.plan and (args.install_hook or args.skip_tests):
+        parser.error("--plan 不能与 --install-hook 或 --skip-tests 同用")
     if args.install_hook:
         return install_hook()
 
-    files = changed_files(args)
-    if not (args.files or args.since or args.vs) and not git(
-        "diff", "--cached", "--name-only"
-    ):
-        # 走到这里说明 `changed_files` 用的是「整个工作区」兜底，而不是暂存区。
-        print(WORKSPACE_MODE_NOTICE, flush=True)
+    try:
+        files = changed_files(args)
+        if args.files is None and not (args.since or args.vs) and not git("--cached"):
+            print(WORKSPACE_MODE_NOTICE, flush=True)
+    except (OSError, RuntimeError) as error:
+        print(f"[check] {error}", flush=True)
+        return 1
+
+    all_tests = sorted(p.name for p in (PACKAGE_DIR / "tests").glob("test_*.py"))
+    if args.plan:
+        picked, reason, warnings = (
+            (all_tests, "按要求强制全量", []) if args.full else plan_tests(files, all_tests)
+        )
+        print(f"[check] {reason}", flush=True)
+        if any(path.startswith(HERO_ROSTER_PREFIX) for path in files):
+            print("[check] 图鉴消费者：竞技场避战/优先名单、桌面英雄筛选", flush=True)
+        for name in picked:
+            print(f"  tests/{name}", flush=True)
+        for warning in warnings:
+            print(f"[check] 提示：{warning}", flush=True)
+        return 0
     code_files = [
         path
         for path in files
@@ -811,7 +890,6 @@ def main() -> int:
     if status != 0:
         return status
 
-    all_tests = sorted(p.name for p in (PACKAGE_DIR / "tests").glob("test_*.py"))
     all_targets = [f"{PACKAGE}/tests/{name}" for name in all_tests]
 
     if args.full:

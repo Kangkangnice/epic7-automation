@@ -144,6 +144,9 @@ P 键在轮询边界检查，不保证在一次截图或系统调用中间立即
 
 ## 提交有效问题现场
 
+若游戏更新后出现兼容问题，先查 Issues 中是否已有同一版本的跟踪记录。
+只有某条路线失败时用普通 Bug 表单，多路线受同一补丁影响时用[改版兼容跟踪](https://github.com/Kangkangnice/epic7-automation/issues/new?template=game_update.yml)。
+
 反馈给后续 AI 时提供：
 
 1. 完整运行命令。

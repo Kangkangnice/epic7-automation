@@ -27,6 +27,8 @@
 - **新增路线或新增动作**时读 `docs/EXTENDING.md`；**移植 PC / 改 PC 后端**时读 [PC 接入指南](docs/PC_TEMPLATE_MIGRATION.md)。收到「移植 PC」的请求从 [§3](docs/PC_TEMPLATE_MIGRATION.md#3-一句话移植到-pc) 开始
 - **要实机跑闭环**时，读 `docs/howto/live_verification.md`（权限 / 点不动 / 失败判定）
 - **要公开声明稳定支持**时，按[路线稳定版验收](docs/howto/route_acceptance.md)记录账号变体、真实结果和终点。
+- **游戏更新或维护已有路线**时，按[游戏更新手册](docs/howto/game_update.md)确定影响。修改前可用
+  `python -m auto_game_unified.tools.check --plan --files <仓库相对路径>` 预查回归范围。
 - 目标路线测试和最新真实失败证据
 
 ## 做到一半要停（超时 / 被叫停 / 上下文用尽）
