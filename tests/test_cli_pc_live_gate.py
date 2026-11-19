@@ -118,13 +118,22 @@ def test_bad_run_confirmation_rejects_without_precheck(monkeypatch, argv, entry,
             "--daily", "--daily-tasks", "arena:1",
             "--window-backend", "emulator", "--live", "--confirm", "RUN",
         ],
+        ["--daily", "--daily-tasks", "arena:1", "--window-backend", "emulator"],
         ["--mode", "arena", "--max-cycles", "1", "--window-backend", "pc"],
+        ["--mode", "arena", "--window-backend", "emulator"],
         [
             "--mode", "arena", "--max-cycles", "1",
             "--window-backend", "emulator", "--live", "--confirm", "RUN",
         ],
     ],
-    ids=["daily-pc-dry", "daily-emulator-live", "single-pc-dry", "single-emulator-live"],
+    ids=[
+        "daily-pc-dry",
+        "daily-emulator-live",
+        "daily-emulator-dry",
+        "single-pc-dry",
+        "single-emulator-dry",
+        "single-emulator-live",
+    ],
 )
 def test_non_pc_live_paths_never_touch_the_pc_precheck(monkeypatch, argv):
     code, error, calls = _drive(monkeypatch, argv, precheck="预检不该被调用")
