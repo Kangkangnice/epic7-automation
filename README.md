@@ -10,7 +10,6 @@
   <img alt="platform" src="https://img.shields.io/badge/platform-Windows-blueviolet">
   <img alt="python" src="https://img.shields.io/badge/python-3.11%2B-blue">
   <img alt="license" src="https://img.shields.io/badge/license-MIT-green">
-  <img alt="routes" src="https://img.shields.io/badge/routes-17-orange">
 </div>
 <div>
   <img alt="stars" src="https://img.shields.io/github/stars/Kangkangnice/epic7-automation?style=social">
@@ -77,19 +76,17 @@ python -u -m auto_game_unified.desktop
 **3. 使用**：先启动模拟器 / PC 客户端并进入游戏 → 点「检测环境」→ 勾选路线（可填次数）→ 点「开始任务」。日常使用建议用[无窗口入口](docs/USER_GUIDE.md)，双击桌面图标即可。
 
 > 命令行入口 `python -m auto_game_unified.main` 保留给开发调试；**默认是干跑**，实跑必须显式加 `--live --confirm RUN`。
+>
+> 自己构建免安装版、校验第三方输入与自检报告，见 [贡献指南](CONTRIBUTING.md) 的「打包」一节。
 
 > 🧰 界面左侧有三页：**每日任务** / **运行日志** / **实用工具**（目前是固定点连点器），底部是「关于」。2026-11-09 起只有这一套界面了（原来的 Tk 版已删除），依赖也合并进了 `requirements.txt`。
 
-## 🗂️ 路线一览
+## 🗂️ 路线与后端
 
-| 分组 | 路线 |
-| --- | --- |
-| 每日 | 竞技场 · 刷书签 · 世界首领战 · 骑士团捐赠 · 迷宫强化石 · 圣域收菜 · 社区签到 · 成就领取 · 宠物领养 |
-| 按需 | 英雄合成 · 主线 · 狗粮 · 支线故事 · 月光剧场 · 主线补星 |
-| 赛季 | 远征 · 月塔 |
-| 活动 | 限时活动 · 活动剧情 |
-
-具体条数与 PC 放行名单见 [现状速查](docs/STATUS.md) —— 那一页由代码生成，不会过期。活动路线与其它路线互斥，且需要人工停在指定页面。逐条边界与限制见 [使用手册](docs/USER_GUIDE.md) 与 [文档索引](docs/README.md)。
+路线名单、默认次数、模拟器 / PC 放行状态只看 [现状速查](docs/STATUS.md) ——
+那一页由代码生成，增删路线后自动更新，首页不再手维护第二份清单。
+活动路线与其它路线互斥，且需要人工停在指定页面；逐条边界见
+[使用手册](docs/USER_GUIDE.md) 与 [文档索引](docs/README.md)。
 
 ## 📚 文档
 
