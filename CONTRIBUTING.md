@@ -31,21 +31,30 @@ $env:Path = (Resolve-Path -LiteralPath .\.venv\Scripts).Path + ';' + $env:Path
 & $python -m auto_game_unified.main --help
 ```
 
-文档、单元测试和离线夹具回放无需登录游戏。先跑能覆盖改动的测试。全量测试与静态检查在父目录运行：
+## 按改动选测试
+
+从仓库父目录执行。调试失败用例时可以指定一个 pytest 节点，几次小改后用选择器检查完整的受影响范围。
 
 ```powershell
-& $python -m pytest -q auto_game_unified/tests
-& $python -m ruff check auto_game_unified
-& $python -m mypy --config-file auto_game_unified/pyproject.toml
-& $python -m compileall -q auto_game_unified
+& $python -m auto_game_unified.tools.check --plan --files games/epic7/pet_adoption.py
+& $python -m pytest -q auto_game_unified/tests/test_pet_adoption.py::test_mixed_free_evidence_stops_instead_of_guessing
 ```
 
-提交钩子按暂存内容定向验证。同一份暂存内容交给钩子检查，开发中途可直接跑目标测试。
-用 `& $python -m auto_game_unified.tools.check --plan --files <仓库相对路径>` 预览受影响的测试。
-已提交的改动可用 `--plan --since origin/main`。新增未跟踪的文件需显式列出或暂存。
+| 时机或影响 | 执行范围 |
+| --- | --- |
+| 开发中改一个判据或修一个错误 | 先跑失败用例及最相似反例。需要整条路线反馈时用 `check --files <路径>`。 |
+| 本地提交 | 钩子运行静态检查和暂存文件对应的测试。宠物领养逻辑查路线、注册和安全约束；宠物屋标题素材还会查导航。 |
+| 普通分支 push | CI 核对编译、静态、治理和图鉴。可在分支上迭代，到准备评审时开 PR。 |
+| 只改项目 Markdown、英雄头像或分类、已登记的宠物／企鹅／装备回放 PNG 或相应测试的 PR | 在合并结果上运行治理门禁及所有受影响的测试。转场、接力和界面文案等规范另有对应契约测试。 |
+| 含运行代码、生产页面模板、共享夹具、依赖、打包、CI 或其他未登记路径的 PR | 在合并结果上运行完整离线套件。多种改动取较严的一档；连续推送取消同一 PR 旧版本的检查。 |
+| 版本标签、每周回归、维护者手动触发 | 无条件全量。需要本机复现时用 `& $python -m pytest -q --durations=10 auto_game_unified/tests`。 |
+
+本地预览用 `--plan --files <仓库相对路径>`。已提交的改动可用 `--plan --since origin/main`。
+新增未跟踪的文件需显式列出或暂存。暂存区为空时默认读取整个已跟踪工作区，多任务并行时优先显式指定路径。
+本地提示未映射时，手工指定覆盖它的测试；PR 选择器对未知路径执行全量。维护者扩大定向范围前应核对直接消费者、
+跨路线契约及反例，并给分层选择增加回归测试。路线实机与多账号验收仍按行为变化执行。
 提交含需要复审的修改时，按钩子提示在提交消息加入 `Doc-reviewed:` 和实际复审结果。
 在仓库根目录可用 `python tools/doc_review.py --staged` 查看清单。
-CI 在活跃分支的 push 上跑编译、静态检查、治理和图鉴校验，PR、版本标签、手动和定期运行触发全量组。
 
 ## 路线与素材
 
