@@ -29,7 +29,8 @@ GitHub 的 tag 标记代码版本，带 ZIP 的 GitHub Release 提供用户可�
    当前构建不自动把 `LICENSE` / `NOTICE.md` 复制到可执行文件目录，也不过滤与系统同名的 ICU 库，
    这两项须在发布前人工确认；自动化方案登记在[待办](../TODO.md)的打包条目。
    E7auto 按 `packaging/vendor_lock.json` 逐文件校验后，随工件分发 `src` / `config` /
-   `assets/templates` 三段；是否继续随包分发由维护者在授权结论明确后决定。
+   `assets/templates` 三段。**维护者尚未确认该组件可公开分发**，确认前不得对外发布含它的工件；
+   是否继续随包分发由维护者决定，结论出来前三个位置（`NOTICE.md`、本手册、spec）按同一事实表述。
    本机诊断、个人数据、令牌、Git 元数据和未经核对的外部源码与工件隔离。
    [Windows ICU 文档](https://learn.microsoft.com/en-us/windows/win32/intl/international-components-for-unicode--icu-)
    [GitHub 许可证说明](https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/licensing-a-repository) ·
@@ -45,7 +46,8 @@ python -m pip install PyInstaller
 python auto_game_unified/packaging/build.py
 ```
 
-记下实际构建的提交、Python 与 PyInstaller 版本。确认默认产物的自检通过，解压 ZIP 后验证界面启动，
+记下实际构建的提交、Python 与 PyInstaller 版本。确认默认产物的自检通过，解压 ZIP 核对顶层目录与
+`vendor/e7auto` 三段是否与本次分发决定一致，再验证界面启动，
 再按照 [实机验证](live_verification.md) 覆盖此次声明的路线。发布附件来自同一次验收的
 `packaging/dist/`，可选安装版由 `--installer` 生成。保留 `SHA256SUMS.txt`，核对文件与哈希一致。
 
