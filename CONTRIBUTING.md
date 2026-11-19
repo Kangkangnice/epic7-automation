@@ -101,13 +101,32 @@ python auto_game_unified/tools/check.py --install-hook
 
 ## 打包（改动了打包配置才需要）
 
+**先取第三方代码**（次元探查的内置 chaos 流程）。它**不随 Git 分发**：上游仓库没有
+LICENSE 文件，重分发依据未确认，所以仓库里只放清单（`packaging/vendor_lock.json`
+记着上游地址、精确 commit 与逐个文件的 SHA-256），构建前按 commit 取回：
+
+```powershell
+python tools/fetch_vendor.py            # 取到 ..\vendor\e7auto；已存在就只校验
+python tools/fetch_vendor.py --check    # 只校验，不联网
+python tools/fetch_vendor.py --source D:\mirrors\E7auto.git   # 内网镜像/离线副本
+```
+
+缺文件、摘要不符、清单外文件都会返回非零并逐条列出；脚本**不会覆盖**已存在的目录。
+随包只收 `src`、`config`、`assets/templates` 三段，`.git`、测试、文档与缓存都不进产物。
+
 ```powershell
 python packaging/build.py
 ```
 
-它会做四件事：PyInstaller 目录版打包 → 确认 spec 剔掉的 videoio ffmpeg 二进制
-真没进产物 → 跑一次 `Epic7AutoAssistant.exe --self-check`（检查产物目录可写、
-模板在不在、全部路线能不能加载 —— 条数以 `desktop/catalog.ROUTES` 为准）→ 打免安装 ZIP 并写 `SHA256SUMS.txt`。
+它会做五件事：校验第三方清单 → PyInstaller 目录版打包 → 核对产物里的第三方文件
+**正好**是清单那一份 → 跑一次 `Epic7AutoAssistant.exe --self-check`（检查运行产物
+目录可写、模板在不在、全部路线能不能加载、第三方模块与配置能不能加载）→ 打免安装
+ZIP 并写 `SHA256SUMS.txt`。另有一条 `check_pruned_binaries` 守着 spec 剔掉的
+videoio ffmpeg 二进制真没进产物。
+
+⚠️ 直接调 `python -m PyInstaller packaging/epic7_auto_assistant.spec` **不做**清单
+校验，缺文件时产物会少一段而不报错；构建请走 `packaging/build.py`。
+
 产物在 `packaging/dist/`（已 gitignore，不进历史）。
 
 `--no-build` 复用已有目录版，只重打 ZIP；`--skip-smoke` 跳过自检。
