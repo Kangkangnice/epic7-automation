@@ -119,7 +119,14 @@ class _GateRunner(ModeRunnerBase):
         return 1e9
 
 
-class _ResubmitsRejectedConclusion(ModeRunnerBase):
+class _FakeAction:
+    """假动作：只要不被拦下，主循环就会调 ``runtime.click``。"""
+
+    name = "fake_action"
+    point = (0, 0)
+
+
+class _RewritesRejectedConclusion(ModeRunnerBase):
     """复现审查 C 的反例：基类第一帧拒绝后，子类把 NOT_STABLE 换成结论再抛。"""
 
     _MODE_LABEL = "假路线"
@@ -131,6 +138,21 @@ class _ResubmitsRejectedConclusion(ModeRunnerBase):
         result = super()._stable_next_action(screen, stable)
         if result is NOT_STABLE:
             raise _FakeExhausted()
+        return result
+
+
+class _RewritesRejectedIntoAction(ModeRunnerBase):
+    """复现审查 C 的第二形态：基类拒绝后，子类返回动作而不是抛异常。"""
+
+    _MODE_LABEL = "假路线"
+
+    def _timeout_for(self, state) -> float:
+        return 1e9
+
+    def _stable_next_action(self, screen, stable):
+        result = super()._stable_next_action(screen, stable)
+        if result is NOT_STABLE:
+            return _FakeAction()
         return result
 
 
@@ -243,7 +265,7 @@ class BaseLoopConclusionTests(unittest.TestCase):
         「进过基类」被当成了「结论过了门槛」。
         """
 
-        runner = _ResubmitsRejectedConclusion(
+        runner = _RewritesRejectedConclusion(
             ScriptedMachine([_FakeExhausted(), _LoopStop()]),
             FakeRuntime(),
             sleep=lambda _: None,
@@ -257,6 +279,26 @@ class BaseLoopConclusionTests(unittest.TestCase):
             runner.resource_exhausted,
             "第一帧被拒的结论不许在同一帧变成已确认结论",
         )
+
+    def test_a_rejected_first_frame_cannot_be_rewritten_into_a_click(self):
+        """审查 C 的新反例：基类拒绝后，子类返回动作 —— 一次点击都不许发出。
+
+        改前：同一帧先记「结论待确认」，紧接着就把子类返回的动作点了出去。
+        验收标准是**模拟点击数为 0**，不是只断言某个异常名。
+        """
+
+        runtime = FakeRuntime()
+        runner = _RewritesRejectedIntoAction(
+            ScriptedMachine([_FakeExhausted(), _LoopStop()]),
+            runtime,
+            sleep=lambda _: None,
+            poll_seconds=0.0,
+        )
+
+        with self.assertRaisesRegex(ConclusionGateBypassed, "动作判定被改写"):
+            runner.run(max_cycles=1)
+
+        self.assertEqual([], runtime.clicks, "未过两帧确认的动作不许点击")
 
     def test_a_real_failure_before_the_gate_keeps_its_cause(self):
         """审查 C 反例：截图失败发生在进基类之前，不许改写成「没调 super」。"""
@@ -367,16 +409,18 @@ class ConclusionGateRegistryTests(unittest.TestCase):
                 return 1e9
 
             def _stable_next_action(self, screen, stable):
-                return self.machine.next_action(screen)
+                return _FakeAction()
 
         with self._fake_route(_Overriding):
             modes._assert_conclusion_gate_declared()  # 注册可以通过
 
+        runtime = FakeRuntime()
         runner = _Overriding(
-            ScriptedMachine([]), FakeRuntime(), sleep=lambda _: None, poll_seconds=0.0
+            ScriptedMachine([]), runtime, sleep=lambda _: None, poll_seconds=0.0
         )
         with self.assertRaisesRegex(RuntimeError, "结论门槛被绕过"):
             runner.run(max_cycles=1)
+        self.assertEqual([], runtime.clicks)
 
     def test_a_comment_that_looks_like_delegation_does_not_count(self):
         """方法体里写一句 ``super()._stable_next_action`` 的注释，不算委托。
@@ -392,16 +436,18 @@ class ConclusionGateRegistryTests(unittest.TestCase):
 
             def _stable_next_action(self, screen, stable):
                 # super()._stable_next_action(screen, stable)
-                return self.machine.next_action(screen)
+                return _FakeAction()
 
         with self._fake_route(_CommentOnly):
             modes._assert_conclusion_gate_declared()  # 注册不再读方法体
 
+        runtime = FakeRuntime()
         runner = _CommentOnly(
-            ScriptedMachine([]), FakeRuntime(), sleep=lambda _: None, poll_seconds=0.0
+            ScriptedMachine([]), runtime, sleep=lambda _: None, poll_seconds=0.0
         )
         with self.assertRaisesRegex(RuntimeError, "结论门槛被绕过"):
             runner.run(max_cycles=1)
+        self.assertEqual([], runtime.clicks)
 
     def test_registry_loads_without_source_text(self):
         """拿不到源码文本时注册表仍可加载（判据不依赖 inspect）。"""
@@ -422,13 +468,15 @@ class ConclusionGateRegistryTests(unittest.TestCase):
                 return 1e9
 
             def _stable_next_action(self, screen, stable):
-                return self.machine.next_action(screen)
+                return _FakeAction()
 
+        runtime = FakeRuntime()
         runner = _Bypass(
-            ScriptedMachine([]), FakeRuntime(), sleep=lambda _: None, poll_seconds=0.0
+            ScriptedMachine([]), runtime, sleep=lambda _: None, poll_seconds=0.0
         )
         with self.assertRaisesRegex(RuntimeError, "结论门槛被绕过"):
             runner.run(max_cycles=1)
+        self.assertEqual([], runtime.clicks)
 
     def test_a_runner_that_rewrites_run_is_not_auto_protected(self):
         """审查 C：自己写 ``run()`` 的路线不能仅凭继承被认定「已保护」。

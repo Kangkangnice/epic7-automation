@@ -2894,6 +2894,37 @@ class RunnerFlowTests(unittest.TestCase):
 
         self.assertIn("截图通道挂了", str(captured.exception))
 
+    def test_a_value_error_during_navigation_settle_keeps_its_real_cause(self):
+        """审查 C 补反例：``ValueError`` 与 ``OSError`` 同等对待。
+
+        不能只对 ``OSError`` 例外 —— 真实故障的异常类型不止一种，
+        漏掉 ``ValueError`` 会让「解码失败」被误报成「没调 super()」。
+        """
+
+        screen = fixture("live_equipment_subpage_20260825")
+        m = machine()
+        m.state = HeroSynthState.HERO_LIST
+        frames = iter([screen])
+
+        def capture():
+            try:
+                return next(frames)
+            except StopIteration:
+                raise ValueError("截图解码失败") from None
+
+        runner = HeroSynthRunner(
+            m,
+            Runtime(capture, lambda _: None, emit=lambda _: None),
+            sleep=lambda _: None,
+            poll_seconds=0.0,
+        )
+        runner._needs_navigation_settle = True
+
+        with self.assertRaises(ValueError) as captured:
+            runner.run(max_cycles=1)
+
+        self.assertIn("截图解码失败", str(captured.exception))
+
     def test_unconfirmed_hero_subpage_logs_tab_evidence_without_flooding(self):
         screen = fixture("live_equipment_subpage_20260825").copy()
         m = machine()
