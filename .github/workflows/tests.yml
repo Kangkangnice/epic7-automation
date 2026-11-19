@@ -62,7 +62,7 @@ jobs:
       - name: Governance gate (docs / isolation / packaging)
         working-directory: ${{ github.workspace }}
         run: |
-          python -m pytest -q auto_game_unified/tests/test_status_doc.py auto_game_unified/tests/test_docs_index.py auto_game_unified/tests/test_doc_review.py auto_game_unified/tests/test_new_decision.py auto_game_unified/tests/test_governance_selfcheck.py auto_game_unified/tests/test_core_dependencies.py auto_game_unified/tests/test_release_packaging.py
+          python -m pytest -q auto_game_unified/tests/test_status_doc.py auto_game_unified/tests/test_docs_index.py auto_game_unified/tests/test_doc_review.py auto_game_unified/tests/test_new_decision.py auto_game_unified/tests/test_governance_selfcheck.py auto_game_unified/tests/test_core_dependencies.py auto_game_unified/tests/test_release_packaging.py auto_game_unified/tests/test_route_acceptance.py
 
       # push 到功能分支时跳过：本机钩子已跑定向，服务端这一步留给 PR 合并。
       - name: Run test suite (full)

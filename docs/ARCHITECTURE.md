@@ -125,6 +125,10 @@ auto_game_unified/
 
 这样可以避免点击未生效、加载卡住或额外弹窗出现时产生虚假计数。
 
+业务计数和收尾分别记录。若回首页未确认，`RunResult.closeout_warning` 会传到命令行和每日结果，
+已完成的业务数量仍保留。收尾期间手动停止时，每日编排保留已完成的结果并结束本轮。
+发布验收还需核对真实回执和约定终点，见[路线稳定版验收](howto/route_acceptance.md)。
+
 ## 同构模式公共骨架
 
 `runner_base.py` 的 `ModeRunnerBase` 统一实现**同构线**的公共主循环。
