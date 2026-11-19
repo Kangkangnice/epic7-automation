@@ -1,5 +1,11 @@
 # 文档索引
 
+## 按角色
+
+- **玩家**：安装与首次启动见[使用手册](USER_GUIDE.md)第 1、2 节；能跑哪条路线、哪些已放行看[现状速查](STATUS.md)；出问题先看[故障排查](TROUBLESHOOTING.md)。
+- **贡献者**：开发环境与测试范围见[贡献指南](../CONTRIBUTING.md)；新增路线见[新增路线指南](EXTENDING.md)；改判据前读[页面转场契约](TRANSITION_CONTRACTS.md)。
+- **发布维护者**：发版步骤与回退见[发布手册](howto/release.md)；能否公开声明稳定支持见[路线稳定版验收](howto/route_acceptance.md)；评审与放行职责见[项目治理](../GOVERNANCE.md)。
+
 ## 一、按你要做的事找
 
 | 你要做什么 | 从这里开始 |
