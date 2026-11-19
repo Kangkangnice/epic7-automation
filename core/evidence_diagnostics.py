@@ -1,81 +1,19 @@
-"""Read-only inspection and self-contained diagnostics for visual evidence."""
+"""Generic, read-only diagnostics writer for visual evidence.
 
-from dataclasses import asdict, dataclass
+⚠️ 这里**只放与游戏无关的写盘逻辑**（图 + JSON）。Epic7 的「证据画像」检查
+（``inspect_profile`` / ``save_runtime_evidence_diagnostic``）在
+``games/epic7/evidence/diagnostics.py`` —— core 不反向依赖 games（审查 D，
+见 ``tests/test_core_import_boundary.py``）。
+"""
+
+from __future__ import annotations
+
 import json
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 import cv2
 import numpy as np
-
-from .matcher import (
-    Match,
-    best_match_with_fallback,
-    load_template,
-)
-from auto_game_unified.games.epic7.evidence.common import (
-    AtomObservation,
-    EvidenceProfile,
-    EvidenceState,
-)
-
-
-@dataclass(frozen=True)
-class ProfileInspection:
-    atoms: dict[str, AtomObservation]
-    pages: dict[str, EvidenceState]
-
-
-def inspect_profile(
-    screen: np.ndarray,
-    profile: EvidenceProfile,
-    template_root: Path,
-) -> ProfileInspection:
-    observations: dict[str, AtomObservation] = {}
-    for key, atom in profile.atoms.items():
-        template_path = template_root / atom.template_path
-        if not template_path.is_file() and not atom.required:
-            observations[key] = AtomObservation(
-                key=key,
-                template=str(template_path),
-                config=profile.config_path,
-                region=atom.region,
-                reference_size=atom.reference_size,
-                threshold=atom.threshold,
-                observed=False,
-                score=None,
-                center=None,
-            )
-            continue
-        template = load_template(str(template_path))
-        # ⚠️ 必须跟路线走同一个口径与同一套兜底：诊断包里的分数要与实跑判定出自
-        # 同一把尺子，否则工具报「0.841 未过阈」而实跑已经用低通/扫尺寸兜底过了，
-        # 等于骗人。口径由证据画像声明，这里**只转发**（从前非原样口径的那一支
-        # 直连 `find_best_template`，兜底对它不生效 —— 与路线层同一个坑）。
-        match: Match | None = best_match_with_fallback(
-            key,
-            screen,
-            template,
-            atom.threshold,
-            region=atom.region,
-            reference_size=atom.reference_size,
-            mode=atom.match_mode,
-        )
-        observed = match is not None and match.score >= atom.threshold
-        observations[key] = AtomObservation(
-            key=key,
-            template=str(template_path),
-            config=profile.config_path,
-            region=atom.region,
-            reference_size=atom.reference_size,
-            threshold=atom.threshold,
-            observed=observed,
-            score=match.score if match is not None else None,
-            center=match.center if match is not None else None,
-            scale=match.scale if match is not None else None,
-        )
-    pages = profile.evaluate_pages(observations)
-    return ProfileInspection(atoms=observations, pages=pages)
 
 
 def _write_rgb_png(path: Path, image: np.ndarray) -> None:
@@ -132,75 +70,3 @@ def write_evidence_diagnostic(
         encoding="utf-8",
     )
     return output
-
-
-def save_runtime_evidence_diagnostic(
-    runtime: Any,
-    screen: np.ndarray,
-    profile: EvidenceProfile | None,
-    *,
-    legacy_path: Path,
-    mode: str,
-    action: str,
-    source: str,
-    targets: Sequence[str],
-    attempt: int,
-    conclusion: str,
-) -> Path | None:
-    """Add a self-contained evidence pack beside an existing diagnostic PNG.
-
-    This is deliberately best-effort: evidence collection must never replace
-    the original route failure with a secondary diagnostics error.
-    """
-    if (
-        getattr(runtime, "diagnostic_dir", None) is None
-        or profile is None
-        or profile.template_root is None
-    ):
-        return None
-    try:
-        diagnostic_root = Path(runtime.diagnostic_dir)
-        if legacy_path.is_absolute():
-            resolved_legacy = legacy_path
-        elif legacy_path.is_file():
-            resolved_legacy = legacy_path.resolve()
-        else:
-            resolved_legacy = diagnostic_root / legacy_path
-        if not resolved_legacy.is_file():
-            return None
-        inspection = inspect_profile(screen, profile, profile.template_root)
-        # 显式标注：三个键的值类型不同（str / dict[str, Any] / dict[str, str]），不标的话
-        # mypy 会推成 dict[str, object]，与 write_evidence_diagnostic 的参数类型对不上。
-        evidence: dict[str, Mapping[str, Any]] = {
-            "profile": {
-                "config": profile.config_path,
-                "template_root": str(profile.template_root),
-            },
-            "atoms": {
-                key: asdict(observation)
-                for key, observation in inspection.atoms.items()
-            },
-            "pages": {
-                key: {"state": state.value}
-                for key, state in inspection.pages.items()
-            },
-        }
-        output = write_evidence_diagnostic(
-            resolved_legacy.with_suffix(""),
-            screen,
-            mode=mode,
-            action=action,
-            source=source,
-            targets=targets,
-            attempt=attempt,
-            evidence=evidence,
-            conclusion=conclusion,
-        )
-        runtime.log(f"已保存视觉证据包 {output}")
-        return output
-    except Exception as error:  # diagnostics must not mask the business failure
-        try:
-            runtime.log(f"视觉证据诊断失败：{error}")
-        except Exception:
-            pass
-        return None

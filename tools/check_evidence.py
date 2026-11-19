@@ -9,7 +9,7 @@ import cv2
 if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from auto_game_unified.core.evidence_diagnostics import inspect_profile
+from auto_game_unified.games.epic7.evidence.diagnostics import inspect_profile
 from auto_game_unified.games.epic7.evidence.arena import (
     REFERENCE_SIZE,
     build_arena_evidence,

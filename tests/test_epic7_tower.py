@@ -16,7 +16,7 @@ import cv2
 import numpy as np
 
 from auto_game_unified.core.battle_supervisor import AutoBattleState, valid_game_frame
-from auto_game_unified.core.evidence_diagnostics import inspect_profile
+from auto_game_unified.games.epic7.evidence.diagnostics import inspect_profile
 from auto_game_unified.core.matcher import find_best_template, load_template
 from auto_game_unified.core.runtime import Runtime
 from auto_game_unified.games.epic7.evidence.tower import build_tower_evidence
