@@ -1,12 +1,15 @@
 ---
-status: accepted
+status: superseded
 date: 2026-11-07
 deciders: 用户（拍板人）
 supersedes:
-superseded_by:
+superseded_by: 0009
 ---
 
 # 0001. PC 相关的改动一律走单点开关，模拟器一个字节都不许变
+
+> 后续迁移以[共享视觉契约 0009](0009-universal-vision-contract.md)为准。既有生产覆盖保留到对应路线
+> 完成切换，共享行为变更依然需要模拟器回归证据。
 
 ## 背景
 

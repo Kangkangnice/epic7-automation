@@ -24,13 +24,11 @@ psutil==5.9.8
 # Qt 只是「装了才用」的预览外观。Tk 版删掉之后这个区分没有意义了：
 # 不装它们就没有界面可开。**别再把它们拆出去。**
 #
-# ⚠️ 许可：PySide6 是 LGPLv3，PySide6-Fluent-Widgets 是 GPLv3。
-# 本项目是 MIT 开源的，因此可用；若将来要闭源分发，必须先换掉
-# PySide6-Fluent-Widgets（改成 PySide6 原生控件 + QSS）。
+# 分发前按 docs/howto/release.md 核对 Qt 和 Fluent Widgets 的独立许可与随包文件。
 PySide6>=6.8,<7
 PySide6-Fluent-Widgets>=1.7
 
-# 次元探查：内置第三方 chaos 流程（vendor/e7auto）额外要的包。
+# 次元探查：可选源码集成（vendor/e7auto）要用的依赖。标准打包不分发 E7auto。
 # 全是新增依赖，不覆盖 numpy / OpenCV / PySide6 —— 现有路线在原版本上验过。
 # 已有 Python 3.13 的 wheel；OpenCV 仍用上面那版 4.11，不装对方的 5.0。
 PyYAML==6.0.3

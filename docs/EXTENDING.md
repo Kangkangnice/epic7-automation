@@ -44,7 +44,9 @@ python tools/check_evidence.py --mode arena --screen tests/fixtures/epic7_arena/
 
 ## 1. 先手动走完整流程
 
-记录每个稳定页面、可选页面、加载边界、停止条件和循环完成标志。保存完整游戏窗口截图，不要只保存按钮裁剪。协作过程遵循 [贡献指南](../CONTRIBUTING.md)「人和 AI 怎么配合做新路线」，素材规则遵循 [TEMPLATE_CAPTURE.md](TEMPLATE_CAPTURE.md)。编码前为每个改变页面或业务状态的动作填写 [页面转场契约](TRANSITION_CONTRACTS.md)。
+记录每个稳定页面、可选页面、加载边界、停止条件和循环完成标志。保存完整游戏窗口截图。协作过程参见
+[贡献指南的路线与素材章节](../CONTRIBUTING.md#路线与素材)，采图见[素材规范](TEMPLATE_CAPTURE.md)。
+编码前为每个改变页面或业务状态的动作填写[页面转场契约](TRANSITION_CONTRACTS.md)。
 
 必须明确：
 
@@ -102,6 +104,9 @@ tests/test_hunt_runner.py
 - 可选页面出现和不出现都能继续。
 - 两轮连续流程只在入口重新出现时计数两次。
 - 正常资源耗尽不会执行购买动作。
+
+新增模拟器路线时一并声明来源页、实际可点区域、必要的文字和业务完成证据，保留最相似的反例。
+这份证据与共享素材供 PC 直接复用。 [一句话移植到 PC](PC_TEMPLATE_MIGRATION.md#3-一句话移植到-pc)
 
 如果修复某个实机失败，必须把失败截图加入 `tests/fixtures`，先写一个会失败的回归测试，再改模板或状态机。
 
@@ -225,6 +230,8 @@ tests/test_hunt_runner.py
 「挂上了」不等于「认得出」。覆盖面登记在 [RESUME_COVERAGE.md](RESUME_COVERAGE.md)。
 
 ## 5. 安全验收顺序
+
+本节用于新增路线验收。已有模拟器路线的 PC 移植按 [一轮实机闭环](PC_TEMPLATE_MIGRATION.md#3-一句话移植到-pc) 验收。
 
 1. 运行全量离线测试。
 2. 停在路线入口，运行默认干跑，确认只打印第一步。

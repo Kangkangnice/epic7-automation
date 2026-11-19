@@ -228,7 +228,7 @@
 - 模拟器侧两张图缺席（builder 得到空元组）⇒ 原子恒 `None` ⇒ 运行期与接力都零改动；
   这一页在模拟器模板下 `detect_resume_point` 仍返回 `None`（失败关闭）。
 - ⚠️ 只有一张真机帧，且「故事」点下去的实际落点未真机复验 —— 见
-  `docs/PC_TEMPLATE_MIGRATION.md` §6 欠账。
+  [PC 迁移待验证项](TODO.md#pc-迁移矩阵)。
 
 ### 月光剧场 moonlight_theater — 0 / 9（2026-10-17 新路线，**故意不接力**）
 
