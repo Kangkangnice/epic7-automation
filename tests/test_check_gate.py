@@ -199,6 +199,69 @@ class TargetedSelectionTests(unittest.TestCase):
         self.assertTrue(any("test_tower" in str(call) for call in output.call_args_list))
 
 
+class TestLayerSelection(unittest.TestCase):
+    def test_mapped_change_does_not_hide_an_unmapped_python_file(self):
+        for unknown in ("core/unknown_dependency.py", "tools/new_helper.py", "tests/shared_factory.py"):
+            with self.subTest(unknown=unknown):
+                picked, _, warnings = check_module.plan_tests(
+                    ["games/epic7/craft_equipment.py", unknown], ["test_epic7_craft_equipment.py"]
+                )
+                self.assertEqual(["test_epic7_craft_equipment.py"], picked)
+                self.assertIn(unknown, " ".join(warnings))
+
+    def test_pet_runner_fixture_and_shared_title_have_different_consumers(self):
+        tests = ["test_pet_adoption.py", "test_navigation.py", "test_safety_fail_closed.py"]
+        for path in ("games/epic7/pet_adoption.py", "tests/fixtures/epic7_pet_adoption/house.png"):
+            picked, _, _ = check_module.plan_tests([path], tests)
+            self.assertIn("test_pet_adoption.py", picked)
+            self.assertNotIn("test_navigation.py", picked)
+        picked, _, _ = check_module.plan_tests(["games/epic7/pet_adoption.py"], tests)
+        self.assertIn("test_safety_fail_closed.py", picked)
+        picked, _, _ = check_module.plan_tests(["games/epic7/templates/pet_adoption/house_title.png"], tests)
+        self.assertIn("test_navigation.py", picked)
+
+    def test_pr_can_bound_docs_roster_and_route_replay_together(self):
+        from auto_game_unified.tools.pr_tests import plan_pr
+
+        files = [
+            "docs/RESUME_COVERAGE.md", "docs/TRANSITION_CONTRACTS.md",
+            "docs/README.md", "games/epic7/templates/arena/heroes_pokedex/meta.json",
+            "tests/fixtures/epic7_craft_equipment/frame.png", "tests/test_epic7_craft_equipment.py",
+        ]
+        picked, _ = plan_pr(files)
+        self.assertIsNotNone(picked)
+        for name in ("test_resume_contracts.py", "test_transition_contracts.py", "test_ui_copy_style.py",
+                     "test_hero_catalog.py", "test_arena_hero_lists.py", "test_epic7_craft_equipment.py"):
+            self.assertIn(name, picked)
+        self.assertNotIn("test_navigation.py", picked)
+
+    def test_pr_defaults_to_full_for_unbounded_or_mixed_changes(self):
+        from auto_game_unified.tools.pr_tests import plan_pr
+
+        self.assertIsNone(plan_pr([])[0])
+        for path in ("core/matcher.py", "games/epic7/pet_adoption.py",
+                     "tests/conftest.py", "tests/fixtures/epic7_navigation/frame.png",
+                     "tools/new_helper.py", ".github/workflows/tests.yml",
+                     "requirements.txt", "docs/manual_review/knights_donation/list.png",
+                     "games/epic7/templates/arena/heroes_pokedex/new_config.json"):
+            with self.subTest(path=path):
+                picked, reason = plan_pr(["README.md", path])
+                self.assertIsNone(picked)
+                self.assertIn(path, reason)
+
+    def test_pr_uses_tree_diff_and_propagates_pytest_failure_on_fallback(self):
+        from auto_game_unified.tools import pr_tests
+
+        with (
+            mock.patch.object(pr_tests.sys, "argv", ["pr_tests", "--base", "HEAD^1"]),
+            mock.patch.object(check_module, "git", side_effect=RuntimeError("shallow")) as diff,
+            mock.patch.object(pr_tests.subprocess, "run", return_value=mock.Mock(returncode=2)) as run,
+        ):
+            self.assertEqual(2, pr_tests.main())
+        diff.assert_called_once_with("HEAD^1", "HEAD")
+        self.assertEqual("auto_game_unified/tests", run.call_args.args[0][-1])
+
+
 class WorkspaceModeNoticeTests(unittest.TestCase):
     """暂存区为空、退化成「整个工作区判定」时的提醒。"""
 

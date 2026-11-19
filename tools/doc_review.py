@@ -115,6 +115,8 @@ DOC_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("core/elevation.py", ("docs/howto/live_verification.md",)),
     ("desktop/preflight.py", ("docs/howto/live_verification.md", "docs/USER_GUIDE.md")),
     ("tools/live_check.py", ("docs/howto/live_verification.md",)),
+    ("tools/check.py", ("CONTRIBUTING.md",)),
+    ("tools/pr_tests.py", ("CONTRIBUTING.md",)),
     ("tools/check_route_acceptance.py", ("docs/howto/route_acceptance.md", "docs/howto/release.md")),
     ("tools/_run_live", ("docs/howto/live_verification.md",)),
     ("tools/_verify_", ("docs/howto/live_verification.md",)),

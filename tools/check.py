@@ -1,7 +1,7 @@
 """项目提交前检查：把「验证门槛」从文档约定变成机器执行。
 
 门槛（与 docs/RESUME_COVERAGE.md 及项目约定一致，按改动范围决定跑多少）：
-- **只改文档**：只做编译检查，不跑测试。
+- **维护文档**：运行索引和相关契约测试。
 - **只改某条路线内部**（`games/epic7/<route>.py`、`evidence/<route>.py`）：
   编译检查 + 该路线的测试（按文件名关键词匹配）。
 - **改了测试或夹具/模板**：跑改动到的测试文件，夹具/模板带上布局检查和已知消费者的回归。
@@ -26,8 +26,7 @@
     python tools/check.py --install-hook # 装上 pre-commit 钩子（每 clone 一次）
 
 ⚠️ **小改动别用 `--vs HEAD`**：它取的是「工作区相对 HEAD 的**全部**改动」，上一轮没提交
-的东西也算进去。只要工作区里躺着任何一个共享模块的旧改动，就会被判成全量 —— 跟这次
-改了多大无关（2026-09-25 实测：改一行却连跑两次全量 408s / 457s，局部只要 28.7 秒）。
+的东西也算进去，可能选中多条与本次修改无关的路线。
 日常姿势是「先 `git add` 本次的文件，再不带参数跑」，或直接 `--files`。
 护栏：`tests/test_check_gate.py`。
 
@@ -40,8 +39,7 @@
 以钩子的结论为准（钩子看的是提交那一刻的暂存区）。`--no-verify` 默认禁止；
 要省时间就省在别处 —— 把「要动共享模块」的几件事攒成一次提交。
 
-fail-closed：认不出改了哪条路线、或该路线一个测试文件都匹配不到，一律退化成全量，
-绝不用「没测到」冒充「没问题」。
+本地定向结果仅代表选中的测试。PR 的独立分层入口见 tools/pr_tests.py。
 
 本机会自动找一个真的装了 pytest 的解释器来跑测试（PATH 上的 `python` 可能没有依赖）。
 可用环境变量 `AUTO_GAME_PYTHON` 覆盖。**找不到就拒绝提交（退出码 1）** ——
@@ -134,6 +132,11 @@ TEST_KEYWORD_OVERRIDES: dict[str, tuple[str, ...]] = {
     "tools/check_hero_roster.py": ("hero_roster_check",),
     "tools/check_route_acceptance.py": ("route_acceptance",),
     "tools/check.py": ("check_gate",),
+    "tools/pr_tests.py": ("check_gate", "governance_selfcheck"),
+    "tools/doc_review.py": ("doc_review", "governance_selfcheck"),
+    # 导航复用宠物屋标题素材。领养流程和自己的回放帧只由路线消费。
+    "games/epic7/pet_adoption.py": ("pet_adoption", "modes", "safety_fail_closed"),
+    "games/epic7/evidence/pet_adoption.py": ("pet_adoption", "safety_fail_closed"),
     "games/epic7/evidence/common.py": VISUAL_EVIDENCE_TESTS,
     "core/visual_evidence.py": VISUAL_EVIDENCE_TESTS,
     "games/epic7/finish_home.py": ("finish_at_home", "home_return_failure"),
@@ -243,7 +246,7 @@ PARALLEL_RESERVE_GB = 2.5
 
 # 全量时才说的话。默认已经不再自动全量；这段用于 `--full`，同时提醒
 # 「定向测试才是日常姿势」。护栏：`tests/test_check_gate.py`。
-FULL_RUN_NOTICE = """[check] 本次将跑**全量**（约 7~8 分钟），原因：{reason}
+FULL_RUN_NOTICE = """[check] 本次将跑**全量**，原因：{reason}
 [check] 日常提交默认只跑定向测试；全量是 `--full` 的显式选项。
 [check] 只想验本次改动：`python tools/check.py --files {files}`（约 1~2 分钟）
 [check] 或先 `git add <本次改的文件>` 再不带参数跑 —— 只验暂存区"""
@@ -354,6 +357,8 @@ def asset_test_keywords(path: str) -> set[str]:
         return set()
 
     fixture = path.removeprefix("tests/fixtures/epic7_").partition("/")[0]
+    if fixture == "pet_adoption":
+        return {"pet_adoption"}
     if fixture in {"global", "navigation"}:
         return set(SHARED_TEMPLATE_TESTS)
     keys = [
@@ -363,6 +368,14 @@ def asset_test_keywords(path: str) -> set[str]:
     if keys:
         return route_consumer_tests(max(keys, key=len))
     return set()
+
+
+def is_project_doc(path: str) -> bool:
+    return (
+        path.endswith(".md")
+        and ("/" not in path or path.startswith("docs/"))
+        and not path.startswith("docs/manual_review/")
+    )
 
 
 def plan_tests(
@@ -389,6 +402,17 @@ def plan_tests(
     warnings: list[str] = []
 
     for path in files:
+        if is_project_doc(path):
+            keywords.update(("docs_index", "status_doc", "governance_selfcheck"))
+            if path in {"docs/README.md", "docs/UI_COPY_STYLE.md"}:
+                keywords.add("ui_copy_style")
+            if path == "docs/TRANSITION_CONTRACTS.md":
+                keywords.add("transition_contracts")
+            if path == "docs/RESUME_COVERAGE.md":
+                keywords.add("resume_contracts")
+            if path == "NOTICE.md":
+                keywords.add("release_packaging")
+            continue
         if path in TEST_KEYWORD_OVERRIDES:
             keywords.update(TEST_KEYWORD_OVERRIDES[path])
             continue
@@ -404,11 +428,13 @@ def plan_tests(
             )
             continue
         if path.startswith(NO_TEST_PREFIXES):
+            if path.endswith(".py") and Path(path).name not in changed_tests:
+                unmapped.append(path)
             continue
         if not path.endswith(".py") or path.endswith(DOC_SUFFIXES):
             continue
         found = test_keywords(path)
-        if found:
+        if found and route_tests(found, all_tests):
             keywords.update(found)
         else:
             unmapped.append(path)

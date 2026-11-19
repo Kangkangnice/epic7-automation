@@ -24,12 +24,13 @@ def test_a_route_module_points_at_its_own_manual_and_the_status_page() -> None:
     assert "docs/STATUS.md" in docs, "改路线模块不会影响放行名单吗？至少该看一眼 STATUS"
 
 
-def test_tests_and_tools_do_not_require_a_doc_review() -> None:
-    """改测试和工具不该惊动文档 —— 否则每天都在提醒，人就学会无视它了。"""
+def test_only_tools_with_documented_contracts_require_review() -> None:
     docs = doc_review.affected_docs(
-        ["tests/test_arena.py", "tools/check.py", "runtime_logs/a.py"]
+        ["tests/test_arena.py", "tools/_private_probe.py", "runtime_logs/a.py"]
     )
     assert docs == [], f"这些路径不该映射到文档，却给出 {docs}"
+    for tool in ("tools/check.py", "tools/pr_tests.py"):
+        assert doc_review.affected_docs([tool]) == ["CONTRIBUTING.md"]
 
 
 def test_docs_do_not_remind_you_to_read_themselves() -> None:
