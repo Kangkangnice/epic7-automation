@@ -68,3 +68,29 @@ def test_default_entry_still_launches_the_gui(monkeypatch):
 
     assert _load_entry()["main"]() == 0
     assert called == ["gui"]
+
+
+def test_frozen_entry_switches_stdio_to_utf8(monkeypatch):
+    """冻结版不认 PYTHONIOENCODING：worker 分支必须自己把输出改成 UTF-8。
+
+    否则父进程按 UTF-8 读到的会是系统代码页字节（2026-11-19 用真实产物复现：
+    ``--self-check`` 输出只能按 GBK 解码）。
+    """
+
+    class Stream:
+        def __init__(self) -> None:
+            self.encodings: list[str] = []
+
+        def reconfigure(self, encoding: str) -> None:
+            self.encodings.append(encoding)
+
+    out, err = Stream(), Stream()
+    monkeypatch.setattr(sys, "stdout", out)
+    monkeypatch.setattr(sys, "stderr", err)
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    _stub(monkeypatch, "auto_game_unified.main", lambda argv=None: 0)
+    monkeypatch.setattr(sys, "argv", ["Epic7AutoAssistant.exe", "--worker", "--daily"])
+
+    assert _load_entry()["main"]() == 0
+    assert out.encodings == ["utf-8"]
+    assert err.encodings == ["utf-8"]

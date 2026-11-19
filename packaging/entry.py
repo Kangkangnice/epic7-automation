@@ -144,8 +144,28 @@ def _self_check() -> int:
     return 0 if failures == 0 else 1
 
 
+def _use_utf8_stdio() -> None:
+    """冻结版窗口程序不认 ``PYTHONIOENCODING``，输出按系统代码页编码。
+
+    桌面端按 UTF-8 读子进程输出（``desktop/worker.py``），不统一就会整屏乱码；
+    所以 worker 分支在跑业务之前把标准输出重设为 UTF-8。源码模式下终端自己
+    决定编码，不动它。
+    """
+    if not getattr(sys, "frozen", False):
+        return
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:
+            continue
+        try:
+            reconfigure(encoding="utf-8")
+        except (OSError, ValueError):
+            pass
+
+
 def main() -> int:
     argv = sys.argv[1:]
+    _use_utf8_stdio()
     if "--self-check" in argv:
         return _self_check()
     # 只认第一个参数：业务参数是界面生成的固定形状，不会把 --worker 塞到后面，
