@@ -56,6 +56,7 @@ def _scan(package_root: Path) -> list[str]:
     forbidden = (
         f"{package_root.name}.games",
         f"{package_root.name}.desktop",
+        f"{package_root.name}.desktop_qt",
     )
     offenders: list[str] = []
     for path in sorted((package_root / "core").rglob("*.py")):
@@ -93,6 +94,10 @@ def test_the_scan_flags_relative_and_package_imports(tmp_path):
     (core / "sub" / "bad_deep.py").write_text(
         "from ...desktop import preflight\n", encoding="utf-8"
     )
+    # Qt 桌面层同样是上层，禁的是「core 反向依赖界面」，不只 ``desktop``。
+    (core / "bad_desktop_qt.py").write_text(
+        "from ..desktop_qt import app\n", encoding="utf-8"
+    )
     # 合法的相对导入不许误报。
     (core / "ok.py").write_text(
         "from . import supervisor\nfrom ..core import runtime\n",
@@ -106,4 +111,5 @@ def test_the_scan_flags_relative_and_package_imports(tmp_path):
         "core/bad_relative.py",
         "core/bad_package.py",
         "core/sub/bad_deep.py",
+        "core/bad_desktop_qt.py",
     }, offenders
