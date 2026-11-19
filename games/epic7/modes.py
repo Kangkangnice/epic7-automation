@@ -1,4 +1,3 @@
-import inspect
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Callable, Mapping, Optional
@@ -1691,8 +1690,8 @@ def _assert_resume_declared() -> None:
 # 压根没过那道门槛 ⇒ 一帧就能宣布「今天打完了」、一帧没认出画面就去点屏幕中间。
 # 动作要两帧、结论只要一帧，等于门只掩了一半。
 #
-# 判定规则（``_assert_conclusion_gate_declared``）：继承 ``ModeRunnerBase``、且没重写
-# ``_stable_next_action`` 的路线自动达标（基类里已经接了 ``ConclusionGate``）；
+# 判定规则（``_assert_conclusion_gate_declared``）：继承 ``ModeRunnerBase`` 的路线
+# 自动达标 —— 基类主循环会在运行时确认结论门槛真的执行过（重写绕过去就失败关闭）。
 # 其余（自带独立主循环的，以及 2026-09-26 起的 ``TransactionalRunnerBase`` 那一族）
 # 必须在这张表里写明自己靠什么达标。
 CONCLUSION_GATE_DECLARATION = {
@@ -1729,21 +1728,16 @@ CONCLUSION_GATE_DECLARATION = {
 
 
 def _base_conclusion_gate_protected(runner_type: type) -> bool:
-    """这条路线的 Runner 是否真的走得到基类那道结论门槛。
+    """这条路线的 Runner 是否走得到基类主循环的结论门槛。
 
-    重写 ``_stable_next_action`` **不等于绕过门槛** —— ``HeroSynthRunner`` 就重写了它
-    （为了导航后先等画面稳一稳），但内部调了 ``super()``，门槛照样生效。所以判据是：
-    没重写 = 达标；重写了 = 必须把基类的实现调回去（``super()._stable_next_action``）。
+    判据**只看继承关系**，不读源码：``ModeRunnerBase.run`` 在调用
+    ``_stable_next_action`` 时用运行时标记确认基类实现真的执行过（见
+    ``runner_base._stable_next_action_checked``）。子类可以重写该方法补等待心跳，
+    但只要没把基类实现调回去，主循环就会失败关闭 —— 不依赖方法体里有没有那句
+    ``super()._stable_next_action`` 的文字。
     """
 
-    if not issubclass(runner_type, ModeRunnerBase):
-        return False
-    overridden = "_stable_next_action" in runner_type.__dict__
-    if not overridden:
-        return True
-    return "super()._stable_next_action" in inspect.getsource(
-        runner_type._stable_next_action
-    )
+    return issubclass(runner_type, ModeRunnerBase)
 
 
 def _assert_conclusion_gate_declared() -> None:

@@ -36,6 +36,14 @@ from auto_game_unified.games.epic7.unknown_screen import (
 )
 
 
+class ConclusionGateBypassed(RuntimeError):
+    """路线重写了 ``_stable_next_action`` 却没有调用基类实现。
+
+    单独一个类型是为了让主循环**立刻**把路线判失败，而不是当成「认不出画面」
+    去等状态超时（那会把一次结构性错误拖成几十秒的空转）。
+    """
+
+
 class _NotStable:
     """两帧未稳定，本轮跳过的哨兵值。"""
 
@@ -102,6 +110,9 @@ class ModeRunnerBase:
         # 「下结论」的门槛：收工 / 认不出画面这类终止性结论同样要连续两帧一致，
         # 否则一帧就能结束整条路线（详见 core.supervisor.ConclusionGate）。
         self.conclusion_gate = ConclusionGate()
+        # 运行时标记：基类 ``_stable_next_action`` 每次进入都会置真。主循环据此
+        # 判定子类覆写有没有把基类实现调回去 —— 不读源码文本（审查 C）。
+        self._conclusion_gate_entered = False
 
     # ---- 子类钩子（差异点） ----
 
@@ -336,6 +347,8 @@ class ModeRunnerBase:
         整条路线结束。这里先把结论变成签名交给门槛，两帧一致才允许穿出去。
         规矩见 docs/TRANSITION_CONTRACTS.md「结论门槛（全局强制）」。
         """
+        # 给主循环的运行时标记：子类覆写必须走到这里，否则 ``run`` 会失败关闭。
+        self._conclusion_gate_entered = True
         try:
             preview_action, outcome = self.machine.preview(screen)
         except ManualStop:
@@ -368,6 +381,41 @@ class ModeRunnerBase:
         if not stable.update(signature):
             return NOT_STABLE
         return self.machine.next_action(screen)
+
+    def _stable_next_action_checked(self, screen, stable: StableObservation):
+        """调用子类实现，并确认基类的结论门槛真的执行过。
+
+        ⚠️ 这是审查 C 的运行时保护：以前加载期靠 ``inspect.getsource`` 找
+        ``super()._stable_next_action`` 这串文字，注释里写一句同样的字就能骗过，
+        而真正委托基类的写法反而可能被误判。现在改为「基类方法自己打点」：
+        子类重写后没调 ``super()`` ⇒ 这一帧没有标记 ⇒ 主循环当场失败关闭，
+        不会带着未过门槛的结论继续点。
+
+        用户停止（``ManualStop``）照常穿出去：它不是程序下的结论。
+        """
+        self._conclusion_gate_entered = False
+        # 测试会把实例方法整个换掉（``patch.object(runner, "_stable_next_action")``）
+        # 来喂脚本；那不是路线重写，别误判成绕过。只对**类级覆写**执行这条保护。
+        instance_patched = "_stable_next_action" in vars(self)
+        try:
+            action = self._stable_next_action(screen, stable)
+        except ManualStop:
+            raise
+        except BaseException:
+            if not self._conclusion_gate_entered and not instance_patched:
+                raise ConclusionGateBypassed(
+                    f"模式={self._MODE_LABEL} 结论门槛被绕过："
+                    "重写了 _stable_next_action 却没有调用基类实现（super()）。"
+                    "终止性结论必须经过两帧确认，路线已按失败关闭处理。"
+                ) from None
+            raise
+        if not self._conclusion_gate_entered and not instance_patched:
+            raise ConclusionGateBypassed(
+                f"模式={self._MODE_LABEL} 结论门槛被绕过："
+                "重写了 _stable_next_action 却没有调用基类实现（super()）。"
+                "终止性结论必须经过两帧确认，路线已按失败关闭处理。"
+            )
+        return action
 
     def _require_transition_contract(self, action: Any) -> None:
         """新路线准入：``_REQUIRE_TRANSITION_CONTRACT`` 打开时，动作必须带出口验收。
@@ -585,7 +633,7 @@ class ModeRunnerBase:
                 blocked = consume() if callable(consume) else ""
                 if isinstance(blocked, str) and blocked:
                     raise EquipmentBagFull(blocked)
-                action = self._stable_next_action(screen, stable)
+                action = self._stable_next_action_checked(screen, stable)
             except ResourceExhausted as error:
                 # 「还能干、但没本钱了」：生命之叶 / 通缉传单 / 挑战次数……
                 # 各路线缺的东西不一样，所以「停止=」后面的文案由异常自己带
@@ -604,6 +652,9 @@ class ModeRunnerBase:
                 # 「用户按下 P / 已保存诊断」并每秒写一张全屏截图，一直磨到该状态的
                 # 超时才停（竞技场列表页 40 秒，战斗监督里最长 900 秒）。
                 # 表现就是「用户按了停止，程序却像卡在诊断循环里」。
+                raise
+            except ConclusionGateBypassed:
+                # 结构性问题：不是「这页认不出」，等超时没有意义，立刻判失败。
                 raise
             except RuntimeError as error:
                 if (
