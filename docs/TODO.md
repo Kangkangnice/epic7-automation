@@ -73,6 +73,13 @@
 | `evidence/labyrinth_stone.py::_PC_ONLY_KEYS` | `region1_completed` 与 `labyrinth_entry_alt` 目前在 PC 画像注册。 |
 | `knights_support_digits.py::_read_digits_pc` | PC 数字字模渲染不同，沿用模拟器读法曾导致错读。 |
 
+## 未评估、未排期
+
+这些是想法的暂存处，没有承诺。评估时先说明默认行为、资源上限与次数的交互，并保证现有默认值仍然可用。
+
+- 主线仅运行指定章节或关卡范围，便于只刷需要的进度。
+- 给尚未细分的路线增加部分任务开关；现有选项见[使用手册](USER_GUIDE.md)，竞技场已有刷新与旗帜购入设置。
+
 ## 待办完成定义
 
 - 附上修复或验收链接，提供可复现的正反例和可定位判断依据的日志。

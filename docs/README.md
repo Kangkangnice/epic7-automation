@@ -17,7 +17,7 @@
 | 报告问题或提议功能 | [贡献指南](../CONTRIBUTING.md)、[安全政策](../SECURITY.md) |
 | 维护 Issues、PR、分支和版本 | [项目治理](../GOVERNANCE.md)、[发布流程](howto/release.md) |
 | 游戏更新、批量兼容故障或版本回退 | [游戏更新与多人维护](howto/game_update.md) |
-| 看懂代码分层、运行时和诊断 | [架构说明](ARCHITECTURE.md)、[架构图代码对照](architecture/auto_game_unified.code-map.md) |
+| 看懂代码分层、运行时和诊断 | [架构说明](ARCHITECTURE.md)；按旧提交定位代码用[代码对照表（历史快照）](architecture/auto_game_unified.code-map.md) |
 | 新增路线 | [新增路线指南](EXTENDING.md) |
 | 修改视觉判据、动作、重试或转场 | [页面转场契约](TRANSITION_CONTRACTS.md)、[截图与模板采集](TEMPLATE_CAPTURE.md) |
 | 排查开局接力或回大厅收尾 | [开局接力覆盖面](RESUME_COVERAGE.md)、[路线终点](maintenance/route_finish_points.md) |
@@ -25,7 +25,7 @@
 | 实机验证 | [实机闭环验证](howto/live_verification.md) |
 | 判断路线能否给不同账号公开使用 | [路线稳定版验收](howto/route_acceptance.md) |
 | 更新图鉴数据或界面文案 | [英雄图鉴维护](maintenance/hero_roster.md)、[界面文案规范](UI_COPY_STYLE.md) |
-| 查看缺失的证据、未解决的缺陷或未评估提案 | [待办](TODO.md)、[想法池](BACKLOG.md) |
+| 查看缺失的证据、未解决的缺陷或未评估的想法 | [待办](TODO.md)（含「未评估、未排期」） |
 | 查看版本变化与素材权利 | [变更日志](../CHANGELOG.md)、[素材声明](../NOTICE.md) |
 
 ## 二、每条路线怎么维护
