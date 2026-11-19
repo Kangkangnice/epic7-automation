@@ -56,6 +56,7 @@
 - [0008 一个主题维护一份指南](decisions/0008-one-guide-per-topic.md)
 - [0009 共享视觉证据契约](decisions/0009-universal-vision-contract.md)
 - [0010 开源项目治理](decisions/0010-open-source-governance.md)
+- [0011 按玩家行为的影响范围分层验收变更](decisions/0011-behavior-based-regression.md)
 
 ## 四、写文档的规矩
 

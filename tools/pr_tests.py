@@ -24,6 +24,8 @@ def plan_pr(files: list[str]) -> tuple[list[str] | None, str]:
         return None, "合并差异为空"
     for name in files:
         path = PurePosixPath(name)
+        if check.bounded_behavior_tests(name) and (check.PACKAGE_DIR / name).is_file():
+            continue
         if check.is_project_doc(name):
             continue
         if (path.parent.as_posix() + "/" == check.HERO_ROSTER_PREFIX

@@ -65,7 +65,7 @@ Episode，接着打同样会越界。
 ## 三、判据为什么这么设计
 
 证据清单在 [`games/epic7/evidence/story_star.py`](../../games/epic7/evidence/story_star.py)，
-状态机在 [`games/epic7/story_star.py`](../../games/epic7/story_star.py)。
+状态机在 [`games/epic7/story_star.py`](../../games/epic7/story_star.py)。篇章候选、边缘卡片和画布落点由[选卡模块](../../games/epic7/story_star_cards.py)维护；滚动、点击和接力由状态机执行。只改选卡时按[贡献指南](../../CONTRIBUTING.md#按改动选测试)定向验收。
 
 | 判据 | 做法 | 为什么 |
 |---|---|---|
