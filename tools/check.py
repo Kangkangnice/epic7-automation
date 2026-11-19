@@ -80,6 +80,22 @@ VISUAL_EVIDENCE_TESTS = (
 )
 HERO_ROSTER_PREFIX = "games/epic7/templates/arena/heroes_pokedex/"
 HERO_ROSTER_TESTS = ("hero_catalog", "hero_roster_check", "arena_hero_lists", "add_hero")
+
+
+# 已用历史故障验过的独立行为。提交与 PR 使用同一组必需文件，缺项时 PR 转全量。
+def bounded_behavior_tests(path: str) -> set[str]:
+    folder, _, name = path.rpartition("/")
+    if path in {"games/epic7/story_star_cards.py", "tests/test_story_star.py"} or (
+        folder == "tests/fixtures/epic7_story_star_pc" and name.endswith(".png")
+    ):
+        return {
+            "test_story_star.py", "test_modes.py", "test_desktop_preflight.py",
+            "test_resume_contracts.py", "test_transition_contracts.py", "test_safety_fail_closed.py",
+            "test_check_gate.py",
+        }
+    return set()
+
+
 TEST_KEYWORD_OVERRIDES: dict[str, tuple[str, ...]] = {
     # 串跑编排层：主模块 + 桌面入口 + 圣域（它直接调用 daily_tasks 的编排）。
     "games/epic7/daily_tasks.py": (
@@ -400,8 +416,12 @@ def plan_tests(
     keywords: set[str] = set()
     unmapped: list[str] = []
     warnings: list[str] = []
+    required: set[str] = set()
 
     for path in files:
+        if behavior := bounded_behavior_tests(path):
+            required.update(behavior)
+            continue
         if is_project_doc(path):
             keywords.update(("docs_index", "status_doc", "governance_selfcheck"))
             if path in {"docs/README.md", "docs/UI_COPY_STYLE.md"}:
@@ -440,6 +460,9 @@ def plan_tests(
             unmapped.append(path)
 
     picked: set[str] = set(changed_tests)
+    picked.update(required.intersection(all_tests))
+    if missing := required.difference(all_tests):
+        warnings.append("独立行为缺少必需回归：" + "、".join(sorted(missing)))
     if assets:
         picked.add(LAYOUT_TEST)
     matched = route_tests(keywords, all_tests)
@@ -457,6 +480,8 @@ def plan_tests(
         )
 
     parts: list[str] = []
+    if required:
+        parts.append("已核验的行为和入口契约")
     if changed_tests:
         parts.append("改动到的测试")
     if assets:

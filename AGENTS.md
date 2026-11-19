@@ -96,7 +96,7 @@ python tools/compress_images.py --staged --apply && git add <刚压过的文件>
 
 **提交那一次由钩子跑（`tools/githooks/pre-commit` → `tools/check.py`），不要再手工跑一遍。**
 开发中途想看结果才手工跑：`python tools/check.py --files a.py b.py`（约 1~2 分钟）。
-`--no-verify` **默认禁止**；按[测试分层](CONTRIBUTING.md#按改动选测试)验收 PR，运行代码和未映射改动在 PR 全量，版本标签始终全量；
+`--no-verify` **默认禁止**；按[测试分层](CONTRIBUTING.md#按改动选测试)验收 PR，已登记的独立行为走定向，共享或未登记的运行改动走全量，版本标签始终全量；
 改共享模块最费时间，这类改动**攒在一起一次提交**，别拆成几次各跑一遍。
 
 提交和并发协作见[贡献指南](CONTRIBUTING.md)。`--vs HEAD` 会包含当前工作区相对 HEAD 的全部改动；

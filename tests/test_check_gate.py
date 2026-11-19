@@ -155,7 +155,7 @@ class TargetedSelectionTests(unittest.TestCase):
             ["tests/fixtures/epic7_story_star_pc/lobby.png"],
             [*self.ALL_TESTS, "test_main_story.py", "test_story_star.py"],
         )
-        self.assertEqual(["test_project_layout.py", "test_story_star.py"], picked)
+        self.assertEqual(["test_modes.py", "test_project_layout.py", "test_story_star.py"], picked)
 
     def test_shared_fixtures_select_consumers_outside_their_folder(self):
         all_tests = [*self.ALL_TESTS, "test_navigation.py", "test_hero_synthesis.py"]
@@ -200,6 +200,55 @@ class TargetedSelectionTests(unittest.TestCase):
 
 
 class TestLayerSelection(unittest.TestCase):
+    def test_card_selection_stays_isolated_from_inputs_and_other_routes(self):
+        root = check_module.PACKAGE_DIR
+        module = root / "games/epic7/story_star_cards.py"
+        imports = set()
+        for node in ast.walk(ast.parse(module.read_bytes())):
+            if isinstance(node, ast.Import):
+                imports.update(alias.name for alias in node.names)
+            elif isinstance(node, ast.ImportFrom):
+                imports.add(node.module)
+        self.assertLessEqual(imports, {"__future__", "numpy", "collections.abc"})
+        consumers = []
+        sources = [root / "main.py"]
+        for folder in ("core", "games", "desktop", "desktop_qt"):
+            sources.extend((root / folder).rglob("*.py"))
+        for source in sources:
+            if source == module:
+                continue
+            content = source.read_bytes()
+            if b"story_star_cards" not in content:
+                continue
+            for node in ast.walk(ast.parse(content)):
+                if isinstance(node, (ast.Import, ast.ImportFrom)):
+                    names = [alias.name for alias in node.names]
+                    if isinstance(node, ast.ImportFrom) and node.module:
+                        names.append(node.module)
+                    if any(name.split(".")[-1] == "story_star_cards" for name in names):
+                        consumers.append(source.relative_to(root).as_posix())
+                        break
+        self.assertEqual(["games/epic7/story_star.py"], consumers)
+
+    def test_story_star_card_changes_have_one_local_and_pr_contract(self):
+        from auto_game_unified.tools.pr_tests import plan_pr
+
+        files = ["games/epic7/story_star_cards.py", "tests/test_story_star.py",
+                 "tests/fixtures/epic7_story_star_pc/22_now.png"]
+        suite = sorted(p.name for p in (check_module.PACKAGE_DIR / "tests").glob("test_*.py"))
+        local, _, warnings = check_module.plan_tests(files, suite)
+        merged, _ = plan_pr(files)
+        self.assertEqual([], warnings)
+        self.assertEqual(local, merged)
+        self.assertTrue({"test_story_star.py", "test_modes.py", "test_resume_contracts.py",
+                         "test_safety_fail_closed.py", "test_desktop_preflight.py"}.issubset(local))
+        self.assertNotIn("test_navigation.py", local)
+        for extra in ("games/epic7/story_star.py", "games/epic7/stamina.py",
+                      "games/epic7/navigation.py", "games/epic7/templates/story/pc/home.png"):
+            self.assertIsNone(plan_pr([*files, extra])[0], extra)
+        missing = [test for test in suite if test != "test_story_star.py"]
+        self.assertTrue(check_module.plan_tests(files[:1], missing)[2])
+
     def test_mapped_change_does_not_hide_an_unmapped_python_file(self):
         for unknown in ("core/unknown_dependency.py", "tools/new_helper.py", "tests/shared_factory.py"):
             with self.subTest(unknown=unknown):

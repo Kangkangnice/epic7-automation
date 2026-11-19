@@ -92,6 +92,7 @@ DOC_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("games/epic7/hero_synthesis.py", ("docs/maintenance/hero_synthesis.md",)),
     ("games/epic7/arena.py", ("docs/maintenance/arena.md",)),
     ("games/epic7/story.py", ("docs/maintenance/story.md",)),
+    ("games/epic7/story_star", ("docs/maintenance/story_star.md",)),
     ("games/epic7/side_story.py", ("docs/maintenance/side_story.md",)),
     ("games/epic7/tower.py", ("docs/maintenance/tower.md",)),
     ("games/epic7/expedition.py", ("docs/maintenance/expedition.md",)),
