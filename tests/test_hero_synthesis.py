@@ -2862,6 +2862,38 @@ class NavigationTests(unittest.TestCase):
 
 
 class RunnerFlowTests(unittest.TestCase):
+    def test_a_capture_failure_during_navigation_settle_keeps_its_real_cause(self):
+        """审查 C 反例：真实 HeroSynthRunner 在进基类之前截帧失败。
+
+        改前：``OSError`` 被 ``_stable_next_action_checked`` 改报成
+        「子类没有调用 super」，真正的故障原因（截图通道）反而不见了。
+        """
+
+        screen = fixture("live_equipment_subpage_20260825")
+        m = machine()
+        m.state = HeroSynthState.HERO_LIST
+        frames = iter([screen])
+
+        def capture():
+            try:
+                return next(frames)
+            except StopIteration:
+                raise OSError("截图通道挂了") from None
+
+        runner = HeroSynthRunner(
+            m,
+            Runtime(capture, lambda _: None, emit=lambda _: None),
+            sleep=lambda _: None,
+            poll_seconds=0.0,
+        )
+        # 子类会在调用 super() 之前主动再截一帧（导航后稳定等待）。
+        runner._needs_navigation_settle = True
+
+        with self.assertRaises(OSError) as captured:
+            runner.run(max_cycles=1)
+
+        self.assertIn("截图通道挂了", str(captured.exception))
+
     def test_unconfirmed_hero_subpage_logs_tab_evidence_without_flooding(self):
         screen = fixture("live_equipment_subpage_20260825").copy()
         m = machine()

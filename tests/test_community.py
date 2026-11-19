@@ -1491,6 +1491,45 @@ class CommunityStateMachineTests(unittest.TestCase):
 
         self.assertEqual(self._fingerprint(machine), before)
 
+    def test_preview_drops_fields_created_during_a_preview(self):
+        """审查 E：预览期间首次创建的字段，正常返回后也要撤销。
+
+        ``restore`` 以前只写回旧字段；新字段留在机器上，下一次真跑会把
+        试算留下的账本当成上一轮的真实进度。
+        """
+
+        machine = self.machine(state=cm.CommunityState.EXCHANGE)
+        before = self._fingerprint(machine)
+
+        def add_field(screen):
+            machine._preview_only_field = "预览期间新建"
+            return None
+
+        with unittest.mock.patch.object(machine, "next_action", side_effect=add_field):
+            machine.preview(fixture("exchange_after_redeem_live_20261006"))
+
+        self.assertEqual(self._fingerprint(machine), before)
+        self.assertFalse(hasattr(machine, "_preview_only_field"))
+
+    def test_preview_drops_fields_created_before_an_error(self):
+        """审查 E：新增字段后抛错，字段集合同样要回到预览前。"""
+
+        machine = self.machine(state=cm.CommunityState.EXCHANGE)
+        before = self._fingerprint(machine)
+
+        def add_then_explode(screen):
+            machine._preview_only_field = "预览期间新建"
+            raise RuntimeError("试算炸了")
+
+        with unittest.mock.patch.object(
+            machine, "next_action", side_effect=add_then_explode
+        ):
+            with self.assertRaises(RuntimeError):
+                machine.preview(fixture("exchange_after_redeem_live_20261006"))
+
+        self.assertEqual(self._fingerprint(machine), before)
+        self.assertFalse(hasattr(machine, "_preview_only_field"))
+
     # ---- 动作契约 ----
 
     def test_every_action_carries_an_exit_check(self):

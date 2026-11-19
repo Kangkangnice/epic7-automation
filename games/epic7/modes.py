@@ -1690,8 +1690,10 @@ def _assert_resume_declared() -> None:
 # 压根没过那道门槛 ⇒ 一帧就能宣布「今天打完了」、一帧没认出画面就去点屏幕中间。
 # 动作要两帧、结论只要一帧，等于门只掩了一半。
 #
-# 判定规则（``_assert_conclusion_gate_declared``）：继承 ``ModeRunnerBase`` 的路线
-# 自动达标 —— 基类主循环会在运行时确认结论门槛真的执行过（重写绕过去就失败关闭）。
+# 判定规则（``_assert_conclusion_gate_declared``）：继承 ``ModeRunnerBase`` **且
+# 没有重写 ``run()``** 的路线自动达标 —— 基类主循环会在运行时确认结论门槛真的
+# 执行过（重写绕过去就失败关闭）。自己写了 ``run()`` 的路线光凭继承不算：
+# 它可能根本不进基类循环，必须在这张表里写明「run 只是前置/收尾，主循环转调基类」。
 # 其余（自带独立主循环的，以及 2026-09-26 起的 ``TransactionalRunnerBase`` 那一族）
 # 必须在这张表里写明自己靠什么达标。
 CONCLUSION_GATE_DECLARATION = {
@@ -1716,6 +1718,34 @@ CONCLUSION_GATE_DECLARATION = {
         "「体力不足」是**资源耗尽**通道（``StaminaExhausted``，退出码 2），"
         "不经过这道门槛。"
     ),
+    "story": (
+        "重写 ``run()`` 只处理「接力落在局内」的战后监督（``resumed_from``），"
+        "随后转调 ``super().run()`` —— 主循环与结论门槛仍在 ``ModeRunnerBase``。"
+    ),
+    "side_story": (
+        "继承 ``StoryRunner`` 的 ``run()``：同样只处理局内接力，随后转调 "
+        "``super().run()`` —— 主循环与结论门槛仍在 ``ModeRunnerBase``。"
+    ),
+    "activity_story": (
+        "重写 ``run()`` 只在正常收工时补一张诊断帧，随后转调 ``super().run()`` —— "
+        "主循环与结论门槛仍在 ``ModeRunnerBase``。"
+    ),
+    "world_boss": (
+        "重写 ``run()`` 只处理「接力落在局内」的战后监督（``resumed_from``），"
+        "随后转调 ``super().run()`` —— 主循环与结论门槛仍在 ``ModeRunnerBase``。"
+    ),
+    "penguin_purchase": (
+        "重写 ``run()`` 只把界面次数同步给状态机，随后转调 ``super().run()`` —— "
+        "主循环与结论门槛仍在 ``ModeRunnerBase``。"
+    ),
+    "craft_equipment": (
+        "重写 ``run()`` 只把界面轮数同步给状态机，随后转调 ``super().run()`` —— "
+        "主循环与结论门槛仍在 ``ModeRunnerBase``。"
+    ),
+    "community": (
+        "重写 ``run()`` 只接竖屏通道与失败兜底，主循环仍转调 ``super().run()`` —— "
+        "结论门槛仍在 ``ModeRunnerBase``。"
+    ),
     "shop_refresh": (
         "不是「每帧下一结论」的形态：全程靠 ``_wait_stable`` / ``_observe_stable`` "
         "先等画面稳定再判定，认不出也只有**超时之后**才失败，不存在单帧收工。"
@@ -1728,16 +1758,23 @@ CONCLUSION_GATE_DECLARATION = {
 
 
 def _base_conclusion_gate_protected(runner_type: type) -> bool:
-    """这条路线的 Runner 是否走得到基类主循环的结论门槛。
+    """这条路线的 Runner 是否**自动**落在基类主循环的结论门槛下。
 
-    判据**只看继承关系**，不读源码：``ModeRunnerBase.run`` 在调用
+    ⚠️ 光看继承不够（审查 C，2026-11-19 复验）：路线可以继承
+    ``ModeRunnerBase`` 却重写 ``run()`` 完全不进基类循环 —— 那样门槛一次都
+    不会执行，注册表却说它「已保护」。这里的判据因此收紧成
+    **``run`` 仍是基类那一份**；重写过的路线必须进 ``CONCLUSION_GATE_DECLARATION``
+    写明自己的保证（多数是「只做前置/收尾，主循环仍转调 ``super().run()``」）。
+
+    判据仍然只看类型结构，不读源码文本：``ModeRunnerBase.run`` 在调用
     ``_stable_next_action`` 时用运行时标记确认基类实现真的执行过（见
-    ``runner_base._stable_next_action_checked``）。子类可以重写该方法补等待心跳，
-    但只要没把基类实现调回去，主循环就会失败关闭 —— 不依赖方法体里有没有那句
-    ``super()._stable_next_action`` 的文字。
+    ``runner_base._stable_next_action_checked``）。
     """
 
-    return issubclass(runner_type, ModeRunnerBase)
+    return (
+        issubclass(runner_type, ModeRunnerBase)
+        and runner_type.run is ModeRunnerBase.run
+    )
 
 
 def _assert_conclusion_gate_declared() -> None:
@@ -1764,7 +1801,7 @@ def _assert_conclusion_gate_declared() -> None:
         if not guarded and not declared:
             raise RuntimeError(
                 f"路线 {name} 既不在基类门槛的保护下、也没登记自己的结论门槛。"
-                "要么别重写 _stable_next_action（让基类的 ConclusionGate 生效），"
+                "要么别重写 run()/_stable_next_action（让基类的 ConclusionGate 生效），"
                 "要么在 CONCLUSION_GATE_DECLARATION 里写清「自己靠什么保证不一帧下结论」；"
                 "规矩见 docs/TRANSITION_CONTRACTS.md「结论门槛（全局强制）」。"
             )

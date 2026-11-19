@@ -1515,7 +1515,8 @@ class CommunityStateMachine:
         return snapshot_state(self, stable=self._PREVIEW_STABLE_FIELDS)
 
     def _restore(self, snapshot: dict[str, Any]) -> None:
-        restore_state(self, snapshot)
+        # 传 stable：只读基础设施既不进快照，也不该在还原时被当成「新增字段」删掉。
+        restore_state(self, snapshot, stable=self._PREVIEW_STABLE_FIELDS)
 
     # ---- 各页的处理 ----
 
