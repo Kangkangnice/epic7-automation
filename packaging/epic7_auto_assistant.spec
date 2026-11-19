@@ -21,8 +21,6 @@ from PyInstaller.utils.hooks import collect_data_files, collect_submodules
 
 REPO = Path(SPECPATH).resolve().parent
 WORKSPACE = REPO.parent
-DESKTOP = REPO / "desktop_qt"
-APP_ICON = DESKTOP / "app.ico"
 #: 第三方 chaos 源码（不随 Git 分发，构建前由 tools/fetch_vendor.py 取回）。
 #: ⚠️ 校验在 packaging/build.py 里做，**构建请走那条入口**；直接调 PyInstaller
 #: 不会检查清单，缺文件时只会得到「产物里没有它不是报错」的假成功。
@@ -42,8 +40,6 @@ a = Analysis(
             str(REPO / "games" / "epic7" / "templates"),
             "auto_game_unified/games/epic7/templates",
         ),
-        (str(DESKTOP / "assets"), "auto_game_unified/desktop_qt/assets"),
-        (str(APP_ICON), "auto_game_unified/desktop_qt"),
         # 次元探查：第三方 chaos 源码、配置与模板。只收会参与运行的三段 ——
         # 整目录照收会把 .git（45 MB）、tests、docs、缓存一起塞进产物。
         # 取回与校验走 ``tools/fetch_vendor.py``，``packaging/build.py`` 在打包前
@@ -61,7 +57,7 @@ a = Analysis(
     hookspath=[],
     runtime_hooks=[],
     # ⚠️ 整个包按**源码**收集，不压成 pyc。
-    # 历史原因：距今以前 ``modes.py`` 的加载期自查用 ``inspect.getsource`` 读路线源码
+    # 历史原因：以前 ``modes.py`` 的加载期自查用 ``inspect.getsource`` 读路线源码
     # （判断「结论门槛有没有被 super() 接回去」），压成 pyc 后打包版一启动就
     # ``OSError: could not get source code``（2026-10-19 实测）。
     # 2026-11-19 起该自查已改成**运行时标记**，不再读源码；这里保留按源码收集，
@@ -120,7 +116,6 @@ exe = EXE(
     [],
     exclude_binaries=True,
     name="Epic7AutoAssistant",
-    icon=str(APP_ICON),
     debug=False,
     strip=False,
     upx=False,
