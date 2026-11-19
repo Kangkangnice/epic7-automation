@@ -26,9 +26,11 @@ GitHub 的 tag 标记代码版本，带 ZIP 的 GitHub Release 提供用户可�
    默认策略通过数除以上述模拟器路线数计算。无实机闭环的路线不能从分母移除。
 3. 核对 [LICENSE](../../LICENSE)、[NOTICE](../../NOTICE.md) 和实际工件清单。游戏图像、截图、
    第三方库与外部扩展分别核对授权与发布条件。检查 Fluent Widgets 等组件的上游许可及随包文件。
-   标准工件在可执行文件同目录随附 `LICENSE` 和 `NOTICE.md`。E7auto 为可选源码集成，
-   不随标准工件分发。本机诊断、个人数据、令牌、Git 元数据和未经核对的外部源码与工件隔离。
-   Windows 系统 ICU 由操作系统提供，工件排除同名 DLL，避免构建环境中的版本覆盖系统接口。
+   当前构建不自动把 `LICENSE` / `NOTICE.md` 复制到可执行文件目录，也不过滤与系统同名的 ICU 库，
+   这两项须在发布前人工确认；自动化方案登记在[待办](../TODO.md)的打包条目。
+   E7auto 按 `packaging/vendor_lock.json` 逐文件校验后，随工件分发 `src` / `config` /
+   `assets/templates` 三段；是否继续随包分发由维护者在授权结论明确后决定。
+   本机诊断、个人数据、令牌、Git 元数据和未经核对的外部源码与工件隔离。
    [Windows ICU 文档](https://learn.microsoft.com/en-us/windows/win32/intl/international-components-for-unicode--icu-)
    [GitHub 许可证说明](https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/licensing-a-repository) ·
    [Fluent Widgets 上游许可](https://github.com/zhiyiYo/PyQt-Fluent-Widgets)
