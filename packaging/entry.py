@@ -93,6 +93,36 @@ def _self_check() -> int:
         f"{len(ROUTES)} 条全部可加载" if not broken else "；".join(broken),
     )
 
+    # 次元探查的第三方代码按清单分发（不在 Git 里）。自检要证明「产物里的这一份
+    # 真能导入、配置真能解析」，否则文件缺了只会等到用户点「开始」才报错。
+    def vendor_problem() -> str:
+        from auto_game_unified.desktop.chaos_bridge import vendor_root
+
+        root = vendor_root()
+        source = root / "src"
+        config = root / "config" / "internal.yaml"
+        if not (source / "e7auto").is_dir():
+            return f"缺少第三方源码：{source}"
+        if not config.is_file():
+            return f"缺少第三方配置：{config}"
+        if str(source) not in sys.path:
+            sys.path.insert(0, str(source))
+        from e7auto.configuration.loader import load_config
+        from e7auto.features.chaos.configuration import with_chaos_config
+
+        with_chaos_config(
+            load_config(config, template_profile="chaos"),
+            target_stage=1,
+            lineup_id="dark_twins",
+        )
+        return ""
+
+    try:
+        problem = vendor_problem()
+    except Exception as error:  # noqa: BLE001 —— 报清是哪一步加载不了
+        problem = f"{type(error).__name__}: {error}"
+    record(not problem, "第三方代码", problem or "e7auto 可导入，chaos 配置可加载")
+
     def render(fail_count: int) -> str:
         return "\n".join(
             lines + [f"结果：{'通过' if fail_count == 0 else f'{fail_count} 项失败'}"]
