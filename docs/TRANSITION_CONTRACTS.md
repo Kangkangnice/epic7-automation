@@ -56,7 +56,7 @@
 
 ### 护栏（两道，缺一不可）
 
-1. **路线准入**：`modes._assert_conclusion_gate_declared()` —— 每条路线要么走基类门槛、要么在 `CONCLUSION_GATE_DECLARATION` 里写明「自己靠什么保证」。重写 `_stable_next_action` 却不调 `super()` 视为绕过。
+1. **路线准入**：`modes._assert_conclusion_gate_declared()` —— 每条路线要么走基类门槛（继承且没重写 `run()`，运行时标记确认基类实现真的执行过）、要么在 `CONCLUSION_GATE_DECLARATION` 里写明「自己靠什么保证」。重写 `_stable_next_action` 却不调 `super()` 视为绕过；自己重写 `run()` 的路线，**光凭继承不算达标**，要登记主循环是否仍转调 `super().run()`。
 2. **跑真主循环的反向测试**：`tests/test_conclusion_gate.py` —— 喂「只看到一帧」的结论，断言**不许收工、不许点屏幕中间**；连喂两帧才允许收工。只调校验方法的测试挡不住「接线被摘掉」。
 
 ### 元规范：一条规范怎么才算「做完」

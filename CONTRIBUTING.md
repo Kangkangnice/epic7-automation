@@ -101,16 +101,55 @@ python auto_game_unified/tools/check.py --install-hook
 
 ## 打包（改动了打包配置才需要）
 
+**先取第三方代码**（次元探查的内置 chaos 流程）。它**不随 Git 分发**：上游仓库没有
+LICENSE 文件，重分发依据未确认，所以仓库里只放清单（`packaging/vendor_lock.json`
+记着上游地址、精确 commit 与逐个文件的 SHA-256），构建前按 commit 取回：
+
+```powershell
+python tools/fetch_vendor.py            # 取到 ..\vendor\e7auto；已存在就只校验
+python tools/fetch_vendor.py --check    # 只校验，不联网
+python tools/fetch_vendor.py --source D:\mirrors\E7auto.git   # 内网镜像/离线副本
+```
+
+缺文件、摘要不符、清单外文件都会返回非零并逐条列出；脚本**不会覆盖**已存在的目录。
+随包只收 `src`、`config`、`assets/templates` 三段，`.git`、测试、文档与缓存都不进产物。
+
+清单校验的是**固定 commit 的 Git blob 原始字节**：取回时用 `git ls-tree` +
+`git cat-file --batch` 直接写对象库里的字节，不经过 `git checkout` 或 `git archive`
+（这两者会按本机 `core.autocrlf` / `core.eol` 转换行）。所以 `core.autocrlf=true`
+与 `false` 取回的字节一致，**不需要改全局 Git 配置**。旧检出如果字节不同（例如早先
+用 CRLF 检出过），删掉 `..\vendor\e7auto` 重跑一次取回即可。
+
 ```powershell
 python packaging/build.py
 ```
 
-它会做四件事：PyInstaller 目录版打包 → 确认 spec 剔掉的 videoio ffmpeg 二进制
-真没进产物 → 跑一次 `Epic7AutoAssistant.exe --self-check`（检查产物目录可写、
-模板在不在、全部路线能不能加载 —— 条数以 `desktop/catalog.ROUTES` 为准）→ 打免安装 ZIP 并写 `SHA256SUMS.txt`。
+它会先校验源码侧清单 → PyInstaller 目录版打包 → 核对产物里的第三方文件**正好**是
+清单那一份（多一个文件、少一个文件、同名文件改一个字节都会停下）→ 跑一次
+`Epic7AutoAssistant.exe --self-check`（检查运行产物目录可写、模板在不在、全部路线
+能不能加载、第三方模块与配置能不能加载）→ **打 ZIP 前再核对一次**，失败不产出新
+ZIP → 打免安装 ZIP 并写 `SHA256SUMS.txt`。`--no-build` 复用旧 dist 时没有源码可验，
+但压缩前同样过内容门禁。另有一条 `check_pruned_binaries` 守着 spec 剔掉的
+videoio ffmpeg 二进制真没进产物。
+
+⚠️ 直接调 `python -m PyInstaller packaging/epic7_auto_assistant.spec` **不做**清单
+校验，缺文件时产物会少一段而不报错；构建请走 `packaging/build.py`。
+
 产物在 `packaging/dist/`（已 gitignore，不进历史）。
 
-`--no-build` 复用已有目录版，只重打 ZIP；`--skip-smoke` 跳过自检。
+`--no-build` 复用已有目录版，只重打 ZIP（仍会校验第三方内容）；`--skip-smoke` 跳过自检。
+
+**验证冻结版的 worker 交接**（离线，不需要游戏、不发任何输入）：
+
+```powershell
+python tools\verify_frozen_worker.py --exe packaging\dist\Epic7AutoAssistant\Epic7AutoAssistant.exe
+```
+
+它用桌面端同一条 `WorkerController.start()` 启动产物，子进程跑隐藏参数
+`--offline-probe`：只观察停止信号，**不装配路线、不截图、不点击**，即使游戏已经打开
+也不会碰它。期望两次结果：到点正常结束（退出码 0）；父进程写 `stop.signal` 后，
+子进程读到并退出 130。同时核对只有 `Epic7AutoAssistant.exe` 一个子进程、命令行带
+`--worker`、没有窗口、输出能回传父进程。
 
 **默认只出免安装版**（2026-10-20 起，用户拍板）：用户解压 ZIP、双击 `Epic7AutoAssistant.exe`
 就能跑。想要安装包再加 `--installer`，那一步要 **Inno Setup 6**，没装就自动跳过。单独编也可以：

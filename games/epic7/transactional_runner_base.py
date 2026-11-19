@@ -43,7 +43,7 @@ from auto_game_unified.core.battle_supervisor import (
     BattleSupervisor,
     valid_game_frame,
 )
-from auto_game_unified.core.evidence_diagnostics import (
+from auto_game_unified.games.epic7.evidence.diagnostics import (
     save_runtime_evidence_diagnostic,
 )
 from auto_game_unified.core.recovery import RecoveryGate

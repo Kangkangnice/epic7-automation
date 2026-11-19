@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import cv2
 import numpy as np
 
-from auto_game_unified.core.evidence_diagnostics import (
+from auto_game_unified.games.epic7.evidence.diagnostics import (
     save_runtime_evidence_diagnostic,
 )
 from auto_game_unified.core.runtime import Runtime

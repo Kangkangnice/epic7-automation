@@ -1,4 +1,4 @@
-"""一条命令出免安装版：清理 -> PyInstaller -> 冒烟自检 -> 打 ZIP -> 记 SHA256。
+"""一条命令出免安装版：校验第三方清单 -> PyInstaller -> 冒烟自检 -> 打 ZIP -> 记 SHA256。
 
 用法（在仓库目录执行）::
 
@@ -6,6 +6,10 @@
     python packaging/build.py --installer   # 额外再编一个 Inno Setup 安装包
     python packaging/build.py --skip-smoke  # 只打包，不跑自检（调试打包问题时用）
     python packaging/build.py --no-build    # 复用已有 dist，只重打 ZIP（改文件名/清单时用）
+
+第三方代码（次元探查的 chaos 流程）不在 Git 里：先跑一次
+``python tools/fetch_vendor.py``，本脚本按 ``packaging/vendor_lock.json`` 逐文件
+核对，缺文件/摘要不符/清单外文件都会在 PyInstaller 之前停下。
 
 产物都在 ``packaging/dist/``：
 
@@ -59,6 +63,71 @@ def product_version() -> str:
     return match.group(1)
 
 
+#: 「次元探查」的第三方代码。仓库里只有清单（commit + 逐文件 SHA-256），
+#: 源码由 ``tools/fetch_vendor.py`` 在构建前取到工作区，不随 Git 分发。
+VENDOR = REPO.parent / "vendor" / "e7auto"
+
+
+def _vendor_module():
+    if str(REPO.parent) not in sys.path:
+        sys.path.insert(0, str(REPO.parent))
+    from auto_game_unified.tools import fetch_vendor
+
+    return fetch_vendor
+
+
+def verify_vendor() -> dict:
+    """构建前先验第三方代码：缺文件、摘要不符、清单外文件都当场停下。"""
+    module = _vendor_module()
+    lock = module.load_lock()
+    problems = module.verify(VENDOR, lock)
+    if problems:
+        raise SystemExit(
+            f"第三方代码不可用：{VENDOR}\n"
+            + "\n".join(problems[:20])
+            + "\n先运行：python tools/fetch_vendor.py（或 --check 排查）"
+        )
+    # 缓存文件不算清单外文件，但不能跟着进产物：PyInstaller 会整目录照收。
+    for cache in VENDOR.rglob("__pycache__"):
+        if cache.is_dir():
+            shutil.rmtree(cache, ignore_errors=True)
+    print(f"[build] 第三方代码校验通过（{len(lock['files'])} 个文件）", flush=True)
+    return lock
+
+
+def check_vendor_payload(lock: dict) -> None:
+    """打完包再确认产物里的第三方文件**正好**是清单那一份。
+
+    ⚠️ 这条不是形式主义：``.git``、``__pycache__``、测试与文档都可能被整目录
+    收进来（审查看到的正是这种写法），而现象只是「包变大」，没有任何报错。
+    """
+    root = DIST / APP_NAME / "_internal" / "vendor" / "e7auto"
+    if not root.is_dir():
+        raise SystemExit(f"产物里找不到第三方代码：{root}")
+    module = _vendor_module()
+    shipped = {
+        item.relative_to(root).as_posix()
+        for item in root.rglob("*")
+        if item.is_file()
+    }
+    expected = set(lock["files"])
+    extra = sorted(shipped - expected)
+    missing = sorted(expected - shipped)
+    changed = sorted(
+        name
+        for name in shipped & expected
+        if module.sha256_file(root / name) != lock["files"][name]
+    )
+    if extra or missing or changed:
+        raise SystemExit(
+            "产物中的第三方文件与清单不一致：\n"
+            + "\n".join(f"  多出：{name}" for name in extra[:10])
+            + "\n".join(f"  缺少：{name}" for name in missing[:10])
+            + "\n".join(f"  摘要不符：{name}" for name in changed[:10])
+        )
+    print(f"[build] 产物第三方文件与清单一致（{len(expected)} 个）", flush=True)
+
+
 def run_pyinstaller() -> Path:
     for path in (DIST / APP_NAME, BUILD):
         if path.exists():
@@ -94,6 +163,7 @@ def smoke_test(exe: Path) -> None:
             env=env,
             capture_output=True,
             text=True,
+            encoding="utf-8",
             errors="replace",
             timeout=300,
         )
@@ -141,13 +211,16 @@ def directory_size(path: Path) -> int:
     return sum(item.stat().st_size for item in path.rglob("*") if item.is_file())
 
 
-def make_zip(version: str) -> Path:
+def make_zip(version: str, lock: dict) -> Path:
     """打免安装版 ZIP。
 
     ⚠️ 用 **DEFLATE** 不是为了省事：换 ``ZIP_LZMA`` 能再小 18 MB（63 → 45），
     但 **Windows 资源管理器自带的「全部解压缩」不认 LZMA 的 zip**，
     用户得先装 7-Zip —— 那就不是「解压即用」了。2026-10-20 实测过两种压缩率。
     """
+    # ⚠️ 先验内容再开压缩包：``--no-build`` 复用旧 dist 时也必须过这一关，
+    # 否则往目录里塞一个清单外文件再重打包，它会照样进 ZIP。
+    check_vendor_payload(lock)
     archive = DIST / f"第七史诗自动助手-免安装版-{version}.zip"
     with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED) as bundle:
         for item in sorted((DIST / APP_NAME).rglob("*")):
@@ -214,8 +287,13 @@ def main() -> int:
     print(f"[build] 版本 {version}", flush=True)
 
     exe = DIST / APP_NAME / f"{APP_NAME}.exe"
+    # --no-build 复用旧 dist 时没有源码目录可验，清单仍要从仓库读出来，
+    # 交给 make_zip 在压缩前核对产物。
+    vendor_lock = _vendor_module().load_lock()
     if not args.no_build:
+        vendor_lock = verify_vendor()
         exe = run_pyinstaller()
+        check_vendor_payload(vendor_lock)
         # 先确认剔掉的东西真没进产物，再花时间跑自检 —— 顺序反了会白跑一遍。
         check_pruned_binaries()
         if not args.skip_smoke:
@@ -224,7 +302,7 @@ def main() -> int:
     if not exe.is_file():
         raise SystemExit(f"没有可打包的产物：{exe}")
 
-    archive = make_zip(version)
+    archive = make_zip(version, vendor_lock)
     installer = build_installer(version) if args.installer else None
 
     artifacts = [archive] + ([installer] if installer is not None else [])

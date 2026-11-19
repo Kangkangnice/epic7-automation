@@ -6,10 +6,8 @@ import sys
 import cv2
 import numpy as np
 
-from auto_game_unified.core.evidence_diagnostics import (
-    inspect_profile,
-    write_evidence_diagnostic,
-)
+from auto_game_unified.core.evidence_diagnostics import write_evidence_diagnostic
+from auto_game_unified.games.epic7.evidence.diagnostics import inspect_profile
 from auto_game_unified.games.epic7.evidence.common import (
     AtomEvidence,
     EvidenceProfile,

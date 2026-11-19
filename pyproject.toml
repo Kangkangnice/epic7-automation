@@ -1,7 +1,8 @@
 # 静态检查配置（ruff + mypy）。
 #
-# ⚠️ 这个文件放在**包目录** auto_game_unified/ 下，不是仓库根 —— 仓库根就是它的父目录，
-# 而项目所有 import 都写成 auto_game_unified.xxx（见 .github/workflows/tests.yml 的检出路径）。
+# ⚠️ 这个文件就在**仓库根** auto_game_unified/ 下；而运行 / 测试的**工作目录**是它的
+# 父目录（项目所有 import 都写成 auto_game_unified.xxx，见 .github/workflows/tests.yml
+# 的检出路径）。两者别混：仓库根 ≠ 执行目录。
 #
 # 2026-09-30 引入。目的不是「统一风格」（这份代码的风格本来就很齐），而是挡住两类
 # **机器一查就出、人眼会漏**的问题：
@@ -79,5 +80,10 @@ files = [
     "auto_game_unified/core",
     # 导航链的纯数据模块（它 import 为零，所以能把「数据形状」单独钉住）。
     "auto_game_unified/games/epic7/navigation_plan.py",
+    # 视觉证据诊断的**游戏侧接口**（2026-11-19 从 core 搬出来后纳入检查）：
+    # 它只依赖 core + 证据模型，接口稳定、本来就干净。
+    "auto_game_unified/games/epic7/evidence/diagnostics.py",
+    # 试算快照的稳定接口（审查 E）：只依赖标准库，社区路线通过它抓/还原状态。
+    "auto_game_unified/games/epic7/preview_state.py",
 ]
 show_error_codes = true

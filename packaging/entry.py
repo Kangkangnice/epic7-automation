@@ -1,12 +1,18 @@
-"""打包入口：只做两件事 —— 能自检、能启动桌面界面。
+"""打包入口：自检、工作进程、桌面界面三条路。
 
 打包版是 ``console=False``（不给用户弹黑窗），所以自检结果不能只靠 ``print``：
 它同时写进 ``<运行产物根>/runtime_logs/self_check.txt``，并用退出码表示成败。
 ``packaging/build.py`` 打完包就靠这两样东西做冒烟验证。
 
+⚠️ 桌面端跑每日任务时，父进程会把**同一个 exe** 加上 ``--worker`` 再启动一次
+（``desktop/worker.py``）：冻结后没有独立的 ``python.exe``，不加这个分支就会把
+业务参数送进界面，弹出第二个窗口。``--worker`` 必须放在参数最前面。
+
 用法::
 
     Epic7AutoAssistant.exe --self-check
+    Epic7AutoAssistant.exe --worker --daily --daily-tasks arena:1 ...
+    Epic7AutoAssistant.exe
 """
 
 from __future__ import annotations
@@ -50,15 +56,19 @@ def _self_check() -> int:
     lines.append(f"Python {sys.version.split()[0]}  frozen={bool(getattr(sys, 'frozen', False))}")
     lines.append(f"程序目录 {Path(sys.executable).parent}")
 
-    root = data_root()
+    # ⚠️ 数据根与模板根是**两个**目录，别复用同一个变量名：以前循环里用
+    # ``root = template_root_for_backend(...)`` 覆盖了数据根，报告就写进模板目录
+    # （那个 ``runtime_logs`` 不存在），OSError 又被吞掉，于是「自检通过、
+    # 报告没有」——``packaging/build.py`` 的冒烟正好去数据目录取报告，必然取不到。
+    data_dir = data_root()
     try:
-        (root / "runtime_logs").mkdir(parents=True, exist_ok=True)
-        probe = root / "runtime_logs" / ".self_check"
+        (data_dir / "runtime_logs").mkdir(parents=True, exist_ok=True)
+        probe = data_dir / "runtime_logs" / ".self_check"
         probe.write_text("ok", encoding="utf-8")
         probe.unlink()
-        record(True, "运行产物目录可写", str(root))
+        record(True, "运行产物目录可写", str(data_dir))
     except OSError as error:
-        record(False, "运行产物目录可写", f"{root}：{error}")
+        record(False, "运行产物目录可写", f"{data_dir}：{error}")
 
     if TEMPLATE_ROOT.is_dir():
         count = len(list(TEMPLATE_ROOT.rglob("*.png")))
@@ -72,9 +82,9 @@ def _self_check() -> int:
         # 否则会把「设计上就跑不了」误报成产物缺图。
         backends = ("pc",) if route.mode in PC_ONLY_ROUTES else ("emulator", "pc")
         for backend in backends:
-            root = template_root_for_backend(TEMPLATE_ROOT, backend)
+            template_dir = template_root_for_backend(TEMPLATE_ROOT, backend)
             try:
-                validate_route_templates(route.mode, root)
+                validate_route_templates(route.mode, template_dir)
             except Exception as error:  # noqa: BLE001 —— 报清是哪条路线加载不了
                 broken.append(f"{route.label}[{backend}]：{error}")
     record(
@@ -83,19 +93,94 @@ def _self_check() -> int:
         f"{len(ROUTES)} 条全部可加载" if not broken else "；".join(broken),
     )
 
-    lines.append(f"结果：{'通过' if failures == 0 else f'{failures} 项失败'}")
-    report = "\n".join(lines) + "\n"
+    # 次元探查的第三方代码按清单分发（不在 Git 里）。自检要证明「产物里的这一份
+    # 真能导入、配置真能解析」，否则文件缺了只会等到用户点「开始」才报错。
+    # ⚠️ 源码检出不是产物：干净 clone 里没有 vendor（构建前才取回），这时**明说
+    # 跳过**，不冒充通过；打包版（frozen）缺它仍然算失败。
+    from auto_game_unified.desktop.chaos_bridge import vendor_root
+
+    vendor_dir = vendor_root()
+    if not (vendor_dir / "src" / "e7auto").is_dir() and not getattr(sys, "frozen", False):
+        lines.append(
+            "[跳过] 第三方代码：源码检出未取回"
+            "（构建前运行 python tools/fetch_vendor.py）"
+        )
+    else:
+        def vendor_problem() -> str:
+            source = vendor_dir / "src"
+            config = vendor_dir / "config" / "internal.yaml"
+            if not (source / "e7auto").is_dir():
+                return f"缺少第三方源码：{source}"
+            if not config.is_file():
+                return f"缺少第三方配置：{config}"
+            if str(source) not in sys.path:
+                sys.path.insert(0, str(source))
+            from e7auto.configuration.loader import load_config
+            from e7auto.features.chaos.configuration import with_chaos_config
+
+            with_chaos_config(
+                load_config(config, template_profile="chaos"),
+                target_stage=1,
+                lineup_id="dark_twins",
+            )
+            return ""
+
+        try:
+            problem = vendor_problem()
+        except Exception as error:  # noqa: BLE001 —— 报清是哪一步加载不了
+            problem = f"{type(error).__name__}: {error}"
+        record(not problem, "第三方代码", problem or "e7auto 可导入，chaos 配置可加载")
+
+    def render(fail_count: int) -> str:
+        return "\n".join(
+            lines + [f"结果：{'通过' if fail_count == 0 else f'{fail_count} 项失败'}"]
+        ) + "\n"
+
+    report = render(failures)
+    report_path = data_dir / "runtime_logs" / "self_check.txt"
     try:
-        (root / "runtime_logs" / "self_check.txt").write_text(report, encoding="utf-8")
-    except OSError:
-        pass
+        report_path.parent.mkdir(parents=True, exist_ok=True)
+        report_path.write_text(report, encoding="utf-8")
+    except OSError as error:
+        # 报告写不进去就是**没通过**：调用方（构建冒烟、排障的人）只认这个文件，
+        # 静默跳过等于把「没留下证据」当成「一切正常」。
+        failures += 1
+        lines.append(f"[失败] 自检报告写入：{report_path}：{error}")
+        print(render(failures), flush=True)
+        return 1
     print(report, flush=True)
     return 0 if failures == 0 else 1
 
 
+def _use_utf8_stdio() -> None:
+    """冻结版窗口程序不认 ``PYTHONIOENCODING``，输出按系统代码页编码。
+
+    桌面端按 UTF-8 读子进程输出（``desktop/worker.py``），不统一就会整屏乱码；
+    所以冻结时先把标准输出重设为 UTF-8。源码模式下终端自己决定编码，不动它。
+    """
+    if not getattr(sys, "frozen", False):
+        return
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:
+            continue
+        try:
+            reconfigure(encoding="utf-8")
+        except (OSError, ValueError):
+            pass
+
+
 def main() -> int:
-    if "--self-check" in sys.argv[1:]:
+    argv = sys.argv[1:]
+    _use_utf8_stdio()
+    if "--self-check" in argv:
         return _self_check()
+    # 只认第一个参数：业务参数是界面生成的固定形状，不会把 --worker 塞到后面，
+    # 这样也避免把将来的路线参数误当成分流开关删掉。
+    if argv[:1] == ["--worker"]:
+        from auto_game_unified.main import main as run_cli
+
+        return run_cli(argv[1:])
 
     from auto_game_unified.desktop_qt.app import main as run_app
 
