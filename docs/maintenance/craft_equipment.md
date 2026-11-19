@@ -112,7 +112,7 @@
   安全停止，不猜、不点。
 - ~~装备背包已满缺可用素材~~：2026-11-18 已按真机帧重做，并**删掉旧的两张**
   （`global/pc/equipment_bag_full_message.png` 与 `_confirm.png`）。现在只有一套：
-  `global/equipment_bag_full_message.png`（正文）与 `_cancel.png`（「取消」）——
+  `global/equipment_bag_full_message.png`（正文）与 `global/equipment_bag_full_cancel.png`（「取消」）——
   正例 0.9737 / 0.9718，四张无关帧最高 0.27 / 0.43。
   删除理由（同一帧实测）：旧正文 0.8426（只比阈值 0.82 高 0.023，图比实机小 1%，放大
   到 1.010 倍才是 0.9796）；旧按钮 0.7100（阈 0.85）—— 这条弹窗只有取消 / 整理 / 扩充
