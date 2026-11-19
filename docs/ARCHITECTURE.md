@@ -131,9 +131,10 @@ auto_game_unified/
 
 ## 同构模式公共骨架
 
-`runner_base.py` 的 `ModeRunnerBase` 统一实现**同构线**的公共主循环。
-2026-11-09 核实时它覆盖 12 条：主线 `story` 与它的两个子类（支线故事 / 活动剧情）、狗粮、
-英雄合成、骑士团捐赠、圣域收菜、迷宫强化石、月光剧场、世界首领战、成就领取、社区签到。
+`runner_base.py` 的 `ModeRunnerBase` 统一实现**同构线**的公共主循环，覆盖主线 `story` 与它的两个子类
+（支线故事 / 活动剧情）、狗粮、英雄合成、骑士团捐赠、圣域收菜、迷宫强化石、月光剧场、世界首领战、
+成就领取、社区签到，以及后续新增的宠物领养、企鹅批量购买、装备制作与主线补星。
+逐条归类以 `modes.MODE_SPECS` 和类定义为准，本页不记条数。
 
 - 空跑短路、两帧稳定确认、同动作 45 秒转场等待、4 次点击上限。**页内滚动这类本来就不换页的动作**可由路线登记进 `_REPEATABLE_ACTIONS` 豁免 4 次上限（名单默认空，老路线零影响）；主线补星横向翻篇章要连滚好几下才到头，2026-11-10 19:18 实跑正是撞了这条上限。
 - 结论门槛（收工 / 认不出画面也要连续两帧一致）。
@@ -218,11 +219,10 @@ auto_game_unified/
 
 ## 开局接力
 
-`ModeSpec.resume_probe`（可选）给一条路线装上「开局接着往下跑」的能力。现行共 **11 条**接了探针：
-`arena` / `story` / `expedition` / `tower` / `side_story` / `shop_refresh` / `world_boss` /
-`knights_donation` / `labyrinth_stone` / `sanctuary` / `achievement`（以 `games/epic7/modes.py` 为准，
-逐条覆盖矩阵见 [RESUME_COVERAGE.md](RESUME_COVERAGE.md)）；
-其余路线 `resume_probe is None`，调用签名与行为完全不变（仍是 `return_home()` + `navigate()`）。
+`ModeSpec.resume_probe`（可选）给一条路线装上「开局接着往下跑」的能力。哪些路线接了探针，以
+[现状速查](STATUS.md) 的「开局接力」列为准（该列读 `MODE_SPECS.resume_probe`；逐环节覆盖矩阵见
+[RESUME_COVERAGE.md](RESUME_COVERAGE.md)）。没有探针的路线 `resume_probe is None`，
+调用签名与行为完全不变（仍是 `return_home()` + `navigate()`）。
 
 契约：`ResumeProbe = (machine, screen, navigator) -> Optional[ResumePoint]`，其中
 `ResumePoint = (page: str, state: Optional[str], entry: Optional[str])` —— `page` 只给日志和诊断看，
