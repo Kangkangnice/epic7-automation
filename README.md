@@ -144,4 +144,6 @@ python -u -m auto_game_unified.desktop
 
 版本变化见 [CHANGELOG.md](CHANGELOG.md) · 许可：[MIT](LICENSE)
 
+游戏素材与第三方组件的权利范围见 [素材声明](NOTICE.md)。本项目与游戏运营方无关联，使用前请核对适用的游戏规则。
+
 </div>

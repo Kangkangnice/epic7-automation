@@ -204,6 +204,7 @@ class PcWindowSafetyTests(unittest.TestCase):
 
     def test_capture_stops_without_activation_when_bitblt_fails(self):
         with (
+            patch.object(self.game, "_sleep") as wait,
             patch.object(self.game, "_find_window", return_value=123),
             patch.object(
                 self.game,
@@ -225,6 +226,7 @@ class PcWindowSafetyTests(unittest.TestCase):
         # 有界重试：拿不到就再试几次，但**绝不**退化成「前置截图」或桌面截图
         # （2026-11-01：偶发失败实测存在，所以从「只试一次」改成 3 次）。
         self.assertEqual(pc_window.CAPTURE_ATTEMPTS, bitblt.call_count)
+        self.assertEqual(pc_window.CAPTURE_ATTEMPTS - 1, wait.call_count)
         activate.assert_not_called()
         screenshot.assert_not_called()
         activate.assert_not_called()

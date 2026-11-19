@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import re
 import subprocess
 from pathlib import Path
 from unittest import mock
@@ -35,6 +36,13 @@ REGENERATE_HINT = (
 
 def _on_disk() -> str:
     return gen_status.STATUS_PATH.read_text(encoding="utf-8")
+
+
+def test_the_safety_matrix_records_every_route() -> None:
+    matrix = (ROOT / "docs" / "SAFETY_MATRIX.md").read_text(encoding="utf-8")
+    live_table = matrix.split("## 三、实机支持证据表", 1)[1].split("### ", 1)[0]
+    rows = re.findall(r"^\|[^|\n]*`([a-z][a-z0-9_]*)`[^|\n]*\|", live_table, re.MULTILINE)
+    assert sorted(rows) == sorted(modes.MODE_SPECS)
 
 
 def test_tracked_pngs_reads_git_output_as_bytes(monkeypatch) -> None:

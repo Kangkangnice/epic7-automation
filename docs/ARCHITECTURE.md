@@ -15,6 +15,7 @@ auto_game_unified/
 │  ├─ qqbot.py             # 官方 QQ 机器人开放平台 C2C 私聊推送
 │  ├─ window.py             # 模拟器窗口捕获与局部坐标点击（雷电 adb 通道）
 │  ├─ pc_window.py          # PC 客户端窗口 I/O（BitBlt 后台抓屏、SendInput 点击、ESC、滑动、滚轮）
+│  ├─ visual_evidence.py    # 通用模板判据、动作证据及校验
 │  ├─ evidence_diagnostics.py # 失败诊断落盘（screen/source/target/evidence.json）
 │  ├─ elevation.py          # UIPI 提权判断（对方窗口权限更高时点击会被静默拦掉）
 │  ├─ portrait.py           # 竖屏通道（H5 网页把模拟器切成竖屏时的取图与坐标）
@@ -29,10 +30,7 @@ auto_game_unified/
 │  ├─ runner_base.py        # 同构模式公共主循环（ModeRunnerBase；点一次→每帧重问状态机）
 │  ├─ transactional_runner_base.py  # 事务型公共主循环（目标页连续两帧才提交状态）
 │  ├─ template_paths.py     # 平台差异的**唯一入口**：共享图 / pc 同名图覆盖
-│  ├─ **其余「一条路线一个模块」**：arena / story / expedition / tower / fodder /
-│  │   hero_synthesis / side_story / activity_story / knights_donation / sanctuary /
-│  │   labyrinth_stone / moonlight_theater / survivor / community / shop_refresh /
-│  │   world_boss / achievement（现行名单以 modes.MODE_SPECS 为准）
+│  ├─ 各路线模块            # 页面语义、动作和完成条件。注册表见 modes.py
 │  ├─ daily_tasks.py        # 每日连打的**编排**（不是一条路线，不占 --mode）
 │  ├─ modes.py              # 模式注册、默认状态、构建器、准入表态
 │  ├─ evidence/             # 各路线视觉证据：模板、区域、阈值和页面组合
@@ -68,6 +66,20 @@ auto_game_unified/
 - `Epic7Navigator` 只负责大厅恢复和进入模式，不处理模式内部业务。
 
 这些职责不能混在一起。点击成功不等于页面已经变化；内部状态只能在目标页面得到确认后继续。
+
+`core` 持有公共窗口、匹配和证据类型，供游戏层、命令行和桌面组装。游戏层在
+`games/epic7/evidence/` 声明业务锚点；旧 `evidence/common.py` 保留已有导入路径。
+共享核心直接导入游戏和桌面模块会触发离线依赖门禁。
+
+### 共享视觉的演进顺序
+
+1. 按[跨端共享视觉契约](decisions/0009-universal-vision-contract.md)统一截图口径、限定区域的文字证据、
+   当前帧落点和拒绝依据。先把试点接到一条路线的正常 CLI 与桌面入口，再用未参与校准的路线验收公共策略。
+2. 以 `ModeSpec`、`NavigationPlan` 和现有 Runner 分工复用业务语义，逐个证明旧平台覆盖可退出。
+   每次变更独立回归，并按[接入指南](PC_TEMPLATE_MIGRATION.md)登记真实变体或例外。
+3. 后续将 `main.py::run_mode` 的装配边界和桌面进度事件分别梳理。当前桌面部分进度由
+   [run_progress.py](../desktop/run_progress.py) 解析日志。引入结构化事件时应同时核对进度、停止、
+   结果和现有 CLI 行为。打包的源码保留约束及烟测入口见[发布手册](howto/release.md)。
 
 ## 坐标和窗口
 
@@ -112,6 +124,10 @@ auto_game_unified/
 - 英雄合成：模拟器翻卡通过右侧列表的“稳定→定向运动→重新稳定”动态证据确认，因此同名同外观副本也能安全推进；SSS、普通与未知使用三态分类，未知目标不点击。发现 SSS 材料后，传送事务会一直保留当前目标，只有奖励层联合证据稳定出现且返回英雄列表后才清理，防止漏传、误传或重复传送。
 
 这样可以避免点击未生效、加载卡住或额外弹窗出现时产生虚假计数。
+
+业务计数和收尾分别记录。若回首页未确认，`RunResult.closeout_warning` 会传到命令行和每日结果，
+已完成的业务数量仍保留。收尾期间手动停止时，每日编排保留已完成的结果并结束本轮。
+发布验收还需核对真实回执和约定终点，见[路线稳定版验收](howto/route_acceptance.md)。
 
 ## 同构模式公共骨架
 
@@ -258,6 +274,12 @@ auto_game_unified/
 - 当前客户端未采集的页面应安全停止，不能拿旧客户端素材冒充支持。
 
 详细采集规则见 [TEMPLATE_CAPTURE.md](TEMPLATE_CAPTURE.md)。
+
+竞技场图鉴资产由 `hero_catalog.py` 提供桌面筛选分类，由 `hero_match.py` 识别已配置的避战和优先目标。
+英雄合成使用 `templates/hero/` 的页面与控件判据。批量维护时用 `tools.check --plan` 从实际文件选定回归，
+执行顺序见[游戏更新手册](howto/game_update.md)。
+
+维护频繁、可用离线反例验证的独立行为，可按实际调用关系设立定向合并边界。首个实例是补星的篇章选卡；状态机消费候选结果并执行转场。边界的登记、升级全量与发布条件见[决策 0011](decisions/0011-behavior-based-regression.md)。
 
 ## 视觉证据诊断
 

@@ -9,3 +9,6 @@ contact_links:
   - name: 参与贡献
     url: https://github.com/Kangkangnice/epic7-automation/blob/main/CONTRIBUTING.md
     about: 新增路线的准入条件、素材规范、本地跑测试
+  - name: 安全与隐私报告
+    url: https://github.com/Kangkangnice/epic7-automation/security/policy
+    about: 安全问题的私密报告途径与诊断资料脱敏说明

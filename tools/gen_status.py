@@ -313,7 +313,7 @@ def render() -> str:
         "",
         "> 本页由 `python -m auto_game_unified.tools.gen_status` 从代码生成，**不要手改**。",
         "> 门禁 `tests/test_status_doc.py` 会逐字比对：与代码不一致就直接报红。",
-        "> 想知道「现在到底支持哪些、哪些放行了」，只看这一页就够。",
+        "> 本页列出当前代码允许启动的组合。公开稳定支持还需通过[路线稳定版验收](howto/route_acceptance.md)。",
         "",
         f"**产品**：{catalog.PRODUCT_NAME} v{catalog.PRODUCT_VERSION}",
         "",
