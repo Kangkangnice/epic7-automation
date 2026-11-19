@@ -8,7 +8,7 @@
 
 <div>
   <img alt="platform" src="https://img.shields.io/badge/platform-Windows-blueviolet">
-  <img alt="python" src="https://img.shields.io/badge/python-3.11%2B-blue">
+  <img alt="python" src="https://img.shields.io/badge/python-3.13-blue">
   <img alt="license" src="https://img.shields.io/badge/license-MIT-green">
 </div>
 <div>
@@ -58,7 +58,7 @@
 
 ## ⚡ 快速开始
 
-环境：Windows · Python 3.11+ · 游戏语言**简体中文** · 雷电模拟器或 PC 客户端 · 基准画布 `1982 × 1132`。
+环境：Windows · Python 3.13（本项目验证过的版本）· 游戏语言**简体中文** · 雷电模拟器或 PC 客户端 · 基准画布 `1982 × 1132`。
 
 **1. 安装**（仓库需克隆为 `auto_game_unified`，命令从它的**父目录**执行）
 
@@ -75,11 +75,11 @@ python -u -m auto_game_unified.desktop
 
 **3. 使用**：先启动模拟器 / PC 客户端并进入游戏 → 点「检测环境」→ 勾选路线（可填次数）→ 点「开始任务」。日常使用建议用[无窗口入口](docs/USER_GUIDE.md)，双击桌面图标即可。
 
-> 命令行入口 `python -m auto_game_unified.main` 保留给开发调试；**默认是干跑**，实跑必须显式加 `--live --confirm RUN`。
+> 命令行入口 `python -m auto_game_unified.main` 保留给开发调试；**默认是干跑**，实跑必须同时给 `--live --confirm RUN --max-cycles <正整数>`。
 >
 > 自己构建免安装版、校验第三方输入与自检报告，见 [贡献指南](CONTRIBUTING.md) 的「打包」一节。
 
-> 🧰 界面左侧有三页：**每日任务** / **运行日志** / **实用工具**（目前是固定点连点器），底部是「关于」。2026-11-09 起只有这一套界面了（原来的 Tk 版已删除），依赖也合并进了 `requirements.txt`。
+> 🧰 界面左侧有四个入口：**每日任务** / **运行日志** / **实用工具**（目前是固定点连点器）/ **次元探查**（可选的第三方内置流程，与每日任务、连点器互斥），底部是「关于」。2026-11-09 起只有这一套界面了（原来的 Tk 版已删除），依赖也合并进了 `requirements.txt`。
 
 ## 🗂️ 路线与后端
 
@@ -101,7 +101,9 @@ python -u -m auto_game_unified.desktop
 | 🖥️ [PC 客户端接入指南](docs/PC_TEMPLATE_MIGRATION.md) | PC 抓帧、模板差异与逐路线验收状态 |
 | 🩺 [故障排查](docs/TROUBLESHOOTING.md) | 认不出、点不动、黑屏时先看这里 |
 | 🧩 [新增自动化路线](docs/EXTENDING.md) | 复用优先的证据先于代码流程 |
-| 🤝 [贡献指南](CONTRIBUTING.md) | 提交门禁、测试与协作约定 |
+| 🤝 [贡献指南](CONTRIBUTING.md) | 开发环境、测试范围、提交门禁与协作约定 |
+| 📦 [发布手册](docs/howto/release.md) | 发版检查、离线回归与回退条件 |
+| 🧭 [项目治理](GOVERNANCE.md) | 评审职责、放行与维护者分工 |
 | 🔒 [安全政策](SECURITY.md) | 漏洞反馈与数据处理说明 |
 
 ## 🛡️ 安全边界

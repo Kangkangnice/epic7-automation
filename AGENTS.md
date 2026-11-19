@@ -35,9 +35,8 @@
 
 **先建交接单：复制 `docs/wip/_TEMPLATE.md` 到 `docs/wip/<日期>-<主题>.md`，填完再停。**
 
-它会自动出现在 `docs/STATUS.md` 的「在制品」一节 —— 下一个人（或你换个会话）打开现状页
-就知道有活没干完、做到哪、下一步做什么。**合并进 main 之后删掉它**，结论进提交信息 /
-`CHANGELOG.md` / `docs/decisions/` / `docs/maintenance/<路线>.md`。
+它自动出现在 `docs/STATUS.md` 的「在制品」一节，下一个人打开现状页就知道活没干完、做到哪、下一步做什么。
+**合并进 main 之后删掉它**，结论进提交信息 / `CHANGELOG.md` / `docs/decisions/` / `docs/maintenance/<路线>.md`。
 
 ## 不可违反的视觉动作契约
 
@@ -83,8 +82,7 @@
 python tools/compress_images.py --staged --apply && git add <刚压过的文件>
 ```
 
-它是**无损**的（压完逐位比对像素，不一致就报错、不落盘）。⚠️ **不要拿它压存量再提交** ——
-只会把新 blob 加进 pack，历史里旧 blob 一个不少。存量瘦身见
+它是**无损**的（压完逐位比对像素，不一致就报错、不落盘）。**不要拿它压存量再提交**：存量瘦身另走
 [`docs/TEMPLATE_CAPTURE.md`](docs/TEMPLATE_CAPTURE.md#入库前无损压缩体积门槛)。
 
 ## 完成规则
@@ -99,5 +97,4 @@ python tools/compress_images.py --staged --apply && git add <刚压过的文件>
 `--no-verify` **默认禁止**；按[测试分层](CONTRIBUTING.md#按改动选测试)验收 PR，已登记的独立行为走定向，共享或未登记的运行改动走全量，版本标签始终全量；
 改共享模块最费时间，这类改动**攒在一起一次提交**，别拆成几次各跑一遍。
 
-提交和并发协作见[贡献指南](CONTRIBUTING.md)。`--vs HEAD` 会包含当前工作区相对 HEAD 的全部改动；
-手工验证后又修改文件，提交前以最终暂存内容为准。
+`--vs HEAD` 会包含工作区相对 HEAD 的全部改动；手工验证后又改了文件，以最终暂存内容为准。并发协作见[贡献指南](CONTRIBUTING.md)。
