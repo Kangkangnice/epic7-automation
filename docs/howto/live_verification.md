@@ -134,7 +134,7 @@ python -m auto_game_unified.main --mode arena --live --confirm RUN --max-cycles 
 
 1. **一个主题只有这一份文件。** 想到更好的做法时，**改这里**，不要另开
    `live_verification_v2.md` / `实机验证新方案.md` —— 两份并存时，下一个人不知道该信哪份，
-   而 agent 极可能挑到旧的那份，把你踩过的坑再踩一遍。
+   而 agent 可能选到旧的那份，重复同一次失败。
    （`docs/howto/` 下每个文件的 frontmatter `topic` 必须唯一，门禁会查。）
 2. **改的时候留一行「更改记录」**（见文末表），写清日期、改了什么、依据。
    这样"覆盖"是看得见的，历史也不丢。
