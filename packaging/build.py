@@ -23,7 +23,7 @@
 ## 为什么冒烟要跑 ``--self-check`` 而不是「启动 GUI 看它有没有崩」
 
 窗口起不起来没法自动判定，而自检覆盖了真正会坏的三件事 ——
-运行产物目录能不能写、模板在不在、十五条路线的模板能不能全部加载。
+运行产物目录能不能写、模板在不在、已登记路线的模板能不能全部加载。
 另有一条 ``check_pruned_binaries`` 守着「spec 里剔掉的 videoio ffmpeg 真的没进产物」
 （那两个 DLL 原始 51.9 MB，是免安装版从 88 MB 降到 63 MB 的全部来源）。
 """
@@ -137,6 +137,19 @@ def check_pruned_binaries() -> None:
     print(f"[build] 已确认剔除 {PRUNED_BINARY_PREFIX}*", flush=True)
 
 
+def prepare_release_directory(app_dir: Path) -> None:
+    """检查目录版的发布边界，并写入 ZIP 和安装包共用的许可文件。"""
+    for item in sorted(app_dir.rglob("*")):
+        if item.name.casefold() in {"e7auto", ".git", ".github"}:
+            raise SystemExit(
+                f"目录版含有禁止分发的目录或文件：{item.relative_to(app_dir)}\n"
+                "请去掉 --no-build，以干净输入重新构建。"
+            )
+
+    for name in ("LICENSE", "NOTICE.md"):
+        shutil.copyfile(REPO / name, app_dir / name)
+
+
 def directory_size(path: Path) -> int:
     return sum(item.stat().st_size for item in path.rglob("*") if item.is_file())
 
@@ -216,13 +229,16 @@ def main() -> int:
     exe = DIST / APP_NAME / f"{APP_NAME}.exe"
     if not args.no_build:
         exe = run_pyinstaller()
+
+    if not exe.is_file():
+        raise SystemExit(f"没有可打包的产物：{exe}")
+
+    prepare_release_directory(exe.parent)
+    if not args.no_build:
         # 先确认剔掉的东西真没进产物，再花时间跑自检 —— 顺序反了会白跑一遍。
         check_pruned_binaries()
         if not args.skip_smoke:
             smoke_test(exe)
-
-    if not exe.is_file():
-        raise SystemExit(f"没有可打包的产物：{exe}")
 
     archive = make_zip(version)
     installer = build_installer(version) if args.installer else None

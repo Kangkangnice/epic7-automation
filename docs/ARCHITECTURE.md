@@ -15,6 +15,7 @@ auto_game_unified/
 │  ├─ qqbot.py             # 官方 QQ 机器人开放平台 C2C 私聊推送
 │  ├─ window.py             # 模拟器窗口捕获与局部坐标点击（雷电 adb 通道）
 │  ├─ pc_window.py          # PC 客户端窗口 I/O（BitBlt 后台抓屏、SendInput 点击、ESC、滑动、滚轮）
+│  ├─ visual_evidence.py    # 通用模板判据、动作证据及校验
 │  ├─ evidence_diagnostics.py # 失败诊断落盘（screen/source/target/evidence.json）
 │  ├─ elevation.py          # UIPI 提权判断（对方窗口权限更高时点击会被静默拦掉）
 │  ├─ portrait.py           # 竖屏通道（H5 网页把模拟器切成竖屏时的取图与坐标）
@@ -29,10 +30,7 @@ auto_game_unified/
 │  ├─ runner_base.py        # 同构模式公共主循环（ModeRunnerBase；点一次→每帧重问状态机）
 │  ├─ transactional_runner_base.py  # 事务型公共主循环（目标页连续两帧才提交状态）
 │  ├─ template_paths.py     # 平台差异的**唯一入口**：共享图 / pc 同名图覆盖
-│  ├─ **其余「一条路线一个模块」**：arena / story / expedition / tower / fodder /
-│  │   hero_synthesis / side_story / activity_story / knights_donation / sanctuary /
-│  │   labyrinth_stone / moonlight_theater / survivor / community / shop_refresh /
-│  │   world_boss / achievement（现行名单以 modes.MODE_SPECS 为准）
+│  ├─ 各路线模块            # 页面语义、动作和完成条件。注册表见 modes.py
 │  ├─ daily_tasks.py        # 每日连打的**编排**（不是一条路线，不占 --mode）
 │  ├─ modes.py              # 模式注册、默认状态、构建器、准入表态
 │  ├─ evidence/             # 各路线视觉证据：模板、区域、阈值和页面组合
@@ -68,6 +66,20 @@ auto_game_unified/
 - `Epic7Navigator` 只负责大厅恢复和进入模式，不处理模式内部业务。
 
 这些职责不能混在一起。点击成功不等于页面已经变化；内部状态只能在目标页面得到确认后继续。
+
+`core` 持有公共窗口、匹配和证据类型，供游戏层、命令行和桌面组装。游戏层在
+`games/epic7/evidence/` 声明业务锚点；旧 `evidence/common.py` 保留已有导入路径。
+共享核心直接导入游戏和桌面模块会触发离线依赖门禁。
+
+### 共享视觉的演进顺序
+
+1. 按[跨端共享视觉契约](decisions/0009-universal-vision-contract.md)统一截图口径、限定区域的文字证据、
+   当前帧落点和拒绝依据。先把试点接到一条路线的正常 CLI 与桌面入口，再用未参与校准的路线验收公共策略。
+2. 以 `ModeSpec`、`NavigationPlan` 和现有 Runner 分工复用业务语义，逐个证明旧平台覆盖可退出。
+   每次变更独立回归，并按[接入指南](PC_TEMPLATE_MIGRATION.md)登记真实变体或例外。
+3. 后续将 `main.py::run_mode` 的装配边界和桌面进度事件分别梳理。当前桌面部分进度由
+   [run_progress.py](../desktop/run_progress.py) 解析日志。引入结构化事件时应同时核对进度、停止、
+   结果和现有 CLI 行为。打包的源码保留约束及烟测入口见[发布手册](howto/release.md)。
 
 ## 坐标和窗口
 

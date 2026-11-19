@@ -7,6 +7,7 @@
 - **现状**：`docs/STATUS.md` —— 路线名单 / PC 放行 / 每日任务顺序，**由代码生成**。
   想知道「现在支持哪些」看它，别数 `catalog.py`、也别信旧文档里的数字。
 - **索引**：`docs/README.md` —— 「我要做 X 该看哪份」+ 文档各通道 + 写文档的规矩。
+- **协作**：[`GOVERNANCE.md`](GOVERNANCE.md) —— 评审职责、架构决策、交接和放行。
 
 三条会被门禁拦下的硬规矩（不是建议，是测试）：
 
@@ -22,8 +23,8 @@
 修改任何视觉识别、点击、导航、重试、事务或路线前，必须阅读（适用于全部路线、模拟器与 PC 迁移）：
 
 - `docs/TRANSITION_CONTRACTS.md`
-- `CONTRIBUTING.md`（人和 AI 怎么配合做新路线；旧的「用户操作、AI 只读观测」分工已作废）
-- **新增路线或新增动作**时读 `docs/EXTENDING.md`；**移植 PC / 改 PC 后端**时读 [`docs/PC_TEMPLATE_MIGRATION.md`](docs/PC_TEMPLATE_MIGRATION.md)
+- [贡献指南](CONTRIBUTING.md)（本地环境、证据、提交和评审）
+- **新增路线或新增动作**时读 `docs/EXTENDING.md`；**移植 PC / 改 PC 后端**时读 [PC 接入指南](docs/PC_TEMPLATE_MIGRATION.md)。收到「移植 PC」的请求从 [§3](docs/PC_TEMPLATE_MIGRATION.md#3-一句话移植到-pc) 开始
 - **要实机跑闭环**时，读 `docs/howto/live_verification.md`（权限 / 点不动 / 失败判定）
 - 目标路线测试和最新真实失败证据
 
@@ -92,9 +93,8 @@ python tools/compress_images.py --staged --apply && git add <刚压过的文件>
 
 **提交那一次由钩子跑（`tools/githooks/pre-commit` → `tools/check.py`），不要再手工跑一遍。**
 开发中途想看结果才手工跑：`python tools/check.py --files a.py b.py`（约 1~2 分钟）。
-`--no-verify` **默认禁止**（钩子是唯一的强制关卡）；`--full` 只在 PR 合并 / 发布前用；
+`--no-verify` **默认禁止**；PR 合并和发布前通过 CI 全量测试；
 改共享模块最费时间，这类改动**攒在一起一次提交**，别拆成几次各跑一遍。
 
-⚠️ 五个坑（`--vs HEAD` 会把上一轮未提交的改动算进来、手工跑完又改文件那次作废、
-并发会话共用工作区时别 `git add -A`……）见
-[`CONTRIBUTING.md`](CONTRIBUTING.md#几个容易踩的细节2026-11-08-从-agentsmd-移来)。
+提交和并发协作见[贡献指南](CONTRIBUTING.md)。`--vs HEAD` 会包含当前工作区相对 HEAD 的全部改动；
+手工验证后又修改文件，提交前以最终暂存内容为准。

@@ -1,150 +1,36 @@
-<div align="center">
-
 # 第七史诗自动助手
 
-**基于窗口截图 + OpenCV 模板匹配的《第七史诗》PVE 自动化**
+Windows 上的非官方《第七史诗》视觉自动化工具。通过游戏窗口截图定位页面和控件，在确认页面、动作和资源条件后执行输入，并验证实际结果。
 
-<sub>免费 · 开源 · 不读内存 · 不注入 · 不改游戏文件</sub>
-
-<div>
-  <img alt="platform" src="https://img.shields.io/badge/platform-Windows-blueviolet">
-  <img alt="python" src="https://img.shields.io/badge/python-3.11%2B-blue">
-  <img alt="license" src="https://img.shields.io/badge/license-MIT-green">
-  <img alt="routes" src="https://img.shields.io/badge/routes-17-orange">
-</div>
-<div>
-  <img alt="stars" src="https://img.shields.io/github/stars/Kangkangnice/epic7-automation?style=social">
-  <img alt="commit" src="https://img.shields.io/github/commit-activity/m/Kangkangnice/epic7-automation?color=blue">
-</div>
-
-学习实践 __视觉判据 & 失败关闭__ 的一次工程尝试
-
-✨ 如果觉得有用，欢迎右上角点亮 `Star` 支持 ✨
-
-</div>
-
----
-
-## 🚀 功能介绍
-
-<div align="left">
-
-🧹 __日常清理__：竞技场、世界首领战、骑士团捐赠、迷宫强化石、圣域收菜、社区签到、成就领取
-
-📖 __剧情与养成__：主线、支线故事、月塔、远征、狗粮、英雄合成、月光剧场
-
-🛒 __资源与商店__：秘密商店刷书签（只买誓约 / 神秘书签）、活动剧情、限时活动
-
-🖥️ __双后端__：雷电模拟器与《第七史诗》PC 客户端都能跑，界面只放行已实跑验收的路线
-
-🛡️ __失败关闭__：只在认出预期页面时点击；陌生页面、黑屏、遮挡、转场超时一律留证停止
-
-📋 __证据优先__：每次点击前后都要有可证伪的画面判据，「点了」永远不等于「成了」
-
-🖱️ __后台输入__：PC 端默认走后台点击通道，运行时不必让出前台；键盘与滑动仍走前台，且后台点击会移动真实鼠标
-
-</div>
-
-> 路线清单与逐条说明见 [现状速查](docs/STATUS.md)；怎么勾选、怎么跑见 [使用手册](docs/USER_GUIDE.md)。
-
-## 📸 界面一览
-
-<div align="center">
+[使用手册](docs/USER_GUIDE.md) · [支持范围](docs/STATUS.md) · [故障排查](docs/TROUBLESHOOTING.md) · [参与贡献](CONTRIBUTING.md)
 
 ![桌面界面示意](docs/images/app-preview.svg)
 
-*✨ 勾选顺序即执行顺序 · 开始前自动复检 · 实时日志 · 一键导出诊断包 ✨*
+## 快速开始
 
-</div>
+需要 Windows 64 位、简体中文游戏界面，以及雷电模拟器或《第七史诗》PC 客户端。请按 [支持范围](docs/STATUS.md) 选择对应后端已放行的路线。
 
-## ⚡ 快速开始
-
-环境：Windows · Python 3.11+ · 游戏语言**简体中文** · 雷电模拟器或 PC 客户端 · 基准画布 `1982 × 1132`。
-
-**1. 安装**（仓库需克隆为 `auto_game_unified`，命令从它的**父目录**执行）
+如 [GitHub Releases](https://github.com/Kangkangnice/epic7-automation/releases) 有维护者发布的免安装 ZIP，解压后运行 `Epic7AutoAssistant.exe`。从源码开始时使用 Windows Python，CI 的完整测试基线为 Python 3.11。
 
 ```powershell
 git clone https://github.com/Kangkangnice/epic7-automation.git auto_game_unified
-python -m pip install -r auto_game_unified\requirements.txt
+py -3.11 -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r auto_game_unified\requirements.txt
+.\.venv\Scripts\python.exe -u -m auto_game_unified.desktop
 ```
 
-**2. 启动桌面界面**
+命令从检出目录 `auto_game_unified` 的父目录执行。打开游戏后，在助手里选择后端，检测环境，勾选路线并开始。界面操作和停止方法见 [使用手册](docs/USER_GUIDE.md)。
 
-```powershell
-python -u -m auto_game_unified.desktop
-```
+## 安全与反馈
 
-**3. 使用**：先启动模拟器 / PC 客户端并进入游戏 → 点「检测环境」→ 勾选路线（可填次数）→ 点「开始任务」。日常使用建议用[无窗口入口](docs/USER_GUIDE.md)，双击桌面图标即可。
+命令行默认干跑。需要真实操作时明确启用实跑，并按路线设置核对次数和资源选项。涉及购买、补充、制作或整理等动作的具体开关和证据见 [安全矩阵](docs/SAFETY_MATRIX.md)。
 
-> 命令行入口 `python -m auto_game_unified.main` 保留给开发调试；**默认是干跑**，实跑必须显式加 `--live --confirm RUN`。
+诊断截图和日志默认留在本机。公开报告前应移除昵称、账号、私密路径和凭据。更新检查会查询 GitHub，配置 QQ 通知时会发送运行摘要。渠道与数据说明见 [安全政策](SECURITY.md)。
 
-> 🧰 界面左侧有三页：**每日任务** / **运行日志** / **实用工具**（目前是固定点连点器），底部是「关于」。2026-11-09 起只有这一套界面了（原来的 Tk 版已删除），依赖也合并进了 `requirements.txt`。
+欢迎使用 [GitHub Issue 表单](https://github.com/Kangkangnice/epic7-automation/issues/new/choose) 提交复现步骤、客户端和脱敏日志。代码和文档贡献从 [贡献指南](CONTRIBUTING.md) 开始。维护职责见 [项目治理](GOVERNANCE.md)，其他资料见 [文档索引](docs/README.md)。
 
-## 🗂️ 路线一览
+## 许可
 
-| 分组 | 路线 |
-| --- | --- |
-| 每日 | 竞技场 · 刷书签 · 世界首领战 · 骑士团捐赠 · 迷宫强化石 · 圣域收菜 · 社区签到 · 成就领取 · 宠物领养 |
-| 按需 | 英雄合成 · 主线 · 狗粮 · 支线故事 · 月光剧场 · 主线补星 |
-| 赛季 | 远征 · 月塔 |
-| 活动 | 限时活动 · 活动剧情 |
+原创代码按 [MIT](LICENSE) 授权。游戏素材和第三方组件的权利范围见 [NOTICE](NOTICE.md)。本项目与游戏运营方无关联，使用前请核对适用的游戏规则。
 
-具体条数与 PC 放行名单见 [现状速查](docs/STATUS.md) —— 那一页由代码生成，不会过期。活动路线与其它路线互斥，且需要人工停在指定页面。逐条边界与限制见 [使用手册](docs/USER_GUIDE.md) 与 [文档索引](docs/README.md)。
-
-## 📚 文档
-
-| | |
-| --- | --- |
-| 📊 [现状速查](docs/STATUS.md) | 路线名单、PC 放行情况、每日任务顺序（自动生成） |
-| 🗂️ [文档索引](docs/README.md) | 我要做 X 该看哪份；文档怎么组织、怎么写 |
-| 📖 [使用手册](docs/USER_GUIDE.md) | 安装、界面、干跑 / 实跑、日志、停止与退出码 |
-| 🛡️ [安全矩阵](docs/SAFETY_MATRIX.md) | 哪些动作花资源、靠什么拦住误点；每条路线的实机证据表 |
-| 🏗️ [架构说明](docs/ARCHITECTURE.md) | 分层、运行时、证据模型与 Runner 主循环 |
-| 🔗 [页面转场契约](docs/TRANSITION_CONTRACTS.md) | 五段式证据、fail-closed 与接力规则 |
-| 🖥️ [PC 客户端接入指南](docs/PC_TEMPLATE_MIGRATION.md) | PC 抓帧、模板差异与逐路线验收状态 |
-| 🩺 [故障排查](docs/TROUBLESHOOTING.md) | 认不出、点不动、黑屏时先看这里 |
-| 🧩 [新增自动化路线](docs/EXTENDING.md) | 复用优先的证据先于代码流程 |
-| 🤝 [贡献指南](CONTRIBUTING.md) | 提交门禁、测试与协作约定 |
-| 🔒 [安全政策](SECURITY.md) | 漏洞反馈与数据处理说明 |
-
-## 🛡️ 安全边界
-
-- **干跑是默认**：不显式加 `--live --confirm RUN`，一个点击都不会发出去。
-- **绝不点危险按钮**：钻石购买、付费确认、买票、重新抽取等路径在代码里被显式禁止。
-- **资源只认不买**：体力 / 旗帜 / 门票不足时停止并留证，不自动补充付费资源。
-- **每条路线收尾回大厅**：完成判定靠「重新认出稳定入口」，不靠「点过确认按钮」。
-- **可随时安全停止**：`P` 全局热键、界面停止按钮、停止信号文件三条通道。
-
-完整的安全原则见 [安全矩阵](docs/SAFETY_MATRIX.md) 与 [使用手册](docs/USER_GUIDE.md) 第 12 节。
-
-## ⚠️ 免责声明
-
-📌 本项目仅供技术学习与交流，免费开源，作者保留最终解释权
-
-🎨 《第七史诗》相关素材与商标版权归原权利方所有
-
-⚖️ 使用任何第三方辅助工具均可能违反游戏用户协议，账号风险与后果由使用者自行承担
-
-🚫 本项目未授权任何个人、商家或自媒体进行售卖；若遇到商家用它代练收费，相关后果与本项目无关
-
-🚫 作者不提供任何「售后」或代练服务
-
-🔒 所有日志、截图与诊断文件默认只留在本机；QQ 机器人通知为可选功能，不配置就不联网
-
-## 🌟 参与贡献
-
-一个人也能把日常跑干净，但判据和模板永远有没覆盖到的页面。欢迎提 [Issue](https://github.com/Kangkangnice/epic7-automation/issues) 或 PR —— 尤其是**带当帧截图和真实分数**的失败现场，那是最有价值的贡献。
-
-动手前请先读 [贡献指南](CONTRIBUTING.md)（含「人和 AI 怎么配合做新路线」）：改视觉判据、点击、导航或路线前，必须先补证据、补反例、补测试。
-
-## ☕ 支持一下
-
-<div align="center">
-
-个人项目，没有赞助码，也没有服务器要养。
-
-⭐ **点个 Star 就是最好的支持** ⭐
-
-版本变化见 [CHANGELOG.md](CHANGELOG.md) · 许可：[MIT](LICENSE)
-
-</div>
+[版本记录](CHANGELOG.md)

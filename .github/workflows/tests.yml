@@ -2,7 +2,7 @@ name: tests
 
 # 全量测试只在「要合进 main / 发版 / 手动兜底 / 每周」时跑。
 # 平时 push（含功能分支）只跑编译 + 静态检查 + 治理门禁：本机提交钩子已经按改动
-# 范围跑过定向测试，服务端不必每次重复 2737 个用例（约 17 分钟）。
+# 范围跑过定向测试，服务端把完整业务回归留给需要合并和发布的检查。
 # ⚠️ job 名 `pytest` 不能改 —— main 的分支保护认这个检查项。
 on:
   push:
@@ -12,6 +12,9 @@ on:
   workflow_dispatch:
   schedule:
     - cron: "0 3 * * 1"
+
+permissions:
+  contents: read
 
 jobs:
   pytest:
@@ -24,6 +27,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           path: auto_game_unified
+          persist-credentials: false
 
       - uses: actions/setup-python@v5
         with:
@@ -55,10 +59,10 @@ jobs:
       # 治理门禁单独成一步：本机可以用 --no-verify 跳钩子，但这一步在干净检出上跑，
       # 跳不过去。失败时一眼就能看出是「文档治理」而不是「业务测试」坏了。
       # 这里同时就是「干净检出一致性」检查：本机被 .gitignore 忽略的临时文件不在场。
-      - name: Governance gate (docs / status / handover)
+      - name: Governance gate (docs / isolation / packaging)
         working-directory: ${{ github.workspace }}
         run: |
-          python -m pytest -q auto_game_unified/tests/test_status_doc.py auto_game_unified/tests/test_docs_index.py auto_game_unified/tests/test_doc_review.py auto_game_unified/tests/test_new_decision.py auto_game_unified/tests/test_governance_selfcheck.py
+          python -m pytest -q auto_game_unified/tests/test_status_doc.py auto_game_unified/tests/test_docs_index.py auto_game_unified/tests/test_doc_review.py auto_game_unified/tests/test_new_decision.py auto_game_unified/tests/test_governance_selfcheck.py auto_game_unified/tests/test_core_dependencies.py auto_game_unified/tests/test_release_packaging.py
 
       # push 到功能分支时跳过：本机钩子已跑定向，服务端这一步留给 PR 合并。
       - name: Run test suite (full)

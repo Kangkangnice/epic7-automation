@@ -109,8 +109,8 @@ DOC_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("desktop_qt/", ("docs/USER_GUIDE.md",)),
     ("desktop/", ("docs/USER_GUIDE.md",)),
     ("main.py", ("docs/USER_GUIDE.md", "docs/ARCHITECTURE.md")),
-    ("packaging/", ("CONTRIBUTING.md",)),
-    (".github/", ("CONTRIBUTING.md",)),
+    ("packaging/", ("docs/howto/release.md", "NOTICE.md")),
+    (".github/", ("CONTRIBUTING.md", "GOVERNANCE.md")),
 )
 
 #: 这些路径的改动**不会**让任何文档过期（改了它们不必复审）。

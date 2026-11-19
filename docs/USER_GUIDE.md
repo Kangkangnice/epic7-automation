@@ -6,21 +6,13 @@
 
 要求：
 
-- Windows；
-- Python 3.11 或更高版本（界面依赖的 PySide6 与现行 numpy / Pillow 都不再提供 3.10 的安装包）；
-- 已安装 `requirements.txt` 中的依赖；
+- Windows。源码运行使用 [README](../README.md) 的 Python 3.11 环境和依赖安装说明；
 - 模拟器中的《第七史诗》窗口标题为“第七史诗”；
 - 游戏语言为简体中文（模板按中文界面采集，换语言会导致判定大面积失效）；
 - 模板基准画面为 `1982 x 1132`，窗口宽高比、游戏 UI 和显示缩放没有在采集模板后改变；
 - 模拟器窗口被其他窗口遮挡也可以；助手读的是窗口画面、点击走模拟器自己的输入通道，期间的鼠标可以照常用（建议不要最小化）。
 
-建议从仓库父目录安装和启动：
-
-```powershell
-cd D:\AI\codex\auto_game
-python -m pip install -r auto_game_unified\requirements.txt
-python -m auto_game_unified.main --help
-```
+源码命令从 `auto_game_unified` 的父目录运行。以下示例的 `python` 指安装了项目依赖的 Python。
 
 第一次运行或游戏更新后，先执行干跑。只有识别结果与当前页面一致时才进行一轮实跑。
 
@@ -29,7 +21,6 @@ python -m auto_game_unified.main --help
 先启动雷电模拟器并进入《第七史诗》，再从仓库父目录启动中文桌面界面：
 
 ```powershell
-cd D:\AI\codex\auto_game
 python -u -m auto_game_unified.desktop
 ```
 
@@ -43,7 +34,7 @@ python -u -m auto_game_unified.desktop
 2026-11-09 起只有这一套界面（Qt / Fluent）。旧的那套 Tk 界面已经删除，
 不要再找「另一个入口 / 另一个图标」。
 
-「每日任务」页提供：环境检测、任务勾选（每条路线一行，勾选框 + 次数框）、开始任务/安全停止、实时日志、导出诊断包。默认一条也不勾；勾选的先后就是执行顺序，界面用 ①②③ 标出。界面上**不再区分正式 / 实验**，启动前也没有「可能不稳定」的二次确认（2026-10-20 起：当时十五条路线均已实机验证；活动剧情（2026-10-31）、成就领取（2026-11-08）与主线补星（2026-11-09）是后来新增的第 16、17、18 条，三条都已在 PC 上真机跑通并放行）。英雄合成固定运行一轮，世界首领战固定每天 2 次（每日上限）——这两条的次数框置灰不可改，其余路线按默认次数预填、可自行调整（竞技场默认预填 10 次）。
+「每日任务」页提供：环境检测、任务勾选（每条路线一行，勾选框 + 次数框）、开始任务/安全停止、实时日志、导出诊断包。默认一条也不勾；勾选的先后就是执行顺序，界面用 ①②③ 标出。界面启动前会检查所选后端支持的路线，名单由[当前现状](STATUS.md)生成。英雄合成固定运行一轮，世界首领战固定每天 2 次（每日上限）——这两条的次数框置灰不可改，其余路线按默认次数预填、可自行调整（竞技场默认预填 10 次）。
 
 进入界面后点击一次“检测环境”。检测通过后切换功能不会要求重复检测；点击“开始任务”时，助手会在后台自动快速复检模拟器和截图，并校验**所选每一条**路线的资源。复检失败时不会启动自动化。
 
@@ -59,7 +50,7 @@ python -u -m auto_game_unified.desktop
 
 每日任务最末尾还会**额外走一趟支线故事**，把这一期的刷新倒计时读下来（不打图、不消耗次数），显示在悬浮便签的待办下面那一行，例如「支线刷新：剩余 13 天 11 小时（11-12 23:41 读）」。同一趟还会**顺手看一眼月光剧场入口卡左上角有没有绿色 F**——有就写「｜月光剧场免费已更新」，没有就写「｜月光剧场免费已用」，两句都挨在倒计时后面；它只站在支线故事页上看，**不会进剧场**。读不到就是「这次没读到」，**不算这一轮失败**。
 
-当前推荐用**免安装版**：解压 ZIP、双击 `Epic7AutoAssistant.exe` 即可，不需要装 Python、不需要安装过程，删文件夹就算卸载（运行记录写在 `%LOCALAPPDATA%\Epic7AutoAssistant`，不在解压目录里）。桌面助手的界面上有两个后端：**“模拟器（雷电）”日常就用它**；“PC 客户端”2026-11-01 起重新露面，但**只有已放行的路线才让在界面跑**（现行条数与名单见 [STATUS.md](STATUS.md) 第一节、本手册第 7 节，唯一出处是 `desktop/catalog.PC_READY_ROUTES`；勾到未在该后端放行的路线只跳过那一条，其余照跑，日志会说明）。其余路线仍按 [PC 客户端接入指南](PC_TEMPLATE_MIGRATION.md) 逐条验收；开发验证不受这层限制，用命令行 `--window-backend pc`。开始按钮在环境检测通过前保持禁用。
+如果对应版本的 GitHub Release 提供免安装 ZIP，解压并双击 `Epic7AutoAssistant.exe`。运行记录写在 `%LOCALAPPDATA%\Epic7AutoAssistant`。源码启动步骤见 [README](../README.md)。桌面助手的界面上有两个后端：**“模拟器（雷电）”日常就用它**；“PC 客户端”2026-11-01 起重新露面，但**只有已放行的路线才让在界面跑**（现行条数与名单见 [STATUS.md](STATUS.md) 第一节、本手册第 7 节，唯一出处是 `desktop/catalog.PC_READY_ROUTES`；勾到未在该后端放行的路线只跳过那一条，其余照跑，日志会说明）。其余路线仍按 [PC 客户端接入指南](PC_TEMPLATE_MIGRATION.md) 逐条验收；开发验证不受这层限制，用命令行 `--window-backend pc`。开始按钮在环境检测通过前保持禁用。
 
 ### 2.1 实用工具：连点器
 
@@ -88,10 +79,9 @@ python -u -m auto_game_unified.desktop
 - 它和「每日任务」**不能同时开**：两边都在发点击会互相干扰，界面会直接拦住并说明原因。
 
 
-### 2.2 次元探查（内置运行）
+### 2.2 次元探查（可选源码集成）
 
-**它干什么**：第三方 E7auto 的「次元探查」代码原样内置在助手里，点一下就跑三层探查。
-**它不是第 19 条路线** —— 不进勾选名单、不进每日任务连打、不参与开跑前的模板复检与路线登记。
+本入口在源码环境中调用单独提供的第三方 E7auto。它单独启动和停止，每日任务使用自己的路线清单。标准发行包不包含该组件。
 
 **怎么开**：在「次元探查」页选好**阶段**（1~5）、**阵容**（暗双子队 / 平民替换队）、
 **完成轮数**，点「开始次元探查」。进度和它打出来的日志就显示在这一页，不用另开程序。
@@ -109,10 +99,10 @@ python -u -m auto_game_unified.desktop
 - 它会自己调整游戏窗口大小；下次开跑本助手会自动改回，不用手动还原；
 - 阶段和阵容是它原样带过来的固定配置：账号缺对应英雄、目标阶段没解锁、或遇到没登记的内容，
   它会停下来并在本页写明停止原因；
-- 需要管理员权限；代码与模板随助手一起分发，不用另外安装或选路径。
+- 需要相应窗口权限。源码集成从工作区根下的 `vendor/e7auto/` 读取单独取得的组件及配置。
 
 
-## 3. 十八种模式
+## 3. 模式和业务完成条件
 
 | 模式参数 | 中文名称 | 作用 | 轮次含义 |
 |---|---|---|---|
@@ -193,7 +183,6 @@ python -u -m auto_game_unified.desktop
 命令行仍然可以直接调用同一条通道，供开发调试与自动化脚本使用：
 
 ```powershell
-cd D:\AI\codex\auto_game
 # 不写 --daily-tasks 就是默认清单；写了就按写的顺序跑
 python -u -m auto_game_unified.main --daily --daily-tasks story:2,arena:1 --live --confirm RUN
 ```
@@ -216,7 +205,6 @@ python -u -m auto_game_unified.main --daily --daily-tasks story:2,arena:1 --live
 干跑只截图、识别并输出当前状态的第一步，不执行点击，也不需要 `--live`：
 
 ```powershell
-cd D:\AI\codex\auto_game
 python -u -m auto_game_unified.main --mode story
 python -u -m auto_game_unified.main --mode arena
 python -u -m auto_game_unified.main --mode expedition
@@ -227,7 +215,7 @@ python -u -m auto_game_unified.main --mode shop_refresh --max-cycles 1
 
 `--start-state` 只用于离线/干跑诊断，必须是对应模式允许的状态。实跑时传入该参数会被拒绝。
 
-竞技场、主线和远征实跑都不需要你告诉它「从第几步开始」：启动时会先看画面，停在半路就从那一步接着跑；停在别的页面就照旧一路返回大厅，而且每返回一页都会再检查一次，中途扫到可接力的画面就地接管。详见 README 的「开局接力」。
+启用开局接力后，程序会在已验证的画面接管，也会复查返回大厅途中的页面。各路线可接管的页面见[开局接力覆盖面](RESUME_COVERAGE.md)。
 
 - **竞技场**：整轮六个环节除了局内都接得住 —— 竞技场模式选择 / 对手列表 / 对战详情 / 准备战斗 / 战斗结果页 / 结果确认中（段位提升弹窗）；停在局内也会把这一局监督完再继续（不会按 `Back`）。只有「买票弹窗压住的队伍页」不接力（认错会点到弹窗上），会走老流程。
 - **主线**：关卡入口、队伍准备、助手选择、剧情播放、跳过确认、通关提示、额外奖励和各种结算页都接得住；停在局内也不会按 `Back`，直接把这一局交给战斗监督等结算。想让它从关卡入口老老实实重开，先把游戏切回大厅即可。
@@ -257,9 +245,9 @@ python -u -m auto_game_unified.main --mode shop_refresh --window-backend emulato
 
 ## 7. PC 后端
 
-`--window-backend pc` 提供完整的窗口接入能力（客户区校准到 `1920×1080`、后台截图、
-`SendInput` 点击与滑动），平台差异只存在于**图片**（`templates/<路线>/pc/*.png` 存在则优先用，
-否则回落共享图）。业务代码在两个客户端上是同一套。
+`--window-backend pc` 负责客户区校准、窗口截图和输入适配。
+PC 默认后台点击，滑动、滚轮和 ESC 会用前台输入。已放行的路线使用相同的业务入口，
+生产模板解析仍支持已有 PC 覆盖。窗口、采集和共享迁移规范见 [PC 接入指南](PC_TEMPLATE_MIGRATION.md)。
 
 **哪些路线能在 PC 上跑，以 `desktop/catalog.PC_READY_ROUTES` 为准** —— 名单旁边逐条写了
 实跑凭据和遗留问题。**现行条数与名单看 [STATUS.md](STATUS.md) 第一节**（唯一出处是
@@ -272,9 +260,8 @@ python -u -m auto_game_unified.main --mode shop_refresh --window-backend emulato
 - **滑动**：PC 的滑动是 `SendInput` 按下 → 分步移动 → 抬起。刷书签、骑士团捐赠、迷宫强化石
   三条已实机跑通（日志里合计数千次动作），**可用**。但 `duration` 的时长语义当年标定在
   adb `input swipe` 上，幸存者那条换到 PC 后还没重新验过。
-- **认不出的页**：先在 PC 上截该页的客户区原图（`1920×1080`，不缩放）量分数，确属渲染差异
-  才往 `templates/<路线>/pc/` 丢同名图。别整帧拉伸（见
-  [PC 客户端接入指南](PC_TEMPLATE_MIGRATION.md) 第 1.2 节）。
+- **认不出的页**：停止任务，按[排错手册](TROUBLESHOOTING.md)留存本机诊断。
+  开发者按[PC 接入指南](PC_TEMPLATE_MIGRATION.md)核对截图口径、适配器和公共识别。
 
 只在采集/验证场景使用 PC 干跑：
 
@@ -318,7 +305,11 @@ python -u -m auto_game_unified.main --mode hero_synthesis --window-backend pc
 
 可选通知通过环境变量启用，没配置就安静跳过，挂了也不影响退出码。
 
-QQ 机器人（官方开放平台 C2C 私聊；免费，需按 README「安卓结束通知（官方 QQ 机器人）」完成一次性注册与取 `user_openid`）：
+在 [QQ 开放平台](https://q.qq.com)创建机器人并取得 AppID 与 AppSecret。由收通知的用户先给机器人发送一条私聊消息，
+从机器人收到的 `C2C_MESSAGE_CREATE` 事件读取该用户的 OpenID，用于下面的 `USER_OPENID`。
+主动消息的权限和接收设置以[腾讯接口文档](https://github.com/tencent-connect/bot-docs/blob/main/docs/develop/api-v2/server-inter/message/send-receive/send.md)为准。
+
+设置变量后从同一个 PowerShell 启动助手，或写入当前 Windows 用户的环境变量后重新打开助手。
 
 ```powershell
 $env:EPIC7_QQBOT_APP_ID = "你的 AppID"
@@ -327,7 +318,7 @@ $env:EPIC7_QQBOT_USER_OPENID = "你收到的 user_openid"
 # 可选：$env:EPIC7_QQBOT_BASE_URL = "https://sandbox.api.sgroup.qq.com"  # 联调用沙箱，默认正式环境
 ```
 
-不要把 AppID / AppSecret / user_openid 写入仓库、日志或聊天记录。官方接口即使报错也返回 HTTP 200，成败在响应体 `code` 字段里；它不会改变自动化本身的运行结果，需要在 QQ 开放平台侧修正配置或停用通知。完整配置步骤见 README「安卓结束通知（官方 QQ 机器人）」。
+把 AppID、AppSecret 和 OpenID 保存在本机。发送失败时根据通知日志和 QQ 平台配置排查，自动化结果和退出码仍反映游戏任务。
 
 ## 10. 日志与诊断文件
 

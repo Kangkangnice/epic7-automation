@@ -16,6 +16,10 @@
 
 ## 第三方组件
 
+- 第三方 E7auto 的次元探查作为可选的源码环境集成，标准构建不随包分发 E7auto。
+  其代码、素材、配置与其他依赖分别适用各自的权利和许可条件。
+- 桌面界面的 Fluent Widgets 组件有独立许可。发行前须按[发布手册](docs/howto/release.md)核对实际版本和分发条件。
+
 - `packaging/languages/ChineseSimplified.isl` —— Inno Setup 安装界面的简体中文消息文件，
   取自 [jrsoftware/issrc](https://github.com/jrsoftware/issrc) 的 `Files/Languages/Unofficial/`
   目录（维护者 Zhenghan Yang，另见 https://github.com/kira-96/Inno-Setup-Chinese-Simplified-Translation）。

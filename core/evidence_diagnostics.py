@@ -13,7 +13,7 @@ from .matcher import (
     best_match_with_fallback,
     load_template,
 )
-from auto_game_unified.games.epic7.evidence.common import (
+from .visual_evidence import (
     AtomObservation,
     EvidenceProfile,
     EvidenceState,

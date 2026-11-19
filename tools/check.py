@@ -75,6 +75,11 @@ PACKAGE = PACKAGE_DIR.name
 
 #: 共享模块默认按**文件 stem** 找测试（`core/matcher.py` -> 含 "matcher" 的测试）。
 #: 这里只补「stem 匹配不到」或「必须多看几处」的少数情况；不要把它当全量清单用。
+VISUAL_EVIDENCE_TESTS = (
+    "visual_evidence", "core_dependencies", "evidence_diagnostics", "hero_evidence",
+    "arena_evidence", "expedition_evidence", "story_evidence", "tower_evidence",
+    "world_boss_evidence", "shop_refresh_evidence", "survivor_evidence",
+)
 TEST_KEYWORD_OVERRIDES: dict[str, tuple[str, ...]] = {
     # 串跑编排层：主模块 + 桌面入口 + 圣域（它直接调用 daily_tasks 的编排）。
     "games/epic7/daily_tasks.py": (
@@ -117,15 +122,15 @@ TEST_KEYWORD_OVERRIDES: dict[str, tuple[str, ...]] = {
         "ticket_exhaustion", "story", "fodder", "arena", "world_boss", "tower",
     ),
     "games/epic7/hero_transition.py": ("hero",),
-    "games/epic7/evidence/common.py": (
-        "visual_evidence", "hero_evidence", "arena_evidence", "expedition_evidence",
-        "story_evidence", "tower_evidence", "world_boss_evidence",
-        "shop_refresh_evidence", "survivor_evidence",
-    ),
+    "games/epic7/evidence/common.py": VISUAL_EVIDENCE_TESTS,
+    "core/visual_evidence.py": VISUAL_EVIDENCE_TESTS,
     "games/epic7/finish_home.py": ("finish_at_home", "home_return_failure"),
     "games/epic7/activity_column.py": ("community",),
     "core/matcher.py": ("matcher", "scaled_template_matching"),
     "core/battle_supervisor.py": ("battle_supervisor", "battle_safety_invariants"),
+    "packaging/build.py": ("release_packaging",),
+    "packaging/entry.py": ("release_packaging",),
+    "packaging/epic7_auto_assistant.spec": ("release_packaging",),
     "main.py": (
         "main_story", "desktop_worker", "desktop_session", "daily_tasks",
         "navigation", "modes", "route_metadata", "public_flow_verification",

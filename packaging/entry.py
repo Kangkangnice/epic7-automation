@@ -50,15 +50,16 @@ def _self_check() -> int:
     lines.append(f"Python {sys.version.split()[0]}  frozen={bool(getattr(sys, 'frozen', False))}")
     lines.append(f"程序目录 {Path(sys.executable).parent}")
 
-    root = data_root()
+    runtime_root = data_root()
+    log_dir = runtime_root / "runtime_logs"
     try:
-        (root / "runtime_logs").mkdir(parents=True, exist_ok=True)
-        probe = root / "runtime_logs" / ".self_check"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        probe = log_dir / ".self_check"
         probe.write_text("ok", encoding="utf-8")
         probe.unlink()
-        record(True, "运行产物目录可写", str(root))
+        record(True, "运行产物目录可写", str(runtime_root))
     except OSError as error:
-        record(False, "运行产物目录可写", f"{root}：{error}")
+        record(False, "运行产物目录可写", f"{runtime_root}：{error}")
 
     if TEMPLATE_ROOT.is_dir():
         count = len(list(TEMPLATE_ROOT.rglob("*.png")))
@@ -72,9 +73,9 @@ def _self_check() -> int:
         # 否则会把「设计上就跑不了」误报成产物缺图。
         backends = ("pc",) if route.mode in PC_ONLY_ROUTES else ("emulator", "pc")
         for backend in backends:
-            root = template_root_for_backend(TEMPLATE_ROOT, backend)
+            template_root = template_root_for_backend(TEMPLATE_ROOT, backend)
             try:
-                validate_route_templates(route.mode, root)
+                validate_route_templates(route.mode, template_root)
             except Exception as error:  # noqa: BLE001 —— 报清是哪条路线加载不了
                 broken.append(f"{route.label}[{backend}]：{error}")
     record(
@@ -86,9 +87,10 @@ def _self_check() -> int:
     lines.append(f"结果：{'通过' if failures == 0 else f'{failures} 项失败'}")
     report = "\n".join(lines) + "\n"
     try:
-        (root / "runtime_logs" / "self_check.txt").write_text(report, encoding="utf-8")
-    except OSError:
-        pass
+        (log_dir / "self_check.txt").write_text(report, encoding="utf-8")
+    except OSError as error:
+        print(f"无法写入自检报告：{error}", flush=True)
+        return 1
     print(report, flush=True)
     return 0 if failures == 0 else 1
 
