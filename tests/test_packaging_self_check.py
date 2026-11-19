@@ -18,7 +18,13 @@ ENTRY = REPO / "packaging" / "entry.py"
 
 
 def run_self_check(data_dir: Path) -> subprocess.CompletedProcess[str]:
-    env = dict(os.environ, EPIC7_DATA_DIR=str(data_dir))
+    # 子进程的编码由这里**显式固定**，不依赖当前终端有没有设 PYTHONIOENCODING：
+    # 否则中文报告在 GBK 终端下会被按 UTF-8 解、断言随机红（2026-11-19 复验遇到）。
+    env = dict(
+        os.environ,
+        EPIC7_DATA_DIR=str(data_dir),
+        PYTHONIOENCODING="utf-8",
+    )
     return subprocess.run(
         [sys.executable, str(ENTRY), "--self-check"],
         env=env,
