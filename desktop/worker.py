@@ -154,10 +154,15 @@ class WorkerController:
             for mode in request.modes
         )
         command = [
-            sys.executable,
-            "-u",
-            "-m",
-            "auto_game_unified.main",
+            # ⚠️ 冻结版里 ``sys.executable`` 是助手 exe，不是解释器：再拼
+            # ``-u -m auto_game_unified.main`` 会被打包入口当成界面参数，
+            # 结果是**第二个 GUI**（审查 A1）。冻结时走入口显式认识的 ``--worker``；
+            # 源码模式保持原来的 ``-u -m``，两条路互不影响。
+            *(
+                [sys.executable, "--worker"]
+                if getattr(sys, "frozen", False)
+                else [sys.executable, "-u", "-m", "auto_game_unified.main"]
+            ),
             "--daily",
             "--daily-tasks",
             daily_arg,
@@ -177,6 +182,8 @@ class WorkerController:
             command += ["--params-file", str(params_file)]
         environment = os.environ.copy()
         environment["PYTHONIOENCODING"] = "utf-8"
+        # 冻结版子进程没有 ``-u``：不设这个，输出会攒在缓冲区里，界面看不到进度。
+        environment["PYTHONUNBUFFERED"] = "1"
         environment[PC_INPUT_ENV] = request.pc_input_mode
         try:
             self._process = self._popen(
