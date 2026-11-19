@@ -50,15 +50,19 @@ def _self_check() -> int:
     lines.append(f"Python {sys.version.split()[0]}  frozen={bool(getattr(sys, 'frozen', False))}")
     lines.append(f"程序目录 {Path(sys.executable).parent}")
 
-    root = data_root()
+    # ⚠️ 数据根与模板根是**两个**目录，别复用同一个变量名：以前循环里用
+    # ``root = template_root_for_backend(...)`` 覆盖了数据根，报告就写进模板目录
+    # （那个 ``runtime_logs`` 不存在），OSError 又被吞掉，于是「自检通过、
+    # 报告没有」——``packaging/build.py`` 的冒烟正好去数据目录取报告，必然取不到。
+    data_dir = data_root()
     try:
-        (root / "runtime_logs").mkdir(parents=True, exist_ok=True)
-        probe = root / "runtime_logs" / ".self_check"
+        (data_dir / "runtime_logs").mkdir(parents=True, exist_ok=True)
+        probe = data_dir / "runtime_logs" / ".self_check"
         probe.write_text("ok", encoding="utf-8")
         probe.unlink()
-        record(True, "运行产物目录可写", str(root))
+        record(True, "运行产物目录可写", str(data_dir))
     except OSError as error:
-        record(False, "运行产物目录可写", f"{root}：{error}")
+        record(False, "运行产物目录可写", f"{data_dir}：{error}")
 
     if TEMPLATE_ROOT.is_dir():
         count = len(list(TEMPLATE_ROOT.rglob("*.png")))
@@ -72,9 +76,9 @@ def _self_check() -> int:
         # 否则会把「设计上就跑不了」误报成产物缺图。
         backends = ("pc",) if route.mode in PC_ONLY_ROUTES else ("emulator", "pc")
         for backend in backends:
-            root = template_root_for_backend(TEMPLATE_ROOT, backend)
+            template_dir = template_root_for_backend(TEMPLATE_ROOT, backend)
             try:
-                validate_route_templates(route.mode, root)
+                validate_route_templates(route.mode, template_dir)
             except Exception as error:  # noqa: BLE001 —— 报清是哪条路线加载不了
                 broken.append(f"{route.label}[{backend}]：{error}")
     record(
@@ -83,12 +87,23 @@ def _self_check() -> int:
         f"{len(ROUTES)} 条全部可加载" if not broken else "；".join(broken),
     )
 
-    lines.append(f"结果：{'通过' if failures == 0 else f'{failures} 项失败'}")
-    report = "\n".join(lines) + "\n"
+    def render(fail_count: int) -> str:
+        return "\n".join(
+            lines + [f"结果：{'通过' if fail_count == 0 else f'{fail_count} 项失败'}"]
+        ) + "\n"
+
+    report = render(failures)
+    report_path = data_dir / "runtime_logs" / "self_check.txt"
     try:
-        (root / "runtime_logs" / "self_check.txt").write_text(report, encoding="utf-8")
-    except OSError:
-        pass
+        report_path.parent.mkdir(parents=True, exist_ok=True)
+        report_path.write_text(report, encoding="utf-8")
+    except OSError as error:
+        # 报告写不进去就是**没通过**：调用方（构建冒烟、排障的人）只认这个文件，
+        # 静默跳过等于把「没留下证据」当成「一切正常」。
+        failures += 1
+        lines.append(f"[失败] 自检报告写入：{report_path}：{error}")
+        print(render(failures), flush=True)
+        return 1
     print(report, flush=True)
     return 0 if failures == 0 else 1
 
