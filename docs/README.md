@@ -16,6 +16,7 @@
 | 排查开局接力或回大厅收尾 | [开局接力覆盖面](RESUME_COVERAGE.md)、[路线终点](maintenance/route_finish_points.md) |
 | 针对 PC 客户端移植、抓帧或排障 | [PC 接入指南](PC_TEMPLATE_MIGRATION.md)、[PC 页面采集清单](maintenance/pc_page_capture_checklist.md) |
 | 实机验证 | [实机闭环验证](howto/live_verification.md) |
+| 判断路线能否给不同账号公开使用 | [路线稳定版验收](howto/route_acceptance.md) |
 | 更新图鉴数据或界面文案 | [英雄图鉴维护](maintenance/hero_roster.md)、[界面文案规范](UI_COPY_STYLE.md) |
 | 查看缺失的证据、未解决的缺陷或未评估提案 | [待办](TODO.md)、[想法池](BACKLOG.md) |
 | 查看版本变化与素材权利 | [变更日志](../CHANGELOG.md)、[素材声明](../NOTICE.md) |

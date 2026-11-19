@@ -397,6 +397,47 @@ def test_run_daily_tasks_carries_the_route_note_through():
     assert report.outcomes[0].note == "买到 5 张书签（誓约 3 / 神秘 2）"
 
 
+@pytest.mark.parametrize(("exhausted", "status"), [(False, "completed"), (True, "resource")])
+def test_last_route_keeps_business_result_and_exposes_closeout_warning(exhausted, status):
+    from auto_game_unified.main import RunResult
+
+    report = run_daily_tasks(
+        selected=("arena",),
+        dry_run=False,
+        run_mode=lambda **kwargs: RunResult(
+            1, resource_exhausted=exhausted, closeout_warning="RuntimeError: 回大厅超时"
+        ),
+    )
+
+    assert report.outcomes[0].status == status
+    assert report.outcomes[0].cycles == 1
+    assert report.any_failed is False
+    assert "收尾待确认" in report.summary_line()
+    assert "收尾待确认 1 项" in report.result_lines()[0]
+    assert "收尾待确认（回大厅超时）" in report.result_lines()[1]
+    assert "收尾待确认（回大厅超时）" in report.brief_lines()[1]
+
+
+def test_manual_stop_during_closeout_preserves_result_and_stops_daily_batch():
+    from auto_game_unified.main import RunResult
+
+    called = []
+
+    def run_mode(**kwargs):
+        called.append(kwargs["spec"].name)
+        return RunResult(1, closeout_warning="用户手动停止", stopped_during_closeout=True)
+
+    report = run_daily_tasks(
+        selected=("arena", "sanctuary"), dry_run=False, run_mode=run_mode,
+        inspect=lambda: pytest.fail("用户手动停止后不得巡检"),
+    )
+
+    assert called == ["arena"]
+    assert report.stopped_by_user is True
+    assert report.outcomes[0].status == "completed"
+    assert "收尾待确认（用户手动停止）" in report.result_lines()[1]
+
+
 def test_run_daily_tasks_fills_cycles_time_and_outcome():
     class FakeResult:
         completed_cycles = 3
@@ -1425,3 +1466,29 @@ def test_countdown_inspect_returns_none_when_nothing_was_read(monkeypatch, tmp_p
         is None
     )
     assert countdown_module.load_countdown() is None
+
+
+def test_countdown_inspect_closeout_stop_preserves_prior_outcomes(monkeypatch):
+    from auto_game_unified import main as main_module
+
+    def run_until_countdown_closeout(*, spec, start_state, **kwargs):
+        templates = main_module.ROOT / "games" / "epic7" / "templates"
+        machine = spec.build_machine(templates, start_state)
+        machine.countdown_read = {"days": 1, "hours": 2}
+        return main_module.RunResult(
+            0, resource_exhausted=True, closeout_warning="用户手动停止",
+            stopped_during_closeout=True,
+        )
+
+    monkeypatch.setattr(main_module, "run_mode", run_until_countdown_closeout)
+    monkeypatch.setattr(main_module, "save_countdown", lambda *args, **kwargs: pytest.fail(
+        "收尾时收到手动停止，巡检没有正常返回"
+    ))
+
+    report = _run_with_inspect(
+        lambda: main_module.inspect_side_story_countdown(window_backend="emulator", stop_file=None)
+    )
+
+    assert report.stopped_by_user is True
+    assert report.countdown_note == "支线刷新倒计时：未读取（用户手动停止）"
+    assert [outcome.status for outcome in report.outcomes] == ["completed"]
