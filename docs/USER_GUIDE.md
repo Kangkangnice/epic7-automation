@@ -229,7 +229,7 @@ python -u -m auto_game_unified.main --mode shop_refresh --max-cycles 1
 
 ## 6. 模拟器前台实跑
 
-实跑必须同时提供 `--live`、`--confirm RUN` 和正整数 `--max-cycles`。先从一轮开始：
+实跑需要 `--live` 与 `--confirm RUN`。`--max-cycles` 对可调次数的路线必填正整数；次数框置灰的固定次数路线不传也会取默认值；刷书签允许填 `0`（只扫不刷新）；每日编排的次数写在 `--daily-tasks` 的 `路线:次数` 里。先从一轮开始：
 
 ```powershell
 python -u -m auto_game_unified.main --mode story --window-backend emulator --max-cycles 1 --live --confirm RUN
