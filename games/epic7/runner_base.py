@@ -18,7 +18,7 @@ from time import sleep as default_sleep
 from typing import Any, Callable, Optional
 
 from auto_game_unified.core.battle_supervisor import BattleOutcome
-from auto_game_unified.core.evidence_diagnostics import (
+from auto_game_unified.games.epic7.evidence.diagnostics import (
     save_runtime_evidence_diagnostic,
 )
 from auto_game_unified.core.recovery import RecoveryGate
@@ -36,11 +36,26 @@ from auto_game_unified.games.epic7.unknown_screen import (
 )
 
 
+class ConclusionGateBypassed(RuntimeError):
+    """路线重写了 ``_stable_next_action`` 却没有调用基类实现。
+
+    单独一个类型是为了让主循环**立刻**把路线判失败，而不是当成「认不出画面」
+    去等状态超时（那会把一次结构性错误拖成几十秒的空转）。
+    """
+
+
 class _NotStable:
     """两帧未稳定，本轮跳过的哨兵值。"""
 
 
 NOT_STABLE = _NotStable()
+
+
+class _Unset:
+    """基类这一帧还没派发结果（子类在调用 ``super()`` 之前就返回了）。"""
+
+
+_UNSET = _Unset()
 
 
 class ModeRunnerBase:
@@ -102,6 +117,18 @@ class ModeRunnerBase:
         # 「下结论」的门槛：收工 / 认不出画面这类终止性结论同样要连续两帧一致，
         # 否则一帧就能结束整条路线（详见 core.supervisor.ConclusionGate）。
         self.conclusion_gate = ConclusionGate()
+        # 运行时标记：基类 ``_stable_next_action`` 每次进入都会置真。主循环据此
+        # 判定子类覆写有没有把基类实现调回去 —— 不读源码文本（审查 C）。
+        self._conclusion_gate_entered = False
+        # 基类**采信**并抛出的那个结论对象。主循环只认它：进了基类不等于
+        # 这个结论过了门槛 —— 第一帧被拒后子类自己再抛一个，不算数（审查 C）。
+        self._admitted_conclusion: Optional[BaseException] = None
+        # 这一帧被门槛**拒绝**的结论。只有它存在时才追究「子类重抛」；
+        # 基类自己在 ``next_action`` 里抛的结论不算（那是既有行为，不在本次范围）。
+        self._rejected_conclusion: Optional[BaseException] = None
+        # 基类这一帧**派发**给子类的结果（NOT_STABLE / None / 动作对象）。
+        # 主循环用它核对子类有没有把「未稳定」改写成某个动作 —— 那会直接触发点击。
+        self._dispatched_result: Any = _UNSET
 
     # ---- 子类钩子（差异点） ----
 
@@ -328,6 +355,17 @@ class ModeRunnerBase:
         stable.reset()
         self.conclusion_gate.reset()
 
+    def _dispatch(self, result: Any) -> Any:
+        """记下基类这一帧派发的结果，供主循环核对子类有没有改写。
+
+        审查 C 的反例：基类第一帧返回 ``NOT_STABLE``，子类若直接返回一个动作，
+        主循环会照点不误。结果对象（含 ``NOT_STABLE`` 单例与 ``None``）在这里
+        留痕，``_stable_next_action_checked`` 用 ``is`` 对账。
+        """
+
+        self._dispatched_result = result
+        return result
+
     def _stable_next_action(self, screen, stable: StableObservation):
         """两帧稳定确认后返回 next_action；未稳定时返回 NOT_STABLE。
 
@@ -336,6 +374,11 @@ class ModeRunnerBase:
         整条路线结束。这里先把结论变成签名交给门槛，两帧一致才允许穿出去。
         规矩见 docs/TRANSITION_CONTRACTS.md「结论门槛（全局强制）」。
         """
+        # 给主循环的运行时标记：子类覆写必须走到这里，否则 ``run`` 会失败关闭。
+        self._conclusion_gate_entered = True
+        self._admitted_conclusion = None
+        self._rejected_conclusion = None
+        self._dispatched_result = _UNSET
         try:
             preview_action, outcome = self.machine.preview(screen)
         except ManualStop:
@@ -343,11 +386,15 @@ class ModeRunnerBase:
             raise
         except RuntimeError as error:
             if not self.conclusion_gate.admit(error):
+                self._rejected_conclusion = error
                 self.runtime.log(
                     f"模式={self._MODE_LABEL} 结论待确认={type(error).__name__} "
                     f"依据=需连续两帧一致才采信 详情={error}"
                 )
-                return NOT_STABLE
+                return self._dispatch(NOT_STABLE)
+            # 只有从这一行抛出去的结论才是「过了门槛」的。主循环拿这个对象
+            # 对账，防止子类把被拒的结论换个位置再抛一次（审查 C 的反例）。
+            self._admitted_conclusion = error
             raise
         self.unknown_screen_wake.reset()
         signature = self._stable_action_signature(preview_action, outcome)
@@ -360,14 +407,80 @@ class ModeRunnerBase:
                 or committed_action.name != preview_action.name
             ):
                 self._reset_observation(stable)
-                return NOT_STABLE
+                return self._dispatch(NOT_STABLE)
             self.runtime.click(committed_action.point, committed_action.name)
             self._reset_observation(stable)
             # 状态由真正 next_action 提交；下一帧重新观察点击结果。
-            return NOT_STABLE
+            return self._dispatch(NOT_STABLE)
         if not stable.update(signature):
-            return NOT_STABLE
-        return self.machine.next_action(screen)
+            return self._dispatch(NOT_STABLE)
+        return self._dispatch(self.machine.next_action(screen))
+
+    def _stable_next_action_checked(self, screen, stable: StableObservation):
+        """调用子类实现，并确认交给主循环的结论真的过了门槛。
+
+        ⚠️ 审查 C 的运行时保护分两层：
+
+        1. **进过基类**：子类重写后没调 ``super()`` ⇒ 没有标记 ⇒ 失败关闭；
+        2. **结论归属**：进了基类也不够 —— 第一帧被门槛拒绝时基类返回
+           ``NOT_STABLE``，子类若把它换成一个终止性结论再抛，主循环会当成
+           「已确认」收工。所以**基类刚拒绝过结论**时，子类再抛的
+           ``RuntimeError`` 一律按绕过处理（只有基类采信的那个对象放行）。
+        3. **动作归属**：同样的改写换成「返回一个动作」更危险 —— 主循环会直接
+           点击。基类这一帧派发的结果在这里对账（``is``），改了就失败关闭，
+           一次点击都不会发出。
+
+        非 ``RuntimeError``（截图失败、解码错误这类真故障）**一律原样抛出**：
+        包装会把「截图通道挂了」改写成「没调 super」，故障原因被盖掉。
+
+        用户停止（``ManualStop``）照常穿出去：它不是程序下的结论。
+        """
+        self._conclusion_gate_entered = False
+        self._admitted_conclusion = None
+        self._rejected_conclusion = None
+        self._dispatched_result = _UNSET
+        # 测试会把实例方法整个换掉（``patch.object(runner, "_stable_next_action")``）
+        # 来喂脚本；那不是路线重写，别误判成绕过。只对**类级覆写**执行这条保护。
+        instance_patched = "_stable_next_action" in vars(self)
+        try:
+            action = self._stable_next_action(screen, stable)
+        except ManualStop:
+            raise
+        except RuntimeError as error:
+            if instance_patched or error is self._admitted_conclusion:
+                raise
+            if self._rejected_conclusion is not None:
+                raise ConclusionGateBypassed(
+                    f"模式={self._MODE_LABEL} 结论门槛被绕过：基类没有采信这个结论"
+                    f"（{type(error).__name__} 在第一帧就被门槛拒绝了），"
+                    "子类却把它交给主循环。终止性结论必须经过两帧确认，路线已按失败关闭处理。"
+                ) from error
+            if not self._conclusion_gate_entered:
+                raise ConclusionGateBypassed(
+                    f"模式={self._MODE_LABEL} 结论门槛被绕过："
+                    "重写了 _stable_next_action 却没有调用基类实现（super()）。"
+                    "终止性结论必须经过两帧确认，路线已按失败关闭处理。"
+                ) from error
+            raise
+        except BaseException:
+            # 截图 OSError / 解码 ValueError / 停止哨兵：不是终止性结论，
+            # 原样抛出，保留真实原因 —— 不许改写成「没调 super」。
+            raise
+        if not instance_patched:
+            if not self._conclusion_gate_entered:
+                raise ConclusionGateBypassed(
+                    f"模式={self._MODE_LABEL} 结论门槛被绕过："
+                    "重写了 _stable_next_action 却没有调用基类实现（super()）。"
+                    "终止性结论必须经过两帧确认，路线已按失败关闭处理。"
+                )
+            if action is not self._dispatched_result:
+                raise ConclusionGateBypassed(
+                    f"模式={self._MODE_LABEL} 动作判定被改写：基类这一帧给出的结果是"
+                    f" {type(self._dispatched_result).__name__}，子类却返回了"
+                    f" {type(action).__name__}。未过两帧确认的动作不许点击，"
+                    "路线已按失败关闭处理。"
+                )
+        return action
 
     def _require_transition_contract(self, action: Any) -> None:
         """新路线准入：``_REQUIRE_TRANSITION_CONTRACT`` 打开时，动作必须带出口验收。
@@ -585,7 +698,7 @@ class ModeRunnerBase:
                 blocked = consume() if callable(consume) else ""
                 if isinstance(blocked, str) and blocked:
                     raise EquipmentBagFull(blocked)
-                action = self._stable_next_action(screen, stable)
+                action = self._stable_next_action_checked(screen, stable)
             except ResourceExhausted as error:
                 # 「还能干、但没本钱了」：生命之叶 / 通缉传单 / 挑战次数……
                 # 各路线缺的东西不一样，所以「停止=」后面的文案由异常自己带
@@ -604,6 +717,9 @@ class ModeRunnerBase:
                 # 「用户按下 P / 已保存诊断」并每秒写一张全屏截图，一直磨到该状态的
                 # 超时才停（竞技场列表页 40 秒，战斗监督里最长 900 秒）。
                 # 表现就是「用户按了停止，程序却像卡在诊断循环里」。
+                raise
+            except ConclusionGateBypassed:
+                # 结构性问题：不是「这页认不出」，等超时没有意义，立刻判失败。
                 raise
             except RuntimeError as error:
                 if (

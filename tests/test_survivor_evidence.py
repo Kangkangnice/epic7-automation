@@ -3,7 +3,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from auto_game_unified.core.evidence_diagnostics import inspect_profile
+from auto_game_unified.games.epic7.evidence.diagnostics import inspect_profile
 from auto_game_unified.games.epic7.evidence.common import (
     EvidenceState,
     validate_profile,

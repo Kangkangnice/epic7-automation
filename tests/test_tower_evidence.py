@@ -3,7 +3,7 @@ from pathlib import Path
 
 import cv2
 
-from auto_game_unified.core.evidence_diagnostics import inspect_profile
+from auto_game_unified.games.epic7.evidence.diagnostics import inspect_profile
 from auto_game_unified.core.matcher import (
     SCALE_FALLBACK_ANCHORS,
     find_best_template,

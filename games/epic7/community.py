@@ -113,6 +113,8 @@ from auto_game_unified.core.runtime import ManualStop, ResourceExhausted, Runtim
 from auto_game_unified.core.window import Epic7Window
 from auto_game_unified.games.epic7 import community_pages as pages
 from auto_game_unified.games.epic7.community_numbers import Readout, read_pair
+from auto_game_unified.games.epic7.preview_state import restore as restore_state
+from auto_game_unified.games.epic7.preview_state import snapshot as snapshot_state
 from auto_game_unified.games.epic7.route_action import RouteAction
 from auto_game_unified.games.epic7.runner_base import NOT_STABLE, ModeRunnerBase
 
@@ -1495,102 +1497,26 @@ class CommunityStateMachine:
         finally:
             self._restore(snapshot)
 
-    def _snapshot(self) -> tuple:
-        """``preview`` 用的业务进度快照。
+    #: 试算时**不参与回滚**的基础设施字段：整个运行期只读。
+    _PREVIEW_STABLE_FIELDS = frozenset({"templates", "glyphs", "plan"})
 
-        ⚠️ 每加一个「``next_action`` 会改的字段」都要同时加到这里 —— 漏了就会把
-        「一次点击」记成两次（这是项目里踩过的坑）。所以这里写成**显式元组**，
-        而不是 ``__dict__`` 拷贝之类的聪明写法：漏了能一眼看出来。
+    def _snapshot(self) -> dict[str, Any]:
+        """``preview`` 前的业务状态快照。
 
-        ⚠️ **2026-10-10 又踩了一次同一句话**：``_register_swipe_emission`` 的账本
-        （``_pending_swipe_*``）是 10-09 新加的字段，当时**没同步进来**。后果不是
-        「记成两次」而是更隐蔽的**「一次也不记」** —— 见 ``_register_swipe_emission``
-        的 docstring：主循环每帧先 ``preview`` 再真跑，两次都拿**同一帧**算账，
-        真跑那次永远比到「刚刚试算时留下的基线」⇒ 恒判「页面没动」
-        ⇒ ``like_reswipes`` / ``feed_icon_reswipes`` 永远停在 0
-        ⇒ 两条「滑了 N 屏就收手」的闸门**同时失效**（10-10 实跑就是这么炸的：
-        日志里全是「仍在等第 0 屏生效」，一次「第 2/3 次」都没有）。
+        ⚠️ 以前是 31 项手工元组：每加一个 ``next_action`` 会改的字段都得同步
+        两处，位置还必须一一对齐。2026-10-10 漏掉滑动手势账本；2026-11-19 复查
+        又发现 ``completed_cycles`` / ``redeem_failed`` / ``_confirm_clicked``
+        根本不在里面 —— 同一类事故反复发生。
+
+        现在按 ``vars(self)`` 自动快照，只排除三份运行期只读的基础设施。
+        以后新增业务字段**默认就在快照里**；真要排除，加进
+        ``_PREVIEW_STABLE_FIELDS`` 并写明为什么它是只读的。
         """
-        return (
-            self.state,
-            dict(self.progress.tasks),
-            dict(self.progress.redeemed),
-            self.progress.signed_in,
-            self.last_redeem,
-            self.last_page,
-            self.last_reason,
-            self.stop_reason,
-            self._network_refreshes,
-            self._confirmed_page,
-            self.signin_clicked,
-            self.via_exchange,
-            self.active_task,
-            self.task_step,
-            self.pending_verify,
-            self._verify_frames,
-            self.like_reswipes,
-            self.like_point,
-            self.feed_icon_reswipes,
-            dict(self.task_attempts),
-            set(self.stuck_tasks),
-            dict(self._tasks_before),
-            # 滑动手势的账本（2026-10-10 补）。三个都要 ——
-            # 少了 name ⇒ 真跑那次以为「换了手势」，白记一笔；
-            # 少了 tops ⇒ 真跑那次拿试算的基线比自己，恒判没动（本次事故）；
-            # 少了 streak ⇒ 试算也把它 +1，30 帧的上限提前一半烧穿。
-            self._pending_swipe_name,
-            None if self._pending_swipe_tops is None else list(self._pending_swipe_tops),
-            self._pending_swipe_streak,
-            # 陌生页逃生门的三本账（2026-10-18 补）。漏一个的后果都是"逃生门按帧重复计"：
-            # 少 ``_stranger_attempts`` ⇒ 试算也 +1，3 级阶梯在真跑那一帧只剩 2 级；
-            # 少 ``_stranger_waits`` ⇒ 试算吃掉确认帧，"先等两帧"直接失效；
-            # 少 ``_stranger_step`` ⇒ 逃生成功后回退到错的那一步。
-            self._stranger_attempts,
-            self._stranger_waits,
-            self._stranger_task,
-            self._stranger_step,
-            self._stranger_rewound_for,
-            self._recover_note,
-        )
+        return snapshot_state(self, stable=self._PREVIEW_STABLE_FIELDS)
 
-    def _restore(self, snapshot: tuple) -> None:
-        (
-            self.state,
-            self.progress.tasks,
-            self.progress.redeemed,
-            self.progress.signed_in,
-            self.last_redeem,
-            self.last_page,
-            self.last_reason,
-            self.stop_reason,
-            self._network_refreshes,
-            self._confirmed_page,
-            self.signin_clicked,
-            self.via_exchange,
-            self.active_task,
-            self.task_step,
-            self.pending_verify,
-            self._verify_frames,
-            self.like_reswipes,
-            self.like_point,
-            self.feed_icon_reswipes,
-            self.task_attempts,
-            self.stuck_tasks,
-            self._tasks_before,
-            # 滑动手势的账本（2026-10-10 补，理由见 ``_snapshot``）。
-            # ``_pending_swipe_tops`` 直接收下那份拷贝：它只会被**整体重新绑定**，
-            # 代码里没有任何一处 mutate 它的元素。
-            self._pending_swipe_name,
-            self._pending_swipe_tops,
-            self._pending_swipe_streak,
-            # 陌生页逃生门的三本账（2026-10-18 补，理由见 ``_snapshot``）。
-            self._stranger_attempts,
-            self._stranger_waits,
-            self._stranger_task,
-            self._stranger_step,
-            self._stranger_rewound_for,
-            self._recover_note,
-        ) = snapshot
+    def _restore(self, snapshot: dict[str, Any]) -> None:
+        # 传 stable：只读基础设施既不进快照，也不该在还原时被当成「新增字段」删掉。
+        restore_state(self, snapshot, stable=self._PREVIEW_STABLE_FIELDS)
 
     # ---- 各页的处理 ----
 

@@ -151,6 +151,43 @@ def _notify_live(
         )
 
 
+def _make_stop_requested(
+    dry_run: bool, stop_file: Path | None
+) -> Callable[[], bool] | None:
+    """返回「用户要不要停」的判定函数；干跑不装热键，返回 ``None``。"""
+    if dry_run:
+        return None
+    stop_hotkey = WindowsPStopHotkey()
+
+    def stop_requested() -> bool:
+        return bool(
+            stop_hotkey.pressed()
+            or (stop_file is not None and stop_file.exists())
+        )
+
+    return stop_requested
+
+
+def _run_offline_probe(seconds: float, stop_file: Path | None) -> int:
+    """打包验证专用：只观察停止信号，不截图、不点击、不装配任何路线。
+
+    它走的是 worker 子进程的真实 CLI（``entry.py --worker`` → 本函数），停止判定
+    与实跑共用 ``_make_stop_requested``。因此「收到 stop.signal → 退出 130」与
+    运行时同一条通道，而这条路径**永远不会**打开游戏窗口或发输入。
+    """
+    stop_requested = _make_stop_requested(False, stop_file)
+    assert stop_requested is not None
+    deadline = time.monotonic() + max(seconds, 0.0)
+    print(f"离线探针：不截图不点击，最长等待 {seconds:g} 秒", flush=True)
+    while time.monotonic() < deadline:
+        if stop_requested():
+            print("离线探针：收到停止请求，退出码 130", flush=True)
+            return 130
+        time.sleep(0.05)
+    print("离线探针：正常结束", flush=True)
+    return 0
+
+
 def _build_runtime(
     mode: str,
     dry_run: bool,
@@ -169,13 +206,7 @@ def _build_runtime(
     else:
         game_window = Epic7Window()
         game_window.activate()
-    stop_hotkey = None if dry_run else WindowsPStopHotkey()
-
-    def stop_requested() -> bool:
-        return bool(
-            (stop_hotkey is not None and stop_hotkey.pressed())
-            or (stop_file is not None and stop_file.exists())
-        )
+    stop_requested = _make_stop_requested(dry_run, stop_file)
 
     runtime = Runtime(
         capture=game_window.capture,
@@ -195,7 +226,7 @@ def _build_runtime(
         dry_run=dry_run,
         diagnostic_dir=DATA_ROOT / "runtime_diagnostics" / f"epic7_{mode}",
         log_path=DATA_ROOT / "runtime_logs" / f"epic7_{mode}.log",
-        stop_requested=None if dry_run else stop_requested,
+        stop_requested=stop_requested,
         # 跑到一半的通道自检（导航「连续点不动」时会调）。干跑与 PC 后端不装配：
         # 干跑不该去动 adb 服务，PC 后端也没有这条通道。
         input_channel_probe=(
@@ -747,6 +778,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         ),
     )
     parser.add_argument("--stop-file", help=argparse.SUPPRESS)
+    # 打包验证专用：只等停止信号，绝不进入路线（见 ``_run_offline_probe``）。
+    parser.add_argument("--offline-probe", type=float, default=None, help=argparse.SUPPRESS)
     # 界面传下来的路线参数（``{路线名: {参数名: 值}}`` 的 JSON）。
     # 走文件不走命令行：Windows 命令行过一遍引号与编码，中文容易被吃掉。
     # 每日任务与单路线两条路径都会读它；缺省值由路线自己的声明补齐。
@@ -1059,6 +1092,64 @@ def _pc_live_precondition(window_backend: str) -> str | None:
     return f"PC 后端实跑未就绪：{report.message}"
 
 
+def _validate_live_args(args: argparse.Namespace) -> None:
+    """实跑的**纯参数**校验：只读命令行，不枚举窗口。
+
+    审查 B 复验反例：``--max-cycles 0`` 与实跑传 ``--start-state`` 都是命令本身
+    不合法。以前先做 PC 预检，用户看到的是「PC 未就绪」；照着提示修好环境，
+    命令仍然不合法。这里把参数校验提到预检之前 —— 参数错了先报参数错。
+
+    ``--daily`` 的次数写在 ``--daily-tasks`` 里，由 ``_parse_daily_cycles`` 在
+    编排入口解析；这里不重复判。
+    """
+    if not args.live:
+        return
+    if args.confirm != "RUN":
+        raise SystemExit("实跑模式需要附加参数：--live --confirm RUN")
+    if args.daily:
+        return
+    # 次数下限以路线的 ``min_cycles`` 为准（正常 1；「刷书签」是 0 —— 只扫不刷新）。
+    # 用 ``MODE_SPECS.get`` 而不是 ``get_mode``：``--mode`` 写了不存在的名字时，
+    # 要让它照旧在后面 ``get_mode()`` 那里报错（同 ``_apply_fixed_cycles`` 的说明）。
+    minimum = getattr(MODE_SPECS.get(args.mode), "min_cycles", 1)
+    if args.max_cycles is None or args.max_cycles < minimum:
+        raise SystemExit(
+            "实跑模式要求 --max-cycles 为正数"
+            if minimum > 0
+            else "实跑模式的 --max-cycles 不能为负数"
+        )
+    if args.start_state is not None:
+        raise SystemExit("--start-state 仅在空跑诊断模式可用")
+
+
+def _guard_live_entry(args: argparse.Namespace) -> None:
+    """实跑分发边界：参数校验 + PC 窗口/权限预检（单路线与每日任务共用）。
+
+    审查 B：daily 分支原来在这里提前返回，跳过了单路线才有的 PC 检查 ——
+    窗口/权限不通过时仍会进编排、建 runtime，然后把输入静默丢掉。
+
+    四条边界：
+    - 只在 ``--live`` 时生效，干跑不枚举窗口；
+    - 先做纯参数校验（``_validate_live_args``），再碰 PC 预检：参数不合法时
+      报参数错，不把「命令写错」误导成「环境没修好」；
+    - 只有 ``--window-backend pc`` 才调用 PC 专用预检，模拟器一次也不调；
+    - 每个 CLI 调用只走到这里一次。路线自己的业务前检（例如资源/次数闸门）
+      不经过本函数，别把两者的次数混在一起算。
+    """
+    _validate_live_args(args)
+    if not args.live:
+        return
+    if args.window_backend != "pc":
+        return
+    blocked = _pc_live_precondition(args.window_backend)
+    if blocked is not None:
+        raise SystemExit(
+            f"{blocked}\n\n"
+            "先自检看清楚：python -m auto_game_unified.tools.live_check --backend pc\n"
+            "标准做法（怎么提权、怎么判失败）：docs/howto/live_verification.md"
+        )
+
+
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     # 输入通道是进程级设置：写进环境供 ``_build_runtime`` 读取（桌面端的子进程
@@ -1066,36 +1157,23 @@ def main(argv: list[str] | None = None) -> int:
     # ⚠️ 只在 CLI **显式传参**时写：否则 Worker 设好的 background 会被默认值覆盖。
     if args.pc_input_mode is not None:
         os.environ[PC_INPUT_ENV] = args.pc_input_mode
+    if args.offline_probe is not None:
+        # 打包验证走这里：不判 --live、不建 runtime、不碰窗口。
+        return _run_offline_probe(
+            args.offline_probe,
+            Path(args.stop_file) if args.stop_file else None,
+        )
+    # 实跑准入在分发前统一判一次：确认口令 → PC 预检。两条入口共用，
+    # 避免 daily 提前 return 又把检查漏掉（审查 B）。
+    if not args.daily:
+        _apply_fixed_cycles(args)
+    _guard_live_entry(args)
     if args.daily:
         # `--mode` 此时无意义（它有默认值 "arena"，无法可靠区分「用户显式传了」），
         # 所以不报错、直接忽略 —— 界面与命令行都不会同时传这两个。
-        if args.live and args.confirm != "RUN":
-            raise SystemExit("实跑模式需要附加参数：--live --confirm RUN")
         return _run_daily(args)
-    _apply_fixed_cycles(args)
-    if args.live and args.confirm != "RUN":
-        raise SystemExit("实跑模式需要附加参数：--live --confirm RUN")
-    # 次数下限以路线的 ``min_cycles`` 为准（正常 1；「刷书签」是 0 —— 只扫不刷新）。
-    # 用 ``MODE_SPECS.get`` 而不是 ``get_mode``：``--mode`` 写了不存在的名字时，
-    # 要让它照旧在后面 ``get_mode()`` 那里报错（同 ``_apply_fixed_cycles`` 的说明）。
-    if args.live:
-        minimum = getattr(MODE_SPECS.get(args.mode), "min_cycles", 1)
-        if args.max_cycles is None or args.max_cycles < minimum:
-            raise SystemExit(
-                "实跑模式要求 --max-cycles 为正数"
-                if minimum > 0
-                else "实跑模式的 --max-cycles 不能为负数"
-            )
-    if args.live and args.start_state is not None:
-        raise SystemExit("--start-state 仅在空跑诊断模式可用")
-    if args.live:
-        blocked = _pc_live_precondition(args.window_backend)
-        if blocked is not None:
-            raise SystemExit(
-                f"{blocked}\n\n"
-                "先自检看清楚：python -m auto_game_unified.tools.live_check --backend pc\n"
-                "标准做法（怎么提权、怎么判失败）：docs/howto/live_verification.md"
-            )
+    # 实跑的次数下限与 --start-state 已由 _guard_live_entry 的纯参数校验判过；
+    # 这里不再重复，避免同一规则两处实现（审查 B 的顺序要求也靠这一点）。
     spec = get_mode(args.mode)
     try:
         start_state = spec.resolve_state(args.start_state)
