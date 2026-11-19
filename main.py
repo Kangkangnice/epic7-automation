@@ -151,6 +151,43 @@ def _notify_live(
         )
 
 
+def _make_stop_requested(
+    dry_run: bool, stop_file: Path | None
+) -> Callable[[], bool] | None:
+    """返回「用户要不要停」的判定函数；干跑不装热键，返回 ``None``。"""
+    if dry_run:
+        return None
+    stop_hotkey = WindowsPStopHotkey()
+
+    def stop_requested() -> bool:
+        return bool(
+            stop_hotkey.pressed()
+            or (stop_file is not None and stop_file.exists())
+        )
+
+    return stop_requested
+
+
+def _run_offline_probe(seconds: float, stop_file: Path | None) -> int:
+    """打包验证专用：只观察停止信号，不截图、不点击、不装配任何路线。
+
+    它走的是 worker 子进程的真实 CLI（``entry.py --worker`` → 本函数），停止判定
+    与实跑共用 ``_make_stop_requested``。因此「收到 stop.signal → 退出 130」与
+    运行时同一条通道，而这条路径**永远不会**打开游戏窗口或发输入。
+    """
+    stop_requested = _make_stop_requested(False, stop_file)
+    assert stop_requested is not None
+    deadline = time.monotonic() + max(seconds, 0.0)
+    print(f"离线探针：不截图不点击，最长等待 {seconds:g} 秒", flush=True)
+    while time.monotonic() < deadline:
+        if stop_requested():
+            print("离线探针：收到停止请求，退出码 130", flush=True)
+            return 130
+        time.sleep(0.05)
+    print("离线探针：正常结束", flush=True)
+    return 0
+
+
 def _build_runtime(
     mode: str,
     dry_run: bool,
@@ -169,13 +206,7 @@ def _build_runtime(
     else:
         game_window = Epic7Window()
         game_window.activate()
-    stop_hotkey = None if dry_run else WindowsPStopHotkey()
-
-    def stop_requested() -> bool:
-        return bool(
-            (stop_hotkey is not None and stop_hotkey.pressed())
-            or (stop_file is not None and stop_file.exists())
-        )
+    stop_requested = _make_stop_requested(dry_run, stop_file)
 
     runtime = Runtime(
         capture=game_window.capture,
@@ -195,7 +226,7 @@ def _build_runtime(
         dry_run=dry_run,
         diagnostic_dir=DATA_ROOT / "runtime_diagnostics" / f"epic7_{mode}",
         log_path=DATA_ROOT / "runtime_logs" / f"epic7_{mode}.log",
-        stop_requested=None if dry_run else stop_requested,
+        stop_requested=stop_requested,
         # 跑到一半的通道自检（导航「连续点不动」时会调）。干跑与 PC 后端不装配：
         # 干跑不该去动 adb 服务，PC 后端也没有这条通道。
         input_channel_probe=(
@@ -747,6 +778,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         ),
     )
     parser.add_argument("--stop-file", help=argparse.SUPPRESS)
+    # 打包验证专用：只等停止信号，绝不进入路线（见 ``_run_offline_probe``）。
+    parser.add_argument("--offline-probe", type=float, default=None, help=argparse.SUPPRESS)
     # 界面传下来的路线参数（``{路线名: {参数名: 值}}`` 的 JSON）。
     # 走文件不走命令行：Windows 命令行过一遍引号与编码，中文容易被吃掉。
     # 每日任务与单路线两条路径都会读它；缺省值由路线自己的声明补齐。
@@ -1066,6 +1099,12 @@ def main(argv: list[str] | None = None) -> int:
     # ⚠️ 只在 CLI **显式传参**时写：否则 Worker 设好的 background 会被默认值覆盖。
     if args.pc_input_mode is not None:
         os.environ[PC_INPUT_ENV] = args.pc_input_mode
+    if args.offline_probe is not None:
+        # 打包验证走这里：不判 --live、不建 runtime、不碰窗口。
+        return _run_offline_probe(
+            args.offline_probe,
+            Path(args.stop_file) if args.stop_file else None,
+        )
     if args.daily:
         # `--mode` 此时无意义（它有默认值 "arena"，无法可靠区分「用户显式传了」），
         # 所以不报错、直接忽略 —— 界面与命令行都不会同时传这两个。

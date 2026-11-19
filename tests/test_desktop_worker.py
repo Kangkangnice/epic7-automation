@@ -594,3 +594,23 @@ def test_source_worker_keeps_the_module_entry(tmp_path: Path, monkeypatch) -> No
     command = calls[0][0]
     assert command[1:4] == ["-u", "-m", "auto_game_unified.main"]
     assert "--worker" not in command
+
+
+def test_offline_probe_never_passes_live_or_daily(tmp_path: Path):
+    """打包验证用的探针只带停止通道：不带 --daily / --live，绝不进游戏。"""
+    calls = []
+    worker = WorkerController(
+        repo_parent=tmp_path,
+        popen=lambda command, **kwargs: calls.append((command, kwargs))
+        or FakeProcess(),
+    )
+
+    worker.start(
+        RunRequest(("arena",), {"arena": 1}, offline_probe_seconds=2)
+    )
+    worker.join_reader()
+
+    command = calls[0][0]
+    assert command[command.index("--offline-probe") + 1] == "2"
+    assert "--live" not in command
+    assert "--daily" not in command

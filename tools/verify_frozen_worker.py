@@ -1,15 +1,16 @@
 """离线验证冻结版的 worker 交接：只起一个业务子进程，不开第二个界面。
 
 它把当前进程伪装成「已打包的桌面端」：``sys.frozen = True``、``sys.executable``
-指向真实产物，然后走桌面端**同一条** ``WorkerController.start()``。业务进程会在
-窗口预检处失败退出（没有游戏窗口，也不该有）—— 退出码 1 与中文原因正是
-「命令真的进了业务层」的证据：如果入口仍把参数当界面参数，进程不会自己退出。
+指向真实产物，然后走桌面端**同一条** ``WorkerController.start()``。子进程跑的是
+``--offline-probe``：只等停止信号，不装配路线、不截图、不点击 —— 即使游戏已经
+打开、权限也匹配，这条路径也不会碰它。
+
+验两件事：①探针到时正常结束（退出码 0）；②父进程写 stop.signal 后，子进程读到
+并退出 130。
 
 用法（工作目录随意，用装了 psutil 的解释器）::
 
     python tools/verify_frozen_worker.py --exe packaging/dist/Epic7AutoAssistant/Epic7AutoAssistant.exe
-
-不连接游戏、不发送任何输入、不打开界面。
 """
 
 from __future__ import annotations
@@ -111,7 +112,9 @@ def run_once(exe: Path, backend: str) -> dict:
         probe = Probe()
         worker = WorkerController(repo_parent=exe.parent, data_root=Path(data))
         probe.start()
-        worker.start(RunRequest(("arena",), {"arena": 1}, backend))
+        worker.start(
+            RunRequest(("arena",), {"arena": 1}, backend, offline_probe_seconds=2.0)
+        )
         worker.join_reader(timeout=300)
         probe.stop()
         events = worker.drain_events()
@@ -130,7 +133,9 @@ def run_stop_probe(exe: Path, backend: str) -> dict:
     with tempfile.TemporaryDirectory(prefix="arky-worker-stop-") as data:
         os.environ["EPIC7_DATA_DIR"] = data
         worker = WorkerController(repo_parent=exe.parent, data_root=Path(data))
-        worker.start(RunRequest(("arena",), {"arena": 1}, backend))
+        worker.start(
+            RunRequest(("arena",), {"arena": 1}, backend, offline_probe_seconds=60.0)
+        )
         was_running = worker.running
         worker.request_stop()
         stop_file = worker.stop_file
@@ -189,14 +194,26 @@ def main(argv: list[str] | None = None) -> int:
             problems.append(f"子进程用了系统解释器：{process}")
         if "--worker" not in process["cmdline"]:
             problems.append(f"子进程命令行没有 --worker：{process}")
+        if "--offline-probe" not in process["cmdline"]:
+            problems.append(f"子进程不是离线探针：{process}")
+        if "--live" in process["cmdline"]:
+            problems.append(f"离线探针不应带 --live：{process}")
+        if "--offline-probe" not in process["cmdline"]:
+            problems.append(f"子进程不是离线探针：{process}")
+        if "--live" in process["cmdline"]:
+            problems.append(f"离线探针不应带 --live：{process}")
     if handoff["windows"]:
         problems.append(f"子进程开了窗口（应为纯命令行）：{handoff['windows']}")
-    if handoff["exit_code"] is None:
-        problems.append("没有收到业务进程退出码")
-    if not handoff["log_lines"]:
-        problems.append("没有收到业务输出")
+    if handoff["exit_code"] != 0:
+        problems.append(f"正常结束的退出码不是 0：{handoff['exit_code']}")
+    if not any("正常结束" in line for line in handoff["log_lines"]):
+        problems.append("没有收到探针的正常结束输出")
     if not stop["stop_file_written"]:
         problems.append("停止请求没有写出 stop.signal")
+    if stop["exit_code"] != 130:
+        problems.append(f"停止后退出码不是 130：{stop['exit_code']}")
+    if not any("收到停止请求" in message for message in stop["messages"]):
+        problems.append("子进程没有消费停止请求")
     return 1 if problems else 0
 
 
