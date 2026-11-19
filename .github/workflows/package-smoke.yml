@@ -24,6 +24,11 @@ jobs:
     # 打包会跑 PyInstaller + 真实 exe 探针，必须 Windows。
     runs-on: windows-latest
     timeout-minutes: 45
+    # Windows runner 的控制台编码是 cp1252，脚本里的中文输出会在 print 时抛
+    # UnicodeEncodeError（fetch_vendor 第一次运行就撞到）。统一按 UTF-8 输出。
+    env:
+      PYTHONUTF8: "1"
+      PYTHONIOENCODING: "utf-8"
     steps:
       # 检出到 auto_game_unified 子目录：与 tests.yml 一致，import 路径才对。
       # 此时工作区**没有** vendor/ —— 下面的取回步骤从零开始。
