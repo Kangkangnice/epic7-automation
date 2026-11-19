@@ -1092,6 +1092,33 @@ def _pc_live_precondition(window_backend: str) -> str | None:
     return f"PC 后端实跑未就绪：{report.message}"
 
 
+def _guard_live_entry(args: argparse.Namespace) -> None:
+    """实跑分发边界：确认口令 + PC 窗口/权限预检（单路线与每日任务共用）。
+
+    审查 B：daily 分支原来在这里提前返回，跳过了单路线才有的 PC 检查 ——
+    窗口/权限不通过时仍会进编排、建 runtime，然后把输入静默丢掉。
+
+    三条边界：
+    - 只在 ``--live`` 时生效，干跑不枚举窗口；
+    - 只有 ``--window-backend pc`` 才调用 PC 专用预检，模拟器一次也不调；
+    - 每个 CLI 调用只走到这里一次。路线自己的业务前检（例如资源/次数闸门）
+      不经过本函数，别把两者的次数混在一起算。
+    """
+    if not args.live:
+        return
+    if args.confirm != "RUN":
+        raise SystemExit("实跑模式需要附加参数：--live --confirm RUN")
+    if args.window_backend != "pc":
+        return
+    blocked = _pc_live_precondition(args.window_backend)
+    if blocked is not None:
+        raise SystemExit(
+            f"{blocked}\n\n"
+            "先自检看清楚：python -m auto_game_unified.tools.live_check --backend pc\n"
+            "标准做法（怎么提权、怎么判失败）：docs/howto/live_verification.md"
+        )
+
+
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     # 输入通道是进程级设置：写进环境供 ``_build_runtime`` 读取（桌面端的子进程
@@ -1105,15 +1132,15 @@ def main(argv: list[str] | None = None) -> int:
             args.offline_probe,
             Path(args.stop_file) if args.stop_file else None,
         )
+    # 实跑准入在分发前统一判一次：确认口令 → PC 预检。两条入口共用，
+    # 避免 daily 提前 return 又把检查漏掉（审查 B）。
+    if not args.daily:
+        _apply_fixed_cycles(args)
+    _guard_live_entry(args)
     if args.daily:
         # `--mode` 此时无意义（它有默认值 "arena"，无法可靠区分「用户显式传了」），
         # 所以不报错、直接忽略 —— 界面与命令行都不会同时传这两个。
-        if args.live and args.confirm != "RUN":
-            raise SystemExit("实跑模式需要附加参数：--live --confirm RUN")
         return _run_daily(args)
-    _apply_fixed_cycles(args)
-    if args.live and args.confirm != "RUN":
-        raise SystemExit("实跑模式需要附加参数：--live --confirm RUN")
     # 次数下限以路线的 ``min_cycles`` 为准（正常 1；「刷书签」是 0 —— 只扫不刷新）。
     # 用 ``MODE_SPECS.get`` 而不是 ``get_mode``：``--mode`` 写了不存在的名字时，
     # 要让它照旧在后面 ``get_mode()`` 那里报错（同 ``_apply_fixed_cycles`` 的说明）。
@@ -1127,14 +1154,6 @@ def main(argv: list[str] | None = None) -> int:
             )
     if args.live and args.start_state is not None:
         raise SystemExit("--start-state 仅在空跑诊断模式可用")
-    if args.live:
-        blocked = _pc_live_precondition(args.window_backend)
-        if blocked is not None:
-            raise SystemExit(
-                f"{blocked}\n\n"
-                "先自检看清楚：python -m auto_game_unified.tools.live_check --backend pc\n"
-                "标准做法（怎么提权、怎么判失败）：docs/howto/live_verification.md"
-            )
     spec = get_mode(args.mode)
     try:
         start_state = spec.resolve_state(args.start_state)
