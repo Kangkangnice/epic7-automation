@@ -26,6 +26,8 @@
 
 import inspect
 import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from unittest.mock import MagicMock
 
 import numpy as np
@@ -61,6 +63,19 @@ def blank() -> np.ndarray:
     if _BLANK_CACHE is None:
         _BLANK_CACHE = np.zeros((1132, 1982, 3), dtype=np.uint8)
     return _BLANK_CACHE
+
+
+class _PollClock:
+    """按 runner 请求的轮询间隔推进测试时间。"""
+
+    def __init__(self):
+        self.elapsed = 0.0
+
+    def now(self):
+        return self.elapsed
+
+    def sleep(self, seconds):
+        self.elapsed += seconds
 
 
 class _Hooked:
@@ -181,13 +196,20 @@ class BaseRunnerFinishHomeTests(unittest.TestCase):
         machine.state = WorldBossState.HOME
         machine.completed_cycles = 0
         machine.preview.side_effect = RuntimeError("页面没认出来")
-        runtime = Runtime(blank, lambda _: None, emit=lambda _: None)
-        runner = WorldBossRunner(machine, runtime, sleep=lambda _: None)
+        machine.templates = None
+        clock = _PollClock()
+        frame = np.zeros((8, 8, 3), dtype=np.uint8)
+        runtime = Runtime(
+            lambda: frame, lambda _: None, emit=lambda _: None, monotonic=clock.now,
+            diagnostic_dir=Path(self.enterContext(TemporaryDirectory())),
+        )
+        runner = WorldBossRunner(machine, runtime, sleep=clock.sleep)
         hook.install(runner)
 
-        with self.assertRaises(RuntimeError):
+        with self.assertRaisesRegex(RuntimeError, "页面没认出来"):
             runner.run(max_cycles=3)
 
+        self.assertGreater(machine.preview.call_count, 1)
         self.assertEqual(0, hook.calls, "异常退出不该去动游戏")
 
     def test_a_failed_wrap_up_never_changes_the_result(self):
@@ -288,13 +310,15 @@ class ArenaFinishHomeTests(unittest.TestCase):
         machine.completed_cycles = 0
         machine.resumed_from = None
         machine.preview.side_effect = RuntimeError("页面没认出来")
-        runtime = Runtime(blank, lambda _: None, emit=lambda _: None)
-        runner = ArenaRunner(machine, runtime, sleep=lambda _: None)
+        clock = _PollClock()
+        runtime = Runtime(blank, lambda _: None, emit=lambda _: None, monotonic=clock.now)
+        runner = ArenaRunner(machine, runtime, sleep=clock.sleep)
         hook.install(runner)
 
-        with self.assertRaises(RuntimeError):
+        with self.assertRaisesRegex(RuntimeError, "页面没认出来"):
             runner.run(max_cycles=5)
 
+        self.assertGreater(machine.preview.call_count, 1)
         self.assertEqual(0, hook.calls, "异常退出不该去动游戏")
 
     def test_a_failed_wrap_up_never_changes_the_result(self):

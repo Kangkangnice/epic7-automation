@@ -1,0 +1,21 @@
+name: 请求维护者私下联系
+description: 公开请求私密沟通渠道，适用于安全、隐私、社区行为或素材权利问题
+title: "请求维护者提供私密联系渠道"
+body:
+  - type: markdown
+    attributes:
+      value: |
+        本表单会生成公开 Issue。请保留默认标题，仅选择联系原因类别。
+        等待维护者提供私密渠道后再发送细节。请勿在公开 Issue 中附上联系方式、
+        姓名、截图、日志、凭据或复现步骤。
+
+  - type: dropdown
+    id: category
+    attributes:
+      label: 联系原因类别
+      options:
+        - 安全或隐私
+        - 社区行为
+        - 素材权利
+    validations:
+      required: true

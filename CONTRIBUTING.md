@@ -1,103 +1,84 @@
 # 参与贡献
 
-欢迎提交 Issue 和 Pull Request。本项目是**个人维护的免费开源工具**，评审以「长期能不能维护」为准，不以「功能多不多」为准。
+欢迎提交 Issue 和 Pull Request。先用[当前现状](docs/STATUS.md)确认路线与后端的支持范围，再按下面的入口开始。
 
-## 先读这三份
+| 任务 | 入口 |
+| --- | --- |
+| 日常使用或报告故障 | [使用手册](docs/USER_GUIDE.md)、[排错手册](docs/TROUBLESHOOTING.md) |
+| 新增路线或移植 PC | [新增路线](docs/EXTENDING.md)、[PC 接入](docs/PC_TEMPLATE_MIGRATION.md) |
+| 修改识别、导航或点击 | [仓库约束](AGENTS.md)、[转场契约](docs/TRANSITION_CONTRACTS.md)、[实机验收](docs/howto/live_verification.md) |
+| 评审、决策或发布 | [项目治理](GOVERNANCE.md)、[发布手册](docs/howto/release.md) |
+| 游戏更新、维护旧路线或补英雄 | [游戏更新手册](docs/howto/game_update.md)、[英雄图鉴](docs/maintenance/hero_roster.md) |
+| 报告安全或隐私问题 | [安全政策](SECURITY.md) |
 
-| 想做什么 | 先读 |
-|---|---|
-| 新增一条自动化路线 | [docs/EXTENDING.md](docs/EXTENDING.md) |
-| 修改识别、点击、导航、重试逻辑 | [AGENTS.md](AGENTS.md) 与 [docs/TRANSITION_CONTRACTS.md](docs/TRANSITION_CONTRACTS.md) |
-| 只是使用、遇到报错 | [docs/USER_GUIDE.md](docs/USER_GUIDE.md) 与 [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) |
+接受日常路线、识别和输入修复、桌面与诊断改进。改动应能独立说明、验证和回退。
+本项目通过窗口画面和输入进行视觉辅助。贡献范围排除游戏内存读取、客户端或数据包修改、反检测、
+绕过游戏安全机制、自动 PvP 功能扩展，以及自动上传运行日志和截图。资源动作按
+[安全证据矩阵](docs/SAFETY_MATRIX.md)中的权限和路线规则验收。
 
-## 本项目接受什么
+## 本地开发
 
-- 修复某条路线在真实游戏画面上认不出 / 点错 / 卡住的问题（**必须附现场帧**）；
-- 新增一条「每天都要做、很枯燥」的 PVE 日常路线；
-- 游戏改版后的模板更新与判据修复；
-- 桌面界面、日志、诊断、文档的改进。
-
-## 本项目不接受什么
-
-- **PVP 自动对战**。本项目定位是 PVE 视觉辅助；
-- 读取游戏内存、修改客户端文件、改网络数据包、反检测或绕过游戏安全机制；
-- 涉及付费货币的购买默认不执行，需使用者明确开启并受次数上限约束；竞技场旗帜购买按此实现；
-- 上传日志、截图、遥测到任何服务器的功能（本项目默认完全本地运行）；
-- 「顺便重构一下」的大范围改动。评审会要求拆成可独立验证的小步。
-
-## 本地环境
-
-- Windows 64 位；
-- Python 3.11 及以上（界面依赖 PySide6，而 numpy / Pillow 的现行版本也只出 3.11+ 的安装包；
-  3.10 装不上，别照着试）；
-- 仓库目录必须叫 `auto_game_unified`，并且**从它的父目录**运行：
+在 Windows 64 位上使用 CI 基线 Python 3.11，先 fork 再克隆。仓库目录命名为
+`auto_game_unified`。在它的父目录运行 Python 模块和测试。
 
 ```powershell
-cd D:\AI\codex\auto_game
-python -m pip install -r auto_game_unified\requirements-dev.txt
-python -u -m auto_game_unified.desktop
+git clone <你的 fork 地址> auto_game_unified
+py -3.11 -m venv .venv
+$python = '.\.venv\Scripts\python.exe'
+& $python -m pip install -r auto_game_unified\requirements-dev.txt
+& $python auto_game_unified/tools/check.py --install-hook
+$env:Path = (Resolve-Path -LiteralPath .\.venv\Scripts).Path + ';' + $env:Path
+& $python -m auto_game_unified.main --help
 ```
 
-直接跑 `auto_game_unified/main.py` 会因为包导入路径失败，这是预期行为，不是 bug。
+## 按改动选测试
 
-## 跑测试
+从仓库父目录执行。调试失败用例时可以指定一个 pytest 节点，几次小改后用选择器检查完整的受影响范围。
 
 ```powershell
-cd D:\AI\codex\auto_game
-python -m pytest -q auto_game_unified/tests
-python -m compileall -q auto_game_unified
-python -m ruff check auto_game_unified
-python -m mypy --config-file auto_game_unified/pyproject.toml
+& $python -m auto_game_unified.tools.check --plan --files games/epic7/pet_adoption.py
+& $python -m pytest -q auto_game_unified/tests/test_pet_adoption.py::test_mixed_free_evidence_stops_instead_of_guessing
 ```
 
-⚠️ 这四条与 CI（`.github/workflows/tests.yml`）**逐字一致**：mypy 的 `files` 路径按仓库父目录
-解析，进到包目录里再跑 `python -m mypy` 会读错配置（见 `pyproject.toml` 的注释）。
+| 时机或影响 | 执行范围 |
+| --- | --- |
+| 开发中改一个判据或修一个错误 | 先跑失败用例及最相似反例。需要整条路线反馈时用 `check --files <路径>`。 |
+| 本地提交 | 钩子运行静态检查和暂存文件对应的测试。宠物领养逻辑查路线、注册和安全约束；宠物屋标题素材还会查导航。 |
+| 普通分支 push | CI 核对编译、静态、治理和图鉴。可在分支上迭代，到准备评审时开 PR。 |
+| 只改项目 Markdown、英雄头像或分类、已登记的宠物／企鹅／装备回放 PNG 或相应测试的 PR | 在合并结果上运行治理门禁及所有受影响的测试。转场、接力和界面文案等规范另有对应契约测试。 |
+| 只改已核验的独立行为及其回放 | 首个试点是主线补星选卡模块 `games/epic7/story_star_cards.py`、`tests/test_story_star.py` 和 `tests/fixtures/epic7_story_star_pc/` 的直接 PNG。可与文档同改。本地与 PR 都检查补星回放、注册、桌面预检、接力、转场、安全停止和源码边界。 |
+| 含补星主循环、其他未登记的运行代码、生产页面模板、共享夹具、依赖、打包、CI 或其他未登记路径的 PR | 在合并结果上运行完整离线套件。多种改动取较严的一档；连续推送取消同一 PR 旧版本的检查。 |
+| 版本标签、每周回归、维护者手动触发 | 无条件全量。需要本机复现时用 `& $python -m pytest -q --durations=10 auto_game_unified/tests`。 |
 
-提交门禁是仓库自带的 `tools/check.py`，它按**改动范围**决定跑什么：
+本地预览用 `--plan --files <仓库相对路径>`。已提交的改动可用 `--plan --since origin/main`。
+新增未跟踪的文件需显式列出或暂存。暂存区为空时默认读取整个已跟踪工作区，多任务并行时优先显式指定路径。
+本地提示未映射时，手工指定覆盖它的测试；PR 选择器对未知路径执行全量。维护者扩大定向范围前应核对直接消费者、
+跨路线契约及反例，并给分层选择增加回归测试。具体放行条件见[按玩家行为验收](docs/decisions/0011-behavior-based-regression.md)。路线实机与多账号验收仍按行为变化执行。
+提交含需要复审的修改时，按钩子提示在提交消息加入 `Doc-reviewed:` 和实际复审结果。
+在仓库根目录可用 `python tools/doc_review.py --staged` 查看清单。
 
-| 改了什么 | 跑什么 | 大约多久 |
-|---|---|---|
-| 只有文档 / `.github/` / 图片 | 只做编译检查 | 几秒 |
-| 单条路线的模块与它的测试 | 该路线的测试 | 1~2 分钟 |
-| **共享模块**（`core/`、`desktop/`、`main.py`、`modes.py`、`navigation.py` 等） | **定向测试**（按文件 stem 映射；映射不到只提示） | 1~2 分钟 |
+## 路线与素材
 
-装钩子（每个 clone 各装一次）：
+先写清入口、页面流、可选弹窗、授权消耗、真实完成点和耗尽后行为。每条路线交付清单和注册步骤以
+[新增路线指南](docs/EXTENDING.md)为准。使用真实客户端证据和最相似反例覆盖误判，支付、开战、制作等动作
+须明确验证当前允许条件和业务结果。未知画面按转场契约安全停止。
 
-```powershell
-python auto_game_unified/tools/check.py --install-hook
-```
+素材与截图须去除账号、昵称、QQ、通知、余额等不必要信息，保留影响判定的证据。把局部模板与完整回归帧分开。
+模板取自稳定内容，声明搜索范围，判据型模板缺失应尽早报错。图片暂存后，在仓库根目录用
+`python tools/compress_images.py --staged --apply` 无损压缩本次涉及的文件，再重新暂存这些文件。
 
-**提交那一次由钩子跑，不要手工先跑一遍再提交** —— 同一份暂存内容、同一套测试，会白等一次全量。手工跑 `check.py` 只用于开发中途想看结果。
+需要真机时按[实机验收手法](docs/howto/live_verification.md)确认目标、权限、消耗和结果。
+需要多会话并行时优先分支与独立工作树。共用工作树时明确各自负责的文件，逐个暂存。
+新增架构决策使用 `python -m auto_game_unified.tools.new_decision` 从父目录生成编号。
 
-`git commit --no-verify` **默认禁止**：钩子是这套流程里唯一的强制关卡。
+## 从提交到合并
 
-### 几个容易踩的细节（2026-11-08 从 `AGENTS.md` 移来）
+从最新 `main` 创建主题分支，逐个暂存本次改动。提交采用 `类型(范围): 一句话`，正文写清目标与原因。
+推送至有写权限的远端并向主仓库打开 PR。说明变更范围、测试结果，以及实际验证过的后端、分支和业务结果。
+保留未验证范围，按[项目治理](GOVERNANCE.md)交接。
 
-- **手工跑完只要又改了文件，那次结论就作废**，以钩子的结论为准
-  （钩子正因此兜住了 2026-09-29 那次「跑完门禁之后又改了文档」）。
-- **别把 `check.py --vs HEAD` 当日常姿势**：它取的是「工作区相对 HEAD 的**全部**改动」，
-  上一轮没提交的东西也算进去，会把测试面放大，跟这次改了多少无关。
-  2026-09-25 实测：只想验竞技场一行改动，因为上一轮的 `main.py` 还躺在工作区，
-  连续两次全量 408s / 457s，而局部只要 28.7 秒。⇒ **把旧改动提交掉**，范围自然收窄。
-- **改共享模块最费时间**（按文件名映射会带出很多路线的测试）：把这类改动**攒在一起、
-  一次提交**，别拆成好几次各跑一遍。先例是批次 2~5 合并成一次。
-- ⚠️ **多个 Agent 并行时怎么不打架**（2026-11-09 定）：
-  - **首选**：一个 Agent 一个独立工作区（`git worktree`）或独立分支，各自提交、合并时解冲突。
-    规范里**不允许**两个会话共用一个工作区改同一批文件 —— 编号撞车、索引重复行、
-    变更记录混流、按行号编辑失效，都是这么来的。
-  - **确实只能共用一个工作区时**：`git add` 只加自己这次的文件，**绝不 `git add -A`**；
-    共享文件（`CHANGELOG.md`、`docs/README.md`、`docs/STATUS.md`、`AGENTS.md`、
-    `docs/decisions/` 编号）要么**指定单一写入者**，要么用追加式分区，别两边同时重写。
-    共改过同一份文件时，提交前先确认对方的内容还在 —— 那次提交会**整份**带走双方改动，
-    于是可能出现「变更记录说做了 5 件事、仓库里只落地 1 件」。
-  - 决策编号一律走 `python -m auto_game_unified.tools.new_decision`，不要手取号。
-  - 提交信息里若本次改动命中了复审规则，要加一行 `Doc-reviewed:`（钩子会提示清单）。
-- **默认不跑全量**（2026-10-25 用户拍板）：`--full` 只在 PR 合并、发布前或明确要兜底时用；
-  CI 的全量也只在这些环节跑，平时 push 不再重复一遍（见下面「日常怎么改代码」）。
-- 静态检查（ruff + mypy）每次都跑，几秒钟；没装会大声跳过，装了就必须过。
-  规则范围在 `pyproject.toml`，mypy 目前**只覆盖 `core/` 与导航链数据模块**。
-  2026-09-30 上线第一次跑就抓到 `core/window.py` 里一个真 bug
-  （`@staticmethod` 里用 `self`，NameError 被静默吞掉，「尽力还原窗口」一次都没执行过）。
+仓库的 `main` 通过 PR 合并，必需检查名为 `pytest`。维护者检查 CI、审阅意见和适用的实机证据后决定合并。
+打包改动的验收和正式发布见[发布手册](docs/howto/release.md)。
 
 ## 打包（改动了打包配置才需要）
 
@@ -279,7 +260,8 @@ gh pr merge --squash
 - [ ] 改了共享模块的话，知道这次提交默认跑定向测试（`--full` 才跑全量）；
 - [ ] 文档跟着代码一起改（README / 用户手册 / 路线矩阵）。
 
-## 许可证
+## 许可证与协作准则
 
 提交即表示你同意以 [MIT License](LICENSE) 授权你的贡献。
 注意：MIT 只覆盖原创代码，**不覆盖游戏画面与从中裁切的模板**，详见 [NOTICE.md](NOTICE.md)。
+协作按[行为准则](CODE_OF_CONDUCT.md)进行。

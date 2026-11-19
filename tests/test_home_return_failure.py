@@ -224,6 +224,38 @@ class FailureReturnHomeTests(unittest.TestCase):
         home_return.assert_called_once_with()
 
 
+class CloseoutReportingTests(unittest.TestCase):
+    def test_run_mode_preserves_business_result_and_reports_closeout(self):
+        spec = get_mode("story")
+
+        def run_to_closeout(runner, *, max_cycles):
+            runner._close_out()
+            return max_cycles
+
+        cases = (
+            (None, None, False),
+            (RuntimeError("回大厅超时"), "RuntimeError: 回大厅超时", False),
+            (ManualStop("P"), "用户手动停止", True),
+        )
+        for error, warning, stopped in cases:
+            with (
+                self.subTest(error=error),
+                mock.patch.object(main_module, "_build_runtime"),
+                mock.patch.object(main_module, "Epic7Navigator"),
+                mock.patch.object(main_module, "HomeReturn") as builder,
+                mock.patch.object(main_module, "_enter_mode"),
+                mock.patch.object(spec.runner_type, "run", run_to_closeout),
+            ):
+                builder.return_value.side_effect = error
+                result = main_module.run_mode(
+                    spec=spec, dry_run=False, max_cycles=1, start_state=spec.default_state
+                )
+                self.assertEqual(result.completed_cycles, 1)
+                self.assertEqual(result.closeout_warning, warning)
+                self.assertEqual(result.stopped_during_closeout, stopped)
+                builder.return_value.assert_called_once_with()
+
+
 class RealWiringTests(unittest.TestCase):
     """**不 mock `HomeReturn`**，让它走真代码 —— 专抓「替身永远发现不了」的接口错配。
 

@@ -66,6 +66,18 @@ def test_ci_has_a_separate_governance_gate() -> None:
     assert "test_governance_selfcheck.py" in src
 
 
+def test_ci_keeps_pr_selection_and_unconditional_release_regression():
+    src = _text(".github/workflows/tests.yml")
+    pr = src.split("- name: Run PR regression", 1)[1].split("- name:", 1)[0]
+    assert "github.event_name == 'pull_request'" in pr
+    assert "pr_tests --base 'HEAD^1'" in pr
+    assert "fetch-depth:" in src
+    full = src.split("- name: Run test suite (full)", 1)[1]
+    for event in ("schedule", "workflow_dispatch", "refs/tags/"):
+        assert event in full
+    assert "auto_game_unified/tests" in full
+
+
 # ---------------------------------------------------------------- 复审即时化
 
 

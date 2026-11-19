@@ -273,6 +273,17 @@ def main() -> int:
     stars = args.stars or (catalog_hero["stars"] if catalog_hero else 0)
     _validate(job, element, stars)
 
+    # Validate the catalog before mutating its paired portrait.
+    meta = meta_path()
+    try:
+        payload = _read_payload(meta)
+        updated, notes = merge_entry(
+            payload, zh=zh, en=en, job=job, element=element, stars=stars, force=args.force
+        )
+    except ValueError as error:
+        print(f"分类表未写入：{error}")
+        return 1
+
     target = library / f"{zh}.png"
     if args.skip_avatar:
         if not target.exists():
@@ -320,15 +331,6 @@ def main() -> int:
         cv2.imencode(".png", icon)[1].tofile(str(target))
         print(f"头像已写入：{target}（{ICON_SIZE}x{ICON_SIZE}）")
 
-    meta = meta_path()
-    try:
-        payload = _read_payload(meta)
-        updated, notes = merge_entry(
-            payload, zh=zh, en=en, job=job, element=element, stars=stars, force=args.force
-        )
-    except ValueError as error:
-        print(f"分类表未写入：{error}")
-        return 1
     for note in notes:
         print(f"分类表：{note}")
     meta.write_text(json.dumps(updated, ensure_ascii=False, indent=1), encoding="utf-8")

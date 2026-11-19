@@ -190,13 +190,13 @@ def test_result_line_status_words_are_the_explanation_style():
     assert daily_tasks.STATUS_WORDS == expected
 
 
-def test_progress_labels_use_the_same_status_words_as_the_result_card():
-    """悬浮便签的状态词与结果卡不能各说一套。"""
+def test_progress_labels_distinguish_ended_routes_from_successful_results():
+    """悬浮便签只展示执行进度，业务成败见结果卡。"""
 
     assert run_progress.STATUS_LABELS == {
         run_progress.PENDING: "待执行",
         run_progress.RUNNING: "进行中",
-        run_progress.DONE: "已完成",
+        run_progress.DONE: "已结束",
     }
 
 

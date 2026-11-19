@@ -134,6 +134,7 @@ class DailyOutcome:
     elapsed_seconds: int | None = None
     outcome_summary: str | None = None
     note: str | None = None
+    closeout_warning: str | None = None
 
     @property
     def ok(self) -> bool:
@@ -212,6 +213,8 @@ class DailyReport:
             text = f"{outcome.label} {marks.get(outcome.status, '?')}"
             if outcome.status == "failed" and outcome.detail:
                 text += f"[{_short_failure(outcome.detail)}]"
+            if outcome.closeout_warning:
+                text += "[收尾待确认]"
             parts.append(text)
         line = " / ".join(parts)
         if self.aborted_reason:
@@ -231,6 +234,9 @@ class DailyReport:
             count = sum(1 for outcome in self.outcomes if outcome.status == status)
             if count:
                 parts.append(f"{word} {count} 项")
+        pending_closeouts = sum(bool(outcome.closeout_warning) for outcome in self.outcomes)
+        if pending_closeouts:
+            parts.append(f"收尾待确认 {pending_closeouts} 项")
         parts.append(f"总用时 {_format_duration(self.elapsed_seconds)}")
         return " · ".join(parts)
 
@@ -246,6 +252,8 @@ class DailyReport:
             parts.append(outcome.outcome_summary)
         if outcome.note:
             parts.append(outcome.note)
+        if outcome.closeout_warning:
+            parts.append(f"收尾待确认（{_human_reason(outcome.closeout_warning)}）")
         if outcome.elapsed_seconds is not None:
             parts.append(_format_duration(outcome.elapsed_seconds))
         if outcome.status in {"failed", "skipped"} and outcome.detail:
@@ -278,6 +286,8 @@ class DailyReport:
                 parts.append(outcome.outcome_summary)
             if outcome.note:
                 parts.append(outcome.note)
+            if outcome.closeout_warning:
+                parts.append(f"收尾待确认（{_human_reason(outcome.closeout_warning)}）")
             if outcome.status in {"failed", "skipped"} and outcome.detail:
                 parts.append(_human_reason(outcome.detail))
             lines.append(" ".join(parts))
@@ -495,6 +505,7 @@ def run_daily_tasks(
         completed = getattr(result, "completed_cycles", None)
         summary = getattr(result, "outcome_summary", None)
         note = getattr(result, "note", None)
+        closeout_warning = getattr(result, "closeout_warning", None)
         report.outcomes.append(
             DailyOutcome(
                 mode=mode,
@@ -509,8 +520,12 @@ def run_daily_tasks(
                 elapsed_seconds=_elapsed_since(segment_started),
                 outcome_summary=summary if isinstance(summary, str) and summary else None,
                 note=note if isinstance(note, str) and note else None,
+                closeout_warning=closeout_warning if isinstance(closeout_warning, str) else None,
             )
         )
+        if getattr(result, "stopped_during_closeout", False) is True:
+            report.stopped_by_user = True
+            break
 
     if inspect is not None and _should_inspect(report, dry_run=dry_run):
         report.countdown_note = _run_inspect(inspect, report)
