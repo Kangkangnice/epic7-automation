@@ -11,15 +11,19 @@ import pytest
 from auto_game_unified.packaging import build, entry
 
 
-def test_self_check_writes_report_to_configured_data_directory(
-    tmp_path: Path, monkeypatch
+@pytest.mark.parametrize("desktop_available", [True, False])
+def test_self_check_reports_desktop_dependencies_in_configured_data_directory(
+    tmp_path: Path, monkeypatch, desktop_available: bool
 ) -> None:
     monkeypatch.setenv("EPIC7_DATA_DIR", str(tmp_path))
     monkeypatch.setattr(sys, "argv", ["entry.py", "--self-check"])
+    if not desktop_available:
+        monkeypatch.setitem(sys.modules, "auto_game_unified.desktop_qt.app", None)
 
-    assert entry.main() == 0
+    assert entry.main() == (0 if desktop_available else 1)
     report = (tmp_path / "runtime_logs" / "self_check.txt").read_text(encoding="utf-8")
-    assert "结果：通过" in report
+    assert ("[通过] 桌面入口" if desktop_available else "[失败] 桌面入口") in report
+    assert ("结果：通过" if desktop_available else "结果：1 项失败") in report
 
 
 def test_spec_collects_from_a_clean_checkout(tmp_path: Path, monkeypatch) -> None:
@@ -36,10 +40,17 @@ def test_spec_collects_from_a_clean_checkout(tmp_path: Path, monkeypatch) -> Non
         for source, _destination in datas:
             assert Path(source).exists(), source
         assert "e7auto" in excludes
-        return SimpleNamespace(binaries=[], datas=[], pure=[], scripts=[])
+        binaries = [
+            (name, str(repo / name), "BINARY")
+            for name in ("ICUUC.dll", "icuin.dll", "icu.dll", "icuuc78.dll")
+        ]
+        return SimpleNamespace(binaries=binaries, datas=[], pure=[], scripts=[])
 
     def ignore_target(*_args, **_kwargs):
         pass
+
+    def collect(_exe, binaries, _datas, **_options):
+        assert [binary[0] for binary in binaries] == ["icuuc78.dll"]
 
     runpy.run_path(
         str(build.SPEC),
@@ -48,7 +59,7 @@ def test_spec_collects_from_a_clean_checkout(tmp_path: Path, monkeypatch) -> Non
             "Analysis": analysis,
             "PYZ": ignore_target,
             "EXE": ignore_target,
-            "COLLECT": ignore_target,
+            "COLLECT": collect,
         },
     )
 
@@ -68,6 +79,7 @@ def onedir(tmp_path: Path, monkeypatch) -> Path:
     "_internal/vendor/E7Auto/config/internal.yaml",
     ".git",
     "_internal/.github/workflows/tests.yml",
+    "_internal/ICUUC.dll",
 ])
 def test_no_build_rejects_contaminated_dist(onedir: Path, blocked_path: str, monkeypatch):
     blocked = onedir / blocked_path
@@ -79,7 +91,9 @@ def test_no_build_rejects_contaminated_dist(onedir: Path, blocked_path: str, mon
         build.main()
 
     assert str(error.value).lower().splitlines()[0].endswith(
-        next(part for part in blocked.parts if part.lower() in {"e7auto", ".git", ".github"}).lower()
+        next(part for part in blocked.parts if part.lower() in {
+            "e7auto", ".git", ".github", "icuuc.dll"
+        }).lower()
     )
     assert not list(onedir.parent.glob("*.zip"))
     assert not (onedir.parent / "SHA256SUMS.txt").exists()
