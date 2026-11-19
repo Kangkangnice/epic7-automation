@@ -104,6 +104,7 @@ def check_vendor_payload(lock: dict) -> None:
     root = DIST / APP_NAME / "_internal" / "vendor" / "e7auto"
     if not root.is_dir():
         raise SystemExit(f"产物里找不到第三方代码：{root}")
+    module = _vendor_module()
     shipped = {
         item.relative_to(root).as_posix()
         for item in root.rglob("*")
@@ -112,11 +113,17 @@ def check_vendor_payload(lock: dict) -> None:
     expected = set(lock["files"])
     extra = sorted(shipped - expected)
     missing = sorted(expected - shipped)
-    if extra or missing:
+    changed = sorted(
+        name
+        for name in shipped & expected
+        if module.sha256_file(root / name) != lock["files"][name]
+    )
+    if extra or missing or changed:
         raise SystemExit(
             "产物中的第三方文件与清单不一致：\n"
             + "\n".join(f"  多出：{name}" for name in extra[:10])
             + "\n".join(f"  缺少：{name}" for name in missing[:10])
+            + "\n".join(f"  摘要不符：{name}" for name in changed[:10])
         )
     print(f"[build] 产物第三方文件与清单一致（{len(expected)} 个）", flush=True)
 
@@ -204,13 +211,16 @@ def directory_size(path: Path) -> int:
     return sum(item.stat().st_size for item in path.rglob("*") if item.is_file())
 
 
-def make_zip(version: str) -> Path:
+def make_zip(version: str, lock: dict) -> Path:
     """打免安装版 ZIP。
 
     ⚠️ 用 **DEFLATE** 不是为了省事：换 ``ZIP_LZMA`` 能再小 18 MB（63 → 45），
     但 **Windows 资源管理器自带的「全部解压缩」不认 LZMA 的 zip**，
     用户得先装 7-Zip —— 那就不是「解压即用」了。2026-10-20 实测过两种压缩率。
     """
+    # ⚠️ 先验内容再开压缩包：``--no-build`` 复用旧 dist 时也必须过这一关，
+    # 否则往目录里塞一个清单外文件再重打包，它会照样进 ZIP。
+    check_vendor_payload(lock)
     archive = DIST / f"第七史诗自动助手-免安装版-{version}.zip"
     with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED) as bundle:
         for item in sorted((DIST / APP_NAME).rglob("*")):
@@ -277,6 +287,9 @@ def main() -> int:
     print(f"[build] 版本 {version}", flush=True)
 
     exe = DIST / APP_NAME / f"{APP_NAME}.exe"
+    # --no-build 复用旧 dist 时没有源码目录可验，清单仍要从仓库读出来，
+    # 交给 make_zip 在压缩前核对产物。
+    vendor_lock = _vendor_module().load_lock()
     if not args.no_build:
         vendor_lock = verify_vendor()
         exe = run_pyinstaller()
@@ -289,7 +302,7 @@ def main() -> int:
     if not exe.is_file():
         raise SystemExit(f"没有可打包的产物：{exe}")
 
-    archive = make_zip(version)
+    archive = make_zip(version, vendor_lock)
     installer = build_installer(version) if args.installer else None
 
     artifacts = [archive] + ([installer] if installer is not None else [])
