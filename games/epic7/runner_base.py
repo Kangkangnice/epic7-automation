@@ -113,6 +113,12 @@ class ModeRunnerBase:
         # 运行时标记：基类 ``_stable_next_action`` 每次进入都会置真。主循环据此
         # 判定子类覆写有没有把基类实现调回去 —— 不读源码文本（审查 C）。
         self._conclusion_gate_entered = False
+        # 基类**采信**并抛出的那个结论对象。主循环只认它：进了基类不等于
+        # 这个结论过了门槛 —— 第一帧被拒后子类自己再抛一个，不算数（审查 C）。
+        self._admitted_conclusion: Optional[BaseException] = None
+        # 这一帧被门槛**拒绝**的结论。只有它存在时才追究「子类重抛」；
+        # 基类自己在 ``next_action`` 里抛的结论不算（那是既有行为，不在本次范围）。
+        self._rejected_conclusion: Optional[BaseException] = None
 
     # ---- 子类钩子（差异点） ----
 
@@ -349,6 +355,8 @@ class ModeRunnerBase:
         """
         # 给主循环的运行时标记：子类覆写必须走到这里，否则 ``run`` 会失败关闭。
         self._conclusion_gate_entered = True
+        self._admitted_conclusion = None
+        self._rejected_conclusion = None
         try:
             preview_action, outcome = self.machine.preview(screen)
         except ManualStop:
@@ -356,11 +364,15 @@ class ModeRunnerBase:
             raise
         except RuntimeError as error:
             if not self.conclusion_gate.admit(error):
+                self._rejected_conclusion = error
                 self.runtime.log(
                     f"模式={self._MODE_LABEL} 结论待确认={type(error).__name__} "
                     f"依据=需连续两帧一致才采信 详情={error}"
                 )
                 return NOT_STABLE
+            # 只有从这一行抛出去的结论才是「过了门槛」的。主循环拿这个对象
+            # 对账，防止子类把被拒的结论换个位置再抛一次（审查 C 的反例）。
+            self._admitted_conclusion = error
             raise
         self.unknown_screen_wake.reset()
         signature = self._stable_action_signature(preview_action, outcome)
@@ -383,17 +395,24 @@ class ModeRunnerBase:
         return self.machine.next_action(screen)
 
     def _stable_next_action_checked(self, screen, stable: StableObservation):
-        """调用子类实现，并确认基类的结论门槛真的执行过。
+        """调用子类实现，并确认交给主循环的结论真的过了门槛。
 
-        ⚠️ 这是审查 C 的运行时保护：以前加载期靠 ``inspect.getsource`` 找
-        ``super()._stable_next_action`` 这串文字，注释里写一句同样的字就能骗过，
-        而真正委托基类的写法反而可能被误判。现在改为「基类方法自己打点」：
-        子类重写后没调 ``super()`` ⇒ 这一帧没有标记 ⇒ 主循环当场失败关闭，
-        不会带着未过门槛的结论继续点。
+        ⚠️ 审查 C 的运行时保护分两层：
+
+        1. **进过基类**：子类重写后没调 ``super()`` ⇒ 没有标记 ⇒ 失败关闭；
+        2. **结论归属**：进了基类也不够 —— 第一帧被门槛拒绝时基类返回
+           ``NOT_STABLE``，子类若把它换成一个终止性结论再抛，主循环会当成
+           「已确认」收工。所以**基类刚拒绝过结论**时，子类再抛的
+           ``RuntimeError`` 一律按绕过处理（只有基类采信的那个对象放行）。
+
+        非 ``RuntimeError``（截图失败、解码错误这类真故障）原样抛出，不包装：
+        包装会把「截图通道挂了」改写成「没调 super」，故障原因被盖掉。
 
         用户停止（``ManualStop``）照常穿出去：它不是程序下的结论。
         """
         self._conclusion_gate_entered = False
+        self._admitted_conclusion = None
+        self._rejected_conclusion = None
         # 测试会把实例方法整个换掉（``patch.object(runner, "_stable_next_action")``）
         # 来喂脚本；那不是路线重写，别误判成绕过。只对**类级覆写**执行这条保护。
         instance_patched = "_stable_next_action" in vars(self)
@@ -401,14 +420,32 @@ class ModeRunnerBase:
             action = self._stable_next_action(screen, stable)
         except ManualStop:
             raise
-        except BaseException:
-            if not self._conclusion_gate_entered and not instance_patched:
+        except RuntimeError as error:
+            if instance_patched or error is self._admitted_conclusion:
+                raise
+            if self._rejected_conclusion is not None:
+                raise ConclusionGateBypassed(
+                    f"模式={self._MODE_LABEL} 结论门槛被绕过：基类没有采信这个结论"
+                    f"（{type(error).__name__} 在第一帧就被门槛拒绝了），"
+                    "子类却把它交给主循环。终止性结论必须经过两帧确认，路线已按失败关闭处理。"
+                ) from error
+            if not self._conclusion_gate_entered:
                 raise ConclusionGateBypassed(
                     f"模式={self._MODE_LABEL} 结论门槛被绕过："
                     "重写了 _stable_next_action 却没有调用基类实现（super()）。"
                     "终止性结论必须经过两帧确认，路线已按失败关闭处理。"
-                ) from None
+                ) from error
             raise
+        except BaseException as error:
+            # 截图 / 磁盘这类 I/O 故障不是终止性结论：原样抛出，保留真实原因。
+            # 其余异常（含测试用的停止哨兵）仍按「绕开基类」失败关闭 —— 与改前一致。
+            if instance_patched or self._conclusion_gate_entered or isinstance(error, OSError):
+                raise
+            raise ConclusionGateBypassed(
+                f"模式={self._MODE_LABEL} 结论门槛被绕过："
+                "重写了 _stable_next_action 却没有调用基类实现（super()）。"
+                "终止性结论必须经过两帧确认，路线已按失败关闭处理。"
+            ) from error
         if not self._conclusion_gate_entered and not instance_patched:
             raise ConclusionGateBypassed(
                 f"模式={self._MODE_LABEL} 结论门槛被绕过："

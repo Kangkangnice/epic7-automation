@@ -111,6 +111,42 @@ def test_bad_run_confirmation_rejects_without_precheck(monkeypatch, argv, entry,
 
 
 @pytest.mark.parametrize(
+    "extra, expected",
+    [
+        (["--max-cycles", "0"], "实跑模式要求 --max-cycles 为正数"),
+        (
+            ["--max-cycles", "1", "--start-state", "lobby"],
+            "--start-state 仅在空跑诊断模式可用",
+        ),
+    ],
+    ids=["max-cycles-zero", "start-state-on-live"],
+)
+def test_bad_live_arguments_are_reported_before_the_pc_precheck(
+    monkeypatch, extra, expected
+):
+    """参数本身不合法时先报参数错：修好 PC 环境也救不了这条命令（审查 B 复验）。"""
+
+    argv = [
+        "--mode",
+        "arena",
+        "--window-backend",
+        "pc",
+        "--live",
+        "--confirm",
+        "RUN",
+        *extra,
+    ]
+
+    code, error, calls = _drive(monkeypatch, argv, precheck="PC 未就绪")
+
+    assert code is None
+    assert expected in (error or "")
+    assert "PC 未就绪" not in (error or ""), "不许把参数错误报成环境错误"
+    assert calls["precheck"] == 0
+    assert calls["daily"] == 0 and calls["mode"] == 0
+
+
+@pytest.mark.parametrize(
     "argv",
     [
         ["--daily", "--daily-tasks", "arena:1", "--window-backend", "pc"],

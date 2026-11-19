@@ -21,6 +21,20 @@ def snapshot(obj: object, *, stable: frozenset[str]) -> dict[str, Any]:
     }
 
 
-def restore(obj: object, snapshot: Mapping[str, Any]) -> None:
+def restore(
+    obj: object,
+    snapshot: Mapping[str, Any],
+    *,
+    stable: frozenset[str] = frozenset(),
+) -> None:
+    """把对象还原到快照时刻：写回旧字段，**并删掉预览期间新长出来的字段**。
+
+    只写回不够（审查 E 的复验反例）：子类在 ``next_action`` 里首次创建
+    ``self.xxx`` 后抛错，``finally`` 恢复时旧字段回来了，新字段却留在机器上，
+    下一次真跑会把它当成上一轮留下的账本。``stable`` 是快照本就排除的只读
+    基础设施（模板、字形、计划），它们不参与增删。
+    """
+    for name in set(vars(obj)) - set(snapshot) - set(stable):
+        delattr(obj, name)
     for name, value in snapshot.items():
         setattr(obj, name, value)

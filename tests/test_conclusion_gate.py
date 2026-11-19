@@ -32,7 +32,11 @@ from auto_game_unified.games.epic7.expedition import (
     ExpeditionState,
     PostersExhausted,
 )
-from auto_game_unified.games.epic7.runner_base import ModeRunnerBase
+from auto_game_unified.games.epic7.runner_base import (
+    NOT_STABLE,
+    ConclusionGateBypassed,
+    ModeRunnerBase,
+)
 from auto_game_unified.games.epic7.unknown_screen import UnrecognizedScreen
 
 FAKE_SCREEN = np.zeros((8, 8, 3), dtype=np.uint8)
@@ -113,6 +117,33 @@ class _GateRunner(ModeRunnerBase):
 
     def _timeout_for(self, state) -> float:
         return 1e9
+
+
+class _ResubmitsRejectedConclusion(ModeRunnerBase):
+    """复现审查 C 的反例：基类第一帧拒绝后，子类把 NOT_STABLE 换成结论再抛。"""
+
+    _MODE_LABEL = "假路线"
+
+    def _timeout_for(self, state) -> float:
+        return 1e9
+
+    def _stable_next_action(self, screen, stable):
+        result = super()._stable_next_action(screen, stable)
+        if result is NOT_STABLE:
+            raise _FakeExhausted()
+        return result
+
+
+class _FailsBeforeCallingSuper(ModeRunnerBase):
+    """复现审查 C 的第二个反例：截图失败发生在进基类之前。"""
+
+    _MODE_LABEL = "假路线"
+
+    def _timeout_for(self, state) -> float:
+        return 1e9
+
+    def _stable_next_action(self, screen, stable):
+        raise OSError("截图通道挂了")
 
 
 def _run_base(script) -> tuple[ModeRunnerBase, FakeRuntime]:
@@ -204,6 +235,43 @@ class BaseLoopConclusionTests(unittest.TestCase):
         )
         with self.assertRaises(ManualStop):
             runner.run(max_cycles=1)
+
+    def test_a_rejected_first_frame_cannot_be_resubmitted_as_a_conclusion(self):
+        """审查 C 反例：基类返回 NOT_STABLE 后，子类把它改成「资源耗尽」。
+
+        改前：主循环先记「需连续两帧」，紧接着就在同一帧按资源耗尽收工 ——
+        「进过基类」被当成了「结论过了门槛」。
+        """
+
+        runner = _ResubmitsRejectedConclusion(
+            ScriptedMachine([_FakeExhausted(), _LoopStop()]),
+            FakeRuntime(),
+            sleep=lambda _: None,
+            poll_seconds=0.0,
+        )
+
+        with self.assertRaisesRegex(ConclusionGateBypassed, "基类没有采信这个结论"):
+            runner.run(max_cycles=1)
+
+        self.assertFalse(
+            runner.resource_exhausted,
+            "第一帧被拒的结论不许在同一帧变成已确认结论",
+        )
+
+    def test_a_real_failure_before_the_gate_keeps_its_cause(self):
+        """审查 C 反例：截图失败发生在进基类之前，不许改写成「没调 super」。"""
+
+        runner = _FailsBeforeCallingSuper(
+            ScriptedMachine([]),
+            FakeRuntime(),
+            sleep=lambda _: None,
+            poll_seconds=0.0,
+        )
+
+        with self.assertRaises(OSError) as captured:
+            runner.run(max_cycles=1)
+
+        self.assertIn("截图通道挂了", str(captured.exception))
 
 
 class ArenaLoopConclusionTests(unittest.TestCase):
@@ -361,6 +429,29 @@ class ConclusionGateRegistryTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(RuntimeError, "结论门槛被绕过"):
             runner.run(max_cycles=1)
+
+    def test_a_runner_that_rewrites_run_is_not_auto_protected(self):
+        """审查 C：自己写 ``run()`` 的路线不能仅凭继承被认定「已保护」。
+
+        继承只证明「类关系上属于基类」，不证明那次运行真的走过基类循环。
+        重写 ``run()`` 的路线必须在表里写明自己的保证（现有 7 条都写了
+        「只做前置/收尾，主循环转调 ``super().run()``」）。
+        """
+
+        class _OwnLoop(ModeRunnerBase):
+            _MODE_LABEL = "假路线"
+
+            def run(self, max_cycles=None) -> int:
+                return 0
+
+        with self._fake_route(_OwnLoop):
+            with self.assertRaisesRegex(RuntimeError, "CONCLUSION_GATE_DECLARATION"):
+                modes._assert_conclusion_gate_declared()
+            modes.CONCLUSION_GATE_DECLARATION[self.FAKE] = "假理由：run 自己下结论"
+            try:
+                modes._assert_conclusion_gate_declared()
+            finally:
+                modes.CONCLUSION_GATE_DECLARATION.pop(self.FAKE, None)
 
     def test_the_check_refuses_saying_it_twice(self):
         with self._fake_route(_GateRunner):

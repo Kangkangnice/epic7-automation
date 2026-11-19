@@ -1092,22 +1092,53 @@ def _pc_live_precondition(window_backend: str) -> str | None:
     return f"PC 后端实跑未就绪：{report.message}"
 
 
-def _guard_live_entry(args: argparse.Namespace) -> None:
-    """实跑分发边界：确认口令 + PC 窗口/权限预检（单路线与每日任务共用）。
+def _validate_live_args(args: argparse.Namespace) -> None:
+    """实跑的**纯参数**校验：只读命令行，不枚举窗口。
 
-    审查 B：daily 分支原来在这里提前返回，跳过了单路线才有的 PC 检查 ——
-    窗口/权限不通过时仍会进编排、建 runtime，然后把输入静默丢掉。
+    审查 B 复验反例：``--max-cycles 0`` 与实跑传 ``--start-state`` 都是命令本身
+    不合法。以前先做 PC 预检，用户看到的是「PC 未就绪」；照着提示修好环境，
+    命令仍然不合法。这里把参数校验提到预检之前 —— 参数错了先报参数错。
 
-    三条边界：
-    - 只在 ``--live`` 时生效，干跑不枚举窗口；
-    - 只有 ``--window-backend pc`` 才调用 PC 专用预检，模拟器一次也不调；
-    - 每个 CLI 调用只走到这里一次。路线自己的业务前检（例如资源/次数闸门）
-      不经过本函数，别把两者的次数混在一起算。
+    ``--daily`` 的次数写在 ``--daily-tasks`` 里，由 ``_parse_daily_cycles`` 在
+    编排入口解析；这里不重复判。
     """
     if not args.live:
         return
     if args.confirm != "RUN":
         raise SystemExit("实跑模式需要附加参数：--live --confirm RUN")
+    if args.daily:
+        return
+    # 次数下限以路线的 ``min_cycles`` 为准（正常 1；「刷书签」是 0 —— 只扫不刷新）。
+    # 用 ``MODE_SPECS.get`` 而不是 ``get_mode``：``--mode`` 写了不存在的名字时，
+    # 要让它照旧在后面 ``get_mode()`` 那里报错（同 ``_apply_fixed_cycles`` 的说明）。
+    minimum = getattr(MODE_SPECS.get(args.mode), "min_cycles", 1)
+    if args.max_cycles is None or args.max_cycles < minimum:
+        raise SystemExit(
+            "实跑模式要求 --max-cycles 为正数"
+            if minimum > 0
+            else "实跑模式的 --max-cycles 不能为负数"
+        )
+    if args.start_state is not None:
+        raise SystemExit("--start-state 仅在空跑诊断模式可用")
+
+
+def _guard_live_entry(args: argparse.Namespace) -> None:
+    """实跑分发边界：参数校验 + PC 窗口/权限预检（单路线与每日任务共用）。
+
+    审查 B：daily 分支原来在这里提前返回，跳过了单路线才有的 PC 检查 ——
+    窗口/权限不通过时仍会进编排、建 runtime，然后把输入静默丢掉。
+
+    四条边界：
+    - 只在 ``--live`` 时生效，干跑不枚举窗口；
+    - 先做纯参数校验（``_validate_live_args``），再碰 PC 预检：参数不合法时
+      报参数错，不把「命令写错」误导成「环境没修好」；
+    - 只有 ``--window-backend pc`` 才调用 PC 专用预检，模拟器一次也不调；
+    - 每个 CLI 调用只走到这里一次。路线自己的业务前检（例如资源/次数闸门）
+      不经过本函数，别把两者的次数混在一起算。
+    """
+    _validate_live_args(args)
+    if not args.live:
+        return
     if args.window_backend != "pc":
         return
     blocked = _pc_live_precondition(args.window_backend)
@@ -1141,19 +1172,8 @@ def main(argv: list[str] | None = None) -> int:
         # `--mode` 此时无意义（它有默认值 "arena"，无法可靠区分「用户显式传了」），
         # 所以不报错、直接忽略 —— 界面与命令行都不会同时传这两个。
         return _run_daily(args)
-    # 次数下限以路线的 ``min_cycles`` 为准（正常 1；「刷书签」是 0 —— 只扫不刷新）。
-    # 用 ``MODE_SPECS.get`` 而不是 ``get_mode``：``--mode`` 写了不存在的名字时，
-    # 要让它照旧在后面 ``get_mode()`` 那里报错（同 ``_apply_fixed_cycles`` 的说明）。
-    if args.live:
-        minimum = getattr(MODE_SPECS.get(args.mode), "min_cycles", 1)
-        if args.max_cycles is None or args.max_cycles < minimum:
-            raise SystemExit(
-                "实跑模式要求 --max-cycles 为正数"
-                if minimum > 0
-                else "实跑模式的 --max-cycles 不能为负数"
-            )
-    if args.live and args.start_state is not None:
-        raise SystemExit("--start-state 仅在空跑诊断模式可用")
+    # 实跑的次数下限与 --start-state 已由 _guard_live_entry 的纯参数校验判过；
+    # 这里不再重复，避免同一规则两处实现（审查 B 的顺序要求也靠这一点）。
     spec = get_mode(args.mode)
     try:
         start_state = spec.resolve_state(args.start_state)
