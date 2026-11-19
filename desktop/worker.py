@@ -43,6 +43,9 @@ class RunRequest:
     # PC 端输入通道：``background``（默认，不抢前台）/ ``foreground``（抢前台）。
     # 它是**进程级**设置，写进子进程环境变量，不进 --params-file（那是路线参数）。
     pc_input_mode: str = "background"
+    # 打包验证专用：不为 None 时子进程只跑「等停止信号」的离线探针，
+    # 不装配任何路线、不截图、不点击。界面从不设置它。
+    offline_probe_seconds: float | None = None
 
 
 @dataclass(frozen=True)
@@ -153,6 +156,35 @@ class WorkerController:
             f"{mode}:{request.cycles[mode]}" if mode in request.cycles else mode
             for mode in request.modes
         )
+        if request.offline_probe_seconds is not None:
+            # 离线探针：只带停止通道，不带 --daily / --live，业务进程不会碰游戏。
+            cli_args = [
+                "--offline-probe",
+                f"{request.offline_probe_seconds:g}",
+                "--stop-file",
+                str(self.stop_file),
+                "--pc-input-mode",
+                request.pc_input_mode,
+            ]
+        else:
+            cli_args = [
+                "--daily",
+                "--daily-tasks",
+                daily_arg,
+                "--window-backend",
+                request.backend,
+                "--live",
+                "--confirm",
+                "RUN",
+                "--stop-file",
+                str(self.stop_file),
+                # 显式传参 + 环境变量双保险：命令行优先级最高，进程命令行里也能
+                # 直接看到这次用的是哪条输入通道（排障时不用去猜环境）。
+                "--pc-input-mode",
+                request.pc_input_mode,
+            ]
+            if params_file is not None:
+                cli_args += ["--params-file", str(params_file)]
         command = [
             # ⚠️ 冻结版里 ``sys.executable`` 是助手 exe，不是解释器：再拼
             # ``-u -m auto_game_unified.main`` 会被打包入口当成界面参数，
@@ -163,23 +195,8 @@ class WorkerController:
                 if getattr(sys, "frozen", False)
                 else [sys.executable, "-u", "-m", "auto_game_unified.main"]
             ),
-            "--daily",
-            "--daily-tasks",
-            daily_arg,
-            "--window-backend",
-            request.backend,
-            "--live",
-            "--confirm",
-            "RUN",
-            "--stop-file",
-            str(self.stop_file),
-            # 显式传参 + 环境变量双保险：命令行优先级最高，进程命令行里也能
-            # 直接看到这次用的是哪条输入通道（排障时不用去猜环境）。
-            "--pc-input-mode",
-            request.pc_input_mode,
+            *cli_args,
         ]
-        if params_file is not None:
-            command += ["--params-file", str(params_file)]
         environment = os.environ.copy()
         environment["PYTHONIOENCODING"] = "utf-8"
         # 冻结版子进程没有 ``-u``：不设这个，输出会攒在缓冲区里，界面看不到进度。
