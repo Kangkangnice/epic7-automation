@@ -5,8 +5,12 @@
 LICENSE 文件，重分发依据未确认；构建时按固定 commit 取回，再逐文件比对 SHA-256。
 
 落点固定为 ``<工作区>/vendor/e7auto`` —— ``desktop/chaos_bridge.py`` 与打包 spec
-都认这个路径。取回后删除 ``.git``：产物只需要 ``src`` / ``config`` /
-``assets/templates`` 三个目录，不需要历史。
+都认这个路径。只写 ``src`` / ``config`` / ``assets/templates`` 三个目录，不带历史。
+
+**校验的是哪一种字节**：固定 commit 的 Git blob 原始字节。取回用
+``git archive`` 直接从对象库导出，不经过 ``git checkout`` —— 后者会按调用者的
+``core.autocrlf`` / ``core.eol`` 转换换行，同一 commit 在不同机器上字节就不同。
+因此清单与 ``core.autocrlf=true/false`` 都无关，用户不需要改全局配置。
 
 用法（在仓库根执行）::
 
@@ -86,7 +90,10 @@ def verify(root: Path, lock: dict) -> list[str]:
         if rel not in actual:
             problems.append(f"缺少文件：{rel}")
         elif actual[rel] != digest:
-            problems.append(f"摘要不符：{rel}")
+            problems.append(
+                f"摘要不符：{rel}（文件字节与 Git blob 不一致；换行符不同也会到这里，"
+                "重新运行 fetch_vendor.py 取回）"
+            )
     for rel in sorted(actual.keys() - expected.keys()):
         problems.append(f"清单外文件：{rel}")
     return problems
@@ -118,6 +125,70 @@ def _remove_tree(path: Path) -> None:
     shutil.rmtree(path, onerror=_force_remove)
 
 
+def _tree_entries(commit: str, repo: Path) -> list[tuple[str, str]]:
+    """``[(blob sha, 相对路径)]``，只保留随包分发的那三段。"""
+    result = subprocess.run(
+        ["git", "ls-tree", "-r", "-z", "--full-tree", commit],
+        cwd=repo,
+        capture_output=True,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"git ls-tree 失败：{result.stderr.decode('utf-8', 'replace').strip()}"
+        )
+    prefixes = tuple(f"{name}/" for name in INCLUDE)
+    entries: list[tuple[str, str]] = []
+    for record in result.stdout.split(b"\0"):
+        if not record:
+            continue
+        meta, _, raw_path = record.partition(b"\t")
+        parts = meta.split()
+        if len(parts) != 3 or parts[1] != b"blob":
+            continue
+        path = raw_path.decode("utf-8")
+        if not path.startswith(prefixes):
+            continue
+        entries.append((parts[2].decode("ascii"), path))
+    return entries
+
+
+def _export_blobs(commit: str, repo: Path, dest: Path) -> None:
+    """按 **Git blob 原始字节**写出文件，不经过 checkout / archive 的换行转换。"""
+    entries = _tree_entries(commit, repo)
+    if not entries:
+        raise RuntimeError(f"{commit} 里没有可分发文件")
+    # ``cat-file --batch`` 一次把 500 多个 blob 原样吐出来，避免逐文件起进程。
+    payload = b"".join(sha.encode("ascii") + b"\n" for sha, _ in entries)
+    result = subprocess.run(
+        ["git", "cat-file", "--batch"],
+        cwd=repo,
+        input=payload,
+        capture_output=True,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"git cat-file 失败：{result.stderr.decode('utf-8', 'replace').strip()}"
+        )
+    stream = result.stdout
+    offset = 0
+    for _sha, path in entries:
+        newline = stream.find(b"\n", offset)
+        if newline < 0:
+            raise RuntimeError(f"blob 输出不完整：{path}")
+        header = stream[offset:newline].split()
+        if len(header) != 3 or header[1] != b"blob":
+            raise RuntimeError(f"读不到 blob：{path}（{stream[offset:newline]!r}）")
+        size = int(header[2])
+        start = newline + 1
+        data = stream[start : start + size]
+        if len(data) != size:
+            raise RuntimeError(f"blob 长度不符：{path}")
+        target = dest / Path(path)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(data)
+        offset = start + size + 1  # 每条记录后面跟一个换行
+
+
 def fetch(lock: dict, source: str, dest: Path = DEST) -> None:
     """把固定 commit 取到 ``dest``；目标已存在时**不覆盖**。"""
     if dest.exists():
@@ -127,27 +198,27 @@ def fetch(lock: dict, source: str, dest: Path = DEST) -> None:
         )
     dest.parent.mkdir(parents=True, exist_ok=True)
     temp = Path(tempfile.mkdtemp(prefix="e7auto-fetch-", dir=dest.parent))
+    work = temp / "repo"
+    work.mkdir()
     try:
-        _run_git(["init", "--quiet"], temp)
-        _run_git(["remote", "add", "origin", source], temp)
-        _run_git(
-            ["fetch", "--depth", "1", "origin", lock["commit"]],
-            temp,
-        )
-        _run_git(["checkout", "--quiet", "--detach", "FETCH_HEAD"], temp)
-        _remove_tree(temp / ".git")
-        problems = verify(temp, lock)
+        _run_git(["init", "--quiet"], work)
+        _run_git(["remote", "add", "origin", source], work)
+        _run_git(["fetch", "--depth", "1", "origin", lock["commit"]], work)
+        _export_blobs(lock["commit"], work, temp / "tree")
+        problems = verify(temp / "tree", lock)
         if problems:
             raise RuntimeError(
                 "取回的内容与清单不符：\n" + "\n".join(problems[:20])
             )
-        temp.rename(dest)
+        (temp / "tree").rename(dest)
     except Exception:
         try:
             _remove_tree(temp)
         except OSError:
             pass
         raise
+    else:
+        _remove_tree(temp)
 
 
 def write_lock(dest: Path = DEST, *, upstream: str, commit: str, tag: str) -> None:

@@ -34,16 +34,18 @@ def test_lock_pins_an_upstream_commit_and_only_distributable_directories():
 
 def _make_tree(root: Path) -> Path:
     (root / "src" / "e7auto").mkdir(parents=True)
-    (root / "src" / "e7auto" / "__init__.py").write_text("VALUE = 1\n", encoding="utf-8")
+    # 用 write_bytes 写固定 LF：write_text 在 Windows 会把 \n 翻成 \r\n，
+    # 清单和 Git blob 就对不上了（真实上游的 blob 是 LF）。
+    (root / "src" / "e7auto" / "__init__.py").write_bytes(b"VALUE = 1\n")
     (root / "config").mkdir()
-    (root / "config" / "internal.yaml").write_text("schema_version: 1\n", encoding="utf-8")
+    (root / "config" / "internal.yaml").write_bytes(b"schema_version: 1\n")
     (root / "assets" / "templates").mkdir(parents=True)
-    (root / "assets" / "templates" / "x.txt").write_text("x", encoding="utf-8")
+    (root / "assets" / "templates" / "x.txt").write_bytes(b"x")
     # 上游还有这些目录，但它们不该进清单。
     (root / "docs").mkdir()
-    (root / "docs" / "guide.md").write_text("doc", encoding="utf-8")
+    (root / "docs" / "guide.md").write_bytes(b"doc")
     (root / ".git").mkdir()
-    (root / ".git" / "HEAD").write_text("ref: refs/heads/main\n", encoding="utf-8")
+    (root / ".git" / "HEAD").write_bytes(b"ref: refs/heads/main\n")
     return root
 
 
@@ -136,3 +138,38 @@ def test_spec_ships_only_the_runtime_subdirectories_of_the_vendor(tmp_path: Path
         str(workspace / "vendor" / "e7auto" / "config"),
         str(workspace / "vendor" / "e7auto" / "assets" / "templates"),
     }
+
+
+@pytest.mark.skipif(shutil.which("git") is None, reason="需要 git")
+@pytest.mark.parametrize("autocrlf", ["true", "false"])
+def test_fetch_does_not_depend_on_the_local_autocrlf_setting(
+    tmp_path: Path, monkeypatch, autocrlf: str
+):
+    """同一 commit，在 autocrlf=true / false 下取回的字节必须一样（Git blob 字节）。"""
+    upstream = tmp_path / f"upstream-{autocrlf}"
+    (upstream / "src" / "e7auto").mkdir(parents=True)
+    (upstream / "src" / "e7auto" / "text.py").write_bytes(b"a\nb\n")
+    subprocess.run(["git", "init", "--quiet"], cwd=upstream, check=True)
+    subprocess.run(["git", "add", "."], cwd=upstream, check=True)
+    subprocess.run(
+        ["git", "-c", "user.name=t", "-c", "user.email=t@example.com",
+         "commit", "--quiet", "-m", "fixture"],
+        cwd=upstream,
+        check=True,
+    )
+    commit = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=upstream, check=True, text=True,
+        capture_output=True,
+    ).stdout.strip()
+    lock = {"commit": commit, "include": list(fetch_vendor.INCLUDE),
+            "files": fetch_vendor.inventory(upstream)}
+
+    config = tmp_path / "gitconfig"
+    config.write_text(f"[core]\n\tautocrlf = {autocrlf}\n", encoding="utf-8")
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(config))
+
+    dest = tmp_path / f"dest-{autocrlf}"
+    fetch_vendor.fetch(lock, str(upstream), dest=dest)
+
+    assert fetch_vendor.verify(dest, lock) == []
+    assert (dest / "src" / "e7auto" / "text.py").read_bytes() == b"a\nb\n"
