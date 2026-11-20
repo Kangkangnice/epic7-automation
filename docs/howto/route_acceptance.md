@@ -79,9 +79,10 @@ STOVE 和 Steam 分别记录。已验证的 Windows、语言、窗口尺寸与�
 
 ### 零工作与部分完成
 
-确实无事可做（奖励已领完、今日次数为零、刷新倒计时已读到）按 `expected_stop` 记录，
-并给出「确实为空」的正向证据，例如所有奖励行已领取、次数显示为零、倒计时原文。
-仅有「没有找到可做的事」不构成正向证据。零工作结束不得记 `completed`。
+打图分支确实无事可做（奖励已领完、今日次数为零、商品已售罄）按 `expected_stop` 记录，
+并给出「确实为空」的正向证据，例如所有奖励行已领取、次数显示为零、商品显示已售。
+仅有「没有找到可做的事」不构成正向证据。读数任务读到约定值属于只读目标完成，
+不在这里按停止记；口径见上一节。
 
 只完成一部分且未命中声明条件时记 `failed`，保留已完成量、最后动作和来源页。
 不得用「已完成的部分也算成功」把它改成 `completed`。命中声明条件但只完成一部分时记
@@ -172,7 +173,7 @@ STOVE 和 Steam 分别记录。已验证的 Windows、语言、窗口尺寸与�
   "replay_cases": [
     {
       "case": "normal",
-      "test": "tests/test_epic7_craft_equipment.py::test_two_rounds_count_twenty",
+      "test": "tests/test_epic7_craft_equipment.py::CraftEquipmentMachineTest::test_two_rounds_without_tidy",
       "evidence": "reports/replay/craft-normal.txt"
     }
   ],
