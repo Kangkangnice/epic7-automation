@@ -18,6 +18,8 @@ from datetime import date, datetime
 import json
 from pathlib import Path
 import re
+import subprocess
+import sys
 
 SCHEMA_VERSION = 2
 REPLAY_CASES = frozenset({"normal", "repeat", "overlay", "slow_or_frozen", "unknown", "end"})
@@ -67,6 +69,44 @@ ROUTE_LABELS = {
 QUANTITY_FIELDS = {
     "craft_equipment": re.compile(r"(?:^|\s)件数=(\d+)"),
 }
+
+_COLLECTION_CACHE: dict[Path, set[str]] = {}
+
+
+def _route_present(text: str, route: str) -> bool:
+    """只认完整模式字段，story 不等于 story_star，主线不等于主线补星。"""
+    names = [route]
+    label = ROUTE_LABELS.get(route)
+    if label:
+        names.append(label)
+    return any(
+        re.search(rf"(?:^|\s)模式={re.escape(name)}(?=\s|$)", text, re.M) is not None
+        for name in names
+    )
+
+
+def _collected_nodes(path: Path) -> set[str]:
+    """用 pytest 的真实收集结果核准节点；收集不到时 fail-closed。"""
+    if path in _COLLECTION_CACHE:
+        return _COLLECTION_CACHE[path]
+    try:
+        relative = path.resolve().relative_to(REPO_ROOT)
+    except ValueError:
+        return set()
+    try:
+        result = subprocess.run(
+            [sys.executable, "-m", "pytest", "--collect-only", "-q", "-p", "no:cacheprovider", str(relative)],
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+            timeout=120,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return set()
+    nodes = set(re.findall(r"^(\S+::\S+)\s*$", result.stdout, re.M))
+    _COLLECTION_CACHE[path] = nodes
+    return nodes
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -145,22 +185,8 @@ def _check_test_node(node: object) -> tuple[str | None, str | None]:
     if not segments or len(segments) > 2:
         return None, f"回放测试节点格式无效：{node}"
     name = segments[-1]
-    try:
-        source = path.read_text(encoding="utf-8", errors="replace")
-    except OSError as error:
-        return None, f"回放测试文件打不开：{path_part}（{error}）"
-    definition = re.search(rf"^(\s*)def {re.escape(name)}\(", source, re.M)
-    if definition is None:
-        return None, f"回放测试节点不存在：{node}"
-    indented = bool(definition.group(1))
-    if len(segments) == 2 and re.search(
-        rf"^class {re.escape(segments[0])}\b", source, re.M
-    ) is None:
-        return None, f"回放测试类不存在：{node}"
-    if indented and len(segments) == 1:
-        return None, f"回放测试节点缺少类名，pytest 无法收集：{node}"
-    if not indented and len(segments) == 2:
-        return None, f"回放测试节点把模块级函数误挂到类下：{node}"
+    if node not in _collected_nodes(path):
+        return None, f"pytest 收集不到该节点（含类名与所属文件）：{node}"
     return name, None
 
 
@@ -171,7 +197,10 @@ def _check_replay_result(path: Path, name: str, node: str, revision: str) -> str
         return f"回放结果打不开：{path}（{error}）"
     if revision not in text:
         return f"回放结果未写明待验提交 {revision}。"
-    own_lines = [line for line in text.splitlines() if node in line]
+    own_lines = [
+        line for line in text.splitlines()
+        if re.search(rf"(?:^|\s)node={re.escape(node)}(?=\s|$)", line) is not None
+    ]
     if not own_lines:
         return f"回放结果未指向该测试节点：{node}"
     if any(FAIL_RESULT.search(line) for line in own_lines):
@@ -425,12 +454,9 @@ def check_report(
             problems.append(f"{label}：{slice_error}")
             continue
         slice_text = "\n".join(line for _, line in slice_lines)
-        route_name = ROUTE_LABELS.get(run["route"])
-        if f"模式={run['route']}" not in slice_text and not (
-            route_name and f"模式={route_name}" in slice_text
-        ):
+        if not _route_present(slice_text, run["route"]):
             problems.append(
-                f"{route_name or run['route']} 的日志边界内没有该路线的记录，"
+                f"{ROUTE_LABELS.get(run['route'], run['route'])} 的日志边界内没有该路线的完整模式字段，"
                 "不能借其他路线的业务或终点充当本次证据。"
             )
             continue

@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from auto_game_unified.tools.check_route_acceptance import main
+from auto_game_unified.tools.check_route_acceptance import _route_present, main
 
 REVISION = "a" * 40
 ROUTE = "craft_equipment"
@@ -183,9 +183,9 @@ def _save(path: Path, report: dict) -> None:
     path.write_text(json.dumps(report, ensure_ascii=False), encoding="utf-8")
 
 
-def check(path: Path, *, client: str = CLIENT) -> int:
+def check(path: Path, *, client: str = CLIENT, route: str = ROUTE) -> int:
     return main([
-        str(path), "--route", ROUTE, "--backend", "pc",
+        str(path), "--route", route, "--backend", "pc",
         "--client", client, "--revision", REVISION,
     ])
 
@@ -725,6 +725,78 @@ def test_blank_identity_cannot_meet_the_second_variant(evidence: Path, capsys, f
     _save(evidence, report)
     assert check(evidence) == 1
     assert "空白" in capsys.readouterr().out
+
+
+# ---------------------------------------------------------------- e8971e3 复验反例
+
+
+def test_route_field_must_match_the_complete_mode_token(evidence: Path, capsys):
+    """story_star 与中文「主线补星」都不能为 story 贡献样本。"""
+    report = _load(evidence)
+    other = evidence.parent / "runtime_logs" / "story_star_only.log"
+    other.write_text(
+        "2026-11-10 20:48:28 模式=story_star 开局\n"
+        "2026-11-10 20:53:11 模式=主线补星 动作=按 P\n"
+        "2026-11-10 20:53:12 模式=story_star 收尾=已回到首页 状态=可以衔接下一个任务\n",
+        encoding="utf-8",
+    )
+    for run in report["runs"]:
+        run["route"] = "story"
+    first = report["runs"][0]
+    first["launch"] = {
+        "log": "runtime_logs/story_star_only.log",
+        "started_at": "2026-11-10 20:48:28",
+        "ended_at": "2026-11-10 20:53:13",
+    }
+    first["day"] = "2026-11-10"
+    first["evidence"] = ["runtime_logs/story_star_only.log#L1-L2"]
+    first["terminal"]["evidence"] = "runtime_logs/story_star_only.log#L3"
+    report["route"] = "story"
+    _save(evidence, report)
+    assert check(evidence, route="story") == 1
+    assert "路线" in capsys.readouterr().out
+
+
+def test_route_presence_accepts_its_own_english_and_chinese_fields():
+    assert _route_present("2026-11-16 模式=story 状态=转场确认", "story")
+    assert _route_present("2026-11-16 模式=主线 状态=完成", "story")
+    assert not _route_present("2026-11-10 模式=story_star 状态=开始", "story")
+    assert not _route_present("2026-11-10 模式=主线补星 状态=开始", "story")
+    assert _route_present("2026-11-17 模式=装备制作 状态=完成一遍", "craft_equipment")
+
+
+def test_module_level_replay_node_is_collectible(evidence: Path):
+    node = "tests/test_shop_refresh_runner.py::test_initial_purchases_do_not_enter_paid_hit_rate"
+    report = _load(evidence)
+    report["replay_cases"][0]["test"] = node
+    proof = evidence.parent / "reports" / "replay" / "normal.txt"
+    proof.write_text(f"node={node} revision={REVISION} result=1 passed\n", encoding="utf-8")
+    _save(evidence, report)
+    assert check(evidence) == 0
+
+
+def test_replay_node_must_belong_to_the_named_class(evidence: Path, capsys):
+    node = (
+        "tests/test_epic7_side_story_resume.py::SideStoryEventHomeResumeTests::"
+        "test_each_recorded_page_lands_on_the_right_state"
+    )
+    report = _load(evidence)
+    report["replay_cases"][0]["test"] = node
+    proof = evidence.parent / "reports" / "replay" / "normal.txt"
+    proof.write_text(f"node={node} revision={REVISION} result=1 passed\n", encoding="utf-8")
+    _save(evidence, report)
+    assert check(evidence) == 1
+    assert "收集" in capsys.readouterr().out
+
+
+def test_replay_result_must_name_the_exact_node(evidence: Path, capsys):
+    node = REPLAY_TESTS["normal"]
+    report = _load(evidence)
+    proof = evidence.parent / "reports" / "replay" / "normal.txt"
+    proof.write_text(f"node={node}_other revision={REVISION} result=1 passed\n", encoding="utf-8")
+    _save(evidence, report)
+    assert check(evidence) == 1
+    assert "未指向该测试节点" in capsys.readouterr().out
 
 
 # ---------------------------------------------------------------- 历史台账
