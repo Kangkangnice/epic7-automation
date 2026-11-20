@@ -1,0 +1,81 @@
+name: package-smoke
+
+# Windows 打包冒烟：从「没有相邻 vendor」的干净检出开始，按锁定 commit 取回第三方
+# 输入，构建 ZIP，再从 ZIP 解压验证。只跑打包关键文件变更的 PR 与手动触发；
+# 文档改动不触发（全量测试在 tests.yml，别把两件事混在一起）。
+#
+# ⚠️ job 名不叫 pytest：main 的分支保护只认 tests.yml 的 pytest，不要动那个名字。
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "packaging/**"
+      - "tools/fetch_vendor.py"
+      - "desktop/worker.py"
+      - "desktop/chaos_bridge.py"
+      - "desktop_qt/**"
+      - "core/data_paths.py"
+      - "main.py"
+      - "requirements.txt"
+      - ".github/workflows/package-smoke.yml"
+
+jobs:
+  package-smoke:
+    # 打包会跑 PyInstaller + 真实 exe 探针，必须 Windows。
+    runs-on: windows-latest
+    timeout-minutes: 45
+    # Windows runner 的控制台编码是 cp1252，脚本里的中文输出会在 print 时抛
+    # UnicodeEncodeError（fetch_vendor 第一次运行就撞到）。统一按 UTF-8 输出。
+    env:
+      PYTHONUTF8: "1"
+      PYTHONIOENCODING: "utf-8"
+    steps:
+      # 检出到 auto_game_unified 子目录：与 tests.yml 一致，import 路径才对。
+      # 此时工作区**没有** vendor/ —— 下面的取回步骤从零开始。
+      - uses: actions/checkout@v4
+        with:
+          path: auto_game_unified
+
+      # 3.13.14 是上一轮实际构建通过的打包解释器（3.11 也能跑测试，但 PySide6
+      # 的 wheel 集合不同；打包验证要跟已验证的环境一致）。
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13.14"
+          cache: pip
+          cache-dependency-path: auto_game_unified/requirements.txt
+
+      - name: Install dependencies
+        working-directory: ${{ github.workspace }}
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r auto_game_unified/requirements.txt
+          python -m pip install pyinstaller==6.22.3
+          New-Item -ItemType Directory -Force -Path ci-evidence | Out-Null
+          python -m pip freeze | Out-File -Encoding utf8 ci-evidence/pip-freeze.txt
+
+      # 固定 commit + 逐文件摘要；失败就退出，不回退 latest、不跳过校验。
+      - name: Fetch and verify third-party input
+        working-directory: ${{ github.workspace }}
+        run: python auto_game_unified/tools/fetch_vendor.py
+
+      - name: Build package
+        working-directory: auto_game_unified
+        run: python packaging/build.py
+
+      # 从最终 ZIP 解压验证：自检 0、离线 worker 0、停止 130。
+      # 输出只含清单 / 摘要 / 自检报告，ZIP 本体不上传。
+      - name: Verify final ZIP
+        working-directory: auto_game_unified
+        run: python packaging/verify_release.py
+
+      - name: Upload evidence (not the ZIP)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: package-smoke-evidence
+          path: |
+            ci-evidence/**
+            auto_game_unified/packaging/dist/release-evidence/**
+            auto_game_unified/packaging/dist/SHA256SUMS.txt
+          if-no-files-found: warn
+          retention-days: 14
