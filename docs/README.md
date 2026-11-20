@@ -3,7 +3,7 @@
 ## 按角色
 
 - **玩家**：安装与首次启动见[使用手册](USER_GUIDE.md)第 1、2 节；能跑哪条路线、哪些已放行看[现状速查](STATUS.md)；出问题先看[故障排查](TROUBLESHOOTING.md)。
-- **贡献者**：开发环境与测试范围见[贡献指南](../CONTRIBUTING.md)；新增路线见[新增路线指南](EXTENDING.md)；改判据前读[页面转场契约](TRANSITION_CONTRACTS.md)。
+- **贡献者**：开发环境与测试范围见[贡献指南](../CONTRIBUTING.md)；新增路线见[新增路线指南](EXTENDING.md)；改判据前读[页面转场契约](TRANSITION_CONTRACTS.md)；开工前写验收合同、收工后判结论看[路线稳定版验收](howto/route_acceptance.md)。
 - **发布维护者**：发版步骤与回退见[发布手册](howto/release.md)；能否公开声明稳定支持见[路线稳定版验收](howto/route_acceptance.md)；评审与放行职责见[项目治理](../GOVERNANCE.md)。
 
 ## 一、按你要做的事找
@@ -23,7 +23,7 @@
 | 排查开局接力或回大厅收尾 | [开局接力覆盖面](RESUME_COVERAGE.md)、[路线终点](maintenance/route_finish_points.md) |
 | 针对 PC 客户端移植、抓帧或排障 | [PC 接入指南](PC_TEMPLATE_MIGRATION.md)、[PC 页面采集清单](maintenance/pc_page_capture_checklist.md) |
 | 实机验证 | [实机闭环验证](howto/live_verification.md) |
-| 判断路线能否给不同账号公开使用 | [路线稳定版验收](howto/route_acceptance.md) |
+| 判断路线能否给不同账号公开使用，或改完路线后该记哪种结论 | [路线稳定版验收](howto/route_acceptance.md) |
 | 更新图鉴数据或界面文案 | [英雄图鉴维护](maintenance/hero_roster.md)、[界面文案规范](UI_COPY_STYLE.md) |
 | 查看缺失的证据、未解决的缺陷或未评估的想法 | [待办](TODO.md)（含「未评估、未排期」） |
 | 查看版本变化与素材权利 | [变更日志](../CHANGELOG.md)、[素材声明](../NOTICE.md) |

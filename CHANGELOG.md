@@ -6,7 +6,7 @@
 
 ## [Unreleased]
 
-> 本版累积 2026-10-20 至 11-19 的改动。逐条实现依据、失败现场与离线用例见提交历史、
+> 本版累积 2026-10-20 至 11-20 的改动。逐条实现依据、失败现场与离线用例见提交历史、
 > [`docs/maintenance/`](docs/maintenance/) 的路线手册与 [`docs/decisions/`](docs/decisions/)。
 
 ### 新增
@@ -38,6 +38,10 @@
 - 现状页 `docs/STATUS.md` 由代码生成；`tools/doc_review.py` 按改动映射需要复审的文档，并在提交信息留痕。
 - 新增 [`GOVERNANCE.md`](GOVERNANCE.md)、[发布手册](docs/howto/release.md)、[路线稳定版验收](docs/howto/route_acceptance.md)
   与决策 [0009](docs/decisions/0009-universal-vision-contract.md)–[0011](docs/decisions/0011-behavior-based-regression.md)。
+- 路线稳定版验收补齐开工合同与五种结论判定：只读巡检、零工作、部分完成、收尾失败与
+  「先故障后人工停止」分别归类；`check_route_acceptance` 增加启动边界、依据可打开、
+  同启动去重、请求量与实得、资源上限、终点标记与回放节点校验。工具通过时明确输出
+  「台账通过，待独立复核」。证据矩阵新增按组合的复审现状与统一未验证项。
 
 ### 变更
 
