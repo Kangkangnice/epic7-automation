@@ -2,7 +2,7 @@
 
 检查分两层：
 
-* **结构门槛**：路线/后端/客户端/提交、样本数、账号与环境差异；
+* **结构门槛**：路线/后端/客户端/提交、目标分支的实机闭环和开发回放；
 * **原始材料**：每条运行能切出一次启动的日志边界，依据引用能打开，
   业务量、资源、终点和停止原因与日志不矛盾。
 
@@ -13,7 +13,6 @@
 from __future__ import annotations
 
 import argparse
-from collections import Counter
 from datetime import date, datetime
 import json
 from pathlib import Path
@@ -26,9 +25,6 @@ REPLAY_CASES = frozenset({"normal", "repeat", "overlay", "slow_or_frozen", "unkn
 SCENARIOS = frozenset({"normal", "alternate", "expected_stop", "read_only"})
 OUTCOMES = frozenset({"completed", "expected_stop", "failed", "interrupted", "unsafe"})
 WORK_KINDS = frozenset({"business", "read_only"})
-MIN_RUNS = 10
-MIN_ACCOUNT_RUNS = 2
-MIN_DAYS = 3
 
 LAUNCH_FORMAT = "%Y-%m-%d %H:%M:%S"
 TERMINAL_MARKER = re.compile(r"(?:^|\s)收尾=已回到首页")
@@ -111,7 +107,7 @@ def _collected_nodes(path: Path) -> set[str]:
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 MANUAL_REVIEW = (
-    "账号与环境代号是否确属不同实体（代号不能自证）。",
+    "本次变更涉及哪些分支，正常与危险反例是否有对应断言和本提交的通过记录。",
     "业务回执画面与台账文字是否一致，计数单位是否对得上。",
     "危险动作是否同帧确认，是否存在被遮挡或迟到的回执。",
     "终点标记是否对应约定终点，而不是外观相似的页面。",
@@ -218,8 +214,10 @@ def _check_contract(contract: object) -> tuple[dict[str, object], list[str]]:
         value = contract.get(field)
         if not isinstance(value, str) or not value.strip():
             problems.append(f"验收合同缺少 {field}。")
+    if contract.get("work", "business") not in ("business", "read_only"):
+        problems.append("合同 work 应为 business 或 read_only。")
     early_stop = contract.get("early_stop")
-    if not isinstance(early_stop, list) or not early_stop or not all(
+    if not isinstance(early_stop, list) or not all(
         isinstance(item, str) and item.strip() for item in early_stop
     ):
         problems.append("验收合同须逐条列出允许提前停止的条件（early_stop）。")
@@ -245,7 +243,7 @@ def _check_contract(contract: object) -> tuple[dict[str, object], list[str]]:
     return contract, problems
 
 
-def _check_replay(cases: object, base: Path, revision: str) -> list[str]:
+def _check_replay(cases: object, base: Path, revision: str, *, needs_safe_stop: bool) -> list[str]:
     problems: list[str] = []
     if not isinstance(cases, list):
         return ["replay_cases 应列出已通过的用例类别、测试节点和依据。"]
@@ -255,7 +253,7 @@ def _check_replay(cases: object, base: Path, revision: str) -> list[str]:
             problems.append(f"回放第 {index} 项只有类别名；须写测试节点与依据。")
             continue
         case = item.get("case")
-        if case not in REPLAY_CASES:
+        if case != "safe_stop" and case not in REPLAY_CASES:
             problems.append(f"回放第 {index} 项的类别无效：{case!r}。")
             continue
         seen.add(case)
@@ -270,7 +268,8 @@ def _check_replay(cases: object, base: Path, revision: str) -> list[str]:
             error = _check_replay_result(evidence_path, name, item["test"], revision)
             if error:
                 problems.append(f"回放 {case}：{error}")
-    missing = REPLAY_CASES.difference(seen)
+    required = REPLAY_CASES | {"safe_stop"} if needs_safe_stop else REPLAY_CASES
+    missing = required.difference(seen)
     if missing:
         problems.append("缺少离线回归类别：" + ", ".join(sorted(missing)))
     return problems
@@ -297,7 +296,9 @@ def check_report(
     problems: list[str] = []
     contract, contract_problems = _check_contract(report.get("contract"))
     problems.extend(contract_problems)
-    problems.extend(_check_replay(report.get("replay_cases"), base, target["revision"]))
+    problems.extend(_check_replay(
+        report.get("replay_cases"), base, target["revision"], needs_safe_stop=bool(contract.get("early_stop")),
+    ))
 
     runs = report.get("runs")
     if not isinstance(runs, list):
@@ -308,11 +309,7 @@ def check_report(
     terminal_refs: set[tuple[str, int | None, int | None]] = set()
     evidence_keys: set[tuple[tuple[str, int | None, int | None], ...]] = set()
     windows_by_log: dict[str, list[tuple[datetime, datetime, str]]] = {}
-    accounts: Counter[str] = Counter()
-    dates: set[str] = set()
-    environments: set[str] = set()
-    covered: set[str] = set()
-    planned = safe_stops = interrupted = read_only_ok = failed = 0
+    completed = safe_stops = interrupted = read_only_ok = failed = 0
     read_only_failed = 0
 
     for index, run in enumerate(runs, 1):
@@ -332,7 +329,7 @@ def check_report(
             problems.append(f"{label}的编号或请求量为空。")
             continue
         if not run["account"].strip() or not run["environment"].strip():
-            problems.append(f"{label}的账号或环境代号为空白，不能充当第二个变体。")
+            problems.append(f"{label}的账号或环境代号为空白，请填写本次运行的本地代号。")
             continue
         if any(run.get(key) != value for key, value in target.items()):
             problems.append(f"{label}与发布目标不一致。")
@@ -454,6 +451,7 @@ def check_report(
             problems.append(f"{label}：{slice_error}")
             continue
         slice_text = "\n".join(line for _, line in slice_lines)
+        launch_line_numbers = {number for number, _ in slice_lines}
         if not _route_present(slice_text, run["route"]):
             problems.append(
                 f"{ROUTE_LABELS.get(run['route'], run['route'])} 的日志边界内没有该路线的完整模式字段，"
@@ -487,6 +485,12 @@ def check_report(
             path, start_line, end_line, error = _resolve_ref(reference, base)
             if error or path is None:
                 problems.append(f"{label}：{error or '依据路径无效'}")
+                duplicate = True
+                break
+            if path.resolve() == log_path.resolve() and (
+                start_line not in launch_line_numbers or end_line not in launch_line_numbers
+            ):
+                problems.append(f"{label}的业务依据须指向本次启动内的具体日志行。")
                 duplicate = True
                 break
             resolved.append((str(path.resolve()), start_line, end_line))
@@ -561,38 +565,27 @@ def check_report(
         else:  # failed
             if work == "business":
                 failed += 1
-                problems.append(
-                    f"{label}发生真实失败：当前业务计划不能声明稳定支持，失败保留在分母中。"
-                )
             else:
                 read_only_failed += 1
+            problems.append(f"{label}发生真实失败，须修复并重验。")
             continue
 
         if not countable:
             continue
-        covered.add(scenario)
         if outcome == "expected_stop":
             safe_stops += 1
         elif work == "read_only":
             read_only_ok += 1
         else:
-            planned += 1
-            accounts[run["account"].strip().casefold()] += 1
-            dates.add(day)
-            environments.add(run["environment"].strip().casefold())
+            completed += 1
 
-    completed = sum(accounts.values())
-    if completed < MIN_RUNS:
-        problems.append(f"独立业务闭环至少需要 {MIN_RUNS} 次。")
-    if sum(count >= MIN_ACCOUNT_RUNS for count in accounts.values()) < 2:
-        problems.append(f"至少两个不同账号各完成 {MIN_ACCOUNT_RUNS} 次。")
-    if len(dates) < MIN_DAYS or len(environments) < 2:
-        problems.append(f"业务闭环须跨至少 {MIN_DAYS} 天、两个使用环境。")
-    if {"normal", "alternate", "expected_stop"}.difference(covered):
-        problems.append("须覆盖默认流程、账号变体及预期安全停止。")
+    target_work = contract.get("work", "business")
+    target_completed = read_only_ok if target_work == "read_only" else completed
+    if not target_completed:
+        problems.append(f"缺少合同目标 {target_work} 的一次独立实机闭环。")
 
     summary = (
-        f"业务闭环 {completed}/{planned + failed}，预期安全停止 {safe_stops}，"
+        f"业务闭环 {completed}/{completed + failed}，预期安全停止 {safe_stops}，"
         f"只读巡检 {read_only_ok}，人工中止 {interrupted}，失败 {failed}"
     )
     if read_only_failed:

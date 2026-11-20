@@ -53,7 +53,7 @@ $env:Path = (Resolve-Path -LiteralPath .\.venv\Scripts).Path + ';' + $env:Path
 本地预览用 `--plan --files <仓库相对路径>`。已提交的改动可用 `--plan --since origin/main`。
 新增未跟踪的文件需显式列出或暂存。暂存区为空时默认读取整个已跟踪工作区，多任务并行时优先显式指定路径。
 本地提示未映射时，手工指定覆盖它的测试；PR 选择器对未知路径执行全量。维护者扩大定向范围前应核对直接消费者、
-跨路线契约及反例，并给分层选择增加回归测试。具体放行条件见[按玩家行为验收](docs/decisions/0011-behavior-based-regression.md)。路线实机与多账号验收仍按行为变化执行。
+跨路线契约及反例，并给分层选择增加回归测试。具体放行条件见[按玩家行为验收](docs/decisions/0011-behavior-based-regression.md)。路线按行为变化提交目标客户端实机闭环和风险回放。
 提交含需要复审的修改时，按钩子提示在提交消息加入 `Doc-reviewed:` 和实际复审结果。
 在仓库根目录可用 `python tools/doc_review.py --staged` 查看清单。
 

@@ -7,7 +7,7 @@ review_when: 改了 core/elevation.py、core/pc_window.py、desktop/preflight.py
 
 # 实机闭环验证：让 agent 自己动鼠标
 
-本文说明怎么做一次实机验证。正式稳定版所需的账号、客户端和样本门槛见[路线稳定版验收](route_acceptance.md)。
+本文说明怎么做一次实机验证。按客户端留存实机闭环、回放反例与终点的要求见[路线稳定版验收](route_acceptance.md)。
 
 > **什么时候看这份**：你要让 agent **真的点进游戏跑完一个业务闭环**，而不是只看测试通过。
 > 这里只写「怎么做、失败了怎么判」。为什么这么定在 `core/elevation.py` 的模块注释里。

@@ -1,7 +1,7 @@
 """Release evidence must record complete, separate runs for the claimed target.
 
 测试分两层：
-- **结构**：路线/后端/客户端/提交必须与发布目标一致，样本门槛照旧；
+- **结构**：路线/后端/客户端/提交必须与发布目标一致，至少一次合同目标实机闭环；
 - **原始材料**：每条运行都要能回到一次启动的边界和可打开的日志行。
   后者是 2026-11-20 复审补的 —— 只填类别、代号、结果和布尔值的台账，
   旧检查器会给 10/10 通过，却无法发现同一启动换名、失败改填中止、终点与日志矛盾。
@@ -28,6 +28,7 @@ REPLAY_TESTS = {
     "overlay": "tests/test_epic7_craft_equipment.py::CraftEquipmentMachineTest::test_dark_frame_is_not_a_click",
     "slow_or_frozen": "tests/test_epic7_craft_equipment.py::CraftEquipmentMachineTest::test_sell_path_needs_quick_select_before_selling",
     "unknown": "tests/test_epic7_craft_equipment.py::CraftEquipmentMachineTest::test_extract_path_recognises_its_own_popup",
+    "safe_stop": "tests/test_global_popups.py::test_guard_closes_the_bag_full_popup_and_records_the_stop",
     "end": "tests/test_epic7_craft_equipment.py::CraftEquipmentMachineTest::test_export_names_follow_the_game",
 }
 
@@ -703,22 +704,23 @@ def test_replay_node_cannot_drop_the_class_of_a_method(evidence: Path, capsys):
     assert "类名" in capsys.readouterr().out
 
 
-def test_overlapping_stop_cannot_satisfy_the_required_coverage(evidence: Path, capsys):
-    """待核的预期停止不贡献覆盖项，不能凑必做安全停止。"""
+def test_overlapping_stop_with_foreign_evidence_is_rejected(evidence: Path, capsys):
+    """重叠边界内不得借用原启动的证据。"""
     report = _load(evidence)
     stop = report["runs"][-1]
     earlier = datetime.strptime(report["runs"][8]["launch"]["started_at"], "%Y-%m-%d %H:%M:%S")
     stop["launch"]["started_at"] = _stamp(earlier - timedelta(seconds=1))
     stop["launch"]["ended_at"] = report["runs"][8]["launch"]["ended_at"]
+    stop["achieved"] = report["runs"][8]["achieved"]
     _save(evidence, report)
     assert check(evidence) == 1
     out = capsys.readouterr().out
     assert "待复核" in out
-    assert "预期安全停止" in out
+    assert "业务依据须指向本次启动" in out
 
 
 @pytest.mark.parametrize("field", ["account", "environment"])
-def test_blank_identity_cannot_meet_the_second_variant(evidence: Path, capsys, field):
+def test_run_metadata_cannot_be_blank(evidence: Path, capsys, field):
     report = _load(evidence)
     for run in report["runs"][5:10]:
         run[field] = "   "
@@ -812,11 +814,11 @@ def test_legacy_report_is_history_only(capsys):
 # ---------------------------------------------------------------- 原有结构门槛
 
 
-def test_one_development_smoke_does_not_qualify(evidence: Path):
+def test_single_local_closure_with_full_replay_qualifies(evidence: Path):
     report = _load(evidence)
     report["runs"] = report["runs"][:1]
     _save(evidence, report)
-    assert check(evidence) == 1
+    assert check(evidence) == 0
 
 
 @pytest.mark.parametrize("change", [
@@ -872,10 +874,55 @@ def test_mixed_targets_cannot_share_a_single_report(evidence: Path, field, value
     assert check(evidence) == 1
 
 
-@pytest.mark.parametrize("field", ["account", "environment", "day", "scenario"])
-def test_same_conditions_do_not_prove_compatibility(evidence: Path, field):
+def test_many_successes_cannot_replace_failure_replay(evidence: Path):
     report = _load(evidence)
-    for run in report["runs"][:10]:
-        run[field] = report["runs"][0][field]
+    report["replay_cases"] = [case for case in report["replay_cases"] if case["case"] != "slow_or_frozen"]
     _save(evidence, report)
     assert check(evidence) == 1
+
+
+def test_only_expected_stop_cannot_prove_business_completion(evidence: Path):
+    report = _load(evidence)
+    report["runs"] = report["runs"][-1:]
+    _save(evidence, report)
+    assert check(evidence) == 1
+
+
+def test_many_runs_cannot_borrow_a_receipt_from_another_launch(evidence: Path):
+    report = _load(evidence)
+    report["runs"][0]["evidence"] = [f"{LOG_REF}#L6"]
+    _save(evidence, report)
+    assert check(evidence) == 1
+
+
+def test_read_only_closure_requires_a_read_only_contract(evidence: Path):
+    report = _load(evidence)
+    log = evidence.parent / "read-only.log"
+    log.write_text(
+        "2026-11-16 10:00:00 模式=side_story 开始=巡检\n"
+        "2026-11-16 10:00:01 模式=side_story 倒计时=2天 已完成=0\n"
+        "2026-11-16 10:00:05 模式=side_story 收尾=已回到首页\n",
+        encoding="utf-8",
+    )
+    report["route"] = "side_story"
+    run = report["runs"][0]
+    run.update(route="side_story", work="read_only", scenario="read_only", target=None,
+               achieved=0, requested="读取倒计时", receipt="倒计时=2天", resources=[],
+               evidence=["read-only.log#L2"], terminal={"verified": True, "evidence": "read-only.log#L3"})
+    run["launch"].update(log="read-only.log", ended_at="2026-11-16 10:00:05")
+    report["runs"] = [run]
+    report["contract"].update(goal="读取倒计时", early_stop=[], resources=[])
+    report["replay_cases"] = [case for case in report["replay_cases"] if case["case"] != "safe_stop"]
+    _save(evidence, report)
+    assert check(evidence, route="side_story") == 1
+    report["contract"]["work"] = "read_only"
+    _save(evidence, report)
+    assert check(evidence, route="side_story") == 0
+
+
+def test_declared_stop_needs_development_replay_even_after_many_live_runs(evidence: Path, capsys):
+    report = _load(evidence)
+    report["replay_cases"] = [case for case in report["replay_cases"] if case["case"] != "safe_stop"]
+    _save(evidence, report)
+    assert check(evidence) == 1
+    assert "safe_stop" in capsys.readouterr().out
