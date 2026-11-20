@@ -594,6 +594,139 @@ def test_missing_resource_cap_returns_a_message_not_a_traceback(evidence: Path, 
     assert "Traceback" not in out
 
 
+# ---------------------------------------------------------------- 87293c4 复验反例
+
+
+def _write_craft_segment(path: Path, *, items: int, terminal: str) -> tuple[str, str, int]:
+    lines = [
+        "2026-11-17 22:20:31 模式=装备制作 轮次=1/1 请求中间帧",
+        f"2026-11-17 22:20:35 模式=装备制作 状态=完成一遍 cycles={items // 10} 件数={items}",
+        f"2026-11-17 22:21:30 模式=craft_equipment {terminal}",
+    ]
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return "2026-11-17 22:20:31", "2026-11-17 22:21:31", 1
+
+
+def test_ledger_must_match_the_logs_final_business_count(evidence: Path, capsys):
+    """同一段日志写 1 轮 10 件，台账不能申报请求 20、实得 20。"""
+    report = _load(evidence)
+    segment = evidence.parent / "runtime_logs" / "craft_actual.log"
+    started_at, ended_at, first = _write_craft_segment(
+        segment, items=10, terminal="收尾=已回到首页 状态=可以衔接下一个任务"
+    )
+    run = _run(
+        0, started_at, ended_at, first, account="A", environment="setup-1",
+        day="2026-11-17", scenario="normal", outcome="completed", target=20, achieved=20,
+    )
+    run["launch"]["log"] = "runtime_logs/craft_actual.log"
+    run["terminal"] = {"verified": True, "evidence": "runtime_logs/craft_actual.log#L3"}
+    run["evidence"] = ["runtime_logs/craft_actual.log#L1-L2"]
+    report["runs"][0] = run
+    _save(evidence, report)
+    assert check(evidence) == 1
+    assert "实得" in capsys.readouterr().out
+
+
+def test_the_same_segment_is_valid_with_the_real_count(evidence: Path):
+    """真实请求 10、实得 10 的同一段证据可以成立。"""
+    report = _load(evidence)
+    segment = evidence.parent / "runtime_logs" / "craft_actual.log"
+    started_at, ended_at, first = _write_craft_segment(
+        segment, items=10, terminal="收尾=已回到首页 状态=可以衔接下一个任务"
+    )
+    run = _run(
+        0, started_at, ended_at, first, account="A", environment="setup-1",
+        day="2026-11-17", scenario="normal", outcome="completed", target=10, achieved=10,
+    )
+    run["launch"]["log"] = "runtime_logs/craft_actual.log"
+    run["terminal"] = {"verified": True, "evidence": "runtime_logs/craft_actual.log#L3"}
+    run["evidence"] = ["runtime_logs/craft_actual.log#L1-L2"]
+    report["runs"][0] = run
+    _save(evidence, report)
+    assert check(evidence) == 0
+
+
+def test_chinese_route_label_keeps_a_real_failure_in_the_denominator(evidence: Path, capsys):
+    """装备制作日志只写中文模式名；真实失败须计入分母，不得误报跨路线。"""
+    report = _load(evidence)
+    log = evidence.parent / "runtime_logs" / "craft_cn.log"
+    log.write_text(
+        "2026-11-17 21:59:30 模式=装备制作 轮次=2/2 请求中间帧\n"
+        "2026-11-17 22:00:25 模式=装备制作 状态=完成一遍 cycles=2 件数=20\n"
+        "2026-11-17 22:01:32 模式=装备制作 收尾=回首页失败 原因=连按两次 ESC 页面都没有变化\n",
+        encoding="utf-8",
+    )
+    failed = _run(
+        20, "2026-11-17 21:59:30", "2026-11-17 22:01:33", 1,
+        account="A", environment="setup-1", day="2026-11-17", scenario="normal",
+        outcome="failed", target=20, achieved=20, terminal_verified=False,
+        stop_reason="业务完成但收尾失败", first_failure="收尾=回首页失败",
+    )
+    failed["launch"]["log"] = "runtime_logs/craft_cn.log"
+    failed["evidence"] = ["runtime_logs/craft_cn.log#L1-L2"]
+    report["runs"].append(failed)
+    _save(evidence, report)
+    assert check(evidence) == 1
+    out = capsys.readouterr().out
+    assert "10/11" in out
+    assert "失败 1" in out
+    assert "路线" not in out
+
+
+def test_replay_node_result_must_belong_to_that_node(evidence: Path, capsys):
+    """目标节点 SKIPPED、别的节点 PASSED，不得算目标节点通过。"""
+    report = _load(evidence)
+    proof = evidence.parent / "reports" / "replay" / "normal.txt"
+    proof.write_text(
+        f"node={REPLAY_TESTS['normal']} revision={REVISION} result=SKIPPED\n"
+        f"node={REPLAY_TESTS['repeat']} revision={REVISION} result=1 passed\n",
+        encoding="utf-8",
+    )
+    _save(evidence, report)
+    assert check(evidence) == 1
+    assert "通过记录" in capsys.readouterr().out
+
+
+def test_replay_node_cannot_drop_the_class_of_a_method(evidence: Path, capsys):
+    """真实节点是类方法；去掉类名后 pytest 无法收集该节点。"""
+    report = _load(evidence)
+    node = REPLAY_TESTS["normal"]
+    report["replay_cases"][0]["test"] = (
+        "tests/test_epic7_craft_equipment.py::test_page_recognition_covers_every_stable_page"
+    )
+    proof = evidence.parent / "reports" / "replay" / "normal.txt"
+    proof.write_text(
+        f"node={node} revision={REVISION} result=1 passed\n", encoding="utf-8"
+    )
+    _save(evidence, report)
+    assert check(evidence) == 1
+    assert "类名" in capsys.readouterr().out
+
+
+def test_overlapping_stop_cannot_satisfy_the_required_coverage(evidence: Path, capsys):
+    """待核的预期停止不贡献覆盖项，不能凑必做安全停止。"""
+    report = _load(evidence)
+    stop = report["runs"][-1]
+    earlier = datetime.strptime(report["runs"][8]["launch"]["started_at"], "%Y-%m-%d %H:%M:%S")
+    stop["launch"]["started_at"] = _stamp(earlier - timedelta(seconds=1))
+    stop["launch"]["ended_at"] = report["runs"][8]["launch"]["ended_at"]
+    _save(evidence, report)
+    assert check(evidence) == 1
+    out = capsys.readouterr().out
+    assert "待复核" in out
+    assert "预期安全停止" in out
+
+
+@pytest.mark.parametrize("field", ["account", "environment"])
+def test_blank_identity_cannot_meet_the_second_variant(evidence: Path, capsys, field):
+    report = _load(evidence)
+    for run in report["runs"][5:10]:
+        run[field] = "   "
+    _save(evidence, report)
+    assert check(evidence) == 1
+    assert "空白" in capsys.readouterr().out
+
+
 # ---------------------------------------------------------------- 历史台账
 
 

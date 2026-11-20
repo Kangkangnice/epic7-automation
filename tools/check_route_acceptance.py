@@ -36,7 +36,37 @@ TIMESTAMP = re.compile(r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}) ")
 ANCHOR = re.compile(r"L(\d+)(?:-L?(\d+))?")
 ZERO_WORK = re.compile(r"已完成=0(?:\s|$)")
 PASS_RESULT = re.compile(r"\b(?:1 passed|[1-9]\d* passed|passed|PASSED)\b")
-FAIL_RESULT = re.compile(r"\b[1-9]\d* failed\b|\bFAILED\b|\bERROR\b")
+FAIL_RESULT = re.compile(r"\b[1-9]\d* failed\b|\bFAILED\b|\bSKIPPED\b|\bERROR\b")
+
+#: 日志只写中文模式名时必须认得的路线别名；跨路线借证仍被拒绝。
+ROUTE_LABELS = {
+    "craft_equipment": "装备制作",
+    "shop_refresh": "刷书签",
+    "story_star": "主线补星",
+    "pet_adoption": "宠物领养",
+    "penguin_purchase": "企鹅批量购买",
+    "side_story": "支线故事",
+    "hero_synthesis": "英雄合成",
+    "world_boss": "世界首领战",
+    "knights_donation": "骑士团捐赠",
+    "labyrinth_stone": "迷宫强化石",
+    "moonlight_theater": "月光剧场",
+    "story": "主线",
+    "arena": "竞技场",
+    "expedition": "远征",
+    "tower": "月塔",
+    "fodder": "狗粮",
+    "survivor": "活动小游戏",
+    "activity_story": "活动剧情",
+    "community": "社区签到",
+    "achievement": "成就领取",
+    "sanctuary": "圣域",
+}
+
+#: 能从日志读回最终业务计数的字段。多个回合取最后一次累计量。
+QUANTITY_FIELDS = {
+    "craft_equipment": re.compile(r"(?:^|\s)件数=(\d+)"),
+}
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -119,12 +149,18 @@ def _check_test_node(node: object) -> tuple[str | None, str | None]:
         source = path.read_text(encoding="utf-8", errors="replace")
     except OSError as error:
         return None, f"回放测试文件打不开：{path_part}（{error}）"
+    definition = re.search(rf"^(\s*)def {re.escape(name)}\(", source, re.M)
+    if definition is None:
+        return None, f"回放测试节点不存在：{node}"
+    indented = bool(definition.group(1))
     if len(segments) == 2 and re.search(
         rf"^class {re.escape(segments[0])}\b", source, re.M
     ) is None:
         return None, f"回放测试类不存在：{node}"
-    if re.search(rf"^\s*def {re.escape(name)}\(", source, re.M) is None:
-        return None, f"回放测试节点不存在：{node}"
+    if indented and len(segments) == 1:
+        return None, f"回放测试节点缺少类名，pytest 无法收集：{node}"
+    if not indented and len(segments) == 2:
+        return None, f"回放测试节点把模块级函数误挂到类下：{node}"
     return name, None
 
 
@@ -133,11 +169,14 @@ def _check_replay_result(path: Path, name: str, node: str, revision: str) -> str
         text = path.read_text(encoding="utf-8", errors="replace")
     except OSError as error:
         return f"回放结果打不开：{path}（{error}）"
-    if name not in text:
-        return f"回放结果未指向该测试节点：{node}"
     if revision not in text:
         return f"回放结果未写明待验提交 {revision}。"
-    if FAIL_RESULT.search(text) or PASS_RESULT.search(text) is None:
+    own_lines = [line for line in text.splitlines() if node in line]
+    if not own_lines:
+        return f"回放结果未指向该测试节点：{node}"
+    if any(FAIL_RESULT.search(line) for line in own_lines):
+        return f"回放节点自身的结果不是通过，没有该节点的通过记录：{node}"
+    if not any(PASS_RESULT.search(line) for line in own_lines):
         return f"回放结果没有该节点的通过记录：{node}"
     return None
 
@@ -263,6 +302,9 @@ def check_report(
         if not run["id"].strip() or not run["requested"].strip():
             problems.append(f"{label}的编号或请求量为空。")
             continue
+        if not run["account"].strip() or not run["environment"].strip():
+            problems.append(f"{label}的账号或环境代号为空白，不能充当第二个变体。")
+            continue
         if any(run.get(key) != value for key, value in target.items()):
             problems.append(f"{label}与发布目标不一致。")
             continue
@@ -383,12 +425,28 @@ def check_report(
             problems.append(f"{label}：{slice_error}")
             continue
         slice_text = "\n".join(line for _, line in slice_lines)
-        if f"模式={run['route']}" not in slice_text:
+        route_name = ROUTE_LABELS.get(run["route"])
+        if f"模式={run['route']}" not in slice_text and not (
+            route_name and f"模式={route_name}" in slice_text
+        ):
             problems.append(
-                f"{label}的日志边界内没有路线 {run['route']} 的记录，"
+                f"{route_name or run['route']} 的日志边界内没有该路线的记录，"
                 "不能借其他路线的业务或终点充当本次证据。"
             )
             continue
+        pattern = QUANTITY_FIELDS.get(run["route"])
+        if pattern is not None:
+            final_counts = [
+                int(match.group(1))
+                for _, line in slice_lines
+                for match in pattern.finditer(line)
+            ]
+            if final_counts and achieved is not None and final_counts[-1] != achieved:
+                problems.append(
+                    f"{label}本次启动日志的最终业务计数为 {final_counts[-1]}，"
+                    f"台账申报实得 {achieved}；应以最后一次累计量核对。"
+                )
+                continue
         if ZERO_WORK.search(slice_text) and (achieved or 0) > 0:
             problems.append(f"{label}的日志写明已完成=0，却申报实得 {achieved}。")
             continue
@@ -443,8 +501,8 @@ def check_report(
             scenario == "expected_stop" and outcome != "expected_stop"
         ):
             problems.append(
-                f"{label}的场景与结果冲突：预登记 {scenario}，实际 {outcome}；"
-                "请按实际结果改登记场景后再送验。"
+                f"{label}的场景与结果不一致：预登记 {scenario}，实际 {outcome}；"
+                "请保留两者差异并说明理由，不得抹去预登记场景。"
             )
         if not run["stop_reason"].strip() and outcome in {"expected_stop", "failed"} and not first_failure.strip():
             problems.append(f"{label}记 {outcome} 但未写停止原因或首个故障。")
@@ -484,12 +542,14 @@ def check_report(
                 read_only_failed += 1
             continue
 
+        if not countable:
+            continue
         covered.add(scenario)
         if outcome == "expected_stop":
             safe_stops += 1
         elif work == "read_only":
             read_only_ok += 1
-        elif countable:
+        else:
             planned += 1
             accounts[run["account"].strip().casefold()] += 1
             dates.add(day)
