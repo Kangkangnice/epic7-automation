@@ -50,7 +50,11 @@ def _drive(monkeypatch, argv, *, precheck):
     def fake_run_mode(**kwargs):
         calls["mode"] += 1
         return SimpleNamespace(
-            resource_exhausted=False, completed_cycles=1, outcome_summary=None
+            resource_exhausted=False,
+            completed_cycles=1,
+            outcome_summary=None,
+            closeout_warning=None,
+            stopped_during_closeout=False,
         )
 
     monkeypatch.setattr(cli, "_pc_live_precondition", fake_precheck)
