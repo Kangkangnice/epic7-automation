@@ -345,14 +345,12 @@ def _divider(parent: QWidget) -> QLabel:
 
 def _legend(parent: QWidget) -> QHBoxLayout:
     row = QHBoxLayout()
-    for status, caption in ((DONE, "已完成"), (RUNNING, "进行中"), (PENDING, "待执行")):
+    for status in (DONE, RUNNING, PENDING):
         dot = QLabel("", parent)
         dot.setObjectName(f"dot{status.title()}")
         dot.setFixedSize(14, 14)
         dot.setAlignment(Qt.AlignCenter)
-        if status == DONE:
-            dot.setText("✓")
-        text = QLabel(caption, parent)
+        text = QLabel(STATUS_LABELS[status], parent)
         text.setObjectName("legendText")
         row.addWidget(dot)
         row.addWidget(text)
@@ -377,8 +375,6 @@ def _progress_row(
     )
     dot.setFixedSize(14, 14)
     dot.setAlignment(Qt.AlignCenter)
-    if item.status == DONE:
-        dot.setText("✓")
     name = QLabel(metrics.elidedText(item.label, Qt.ElideRight, name_width), row)
     state = QLabel(STATUS_LABELS[item.status], row)
     state.setFixedWidth(40)

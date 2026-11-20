@@ -741,6 +741,22 @@ class MainStoryTests(unittest.TestCase):
 
         self.assertEqual(2, exit_code)
 
+    def test_live_closeout_warning_preserves_business_exit_code(self):
+        for exhausted, expected in ((False, 0), (True, 2)):
+            with (
+                self.subTest(exhausted=exhausted),
+                patch.object(main_module, "run_mode", return_value=RunResult(
+                    1, resource_exhausted=exhausted, closeout_warning="回大厅超时"
+                )),
+                patch.object(main_module, "_notify_live"),
+                patch("builtins.print") as output,
+            ):
+                exit_code = main_module.main(
+                    ["--mode", "story", "--live", "--confirm", "RUN", "--max-cycles", "1"]
+                )
+                self.assertEqual(expected, exit_code)
+                output.assert_any_call("收尾待确认 模式=story 原因=回大厅超时", flush=True)
+
     def test_runtime_failure_returns_exit_code_one(self):
         with patch.object(main_module, "run_mode", side_effect=RuntimeError("unknown page")):
             exit_code = main_module.main(

@@ -16,6 +16,12 @@
 
 ## 第三方组件
 
+- 第三方 E7auto 的次元探查以源码环境集成方式提供。标准构建（`packaging/build.py`）在按
+  `packaging/vendor_lock.json` 逐文件校验后，会把 `src`、`config`、`assets/templates` 三段收进产物。
+  **维护者尚未确认该组件可公开分发**，确认前不得对外发布含它的工件。其代码、素材、配置与其他依赖
+  分别适用各自的权利和许可条件，状态见[待办](docs/TODO.md)的发布工件条目。
+- 桌面界面的 Fluent Widgets 组件有独立许可。发行前须按[发布手册](docs/howto/release.md)核对实际版本和分发条件。
+
 - `packaging/languages/ChineseSimplified.isl` —— Inno Setup 安装界面的简体中文消息文件，
   取自 [jrsoftware/issrc](https://github.com/jrsoftware/issrc) 的 `Files/Languages/Unofficial/`
   目录（维护者 Zhenghan Yang，另见 https://github.com/kira-96/Inno-Setup-Chinese-Simplified-Translation）。

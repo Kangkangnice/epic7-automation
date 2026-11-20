@@ -39,7 +39,7 @@ import cv2
 import numpy as np
 
 from auto_game_unified.core.data_paths import data_root
-from auto_game_unified.games.epic7.hero_catalog import meta_path
+from auto_game_unified.games.epic7.hero_catalog import META_FILENAME
 from auto_game_unified.games.epic7.hero_match import default_library_dir, library_names
 
 SOURCE_URL = "https://epic7db.com/heroes"
@@ -243,10 +243,9 @@ def build_table(library: Path, matcher: Matcher, heroes: dict[str, dict]) -> dic
     return table
 
 
-def read_existing() -> tuple[dict[str, dict], list[str], str]:
+def read_existing(path: Path) -> tuple[dict[str, dict], list[str], str]:
     """读回现有表：条目表 + 上次抓到的外部英雄名单 + 上次刷新日期。"""
 
-    path = meta_path()
     if not path.is_file():
         return {}, [], ""
     try:
@@ -352,7 +351,8 @@ def main() -> int:
     matcher = Matcher(avatars, heroes)
     fresh = build_table(library, matcher, heroes)
 
-    existing, previous_catalog, previous_date = read_existing()
+    target = library / META_FILENAME
+    existing, previous_catalog, previous_date = read_existing(target)
     if previous_date:
         print(f"本地分类表建立于 {previous_date}")
     for line in report(
@@ -376,7 +376,6 @@ def main() -> int:
         "heroes": merged,
         "catalog": sorted(hero["name"] for hero in catalog),
     }
-    target = meta_path()
     target.write_text(
         json.dumps(payload, ensure_ascii=False, indent=1), encoding="utf-8"
     )

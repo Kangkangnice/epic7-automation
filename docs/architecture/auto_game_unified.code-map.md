@@ -1,7 +1,10 @@
-# 架构图节点 → 代码对照表
+# 架构图节点 → 代码对照表（历史快照）
+
+> 本表钉在提交 `8b0aeaadc72fdfdffb64b6fe748dc432f79d58bf`，行号只对该版本有效，**不是现行结构说明**。
+> 现行分层、运行时与证据模型见[架构说明](../ARCHITECTURE.md)；行号过期时按符号名在当前代码里重新定位，
+> 不要把本表当作路线的权威清单。
 
 配套图：`docs/architecture/auto_game_unified.html`（由 `auto_game_unified.architecture.json` 渲染）
-出处钉版：`8b0aeaadc72fdfdffb64b6fe748dc432f79d58bf`（下称 HEAD）
 
 > 为什么是单独一张表：Archify 支持把每个节点挂到代码行并生成可点链接，
 > 但它的校验要派生 `git` 子进程，本机 Node 被禁止创建子进程（详见
@@ -23,8 +26,8 @@
 | 节点 | 文件 | HEAD 行 |
 | --- | --- | --- |
 | 路线注册表 | `games/epic7/modes.py` | 455 `MODE_SPECS` |
-| 公共主循环（12 条走这条） | `games/epic7/runner_base.py` | 37 `ModeRunnerBase` |
-| 事务型主循环（3 条：竞技场 / 远征 / 月塔） | `games/epic7/transactional_runner_base.py` | `TransactionalRunnerBase` |
+| 公共主循环（多数同构路线走这条） | `games/epic7/runner_base.py` | 37 `ModeRunnerBase` |
+| 事务型主循环（竞技场 / 远征 / 月塔） | `games/epic7/transactional_runner_base.py` | `TransactionalRunnerBase` |
 | 其中竞技场**保留自己的 run()** | `games/epic7/arena.py` | `ArenaRunner` |
 | 完全自写循环（不经任何基类） | `games/epic7/shop_refresh.py` | `ShopRefreshRunner` |
 | 完全自写循环（不经任何基类） | `games/epic7/survivor.py` | `SurvivorRunner` |

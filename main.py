@@ -102,6 +102,8 @@ class RunResult:
     # 路线自己那句结果（竞技场以外的收获说明，如「买到 5 张书签…」「打了 2 场」）。
     # 由各 Runner 的 route_note() 提供，没有就留 None；只给每日任务结算用。
     note: str | None = None
+    closeout_warning: str | None = None
+    stopped_during_closeout: bool = False
 
 
 def _elapsed_seconds(started_at: float) -> int:
@@ -412,11 +414,12 @@ def _install_finish_home(
     runtime: Runtime,
     *,
     mode: str,
+    on_warning: Callable[[str, bool], None],
 ) -> None:
     """给路线装上「收尾回首页」钩子。
 
     契约（由 Runner 侧声明，见 ``ModeRunnerBase._close_out``）：**绝不抛异常**，
-    失败返回原因字符串、成功返回 ``None``；调用方把它写进日志但**不改退出码**。
+    失败返回原因字符串、成功返回 ``None``。另将警告传给运行结果，保留业务退出码。
 
     为什么不能直接让 ``return_home()`` 抛到外面：任务本身已经成功了（跑满轮次 /
     资源耗尽都算正常结论），不能因为「没走回家」就让整次运行报失败 —— 用户看到的
@@ -461,9 +464,13 @@ def _install_finish_home(
             # 用户在收尾阶段按了 P：这不是「回不了家」，是「别动了」。
             # 照实记一笔就收手，既不重试也不改结论。
             runtime.log(f"模式={mode} 收尾=回首页被手动停止 处理=放弃收尾")
-            return "用户手动停止"
+            warning = "用户手动停止"
+            on_warning(warning, True)
+            return warning
         except Exception as error:  # noqa: BLE001 —— 契约要求绝不外抛
-            return f"{type(error).__name__}: {error}"
+            warning = f"{type(error).__name__}: {error}"
+            on_warning(warning, False)
+            return warning
         runtime.log(f"模式={mode} 收尾=已回到首页 状态=可以衔接下一个任务")
         return None
 
@@ -709,7 +716,15 @@ def run_mode(
     if spec.runner_options is not None:
         runner_options.update(spec.runner_options(DATA_ROOT, dry_run, params or {}))
     runner = spec.runner_type(machine, runtime, **runner_options)
-    _install_finish_home(runner, home_return, runtime, mode=spec.name)
+    closeout_warning: str | None = None
+    stopped_during_closeout = False
+
+    def report_closeout_warning(warning: str, stopped: bool) -> None:
+        nonlocal closeout_warning, stopped_during_closeout
+        closeout_warning = warning
+        stopped_during_closeout = stopped
+
+    _install_finish_home(runner, home_return, runtime, mode=spec.name, on_warning=report_closeout_warning)
     try:
         completed = runner.run(max_cycles=max_cycles)
     except ManualStop:
@@ -732,6 +747,8 @@ def run_mode(
         resource_exhausted=bool(getattr(runner, "resource_exhausted", False)),
         outcome_summary=summary() if summary is not None else None,
         note=note() if note is not None else None,
+        closeout_warning=closeout_warning,
+        stopped_during_closeout=stopped_during_closeout,
     )
 
 
@@ -929,7 +946,7 @@ def inspect_side_story_countdown(
         resume_probe=None,
         build_machine=build_countdown_machine,
     )
-    run_mode(
+    result = run_mode(
         spec=spec,
         dry_run=False,
         # 只读：一次就够。真实终点是状态机读完就抛 ``SideStoryCountdownRead``。
@@ -938,6 +955,8 @@ def inspect_side_story_countdown(
         window_backend=window_backend,
         stop_file=stop_file,
     )
+    if getattr(result, "stopped_during_closeout", False) is True:
+        raise ManualStop("巡检收尾时用户手动停止")
     machine = built.get("machine")
     payload = getattr(machine, "countdown_read", None)
     if not isinstance(payload, dict):
@@ -1229,6 +1248,8 @@ def main(argv: list[str] | None = None) -> int:
         f"完成 模式={args.mode} 轮次={result.completed_cycles}{record}",
         flush=True,
     )
+    if result.closeout_warning:
+        print(f"收尾待确认 模式={args.mode} 原因={result.closeout_warning}", flush=True)
     return 2 if result.resource_exhausted else 0
 
 

@@ -1,7 +1,9 @@
 """运行进度状态机：只给悬浮窄条展示，认错也不许影响业务。
 
-钉住三件事：只前进不回退、汇总行一次补齐、手动停止时没轮到的仍是「待跑」。
+验证已观察到的执行顺序、终态汇总与未执行路线。
 """
+
+import pytest
 
 from auto_game_unified.desktop.run_progress import (
     DONE,
@@ -31,6 +33,7 @@ def test_first_route_is_running_at_start() -> None:
 
 def test_mode_line_advances_one_route_at_a_time() -> None:
     progress = RunProgress(ROUTES)
+    progress.note_line("模式=world_boss 状态=导航完成")
     progress.note_line("2026-11-11 19:00:00 模式=shop_refresh 状态=导航完成")
     assert _statuses(progress) == [DONE, RUNNING, PENDING]
     assert progress.active_label == "刷书签"
@@ -39,15 +42,15 @@ def test_mode_line_advances_one_route_at_a_time() -> None:
 def test_mode_line_can_skip_ahead_but_never_backwards() -> None:
     progress = RunProgress(ROUTES)
     progress.note_line("模式=arena 状态=进入路线")
-    assert _statuses(progress) == [DONE, DONE, RUNNING]
+    assert _statuses(progress) == [PENDING, PENDING, RUNNING]
     progress.note_line("模式=world_boss 状态=开局")
-    assert _statuses(progress) == [DONE, DONE, RUNNING]
+    assert _statuses(progress) == [PENDING, PENDING, RUNNING]
 
 
 def test_chinese_label_in_mode_line_also_advances() -> None:
     progress = RunProgress(ROUTES)
     progress.note_line("模式=竞技场 状态=导航完成")
-    assert _statuses(progress) == [DONE, DONE, RUNNING]
+    assert _statuses(progress) == [PENDING, PENDING, RUNNING]
 
 
 def test_unrelated_lines_are_ignored() -> None:
@@ -63,8 +66,27 @@ def test_summary_line_marks_every_route_done() -> None:
     assert _statuses(progress) == [DONE, DONE, DONE]
 
 
+@pytest.mark.parametrize(
+    "summary",
+    [
+        "世界首领战 ✓[收尾待确认] / 刷书签 — ｜ 已中止：无法回到首页",
+        "世界首领战 ✓(无剩余内容) / 刷书签 —(当前环境不支持)",
+        "世界首领战 ✗[页面识别失败]",
+    ],
+)
+def test_partial_summary_leaves_skipped_and_absent_routes_pending(summary: str) -> None:
+    progress = RunProgress(ROUTES)
+    progress.note_line("模式=arena 状态=执行前检查")
+    progress.note_line(f"每日任务汇总：{summary}")
+    progress.finish()
+
+    assert _statuses(progress) == [DONE, PENDING, PENDING]
+    assert progress.active_label == ""
+
+
 def test_finish_marks_current_done_and_keeps_unreached_pending() -> None:
     progress = RunProgress(ROUTES)
+    progress.note_line("模式=world_boss 状态=导航完成")
     progress.finish()
     assert _statuses(progress) == [DONE, PENDING, PENDING]
     assert progress.finished is True
@@ -75,7 +97,7 @@ def test_lines_after_finish_do_not_change_anything() -> None:
     progress = RunProgress(ROUTES)
     progress.finish()
     progress.note_line("模式=arena 状态=收尾")
-    assert _statuses(progress) == [DONE, PENDING, PENDING]
+    assert _statuses(progress) == [PENDING, PENDING, PENDING]
 
 
 def test_empty_plan_is_safe() -> None:

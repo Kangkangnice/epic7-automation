@@ -7,6 +7,7 @@
 - **现状**：`docs/STATUS.md` —— 路线名单 / PC 放行 / 每日任务顺序，**由代码生成**。
   想知道「现在支持哪些」看它，别数 `catalog.py`、也别信旧文档里的数字。
 - **索引**：`docs/README.md` —— 「我要做 X 该看哪份」+ 文档各通道 + 写文档的规矩。
+- **协作**：[`GOVERNANCE.md`](GOVERNANCE.md) —— 评审职责、架构决策、交接和放行。
 
 三条会被门禁拦下的硬规矩（不是建议，是测试）：
 
@@ -22,18 +23,20 @@
 修改任何视觉识别、点击、导航、重试、事务或路线前，必须阅读（适用于全部路线、模拟器与 PC 迁移）：
 
 - `docs/TRANSITION_CONTRACTS.md`
-- `CONTRIBUTING.md`（人和 AI 怎么配合做新路线；旧的「用户操作、AI 只读观测」分工已作废）
-- **新增路线或新增动作**时读 `docs/EXTENDING.md`；**移植 PC / 改 PC 后端**时读 [`docs/PC_TEMPLATE_MIGRATION.md`](docs/PC_TEMPLATE_MIGRATION.md)
+- [贡献指南](CONTRIBUTING.md)（本地环境、证据、提交和评审）
+- **新增路线或新增动作**时读 `docs/EXTENDING.md`；**移植 PC / 改 PC 后端**时读 [PC 接入指南](docs/PC_TEMPLATE_MIGRATION.md)。收到「移植 PC」的请求从 [§3](docs/PC_TEMPLATE_MIGRATION.md#3-一句话移植到-pc) 开始
 - **要实机跑闭环**时，读 `docs/howto/live_verification.md`（权限 / 点不动 / 失败判定）
+- **要公开声明稳定支持**时，按[路线稳定版验收](docs/howto/route_acceptance.md)记录账号变体、真实结果和终点。
+- **游戏更新或维护已有路线**时，按[游戏更新手册](docs/howto/game_update.md)确定影响。修改前可用
+  `python -m auto_game_unified.tools.check --plan --files <仓库相对路径>` 预查回归范围。
 - 目标路线测试和最新真实失败证据
 
 ## 做到一半要停（超时 / 被叫停 / 上下文用尽）
 
 **先建交接单：复制 `docs/wip/_TEMPLATE.md` 到 `docs/wip/<日期>-<主题>.md`，填完再停。**
 
-它会自动出现在 `docs/STATUS.md` 的「在制品」一节 —— 下一个人（或你换个会话）打开现状页
-就知道有活没干完、做到哪、下一步做什么。**合并进 main 之后删掉它**，结论进提交信息 /
-`CHANGELOG.md` / `docs/decisions/` / `docs/maintenance/<路线>.md`。
+它自动出现在 `docs/STATUS.md` 的「在制品」一节，下一个人打开现状页就知道活没干完、做到哪、下一步做什么。
+**合并进 main 之后删掉它**，结论进提交信息 / `CHANGELOG.md` / `docs/decisions/` / `docs/maintenance/<路线>.md`。
 
 ## 不可违反的视觉动作契约
 
@@ -79,8 +82,7 @@
 python tools/compress_images.py --staged --apply && git add <刚压过的文件>
 ```
 
-它是**无损**的（压完逐位比对像素，不一致就报错、不落盘）。⚠️ **不要拿它压存量再提交** ——
-只会把新 blob 加进 pack，历史里旧 blob 一个不少。存量瘦身见
+它是**无损**的（压完逐位比对像素，不一致就报错、不落盘）。**不要拿它压存量再提交**：存量瘦身另走
 [`docs/TEMPLATE_CAPTURE.md`](docs/TEMPLATE_CAPTURE.md#入库前无损压缩体积门槛)。
 
 ## 完成规则
@@ -92,9 +94,7 @@ python tools/compress_images.py --staged --apply && git add <刚压过的文件>
 
 **提交那一次由钩子跑（`tools/githooks/pre-commit` → `tools/check.py`），不要再手工跑一遍。**
 开发中途想看结果才手工跑：`python tools/check.py --files a.py b.py`（约 1~2 分钟）。
-`--no-verify` **默认禁止**（钩子是唯一的强制关卡）；`--full` 只在 PR 合并 / 发布前用；
+`--no-verify` **默认禁止**；按[测试分层](CONTRIBUTING.md#按改动选测试)验收 PR，已登记的独立行为走定向，共享或未登记的运行改动走全量，版本标签始终全量；
 改共享模块最费时间，这类改动**攒在一起一次提交**，别拆成几次各跑一遍。
 
-⚠️ 五个坑（`--vs HEAD` 会把上一轮未提交的改动算进来、手工跑完又改文件那次作废、
-并发会话共用工作区时别 `git add -A`……）见
-[`CONTRIBUTING.md`](CONTRIBUTING.md#几个容易踩的细节2026-11-08-从-agentsmd-移来)。
+`--vs HEAD` 会包含工作区相对 HEAD 的全部改动；手工验证后又改了文件，以最终暂存内容为准。并发协作见[贡献指南](CONTRIBUTING.md)。

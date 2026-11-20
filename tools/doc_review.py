@@ -67,11 +67,23 @@ MUST_MAP: tuple[str, ...] = (
     ".github/workflows/tests.yml",
 )
 
-#: 改动路径 → 需要复审的文档。按前缀匹配，**所有命中的规则都会叠加**
+# 头像库同时存图像和静态分类，独立于页面模板的 PC 迁移规则。
+HERO_ROSTER_PREFIX = "games/epic7/templates/arena/heroes_pokedex/"
+HERO_ROSTER_DOCS = ("docs/maintenance/hero_roster.md", "docs/maintenance/arena.md")
+
+#: 改动路径 → 需要复审的文档。按前缀匹配，通常叠加命中的规则。
 #: （具体规则给「这条路线的维护手册」，通用规则 ``games/epic7/`` 再补一份 STATUS）。
 #: 只写「改了这个文件，哪份文档里的话可能就不成立了」，不追求完备：
 #: 漏掉的代价是「下次看别的文档时会顺带发现」，错报的代价是白读几页。
 DOC_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
+    (HERO_ROSTER_PREFIX, HERO_ROSTER_DOCS),
+    ("games/epic7/hero_catalog.py", HERO_ROSTER_DOCS),
+    ("games/epic7/hero_match.py", HERO_ROSTER_DOCS),
+    ("tools/add_hero.py", HERO_ROSTER_DOCS),
+    ("tools/refresh_hero_meta.py", HERO_ROSTER_DOCS),
+    ("tools/check_hero_roster.py", HERO_ROSTER_DOCS),
+    ("games/epic7/templates/global/", ("docs/howto/game_update.md",)),
+    ("games/epic7/templates/navigation/", ("docs/howto/game_update.md",)),
     ("games/epic7/templates/", ("docs/TEMPLATE_CAPTURE.md", "docs/STATUS.md")),
     ("games/epic7/evidence/", ("docs/STATUS.md", "docs/TRANSITION_CONTRACTS.md")),
     ("games/epic7/modes.py", ("docs/STATUS.md", "docs/EXTENDING.md")),
@@ -80,6 +92,7 @@ DOC_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("games/epic7/hero_synthesis.py", ("docs/maintenance/hero_synthesis.md",)),
     ("games/epic7/arena.py", ("docs/maintenance/arena.md",)),
     ("games/epic7/story.py", ("docs/maintenance/story.md",)),
+    ("games/epic7/story_star", ("docs/maintenance/story_star.md",)),
     ("games/epic7/side_story.py", ("docs/maintenance/side_story.md",)),
     ("games/epic7/tower.py", ("docs/maintenance/tower.md",)),
     ("games/epic7/expedition.py", ("docs/maintenance/expedition.md",)),
@@ -103,14 +116,17 @@ DOC_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("core/elevation.py", ("docs/howto/live_verification.md",)),
     ("desktop/preflight.py", ("docs/howto/live_verification.md", "docs/USER_GUIDE.md")),
     ("tools/live_check.py", ("docs/howto/live_verification.md",)),
+    ("tools/check.py", ("CONTRIBUTING.md",)),
+    ("tools/pr_tests.py", ("CONTRIBUTING.md",)),
+    ("tools/check_route_acceptance.py", ("docs/howto/route_acceptance.md", "docs/howto/release.md")),
     ("tools/_run_live", ("docs/howto/live_verification.md",)),
     ("tools/_verify_", ("docs/howto/live_verification.md",)),
     ("tools/_diagnose_", ("docs/howto/live_verification.md",)),
     ("desktop_qt/", ("docs/USER_GUIDE.md",)),
     ("desktop/", ("docs/USER_GUIDE.md",)),
     ("main.py", ("docs/USER_GUIDE.md", "docs/ARCHITECTURE.md")),
-    ("packaging/", ("CONTRIBUTING.md",)),
-    (".github/", ("CONTRIBUTING.md",)),
+    ("packaging/", ("docs/howto/release.md", "NOTICE.md")),
+    (".github/", ("CONTRIBUTING.md", "GOVERNANCE.md")),
 )
 
 #: 这些路径的改动**不会**让任何文档过期（改了它们不必复审）。
@@ -283,6 +299,8 @@ def affected_docs(changed: list[str]) -> list[str]:
             if normalised.startswith(prefix):
                 docs.update(targets)
                 matched = True
+                if prefix == HERO_ROSTER_PREFIX:
+                    break
         if matched:
             continue
         if normalised.startswith(IGNORED_PREFIXES):
@@ -299,7 +317,8 @@ def _git(*args: str) -> str:
         ["git", *args],
         cwd=REPO_ROOT,
         capture_output=True,
-        text=True,
+        encoding="utf-8",
+        errors="replace",
         check=False,
     )
     if result.returncode != 0:
@@ -309,12 +328,14 @@ def _git(*args: str) -> str:
 
 def staged_files() -> list[str]:
     """本次暂存区改了哪些文件。提交钩子用它 —— 天然包含还没提交的改动。"""
-    return [line for line in _git("diff", "--cached", "--name-only").splitlines() if line.strip()]
+    paths = _git("diff", "--cached", "--name-only", "-z", "--no-renames")
+    return [path for path in paths.split("\0") if path]
 
 
 def working_files() -> list[str]:
     """工作区相对 HEAD 的全部改动（含未暂存），日常自查用。"""
-    return [line for line in _git("diff", "--name-only", "HEAD").splitlines() if line.strip()]
+    paths = _git("diff", "--name-only", "-z", "--no-renames", "HEAD", "--")
+    return [path for path in paths.split("\0") if path]
 
 
 def review_note_missing(message_path: Path, docs: list[str]) -> bool:

@@ -9,6 +9,7 @@ body:
         请先说明场景，再说明做法 —— 只写「加一个 XX 功能」通常没法评估。
 
         ⚠️ 本项目只做 **PVE 视觉辅助**：不读内存、不改客户端、不做反检测，**不接受 PVP 自动对战**。
+        提交截图前请遮盖昵称、好友名单、聊天和账号信息。
 
   - type: textarea
     id: pain
@@ -58,6 +59,19 @@ body:
         - 能，可以按需要的页面逐张提供
         - 能提供一部分
         - 不能
+    validations:
+      required: true
+
+  - type: dropdown
+    id: backend
+    attributes:
+      label: 适用的游戏客户端
+      options:
+        - 雷电模拟器
+        - PC 客户端
+        - 两个客户端
+        - 不涉及游戏客户端
+        - 不确定
     validations:
       required: true
 
