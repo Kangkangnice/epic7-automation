@@ -29,11 +29,14 @@ MIN_ACCOUNT_RUNS = 2
 MIN_DAYS = 3
 
 LAUNCH_FORMAT = "%Y-%m-%d %H:%M:%S"
-TERMINAL_MARKER = "收尾=已回到首页"
-FAILURE_MARKERS = ("收尾=回首页失败", "进入路线失败")
+TERMINAL_MARKER = re.compile(r"(?:^|\s)收尾=已回到首页")
+FAILURE_MARKERS = ("收尾=回首页失败", "进入路线失败", "异常收尾=")
 MANUAL_MARKERS = ("用户按下 P", "正在中断自动化")
 TIMESTAMP = re.compile(r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}) ")
 ANCHOR = re.compile(r"L(\d+)(?:-L?(\d+))?")
+ZERO_WORK = re.compile(r"已完成=0(?:\s|$)")
+PASS_RESULT = re.compile(r"\b(?:1 passed|[1-9]\d* passed|passed|PASSED)\b")
+FAIL_RESULT = re.compile(r"\b[1-9]\d* failed\b|\bFAILED\b|\bERROR\b")
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -100,22 +103,42 @@ def _launch_slice(path: Path, started: datetime, ended: datetime) -> tuple[list[
     return picked, None
 
 
-def _check_test_node(node: object) -> str | None:
+def _check_test_node(node: object) -> tuple[str | None, str | None]:
+    """核对完整测试节点，返回 (函数名, 错误)。类名不参与核对就会串到同名函数。"""
     if not isinstance(node, str) or "::" not in node:
-        return "回放测试节点应写成 tests/xxx.py::test_name。"
+        return None, "回放测试节点应写成 tests/xxx.py::Class::test_name 或 tests/xxx.py::test_name。"
     path_part, _, rest = node.partition("::")
     path = REPO_ROOT / path_part
     if not path.is_file():
-        return f"回放测试文件不存在：{path_part}"
-    name = rest.split("::")[-1].strip()
-    if not name:
-        return f"回放测试节点缺少函数名：{node}"
+        return None, f"回放测试文件不存在：{path_part}"
+    segments = [part.strip() for part in rest.split("::") if part.strip()]
+    if not segments or len(segments) > 2:
+        return None, f"回放测试节点格式无效：{node}"
+    name = segments[-1]
     try:
         source = path.read_text(encoding="utf-8", errors="replace")
     except OSError as error:
-        return f"回放测试文件打不开：{path_part}（{error}）"
+        return None, f"回放测试文件打不开：{path_part}（{error}）"
+    if len(segments) == 2 and re.search(
+        rf"^class {re.escape(segments[0])}\b", source, re.M
+    ) is None:
+        return None, f"回放测试类不存在：{node}"
     if re.search(rf"^\s*def {re.escape(name)}\(", source, re.M) is None:
-        return f"回放测试节点不存在：{node}"
+        return None, f"回放测试节点不存在：{node}"
+    return name, None
+
+
+def _check_replay_result(path: Path, name: str, node: str, revision: str) -> str | None:
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError as error:
+        return f"回放结果打不开：{path}（{error}）"
+    if name not in text:
+        return f"回放结果未指向该测试节点：{node}"
+    if revision not in text:
+        return f"回放结果未写明待验提交 {revision}。"
+    if FAIL_RESULT.search(text) or PASS_RESULT.search(text) is None:
+        return f"回放结果没有该节点的通过记录：{node}"
     return None
 
 
@@ -154,10 +177,10 @@ def _check_contract(contract: object) -> tuple[dict[str, object], list[str]]:
     return contract, problems
 
 
-def _check_replay(cases: object, base: Path) -> tuple[set[str], list[str]]:
+def _check_replay(cases: object, base: Path, revision: str) -> list[str]:
     problems: list[str] = []
     if not isinstance(cases, list):
-        return set(), ["replay_cases 应列出已通过的用例类别、测试节点和依据。"]
+        return ["replay_cases 应列出已通过的用例类别、测试节点和依据。"]
     seen: set[str] = set()
     for index, item in enumerate(cases, 1):
         if not isinstance(item, dict):
@@ -168,22 +191,28 @@ def _check_replay(cases: object, base: Path) -> tuple[set[str], list[str]]:
             problems.append(f"回放第 {index} 项的类别无效：{case!r}。")
             continue
         seen.add(case)
-        problem = _check_test_node(item.get("test"))
+        name, problem = _check_test_node(item.get("test"))
         if problem:
             problems.append(f"回放 {case}：{problem}")
-        _, _, _, error = _resolve_ref(item.get("evidence"), base)
+        evidence_path, _, _, error = _resolve_ref(item.get("evidence"), base)
         if error:
             problems.append(f"回放 {case}：{error}")
+        elif name is not None:
+            assert evidence_path is not None
+            error = _check_replay_result(evidence_path, name, item["test"], revision)
+            if error:
+                problems.append(f"回放 {case}：{error}")
     missing = REPLAY_CASES.difference(seen)
     if missing:
         problems.append("缺少离线回归类别：" + ", ".join(sorted(missing)))
-    return seen, problems
+    return problems
 
 
 def check_report(
     report: object,
     target: dict[str, str],
     base: Path | None = None,
+    notes: list[str] | None = None,
 ) -> tuple[str, list[str]]:
     """Return the observed count and any reasons to withhold stable support."""
     if not isinstance(report, dict):
@@ -200,8 +229,7 @@ def check_report(
     problems: list[str] = []
     contract, contract_problems = _check_contract(report.get("contract"))
     problems.extend(contract_problems)
-    _, replay_problems = _check_replay(report.get("replay_cases"), base)
-    problems.extend(replay_problems)
+    problems.extend(_check_replay(report.get("replay_cases"), base, target["revision"]))
 
     runs = report.get("runs")
     if not isinstance(runs, list):
@@ -209,6 +237,9 @@ def check_report(
 
     run_ids: set[str] = set()
     launches: set[tuple[str, str]] = set()
+    terminal_refs: set[tuple[str, int | None, int | None]] = set()
+    evidence_keys: set[tuple[tuple[str, int | None, int | None], ...]] = set()
+    windows_by_log: dict[str, list[tuple[datetime, datetime, str]]] = {}
     accounts: Counter[str] = Counter()
     dates: set[str] = set()
     environments: set[str] = set()
@@ -309,10 +340,13 @@ def check_report(
         if ended <= started:
             problems.append(f"{label}的启动结束时间不晚于开始时间。")
             continue
+        if day != started.strftime("%Y-%m-%d"):
+            problems.append(f"{label}的日期与启动时间不一致：day={day}，启动={started}。")
+            continue
 
         log_path, _, _, log_error = _resolve_ref(launch["log"], base)
-        if log_error:
-            problems.append(f"{label}：{log_error}")
+        if log_error or log_path is None:
+            problems.append(f"{label}：{log_error or '日志路径无效'}")
             continue
         identity = (str(log_path.resolve()), started.strftime(LAUNCH_FORMAT))
         if identity in launches:
@@ -323,21 +357,76 @@ def check_report(
             continue
         launches.add(identity)
 
+        log_key = str(log_path.resolve())
+        overlap = next(
+            (
+                other_id for other_start, other_end, other_id in windows_by_log.get(log_key, [])
+                if started < other_end and ended > other_start
+            ),
+            None,
+        )
+        if overlap:
+            message = (
+                f"{label}与 {overlap} 的启动边界重叠，不能可靠区分为独立样本；"
+                "待人工核对，本次不计入业务闭环。"
+            )
+            if notes is None:
+                problems.append(message)
+            else:
+                notes.append(message)
+        else:
+            windows_by_log.setdefault(log_key, []).append((started, ended, run_id))
+        countable = overlap is None
+
         slice_lines, slice_error = _launch_slice(log_path, started, ended)
         if slice_error:
             problems.append(f"{label}：{slice_error}")
             continue
         slice_text = "\n".join(line for _, line in slice_lines)
+        if f"模式={run['route']}" not in slice_text:
+            problems.append(
+                f"{label}的日志边界内没有路线 {run['route']} 的记录，"
+                "不能借其他路线的业务或终点充当本次证据。"
+            )
+            continue
+        if ZERO_WORK.search(slice_text) and (achieved or 0) > 0:
+            problems.append(f"{label}的日志写明已完成=0，却申报实得 {achieved}。")
+            continue
 
         evidence = run.get("evidence")
         if not isinstance(evidence, list) or not evidence:
             problems.append(f"{label}没有业务依据引用。")
             continue
+        resolved: list[tuple[str, int | None, int | None]] = []
+        duplicate = False
         for reference in evidence:
-            _, _, _, error = _resolve_ref(reference, base)
-            if error:
-                problems.append(f"{label}：{error}")
+            path, start_line, end_line, error = _resolve_ref(reference, base)
+            if error or path is None:
+                problems.append(f"{label}：{error or '依据路径无效'}")
+                duplicate = True
                 break
+            resolved.append((str(path.resolve()), start_line, end_line))
+        evidence_key = tuple(sorted(resolved))
+        if not duplicate and evidence_key in evidence_keys:
+            problems.append(f"{label}重复引用了已有运行的同一份业务依据。")
+            duplicate = True
+        if not duplicate:
+            evidence_keys.add(evidence_key)
+        if duplicate:
+            continue
+
+        if terminal["verified"]:
+            terminal_path, term_start, term_end, terminal_error = _resolve_ref(
+                terminal["evidence"], base
+            )
+            if terminal_error or terminal_path is None:
+                problems.append(f"{label}的终点依据{terminal_error or '路径无效'}")
+                continue
+            terminal_key = (str(terminal_path.resolve()), term_start, term_end)
+            if terminal_key in terminal_refs:
+                problems.append(f"{label}重复引用了已有运行的同一条终点证据。")
+                continue
+            terminal_refs.add(terminal_key)
 
         if outcome == "unsafe":
             problems.append(f"{label}发生误操作，阻止该组合稳定放行。")
@@ -350,8 +439,25 @@ def check_report(
             )
             continue
 
+        if (scenario in {"normal", "alternate"} and outcome == "expected_stop") or (
+            scenario == "expected_stop" and outcome != "expected_stop"
+        ):
+            problems.append(
+                f"{label}的场景与结果冲突：预登记 {scenario}，实际 {outcome}；"
+                "请按实际结果改登记场景后再送验。"
+            )
+        if not run["stop_reason"].strip() and outcome in {"expected_stop", "failed"} and not first_failure.strip():
+            problems.append(f"{label}记 {outcome} 但未写停止原因或首个故障。")
+            continue
+
+        # 越权与首个故障必须先于主动停止分类核对。
+        error = _check_resources(run, contract, outcome)
+        if error:
+            problems.append(f"{label}：{error}")
+            continue
+
         if outcome == "interrupted":
-            error = _check_interrupted(run, slice_lines)
+            error = _check_interrupted(run, slice_lines, started, ended)
             if error:
                 problems.append(f"{label}：{error}")
                 continue
@@ -371,25 +477,19 @@ def check_report(
         else:  # failed
             if work == "business":
                 failed += 1
+                problems.append(
+                    f"{label}发生真实失败：当前业务计划不能声明稳定支持，失败保留在分母中。"
+                )
             else:
                 read_only_failed += 1
-            if not run["stop_reason"].strip() and not first_failure.strip():
-                problems.append(f"{label}记 failed 但未写停止原因或首个故障。")
-                continue
-
-        error = _check_resources(run, contract, outcome)
-        if error:
-            problems.append(f"{label}：{error}")
             continue
 
-        if outcome == "failed":
-            continue
         covered.add(scenario)
-        if work == "read_only":
-            read_only_ok += 1
-        elif scenario == "expected_stop":
+        if outcome == "expected_stop":
             safe_stops += 1
-        else:
+        elif work == "read_only":
+            read_only_ok += 1
+        elif countable:
             planned += 1
             accounts[run["account"].strip().casefold()] += 1
             dates.add(day)
@@ -414,14 +514,23 @@ def check_report(
     return summary, problems
 
 
-def _check_interrupted(run: dict, slice_lines: list[tuple[int, str]]) -> str | None:
+def _check_interrupted(
+    run: dict,
+    slice_lines: list[tuple[int, str]],
+    started: datetime,
+    ended: datetime,
+) -> str | None:
     if not run["stop_reason"].strip():
         return "人工中止未写停止原因。"
     stopped_at = run.get("stopped_at")
+    if not isinstance(stopped_at, str):
+        return "人工中止未写停止时间（YYYY-MM-DD HH:MM:SS）。"
     try:
-        datetime.strptime(stopped_at, LAUNCH_FORMAT)
+        stopped = datetime.strptime(stopped_at, LAUNCH_FORMAT)
     except (TypeError, ValueError):
         return "人工中止未写停止时间（YYYY-MM-DD HH:MM:SS）。"
+    if not started <= stopped <= ended:
+        return f"人工中止时间 {stopped_at} 不在本次启动边界内。"
     if not isinstance(run.get("state_at_stop"), str) or not run["state_at_stop"].strip():
         return "人工中止未写当时页面状态。"
     manual_at = next(
@@ -454,14 +563,23 @@ def _terminal_error(
         return f"终点依据{error}"
     if evidence_path is None or evidence_path.resolve() != log_path.resolve():
         return "终点依据必须指向本次启动的日志。"
-    numbers = {number for number, _ in slice_lines}
-    if start is None or start not in numbers or (end is not None and end not in numbers):
+    lines_by_number = dict(slice_lines)
+    if start is None or start not in lines_by_number or (end is not None and end not in lines_by_number):
         return "终点依据不在本次启动的日志边界内。"
-    marker = contract.get("terminal_marker") or TERMINAL_MARKER
-    if marker not in slice_text:
-        return f"日志边界内没有约定终点标记「{marker}」。"
     if any(marker_text in slice_text for marker_text in FAILURE_MARKERS):
-        return "日志显示收尾失败或进入路线失败，不能记 completed / expected_stop。"
+        return "日志显示收尾失败、异常收尾或进入路线失败，不能记 completed / expected_stop。"
+    marked = contract.get("terminal_marker")
+    if isinstance(marked, str) and marked.strip():
+        ok = all(marked in lines_by_number[number] for number in range(start, (end or start) + 1))
+        shown = marked
+    else:
+        ok = all(
+            TERMINAL_MARKER.search(lines_by_number[number]) is not None
+            for number in range(start, (end or start) + 1)
+        )
+        shown = "收尾=已回到首页"
+    if not ok:
+        return f"终点所引用的行没有精确的约定终点标记「{shown}」。"
     return None
 
 
@@ -487,10 +605,10 @@ def _check_completed(
         return "业务运行没有实得数量，不能记 completed；零工作请按 expected_stop 记录。"
     target_quantity = run.get("target")
     if target_quantity is not None:
-        if achieved < target_quantity:
+        if abs(achieved - target_quantity) > 1e-9:
             return (
                 f"请求目标 {target_quantity}，实得 {achieved}；"
-                "固定轮数须按请求量核对，未达目标不能记 completed。"
+                "固定数量须与请求量一致，多出或不足都不能记 completed。"
             )
     else:
         _, _, _, error = _resolve_ref(run.get("end_evidence"), base)
@@ -531,7 +649,10 @@ def _check_resources(run: dict, contract: dict, outcome: str) -> str | None:
     declared = {
         item["name"].strip(): item["cap"]
         for item in contract.get("resources", [])
-        if isinstance(item, dict) and isinstance(item.get("name"), str)
+        if isinstance(item, dict)
+        and isinstance(item.get("name"), str)
+        and isinstance(item.get("cap"), (int, float))
+        and not isinstance(item.get("cap"), bool)
     }
     resources = run.get("resources")
     if not isinstance(resources, list):
@@ -546,9 +667,12 @@ def _check_resources(run: dict, contract: dict, outcome: str) -> str | None:
             return f"资源「{name}」的消耗应为非负数。"
         if name not in declared:
             return f"消耗了合同未声明的资源「{name}」，按越权扣费处理。"
-        if value > declared[name]:
-            return f"资源「{name}」消耗 {value} 超出声明上限 {declared[name]}。"
-        spent[name] = value
+        spent[name] = spent.get(name, 0) + value
+        if spent[name] > declared[name]:
+            return (
+                f"资源「{name}」本次启动合计消耗 {spent[name]} "
+                f"超出声明上限 {declared[name]}。"
+            )
     if outcome in {"completed", "expected_stop"} and run["work"] == "business":
         missing = set(declared).difference(spent)
         if missing:
@@ -573,11 +697,16 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     target = {key: getattr(args, key) for key in ("route", "backend", "client", "revision")}
-    summary, problems = check_report(report, target, base=args.evidence.parent)
+    notes: list[str] = []
+    summary, problems = check_report(report, target, base=args.evidence.parent, notes=notes)
     if summary:
         print(summary)
     for problem in problems:
         print(f"- {problem}")
+    if notes:
+        print("待复核（不计入独立样本）：")
+        for note in notes:
+            print(f"- {note}")
     if problems:
         print("稳定版证据未通过。")
         return 1

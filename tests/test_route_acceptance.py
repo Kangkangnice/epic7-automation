@@ -57,7 +57,7 @@ def _append_launch(
     for offset, extra in enumerate(before_terminal, start=1):
         lines.append(f"{_stamp(started + timedelta(seconds=30 + offset))} {extra}")
     if manual:
-        lines.append(f"{_stamp(started + timedelta(seconds=45))} {MANUAL_STOP}")
+        lines.append(f"{_stamp(started + timedelta(seconds=45))} 模式=craft_equipment {MANUAL_STOP}")
     else:
         lines.append(f"{_stamp(started + timedelta(seconds=60))} 模式=导航 流程=v2 页面=大厅 状态=已确认")
         lines.append(f"{_stamp(started + timedelta(seconds=60))} {terminal}")
@@ -133,18 +133,22 @@ def evidence(tmp_path: Path) -> Path:
     started_at, ended_at, first, _ = _append_launch(
         log, started, before_terminal=("模式=装备制作 停止=讨伐材料不足 已完成=10",), achieved=10,
     )
-    runs.append(_run(
+    expected_stop_run = _run(
         10, started_at, ended_at, first, account="B", environment="setup-2", day="2026-11-18",
         scenario="expected_stop", outcome="expected_stop", target=20, achieved=10,
         stop_reason="讨伐材料不足",
-    ))
+    )
+    expected_stop_run["terminal"]["evidence"] = f"{LOG_REF}#L{first + 4}"
+    runs.append(expected_stop_run)
 
     replay_dir = tmp_path / "reports" / "replay"
     replay_dir.mkdir(parents=True)
     replay = []
     for case, node in REPLAY_TESTS.items():
         proof = replay_dir / f"{case}.txt"
-        proof.write_text("pytest -q 1 passed\n", encoding="utf-8")
+        proof.write_text(
+            f"node={node} revision={REVISION} result=1 passed\n", encoding="utf-8"
+        )
         replay.append({"case": case, "test": node, "evidence": f"reports/replay/{case}.txt"})
 
     report = {
@@ -224,6 +228,7 @@ def test_legal_read_only_run_is_reported_separately(evidence: Path, capsys):
         scenario="read_only", work="read_only", target=None, achieved=0,
     )
     read_only["receipt"] = "读到「剩余 6 天 2 小时」，完成数 0"
+    read_only["terminal"]["evidence"] = f"{LOG_REF}#L{first + 4}"
     report["runs"].append(read_only)
     _save(evidence, report)
     assert check(evidence) == 0
@@ -244,6 +249,7 @@ def test_declared_zero_work_end_needs_positive_evidence(evidence: Path, capsys):
         stop_reason="今日次数已用完",
     )
     zero["zero_work_evidence"] = f"{LOG_REF}#L{first + 2}"
+    zero["terminal"]["evidence"] = f"{LOG_REF}#L{first + 4}"
     report["runs"].append(zero)
     _save(evidence, report)
     assert "预期安全停止 2" in _run_and_capture(evidence, capsys)
@@ -387,6 +393,205 @@ def test_replay_node_must_exist_in_the_named_test(evidence: Path):
     report["replay_cases"][0]["test"] = "tests/test_epic7_craft_equipment.py::test_does_not_exist"
     _save(evidence, report)
     assert check(evidence) == 1
+
+
+# ---------------------------------------------------------------- 退回单反例（2026-11-20）
+
+ABNORMAL_TERMINAL = "模式=craft_equipment 异常收尾=已回到首页 状态=可以衔接下一个任务"
+
+
+def _append_failed(log: Path, started: datetime) -> tuple[str, str, int]:
+    started_at, ended_at, first, _ = _append_launch(
+        log, started, before_terminal=("模式=装备制作 停止=未识别页面 已完成=0",), achieved=0,
+    )
+    run = _run(
+        20, started_at, ended_at, first, account="A", environment="setup-1",
+        day=started.strftime("%Y-%m-%d"), scenario="normal", outcome="failed",
+        achieved=0, terminal_verified=False, stop_reason="未识别页面，安全停止",
+    )
+    return run
+
+
+def test_one_real_failure_blocks_the_whole_plan(evidence: Path, capsys):
+    """同一业务计划出现一次真实失败，就不能声明稳定支持。"""
+    report = _load(evidence)
+    report["runs"].append(_append_failed(evidence.parent / LOG_REF, datetime(2026, 11, 19, 14, 0, 0)))
+    _save(evidence, report)
+    assert check(evidence) == 1
+    out = capsys.readouterr().out
+    assert "10/11" in out
+    assert "真实失败" in out
+
+
+def test_expected_stop_in_a_normal_scenario_is_rejected(evidence: Path, capsys):
+    """预登记为正常完成，实际记预期停止：按实际结果统计并退回场景冲突。"""
+    report = _load(evidence)
+    report["runs"][0]["outcome"] = "expected_stop"
+    report["runs"][0]["stop_reason"] = "讨伐材料不足"
+    _save(evidence, report)
+    assert check(evidence) == 1
+    out = capsys.readouterr().out
+    assert "9/9" in out
+    assert "预期安全停止 2" in out
+    assert "场景" in out
+
+
+def test_abnormal_closeout_cannot_prove_completion(evidence: Path, capsys):
+    """异常收尾即使回到了大厅，也不是正常终点。"""
+    report = _load(evidence)
+    log = evidence.parent / LOG_REF
+    started = datetime(2026, 11, 19, 15, 0, 0)
+    started_at, ended_at, first, _ = _append_launch(log, started, terminal=ABNORMAL_TERMINAL)
+    report["runs"][0] = _run(
+        0, started_at, ended_at, first, account="A", environment="setup-1",
+        day="2026-11-19", scenario="normal", outcome="completed",
+    )
+    _save(evidence, report)
+    assert check(evidence) == 1
+    assert "异常收尾" in capsys.readouterr().out
+
+
+def test_copied_launch_with_shifted_start_is_not_ten_samples(evidence: Path, capsys):
+    """同一启动复制十份、只把开始时间往前挪，不算十个独立样本。"""
+    report = _load(evidence)
+    base = report["runs"][0]
+    copies = []
+    for index in range(10):
+        item = json.loads(json.dumps(base))
+        item["id"] = f"copy-{index}"
+        start = datetime.strptime(base["launch"]["started_at"], "%Y-%m-%d %H:%M:%S") - timedelta(seconds=index)
+        item["launch"]["started_at"] = _stamp(start)
+        item["launch"]["ended_at"] = _stamp(start + timedelta(seconds=61))
+        copies.append(item)
+    report["runs"] = copies
+    _save(evidence, report)
+    assert check(evidence) == 1
+    out = capsys.readouterr().out
+    assert "重复" in out or "重叠" in out
+
+
+def test_cross_route_log_cannot_prove_work(evidence: Path, capsys):
+    """拿支线倒计时的日志充当装备制作 20 件的业务依据，应识别路线矛盾。"""
+    report = _load(evidence)
+    side = evidence.parent / "runtime_logs" / "epic7_side_story.log"
+    side.write_text(
+        "2026-11-20 08:21:40 模式=side_story 停止=支线刷新倒计时已读取 已完成=0\n"
+        "2026-11-20 08:21:55 模式=side_story 收尾=已回到首页 状态=可以衔接下一个任务\n",
+        encoding="utf-8",
+    )
+    report["runs"][0]["launch"] = {
+        "log": "runtime_logs/epic7_side_story.log",
+        "started_at": "2026-11-20 08:21:40",
+        "ended_at": "2026-11-20 08:21:56",
+    }
+    report["runs"][0]["day"] = "2026-11-20"
+    report["runs"][0]["evidence"] = ["runtime_logs/epic7_side_story.log#L1-L2"]
+    report["runs"][0]["terminal"] = {
+        "verified": True, "evidence": "runtime_logs/epic7_side_story.log#L2",
+    }
+    _save(evidence, report)
+    assert check(evidence) == 1
+    assert "路线" in capsys.readouterr().out
+
+
+def test_achieved_cannot_exceed_the_requested_quantity(evidence: Path, capsys):
+    report = _load(evidence)
+    report["runs"][0]["achieved"] = 40
+    _save(evidence, report)
+    assert check(evidence) == 1
+    assert "实得" in capsys.readouterr().out
+
+
+def test_duplicate_resource_rows_are_summed(evidence: Path, capsys):
+    """同一启动列两条各 210,000，合计已超过 240,000 上限。"""
+    report = _load(evidence)
+    report["runs"][0]["resources"] = [
+        {"name": "金币", "spent": 210000},
+        {"name": "金币", "spent": 210000},
+    ]
+    _save(evidence, report)
+    assert check(evidence) == 1
+    assert "上限" in capsys.readouterr().out
+
+
+def test_manual_stop_time_must_fall_inside_the_launch(evidence: Path, capsys):
+    report = _load(evidence)
+    log = evidence.parent / LOG_REF
+    started = datetime(2026, 11, 19, 16, 0, 0)
+    started_at, ended_at, first, _ = _append_launch(log, started, manual=True, achieved=4)
+    stop = _run(
+        21, started_at, ended_at, first, account="A", environment="setup-1",
+        day="2026-11-19", scenario="normal", outcome="interrupted", achieved=4,
+        terminal_verified=False, stop_reason="玩家主动取消（按 P）",
+    )
+    stop.update({"stopped_at": "2019-01-01 00:00:00", "state_at_stop": "小节列表"})
+    report["runs"].append(stop)
+    _save(evidence, report)
+    assert check(evidence) == 1
+    assert "不在本次启动边界内" in capsys.readouterr().out
+
+
+def test_interrupted_run_still_checks_resource_caps(evidence: Path, capsys):
+    report = _load(evidence)
+    log = evidence.parent / LOG_REF
+    started = datetime(2026, 11, 19, 17, 0, 0)
+    started_at, ended_at, first, _ = _append_launch(log, started, manual=True, achieved=4)
+    stop = _run(
+        22, started_at, ended_at, first, account="A", environment="setup-1",
+        day="2026-11-19", scenario="normal", outcome="interrupted", achieved=4,
+        terminal_verified=False, stop_reason="玩家主动取消（按 P）",
+    )
+    stop.update({
+        "stopped_at": _stamp(started + timedelta(seconds=45)),
+        "state_at_stop": "小节列表",
+        "resources": [{"name": "金币", "spent": 1000000}],
+    })
+    report["runs"].append(stop)
+    _save(evidence, report)
+    assert check(evidence) == 1
+    assert "上限" in capsys.readouterr().out
+
+
+def test_replay_class_must_exist(evidence: Path, capsys):
+    report = _load(evidence)
+    report["replay_cases"][0]["test"] = (
+        "tests/test_epic7_craft_equipment.py::NoSuchClass::test_page_recognition_covers_every_stable_page"
+    )
+    _save(evidence, report)
+    assert check(evidence) == 1
+    assert "类" in capsys.readouterr().out
+
+
+def test_replay_evidence_must_record_a_pass(evidence: Path, capsys):
+    report = _load(evidence)
+    proof = evidence.parent / "reports" / "replay" / "normal.txt"
+    proof.write_text(
+        f"node={REPLAY_TESTS['normal']} revision={REVISION} result=1 failed\n", encoding="utf-8"
+    )
+    _save(evidence, report)
+    assert check(evidence) == 1
+    assert "失败" in capsys.readouterr().out
+
+
+def test_replay_evidence_must_name_the_revision(evidence: Path, capsys):
+    report = _load(evidence)
+    proof = evidence.parent / "reports" / "replay" / "normal.txt"
+    proof.write_text(
+        f"node={REPLAY_TESTS['normal']} result=1 passed\n", encoding="utf-8"
+    )
+    _save(evidence, report)
+    assert check(evidence) == 1
+    assert "提交" in capsys.readouterr().out
+
+
+def test_missing_resource_cap_returns_a_message_not_a_traceback(evidence: Path, capsys):
+    report = _load(evidence)
+    del report["contract"]["resources"][0]["cap"]
+    _save(evidence, report)
+    assert check(evidence) == 1
+    out = capsys.readouterr().out
+    assert "上限" in out
+    assert "Traceback" not in out
 
 
 # ---------------------------------------------------------------- 历史台账
