@@ -120,6 +120,196 @@ class TargetedSelectionTests(unittest.TestCase):
         )
         self.assertIn("test_project_layout.py", picked)
 
+    def test_portrait_change_hits_catalog_and_arena_without_hero_synthesis(self):
+        all_tests = [
+            *self.ALL_TESTS, "test_hero_catalog.py", "test_arena_hero_lists.py",
+            "test_hero_roster_check.py", "test_add_hero.py", "test_hero_synthesis.py",
+        ]
+        picked, _reason, _warnings = check_module.plan_tests(
+            ["games/epic7/templates/arena/heroes_pokedex/英雄.png"], all_tests,
+        )
+        self.assertEqual([
+            "test_add_hero.py", "test_arena_hero_lists.py", "test_hero_catalog.py",
+            "test_hero_roster_check.py", "test_project_layout.py",
+        ], picked)
+
+    def test_shared_story_templates_include_their_consuming_routes(self):
+        all_tests = [
+            *self.ALL_TESTS, "test_story.py", "test_fodder.py",
+            "test_story_star.py", "test_navigation.py",
+        ]
+        picked, _reason, _warnings = check_module.plan_tests(
+            ["games/epic7/templates/story/pc/auto_off.png"], all_tests,
+        )
+        self.assertTrue({"test_fodder.py", "test_story_star.py", "test_navigation.py"}.issubset(picked))
+
+    def test_tool_and_spec_overrides_are_reachable(self):
+        picked, _reason, _warnings = check_module.plan_tests(
+            ["tools/add_hero.py", "packaging/epic7_auto_assistant.spec"],
+            [*self.ALL_TESTS, "test_add_hero.py", "test_release_packaging.py"],
+        )
+        self.assertEqual(["test_add_hero.py", "test_release_packaging.py"], picked)
+
+    def test_fixture_folder_prefers_the_most_specific_route(self):
+        picked, _reason, _warnings = check_module.plan_tests(
+            ["tests/fixtures/epic7_story_star_pc/lobby.png"],
+            [*self.ALL_TESTS, "test_main_story.py", "test_story_star.py"],
+        )
+        self.assertEqual(["test_modes.py", "test_project_layout.py", "test_story_star.py"], picked)
+
+    def test_shared_fixtures_select_consumers_outside_their_folder(self):
+        all_tests = [*self.ALL_TESTS, "test_navigation.py", "test_hero_synthesis.py"]
+        for folder in ("epic7_global", "epic7_navigation"):
+            with self.subTest(folder=folder):
+                picked, _reason, _warnings = check_module.plan_tests(
+                    [f"tests/fixtures/{folder}/popup.png"], all_tests,
+                )
+                self.assertIn("test_hero_synthesis.py", picked)
+                self.assertIn("test_navigation.py", picked)
+
+    def test_navigation_reuses_route_and_legacy_root_assets(self):
+        all_tests = [*self.ALL_TESTS, "test_navigation.py"]
+        for path in (
+            "games/epic7/templates/tower/pc/tower_home.png",
+            "games/epic7/evidence/world_boss.py",
+            "games/epic7/templates/list_ready.png",
+        ):
+            with self.subTest(path=path):
+                picked, _reason, _warnings = check_module.plan_tests([path], all_tests)
+                self.assertIn("test_navigation.py", picked)
+
+    def test_diff_preserves_unicode_and_reports_both_paths_of_a_move(self):
+        old = "games/epic7/templates/arena/heroes_pokedex/旧名.png"
+        new = "games/epic7/templates/arena/heroes_pokedex/新名.png"
+        result = mock.Mock(returncode=0, stdout=f"{old}\0{new}\0".encode())
+        with mock.patch.object(check_module.subprocess, "run", return_value=result) as run:
+            self.assertEqual([old, new], check_module.git("--cached"))
+        self.assertIn("-z", run.call_args.args[0])
+        self.assertIn("--no-renames", run.call_args.args[0])
+
+    def test_plan_prints_targets_without_compiling_or_executing(self):
+        argv = ["check.py", "--plan", "--files", "games/epic7/templates/tower/pc/card.png"]
+        with (
+            mock.patch.object(check_module.sys, "argv", argv),
+            mock.patch.object(check_module, "run") as execute,
+            mock.patch("builtins.print") as output,
+        ):
+            self.assertEqual(0, check_module.main())
+        execute.assert_not_called()
+        self.assertTrue(any("test_tower" in str(call) for call in output.call_args_list))
+
+
+class TestLayerSelection(unittest.TestCase):
+    def test_card_selection_stays_isolated_from_inputs_and_other_routes(self):
+        root = check_module.PACKAGE_DIR
+        module = root / "games/epic7/story_star_cards.py"
+        imports = set()
+        for node in ast.walk(ast.parse(module.read_bytes())):
+            if isinstance(node, ast.Import):
+                imports.update(alias.name for alias in node.names)
+            elif isinstance(node, ast.ImportFrom):
+                imports.add(node.module)
+        self.assertLessEqual(imports, {"__future__", "numpy", "collections.abc"})
+        consumers = []
+        sources = [root / "main.py"]
+        for folder in ("core", "games", "desktop", "desktop_qt"):
+            sources.extend((root / folder).rglob("*.py"))
+        for source in sources:
+            if source == module:
+                continue
+            content = source.read_bytes()
+            if b"story_star_cards" not in content:
+                continue
+            for node in ast.walk(ast.parse(content)):
+                if isinstance(node, (ast.Import, ast.ImportFrom)):
+                    names = [alias.name for alias in node.names]
+                    if isinstance(node, ast.ImportFrom) and node.module:
+                        names.append(node.module)
+                    if any(name.split(".")[-1] == "story_star_cards" for name in names):
+                        consumers.append(source.relative_to(root).as_posix())
+                        break
+        self.assertEqual(["games/epic7/story_star.py"], consumers)
+
+    def test_story_star_card_changes_have_one_local_and_pr_contract(self):
+        from auto_game_unified.tools.pr_tests import plan_pr
+
+        files = ["games/epic7/story_star_cards.py", "tests/test_story_star.py",
+                 "tests/fixtures/epic7_story_star_pc/22_now.png"]
+        suite = sorted(p.name for p in (check_module.PACKAGE_DIR / "tests").glob("test_*.py"))
+        local, _, warnings = check_module.plan_tests(files, suite)
+        merged, _ = plan_pr(files)
+        self.assertEqual([], warnings)
+        self.assertEqual(local, merged)
+        self.assertTrue({"test_story_star.py", "test_modes.py", "test_resume_contracts.py",
+                         "test_safety_fail_closed.py", "test_desktop_preflight.py"}.issubset(local))
+        self.assertNotIn("test_navigation.py", local)
+        for extra in ("games/epic7/story_star.py", "games/epic7/stamina.py",
+                      "games/epic7/navigation.py", "games/epic7/templates/story/pc/home.png"):
+            self.assertIsNone(plan_pr([*files, extra])[0], extra)
+        missing = [test for test in suite if test != "test_story_star.py"]
+        self.assertTrue(check_module.plan_tests(files[:1], missing)[2])
+
+    def test_mapped_change_does_not_hide_an_unmapped_python_file(self):
+        for unknown in ("core/unknown_dependency.py", "tools/new_helper.py", "tests/shared_factory.py"):
+            with self.subTest(unknown=unknown):
+                picked, _, warnings = check_module.plan_tests(
+                    ["games/epic7/craft_equipment.py", unknown], ["test_epic7_craft_equipment.py"]
+                )
+                self.assertEqual(["test_epic7_craft_equipment.py"], picked)
+                self.assertIn(unknown, " ".join(warnings))
+
+    def test_pet_runner_fixture_and_shared_title_have_different_consumers(self):
+        tests = ["test_pet_adoption.py", "test_navigation.py", "test_safety_fail_closed.py"]
+        for path in ("games/epic7/pet_adoption.py", "tests/fixtures/epic7_pet_adoption/house.png"):
+            picked, _, _ = check_module.plan_tests([path], tests)
+            self.assertIn("test_pet_adoption.py", picked)
+            self.assertNotIn("test_navigation.py", picked)
+        picked, _, _ = check_module.plan_tests(["games/epic7/pet_adoption.py"], tests)
+        self.assertIn("test_safety_fail_closed.py", picked)
+        picked, _, _ = check_module.plan_tests(["games/epic7/templates/pet_adoption/house_title.png"], tests)
+        self.assertIn("test_navigation.py", picked)
+
+    def test_pr_can_bound_docs_roster_and_route_replay_together(self):
+        from auto_game_unified.tools.pr_tests import plan_pr
+
+        files = [
+            "docs/RESUME_COVERAGE.md", "docs/TRANSITION_CONTRACTS.md",
+            "docs/README.md", "games/epic7/templates/arena/heroes_pokedex/meta.json",
+            "tests/fixtures/epic7_craft_equipment/frame.png", "tests/test_epic7_craft_equipment.py",
+        ]
+        picked, _ = plan_pr(files)
+        self.assertIsNotNone(picked)
+        for name in ("test_resume_contracts.py", "test_transition_contracts.py", "test_ui_copy_style.py",
+                     "test_hero_catalog.py", "test_arena_hero_lists.py", "test_epic7_craft_equipment.py"):
+            self.assertIn(name, picked)
+        self.assertNotIn("test_navigation.py", picked)
+
+    def test_pr_defaults_to_full_for_unbounded_or_mixed_changes(self):
+        from auto_game_unified.tools.pr_tests import plan_pr
+
+        self.assertIsNone(plan_pr([])[0])
+        for path in ("core/matcher.py", "games/epic7/pet_adoption.py",
+                     "tests/conftest.py", "tests/fixtures/epic7_navigation/frame.png",
+                     "tools/new_helper.py", ".github/workflows/tests.yml",
+                     "requirements.txt", "docs/manual_review/knights_donation/list.png",
+                     "games/epic7/templates/arena/heroes_pokedex/new_config.json"):
+            with self.subTest(path=path):
+                picked, reason = plan_pr(["README.md", path])
+                self.assertIsNone(picked)
+                self.assertIn(path, reason)
+
+    def test_pr_uses_tree_diff_and_propagates_pytest_failure_on_fallback(self):
+        from auto_game_unified.tools import pr_tests
+
+        with (
+            mock.patch.object(pr_tests.sys, "argv", ["pr_tests", "--base", "HEAD^1"]),
+            mock.patch.object(check_module, "git", side_effect=RuntimeError("shallow")) as diff,
+            mock.patch.object(pr_tests.subprocess, "run", return_value=mock.Mock(returncode=2)) as run,
+        ):
+            self.assertEqual(2, pr_tests.main())
+        diff.assert_called_once_with("HEAD^1", "HEAD")
+        self.assertEqual("auto_game_unified/tests", run.call_args.args[0][-1])
+
 
 class WorkspaceModeNoticeTests(unittest.TestCase):
     """暂存区为空、退化成「整个工作区判定」时的提醒。"""

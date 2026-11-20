@@ -65,7 +65,7 @@ Episode，接着打同样会越界。
 ## 三、判据为什么这么设计
 
 证据清单在 [`games/epic7/evidence/story_star.py`](../../games/epic7/evidence/story_star.py)，
-状态机在 [`games/epic7/story_star.py`](../../games/epic7/story_star.py)。
+状态机在 [`games/epic7/story_star.py`](../../games/epic7/story_star.py)。篇章候选、边缘卡片和画布落点由[选卡模块](../../games/epic7/story_star_cards.py)维护；滚动、点击和接力由状态机执行。只改选卡时按[贡献指南](../../CONTRIBUTING.md#按改动选测试)定向验收。
 
 | 判据 | 做法 | 为什么 |
 |---|---|---|
@@ -76,9 +76,8 @@ Episode，接着打同样会越界。
 
 ### ⚠️ 战斗判据：一条已经被验证过的结论，别推翻它
 
-[`PC_TEMPLATE_MIGRATION.md`](../PC_TEMPLATE_MIGRATION.md) §1 第 2 条写得很清楚：
-**「战斗界面 —— 不用管，它和其它判据一样在 PC 上直接成立」**。主线在 PC 上跑通战斗，
-正是这条结论的验证。
+[`PC_TEMPLATE_MIGRATION.md`](../PC_TEMPLATE_MIGRATION.md) 的[跨端一致的边界](../PC_TEMPLATE_MIGRATION.md#跨端一致的边界)写明：
+**「战斗界面判据在 PC 上直接成立」**。主线在 PC 上跑通战斗，正是这条结论的验证。
 
 2026-11-10 排障时，我曾拿一张补星链路里的战斗帧（判 `battle_unrecognized`）
 去改 `battle_controls.py` 的共享容差（30→35、白占比下限 0.08→0.05）。**这是错的**：
@@ -115,7 +114,7 @@ Episode，接着打同样会越界。
 
 ### PC 上「UI 画小约 3%」的正确解法
 
-[`PC_TEMPLATE_MIGRATION.md`](../PC_TEMPLATE_MIGRATION.md) §2.4b 已记载这个现象，
+[`PC_TEMPLATE_MIGRATION.md`](../PC_TEMPLATE_MIGRATION.md) §2.4 已记载这个现象，
 规定的顺序是：**先换比对口径 → 再扫模板尺寸（`SCALE_FALLBACK_ANCHORS`）→ 都不行才补 `pc/` 图**。
 
 本次 `episode_title` 在另一帧上从 1.0000 掉到 0.8040（阈 0.85）⇒ 整页判「认不出」。
@@ -124,7 +123,7 @@ Episode，接着打同样会越界。
 但按规范更该优先试尺寸扫描——**下一位接手请复核是否改用 `SCALE_FALLBACK_ANCHORS`**，
 别把补图当成通行做法。
 
-**复核结论（2026-11-10）**：本次新增的战斗 HUD 锚点按 §2.4b 的顺序走了
+**复核结论（2026-11-10）**：本次新增的战斗 HUD 锚点按 §2.4 的顺序走了
 「白掩膜换口径 → 尺寸扫描 → 才补图」，扫描只在本路线内做（见上一节）。
 `episode_title` 的双候选已有正反样本验证，改成尺寸扫描要重验全部反例、
 收益不抵风险，**本轮不动**；不要把补图当成通行做法这条仍然成立。
@@ -139,7 +138,7 @@ Episode，接着打同样会越界。
 - **模板文件必须同时登记进 `REGIONS` / `THRESHOLDS`**，否则 `evidence.atom()` 直接 KeyError。
 - CLEAR 页那颗「>」是淡入动画元素，离线 1.0000、实跑中间帧够不到阈值。
   用页面内固定落点 `CLEAR_CONTINUE_POINT`，不拿它当模板。
-- **星标派生的点击落点必须先验画布边界**（2026-11-10 12:21 实跑血的教训）：
+- **星标派生的点击落点必须先验画布边界**（2026-11-10 12:21 实跑事故）：
   篇章卡片是横向轮播，右边缘那张常常只露出星标，`星标 + (150, 90)` 会落到画布外
   （(1909,505) ⇒ (2059,595)）。窗口层对此是**致命错误**
   （`拒绝在 PC 游戏渲染区外点击`），一句话把整条路线带走。

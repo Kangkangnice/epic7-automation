@@ -127,9 +127,12 @@ def test_no_doc_points_at_a_missing_file() -> None:
     会让门禁变得不稳定，而它要防的「删了文件忘了改链接」本地就能查。
     """
     problems: list[str] = []
-    for path in [INDEX, *sorted(DOCS.rglob("*.md")), ROOT / "AGENTS.md"]:
-        if not path.exists():
-            continue
+    documents = [
+        *sorted(ROOT.glob("*.md")),
+        *sorted(DOCS.rglob("*.md")),
+        ROOT / ".github" / "PULL_REQUEST_TEMPLATE.md",
+    ]
+    for path in documents:
         problems.extend(_broken_links(path))
     assert not problems, (
         "这些相对链接指向不存在的文件：\n  " + "\n  ".join(sorted(set(problems)))

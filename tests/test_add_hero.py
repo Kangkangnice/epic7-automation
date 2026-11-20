@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import cv2
 import numpy as np
 
+from auto_game_unified.tools import add_hero
 from auto_game_unified.tools.add_hero import (
     _read_payload,
     _slug_candidates,
@@ -184,6 +187,25 @@ class ValidationTests(unittest.TestCase):
             with self.subTest(job=job, element=element, stars=stars):
                 with self.assertRaises(ValueError):
                     _validate(job, element, stars)
+
+
+def test_conflicting_metadata_leaves_no_orphan_portrait(tmp_path, monkeypatch):
+    metadata = tmp_path / "meta.json"
+    original = {"heroes": {"旧英雄": {"en": "Alpha", "job": "战士", "element": "火", "stars": 5}}}
+    metadata.write_text(json.dumps(original), encoding="utf-8")
+    monkeypatch.setattr(add_hero, "default_library_dir", lambda: tmp_path)
+    monkeypatch.setattr(add_hero, "meta_path", lambda: metadata)
+    monkeypatch.setattr(
+        "sys.argv",
+        ["add_hero", "--zh", "新英雄", "--en", "Alpha", "--job", "战士", "--element", "火", "--stars", "5"],
+    )
+    with patch.object(add_hero, "_download_avatar", return_value=(
+        _png_bytes(np.zeros((112, 112, 3), dtype=np.uint8)), "fixture",
+    )) as download:
+        assert add_hero.main() == 1
+    assert not (tmp_path / "新英雄.png").exists()
+    assert json.loads(metadata.read_text(encoding="utf-8")) == original
+    download.assert_not_called()
 
 
 if __name__ == "__main__":

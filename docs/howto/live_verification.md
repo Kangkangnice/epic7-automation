@@ -7,6 +7,8 @@ review_when: 改了 core/elevation.py、core/pc_window.py、desktop/preflight.py
 
 # 实机闭环验证：让 agent 自己动鼠标
 
+本文说明怎么做一次实机验证。正式稳定版所需的账号、客户端和样本门槛见[路线稳定版验收](route_acceptance.md)。
+
 > **什么时候看这份**：你要让 agent **真的点进游戏跑完一个业务闭环**，而不是只看测试通过。
 > 这里只写「怎么做、失败了怎么判」。为什么这么定在 `core/elevation.py` 的模块注释里。
 
@@ -132,7 +134,7 @@ python -m auto_game_unified.main --mode arena --live --confirm RUN --max-cycles 
 
 1. **一个主题只有这一份文件。** 想到更好的做法时，**改这里**，不要另开
    `live_verification_v2.md` / `实机验证新方案.md` —— 两份并存时，下一个人不知道该信哪份，
-   而 agent 极可能挑到旧的那份，把你踩过的坑再踩一遍。
+   而 agent 可能选到旧的那份，重复同一次失败。
    （`docs/howto/` 下每个文件的 frontmatter `topic` 必须唯一，门禁会查。）
 2. **改的时候留一行「更改记录」**（见文末表），写清日期、改了什么、依据。
    这样"覆盖"是看得见的，历史也不丢。
