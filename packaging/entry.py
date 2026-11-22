@@ -10,9 +10,9 @@
 
 用法::
 
-    Epic7AutoAssistant.exe --self-check
-    Epic7AutoAssistant.exe --worker --daily --daily-tasks arena:1 ...
-    Epic7AutoAssistant.exe
+    ArkyAssistant.exe --self-check
+    ArkyAssistant.exe --worker --daily --daily-tasks arena:1 ...
+    ArkyAssistant.exe
 """
 
 from __future__ import annotations

@@ -1,26 +1,28 @@
-"""PC 专属全局弹窗扩展（**模拟器一条新代码都不会走到**）。
+"""「解锁缘分」全局弹窗扩展（包装 ``_find_popup`` 的轻量方案，双端通用）。
 
 为什么单独一个文件
 ------------------
-2026-11-07 主线 13:11 实跑：Episode 5 第 3 关通关后弹出「解锁缘分」通知窗
+2026-11-07 PC 主线 13:11 实跑：Episode 5 第 3 关通关后弹出「解锁缘分」通知窗
 （标题「解锁缘分」+ 英雄头像 + 「已与贝洛妮卡结下缘分」+ 金色 OK 按钮），
-整页盖住关卡入口 ⇒ 主线报 ``页面无进展：主线画面[跳过确认]未识别``，
-安全停止并回家。它不在既有 23 类全局弹窗里，守卫每帧过也看不见。
+整页盖住关卡入口 ⇒ 主线报 ``页面无进展：主线画面[跳过确认]未识别``，安全停止回家。
+2026-11-22 12:12 模拟器主线也撞到同一层（角色=尤娜）⇒ 扩展为双端通用。
 
-用户 2026-11-07 对移植项目定的硬约束：**所有改动只能在 PC 里，不能影响模拟器，
-不能改公共地方，要给 PC 单独留个口，模拟器完全不动**。所以这里：
+当初（2026-11-07）因「PC 移植不能动模拟器」的约束，判据、模板、装配都只放
+``templates/global/pc/`` + 本文件，走包装守卫的路径以复用其安全机制。现在双端都要，
+**保留这套轻量方案**，不再单独往 ``global_popups.py`` 加第 26 类（那要动多处写死的
+构造参数测试）。所以这里：
 
-* ``global_popups.py`` / ``story.py`` / ``arena.py`` / ``navigation.py``
-  **一个字节都不改**；
-* 新判据、新模板、新装配全在本文件 + ``templates/global/pc/``；
-* ``main.py`` 只有一处 ``if is_pc(template_root):`` 注入，模拟器分支不执行；
+* ``global_popups.py`` / ``story.py`` / ``arena.py`` / ``navigation.py`` 不改；
+* 新判据全在本文件；模板两端各一份（见下）；
+* ``main.py`` 双端都注入 ``install_pc_only_popups``（函数名是历史遗留，语义已通用）；
 * 注入方式是给 ``Epic7GlobalPopupGuard`` 的 ``_find_popup`` 套一层包装，
   **复用原守卫的全部安全机制**（连续 2 帧同一弹窗才出手、点击预算、
   间隔、熔断、存诊断、抛错），不复制第二套循环、不新增第二个数字。
 
-模板只在 ``templates/global/pc/`` 下：模拟器口径下 ``TemplateDir`` 回落
-到 ``templates/global/``，两张图都不存在 ⇒ ``load_relationship_unlock_templates``
-返回全 ``None`` ⇒ 即便误调用，``install_pc_only_popups`` 也原样返回守卫。
+模板两端各一份：``templates/global/pc/`` 放 PC 字形图，``templates/global/`` 放
+模拟器字形图。中文标题在两端字形不同 —— PC 图打模拟器帧只有 0.6808（阈 0.82 不过），
+所以模拟器版标题按 2026-11-22 真机帧重裁。``TemplateDir`` 在 PC 下自动选 ``pc/`` 图、
+模拟器下回落共享图；OK 按钮图通用，共享层一份即可。
 
 判据（2026-11-07 全库取证，脚本 ``runtime_logs/_probe_1110_relationship_unlock.py``）
 ------------------------------------------------------------------------------
@@ -72,7 +74,7 @@ class RelationshipUnlockTemplates:
 
 
 def load_relationship_unlock_templates(template_dir) -> RelationshipUnlockTemplates:
-    """两张图只在 ``global/pc/``；模拟器口径下一张都找不到 ⇒ 全 None。"""
+    """按传入目录加载：PC 传 TemplateDir 自动选 pc/ 图，模拟器传普通 Path 用共享图。"""
     title = template_dir / "relationship_unlock_title.png"
     ok = template_dir / "relationship_unlock_ok.png"
     if not (title.exists() and ok.exists()):

@@ -288,6 +288,26 @@ class OutcomeSummaryTests(unittest.TestCase):
     def test_a_fresh_runner_reports_zeroes_not_nothing(self):
         self.assertEqual("胜 0 / 负 0", self._runner().outcome_summary())
 
+    def test_the_record_names_which_tab_the_battles_came_from(self):
+        """来源标注：结果卡与通知里那句「玩家对战 / NPC 对战」由 ``battle_kinds`` 决定。
+
+        用户 2026-11-21 追问「界面里看不到这个区分」—— 界面不加选项（已明确不要
+        可选口径），所以这一行是用户唯一能看到来源的地方，必须有护栏。
+        """
+        cases = (
+            ({"player"}, "玩家对战 · 胜 2 / 负 1"),
+            ({"npc"}, "NPC 对战 · 胜 2 / 负 1"),
+            ({"player", "npc"}, "玩家对战 + NPC 对战 · 胜 2 / 负 1"),
+        )
+        for kinds, expected in cases:
+            with self.subTest(kinds=kinds):
+                runner = self._runner()
+                runner.outcome_tally[ArenaOutcome.WIN] = 2
+                runner.outcome_tally[ArenaOutcome.LOSE] = 1
+                runner.machine.battle_kinds.update(kinds)
+
+                self.assertEqual(expected, runner.outcome_summary())
+
 
 class OutcomeNotificationTests(unittest.TestCase):
     """战绩要真的送到用户眼前：通知 + 控制台。"""

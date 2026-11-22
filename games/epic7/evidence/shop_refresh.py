@@ -201,7 +201,10 @@ def _yellow_mask(image: np.ndarray) -> np.ndarray:
     ).astype(np.uint8) * 255
 
 REGIONS = {
-    "lobby_shop_entry": (0, 430, 220, 230),
+    # 左侧竖排菜单会随账号进度增减整体上移/下移：有「光辉里程碑」时 secret shop
+    # 图标中心约 (82,521)，没有时约 (82,428)。原区域 (0,430,220,230) 只框到图标
+    # 下半截 ⇒ 2026-11-21 新账号 0.2738。改为整条菜单带扫描（与导航层同口径）。
+    "lobby_shop_entry": (0, 250, 240, 700),
     "shop_title": (0, 52, 500, 130),
     "refresh_button_3": (0, 930, 650, 202),
     "buy_button": (1500, 140, 420, 992),

@@ -47,6 +47,17 @@ class BattleConfig:
     no_business_progress_seconds: float = 900
     absolute_seconds: float = 900
     unrecognized_seconds: float = 45
+    # 「认不出，但画面一直在动」的容忍时长；0 = 不启用（保持 45 秒硬判）。
+    #
+    # 2026-11-22：剧情过场（演出在播、无 HUD、无战前按钮、无可点动作）会被
+    # ``unrecognized_seconds`` 当成"卡死"误杀。过场的真实特征不是"某个 UI 长什么样"，
+    # 而是**画面在动但一直认不出**。启用后：
+    #   * 认不出 + 画面在动 ⇒ 不计「识别失败」；
+    #   * 认不出 + 画面不动 ⇒ 照旧 45 秒报 battle_unrecognized；
+    #   * 一直在动也认不出，累计到本时限 ⇒ 报 scene_unrecognized（有界逃生门）；
+    #   * 同时停用 ``entry_absolute_seconds`` 那条收场，避免同一个现场被两套超时争抢。
+    # 只给主线配（其余路线保持 0 = 改动前行为）。
+    unrecognized_motion_grace_seconds: float = 0.0
     black_seconds: float = 45
     allowed_action_retry_seconds: float = 3
     allowed_action_failure_seconds: float = 15
@@ -113,6 +124,8 @@ class BattleSupervisor:
         self.gate.lock(mode=self.config.mode, cycle=cycle)
         started = active_at = business_at = heartbeat = self.now()
         invalid_since = black_since = None
+        # 「认不出但画面在动」的起始时刻（只在启用 motion grace 的路线里用）。
+        motion_unrecognized_since: float | None = None
         previous = None
         auto_clicks = 0
         auto_clicked_at: float | None = None
@@ -187,12 +200,13 @@ class BattleSupervisor:
                     None if business_pending else observation.allowed_action
                 )
 
-                entered = observation.battle_visible or (
-                    not observation.pre_battle_visible
-                    and observation.allowed_action is None
-                    and observation.frame_valid
-                    and meaningful_change(previous, screen)
-                )
+                # 只认硬判据：战斗 HUD 真的出现才算进入战斗。
+                # 2026-11-22 删掉原先那条「画面变了 + 没有战前页 + 没有可点动作」
+                # 的软推断 —— 剧情过场每切一句台词都满足它，于是日志里出现大量
+                # 假的「已进入战斗」（主线 531 次里 47% 后面还在点跳过）。
+                # 那个推断对业务判定零贡献，只免掉「战斗进入未能确认」这条超时，
+                # 代价是日志失去排查价值。
+                entered = observation.battle_visible
                 if (
                     battle_stable.update("battle" if entered else "other")
                     and entered
@@ -232,15 +246,41 @@ class BattleSupervisor:
                     or observation.pre_battle_business_visible
                 )
                 if observation.frame_valid and not recognized:
-                    invalid_since = current if invalid_since is None else invalid_since
-                    if current - invalid_since >= self.config.unrecognized_seconds:
-                        self._fail(
-                            "battle_unrecognized",
-                            "战斗画面持续无法识别超时",
-                            screen,
+                    if (
+                        self.config.unrecognized_motion_grace_seconds > 0
+                        and meaningful_change(previous, screen)
+                    ):
+                        # 认不出，但画面在动 ⇒ 演出播放中，不是卡死。
+                        # 记录起始时刻，用独立的「画面一直在动却一直认不出」上限收场。
+                        invalid_since = None
+                        motion_unrecognized_since = (
+                            current
+                            if motion_unrecognized_since is None
+                            else motion_unrecognized_since
                         )
+                        if (
+                            current - motion_unrecognized_since
+                            >= self.config.unrecognized_motion_grace_seconds
+                        ):
+                            self._fail(
+                                "scene_unrecognized",
+                                "画面持续变化但长时间无可识别界面",
+                                screen,
+                            )
+                    else:
+                        motion_unrecognized_since = None
+                        invalid_since = (
+                            current if invalid_since is None else invalid_since
+                        )
+                        if current - invalid_since >= self.config.unrecognized_seconds:
+                            self._fail(
+                                "battle_unrecognized",
+                                "战斗画面持续无法识别超时",
+                                screen,
+                            )
                 else:
                     invalid_since = None
+                    motion_unrecognized_since = None
 
                 stable_auto = auto_stable.update(observation.auto_state.value)
                 allowed_signature = (
@@ -452,6 +492,10 @@ class BattleSupervisor:
                     )
                 if (
                     not entry_confirmed
+                    # 启用 motion grace 的路线改用「画面一直在动却认不出」收场，
+                    # 不再由「战斗进入未能确认」抢答（同一个现场两套超时只会让
+                    # 报错名字取决于判定顺序，排查时毫无意义）。
+                    and self.config.unrecognized_motion_grace_seconds <= 0
                     and current - started >= self.config.entry_absolute_seconds
                 ):
                     self._fail(

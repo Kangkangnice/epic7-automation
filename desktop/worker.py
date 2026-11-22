@@ -69,7 +69,7 @@ class WorkerController:
     ) -> None:
         self.repo_parent = repo_parent
         # 运行产物（工作进程日志、失败快照）的根目录。打包安装后由 app 传入
-        # %LOCALAPPDATA%\Epic7AutoAssistant；源码运行时退回包目录，与原来一致。
+        # %LOCALAPPDATA%\ArkyAssistant；源码运行时退回包目录，与原来一致。
         self.data_root = data_root or (repo_parent / "auto_game_unified")
         self._popen = popen
         self.log_path = log_path or (

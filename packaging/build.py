@@ -13,9 +13,12 @@
 
 产物都在 ``packaging/dist/``：
 
-    Epic7AutoAssistant/                       目录版（双击里面的 exe 即用）
-    第七史诗自动助手-免安装版-<版本>.zip      整个目录打成压缩包
+    ArkyAssistant/                            目录版（双击里面的 exe 即用）
+    亚卡助手-免安装版-<版本>.zip              整个目录打成压缩包
     SHA256SUMS.txt                            上面那个 zip 的校验值
+
+每次构建成功后只保留最新一份 ZIP（和安装包）；上一次的版本会被清掉。
+这样 dist 里始终只有一个 ZIP，``verify_release.py`` 按缺省规则就能找到它。
 
 ## 为什么只发免安装版
 
@@ -47,7 +50,7 @@ import zipfile
 
 PACKAGING = Path(__file__).resolve().parent
 REPO = PACKAGING.parent
-APP_NAME = "Epic7AutoAssistant"
+APP_NAME = "ArkyAssistant"
 SPEC = PACKAGING / "epic7_auto_assistant.spec"
 INSTALLER = PACKAGING / "installer.iss"
 DIST = PACKAGING / "dist"
@@ -221,7 +224,7 @@ def make_zip(version: str, lock: dict) -> Path:
     # ⚠️ 先验内容再开压缩包：``--no-build`` 复用旧 dist 时也必须过这一关，
     # 否则往目录里塞一个清单外文件再重打包，它会照样进 ZIP。
     check_vendor_payload(lock)
-    archive = DIST / f"第七史诗自动助手-免安装版-{version}.zip"
+    archive = DIST / f"亚卡助手-免安装版-{version}.zip"
     with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED) as bundle:
         for item in sorted((DIST / APP_NAME).rglob("*")):
             if item.is_file():
@@ -235,6 +238,24 @@ def sha256(path: Path) -> str:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+#: 每次打包只保留最新一份：这两类产物按版本命名，不清就会在 dist 里逐版累积。
+#: ⚠️ 只按精确前缀匹配，不碰 ArkyAssistant/（每次重建）、SHA256SUMS.txt（覆盖写）、
+#: release-evidence/（发布验证证据，CI 要上传）。
+OLD_ARTIFACT_PATTERNS = ("亚卡助手-免安装版-*.zip", "亚卡助手-安装版-*.exe")
+
+
+def prune_old_artifacts(keep: set[Path]) -> None:
+    """删掉上一次打包的产物，只留下本次刚生成的 ``keep``。
+
+    调用点必须在成功造出新 ZIP/安装包**之后**：门禁拦下时保留旧产物，不毁现场。
+    """
+    for pattern in OLD_ARTIFACT_PATTERNS:
+        for path in sorted(DIST.glob(pattern)):
+            if path.is_file() and path not in keep:
+                path.unlink()
+                print(f"[build] 清理旧产物：{path.name}", flush=True)
 
 
 def find_iscc() -> Path | None:
@@ -266,14 +287,14 @@ def build_installer(version: str) -> Path | None:
         check=True,
         stdout=subprocess.DEVNULL,
     )
-    archive = DIST / f"第七史诗自动助手-安装版-{version}.exe"
+    archive = DIST / f"亚卡助手-安装版-{version}.exe"
     if not archive.is_file():
         raise SystemExit(f"ISCC 返回成功但找不到安装包：{archive}")
     return archive
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="构建第七史诗自动助手免安装版")
+    parser = argparse.ArgumentParser(description="构建亚卡助手免安装版")
     parser.add_argument("--no-build", action="store_true", help="复用已有 dist，只重打包")
     parser.add_argument("--skip-smoke", action="store_true", help="跳过 exe 自检")
     parser.add_argument(
@@ -304,6 +325,9 @@ def main() -> int:
 
     archive = make_zip(version, vendor_lock)
     installer = build_installer(version) if args.installer else None
+
+    # 新包都造出来了再清旧的：门禁失败时旧产物仍在，可回溯。
+    prune_old_artifacts({archive, installer} if installer is not None else {archive})
 
     artifacts = [archive] + ([installer] if installer is not None else [])
     (DIST / "SHA256SUMS.txt").write_text(

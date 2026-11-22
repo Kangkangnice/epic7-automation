@@ -7,8 +7,12 @@
 规则（优先级从高到低）：
 
 1. ``EPIC7_DATA_DIR`` —— 显式指定。测试与排障用它，行为完全可预期；
-2. 打包运行（PyInstaller 会把 ``sys.frozen`` 置真）—— ``%LOCALAPPDATA%\\Epic7AutoAssistant``；
+2. 打包运行（PyInstaller 会把 ``sys.frozen`` 置真）—— ``%LOCALAPPDATA%\\ArkyAssistant``；
 3. 源码运行 —— 包目录本身，与既有文档、测试、开发流程里的 ``runtime_logs/`` 一致。
+
+改名前的运行产物在 ``%LOCALAPPDATA%\\Epic7AutoAssistant``。新目录尚未建立而旧目录
+已存在时继续沿用旧目录：只换名字不该让用户的会话存档、日志与诊断突然"消失"。
+用户手动把旧目录改名为 ``ArkyAssistant`` 之后即自动切换，不需要改代码。
 
 目录名继续用 ``runtime_logs`` / ``runtime_diagnostics``：它们是用户手册、诊断导出和
 大量测试共同引用的名字，换名字的收益远小于把老路径全部改一遍的风险。
@@ -20,7 +24,8 @@ import os
 from pathlib import Path
 import sys
 
-APP_DIR_NAME = "Epic7AutoAssistant"
+APP_DIR_NAME = "ArkyAssistant"
+LEGACY_APP_DIR_NAME = "Epic7AutoAssistant"
 DATA_DIR_ENV = "EPIC7_DATA_DIR"
 
 
@@ -30,7 +35,12 @@ def data_root() -> Path:
     if override:
         return Path(override).expanduser()
     if getattr(sys, "frozen", False):
-        return _local_app_data() / APP_DIR_NAME
+        local = _local_app_data()
+        preferred = local / APP_DIR_NAME
+        legacy = local / LEGACY_APP_DIR_NAME
+        if not preferred.exists() and legacy.is_dir():
+            return legacy
+        return preferred
     return package_root()
 
 

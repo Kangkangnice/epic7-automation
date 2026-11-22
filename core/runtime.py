@@ -105,6 +105,12 @@ class Runtime:
         # 主循环读到它就把这一轮按 ``ResourceExhausted`` 正常收工。
         # 空串 = 没有阻断。
         self.blocking_popup: str = ""
+        # 本次运行点过几次「断网重连」弹窗的重试按钮（守卫每次点击时累加）。
+        # 用途只有一个：失败文案要如实带上「这次到底有没有断过网」这个**已经发生
+        # 的事实**，而不是让用户对着一张诊断图自己猜（2026-11-21 竞技场实跑：
+        # 中途点了 5 次 retry-network 没恢复，最终却只报「连按 2 次 ESC 没反应」）。
+        # ⚠️ 只记事实、不改判据：不参与任何验收/重试决策，失败时读它拼文案而已。
+        self.network_popup_clicks: int = 0
         self.diagnostic_limit = diagnostic_limit
         self.max_log_bytes = max_log_bytes
         self.log_backups = log_backups
@@ -136,9 +142,40 @@ class Runtime:
     def set_capture_guard(self, guard: CaptureGuard) -> None:
         self._capture_guard = guard
 
+    def try_dismiss_unknown_popup(self, screen: np.ndarray) -> bool:
+        """卡死兜底：让全局守卫试着点掉画面上没登记过的「点击关闭」弹窗。
+
+        只有装配了支持该能力的守卫（``Epic7GlobalPopupGuard``）才会真正动手；
+        测试替身 / 别的守卫没有这个方法 ⇒ 原样返回 False，行为不变。
+        ⚠️ 调用方必须自己保证「已认不出画面、即将失败」且一条路线只调一次；
+        Runtime 不持有任何状态，也不参与判据。
+        """
+        guard = self._capture_guard
+        method = getattr(guard, "try_dismiss_unknown_popup", None)
+        if not callable(method):
+            return False
+        return bool(method(self, screen))
+
     def note_blocking_popup(self, label: str) -> None:
         """记下「这条弹窗出现后不能继续」的事实，由主循环转成正常收工。"""
         self.blocking_popup = label
+
+    def note_network_popup(self) -> None:
+        """记下「本次运行又点了一次断网弹窗重试」的事实（只用于失败文案）。"""
+        self.network_popup_clicks += 1
+
+    def network_popup_note(self) -> str:
+        """给失败文案用的事实句：本次运行有没有断过网、点了几次重试。
+
+        返回空串表示没有装配守卫/没断过网（老行为不变）。有则以「；」开头，
+        直接拼到既有报错后面，且用「可确认/未确认」陈述事实，不写推测。
+        """
+        if self.network_popup_clicks <= 0:
+            return ""
+        return (
+            f"；本次已断网、自动重试 {self.network_popup_clicks} 次"
+            "（网络问题可确认，需恢复后重跑）"
+        )
 
     def consume_blocking_popup(self) -> str:
         """取一次就清空：一条路线的阻断不该传染给下一条。"""

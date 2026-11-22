@@ -575,6 +575,7 @@ class ActivityStoryRunner(StoryRunner):
         StoryState.STAGE: 45,          # 观看故事页：等切换 / 列表滚动
         StoryState.TEAM: 45,
         StoryState.WAIT_SKIP_CONFIRM: 45,
+        StoryState.STORY_CUTSCENE: 180,
         StoryState.WAIT_BATTLE: 60,
         StoryState.ACTIVE: 120,
         StoryState.WAIT_RESULTS: 45,

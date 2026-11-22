@@ -1,6 +1,6 @@
 <div align="center">
 
-# 第七史诗自动助手
+# 亚卡助手
 
 **基于窗口截图 + OpenCV 模板匹配的《第七史诗》PVE 自动化**
 
@@ -50,7 +50,7 @@
 
 <div align="center">
 
-![桌面界面示意](docs/images/app-preview.svg)
+![桌面界面示意](docs/images/app-preview.png)
 
 *✨ 勾选顺序即执行顺序 · 开始前自动复检 · 实时日志 · 一键导出诊断包 ✨*
 

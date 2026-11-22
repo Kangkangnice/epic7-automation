@@ -88,7 +88,6 @@ class Epic7StoryPcTests(unittest.TestCase):
             "results_confirm",
             "clear",
             "complete",
-            "retry_stage",
             "skip_confirm",
             "watch_story",
         ):

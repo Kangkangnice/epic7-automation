@@ -22,6 +22,8 @@ class OptionDeclarationTests(unittest.TestCase):
             {
                 # 2026-11-16 用户要求：周结算奖励可选，默认仍是钻石。
                 "weekly_reward": "diamond",
+                # 2026-11-21：对手来源默认「玩家对战」，等于改动前的口径。
+                "opponent_source": "player",
                 "opponent_preference": "none",
                 # 两份名单默认为空 = 不筛选（改动前的行为）；冲突处置默认黑名单优先。
                 "hero_blacklist": (),
@@ -175,10 +177,15 @@ class OptionRoutingTests(unittest.TestCase):
             self.assertFalse(options["stamina_enabled"])
             self.assertIsNone(options["stamina_limit"])
 
+        # 2026-11-22 用户拍板删掉「无后续关卡时重复同一关」：界面不再提供，
+        # Runner 也不再收 ``repeat_after_last`` 这个构造参数。
+        self.assertNotIn(
+            "repeat_after_last", {option.key for option in options_for("story")}
+        )
         story = get_mode("story").runner_options(
             Path("."), True, {"repeat_after_last": "no"}
         )
-        self.assertFalse(story["repeat_after_last"])
+        self.assertNotIn("repeat_after_last", story)
 
     def test_shop_labyrinth_and_community_translate_options(self):
         from pathlib import Path

@@ -40,6 +40,16 @@ a = Analysis(
             str(REPO / "games" / "epic7" / "templates"),
             "auto_game_unified/games/epic7/templates",
         ),
+        # 亚卡助手品牌素材：主界面插画、结算插画、悬浮球贴纸与窗口图标。
+        # 少收它们的表现是「窗口能开，插画与图标全空白」。
+        (
+            str(REPO / "desktop_qt" / "assets"),
+            "auto_game_unified/desktop_qt/assets",
+        ),
+        (
+            str(REPO / "desktop_qt" / "app.ico"),
+            "auto_game_unified/desktop_qt",
+        ),
         # 次元探查：第三方 chaos 源码、配置与模板。只收会参与运行的三段 ——
         # 整目录照收会把 .git（45 MB）、tests、docs、缓存一起塞进产物。
         # 取回与校验走 ``tools/fetch_vendor.py``，``packaging/build.py`` 在打包前
@@ -115,7 +125,8 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=True,
-    name="Epic7AutoAssistant",
+    name="ArkyAssistant",
+    icon=str(REPO / "desktop_qt" / "app.ico"),
     debug=False,
     strip=False,
     upx=False,
@@ -129,5 +140,5 @@ coll = COLLECT(
     a.datas,
     strip=False,
     upx=False,
-    name="Epic7AutoAssistant",
+    name="ArkyAssistant",
 )

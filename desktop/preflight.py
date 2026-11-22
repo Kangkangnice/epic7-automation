@@ -157,7 +157,7 @@ def run_preflight(
     warning = privilege_warning_for(probe) if probe is not None else None
     return PreflightReport(
         PreflightStatus.PASS,
-        "雷电模拟器和截图检查通过",
+        "模拟器和截图检查通过",
         (width, height),
         warning=warning,
     )

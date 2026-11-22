@@ -36,7 +36,7 @@ import zipfile
 PACKAGING = Path(__file__).resolve().parent
 REPO = PACKAGING.parent
 DIST = PACKAGING / "dist"
-APP_NAME = "Epic7AutoAssistant"
+APP_NAME = "ArkyAssistant"
 EXE_NAME = f"{APP_NAME}.exe"
 
 #: 记录进证据的依赖。版本没钉死的项（PySide6 / Fluent）正是两次包大小不同的嫌疑，

@@ -28,7 +28,7 @@ def test_packaged_run_writes_under_local_app_data(monkeypatch, tmp_path):
     monkeypatch.setattr(sys, "frozen", True, raising=False)
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
 
-    assert data_paths.data_root() == tmp_path / "Epic7AutoAssistant"
+    assert data_paths.data_root() == tmp_path / "ArkyAssistant"
 
 
 def test_explicit_data_dir_wins_over_both(monkeypatch, tmp_path):
@@ -37,3 +37,17 @@ def test_explicit_data_dir_wins_over_both(monkeypatch, tmp_path):
     monkeypatch.setenv(data_paths.DATA_DIR_ENV, str(tmp_path / "chosen"))
 
     assert data_paths.data_root() == tmp_path / "chosen"
+
+
+def test_legacy_data_dir_is_reused_until_the_new_one_exists(monkeypatch, tmp_path):
+    """改名不丢用户数据：只有旧目录时继续用旧目录，新目录一出现就切换。"""
+    monkeypatch.delenv(data_paths.DATA_DIR_ENV, raising=False)
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+    legacy = tmp_path / data_paths.LEGACY_APP_DIR_NAME
+    legacy.mkdir()
+
+    assert data_paths.data_root() == legacy
+
+    (tmp_path / data_paths.APP_DIR_NAME).mkdir()
+    assert data_paths.data_root() == tmp_path / data_paths.APP_DIR_NAME

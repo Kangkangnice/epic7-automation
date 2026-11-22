@@ -67,6 +67,17 @@ ROUTE_OPTIONS: dict[str, tuple[RouteOption, ...]] = {
             ),
         ),
         RouteOption(
+            key="opponent_source",
+            label="对手来源",
+            kind="choice",
+            default="player",
+            note="交战对手页签为玩家对战，NPC 对战页签为固定 NPC 阵容。玩家对战页签不可挑战时会改打 NPC。",
+            choices=(
+                ("player", "玩家对战"),
+                ("npc", "NPC 对战"),
+            ),
+        ),
+        RouteOption(
             key="opponent_preference",
             label="对手偏好",
             kind="choice",
@@ -146,17 +157,10 @@ ROUTE_OPTIONS: dict[str, tuple[RouteOption, ...]] = {
             depends_on=("ticket_mode", "skystone"),
         ),
     ),
-    "story": _STAMINA_OPTIONS
-    + (
-        RouteOption(
-            key="repeat_after_last",
-            label="无后续关卡时重复同一关",
-            kind="choice",
-            default="yes",
-            note="关卡没有下一关时执行「重新进行」，继续刷同一关。",
-            choices=(("yes", "重复"), ("no", "不重复")),
-        ),
-    ),
+    # 2026-11-22 用户拍板：删掉「无后续关卡时重复同一关」这个选项。
+    # 主线正常推图是一关接一关往下走，重复刷同一关只对刷素材有意义，
+    # 那类需求后续从别的入口开（与狗粮路线更接近），不在主线设置里给。
+    "story": _STAMINA_OPTIONS,
     "story_star": _STAMINA_OPTIONS,
     "fodder": _STAMINA_OPTIONS,
     "world_boss": _STAMINA_OPTIONS,

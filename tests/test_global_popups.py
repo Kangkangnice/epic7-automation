@@ -20,8 +20,10 @@ from auto_game_unified.games.epic7.global_popups import (
     find_knights_weekly_reward_close,
     find_date_change_close,
     find_equipment_bag_full_close,
+    find_generic_click_close,
     find_login_reward_close,
     find_network_retry,
+    find_account_level_up_close,
     find_account_rank_up_close,
     find_gift_claim_close,
     find_pet_gift_badge,
@@ -46,6 +48,7 @@ from auto_game_unified.games.epic7.global_popups import (
     load_equipment_bag_full_templates,
     load_login_reward_templates,
     load_network_reconnect_templates,
+    load_account_level_up_templates,
     load_account_rank_up_templates,
     load_gift_claim_templates,
     load_pet_gift_templates,
@@ -211,6 +214,45 @@ def test_account_rank_up_requires_both_anchors():
 
     assert find_account_rank_up_close(without_title, templates) is None
     assert find_account_rank_up_close(without_close, templates) is None
+
+
+def test_account_level_up_is_dismissed_from_its_arrow():
+    """「账号升等」：正文整行 + 底部「点击关闭」双锚。
+
+    2026-11-22 08:02 主线模拟器实跑：战斗打完弹这一层，盖住战斗画面 ⇒
+    「战斗画面持续无法识别超时」45 秒。它与「账号 Rank 提升」**不是同一个弹窗**
+    （那条是菱形徽章 + RANK UP N 整屏），两张图互不通用。
+    正文里的 161 / 172 每次升级都变，模板一个数字都没进。
+    """
+    screen = np.asarray(
+        Image.open(
+            FIXTURES / "account_level_up_emulator_live_20261122.png"
+        ).convert("RGB")
+    )
+    templates = load_account_level_up_templates(TemplateDir(TEMPLATES, "emulator"))
+
+    match = find_account_level_up_close(screen, templates)
+
+    assert match is not None
+    assert match.score >= 0.85
+    assert 900 <= match.center[0] <= 1030, match.center
+    assert 730 <= match.center[1] <= 820, match.center
+
+
+def test_account_level_up_requires_both_anchors():
+    screen = np.asarray(
+        Image.open(
+            FIXTURES / "account_level_up_emulator_live_20261122.png"
+        ).convert("RGB")
+    )
+    templates = load_account_level_up_templates(TemplateDir(TEMPLATES, "emulator"))
+    without_title = screen.copy()
+    without_title[430:550, 700:1300] = 0
+    without_close = screen.copy()
+    without_close[700:850, 860:1160] = 0
+
+    assert find_account_level_up_close(without_title, templates) is None
+    assert find_account_level_up_close(without_close, templates) is None
 
 
 def test_gift_claim_requires_both_anchors():
@@ -510,6 +552,33 @@ def test_global_guard_dismisses_friendship_and_friend_request_popups():
     assert len(clicks) == 2
     assert any("动作=close-friendship-points-popup" in line for line in logs)
     assert any("动作=cancel-friend-request" in line for line in logs)
+
+
+def test_guard_records_network_popup_so_failure_can_name_the_real_cause():
+    """守卫点断网重试时要记下事实，失败文案才能说「本次已断网」而非只报表象。
+
+    2026-11-21 竞技场实跑：中途连点 5 次 retry-network 没恢复，最终报错却是
+    「连按 2 次 ESC 页面都没有变化」——助手明明知道断过网却没写进报错。
+    """
+    popup = load_screen("network_disconnected_live_20261004.png")
+    normal = np.asarray(
+        Image.open(ROOT / "tests" / "fixtures" / "epic7_story" / "stage.png").convert("RGB")
+    )[:1132, :1982]
+    # 每帧弹窗要连喂两次（守卫要 stable_frames>=2 才点击）。
+    screens = iter([popup, popup, normal])
+    runtime = Runtime(lambda: next(screens), lambda _: None, emit=lambda _: None)
+    runtime.set_capture_guard(
+        Epic7GlobalPopupGuard(
+            load_network_reconnect_templates(TEMPLATES),
+            now=lambda: 0.0,
+            sleep=lambda _: None,
+        )
+    )
+
+    assert runtime.network_popup_clicks == 0
+    runtime.capture()
+    assert runtime.network_popup_clicks == 1
+    assert "本次已断网、自动重试 1 次" in runtime.network_popup_note()
 
 
 class FakeClock:
@@ -2140,9 +2209,30 @@ def test_tutorial_skip_button_is_recognised_on_pc_and_points_at_the_cross():
     assert abs(match.center[1] - 96) <= 8, match.center
     # 点的是 ✕，不是「跳过教学」四个字（文字中心约在 x=1700）
     assert match.center[0] > 1800, match.center
-    # 模拟器口径：两张图都只在 pc/ ⇒ 整段跳过、行为零改动。
-    assert emulator_templates.button is None and emulator_templates.confirm is None
-    assert find_tutorial_skip_point(screen, emulator_templates) is None
+    # 2026-11-22：模拟器口径现在也有这两张图了 —— 新号教学期这块一直挂在右上角，
+    # 把「准备战斗」页顶成认不出、主线干等 45 秒。两套模板各认各自客户端的画法，
+    # 所以这里只断言「不再整段跳过」，不要求 PC 模板在 PC 帧上也能被模拟器模板命中。
+    assert emulator_templates.button is not None and emulator_templates.confirm is not None
+
+
+def test_tutorial_skip_button_is_recognised_on_emulator_and_points_at_the_cross():
+    """模拟器的同一块「跳过教学 ✕」：模板按模拟器画面重裁（PC 那张在本帧只有 0.71）。
+
+    2026-11-22 08:23 主线：新号教学期这块常驻右上角，界面被锁在英雄详情 / 准备战斗
+    之类的页面，状态机认不出 ⇒ 45 秒超时。判据只裁「跳过教学」四个字（不含旁边那颗
+    会变的角标数字），✕ 单独一张决定点哪里 —— 用户要求点 ✕，不点文字。
+    """
+    screen = load_screen("tutorial_skip_emulator_live_20261122.png")
+    templates = load_tutorial_skip_templates(TemplateDir(TEMPLATES, "emulator"))
+
+    match = find_tutorial_skip_point(screen, templates)
+
+    assert match is not None
+    assert match.score >= 0.95
+    assert abs(match.center[0] - 1873) <= 8, match.center
+    assert abs(match.center[1] - 104) <= 8, match.center
+    # 点的是 ✕，不是「跳过教学」四个字（文字中心约在 x=1748）
+    assert match.center[0] > 1820, match.center
 
 
 def test_tutorial_skip_does_not_fire_on_other_pages():
@@ -2493,3 +2583,137 @@ def test_guard_closes_the_bag_full_popup_and_records_the_stop():
     assert 760 <= clicks[0][1] <= 830, clicks
     assert runtime.consume_blocking_popup() == "装备背包已满"
     assert any("弹出=装备背包已满" in line for line in logs)
+
+
+# ── 卡死兜底：陌生弹窗「点击关闭」（2026-11-22）──────────────────────────────────
+#
+# 判据不排他（那行灰字 515 张夹具里 22 张过 0.85，全是弹窗），所以只许在
+# 「认不出画面、即将超时」时由 Runner 显式调用，绝不进每帧守卫的常规链。
+# 下面三条钉住：正例能点、正常业务页不点、一帧内只点一次由 Runner 侧保证。
+
+
+def _unknown_close_guard(screens, clicks, logs, clock):
+    """只装配兜底所需的最小守卫：worldboss 那张「点击关闭」模板。"""
+    return Epic7GlobalPopupGuard(
+        load_network_reconnect_templates(TEMPLATES),
+        worldboss_support_reward_templates=load_worldboss_support_reward_templates(
+            NAVIGATION_TEMPLATES
+        ),
+        sleep=clock.sleep,
+        now=clock.now,
+        poll_seconds=0.1,
+    )
+
+
+def test_generic_click_close_hits_the_unregistered_popup():
+    """正例（圣域已解锁弹窗）：复用现成模板就能定位到那行灰字。"""
+    screen = load_screen("unregistered_click_close_live_20261122.png")
+    match = find_generic_click_close(
+        screen,
+        load_worldboss_support_reward_templates(NAVIGATION_TEMPLATES).close,
+    )
+    assert match is not None
+    assert match.score >= 0.85
+    # 落点在屏幕下方那行关闭文案附近（实测 (960, 834)）。
+    assert 820 <= match.center[0] <= 1100
+    assert 760 <= match.center[1] <= 920
+
+
+@pytest.mark.parametrize(
+    "fixture",
+    [
+        # 全部是 1982x1132 标准画布的正常业务页（旧画布 3200x2000 会触发
+        # 宽高比守卫抛错，用不了）。战斗 / 关卡 / 世界首领主页 / 断线弹窗。
+        (STORY_FIXTURES / "battle_auto_on_live_20260809.png"),
+        (STORY_FIXTURES / "stage_pc_live_20261101.png"),
+        (WORLD_BOSS_FIXTURES / "worldboss_home.png"),
+        (FIXTURES / "network_reconnect.png"),
+    ],
+)
+def test_generic_click_close_rejects_normal_game_frames(fixture):
+    """反向护栏：正常业务页（关卡/结算/战斗/列表/断线弹窗）一个都不许命中。
+
+    那行灰字本身不排他，正是靠这一条证明「正常页没有它」，
+    兜底才敢只在卡死时启用。
+    """
+    screen = np.asarray(Image.open(fixture).convert("RGB"))
+    match = find_generic_click_close(
+        screen,
+        load_worldboss_support_reward_templates(NAVIGATION_TEMPLATES).close,
+    )
+    assert match is None, f"{fixture.name} 不该命中通用关闭文案"
+
+
+@pytest.mark.parametrize(
+    "fixture",
+    [
+        "unregistered_click_close_with_arrow_live_20261122.png",
+        "unregistered_click_close_with_arrow_second_live_20261122.png",
+    ],
+)
+def test_generic_click_close_point_lands_on_the_arrow_not_the_label(fixture):
+    """兜底必须点在「点击关闭」下方的 ∨ 箭头，不能只点那行灰字。
+
+    2026-11-22 主线两次兜底都点在文字行（834 / 843），游戏不响应；同一通知
+    用专用判据点箭头 (960,885) 历史上成功 24+ 次。文字行与箭头中心相差 46~53px，
+    只裁文字的通用模板会把落点算到文字上，这就是兜底失效的根因。
+    """
+    screen = load_screen(fixture)
+    match = find_generic_click_close(
+        screen,
+        load_worldboss_support_reward_templates(NAVIGATION_TEMPLATES).close,
+    )
+    assert match is not None
+    # 两张真机帧的箭头中心 y≈887 / 889；文字行中心 y≈834 / 843。
+    # 与历史上成功 24+ 次的专用判据落点 (960,885) 对齐。
+    assert 880 <= match.center[1] <= 895, f"落点不在箭头开关上：{match.center}"
+
+
+def test_guard_dismiss_helper_clicks_once_and_reports():
+    """守卫的显式兜底方法：命中就点一次、记日志，返回 True。"""
+    screen = load_screen("unregistered_click_close_live_20261122.png")
+    clicks: list[tuple[int, int]] = []
+    logs: list[str] = []
+    clock = FakeClock()
+    runtime = Runtime(lambda: screen, clicks.append, monotonic=clock.now, emit=logs.append)
+    guard = _unknown_close_guard([screen], clicks, logs, clock)
+    runtime.set_capture_guard(guard)
+
+    assert runtime.try_dismiss_unknown_popup(screen) is True
+    assert len(clicks) == 1
+    assert 820 <= clicks[0][0] <= 1100 and 760 <= clicks[0][1] <= 920
+    assert any("兜底=陌生弹窗点击关闭" in line for line in logs)
+
+
+def test_guard_dismiss_helper_noop_on_normal_frame():
+    """正常页调用兜底也不动手 —— 时机门之外再加一层像素门。"""
+    screen = np.asarray(
+        Image.open(STORY_FIXTURES / "battle_auto_on_live_20260809.png").convert("RGB")
+    )
+    clicks: list[tuple[int, int]] = []
+    logs: list[str] = []
+    clock = FakeClock()
+    runtime = Runtime(lambda: screen, clicks.append, monotonic=clock.now, emit=logs.append)
+    runtime.set_capture_guard(_unknown_close_guard([screen], clicks, logs, clock))
+
+    assert runtime.try_dismiss_unknown_popup(screen) is False
+    assert clicks == []
+
+
+def test_guard_dismiss_helper_noop_without_worldboss_template():
+    """没装配 worldboss 模板时（如某些后端）整段跳过，行为与改动前一致。"""
+    screen = load_screen("unregistered_click_close_live_20261122.png")
+    clicks: list[tuple[int, int]] = []
+    logs: list[str] = []
+    clock = FakeClock()
+    runtime = Runtime(lambda: screen, clicks.append, monotonic=clock.now, emit=logs.append)
+    runtime.set_capture_guard(
+        Epic7GlobalPopupGuard(
+            load_network_reconnect_templates(TEMPLATES),
+            sleep=clock.sleep,
+            now=clock.now,
+            poll_seconds=0.1,
+        )
+    )
+    assert runtime.try_dismiss_unknown_popup(screen) is False
+    assert clicks == []

@@ -63,6 +63,9 @@
 - [0009 共享视觉证据契约](decisions/0009-universal-vision-contract.md)
 - [0010 开源项目治理](decisions/0010-open-source-governance.md)
 - [0011 按玩家行为的影响范围分层验收变更](decisions/0011-behavior-based-regression.md)
+- [0012 抗背景改动只给同锚点新增候选，不改既有锚点的口径与阈值](decisions/0012-background-proof-candidate-not-mode-switch.md)
+- [0013 左侧菜单布局随账号变化时按整条菜单带扫描并补白字文字候选](decisions/0013-left-menu-band-scan.md)
+- [0014 「图标 + 中文名」的入口一律补白字候选，纯色图标改用多候选模板](decisions/0014-icon-vs-text-anchors.md)
 
 ## 四、写文档的规矩
 

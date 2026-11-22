@@ -258,6 +258,19 @@ def test_grey_rows_never_buy_even_with_options_on(templates):
     assert m.completed_cycles == 1
 
 
+def test_weekly_cooldown_rows_never_buy(templates):
+    """周额度用尽的「3天后可购买」帧同样三行全灰，开了购入也不点灰按钮。
+
+    2026-11-19 实跑报错根因：旧模板只认「N小时后可购买」，周用尽变体「N天后」
+    漏检 ⇒ 三行被误判亮态 ⇒ 对着灰按钮连点 4 次不推进。模板改裁两态共有的
+    「后可购买」后，本帧三行必须全部识别为冷却并正常收工。
+    """
+    m = machine(templates, buy_food=True, buy_toys=True)
+    assert m.next_action(load("shop_bottom_weekly_cooldown")) is None
+    assert m.completed_cycles == 1
+    assert m.pending_buy is None
+
+
 def test_switches_off_means_no_click_on_bright_rows(templates):
     """亮态但两个开关都关着 ⇒ 一个点击都不发。"""
     m = machine(templates)

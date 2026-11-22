@@ -15,7 +15,7 @@ from __future__ import annotations
 #   #1A1A1A / #FFFFFF ≈ 17.4:1   正文（要求 ≥4.5:1）
 #   #5B5B5B / #F3F4F6 ≈ 6.2:1   禁用态文字（禁用可豁免，仍做够）
 #   #8A8A8A / #FFFFFF ≈ 3.5:1   非文本边框（要求 ≥3:1）
-#   #0078D7 / #FFFFFF ≈ 4.6:1   聚焦描边 / 主色
+#   #21577E / #FFFFFF          聚焦描边 / 主色
 SPIN_BOX_QSS = """
 QSpinBox {
     color: #1A1A1A;
@@ -26,7 +26,7 @@ QSpinBox {
     min-height: 24px;
     font-size: 14px;
 }
-QSpinBox:focus { border: 2px solid #0078D7; }
+QSpinBox:focus { border: 2px solid #21577E; }
 QSpinBox:disabled { color: #5B5B5B; background-color: #F3F4F6; }
 QSpinBox::up-button, QSpinBox::down-button {
     width: 20px; border: none; background: transparent;

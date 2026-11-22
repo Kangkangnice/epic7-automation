@@ -263,6 +263,27 @@ def test_the_summary_drops_the_long_diagnostics_path():
     assert ".png" not in line
 
 
+def test_failure_hint_survives_the_48_char_truncation():
+    """失败文案里「本次到底有没有断过网」这个事实必须挺过 48 字截断。
+
+    失败原因进结果卡/通知前会被 ``_human_reason`` 截到 48 字、去掉诊断长路径。
+    所以这句事实必须排在诊断路径**之前**：写错位置，用户永远看不到，又变回
+    「只说连续点击没反应、别人不知道为什么错」。
+    """
+    detail = (
+        "动作 prepare_battle 点击4次后画面未推进"
+        "；本次已断网、自动重试 5 次（网络问题可确认，需恢复后重跑）；"
+        "已保存诊断 D:\\runtime_diagnostics\\epic7_story\\x.png"
+    )
+    line = DailyReport(
+        outcomes=[DailyOutcome("story", "主线", "failed", detail)]
+    ).summary_line()
+    assert "点击4次后画面未推进" in line, "表象事实仍要保留，供与现场对照"
+    assert "本次已断网" in line and "重试 5 次" in line, "断网事实必须排在诊断路径之前，才能挺过截断"
+    assert "已保存诊断" not in line
+    assert ".png" not in line
+
+
 # --------------------------------------------------------------------------
 # 结算明细（2026-11-12 用户要求：别只报「完成没完成」）
 #
@@ -1382,6 +1403,21 @@ def test_inspect_pressing_stop_is_recorded_as_a_manual_stop():
 # --------------------------------------------------------------------------
 
 
+def _stub_countdown_entry_lock(monkeypatch, main_module):
+    """巡检 2026-11-22 起先探一眼入口锁（会构造真窗口/连模拟器）；替掉这层。
+
+    入口锁是「提前跳过」的辅助判据，与这三例要验的接线（spec / 读数 / 落盘）无关。
+    ``probe_runtime.capture()`` 在调用打桩函数前就会求值，所以替身须带 ``capture``。
+    """
+
+    class _Probe:
+        def capture(self):
+            return None
+
+    monkeypatch.setattr(main_module, "_build_daily_probe", lambda **_kw: (_Probe(), None))
+    monkeypatch.setattr(main_module, "_side_story_entry_locked", lambda *_a, **_kw: False)
+
+
 def test_countdown_inspect_reuses_the_side_story_spec_but_drops_resume(monkeypatch, tmp_path):
     from auto_game_unified import main as main_module
     from auto_game_unified.core import countdown as countdown_module
@@ -1415,6 +1451,7 @@ def test_countdown_inspect_reuses_the_side_story_spec_but_drops_resume(monkeypat
         return _Result()
 
     monkeypatch.setattr(main_module, "run_mode", fake_run_mode)
+    _stub_countdown_entry_lock(monkeypatch, main_module)
 
     payload = main_module.inspect_side_story_countdown(
         window_backend="emulator", stop_file=None
@@ -1458,6 +1495,7 @@ def test_countdown_inspect_returns_none_when_nothing_was_read(monkeypatch, tmp_p
         return _Result()
 
     monkeypatch.setattr(main_module, "run_mode", fake_run_mode)
+    _stub_countdown_entry_lock(monkeypatch, main_module)
 
     assert (
         main_module.inspect_side_story_countdown(
@@ -1481,6 +1519,7 @@ def test_countdown_inspect_closeout_stop_preserves_prior_outcomes(monkeypatch):
         )
 
     monkeypatch.setattr(main_module, "run_mode", run_until_countdown_closeout)
+    _stub_countdown_entry_lock(monkeypatch, main_module)
     monkeypatch.setattr(main_module, "save_countdown", lambda *args, **kwargs: pytest.fail(
         "收尾时收到手动停止，巡检没有正常返回"
     ))

@@ -1247,9 +1247,8 @@ class SideStoryStateMachine(StoryStateMachine):
         # 箭头是闪烁的，超时诊断帧常拍到暗帧 —— 实测暗帧 791 像素 / 亮帧 5142）。
         # 旧代码只判「按钮在不在 + 推过几次」，没有段位条件 ⇒ ①段一遇到它就抢在
         # 箭头前面点了「下一个难度」，返回身份「难度场景页」；而 `results_confirm`
-        # 的落点白名单是（剧情播放/通关提示/额外奖励/下一关入口/无法前往下一关），
-        # 里面没有「难度场景页」⇒ 转场验收不过 ⇒ 干等 45 秒，整条路线以退出码 1 收场
-        # （2026-11-12 20:07 那次 8 分 31 秒失败就是这条）。
+        # 的落点白名单里没有「难度场景页」⇒ 转场验收不过 ⇒ 干等 45 秒，整条路线以
+        # 退出码 1 收场（2026-11-12 20:07 那次 8 分 31 秒失败就是这条）。
         # ①段的正确出口只有两个：箭头（有箭头 = 还有下一关）/ 「离开」（12 帧无箭头
         # = 本段打完，回地图接②BOSS），两者报的身份都是「下一关入口」，验收能过。
         next_difficulty = self._locate(screen, "next_difficulty")
@@ -2248,6 +2247,7 @@ class SideStoryRunner(StoryRunner):
         StoryState.STAGE: 60,          # 关卡地图要等角色跑动/转场
         StoryState.TEAM: 45,
         StoryState.WAIT_SKIP_CONFIRM: 45,
+        StoryState.STORY_CUTSCENE: 180,
         StoryState.WAIT_BATTLE: 60,
         StoryState.ACTIVE: 120,
         StoryState.WAIT_RESULTS: 45,

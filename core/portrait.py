@@ -28,10 +28,7 @@
 
 from __future__ import annotations
 
-import ctypes
-import subprocess
 import tempfile
-from ctypes import wintypes
 from pathlib import Path
 from time import sleep as default_sleep
 from typing import Callable, Optional
@@ -77,8 +74,8 @@ class OrientationError(RuntimeError):
 class PortraitChannel:
     """竖屏取图 / 点击通道。
 
-    ``window`` 传进来是为了复用「找到唯一那个雷电窗口 + 实例序号 + 窗口句柄」
-    这套发现逻辑（见 ``Epic7Window.instance_channel``）；传 ``None`` 就自己建一个。
+    ``window`` 传进来是为了复用 ``Epic7Window`` 的 ADB 设备发现（找到正在跑游戏的
+    那台安卓设备）；传 ``None`` 就自己建一个。
     """
 
     def __init__(
@@ -112,16 +109,12 @@ class PortraitChannel:
     # ── 方向 ────────────────────────────────────────────────────────────────
 
     def client_size(self) -> tuple[int, int]:
-        """窗口**客户区**尺寸（不是窗口外框）。
+        """按**安卓画面尺寸**判定方向：横屏 1920x1080、竖屏 1080x1920。
 
-        ⚠️ 客户区包含雷电自己的顶栏与右侧工具栏，所以竖屏时它是 1103x1899 而不是
-        1080x1920 —— 但这不影响判定：我们只问「宽高哪个大」。
+        不读窗口标题、进程名或客户区，因此不认品牌。
         """
-        _, _, handle = self._window.instance_channel()
-        rect = wintypes.RECT()
-        if not ctypes.windll.user32.GetClientRect(handle, ctypes.byref(rect)):
-            raise OrientationError(f"读不到模拟器客户区尺寸（窗口句柄 {handle}）")
-        return rect.right - rect.left, rect.bottom - rect.top
+        frame = self._window.adb_client.screencap_bgr()
+        return frame.shape[1], frame.shape[0]
 
     def is_portrait(self) -> bool:
         width, height = self.client_size()
@@ -255,29 +248,5 @@ class PortraitChannel:
     # ── adb 底座 ────────────────────────────────────────────────────────────
 
     def _run_adb(self, command: str) -> bytes:
-        console_path, instance_index, _ = self._window.instance_channel()
-        result = subprocess.run(
-            [str(console_path), "adb", "--index", instance_index, "--command", command],
-            check=True,
-            capture_output=True,
-            timeout=self._adb_timeout,
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-        )
-        output = b"".join(
-            bytes(stream)
-            for stream in (result.stdout, result.stderr)
-            if isinstance(stream, (bytes, bytearray))
-        )
-        # ⚠️ 雷电控制台**所有**出错情况都返回退出码 0，只把错误写进输出
-        # （2026-09-24 实测四条，见 Epic7Window._INPUT_FAILURE_MARKERS 的注释）
-        # ⇒ ``check=True`` 对它无效，必须显式看内容。标记表直接复用横屏那一份：
-        # 同一件事不要有两份判据。
-        lowered = output.lower()
-        if any(
-            marker in lowered for marker in Epic7Window._INPUT_FAILURE_MARKERS
-        ):
-            raise RuntimeError(
-                f"竖屏通道指令未送达（{command}）："
-                + output.decode("utf-8", "replace").strip()
-            )
-        return output
+        """命令形如 `shell …` / `pull …`，统一走 ADB 设备通道。"""
+        return self._window.adb_client.run_raw(command, timeout=self._adb_timeout)

@@ -30,7 +30,7 @@ def test_pc_ready_routes_only_names_verified_ones():
 
 
 def test_catalog_lists_every_route_in_menu_order():
-    assert PRODUCT_NAME == "第七史诗自动助手"
+    assert PRODUCT_NAME == "亚卡助手"
     assert [route.mode for route in ROUTES] == [
         "hero_synthesis",
         "story",
@@ -171,8 +171,9 @@ def test_every_route_description_explains_itself():
         text = route.description
         where = f"路线 {route.mode} 的说明"
 
-        # 三段式：第 1 段干什么，第 2 段「一轮 = …」+ 能不能自己改，第 3 段「注意：」。
-        assert text.count("\n") >= 2, f"{where}没分段，至少要三段"
+        # 2026-11-22 分点式：首句干什么，中间「· 」分点写一轮与可调整项，
+        # 末段「注意：」+ 分点写消耗与前提。
+        assert text.count("\n") >= 2, f"{where}没分行，至少要有首句、分点与注意段"
         # 「一轮到哪儿」这件事必须写清。2026-11-13 改说明体后多出两种等价表述
         # （「一次运行完成…」「每日执行一次即结束」），断言接受这四种，但要求
         # 至少命中一个 —— 不许一条都不写。
@@ -258,6 +259,20 @@ def test_every_group_explains_what_ticking_it_does():
         assert "勾选分组标题" in text, f"{where}没写清勾选分组标题会做什么"
         assert "**" not in text, f"{where}里混进了 Markdown 星号"
         assert len(text) <= 160, f"{where}有 {len(text)} 字，太长了"
+
+
+def test_group_descriptions_use_bullet_points():
+    """2026-11-22 分点式：分组说明首句概括，后续每行以「· 」开头。"""
+
+    for group in GROUPS:
+        text = group_description(group)
+        where = f"分组 {group} 的说明"
+        lines = text.split("\n")
+
+        assert all(line.strip() for line in lines), f"{where}有空白行"
+        assert not lines[0].startswith("· "), f"{where}首句应是概括，不是分点"
+        for line in lines[1:]:
+            assert line.startswith("· "), f"{where}的分点「{line}」没有以「· 」开头"
 
 
 def test_unknown_group_has_no_description():

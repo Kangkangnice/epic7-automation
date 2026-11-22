@@ -11,7 +11,7 @@ import numpy as np
 
 from auto_game_unified.core.countdown import save_countdown
 from auto_game_unified.core.data_paths import data_root
-from auto_game_unified.core.matcher import set_active_backend
+from auto_game_unified.core.matcher import find_template, load_template, set_active_backend
 from auto_game_unified.core.hotkey import WindowsPStopHotkey
 from auto_game_unified.core.qqbot import send_qqbot_c2c
 from auto_game_unified.core.recovery import RecoveryGate
@@ -33,7 +33,6 @@ from auto_game_unified.games.epic7.public_flow_verification import (
     assert_public_flow_verification_declared,
 )
 from auto_game_unified.games.epic7.template_paths import (
-    is_pc,
     resolve_template_dir,
 )
 from auto_game_unified.games.epic7.route_metadata import (
@@ -51,6 +50,7 @@ from auto_game_unified.games.epic7.navigation import Epic7Navigator, build_navig
 from auto_game_unified.games.epic7.side_story import build_side_story_machine
 from auto_game_unified.games.epic7.global_popups import (
     Epic7GlobalPopupGuard,
+    load_account_level_up_templates,
     load_account_rank_up_templates,
     load_arena_rank_reward_templates,
     load_battle_record_templates,
@@ -78,14 +78,14 @@ from auto_game_unified.games.epic7.global_popups import (
     load_web_network_error_templates,
     load_worldboss_support_reward_templates,
 )
-# PC 专属弹窗扩展：新判据与模板全在这个模块里，模拟器分支不会 import 之后
-# 调用它的注入函数（见下面 run_mode 里的 is_pc 判断）。
+# 「解锁缘分」弹窗扩展：判据与模板集中在这个模块，双端都注入
+# （PC 模板在 global/pc/，模拟器模板在 global/，由 TemplateDir 自动分流）。
 from auto_game_unified.games.epic7.global_popups_pc import install_pc_only_popups
 
 
 ROOT = Path(__file__).resolve().parent
 # 运行产物（日志、诊断）的根目录。源码运行时与 ROOT 是同一个目录；
-# 打包安装后变成 %LOCALAPPDATA%\Epic7AutoAssistant（安装目录只读，写不进去）。
+# 打包安装后变成 %LOCALAPPDATA%\ArkyAssistant（安装目录只读，写不进去）。
 # 规则见 core/data_paths.py。
 DATA_ROOT = data_root()
 # 中文名从 ``modes.MODE_SPECS`` 派生（那边是唯一来源），本模块不再自己写一份。
@@ -571,6 +571,10 @@ def run_mode(
                 account_rank_up_templates=load_account_rank_up_templates(
                     template_root / "global"
                 ),
+                # 「账号升等」（等级提升、行动力上限提高）——与上面那条是两层不同的弹窗。
+                account_level_up_templates=load_account_level_up_templates(
+                    template_root / "global"
+                ),
                 # 骑士团签到弹窗（每天第一次进骑士团出现），模板放在 navigation 下，
                 # 与骑士团/世界首领战那两个导航锚点同目录。
                 knights_signin_templates=load_knights_signin_templates(
@@ -676,10 +680,11 @@ def run_mode(
                 ),
             )
         )
-        # PC 专属弹窗（「解锁缘分」等）：**只有** PC 分支会注入，模拟器连这一行
-        # 都不会执行；守卫的构造参数一字未改，模拟器路径保持原样。
-        if is_pc(template_root):
-            guard = install_pc_only_popups(guard, template_root / "global")
+        # 「解锁缘分」弹窗：两端都注入（2026-11-22 模拟器主线也撞到了这层）。
+        # template_root / "global" 在 PC 下是 TemplateDir（自动优先 pc/ 的 PC 字形图），
+        # 模拟器下是普通 Path（用共享层的模拟器字形图）——loader / find / 阈值都不用分端。
+        # 走的是包装 _find_popup 的轻量方案：守卫构造参数一字未改。
+        guard = install_pc_only_popups(guard, template_root / "global")
         runtime.set_capture_guard(guard)
         if spec.needs_navigation:
             navigator = Epic7Navigator(
@@ -893,6 +898,34 @@ def _build_daily_probe(
     return runtime, navigator
 
 
+# 「支线故事」入口右侧那把小锁：挂着它说明这个号的支线还没解锁。
+# 2026-11-22：新号跑到收尾巡检时，导航在这里报「页面[大厅]缺少导航锚点
+# lobby_side_story」，日志看着像故障，其实只是没解锁 —— 先看一眼锁，直接给一句
+# 「未解锁，已跳过」，不再让导航去撞一次。
+_SIDE_STORY_LOCK_REGION = (1820, 400, 180, 80)
+_SIDE_STORY_LOCK_THRESHOLD = 0.85
+
+
+def _side_story_entry_locked(template_root: Path, screen: np.ndarray) -> bool:
+    """大厅「支线故事」那一行挂着锁 ⇒ 这个号还没解锁（这趟巡检没有意义）。
+
+    模板缺失时按「没锁」处理：这是提前跳过的**辅助**判据，不是主判据。
+    缺图就退回原来的导航报错路径，比在这里另造一个错误更安全。
+    """
+
+    path = template_root / "navigation" / "lobby_side_story_locked.png"
+    if not path.is_file():
+        return False
+    match = find_template(
+        screen,
+        load_template(str(path)),
+        _SIDE_STORY_LOCK_THRESHOLD,
+        region=_SIDE_STORY_LOCK_REGION,
+        reference_size=(1982, 1132),
+    )
+    return match is not None
+
+
 def inspect_side_story_countdown(
     *,
     window_backend: str,
@@ -927,6 +960,16 @@ def inspect_side_story_countdown(
     """
 
     base = get_mode("side_story")
+    # 入口带锁（支线还没解锁）⇒ 这趟读不到任何东西，直接给一句明确结论收工。
+    # 由 ``daily_tasks._run_inspect`` 兜成「支线刷新倒计时：未读取（…）」，不影响整轮。
+    template_root = resolve_template_dir(
+        ROOT / "games" / "epic7" / "templates", window_backend
+    )
+    probe_runtime, _ = _build_daily_probe(
+        window_backend=window_backend, stop_file=stop_file
+    )
+    if _side_story_entry_locked(template_root, probe_runtime.capture()):
+        raise RuntimeError("支线故事入口未解锁，已跳过")
     # 状态机是 ``run_mode`` 内部建的，外面拿不到；用一个一格字典把它递出来。
     # （``countdown_read`` 记在状态机账本上，不在 ``RunResult`` 里 —— 那是路线结论，
     # 这里要的是「读到的数」，两者语义不同，硬塞会让 RunResult 长出一条只服务一次的字段。）

@@ -257,22 +257,37 @@ def test_notice_and_error_messages_stay_in_the_explanation_style():
     assert not problems, "以下提示仍是口语：\n" + "\n".join(problems)
 
 
-def test_every_route_description_is_three_paragraphs_and_ends_with_a_note():
-    """路线说明固定三段：动作 / 可调整项与「一轮」 / 「注意：」消耗与前提。
+def test_every_route_description_uses_the_bullet_layout():
+    """路线说明固定分点式：首句概括动作 / 「· 」分点 / 「注意：」/ 注意分点。
 
-    第三段是读者最容易漏看的一段（花不花资源、会不会关掉别的东西），
-    所以要求它以「注意：」开头 —— 少了它，说明就退回成「这段是干嘛的」。
+    2026-11-22 用户要求把长段拆成要点罗列，便于扫读。护栏守住四件事：
+    首句不是分点；分点带「· 」前缀；「注意：」独占一行且其后再有分点；无空行。
     """
 
     for route in catalog.ROUTES:
-        paragraphs = route.description.split("\n")
-        assert len(paragraphs) == 3, (
-            f"路线 {route.mode} 的说明有 {len(paragraphs)} 段，应为 3 段"
+        lines = route.description.split("\n")
+        where = f"路线 {route.mode}"
+
+        assert all(line.strip() for line in lines), f"{where} 的说明有空白行"
+
+        first = lines[0]
+        assert not first.startswith("·"), f"{where} 的首句应是概括动作，不是分点"
+
+        note_indexes = [i for i, line in enumerate(lines) if line.strip() == "注意："]
+        assert len(note_indexes) == 1, (
+            f"{where} 的「注意：」应独占一行且只出现一次，实际 {len(note_indexes)} 次"
         )
-        assert paragraphs[-1].startswith("注意："), (
-            f"路线 {route.mode} 的第三段没有以「注意：」开头"
-        )
-        assert all(p.strip() for p in paragraphs), f"路线 {route.mode} 有空白段落"
+        note_at = note_indexes[0]
+
+        body = [line for line in lines[1:note_at] if line.strip()]
+        cautions = [line for line in lines[note_at + 1 :] if line.strip()]
+        assert body, f"{where} 缺少「· 」分点"
+        assert cautions, f"{where} 的「注意：」后没有分点"
+
+        for line in body + cautions:
+            assert line.startswith("· "), (
+                f"{where} 的分点「{line}」没有以「· 」开头"
+            )
 
 
 # --------------------------------------------------------------------------

@@ -26,16 +26,29 @@ class FakeClock:
         self.value += seconds
 
 
-def make_supervisor(observations, *, changing_frames=True, config_overrides=None):
+def make_supervisor(
+    observations,
+    *,
+    changing_frames=True,
+    still_valid_frames=False,
+    config_overrides=None,
+):
     clock = FakeClock()
-    frames = iter(
-        np.full(
-            (720, 1280, 3),
-            index * 7 % 255 if changing_frames else 30,
-            dtype=np.uint8,
+    if still_valid_frames:
+        # 「画面有效但完全静止」：有结构（std > 5）所以 frame_valid 为真，
+        # 但逐字节相同，meaningful_change 为假。
+        base = np.full((720, 1280, 3), 40, dtype=np.uint8)
+        base[::8, ::8] = 220
+        frames = iter(base.copy() for _ in range(50))
+    else:
+        frames = iter(
+            np.full(
+                (720, 1280, 3),
+                index * 7 % 255 if changing_frames else 30,
+                dtype=np.uint8,
+            )
+            for index in range(50)
         )
-        for index in range(50)
-    )
     clicks: list[tuple[tuple[int, int], str]] = []
     logs: list[str] = []
     diagnostics: list[str] = []
@@ -441,7 +454,12 @@ def test_auto_source_disappears_then_enemy_actions_do_not_timeout():
     assert diagnostics == []
 
 
-def test_two_dynamic_valid_frames_confirm_entry_after_prep_disappears():
+def test_prep_disappearing_without_battle_hud_never_claims_battle():
+    """战前页消失 + 画面在动 + 没有 HUD ⇒ 不许写「已进入战斗」。
+
+    2026-11-22 口径：软推断（画面变了就算进战斗）已删掉。主线 531 次「已进入」里
+    47% 后面还在点跳过，就是因为剧情过场每切一句台词都满足那条推断。
+    """
     transition = BattleObservation(
         False,
         False,
@@ -456,8 +474,64 @@ def test_two_dynamic_valid_frames_confirm_entry_after_prep_disappears():
     )
 
     assert supervisor.run(observe, cycle=4) is BattleOutcome.RESULT_REACHED
-    assert any("阶段=战斗 状态=已进入" in line for line in logs)
+    assert not any("状态=已进入" in line for line in logs)
     assert diagnostics == []
+
+
+def test_battle_hud_is_the_only_entry_signal():
+    """只有战斗 HUD 真的出现，才写「已进入战斗」。"""
+    hud = BattleObservation(False, True, False, True, AutoBattleState.AUTO)
+    result = replace(hud, battle_visible=False, result_visible=True)
+    supervisor, gate, observe, clicks, logs, diagnostics = make_supervisor(
+        [hud, hud, result, result]
+    )
+
+    assert supervisor.run(observe, cycle=4) is BattleOutcome.RESULT_REACHED
+    assert any("阶段=战斗 状态=已进入" in line for line in logs)
+
+
+def test_motion_grace_keeps_waiting_while_the_screen_keeps_moving():
+    """认不出但画面在动（剧情演出）：启用 grace 后不报「战斗画面无法识别」。"""
+    blind = BattleObservation(False, False, False, True, AutoBattleState.UNKNOWN)
+    result = replace(blind, result_visible=True)
+    supervisor, gate, observe, clicks, logs, diagnostics = make_supervisor(
+        [blind] * 10 + [result, result],
+        config_overrides={"unrecognized_motion_grace_seconds": 30},
+    )
+
+    assert supervisor.run(observe, cycle=1) is BattleOutcome.RESULT_REACHED
+    assert not any("战斗画面持续无法识别" in line for line in logs)
+
+
+def test_motion_grace_still_fails_when_the_screen_is_frozen():
+    """认不出且画面完全静止（真卡死）：启用 grace 也要按原口径报错。"""
+    blind = BattleObservation(False, False, False, True, AutoBattleState.UNKNOWN)
+    result = replace(blind, result_visible=True)
+    supervisor, gate, observe, clicks, logs, diagnostics = make_supervisor(
+        [blind] * 10 + [result, result],
+        still_valid_frames=True,
+        config_overrides={"unrecognized_motion_grace_seconds": 30},
+    )
+
+    with pytest.raises(RuntimeError, match="战斗画面持续无法识别超时"):
+        supervisor.run(observe, cycle=1)
+    assert diagnostics == ["battle_unrecognized"]
+
+
+def test_motion_grace_has_a_hard_ceiling_for_endless_playback():
+    """画面一直在动却永远认不出：到 grace 上限要报 scene_unrecognized，不许无限等。"""
+    blind = BattleObservation(False, False, False, True, AutoBattleState.UNKNOWN)
+    supervisor, gate, observe, clicks, logs, diagnostics = make_supervisor(
+        [blind] * 40,
+        config_overrides={
+            "unrecognized_motion_grace_seconds": 12,
+            "absolute_seconds": 60,
+        },
+    )
+
+    with pytest.raises(RuntimeError, match="画面持续变化但长时间无可识别界面"):
+        supervisor.run(observe, cycle=1)
+    assert diagnostics == ["scene_unrecognized"]
 
 
 def test_unknown_auto_state_never_clicks_and_safely_stops():

@@ -319,6 +319,9 @@ _NPC_TITLE_REGION = (400, 170, 340, 120)
 _NPC_TITLE_THRESHOLD = 0.88
 # 右菜单「交战对手」页签的中心（2026-11-16 实测；与「NPC对战」页签同一列）。
 _CHALLENGE_TAB_POINT = (1661, 228)
+# 右菜单「NPC对战」页签的中心（2026-11-21 从 tests/fixtures/epic7_arena/npc_list.png
+# 实测：与「交战对手」同一列，行距 150px ⇒ 228 + 150 = 378）。
+_NPC_TAB_POINT = (1661, 378)
 
 # VS 段位确认页（PC 独有）的搜索区与阈值。
 # 区取底部居中（x[700,1480] y[930,1132]），与结算页右下角的「确认」(x[1500,1920]) 不重叠；
@@ -601,6 +604,10 @@ class ArenaStateMachine:
         # 「停在 NPC 页签时先试着切回交战对手」这件事一轮只做一次。切不过去
         # （结算日该页签变灰点不动）就直接按 NPC 页打 —— 两者后面的流程完全一样。
         self._npc_tab_checked = False
+        # 用户选定的对手来源：``player`` = 交战对手页签，``npc`` = NPC 对战页签。
+        # 默认 ``player`` 与改动前行为一致（先切回交战对手，切不动就打 NPC）。
+        # 选 ``npc`` 时反过来：停在交战对手页就点一次「NPC对战」，之后照常选行。
+        self.opponent_source = "player"
         # 本轮打过哪几种：``player`` = 交战对手，``npc`` = NPC 对战。
         # 结算行要写清是哪一种（用户 2026-11-16 要求）；两种都打过就都写。
         self.battle_kinds: set[str] = set()
@@ -1321,26 +1328,43 @@ class ArenaStateMachine:
 
         # 「交战对手」与「NPC对战」是同一页的两个页签，后面的选行 / 挑战 / 队伍选择 /
         # 结算完全一样（2026-11-16 实机逐帧核对：选中后两颗判据分数逐位相同）。
-        # 所以这里只做一件事：**先试着停在交战对手**。
-        #   * 正常日子：点一下页签就切过去，后面照旧打玩家；
-        #   * 结算日：交战对手变灰点不动，画面仍停在 NPC 页 ⇒ 判定为「切不过去」，
-        #     直接按 NPC 页打（`_list_action` 在 NPC 页上量过：三行"能不能打"全是 True）。
-        if self._on_npc_page(screen) and not self._npc_tab_checked:
-            self._npc_tab_checked = True
-            return Action(
-                name="switch-to-challenge-tab",
-                point=_CHALLENGE_TAB_POINT,
-                # 转场契约要求来源/目标都写清：来源是列表（NPC 页也是列表），
-                # 目标是同一个列表 —— 这一下本来就不换页，只换页签。
-                source_state=ArenaState.LIST,
-                # 目标仍写「对手列表」：NPC 页本身也满足这条判据，所以点不动时
-                # 转场照样算成立，不会因为"点不动"而报超时 —— 这正是要的语义。
-                target_states=(ArenaState.LIST,),
-                reason=(
-                    "当前停在「NPC交战对手」页签；先点右菜单「交战对手」切回玩家对战"
-                    "（结算日该页签会变灰点不动，那就直接打 NPC）"
-                ),
-            )
+        # 所以这里只做一件事：**把页签对齐到用户选的那一个**，一轮只点一次。
+        #   * 选玩家对战（默认）：停在 NPC 页就点回交战对手；该页签变灰点不动时
+        #     画面仍是 NPC 页 ⇒ 直接按 NPC 页打，即改动前的兜底口径；
+        #   * 选 NPC 对战：停在交战对手页就点「NPC对战」切过去。
+        # 只在对手列表页对齐页签。队伍选择 / 对手详情页上「不在 NPC 页」恒成立，
+        # 不加这层判断会在已经选完对手之后又去点右菜单，把正在走的转场点乱
+        # （2026-11-21 实跑：选完对手进队伍选择后仍点「NPC对战」，转场超时）。
+        if self.state is ArenaState.LIST:
+            wants_npc = self.opponent_source == "npc"
+            on_npc = self._on_npc_page(screen)
+            if not self._npc_tab_checked and on_npc != wants_npc:
+                self._npc_tab_checked = True
+                if wants_npc:
+                    return Action(
+                        name="switch-to-npc-tab",
+                        point=_NPC_TAB_POINT,
+                        source_state=ArenaState.LIST,
+                        target_states=(ArenaState.LIST,),
+                        reason=(
+                            "已选择 NPC 对战；当前停在交战对手页签，"
+                            "先点右菜单「NPC对战」切过去"
+                        ),
+                    )
+                return Action(
+                    name="switch-to-challenge-tab",
+                    point=_CHALLENGE_TAB_POINT,
+                    # 转场契约要求来源/目标都写清：来源是列表（NPC 页也是列表），
+                    # 目标是同一个列表 —— 这一下本来就不换页，只换页签。
+                    source_state=ArenaState.LIST,
+                    # 目标仍写「对手列表」：NPC 页本身也满足这条判据，所以点不动时
+                    # 转场照样算成立，不会因为"点不动"而报超时 —— 这正是要的语义。
+                    target_states=(ArenaState.LIST,),
+                    reason=(
+                        "当前停在「NPC交战对手」页签；先点右菜单「交战对手」切回玩家对战"
+                        "（结算日该页签会变灰点不动，那就直接打 NPC）"
+                    ),
+                )
 
         if not self.is_in_state(screen, self.state):
             raise UnrecognizedScreen(
@@ -1617,6 +1641,7 @@ class ArenaRunner(TransactionalRunnerBase):
         max_gold_refreshes: int = 0,
         ticket_mode: str = "friendship",
         max_skystone_purchases: int = 0,
+        opponent_source: str = "player",
         opponent_preference: str = "none",
         hero_blacklist: Sequence[str] | None = None,
         hero_whitelist: Sequence[str] | None = None,
@@ -1642,7 +1667,9 @@ class ArenaRunner(TransactionalRunnerBase):
         self.ticket_mode = ticket_mode
         self.max_skystone_purchases = max_skystone_purchases
         # 对手偏好只写状态机：排序发生在「挑哪一行」，而点击与判据都在状态机里。
+        self.opponent_source = opponent_source
         self.opponent_preference = opponent_preference
+        self.machine.opponent_source = opponent_source
         self.machine.refresh_mode = refresh_mode
         self.machine.max_gold_refreshes = max_gold_refreshes
         self.machine.ticket_mode = ticket_mode

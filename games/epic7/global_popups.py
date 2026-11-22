@@ -1060,6 +1060,69 @@ def find_account_rank_up_close(
     return Match(close.center, min(title.score, close.score))
 
 
+# ── 「账号升等」（账号等级提升，行动力上限提高）──────────────────────────────
+#
+# 2026-11-22 08:02 主线模拟器实跑：战斗打完弹这一层，盖住战斗画面 ⇒
+# 「战斗画面持续无法识别超时」45 秒收场（诊断帧
+# 20261122_080249_809608_battle_unrecognized.png）。
+#
+# ⚠️ 它和上面那条「账号 Rank 提升」**不是同一个弹窗**：那条是中央菱形徽章 +
+# 「RANK UP N」整屏；这条是「升级!」标题 + 「账号升等，行动力上限已提升。」+
+# 「161 ➜ 172」的小窗。标题、位置、文案全不同，两张图互不通用（实测旧的那对
+# 在这一帧上只有 0.72 / 0.51）。
+#
+# 锚正文整行 + 底部「点击关闭」：161 / 172 这两个数字每次升级都变，一个像素
+# 都不许进模板（与「模板不含会变内容」同一条纪律）。
+_ACCOUNT_LEVEL_UP_TITLE_REGION = (700, 430, 600, 120)
+_ACCOUNT_LEVEL_UP_CLOSE_REGION = (860, 700, 300, 150)
+_ACCOUNT_LEVEL_UP_THRESHOLD = 0.85
+
+
+@dataclass(frozen=True)
+class AccountLevelUpTemplates:
+    title: np.ndarray
+    close: np.ndarray
+
+
+def load_account_level_up_templates(
+    template_dir: Path,
+) -> AccountLevelUpTemplates | None:
+    title = template_dir / "account_level_up_title.png"
+    close = template_dir / "account_level_up_close.png"
+    if not (title.exists() and close.exists()):
+        return None
+    return AccountLevelUpTemplates(
+        title=load_template(str(title)),
+        close=load_template(str(close)),
+    )
+
+
+def find_account_level_up_close(
+    screen: np.ndarray,
+    templates: AccountLevelUpTemplates,
+) -> Match | None:
+    """Return the close control only when both 账号升等 anchors are present."""
+    title = find_template(
+        screen,
+        templates.title,
+        _ACCOUNT_LEVEL_UP_THRESHOLD,
+        region=_ACCOUNT_LEVEL_UP_TITLE_REGION,
+        reference_size=_REFERENCE_SIZE,
+    )
+    if title is None:
+        return None
+    close = find_template(
+        screen,
+        templates.close,
+        _ACCOUNT_LEVEL_UP_THRESHOLD,
+        region=_ACCOUNT_LEVEL_UP_CLOSE_REGION,
+        reference_size=_REFERENCE_SIZE,
+    )
+    if close is None:
+        return None
+    return Match(close.center, min(title.score, close.score))
+
+
 # ── 「支线故事通知」（新支线解锁时弹一次）─────────────────────────────────────
 #
 # 2026-11-01 22:05 主线 PC 实跑：战斗打完、结算页正要确认时它盖上来，
@@ -1317,6 +1380,60 @@ def find_worldboss_support_reward_close(
     if close is None:
         return None
     return Match(close.center, min(title.score, close.score))
+
+
+# ── 陌生弹窗「点击关闭」兜底（2026-11-22 加）───────────────────────────────────
+#
+# 背景：主线在关卡入口被「圣域已解锁！请从大厅进入圣域」这类**没登记过**的模态弹窗
+# 盖住 ⇒ 状态机认不出页面 ⇒ 45 秒超时 ⇒ 回首页 ESC 又关不掉（模态窗不吃 ESC）⇒
+# 回首页失败。每接一个新弹窗都要走 10 个接触点，用户要求「不想单独分类」——
+# 很多模态弹窗底部都有同一行「点击关闭」灰字，点它就能关，不认标题也行。
+#
+# ⚠️⚠️ 这是**兜底**，绝不能当成普通全局弹窗判据用。三条硬约束：
+#   ① 只在「状态机已经认不出画面、即将失败」时由调用方启用；正常流程永不调用。
+#      「点击关闭」四个字单独**完全不排他** —— 全库 515 张夹具里 22 张过 0.85、
+#      27 张过 0.80，全是领奖 / 结果弹窗（reward_popup 0.8993、popup_penguin
+#      0.8991…）。放进每帧守卫会在正常领奖页乱点，所以只能走这条失败专用通道。
+#   ② **不限制落点区域** —— 各弹窗的「点击关闭」位置差很远（世界首领奖励 y≈770、
+#      「无法控制」y≈1040、圣域解锁 y≈834），框死一块会漏。全屏搜靠的是①的时机门
+#      与阈值：探针在 515 张夹具上确认过 0.85 的 22 张**全是弹窗/结果框**，正常
+#      业务页（大厅/战斗/关卡/结算列表）一个都没过线。
+#   ③ 原样 RGB 口径 —— 那行灰字峰值亮度 171 < 白掩膜 200 下界，走白掩膜会退化成
+#      处处 1.0000（见 WorldBossSupportRewardTemplates 的注释）。
+#
+# 模板复用 ``worldboss_support_reward_close.png``（116x28 的那行灰字），不新增素材。
+# 正例（圣域解锁帧）实测 0.9025（阈 0.85），落点 (902,820)；不必为这一个弹窗裁图。
+_GENERIC_CLOSE_THRESHOLD = 0.85
+# 「点击关闭」那行灰字下面还有一颗 ∨ 箭头，**箭头才是真正吃掉点击的开关**。
+# 通用模板只裁了灰字（116×28），模板中心落在文字上；历史两次兜底（2026-11-22
+# 主线 14:23 / 16:05）都点在文字行 (960,773)/(960,834)，游戏纹丝不动；同一批
+# 弹窗用专用判据点箭头 (960,885) 则成功 24+ 次。真机逐像素量：文字中心 y=834/843，
+# 箭头中心 y=887/889，相差 46~53px。取 +50 落在箭头上，且与历史成功落点一致。
+# ⚠️ 只偏移落点，不改匹配分数 —— 判据口径保持逐字节不变，反向护栏仍成立。
+_GENERIC_CLOSE_ARROW_OFFSET_Y = 50
+
+
+def find_generic_click_close(
+    screen: np.ndarray, close_template: np.ndarray
+) -> Match | None:
+    """陌生模态弹窗底部的「点击关闭」→ 返回**箭头开关**的落点；没有就 None。
+
+    ⚠️ 调用方必须先确认「当前路线已认不出画面」才允许调用 —— 见上方三条硬约束。
+    本函数本身只回答「画面上有没有那行灰字、点哪」，**不回答**「这是不是弹窗」，
+    后者由调用方用失败上下文保证。所以绝不能接进每帧守卫的常规判据链。
+
+    落点含 ``_GENERIC_CLOSE_ARROW_OFFSET_Y`` 下移：灰字本身不响应点击，下方 ∨ 才是开关。
+    """
+    match = find_template(
+        screen,
+        close_template,
+        _GENERIC_CLOSE_THRESHOLD,
+        reference_size=_REFERENCE_SIZE,
+    )
+    if match is None:
+        return None
+    offset = round(_GENERIC_CLOSE_ARROW_OFFSET_Y * screen.shape[0] / _REFERENCE_SIZE[1])
+    return Match((match.center[0], match.center[1] + offset), match.score)
 
 
 def find_arena_rank_reward_close(
@@ -1614,6 +1731,8 @@ class Epic7GlobalPopupGuard:
         reward_notice_templates: RewardNoticeTemplates | None = None,
         gift_claim_templates: GiftClaimTemplates | None = None,
         account_rank_up_templates: AccountRankUpTemplates | None = None,
+        # 2026-11-22：「账号升等」（等级提升、行动力上限提高），与上面那条 Rank 提升不同。
+        account_level_up_templates: AccountLevelUpTemplates | None = None,
         knights_signin_templates: KnightsSigninTemplates | None = None,
         gift_support_templates: GiftSupportTemplates | None = None,
         knights_weekly_reward_templates: KnightsWeeklyRewardTemplates | None = None,
@@ -1654,6 +1773,7 @@ class Epic7GlobalPopupGuard:
         self.reward_notice_templates = reward_notice_templates
         self.gift_claim_templates = gift_claim_templates
         self.account_rank_up_templates = account_rank_up_templates
+        self.account_level_up_templates = account_level_up_templates
         self.knights_signin_templates = knights_signin_templates
         self.gift_support_templates = gift_support_templates
         self.knights_weekly_reward_templates = knights_weekly_reward_templates
@@ -1864,6 +1984,16 @@ class Epic7GlobalPopupGuard:
                     "dismiss-account-rank-up",
                     "account_rank_up_failed",
                     f"账号Rank提升弹窗点击{_MAX_POPUP_CLICKS}次后仍未消失",
+                )
+        if self.account_level_up_templates is not None:
+            match = find_account_level_up_close(screen, self.account_level_up_templates)
+            if match is not None:
+                return (
+                    match,
+                    "account_level_up",
+                    "dismiss-account-level-up",
+                    "account_level_up_failed",
+                    f"账号升等弹窗点击{_MAX_POPUP_CLICKS}次后仍未消失",
                 )
         if self.knights_signin_templates is not None:
             match = find_knights_signin_close(
@@ -2077,6 +2207,12 @@ class Epic7GlobalPopupGuard:
                     runtime.click(match.center, action)
                     clicks += 1
                     last_click_at = current
+                    # 记下「本次运行确实弹过断网窗」这个事实，供后续失败文案如实引用。
+                    # 放点击之后：只有真的点出去了才算，识别到但没点不记。
+                    if popup == "network":
+                        note = getattr(runtime, "note_network_popup", None)
+                        if callable(note):
+                            note()
                 elif (
                     clicks >= _MAX_POPUP_CLICKS
                     and last_click_at is not None
@@ -2092,6 +2228,38 @@ class Epic7GlobalPopupGuard:
                     )
             self.sleep(self.poll_seconds)
             screen = runtime.capture_unguarded()
+
+    def try_dismiss_unknown_popup(
+        self, runtime: "Runtime", screen: np.ndarray
+    ) -> bool:
+        """卡死兜底：认不出的画面上若有「点击关闭」灰字，就点它关掉。
+
+        ⚠️ 只允许在「状态机认不出画面、即将按超时判失败」时由 Runner 显式调用，
+        **绝不能**接进 ``__call__`` 的常规判据链（那行字不排他，正常领奖页也有）。
+
+        有界性由调用方保证：一条路线最多调用一次（见 ``runner_base`` 的
+        ``_unknown_popup_fallback_used``）。这里只做三件事：定位 → 点击 → 记日志。
+        点完不等待、不重试、不熔断 —— 下一帧交还给状态机重新认页面；若仍未认出，
+        上层照原样超时报错，诊断图照旧保存。
+
+        返回 True 表示真的点了一次（调用方据此重置等待计时、给状态机一次机会）。
+        没有可用模板 / 没命中 / 竖屏画面 → False，行为与改动前完全一致。
+        """
+        height, width = screen.shape[:2]
+        if width < height:
+            return False
+        templates = self.worldboss_support_reward_templates
+        if templates is None or templates.close is None:
+            return False
+        match = find_generic_click_close(screen, templates.close)
+        if match is None:
+            return False
+        runtime.click(match.center, "关闭陌生弹窗(兜底)")
+        runtime.log(
+            f"模式=全局弹窗 兜底=陌生弹窗点击关闭 "
+            f"分数={match.score:.4f} 坐标={match.center} 动作=点掉后重新认页面"
+        )
+        return True
 
 
 # ---------------------------------------------------------------------------

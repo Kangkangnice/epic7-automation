@@ -406,6 +406,20 @@ EXCHANGE_GAIN_POINTS_CARD = (800, 270)
 TASKS_BACK = (35, 130)
 TASKS_GOTO_EXCHANGE = (961, 554)
 TASKS_BUTTON_X = 988
+
+# 「点进社区之后可能落在哪一页」—— 社区的 H5 **会记住上次停留的页面**。
+#
+# ⚠️⚠️ 2026-11-22 实跑：点完「游戏社区」直接落在**兑换中心**（上次停在那一页），
+# 而入口那一步只声明了 ``feed_home`` 一个目标 ⇒ 主循环判定「confirmed_page 既不是
+# 来源页也不是目标页」⇒ 把状态机给出的 ``leave_exchange`` **直接丢掉**
+# （见 ``CommunityRunner._transition_completed`` 上面那三段同形事故）。
+# 结果：一次点击都没发出，干等到 60 秒超时，日志只剩一句
+# 「转场超时 … 当前已确认页面=exchange_center」，收尾时人还卡在竖屏里。
+#
+# ⇒ 入口的验收标准不是「到了信息流」，而是「**社区确实打开了**」：竖屏 + 任一已知页。
+# 落点不是信息流时，由 ``_on_exchange_center`` / ``_on_tasks`` 开头那两条
+# 「签到还没做 ⇒ 先退回信息流」把流程掰回正轨。
+_COMMUNITY_ENTRY_PAGES = ("feed_home", "exchange_center", "exchange_empty", "tasks_page")
 TASK_BUTTON_Y = {"browse": 1205, "like": 1349, "share": 1493}
 
 ITEM_BACK = (62, 124)
@@ -1127,6 +1141,12 @@ class CommunityStateMachine:
         self.progress = CommunityProgress()
         self.last_redeem: Optional[RedeemStep] = None
         self.last_page: Optional[pages.PageJudgement] = None
+        # 点进社区后**第一眼**看到的是哪一页（``feed_home`` / ``exchange_center`` / …）。
+        #
+        # H5 会记住上次停留的页面 ⇒ 偶尔一进来不是信息流而是兑换中心/我的任务。
+        # 这两页上都没有「每日签到」，所以要用这个标记判断「是一次真正的入口落点」
+        # 还是「正常流程里路过」—— 后者 ``signed_in`` 早就有值了，绝不能退回。
+        self.entry_page: str = ""
         # 上一帧「为什么没出手 / 为什么这么出手」。给主循环的等待心跳用：
         # 判据沉默时日志不能是空的（2026-10-04 那次的坑）。
         self.last_reason = ""
@@ -1241,6 +1261,13 @@ class CommunityStateMachine:
         page = self.observe(screen)
         self.last_page = page
         self._confirmed_page = page.name
+        # 入口第一眼落在哪一页（只记一次）。见 ``entry_page`` 的说明。
+        if (
+            self.state is CommunityState.ENTERING
+            and not self.entry_page
+            and page.name != "unknown"
+        ):
+            self.entry_page = page.name
         # ⚠️ **入口的出口标志：方向对了 ≠ 社区打开了**（2026-10-07 补）。
         #
         # 刚转进竖屏的那一两秒，H5 往往还在加载：拿到的是 1080x1920 的画面，
@@ -1453,7 +1480,7 @@ class CommunityStateMachine:
                 "enter_community",
                 WEB_COMMUNITY_ENTRY,
                 source_page="web_activity_list",
-                target_pages=("feed_home",),
+                target_pages=_COMMUNITY_ENTRY_PAGES,
                 reason=self.last_reason,
             )
         if self.state is CommunityState.ENTERING:
@@ -1472,7 +1499,7 @@ class CommunityStateMachine:
                 "enter_community",
                 WEB_COMMUNITY_ENTRY,
                 source_page="web_activity_list",
-                target_pages=("feed_home",),
+                target_pages=_COMMUNITY_ENTRY_PAGES,
                 reason=self.last_reason,
             )
         if self.state is CommunityState.RECOVERING:
@@ -1702,12 +1729,19 @@ class CommunityStateMachine:
         )
 
     def _on_exchange_empty(self, screen: np.ndarray, page) -> CommunityAction:
-        """空列表态：退到信息流再进来一次。"""
+        """空列表态：退到信息流再进来一次。
+
+        ⚠️ 2026-11-22 补 ``target_pages``：这一下原来是**没有出口标志**的
+        （只有 ``in_page_evidence``），点完就算数 —— 万一 `<` 没生效、或者退到了
+        别的页，没有任何人会发现，下一步只会在错误的页面上继续点。
+        「进出都要有标志」是这条路线立得住的前提，所以补上 ``feed_home`` 这道验收。
+        """
         self.state = CommunityState.EXCHANGE
         return CommunityAction(
             "leave_empty_exchange",
             EXCHANGE_BACK,
             source_page=page.name,
+            target_pages=("feed_home",),
             in_page_evidence="退出空列表的兑换中心，回信息流后重新进入",
             reason="兑换中心是空列表（偶发），退回去重进",
         )
@@ -1725,6 +1759,25 @@ class CommunityStateMachine:
                 source_page=page.name,
                 target_pages=("tasks_page",),
                 reason="路过兑换中心，点「获取积分卡」进我的任务（这一帧不做兑换决策）",
+            )
+        if self.entry_page in ("exchange_center", "exchange_empty") and (
+            self.progress.signed_in is None
+        ):
+            # **入口落点**（不是从信息流走过来的）：H5 记住了上次那句话，点进社区
+            # 直接就是兑换中心 ⇒ 每日签到还没做。先点左上角 `<` 回信息流，
+            # 由 ``_on_feed`` 按正常流程读签到状态 —— 不在这儿猜签没签。
+            #
+            # ⚠️ 判据用 ``signed_in is None``（一次都没读过信息流），**不用**
+            # ``signin_clicked``：后者只说明"点过一下"，签到可能没成。
+            return CommunityAction(
+                "back_to_feed_for_signin",
+                EXCHANGE_BACK,
+                source_page=page.name,
+                target_pages=("feed_home",),
+                reason=(
+                    "进社区直接落在兑换中心（H5 记住了上次页面），"
+                    "每日签到还没做 ⇒ 先点左上角 `<` 回信息流"
+                ),
             )
         if self.redeem_failed:
             # 上一次兑换没成（多半是积分不够）⇒ 不再试，直接退社区收工。
@@ -1829,6 +1882,23 @@ class CommunityStateMachine:
         照「计数没动」的说法排错会被带偏（2026-10-07 修正）。
         """
         self.state = CommunityState.TASKS
+        if (
+            self.entry_page == "tasks_page"
+            and self.progress.signed_in is None
+            and self.active_task is None
+        ):
+            # 入口直接落在「我的任务」⇒ 先退回兑换中心（这一页的 `<` 只回上一层），
+            # 再由 ``_on_exchange_center`` 把签到那一步补上。
+            return CommunityAction(
+                "back_to_feed_for_signin_from_tasks",
+                TASKS_BACK,
+                source_page=page.name,
+                target_pages=("exchange_center", "exchange_empty"),
+                reason=(
+                    "进社区落在「我的任务」，每日签到还没做 ⇒ "
+                    "先退回兑换中心，再回信息流把签到补上"
+                ),
+            )
         rows = pages.observe_task_rows(screen, self.templates)
         self.progress.tasks = {row.key: row.state for row in rows}
         unknown = [row.label for row in rows if row.state == "unknown"]
@@ -2642,8 +2712,7 @@ class ChannelSwitch:
 
     ## 方向由「路线自己的意图」决定，不是每帧去问窗口
 
-    问一次方向要跑 ``ldconsole list2``（约 100ms 的子进程），每帧都问等于给主循环
-    平白加一份开销。所以这里只在**换向的那几秒**里轮询：状态机点了「游戏社区」就
+    问一次方向要抓一帧画面（约 1 秒），每帧都问等于给主循环平白加一份开销。所以这里只在**换向的那几秒**里轮询：状态机点了「游戏社区」就
     ``expect_portrait()``，点了「退出社区」就 ``expect_landscape()``；轮询看到窗口
     真的转过去了就锁定，之后一帧都不再问。
 
@@ -2756,7 +2825,7 @@ def attach_dual_channel(runtime: Runtime, portrait: PortraitChannel) -> ChannelS
     ③ 干跑**完全不接**（`capture` 直接走原实现）：干跑不该去碰 adb、也不该让模拟器转屏；
     ④ 每个替换点先把原实现存下来，横屏段原样转发。
 
-    ⚠️ 只适用于**雷电模拟器后端**（``PortraitChannel`` 走 adb）。PC 后端由
+    ⚠️ 只适用于**模拟器后端**（``PortraitChannel`` 走 ADB，不认品牌）。PC 后端由
     ``CommunityRunner`` 在装配前拦下。
     """
     names = ("_capture", "_click", "_swipe", "_back")
@@ -3069,10 +3138,10 @@ class CommunityRunner(ModeRunnerBase):
             return
         window = self._landscape_window()
         if window is not None and not isinstance(window, Epic7Window):
-            # 不拦的后果是**静默点错客户端**：`PortraitChannel` 自己会去找雷电窗口，
-            # 要是机器上恰好在跑雷电，它就会去操作那一个 —— 画面看着没问题，点的是别人。
+            # 不拦的后果是**静默点错客户端**：`PortraitChannel` 会去操作别的窗口，
+            # 画面看着没问题，点的是别人。
             raise RuntimeError(
-                "社区签到路线的竖屏段只有雷电模拟器有（走 adb）；"
+                "社区签到路线的竖屏段需要模拟器后端（走 adb）；"
                 f"当前横屏通道是 {type(window).__name__}，需改用默认的模拟器后端"
             )
         portrait = self._portrait or PortraitChannel(window=window)

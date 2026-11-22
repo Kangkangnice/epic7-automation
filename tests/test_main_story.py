@@ -96,6 +96,9 @@ class MainStoryTests(unittest.TestCase):
                 gift_claim_templates = object()
                 # 「账号 Rank 提升」（2026-11-02 接，第 17 类）。
                 account_rank_up_templates = object()
+                # 「账号升等」（2026-11-22 接）：与上面那条不是同一个弹窗，
+                # 标题「升级!」+「账号升等，行动力上限已提升。」+ 两组数字。
+                account_level_up_templates = object()
                 # 「变更日期」「获得登录奖励」（2026-11-03 接，第 18/19 类）：
                 # 游戏按时间自己弹的两条，主线 18:00 那次超时与 18:01 那次回首页失败
                 # 分别是它们。
@@ -280,6 +283,9 @@ class MainStoryTests(unittest.TestCase):
                             load_account_rank_up_templates=unittest.mock.MagicMock(
                                 return_value=account_rank_up_templates
                             ),
+                            load_account_level_up_templates=unittest.mock.MagicMock(
+                                return_value=account_level_up_templates
+                            ),
                             # 2026-11-05/06 第 20/21 类。
                             load_knights_activity_templates=unittest.mock.MagicMock(
                                 return_value=knights_activity_templates
@@ -360,6 +366,7 @@ class MainStoryTests(unittest.TestCase):
                     reward_notice_templates=reward_notice_templates,
                     gift_claim_templates=gift_claim_templates,
                     account_rank_up_templates=account_rank_up_templates,
+                    account_level_up_templates=account_level_up_templates,
                     # 2026-11-05/06 第 20/21 类，与上面 patch.multiple 同进同出。
                     knights_activity_templates=knights_activity_templates,
                     uncontrollable_templates=uncontrollable_templates,
@@ -529,7 +536,7 @@ class MainStoryTests(unittest.TestCase):
             build_machine=lambda *_a, **_k: object(),
             runner_type=_SpyRunner,
             # 钩子拿到的必须是**主线的运行时产物根**，不是 modes 自己猜的一个。
-            # 源码运行时它就是包目录；打包安装后是 %LOCALAPPDATA%\Epic7AutoAssistant
+            # 源码运行时它就是包目录；打包安装后是 %LOCALAPPDATA%\ArkyAssistant
             # （竞技场的买票印记 ``arena_ticket_purchase.txt`` 落在它的 runtime_logs 下）。
             runner_options=lambda root, dry_run, params: {
                 "收到的根": root,

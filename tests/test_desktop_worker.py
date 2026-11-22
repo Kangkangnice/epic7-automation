@@ -488,8 +488,8 @@ def test_data_root_keeps_artifacts_out_of_the_install_dir(tmp_path):
 
     这是「安装目录视为只读」的唯一可验证形态：跑完之后安装目录里**一个字节都不该多**。
     """
-    install = tmp_path / "Program Files" / "Epic7AutoAssistant"
-    data = tmp_path / "LocalAppData" / "Epic7AutoAssistant"
+    install = tmp_path / "Program Files" / "ArkyAssistant"
+    data = tmp_path / "LocalAppData" / "ArkyAssistant"
     worker = WorkerController(repo_parent=install, data_root=data)
 
     assert worker.log_path == data / "runtime_logs" / "desktop_worker.log"
@@ -561,7 +561,7 @@ def test_frozen_worker_relaunches_the_exe_with_the_worker_flag(
     """
     calls = []
     monkeypatch.setattr(sys, "frozen", True, raising=False)
-    monkeypatch.setattr(sys, "executable", r"C:/dist/Epic7AutoAssistant.exe")
+    monkeypatch.setattr(sys, "executable", r"C:/dist/ArkyAssistant.exe")
     worker = WorkerController(
         repo_parent=tmp_path,
         popen=lambda command, **kwargs: calls.append((command, kwargs))
@@ -572,7 +572,7 @@ def test_frozen_worker_relaunches_the_exe_with_the_worker_flag(
     worker.join_reader()
 
     command, options = calls[0]
-    assert command[:2] == [r"C:/dist/Epic7AutoAssistant.exe", "--worker"]
+    assert command[:2] == [r"C:/dist/ArkyAssistant.exe", "--worker"]
     assert "-m" not in command
     assert command[command.index("--daily-tasks") + 1] == "story:2"
     # 冻结子进程没有 ``-u``，输出要靠环境变量关掉缓冲，否则界面看不到进度。

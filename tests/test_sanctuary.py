@@ -626,11 +626,14 @@ def test_the_lobby_entry_anchor_is_the_text_label_not_the_icon():
     ⚠️ 这里守的是「别再把它挪回图标上」：图标没有文字，截出来是一片渐变色块，
     换个分辨率/换个角标就认不出；文字是只此一处的稳定特征。
     """
-    from auto_game_unified.games.epic7.navigation import Epic7Navigator
+    from auto_game_unified.games.epic7.navigation import LEFT_MENU_REGION, Epic7Navigator
 
     x, y, width, height = Epic7Navigator._REGIONS["lobby_sanctuary"]
 
-    assert (x, y, width, height) == (20, 270, 140, 130)
+    # 2026-11-21：账号缺少「光辉里程碑」时整列菜单上移约 90px，单项写死的
+    # (20,270,140,130) 只覆盖有该项的账号。改为整条左菜单带扫描。
+    assert (x, y, width, height) == LEFT_MENU_REGION
+    assert y <= 300 and y + height >= 900
     # 骑士团入口在 (1150, 960) 一带 —— 两者离得很远，不会互相干扰。
     knights = Epic7Navigator._REGIONS["lobby_knights"]
     assert knights[0] > x + width + 500
