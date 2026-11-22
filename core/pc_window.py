@@ -475,8 +475,9 @@ class Epic7PcWindow:
                 # 后面每跳拉长，用于扛住「重连黑屏十几秒」这一类（见上方常量注释）。
                 delay = min(delay * CAPTURE_BACKOFF_FACTOR, CAPTURE_MAX_DELAY)
         raise RuntimeError(
-            "PC 后台截图失败；为避免抢占前台已安全停止。"
-            f"已重试 {CAPTURE_ATTEMPTS} 次；需保持游戏窗口未最小化后重试"
+            "PC 后台截图失败：连续取不到画面，为避免抢占前台已安全停止。"
+            f"已重试 {CAPTURE_ATTEMPTS} 次；"
+            "可核查项：窗口是否被最小化、游戏是否正在加载或重新连接"
         )
 
     def _capture_client_bitblt(self, hwnd) -> np.ndarray | None:

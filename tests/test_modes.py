@@ -197,6 +197,8 @@ class RouteHookRegistryTests(unittest.TestCase):
         expected = {
             # 偏好默认「不指定」= 改动前的行为（random.choice 挑一行）。
             "opponent_preference": "none",
+            # 对手来源默认玩家对战；NPC 页签为固定阵容，玩家页签不可挑战会改打 NPC。
+            "opponent_source": "player",
             # 名单默认两份都空 = 不筛选；冲突处置默认黑名单优先。
             "hero_blacklist": (),
             "hero_whitelist": (),
@@ -221,9 +223,9 @@ class RouteHookRegistryTests(unittest.TestCase):
                 "ticket_mode": "skystone",
                 "max_skystone_purchases": 2,
                 "opponent_preference": "highest",
+                "opponent_source": "npc",
                 "hero_blacklist": ["维多丽卡", "维多丽卡", " 安洁莉卡 "],
                 "hero_list_conflict": "whitelist",
-                "only_npc": True,
             },
         )
         self.assertEqual("gold", chosen["refresh_mode"])
@@ -231,10 +233,10 @@ class RouteHookRegistryTests(unittest.TestCase):
         self.assertEqual("skystone", chosen["ticket_mode"])
         self.assertEqual(2, chosen["max_skystone_purchases"])
         self.assertEqual("highest", chosen["opponent_preference"])
+        self.assertEqual("npc", chosen["opponent_source"])
         # 名单去重、去空白，按声明清洗；冲突处置照样透传。
         self.assertEqual(("维多丽卡", "安洁莉卡"), chosen["hero_blacklist"])
         self.assertEqual("whitelist", chosen["hero_list_conflict"])
-        self.assertNotIn("only_npc", chosen)
 
     def test_routes_without_special_needs_declare_no_hooks(self):
         """没需求的路线不该挂钩子 —— 挂了就是「空转的配置」，读的人会以为它有意义。

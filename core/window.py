@@ -1,44 +1,35 @@
-"""Window-local capture and input for the Epic Seven emulator."""
+"""模拟器窗口：统一 ADB 后端，不认品牌。
 
-import ctypes
-from ctypes import wintypes
-from pathlib import Path
-import subprocess
+## 一个后端适配所有安卓模拟器（2026-11-21 定案）
+
+雷电、MuMu、夜神、BlueStacks……底层都是安卓，都讲标准 ADB。这里只有一条通道：
+用 ADB 找出「正在跑第七史诗的那个设备」，抓图与输入全走 ADB。**代码里没有模拟器品牌
+的概念** —— 新增任何模拟器都无需改代码，只要它是标准 ADB 的安卓模拟器。
+
+对外接口（``capture / click / swipe / wake / back / activate / process_id /
+ensure_input_channel / set_event_sink``）与改造前完全一致，上层（Runtime、导航、各路线、
+竖屏通道、预检）一行都不用改。
+
+画布与坐标沿用历史基准：抓 1920x1080 渲染帧，合成 1982x1132 画布（顶栏 52px 黑边），
+点击时减掉这 52px。这样全库模板、判据、坐标都不用动。
+"""
+
+from __future__ import annotations
+
 from dataclasses import dataclass
-from time import sleep
+from pathlib import Path
 from typing import Callable
 
-# pyautogui captures in physical pixels.  Set DPI awareness before importing it
-# so the window rectangle and click coordinates use that exact same space.
-ctypes.windll.user32.SetProcessDPIAware()
-
+import cv2
 import numpy as np
-import psutil
-import pyautogui
-import pygetwindow
 
-
-class _BITMAPINFOHEADER(ctypes.Structure):
-    _fields_ = [
-        ("biSize", wintypes.DWORD),
-        ("biWidth", wintypes.LONG),
-        ("biHeight", wintypes.LONG),
-        ("biPlanes", wintypes.WORD),
-        ("biBitCount", wintypes.WORD),
-        ("biCompression", wintypes.DWORD),
-        ("biSizeImage", wintypes.DWORD),
-        ("biXPelsPerMeter", wintypes.LONG),
-        ("biYPelsPerMeter", wintypes.LONG),
-        ("biClrUsed", wintypes.DWORD),
-        ("biClrImportant", wintypes.DWORD),
-    ]
-
-
-class _BITMAPINFO(ctypes.Structure):
-    _fields_ = [
-        ("bmiHeader", _BITMAPINFOHEADER),
-        ("bmiColors", wintypes.DWORD * 1),
-    ]
+from auto_game_unified.core.emulator_adb import (
+    AdbDeviceSpec,
+    AdbEmulatorClient,
+    EmulatorNotFound,
+    find_adb,
+    discover_game_device,
+)
 
 
 @dataclass(frozen=True)
@@ -50,7 +41,7 @@ class WindowRect:
 
 
 class WindowViewport:
-    """Translate between desktop pixels and one game's local pixel space."""
+    """桌面像素与游戏局部坐标的换算（保留给历史调用方）。"""
 
     def __init__(self, rect_provider: Callable[[], WindowRect]) -> None:
         self._rect_provider = rect_provider
@@ -78,38 +69,32 @@ class WindowViewport:
 
 
 class Epic7Window:
-    """Capture and click only the uniquely titled Epic Seven window."""
+    """所有安卓模拟器的统一窗口对象（ADB 通道）。
 
-    _UPDATED_TITLE = "\u96f7\u7535\u6a21\u62df\u5668"
+    找设备、抓图、点击全走 ADB；不读窗口标题、不看进程名、不碰私有控制台。
+    """
+
     _RENDER_SIZE = (1920, 1080)
     _LEGACY_SIZE = (1982, 1132)
     _LEGACY_TOP = 52
-    _PW_RENDERFULLCONTENT = 0x00000002  # PrintWindow：含 DirectX 渲染内容
-    # 窗口截图**调用失败**（不是画面黑）时重试几次再报错。
-    # 2026-11-14 竞技场接力事故：一帧取不到就改走屏幕截图，拍到了别人的窗口。
-    _CAPTURE_ATTEMPTS = 3
-    _CAPTURE_RETRY_SECONDS = 0.12
-    _SW_SHOWNOACTIVATE = 4  # 还原但不抢前台：用户可能正在别的窗口里做事
-    _SW_RESTORE = 9  # 还原并置前，仅在不抢前台的还原没生效时用
-    # 还原后等窗口真的退出最小化状态：每次 0.05s，最多约 1s。
-    _RESTORE_WAIT_ATTEMPTS = 20
-    _RESTORE_SETTLE_SECONDS = 0.4  # 还原动画期间画面还没回来，别立刻截图
-    # 雷电控制台**所有**出错情况都返回退出码 0，只把错误打印到 stdout。
-    # 2026-09-24 实测四条：`adb --index 9` → `adb.exe: device 'emulator-5572' not found`、
-    # `adb --index 0`（设备离线）→ `adb.exe: device offline`、
-    # `action --index 9` → `player don't exist!`、`action`（漏参数）→ 整篇 usage。
-    # ⇒ `check=True` 对它完全无效，必须显式看输出（详见 `_ensure_input_delivered`）。
-    _INPUT_FAILURE_MARKERS = (
-        b"adb.exe:",  # adb 客户端自己的错误前缀：offline / not found / unauthorized…
-        b"device offline",  # 兜底：万一某版本不带前缀
-        b"player don't exist",  # ldconsole：实例不存在
-        b"error:",
-        b"usage:",  # ldconsole 参数写错时打印整篇帮助，退出码仍是 0
-    )
 
-    def __init__(self, title: str = "第七史诗") -> None:
+    def __init__(
+        self,
+        title: str = "第七史诗",
+        *,
+        adb_path: Path | None = None,
+        device: AdbDeviceSpec | None = None,
+        client: AdbEmulatorClient | None = None,
+    ) -> None:
+        # title 只为兼容历史调用签名保留，不参与任何判断。
         self.title = title
         self.viewport = WindowViewport(self._rect)
+        if client is not None:
+            self._client = client
+        else:
+            adb = adb_path or find_adb()
+            chosen = device or discover_game_device(adb)
+            self._client = AdbEmulatorClient(adb, chosen)
         self._event_sink: Callable[[str], None] | None = None
 
     def set_event_sink(self, sink: Callable[[str], None] | None) -> None:
@@ -119,208 +104,55 @@ class Epic7Window:
         if self._event_sink is not None:
             self._event_sink(message)
 
-    def _window(self):
-        supported_titles = {self.title, self._UPDATED_TITLE}
-        windows = [
-            window
-            for window in pygetwindow.getAllWindows()
-            if window.title in supported_titles
-            and self._window_process_name(window) == "dnplayer.exe"
-        ]
-        if len(windows) != 1:
-            raise RuntimeError(f"应恰好找到一个支持的雷电模拟器窗口，实际找到 {len(windows)} 个")
-        window = windows[0]
-        if window.isMinimized:
-            # 最小化是用户的正常操作（切去看别的、误触最小化按钮），不是故障：
-            # 先把它还原回桌面继续跑，实在还原不了才当作故障抛错。
-            self._restore_window(window)
-        return window
+    @property
+    def adb_client(self) -> AdbEmulatorClient:
+        """竖屏通道 ``PortraitChannel`` 用它执行 adb 命令。"""
+        return self._client
 
-    def _restore_window(self, window) -> None:
-        """把最小化的模拟器窗口还原回桌面。
+    def description(self) -> str:
+        return self._client.description()
 
-        优先用「不抢前台」的还原，免得用户正在别的窗口里打字时被抢走焦点；
-        只有这种方式没生效时才退化成会置前的还原。
-        """
-        handle = window._hWnd
-        self._emit(f"窗口最小化已自动还原 标题={window.title}")
-        ctypes.windll.user32.ShowWindow(handle, self._SW_SHOWNOACTIVATE)
-        for _ in range(self._RESTORE_WAIT_ATTEMPTS):
-            if not ctypes.windll.user32.IsIconic(handle):
-                sleep(self._RESTORE_SETTLE_SECONDS)
-                return
-            sleep(0.05)
-        # 不抢前台的还原对个别窗口无效，再试一次会置前的还原。
-        ctypes.windll.user32.ShowWindow(handle, self._SW_RESTORE)
-        for _ in range(self._RESTORE_WAIT_ATTEMPTS):
-            if not ctypes.windll.user32.IsIconic(handle):
-                sleep(self._RESTORE_SETTLE_SECONDS)
-                return
-            sleep(0.05)
-        raise RuntimeError(f"窗口 {window.title} 处于最小化状态，且自动还原未生效")
-
-    @staticmethod
-    def _window_process_name(window) -> str:
-        process_id = ctypes.c_ulong()
-        ctypes.windll.user32.GetWindowThreadProcessId(window._hWnd, ctypes.byref(process_id))
-        return psutil.Process(process_id.value).name().lower()
-
-    def process_id(self) -> int:
-        """窗口所属进程的 PID。
-
-        用来判断「对方权限是不是比我们高」（UIPI 会因此拦掉点击）——
-        见 ``core/elevation.py::privilege_warning_for``。
-        """
-        process_id = ctypes.c_ulong()
-        ctypes.windll.user32.GetWindowThreadProcessId(
-            self._window()._hWnd, ctypes.byref(process_id)
-        )
-        return int(process_id.value)
-
-    def _rect(self) -> WindowRect:
-        window = self._window()
-        return WindowRect(window.left, window.top, window.width, window.height)
-
-    def activate(self) -> None:
-        window = self._window()
-        if window.isActive:
-            return
-        try:
-            window.activate()
-        except pygetwindow.PyGetWindowException:
-            # pygetwindow's SetForegroundWindow can fail with a Windows
-            # focus-lock error even when the window is visible. Taps go through
-            # LDPlayer's instance channel (ldconsole) by index, so foreground
-            # focus is not required for input — fall back instead of crashing.
-            self._best_effort_activate(window._hWnd)
-        if not self._wait_until_foreground(window._hWnd):
-            self._best_effort_activate(window._hWnd)
-        sleep(0.3)
-
-    def _best_effort_activate(self, handle: int) -> None:
-        # ⚠️ 2026-09-30（ruff F821 抓到的真实缺陷）：这里原本挂着 @staticmethod，
-        # 函数体却引用 self._SW_RESTORE ⇒ 每次调用**第一行就 NameError**，而下面那个
-        # 兜底 except 把它静默吞掉，「尽力还原窗口」等于一次都没执行过。
-        # ⇒ 别把 self 去掉（那会让还原参数变成魔数），也别把 except 收窄成具体异常类型：
-        # 它兜的是 Windows API 的各种失败，收窄会让「还原失败」直接打断主流程。
-        try:
-            ctypes.windll.user32.ShowWindow(handle, self._SW_RESTORE)
-            ctypes.windll.user32.SetForegroundWindow(handle)
-        except Exception:
-            pass
-
-    @staticmethod
-    def _wait_until_foreground(handle: int, attempts: int = 10) -> bool:
-        for _ in range(attempts):
-            if ctypes.windll.user32.GetForegroundWindow() == handle:
-                return True
-            sleep(0.05)
-        return False
+    # ── 抓图 ────────────────────────────────────────────────────────────────
 
     @staticmethod
     def _legacy_canvas(render: np.ndarray) -> np.ndarray:
+        """把 1920x1080 渲染帧合成 1982x1132 画布（与历史完全一致）。"""
         if render.shape[:2] != (1080, 1920):
             raise RuntimeError(
-                f"LDPlayer render size changed: {render.shape[1]}x{render.shape[0]}; "
-                "expected 1920x1080"
+                f"模拟器画面尺寸异常：{render.shape[1]}x{render.shape[0]}；应为 1920x1080"
             )
         canvas = np.zeros((1132, 1982, 3), dtype=np.uint8)
         canvas[52:, :1920] = render
         return canvas
 
     def capture(self) -> np.ndarray:
-        """只走窗口截图；**调用失败**就报错，绝不退化成屏幕截图。
+        # ⚠️ ADB 解码出来是 **BGR**（``capture_render`` 的 docstring 写明了），
+        # 而本模块对外的画面契约是 **RGB**：``load_template`` 把模板转成 RGB、
+        # ``Runtime.save_diagnostic`` 按 RGB→BGR 存盘、全库模板也都是同一口径。
+        # 2026-11-22：直接透传 BGR 时，原样匹配整体掉分（橙金「进行任务」0.75 不过 0.80），
+        # 同时诊断图被写反色 —— 看上去像「游戏换了配色」，实际是这里漏了一次转换。
+        # 竖屏通道 ``portrait.py`` 早就转了（BGR2RGB），横屏这条与它对齐。
+        render = cv2.cvtColor(self._client.capture_render(), cv2.COLOR_BGR2RGB)
+        return self._legacy_canvas(render)
 
-        2026-11-14 竞技场接力事故：旧实现在 ``PrintWindow`` 拿不到画面时回退
-        ``pyautogui.screenshot``（按屏幕坐标拍照）。那一帧模拟器正好被别人窗口盖住，
-        拍到的是一张聊天界面；接力判据把它当成了「战斗中的游戏」
-        （左侧行动条白占比 0.98，阈值 0.12），于是跳过回大厅、直奔战斗监督，
-        60 秒后报「战斗画面持续无法识别」。
+    def _rect(self) -> WindowRect:
+        """渲染区矩形（ADB 后端不依赖桌面窗口位置）。"""
+        return WindowRect(0, 0, self._RENDER_SIZE[0], self._RENDER_SIZE[1])
 
-        ⚠️ 这里说的「取不到」**只指调用失败**（句柄/GDI/``PrintWindow`` 返回 0）。
-        **黑屏不算失败** —— 游戏转场、加载本来就是黑的，那张图要原样交给判据，
-        判据认不出会等下一帧。把黑屏当故障，才会退到那条会抓错人的路。
+    # ── 输入 ────────────────────────────────────────────────────────────────
 
-        屏幕截图那条路的问题不是「可能抓错」，而是**抓错了没人知道**：
-        它不抛异常、不停机，判据拿着别人的窗口继续做决定。
-        按项目红线（判据不许静默降级），这里改成 fail-closed：
-        连续几次调用失败就明确报错，让上层重试或把问题暴露给用户。
-        """
-        _, _, bind_handle = self._instance_channel()
-        for attempt in range(self._CAPTURE_ATTEMPTS):
-            render = self._print_window_render(bind_handle)
-            if render is not None:
-                return self._legacy_canvas(render)
-            if attempt + 1 < self._CAPTURE_ATTEMPTS:
-                sleep(self._CAPTURE_RETRY_SECONDS)
-        raise RuntimeError(
-            f"模拟器窗口截图调用失败（连续 {self._CAPTURE_ATTEMPTS} 次取不到画面）。"
-            "请确认雷电窗口没有被最小化；若仍复现，请重启模拟器后再试。"
-        )
-
-    def _print_window_render(self, handle: int) -> np.ndarray | None:
-        """窗口级截图：模拟器被遮挡/失焦时仍能取到它自己的画面。
-
-        返回 ``None`` 只表示**这次调用没拿到画面**（句柄、尺寸、GDI 或
-        ``PrintWindow`` 失败）。⚠️ **画面是黑屏也照样返回** —— 黑屏是游戏
-        转场/加载的正常状态，不是故障；判据看到黑图会判「认不出」，然后等下一帧。
-        """
-        user32 = ctypes.windll.user32
-        gdi32 = ctypes.windll.gdi32
-        rect = wintypes.RECT()
-        if not user32.GetClientRect(handle, ctypes.byref(rect)):
-            return None
-        width, height = rect.right - rect.left, rect.bottom - rect.top
-        if (width, height) != self._RENDER_SIZE:
-            return None
-        hwnd_dc = user32.GetDC(handle)
-        if not hwnd_dc:
-            return None
-        try:
-            mem_dc = gdi32.CreateCompatibleDC(hwnd_dc)
-            if not mem_dc:
-                return None
-            try:
-                bitmap = gdi32.CreateCompatibleBitmap(hwnd_dc, width, height)
-                if not bitmap:
-                    return None
-                try:
-                    gdi32.SelectObject(mem_dc, bitmap)
-                    if not user32.PrintWindow(handle, mem_dc, self._PW_RENDERFULLCONTENT):
-                        return None
-                    info = _BITMAPINFO()
-                    info.bmiHeader.biSize = ctypes.sizeof(_BITMAPINFOHEADER)
-                    info.bmiHeader.biWidth = width
-                    info.bmiHeader.biHeight = -height  # top-down
-                    info.bmiHeader.biPlanes = 1
-                    info.bmiHeader.biBitCount = 32
-                    buffer = ctypes.create_string_buffer(width * height * 4)
-                    if not gdi32.GetDIBits(
-                        mem_dc, bitmap, 0, height, buffer, ctypes.byref(info), 0
-                    ):
-                        return None
-                finally:
-                    gdi32.DeleteObject(bitmap)
-            finally:
-                gdi32.DeleteDC(mem_dc)
-        finally:
-            user32.ReleaseDC(handle, hwnd_dc)
-        # memoryview 不是装饰：np.frombuffer 的 stub 不接受 ctypes 数组
-        # （mypy: No overload variant matches 'Array[c_char]'）。包一层得到的是同一个
-        # 缓冲区的视图，逐字节等价。
-        render = np.frombuffer(memoryview(buffer), dtype=np.uint8).reshape(
-            height, width, 4
-        )
-        return np.ascontiguousarray(render[:, :, :3][:, :, ::-1])
+    def _to_render(self, point: tuple[int, int], action: str) -> tuple[int, int]:
+        render_point = point[0], point[1] - self._LEGACY_TOP
+        if not (
+            0 <= render_point[0] < self._RENDER_SIZE[0]
+            and 0 <= render_point[1] < self._RENDER_SIZE[1]
+        ):
+            raise RuntimeError(f"拒绝在安卓渲染区外{action}：{point}")
+        return render_point
 
     def click(self, point: tuple[int, int]) -> None:
-        # ld.exe 通过实例通道发送点击，不依赖前台焦点；先直接发送，避免
-        # Windows 焦点锁导致 activate 长时间卡住。只有实例通道失败时才尝试激活。
-        try:
-            self._click_legacy(point)
-        except (RuntimeError, subprocess.SubprocessError):
-            self.activate()
-            self._click_legacy(point)
+        x, y = self._to_render(point, "点击")
+        self._client.tap(x, y)
 
     def swipe(
         self,
@@ -328,431 +160,69 @@ class Epic7Window:
         end: tuple[int, int],
         duration_ms: int,
     ) -> None:
-        render_start, render_end = self._swipe_render_points(
-            start, end, duration_ms
-        )
-        try:
-            self._send_render_swipe(render_start, render_end, duration_ms)
-        except (RuntimeError, subprocess.SubprocessError):
-            self.activate()
-            self._send_render_swipe(render_start, render_end, duration_ms)
-
-    def wake(self, point: tuple[int, int]) -> None:
-        """Wake LDPlayer's campfire idle layer with a real desktop mouse event."""
-
-        self.activate()
-        _, _, bind_handle = self._instance_channel()
-        rect = self._window_rect_from_handle(bind_handle)
-        render_point = point[0], point[1] - self._LEGACY_TOP
-        if not (
-            0 <= render_point[0] < self._RENDER_SIZE[0]
-            and 0 <= render_point[1] < self._RENDER_SIZE[1]
-        ):
-            raise RuntimeError(f"拒绝在安卓渲染区外唤醒：{point}")
-        pyautogui.click(rect.left + render_point[0], rect.top + render_point[1])
-
-    def _click_legacy(self, point: tuple[int, int]) -> None:
-        render_point = point[0], point[1] - self._LEGACY_TOP
-        if not (
-            0 <= render_point[0] < self._RENDER_SIZE[0]
-            and 0 <= render_point[1] < self._RENDER_SIZE[1]
-        ):
-            raise RuntimeError(f"拒绝在安卓渲染区外点击：{point}")
-        self._send_render_tap(render_point)
-
-    def _swipe_render_points(
-        self,
-        start: tuple[int, int],
-        end: tuple[int, int],
-        duration_ms: int,
-    ) -> tuple[tuple[int, int], tuple[int, int]]:
-        render_start = start[0], start[1] - self._LEGACY_TOP
-        render_end = end[0], end[1] - self._LEGACY_TOP
-        for point in (render_start, render_end):
-            if not (
-                0 <= point[0] < self._RENDER_SIZE[0]
-                and 0 <= point[1] < self._RENDER_SIZE[1]
-            ):
-                raise RuntimeError(f"拒绝在安卓渲染区外滑动：{start}->{end}")
+        x1, y1 = self._to_render(start, "滑动")
+        x2, y2 = self._to_render(end, "滑动")
         if duration_ms <= 0:
             raise ValueError("滑动时长必须大于 0")
-        return render_start, render_end
+        self._client.swipe(x1, y1, x2, y2, duration_ms)
 
-    @classmethod
-    def _ensure_input_delivered(cls, result: subprocess.CompletedProcess) -> None:
-        """把「控制台回了退出码 0、指令其实没送达」转成显式失败。
-
-        2026-09-24 实机：adb 设备处于 offline，`ldconsole adb` 把
-        `adb.exe: device offline` 写进输出，退出码却是 0。于是点击被当成发送成功，
-        上层只看到「点击验收无效」，重试 4 次后报「导航转场失败」—— 表现是
-        「点不动，但程序不报错、不告警、也不切通道」。
-
-        抛出 RuntimeError 后 `click()` 既有的 activate-重试分支才会真正生效；
-        重试仍失败则明确失败，而不是继续假装成功。
-        """
-        output = b"".join(
-            bytes(stream)
-            for stream in (result.stdout, result.stderr)
-            if isinstance(stream, (bytes, bytearray))
-        )
-        lowered = output.lower()
-        if any(marker in lowered for marker in cls._INPUT_FAILURE_MARKERS):
-            raise RuntimeError(
-                "模拟器输入通道不可用，指令未送达："
-                + output.decode("utf-8", "replace").strip()
-            )
-
-    # 探测点击通道用的无害命令：走的是和真实点击**同一条** `ldconsole adb` 链路，
-    # 但只在设备里执行 `echo`，不碰游戏画面。通道通时必须回显 `ping`
-    # （2026-09-24 实测：成功时 `ldconsole adb` 的输出为空，所以这里用 echo 造回显）。
-    _INPUT_PROBE_COMMAND = "shell echo ping"
-    # 通道不可用时重建 adb 服务的两次操作。⚠️ 只用这两条：
-    # `adb reconnect offline` / `adb connect 127.0.0.1:5555` 两次实测都**无效**，
-    # 别往这里加（详见 .workbuddy/memory/topics/click_channel.md）。
-    _ADB_REBUILD_COMMANDS = (("kill-server",), ("start-server",))
-    # 二级恢复：重启**模拟器内部系统**。⚠️ 只有一级（重启 adb 服务）确实救不回来才走到这。
-    # 2026-10-04 实测：`device 'emulator-5554' not found` 和 `device offline` 两种形态
-    # 一级都修不好 —— 模拟器进程还在、5555 端口也还在监听（netstat 看得到），
-    # 但 adb 连上去状态就是 offline；手动 `adb connect 127.0.0.1:5555` 同样连不通。
-    # 也就是说坏的是**模拟器内部的接收端**，PC 侧怎么重启 adb 都碰不到它。
-    # 实测 `ldconsole reboot --index 0` 后约 30 秒通道恢复正常（dnplayer 进程号会变）。
-    # ⚠️ 用「轮询次数」而不是墙钟预算：测试里 sleep 被打桩时不会变成几分钟的空转。
-    _REBOOT_CHANNEL_ATTEMPTS = 18  # 18 × 5 秒 ≈ 90 秒
-    _REBOOT_POLL_SECONDS = 5.0
-    # 重启后必须把游戏重新拉起来：模拟器重启完停在安卓桌面（2026-10-04 实测前台是
-    # launcher3、游戏进程为零），只把通道修好而留一个空桌面，下一次跑进来还是没东西可点。
-    _GAME_PACKAGE = "com.zlongame.cn.epicseven"
-    _GAME_START_ATTEMPTS = 12  # 12 × 5 秒 = 60 秒等游戏进程出现
-    _GAME_LOBBY_SETTLE_SECONDS = 60.0  # 进程起来之后还要等它加载进大厅
-
-    def ensure_input_channel(self, attempts: int = 3, settle_seconds: float = 2.0) -> None:
-        """确认模拟器输入通道（点击/滑动/返回）还活着，坏了就用代码把它拉起来。
-
-        分两级恢复，判据都是「探一次通道」，不是猜：
-
-        1. **重启 adb 服务** —— 只对一种情况有效：host 侧 adb server 是长驻进程，
-           模拟器重启后连接没重建，设备停在 `offline`（2026-09-24 与 2026-09-28 各实测
-           一次，两次都是 `kill-server` → `start-server` 一步到位）。
-        2. **重启模拟器内部系统** —— 2026-10-04 实测：坏的是模拟器内部的接收端时，
-           一级完全无效（端口在听、adb 连上就是 offline），只有 `reboot` 能救回来
-           （约 30 秒），代价是**游戏会被一并关掉**，所以救完必须重新拉起游戏。
-
-        重启后还会再重建一次连接服务：2026-09-24 / 09-28 两次实机的根因都是
-        「模拟器重启了、连接服务没跟着重建」，旧代码只在重启前重建，重启完直接干等，
-        设备就一直查无此设备。
-
-        全程给用户报进度：这类修复要等 30 秒以上，界面不说话用户会以为卡死而按停止，
-        反而把恢复流程打断（2026-11-12 早上连着两次都是这样）。判据一个字没放宽，
-        仍然必须探到 `ping` 回显才算修好。
-
-        ⚠️ 恢复成功也照旧抛错退出（本次运行不续跑）：模拟器重启后游戏停在大厅，
-        原来那条路线已经跑不下去了，继续跑只会瞎点；让外部重新跑一整轮才是安全的。
-
-        只在实跑调用（`main._build_runtime` 的 `not dry_run` 分支，以及导航「连续点不动」
-        时的补检）。干跑不点击，不该去动 adb 服务。窗口本身不存在时 `_window()` 会先抛错，
-        所以不会引入新的失败模式。
-        """
-        last_error: Exception | None = None
-        for attempt in range(1, attempts + 1):
-            try:
-                self._probe_input_channel()
-            except (RuntimeError, subprocess.SubprocessError, OSError) as error:
-                last_error = error
-                if attempt == 1:
-                    self._emit(
-                        "提示=检测到模拟器连接中断，正在自动修复：先重建连接，"
-                        "不行再重启模拟器内部系统，通常需要 1 到 3 分钟；"
-                        "期间请勿点「安全停止」。游戏会被暂时关闭，修好后会自动重新打开。"
-                    )
-                self._emit(
-                    f"模拟器通道 状态=修复中 尝试={attempt}/{attempts} 动作=重启adb服务"
-                )
-                self._restart_adb_server()
-                sleep(settle_seconds)
-                continue
-            self._emit(
-                "模拟器通道 状态=可用"
-                if attempt == 1
-                else f"模拟器通道 状态=已恢复 尝试={attempt}/{attempts}"
-            )
-            return
-        # 一级试满仍不可用 ⇒ 二级：重启模拟器内部系统。
-        self._emit(
-            "提示=快速重建没生效，正在彻底重启模拟器内部系统；"
-            "这一步需要约 30 到 90 秒，游戏会被暂时关闭，期间请勿点「安全停止」。"
-        )
-        self._emit("模拟器通道 状态=修复中 动作=重启模拟器内部系统")
-        # reboot 会换掉模拟器进程号，窗口也可能短暂消失，所以重启后重建连接服务
-        # 要复用 reboot 自己取到的控制台路径，不能再去查一遍实例。
-        console_path = self._reboot_instance()
-        self._restart_adb_server(console_path)
-        for attempt in range(1, self._REBOOT_CHANNEL_ATTEMPTS + 1):
-            try:
-                self._probe_input_channel()
-            except (RuntimeError, subprocess.SubprocessError, OSError) as error:
-                last_error = error
-                waited = int(attempt * self._REBOOT_POLL_SECONDS)
-                remaining = int(
-                    (self._REBOOT_CHANNEL_ATTEMPTS - attempt)
-                    * self._REBOOT_POLL_SECONDS
-                )
-                self._emit(
-                    f"连接修复 进度=已等 {waited} 秒 最多还需 {remaining} 秒 "
-                    "动作=等模拟器重新上线；请勿点「安全停止」"
-                )
-                sleep(self._REBOOT_POLL_SECONDS)
-                continue
-            self._emit(
-                f"模拟器通道 状态=已恢复 尝试={attempt}/{self._REBOOT_CHANNEL_ATTEMPTS} "
-                "动作=重启模拟器内部系统"
-            )
-            self._emit(
-                "提示=连接已修好，正在重新打开游戏；本次任务会安全结束，"
-                "请等游戏回到大厅后重新点「开始任务」。"
-            )
-            self._launch_game()
-            raise RuntimeError(
-                "模拟器输入通道已修复（重启模拟器内部系统），但游戏被一并关闭、"
-                f"本次运行不续跑：已重新拉起 {self._GAME_PACKAGE}，"
-                "请确认它停在大厅后重跑整轮"
-            )
-        self._emit(
-            "提示=自动修复没能恢复连接。请手动关闭雷电模拟器再重新打开，"
-            "等游戏进入大厅后再点「开始任务」；如果仍然不行，请重启一次电脑。"
-        )
-        raise RuntimeError(
-            f"模拟器输入通道不可用，重启 adb 服务 {attempts} 次并重启模拟器内部系统后"
-            f"仍未恢复：{last_error}"
-        )
-
-    def _reboot_instance(self) -> Path:
-        """重启模拟器内部系统（`ldconsole reboot --index N`），返回重启前的控制台路径。
-
-        ⚠️ 这个动作会**关掉游戏**：dnplayer 进程号会变，安卓回到桌面。
-        只在通道确实探不通时才由 `ensure_input_channel` 调用，别单独拿来用。
-        返回路径是为了让调用方在重启后直接重建 adb 服务，不必再去查一遍实例
-        （那时窗口可能还没回来，进程号也变了）。
-        """
-        console_path, instance_index, _ = self._instance_channel()
-        subprocess.run(
-            [str(console_path), "reboot", "--index", instance_index],
-            check=False,
-            capture_output=True,
-            timeout=30,
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-        )
-        return console_path
-
-    def _launch_game(self) -> None:
-        """把被模拟器重启关掉的游戏拉起来，等它进程出现，再留一段加载时间。
-
-        ⚠️ 这里**不验证**是否已进大厅：页面判定在 `games/epic7` 层，核心层不该知道，
-        所以只能「等进程出现 + 固定等一段」，并在抛给上层的消息里写明要人工确认。
-        """
-        console_path, instance_index, _ = self._instance_channel()
-        subprocess.run(
-            [
-                str(console_path),
-                "runapp",
-                "--index",
-                instance_index,
-                "--packagename",
-                self._GAME_PACKAGE,
-            ],
-            check=False,
-            capture_output=True,
-            timeout=30,
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-        )
-        for attempt in range(1, self._GAME_START_ATTEMPTS + 1):
-            result = subprocess.run(
-                [
-                    str(console_path),
-                    "adb",
-                    "--index",
-                    instance_index,
-                    "--command",
-                    f"shell pidof {self._GAME_PACKAGE}",
-                ],
-                check=False,
-                capture_output=True,
-                timeout=10,
-                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-            )
-            if result.stdout.strip():
-                self._emit(f"游戏已拉起 包名={self._GAME_PACKAGE} 尝试={attempt}")
-                self._emit(
-                    "提示=游戏已打开，正在等它加载进大厅（约 60 秒）；"
-                    "请勿点「安全停止」，等它回到大厅后重新点「开始任务」。"
-                )
-                sleep(self._GAME_LOBBY_SETTLE_SECONDS)
-                return
-            sleep(self._REBOOT_POLL_SECONDS)
-        self._emit(f"游戏启动确认=超时 包名={self._GAME_PACKAGE} 状态=未能确认进程")
-
-    def _probe_input_channel(self) -> None:
-        """走真实点击那条 `ldconsole adb` 链路发一条无害命令，确认有回显。"""
-        console_path, instance_index, _ = self._instance_channel()
-        result = subprocess.run(
-            [
-                str(console_path),
-                "adb",
-                "--index",
-                instance_index,
-                "--command",
-                self._INPUT_PROBE_COMMAND,
-            ],
-            check=True,
-            capture_output=True,
-            timeout=10,
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-        )
-        # 设备 offline 时 ldconsole 的退出码仍是 0，失败只写在输出里 ⇒ 必须看内容。
-        self._ensure_input_delivered(result)
-        output = b"".join(
-            bytes(stream)
-            for stream in (result.stdout, result.stderr)
-            if isinstance(stream, (bytes, bytearray))
-        )
-        if b"ping" not in output.lower():
-            raise RuntimeError(
-                "模拟器输入通道探测无回显："
-                + output.decode("utf-8", "replace").strip()
-            )
-
-    def _restart_adb_server(self, console_path: Path | None = None) -> None:
-        """`adb kill-server` → `start-server`，只重建 host 侧 adb 服务。
-
-        **不动模拟器、不重启游戏**（两次实测都是一步到位）。
-        这里刻意 `check=False`：server 没在跑时 `kill-server` 也可能给非 0，
-        真正的判据是重建之后再探一次通道有没有回显。
-
-        `console_path` 可选：模拟器刚重启时窗口和进程号都可能还没回来，
-        那时不能再查一遍实例，直接用重启前取好的路径。
-        """
-        if console_path is None:
-            console_path, _, _ = self._instance_channel()
-        adb_path = console_path.with_name("adb.exe")
-        if not adb_path.exists():
-            raise RuntimeError(f"未在 {console_path.parent} 找到 adb.exe，无法重建输入通道")
-        for arguments in self._ADB_REBUILD_COMMANDS:
-            subprocess.run(
-                [str(adb_path), *arguments],
-                check=False,
-                capture_output=True,
-                timeout=20,
-                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-            )
-
-    def _send_render_tap(self, point: tuple[int, int]) -> None:
-        console_path, instance_index, _ = self._instance_channel()
-        result = subprocess.run(
-            [
-                str(console_path),
-                "adb", "--index", instance_index,
-                "--command", f"shell input tap {point[0]} {point[1]}",
-            ],
-            check=True,
-            capture_output=True,
-            timeout=10,
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-        )
-        self._ensure_input_delivered(result)
-
-    def _send_render_swipe(
-        self,
-        start: tuple[int, int],
-        end: tuple[int, int],
-        duration_ms: int,
-    ) -> None:
-        console_path, instance_index, _ = self._instance_channel()
-        result = subprocess.run(
-            [
-                str(console_path),
-                "adb",
-                "--index",
-                instance_index,
-                "--command",
-                (
-                    f"shell input swipe {start[0]} {start[1]} "
-                    f"{end[0]} {end[1]} {duration_ms}"
-                ),
-            ],
-            check=True,
-            capture_output=True,
-            timeout=10,
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-        )
-        self._ensure_input_delivered(result)
-
-    @staticmethod
-    def _window_rect_from_handle(handle: int) -> WindowRect:
-        rect = wintypes.RECT()
-        if not ctypes.windll.user32.GetWindowRect(handle, ctypes.byref(rect)):
-            raise RuntimeError(f"无法读取雷电模拟器渲染窗口 {handle}")
-        return WindowRect(
-            rect.left,
-            rect.top,
-            rect.right - rect.left,
-            rect.bottom - rect.top,
-        )
-
-    def _instance_channel(self) -> tuple[Path, str, int]:
-        window = self._window()
-        process_id = ctypes.c_ulong()
-        ctypes.windll.user32.GetWindowThreadProcessId(window._hWnd, ctypes.byref(process_id))
-        player_path = Path(psutil.Process(process_id.value).exe())
-        console_path = player_path.with_name("ldconsole.exe")
-        if not console_path.exists():
-            raise RuntimeError(f"未在 {player_path} 旁找到雷电模拟器控制台")
-        listed = subprocess.run(
-            [str(console_path), "list2"],
-            check=True,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=10,
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-        ).stdout
-        for line in listed.splitlines():
-            fields = line.split(",")
-            if len(fields) > 5 and fields[5].strip() == str(process_id.value):
-                return console_path, fields[0].strip(), int(fields[3].strip())
-        raise RuntimeError(f"无法将雷电模拟器进程 {process_id.value} 对应到实例")
-
-    def instance_channel(self) -> tuple[Path, str, int]:
-        """公开的只读入口：``(雷电控制台路径, 实例序号, 渲染窗口句柄)``。
-
-        ⚠️ 只给**竖屏通道**（``core/portrait.py``）用。竖屏段（游戏内 H5「游戏社区」）
-        同样要定位「是哪个雷电实例、哪个窗口」，但那套发现逻辑（``_window`` /
-        ``_instance_channel``）本来就是为横屏写的、只读可用，不该再抄第二份 ——
-        抄一份就会出现「两个地方各自判断哪个是目标窗口」的漂移。
-
-        走的是与横屏**完全相同**的 ``_instance_channel``：本方法只是把它从私有变成
-        可读，横屏的取图/点击/返回一行都没动。
-        """
-        return self._instance_channel()
+    def wake(self, point: tuple[int, int]) -> None:
+        """ADB 注入不需要真鼠标唤醒界面层，点击即可。"""
+        self.click(point)
 
     def back(self) -> None:
+        """安卓标准返回键。"""
+        self._client.back()
+
+    def activate(self) -> None:
+        """ADB 是安卓内部注入，不依赖前台焦点，无需激活窗口。"""
+        return None
+
+    # ── 提权 / 自检 ─────────────────────────────────────────────────────────
+
+    def process_id(self) -> int:
+        """游戏进程 PID（提权提示用；ADB 注入不受 UIPI 限制，仅作信息）。"""
+        return self._client.device.game_pid
+
+    def ensure_input_channel(self) -> None:
+        """探测输入通道，坏了重建 adb 服务再探；仍不通则显式报错。"""
         try:
-            self._send_android_back()
-        except (RuntimeError, subprocess.SubprocessError):
-            self.activate()
-            self._send_android_back()
+            self._client.probe()
+            self._emit("模拟器通道 状态=可用")
+            return
+        except (RuntimeError, OSError) as error:
+            self._emit(f"模拟器通道 状态=探测失败 原因={error} 动作=重建连接服务")
 
-    def _send_android_back(self) -> None:
-        """Use LDPlayer's instance channel; keyboard Esc can be stolen by keymaps."""
+        adb = self._client.adb
+        for command in (["kill-server"], ["start-server"]):
+            subprocess_run(adb, command)
+        try:
+            self._client.probe()
+            self._emit("模拟器通道 状态=已恢复 动作=重建连接服务")
+        except (RuntimeError, OSError) as error:
+            raise RuntimeError(
+                "模拟器输入通道一直没恢复：已尝试重建连接服务仍无响应。"
+                "请关闭模拟器重新打开，等游戏回到大厅后重新开始"
+                f"（底层信息：{error}）"
+            ) from error
 
-        console_path, instance_index, _ = self._instance_channel()
-        result = subprocess.run(
-            [
-                str(console_path), "action", "--index", instance_index,
-                "--key", "call.keyboard", "--value", "back",
-            ],
-            check=True,
-            capture_output=True,
-            timeout=10,
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-        )
-        self._ensure_input_delivered(result)
+
+def subprocess_run(adb: Path, command: list[str]) -> None:
+    """重建 adb 服务用：检查=False，失败由随后的一次探测判定。"""
+    import subprocess
+
+    subprocess.run(
+        [str(adb), *command],
+        check=False,
+        capture_output=True,
+        timeout=20,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+    )
+
+
+__all__ = [
+    "EmulatorNotFound",
+    "Epic7Window",
+    "WindowRect",
+    "WindowViewport",
+]

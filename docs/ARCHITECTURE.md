@@ -13,7 +13,8 @@ auto_game_unified/
 │  ├─ hotkey.py             # 全局停止键（P）—— 自动化与连点器共用同一个键
 │  ├─ autoclicker.py        # 固定点连点器（「实用工具」页；与路线无关，不认画面）
 │  ├─ qqbot.py             # 官方 QQ 机器人开放平台 C2C 私聊推送
-│  ├─ window.py             # 模拟器窗口捕获与局部坐标点击（雷电 adb 通道）
+│  ├─ window.py             # 模拟器窗口捕获与局部坐标点击（统一走标准 ADB，不认品牌）
+│  ├─ emulator_adb.py       # 通用 ADB 后端：按游戏 PID 发现设备、screencap 取图、注入输入（新增模拟器零改动）
 │  ├─ pc_window.py          # PC 客户端窗口 I/O（BitBlt 后台抓屏、SendInput 点击、ESC、滑动、滚轮）
 │  ├─ visual_evidence.py    # 通用模板判据、动作证据及校验
 │  ├─ evidence_diagnostics.py # 失败诊断落盘（screen/source/target/evidence.json）
@@ -24,7 +25,7 @@ auto_game_unified/
 │  ├─ navigation.py         # 从支持页面受控返回大厅并进入目标模式（导航链的**执行器**）
 │  ├─ navigation_plan.py    # 导航链的声明式数据（纯 dataclass，不含任何路线知识）
 │  ├─ global_popups.py      # 全局弹窗守卫（现行 20+ 类，清单见文件里的 _find_popup）
-│  ├─ unknown_screen.py     # 未知画面唤醒（萤火待机等）与安全停止
+│  ├─ unknown_screen.py     # 未知画面观察（只记诊断、交还上层）与大厅观赏模式的有界唤醒
 │  ├─ battle_controls.py    # 战斗内 Auto/加速按钮识别
 │  ├─ stamina.py            # 体力弹窗共享：区域、模板、补体力决策
 │  ├─ runner_base.py        # 同构模式公共主循环（ModeRunnerBase；点一次→每帧重问状态机）

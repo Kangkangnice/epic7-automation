@@ -169,12 +169,18 @@ import numpy as np
 
 from auto_game_unified.core.battle_supervisor import valid_game_frame
 from auto_game_unified.core.matcher import (
+    MATCH_MODE_RAW,
+    MATCH_MODE_WHITE_MASK,
     Match,
     load_template,
     locate_with_fallback,
 )
 from auto_game_unified.core.runtime import Runtime
 from auto_game_unified.core.supervisor import StableObservation
+from auto_game_unified.games.epic7.unknown_screen import (
+    LobbySpectatorWake,
+    SpectatorWakeResult,
+)
 from auto_game_unified.games.epic7.evidence.labyrinth_stone import (
     REFERENCE_SIZE,
     REGIONS as LABYRINTH_REGIONS,
@@ -198,6 +204,7 @@ __all__ = [
 # （用 ``LABYRINTH_REGIONS[...]`` 取值，不写字面量），理由见模块 docstring。
 _REGIONS = {
     "lobby_story": (1450, 220, 480, 200),       # navigation，不在迷宫 REGIONS 里
+    "lobby_story_tight_white": (1450, 220, 480, 200),  # 同区域，白字口径
     "lobby_arena": (1600, 520, 330, 220),
     "lobby_battle": (1650, 430, 332, 220),
     "quick_menu_button": LABYRINTH_REGIONS["quick_menu_button"],
@@ -212,6 +219,8 @@ _REGIONS = {
 # 大厅主锚点用导航那边的 0.80（``observe()`` 里写死的那个）。
 _THRESHOLDS = {name: 0.82 for name in _REGIONS}
 _THRESHOLDS["lobby_story"] = 0.80
+# 白字口径与原来样口径不在同一量纲，阈值必须单定；沿用 0.80 会放进冒牌。
+_THRESHOLDS["lobby_story_tight_white"] = 0.90
 
 # 观测预算：与老 ``return_home`` 同规格（transition_frames * 4 帧 × poll_seconds）。
 _OBSERVATION_SECONDS = 120.0
@@ -270,6 +279,8 @@ class HomeReturnTemplates:
     """v2 要用到的一整套模板（大厅三个 + 迷宫那六个）。"""
 
     lobby_story: np.ndarray
+    # 抗背景第二形态（与 navigation.NavigationTemplates 同源，见那里的注释）。
+    lobby_story_tight_white: np.ndarray
     lobby_arena: np.ndarray
     lobby_battle: np.ndarray
     quick_menu_button: np.ndarray
@@ -285,6 +296,12 @@ class HomeReturnTemplates:
     # ⚠️ **不能**放进全局弹窗守卫：骑士团捐赠正常流程就会进这页，会被踢出去。
     knights_activity_title: np.ndarray | None = None
     knights_activity_close: np.ndarray | None = None
+    # 2026-11-22：章节打完弹出的「完成故事」/整屏提示底部的「点击关闭」。
+    # 与主线 ``story/complete_close.png`` **同一张图**（不另存第二份副本）。
+    # 只在回家路上「认不出任何页面」（observed == "unknown"）时点一次：
+    # 这行字本身不排他（远征胜利、等级提升等弹窗底部也有），所以**不能**放进
+    # 每帧调用的全局弹窗守卫，否则正常流程会被它打断。
+    notice_close: np.ndarray | None = None
 
 
 def build_home_return_templates(
@@ -311,8 +328,18 @@ def build_home_return_templates(
         path = template_root / "global" / f"{key}.png"
         return load_template(str(path)) if path.is_file() else None
 
+    # 「点击关闭」与主线共用同一张图：主线那边是 ``complete`` 动作的落点，
+    # 这里只用于回家路上关掉挡路的章节完成弹窗。
+    notice_close_path = template_root / "story" / "complete_close.png"
+    notice_close = (
+        load_template(str(notice_close_path))
+        if notice_close_path.is_file()
+        else None
+    )
+
     return HomeReturnTemplates(
         lobby_story=navigator_templates.lobby_story,
+        lobby_story_tight_white=navigator_templates.lobby_story_tight_white,
         lobby_arena=navigator_templates.lobby_arena,
         lobby_battle=navigator_templates.lobby_battle,
         quick_menu_button=labyrinth_template("quick_menu_button"),
@@ -323,6 +350,7 @@ def build_home_return_templates(
         giveup_dialog_finish=labyrinth_template("giveup_dialog_finish"),
         knights_activity_title=global_optional("knights_activity_title"),
         knights_activity_close=global_optional("knights_activity_close"),
+        notice_close=notice_close,
     )
 
 
@@ -336,6 +364,7 @@ def return_home_v2(
     stop_probe: Optional[Callable[[np.ndarray], bool]] = None,
     sleep: Callable[[float], None] = default_sleep,
     poll_seconds: float = 0.5,
+    spectator_wake: Optional[LobbySpectatorWake] = None,
 ) -> np.ndarray:
     """把游戏送回大厅（v2）。
 
@@ -363,6 +392,11 @@ def return_home_v2(
     ``stop_probe`` 是「接力」钩子，语义与老流程**完全一致**（每确认一帧稳定画面
     就问一次，返回 True 就当场停下、把这一帧交还调用方）。它必须排在**所有动作之前**
     —— 排在后面的话，一个认不出页面的接力点会被 ESC 先按掉。
+
+    ``spectator_wake`` 是「大厅观赏模式」兜底（2026-11-22）：观赏模式整屏立绘、
+    没有任何 UI，``observe`` 报 unknown，回家流程会一路按 ESC 却回不去。注入这个
+    有界唤醒器后，unknown 稳定帧先问它 —— 判据与 2 次上限都在唤醒器里，点完本帧
+    交还、下一帧重新认页面。默认 None（老调用方 / 测试替身）时整段跳过，行为不变。
 
     返回「到家」的那一帧（或者接力命中的那一帧）。
     """
@@ -593,6 +627,37 @@ def return_home_v2(
                 sleep(poll_seconds)
                 continue
 
+        # ⑦.7 整屏提示底部的「点击关闭」（2026-11-22）：主线打完一章会弹
+        # 「完成故事」，这页盖在章节地图上、不吃 ESC。只在**认不出任何页面**时
+        # 试一次；同一页点两次仍无效就 retire，落到 ⑧ 的 ESC，不在这一页死磕。
+        if observed == "unknown" and not verifier.is_retired("关闭整屏提示", observed):
+            notice = _notice_close_point(screen, templates)
+            if notice is not None:
+                runtime.log(
+                    f"模式=导航 流程=v2 页面=整屏提示 动作=点击关闭 "
+                    f"置信度={notice.score:.3f} 坐标={notice.center}"
+                )
+                verifier.act(
+                    "关闭整屏提示",
+                    lambda: runtime.click(notice.center, "close-notice"),  # noqa: B023
+                    screen,
+                )
+                stable.reset()
+                sleep(poll_seconds)
+                continue
+
+        # ⑦.8 大厅观赏模式兜底（2026-11-22）：整屏立绘、无任何 UI ⇒ observe 报
+        # unknown，上面七个点击分支全都认不出，会落到 ESC —— 而观赏模式下按 ESC
+        # 退不出去。只在 observe=unknown 时问有界唤醒器；点中心一次后交还，下一帧
+        # 重新认页面。默认没注入唤醒器时整段跳过，行为与历史一致。
+        if observed == "unknown" and spectator_wake is not None:
+            spectator = spectator_wake.handle(screen, context="等大厅")
+            if spectator is SpectatorWakeResult.CLICKED:
+                runtime.log("模式=导航 流程=v2 状态=观赏模式点中心已发出 验收=下一帧认页面")
+                stable.reset()
+                sleep(poll_seconds)
+                continue
+
         # ⑧ 都不是 ⇒ 按 ESC 退一层。
         back_count = verifier.press_esc(back_count, observed, screen, "兜底")
         stable.reset()
@@ -776,9 +841,12 @@ class _ActionVerifier:
             # 与导航那边同一个口径（``navigation`` 在「连点两次纹丝不动」时也调这个）。
             self._runtime.ensure_input_channel()
             diagnostic = _save(self._runtime, "return_home_v2_esc_no_effect")
+            note = getattr(self._runtime, "network_popup_note", None)
+            network_note = note() if callable(note) else ""
             raise RuntimeError(
                 f"返回首页失败：连按 {self._esc_ineffective} 次 ESC 页面都没有变化"
-                f"（停在页面={before or '未知'}）；已保存诊断 {diagnostic}"
+                f"（停在页面={before or '未知'}）{network_note}；"
+                f"已保存诊断 {diagnostic}"
             )
         return back_count
 
@@ -845,7 +913,10 @@ def _at_lobby(screen: np.ndarray, templates: HomeReturnTemplates) -> bool:
     单靠 ``lobby_story`` 不够 —— 它在大厅上 1.0000，但别的地方也可能像。
     要求「主线入口」与（「竞技场」或「战斗」）**同时**命中，取两者的低分。
     """
-    story = _locate(screen, templates.lobby_story, "lobby_story")
+    # 与 navigation.observe() 同构：原模板或抗背景白字模板任一命中即可。
+    story = _locate(screen, templates.lobby_story, "lobby_story") or _locate(
+        screen, templates.lobby_story_tight_white, "lobby_story_tight_white"
+    )
     if story is None:
         return False
     for name in ("lobby_arena", "lobby_battle"):
@@ -864,6 +935,13 @@ _ACTIVITY_TITLE_REGION = (60, 120, 340, 110)
 _ACTIVITY_CLOSE_REGION = (820, 1040, 400, 80)
 _ACTIVITY_TITLE_THRESHOLD = 0.82
 _ACTIVITY_CLOSE_THRESHOLD = 0.85
+# 「点击关闭」这一行字的搜索区，与主线 ``story._COMPLETE_CLOSE_REGION`` 必须一致：
+# 同一张图、同一个控件，框换了就会两边各自漂移。
+_NOTICE_CLOSE_REGION = (820, 700, 270, 140)
+# 实测（2026-11-22 章节完成帧）：正例 0.9553；同位置的反例全是**别的弹窗的同一行字**
+# （远征胜利 0.9528 / 等级提升 0.9145 / 世界首领支援奖励 0.8402），点下去都是关弹窗，
+# 不会误伤正常页面 —— 但仍只在 observed=unknown 时用，见调用点。
+_NOTICE_CLOSE_THRESHOLD = 0.85
 
 
 def _activity_close_point(
@@ -899,6 +977,30 @@ def _activity_close_point(
     )
 
 
+def _notice_close_point(
+    screen: np.ndarray, templates: "HomeReturnTemplates"
+) -> Optional[Match]:
+    """整屏提示底部的「点击关闭」：只决定点哪，不决定「这是哪一页」。
+
+    现场（2026-11-22 12:50）：主线打完一章弹出「完成故事」，这页盖在章节地图上、
+    不吃 ESC。收尾连按 2 次 ESC 页面没动 ⇒「回首页失败」。这一行字四平八稳地
+    印在弹窗底部，点它就关掉。
+
+    ⚠️ **必须由调用方限定 observed=unknown**：这行字在远征胜利、等级提升等
+    多个弹窗上都有，无条件点会把正常流程打断（详见模块里 ⑦.5 的同类教训）。
+    """
+    if templates.notice_close is None:
+        return None
+    return locate_with_fallback(
+        "notice_close",
+        screen,
+        templates.notice_close,
+        _NOTICE_CLOSE_THRESHOLD,
+        region=_NOTICE_CLOSE_REGION,
+        reference_size=REFERENCE_SIZE,
+    )
+
+
 def _locate(
     screen: np.ndarray, template: np.ndarray, name: str
 ) -> Optional[Match]:
@@ -916,6 +1018,11 @@ def _locate(
         _THRESHOLDS[name],
         region=_REGIONS[name],
         reference_size=REFERENCE_SIZE,
+        mode=(
+            MATCH_MODE_WHITE_MASK
+            if name == "lobby_story_tight_white"
+            else MATCH_MODE_RAW
+        ),
     )
 
 

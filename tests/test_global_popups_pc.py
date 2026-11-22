@@ -1,12 +1,15 @@
-"""「解锁缘分」弹窗：PC 专属全局弹窗扩展（模拟器零改动）的回归测试。
+"""「解锁缘分」弹窗：双端全局弹窗扩展（包装 ``_find_popup`` 的轻量方案）的回归测试。
 
-2026-11-07 13:11 主线真机：Episode 5 第 3 关通关后弹出这层通知窗，整页盖住
+2026-11-07 13:11 PC 主线真机：Episode 5 第 3 关通关后弹出这层通知窗，整页盖住
 关卡入口 ⇒ ``页面无进展：主线画面[跳过确认]未识别`` ⇒ 主线 ✗、安全停止回家。
+2026-11-22 12:12 模拟器主线也撞到同一层（角色=尤娜）⇒ 扩展为双端通用：
+  * 标题图两端字形不同 —— PC 用 ``global/pc/`` 的 PC 图，模拟器用共享层的模拟器图
+    （PC 图打模拟器帧只有 0.68，故按真机重裁，见 ``_TITLE_REGION`` 相关探针）；
+  * OK 按钮图通用，放共享层；
+  * ``template_root / "global"`` 在 PC 下是 TemplateDir 自动选 pc 图，模拟器下回落共享图。
 
-⚠️ 本文件最重要的两条不是「认得出」，而是：
-  * 模拟器口径下两张 PC 图都加载不到 ⇒ 判据恒 None；
-  * ``install_pc_only_popups`` 在模拟器口径下是**完全 no-op**。
-用户 2026-11-07 定死：移植项目所有改动只能在 PC 里，模拟器完全不动。
+⚠️ 无论哪端，本文件最重要的仍是：判据双锚点缺一不可、继承原守卫的点击预算/熔断、
+不挡住既有 23 类弹窗。这些由下方测试逐条钉住。
 """
 
 from pathlib import Path
@@ -58,6 +61,13 @@ def emulator_templates():
     return load_relationship_unlock_templates(TEMPLATES)
 
 
+EMU_POPUP = "relationship_unlock_emulator_live_20261122.png"
+
+
+def emulator_popup_screen() -> np.ndarray:
+    return load_screen(GLOBAL_FIXTURES / EMU_POPUP)
+
+
 class FakeClock:
     def __init__(self) -> None:
         self.value = 0.0
@@ -83,11 +93,20 @@ def test_relationship_unlock_is_recognised_on_pc_and_points_at_ok():
     assert abs(match.center[1] - 825) <= 8, match.center
 
 
-def test_emulator_loads_no_relationship_unlock_templates():
-    """两张图只在 global/pc/：模拟器口径全 None ⇒ 判据恒不生效。"""
+def test_emulator_recognises_relationship_unlock_from_shared_templates():
+    """模拟器用共享层的模拟器字形图，认得出模拟器真机帧、认不出 PC 帧。
+
+    标题图两端字形不同 —— PC 图打模拟器帧只有 0.6808（阈 0.82 不过），
+    所以必须按模拟器真机重裁；这一条钉住不会退回用 PC 图。
+    """
     templates = emulator_templates()
-    assert templates.title is None
-    assert templates.ok is None
+    assert templates.title is not None and templates.ok is not None
+    match = find_relationship_unlock_ok(emulator_popup_screen(), templates)
+    assert match is not None
+    assert match.score >= 0.99
+    assert abs(match.center[0] - 957) <= 8
+    assert abs(match.center[1] - 825) <= 8
+    # 互斥：模拟器模板不该认出 PC 帧（字形不同），避免一份图通吃两端。
     assert find_relationship_unlock_ok(popup_screen(), templates) is None
 
 
@@ -158,15 +177,18 @@ def _guard() -> Epic7GlobalPopupGuard:
     return Epic7GlobalPopupGuard(load_network_reconnect_templates(TEMPLATES))
 
 
-def test_install_is_a_complete_noop_on_emulator():
-    """模拟器口径：守卫的 _find_popup 一个字节都不换。"""
+def test_install_wires_up_on_emulator_too():
+    """模拟器口径（普通 Path）：共享层有模拟器图 ⇒ 正常安装新判据。"""
     guard = _guard()
     before = guard._find_popup
     result = install_pc_only_popups(guard, TEMPLATES)
 
     assert result is guard
-    assert guard._find_popup == before
-    assert not getattr(guard, "_pc_only_popups_installed", False)
+    assert guard._find_popup is not before
+    assert getattr(guard, "_pc_only_popups_installed", False)
+    match, popup, _, _, _ = guard._find_popup(emulator_popup_screen())
+    assert popup == "relationship_unlock"
+    assert match is not None
 
 
 def test_install_is_idempotent():
@@ -307,18 +329,16 @@ def _run_mode_on(backend: str, install_mock=None):
     return runtime
 
 
-def test_main_never_injects_pc_popups_on_emulator():
+def test_main_injects_popups_on_emulator_too():
     from unittest.mock import MagicMock
 
-    inject = MagicMock()
+    inject = MagicMock(side_effect=lambda guard, _: guard)
     runtime = _run_mode_on("emulator", inject)
 
-    inject.assert_not_called()
+    inject.assert_called_once()
     runtime.set_capture_guard.assert_called_once()
-    # 挂上去的必须是**没被打补丁**的原守卫。
     guard = runtime.set_capture_guard.call_args.args[0]
     assert isinstance(guard, Epic7GlobalPopupGuard)
-    assert not getattr(guard, "_pc_only_popups_installed", False)
 
 
 def test_main_injects_pc_popups_only_on_pc():
@@ -343,14 +363,15 @@ def test_real_pc_assembly_recognises_relationship_unlock():
     assert match is not None and abs(match.center[1] - 825) <= 8
 
 
-def test_real_emulator_assembly_stays_blind_to_relationship_unlock():
-    """端到端：模拟器口径下，同一张 PC 帧仍认不出（守卫没被装任何新判据）。"""
+def test_real_emulator_assembly_recognises_relationship_unlock():
+    """端到端：真跑 main 的模拟器装配，守卫认出模拟器帧的这层弹窗。"""
     runtime = _run_mode_on("emulator")
     guard = runtime.set_capture_guard.call_args.args[0]
-    _, popup, _, _, _ = guard._find_popup(popup_screen())
+    match, popup, action, _, _ = guard._find_popup(emulator_popup_screen())
 
-    assert popup != "relationship_unlock"
-    assert not getattr(guard, "_pc_only_popups_installed", False)
+    assert popup == "relationship_unlock"
+    assert action == "dismiss-relationship-unlock"
+    assert match is not None and abs(match.center[1] - 825) <= 8
 
 
 # ── 宠物小屋礼物角标：PC 侧回归（2026-11-07） ──────────────────────────────

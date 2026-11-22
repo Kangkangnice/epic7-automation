@@ -12,8 +12,11 @@ from auto_game_unified.games.epic7.evidence.arena import build_arena_evidence
 from auto_game_unified.games.epic7 import story as story_module
 from auto_game_unified.games.epic7.activity_column import ACTIVITY_SCROLL_STEP
 from auto_game_unified.games.epic7.navigation import (
+    LEFT_MENU_REGION,
     REFERENCE_SIZE,
     Epic7Navigator,
+    _ACTIVITY_ROW_FALLBACKS,
+    _WHITE_TEXT_CENTER_FIX,
     build_navigation_templates,
     load_template,
 )
@@ -164,7 +167,7 @@ class NavigationTests(unittest.TestCase):
         """两颗候选模板必须**互补**：干净大厅靠主模板过阈、带角标大厅靠第二张过阈，
         且各自在对方的状态下都不过阈。少了任何一半，这条判据就是摆设。"""
         base, badged = build_navigation_templates(TEMPLATES).lobby_shop_entry
-        region = (0, 430, 220, 230)
+        region = LEFT_MENU_REGION
         threshold = 0.82
 
         def best(image, template) -> float:
@@ -779,33 +782,104 @@ class NavigationTests(unittest.TestCase):
                 self.assertGreaterEqual(observation.confidence, 0.9)
 
     def test_lobby_quick_menu_button_matches_clean_and_badged_frames(self):
-        """开菜单那颗蓝四格会挂**橙色未读角标**（角标里还可能带数字）。
+        """开菜单那颗四格方块会挂**橙色未读角标**（角标里还可能带数字）。
 
         角标是**可变内容**，绝不能裁进模板 ⇒ 模板刻意只取「四格的下 3/4」
         （从角标下方起裁）。这一条证明该裁法**对有无角标都成立**：
         干净帧与带角标帧都要过阈，且落点一致（±2px）。
         """
         navigator = self.navigator([])
-        templates = navigator.templates
 
         clean = world_boss_fixture("lobby_with_knights")   # 无角标
         dotted = fixture("lobby")                          # 有橙色角标
         centers = []
         for name, screen in (("clean", clean), ("dotted", dotted)):
             with self.subTest(frame=name):
-                match = find_template(
-                    screen,
-                    templates.lobby_quick_menu_button,
-                    0.82,
-                    region=Epic7Navigator._REGIONS["lobby_quick_menu_button"],
-                    reference_size=(1982, 1132),
-                )
-                self.assertIsNotNone(match, f"{name} 帧上蓝四格没过阈")
+                match = navigator._locate(screen, "lobby_quick_menu_button")
+                self.assertIsNotNone(match, f"{name} 帧上四格方块没过阈")
                 centers.append(match.center)
                 self.assertGreaterEqual(match.score, 0.82)
 
         self.assertLessEqual(abs(centers[0][0] - centers[1][0]), 2)
         self.assertLessEqual(abs(centers[0][1] - centers[1][1]), 2)
+
+    def test_lobby_quick_menu_button_matches_the_second_account_frame(self):
+        """换账号那帧同样要能认出，且落点仍在图标中心。
+
+        ⚠️ 这帧（`lobby_menu_items_missing_20261121`）原抓取时**通道顺序是错的**
+        —— ADB 解码给的是 BGR，被原样当成 RGB 用，于是蓝色四格在画面里显示成橙色，
+        原样模板只有 0.4685。2026-11-22 修复抓图通道后按正确口径重新存档，
+        现在蓝版直接 0.9979。
+
+        ⇒ 这条用例同时是一道**通道护栏**：如果将来又有帧按错误通道存档，
+        蓝版会掉到 0.47 一带，这条会立刻挂，而不是让下游去怀疑"游戏换了配色"。
+        """
+        navigator = self.navigator([])
+        shifted = fixture("lobby_menu_items_missing_20261121")
+        match = navigator._locate(shifted, "lobby_quick_menu_button")
+
+        self.assertIsNotNone(match, "第二个账号那帧没过阈")
+        self.assertGreaterEqual(match.score, 0.95)
+        self.assertLessEqual(abs(match.center[0] - 1862), 3)
+        self.assertLessEqual(abs(match.center[1] - 106), 3)
+
+    def test_lobby_entries_fall_back_to_their_text_labels_on_a_new_backdrop(self):
+        """换主题/换号把底图换掉时，原样候选掉下阈，白字候选必须兜住。
+
+        做法是把**非白像素**整体换成另一种底色（文字与图标保持原样）——
+        这才是真实主题变化的形态。此时原样模板实测 0.79~0.81（阈 0.82），
+        白字候选仍是 1.0000。
+
+        ⚠️ 覆盖的四个锚点都是「图标 + 中文名」却**只裁了图标**的那一类
+        （2026-11-22 全库审计结果）。`lobby_side_story` 的沿革见另一个专门用例：
+        第一次被通道错乱的假象误导撤回，第二次（16:08 真换皮）恢复。
+        """
+        cases = (
+            ("lobby_knights", world_boss_fixture("lobby_with_knights")),
+            ("quick_menu_hero", fixture("quick_menu_over_lobby")),
+            ("quick_menu_knights", fixture("quick_menu_over_lobby")),
+            ("pet_house_entry", fixture("quick_menu_over_lobby")),
+        )
+        navigator = self.navigator([])
+        for anchor, screen in cases:
+            with self.subTest(anchor=anchor):
+                original = navigator._locate(screen, anchor)
+                self.assertIsNotNone(original, f"{anchor}: 原帧就认不出")
+
+                # 把非白像素换成紫黑底色，白字/白图标一字不动。
+                swapped = screen.copy()
+                kept = (swapped >= 200).all(axis=2)
+                swapped[~kept] = (26, 18, 32)
+
+                match = navigator._locate(swapped, anchor)
+                self.assertIsNotNone(match, f"{anchor}: 换底色后白字候选没兜住")
+                self.assertGreaterEqual(match.score, 0.90)
+
+    def test_lobby_side_story_falls_back_to_white_text_on_new_art(self):
+        """支线入口整块换皮（多了 New Substory + 绿色 New 角标）后，白字兜底必须认出。
+
+        2026-11-22 16:08 实跑：入口新画法使原样模板只剩 0.7048（阈 0.82），
+        但「支线故事」四个白字仍在（白字口径 0.8987）。通道互换对照 0.7040
+        ⇒ 排除抓图通道错乱，确认是真换皮。这次恢复白字候选（第一次撤回是通道假象，
+        详见 navigation.py 的沿革注释）。
+        """
+        from auto_game_unified.games.epic7.navigation import EXTRA_WHITE_CANDIDATES
+
+        self.assertIn("lobby_side_story", EXTRA_WHITE_CANDIDATES)
+        self.assertEqual(
+            EXTRA_WHITE_CANDIDATES["lobby_side_story"],
+            ("lobby_side_story_text_white",),
+        )
+        navigator = self.navigator([])
+        self.assertIsNotNone(navigator.templates.lobby_side_story_text_white)
+
+    def test_quick_menu_entries_do_not_fire_on_a_plain_lobby(self):
+        """快捷菜单三格只认菜单展开态的坐标，大厅页上必须一颗都不命中。"""
+        navigator = self.navigator([])
+        plain = fixture("lobby")
+        for anchor in ("quick_menu_hero", "quick_menu_knights", "pet_house_entry"):
+            with self.subTest(anchor=anchor):
+                self.assertIsNone(navigator._locate(plain, anchor))
 
     def test_quick_menu_entry_templates_do_not_collide_with_the_bottom_bar(self):
         """菜单里的「英雄」/「骑士团」与大厅底部那条横排的图**不是同一张**。
@@ -1142,7 +1216,9 @@ class NavigationTests(unittest.TestCase):
         """
         navigator = self.navigator([])
         templates = build_navigation_templates(TEMPLATES)
-        self.assertEqual(2, len(templates.lobby_activity))
+        # 第三张是 2026-11-21 为「账号缺少光辉里程碑、整列上移」补的真机重裁图；
+        # 前两张的旧口径与旧帧结论不变。
+        self.assertEqual(3, len(templates.lobby_activity))
         region = navigator._REGIONS["lobby_activity"]
 
         for name in (
@@ -1341,35 +1417,47 @@ class NavigationTests(unittest.TestCase):
                 f"{name} 是未选中态，不该命中选中态判据",
             )
 
-    def test_the_community_plan_stops_hunting_the_activity_row(self):
-        """社区签到**不再找左列那一行**，直接点右侧「前往活动页」。
+    def test_the_community_plan_goes_through_the_more_activities_row(self):
+        """社区签到必须先选中「更多精彩活动」，再点右侧「前往活动页」（2026-11-22）。
 
-        2026-10-30 改。原来的第 2 步是「选中『更多精彩活动』」，锚点 ``activity_more``
-        是**旧版**活动页上那一行的样子 —— 新版页面上只有 **0.4024**（阈 0.82）
-        ⇒ 根本认不出 ⇒ 上下扫满 9 屏全是白扫。用户看到的就是
-        「一进去往上滑一下、然后一直往下滑」，而那一行明明就在画面里。
+        10-30 曾删掉这一步（旧模板在新版页面上只有 0.4024），改成直接点固定坐标
+        —— 替代前提是「右侧按钮位置永远不变」。11-22 活动页第三次换版后，
+        那个坐标落在了「D-18 灰烬的默示 / 开启 5-1」的锁卡上，点 4 次全空。
 
-        而右侧那颗「前往活动页」按钮在两个新版页面上位置**一模一样**
-        （``web_activity_gate`` 0.9673 @ (1722,985)），与左侧选中哪个活动无关
-        ⇒ 直接点它。左列怎么变、选中哪个、滚到哪儿，一律不影响。
+        能加回来的条件：**新版那一行的白字有了模板**
+        （``activity_more_text_white``，10-30 列表页 1.0000）；未选中态（浅底
+        灰字）认不出时，由 ``_ACTIVITY_ROW_FALLBACKS`` 退到「网页活动入口」分组标题。
 
-        ⚠️ 断言的是 ``NavigationPlan`` 里的**声明**（数据）：一旦有人把「先选中那一行」
-        加回来，这条立刻红 —— 那个写法在当前版本上必然失败，而且是用 9 次滑动换来的。
+        ⚠️ 断言的是 ``NavigationPlan`` 里的**声明**（数据）：步骤或顺序一被改掉，
+        这条立刻红。
         """
         from auto_game_unified.games.epic7.modes import MODE_SPECS
 
         steps = MODE_SPECS["community"].navigation_plan.steps
-        self.assertNotIn(
-            "activity_more",
-            [step.anchor for step in steps],
-            "第 2 步又回去找左列那一行了 —— 那个模板在新版页面上只有 0.40，认不出",
+        anchors = [step.anchor for step in steps]
+        self.assertIn("activity_more", anchors, "「选中更多精彩活动」这一步不见了")
+
+        more = steps[anchors.index("activity_more")]
+        self.assertEqual(("activity_web_promo",), more.targets)
+        self.assertEqual("activity_column", more.scroll_before_retry)
+        self.assertIn(
+            "activity_web_promo",
+            more.skip_if_observed or (),
+            "已经是推广态时必须跳过 —— 再点一下会把选中取消掉",
         )
-        gate = next(step for step in steps if step.anchor == "web_activity_gate")
+
+        # 顺序必须是「先选中那一行，再点右侧按钮」。
+        self.assertLess(
+            anchors.index("activity_more"),
+            anchors.index("web_activity_gate"),
+            "「前往活动页」排到了选中那一行前面",
+        )
+        gate = steps[anchors.index("web_activity_gate")]
         self.assertEqual((1722, 985), gate.fixed_point)
         self.assertIn("web_activity_list", gate.targets)
         self.assertIsNone(
             gate.scroll_before_retry,
-            "直接点按钮那一步不需要滚动兜底（右侧按钮本来就在画面里）",
+            "点按钮那一步不需要滚动兜底（右侧按钮本来就在画面里）",
         )
 
     def test_the_gate_step_declares_a_fixed_point_instead_of_hunting_the_glow(self):
@@ -1646,9 +1734,13 @@ class NavigationTests(unittest.TestCase):
         )
 
         observation = navigator.observe(frame)
-        self.assertEqual(
-            "activity_menu",
+        # 2026-11-22：这一帧上「更多精彩活动」是**选中态**（蓝底白字）⇒ 正确的身份
+        # 是推广态（右侧已经有「前往活动页」）。此前认不出那一行（旧模板 0.6242），
+        # 才退化成 ``activity_menu``；白字候选上线后判得更准。
+        # 这条测试要的「新版活动页不再 unknown」不变，两个身份都算认出来。
+        self.assertIn(
             observation.name,
+            ("activity_menu", "activity_web_promo"),
             f"新版活动页没被判成活动页（判成了 {observation.name}）",
         )
         self.assertGreaterEqual(
@@ -2335,6 +2427,57 @@ class NavigationTests(unittest.TestCase):
 
         self.assertEqual(1, len(clicks))
 
+    def test_dark_portrait_lobby_is_recognized_by_the_white_text_candidate(self):
+        """换大厅背景后仍能认出大厅，靠的是抗背景的紧白字模板。
+
+        2026-11-21：用户把大厅换成紫黑角色立绘，原 `lobby_story` 模板含旧背景，
+        分数从 0.93 掉到 0.84（阈 0.80）。新增的紧白字模板只认「Episode」四字，
+        在新紫黑 / 旧木桌 / 旧动画三帧上白字口径 1.00 / 1.00 / 0.93；全库 18 张
+        过 0.90 全是真大厅页。这条测试钉住「新背景能认出」与「非大厅不误认」。
+        """
+        navigator = self.navigator([])
+        for lobby_fixture in (
+            "lobby_dark_portrait_live_20261121",
+            "lobby",
+            "lobby_animated_updated",
+        ):
+            self.assertEqual(
+                "lobby", navigator.observe(fixture(lobby_fixture)).name
+            )
+        for other in ("arena_mode", "story_stage"):
+            self.assertNotEqual("lobby", navigator.observe(fixture(other)).name)
+
+    def test_lobby_story_click_anchor_falls_back_to_white_text(self):
+        """主线入口 `lobby_story` 在「没有 New Story 角标」时仍能点中（2026-11-22）。
+
+        真机帧 20261122_114740：原模板 310x60 裁了会变的橙色 "New Story" 角标，
+        角标消失后裸分 0.7630（阈 0.80）⇒ 观察层靠 tight_white 认出大厅，但导航
+        点击锚点写死 `lobby_story` 只走原模板 ⇒ 报「缺少导航锚点」、进不去主线。
+        本测试钉住白字兜底登记进 EXTRA_WHITE_CANDIDATES 后：失败帧命中、点击落点在
+        Episode 按钮内、历史夹具原样路径逐字节不变、观赏模式帧不受影响。
+        """
+        navigator = self.navigator([])
+
+        failed = fixture("lobby_no_newstory_badge_live_20261122")
+        match = navigator._locate(failed, "lobby_story")
+        self.assertIsNotNone(match)
+        self.assertGreaterEqual(match.score, 0.90)
+        offset = navigator._click_offset("lobby_story")
+        click = (match.center[0] + offset[0], match.center[1] + offset[1])
+        # 落点必须仍落在白字判据框内（ Episode 按钮），不能因为兜底点偏。
+        self.assertTrue(1684 <= click[0] <= 1854 and 311 <= click[1] <= 371, click)
+
+        # 老路径不变：原样能认出来的帧仍走原样，分数与落点和从前一致。
+        legacy = fixture("lobby")
+        legacy_match = navigator._locate(legacy, "lobby_story")
+        self.assertIsNotNone(legacy_match)
+        self.assertGreaterEqual(legacy_match.score, 0.99)
+        self.assertEqual((1745, 340), legacy_match.center)
+
+        # 观赏模式整屏无 UI，不该被这个锚点认出来（那一步由观赏模式唤醒器处理）。
+        spectator = fixture("lobby_spectator_live_20261122")
+        self.assertIsNone(navigator._locate(spectator, "lobby_story"))
+
     def test_the_smooth_fallback_stays_an_audited_allowlist(self):
         """低通兜底**只能按名单开**，且名单里的锚点必须事先登记过搜索区域。
 
@@ -2398,19 +2541,14 @@ class NavigationTests(unittest.TestCase):
 
         self.assertEqual([(1795, 635), (710, 995)], clicks)
 
-    def test_community_navigation_goes_straight_to_the_web_activity_gate(self):
-        """常规情形：进活动页后**直接点右侧「前往活动页」**，不再经过「更多精彩活动」。
+    def test_community_navigation_goes_through_the_more_activities_row(self):
+        """常规情形：大厅 → 活动页（未选中）→ 点「更多精彩活动」→ 点「前往活动页」。
 
-        2026-10-30 改：原来的第二步是「选中『更多精彩活动』」，锚点 ``activity_more``
-        是**旧版**活动页上那一行的样子 —— 新版页面上它只有 **0.4024**（阈 0.82）
-        ⇒ 根本认不出 ⇒ 上下扫满 9 屏全是白扫（用户看到的就是「一进去往上滑一下、
-        然后一直往下滑」，而那一行明明就在画面里）。
+        2026-11-22：这是 10-30 那版「直接点固定坐标」的反转。活动页第三次换版后，
+        右下角不再是网页活动宣传位，必须先选中那一行才会出现按钮
+        （用户原话：「点击更多精彩活动，然后再点击右下角的有一个前往活动页」）。
 
-        而右侧那颗「前往活动页」按钮在两个新版页面上位置**一模一样**
-        （实测 ``web_activity_gate`` 0.9673 @ (1722,985)），根本不需要先选中什么
-        —— 它说的是右侧那块固定的网页活动宣传位，与左侧选了哪个活动无关。
-
-        ⇒ 现在只有两步：大厅点「活动」→ 活动页点「前往活动页」。
+        ⇒ 三步：大厅点「活动」→ 活动页点那一行 → 推广态点「前往活动页」。
         """
         clicks: list[tuple[int, int]] = []
         navigator = self.navigator(
@@ -2418,6 +2556,8 @@ class NavigationTests(unittest.TestCase):
                 fixture("lobby"), fixture("lobby"),
                 fixture("activity_menu_shifted_live_20261007"),
                 fixture("activity_menu_shifted_live_20261007"),
+                fixture("activity_web_promo_live_20261006"),
+                fixture("activity_web_promo_live_20261006"),
                 fixture("web_activity_list_live_20261006"),
                 fixture("web_activity_list_live_20261006"),
             ],
@@ -2427,10 +2567,53 @@ class NavigationTests(unittest.TestCase):
         navigator.navigate("community", lobby_screen=fixture("lobby"))
 
         self.assertEqual(
-            2,
+            3,
             len(clicks),
-            f"应当只点两下（进入活动 + 前往活动页），实际点了 {clicks}",
+            f"应当点三下（进入活动 + 选中更多精彩活动 + 前往活动页），实际点了 {clicks}",
         )
+        # 第二下必须落在左列那一行上，而不是右下角那颗按钮的位置。
+        self.assertLess(
+            clicks[1][1],
+            900,
+            f"第二下应该点在活动页左列那一行：{clicks}",
+        )
+
+
+def test_new_blue_activity_page_selected_state_and_group_title_fallback():
+    """2026-11-22 新版蓝底活动页：选中态靠白字认；灰字态靠分组标题兜底。
+
+    背景：活动页第三次换版后，右下角不再是「前往活动页」，而是
+    「D-18 灰烬的默示 / 开启 5-1」的锁卡 —— 固定坐标点 4 次全空。
+    新版那一行**选中态是蓝底白字**、**未选中态是浅底灰字**：
+    白字口径只认前者；后者没有可靠口径，只能退到「网页活动入口」分组标题、
+    点标题下方第一行（结构稳定，颜色不稳定）。
+    """
+    selected = load_template(str(FIXTURES / "activity_menu_blue_ui_live_20261030.png"))
+    scrolled = load_template(str(FIXTURES / "activity_menu_scrolled_live_20261122.png"))
+    navigator = Epic7Navigator(
+        build_navigation_templates(TEMPLATES),
+        Runtime(lambda: selected, lambda _point: None),
+    )
+
+    # ① 新版选中态：目标态已经是推广态 ⇒ 必须报「已达成」，且一个点都不许点。
+    _screen, match, reached = navigator._scan_activity_column(
+        "activity_more", ("activity_web_promo",), "activity_menu", "选中更多精彩活动"
+    )
+    assert match is None, f"选中态上不该返回可点击的 match：{match}"
+    assert reached is True
+
+    # ② 分组标题：10-30 列表页上必须认得出，位置就是那一组的分组头。
+    entry = navigator._locate(selected, "activity_web_entry")
+    assert entry is not None, "「网页活动入口」分组标题认不出"
+    assert entry.center[1] == 172, entry.center
+
+    # ③ 兜底点必须落在那一行上（标题 y=172 + 108 = 那一行白字中心 y=280）。
+    _anchor, (offset_x, offset_y) = _ACTIVITY_ROW_FALLBACKS["activity_more"]
+    assert entry.center[1] + offset_y == 280
+
+    # ④ 反证：列表滚到下面（网页活动那一组不在画面里）时，标题**不许**命中 ——
+    #    否则兜底会在别的活动页上乱点。
+    assert navigator._locate(scrolled, "activity_web_entry") is None
 
     def test_community_navigation_works_when_the_row_is_already_selected(self):
         """⚠️ 进活动页时那一行**已经是选中态** ⇒ 一样要走通。
@@ -3363,3 +3546,67 @@ class WorldBossNavigationTests(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "导航不支持从页面"):
             navigator.navigate("story", already_at="worldboss_home")
+
+
+def test_left_menu_entries_survive_a_missing_milestone_item():
+    """账号缺少「光辉里程碑」时左侧菜单整列上移约 93px，三颗入口都必须还能定位。
+
+    原区域按单项写死 y（shop 430~660 / sanctuary 270~400 / activity 700~900），
+    只覆盖有里程碑项的账号。2026-11-21 的新账号三颗分别掉到
+    0.2755 / 0.7415 / 0.2467，全部低于 0.82。改为整条菜单带扫描并补候选后，
+    三颗在两种账号布局上都应命中，且点击点跟着画面走，不用写死坐标。
+    """
+    shifted = fixture("lobby_menu_items_missing_20261121")
+    original = shop_fixture("lobby_shop_entry")
+    navigator = Epic7Navigator(
+        build_navigation_templates(TEMPLATES),
+        Runtime(lambda: shifted, lambda _point: None),
+    )
+
+    for anchor in ("lobby_shop_entry", "lobby_sanctuary", "lobby_activity"):
+        shifted_match = navigator._locate(shifted, anchor, 0.82)
+        original_match = navigator._locate(original, anchor, 0.82)
+        assert shifted_match is not None, f"{anchor}: 新账号布局认不出"
+        assert original_match is not None, f"{anchor}: 旧账号布局回归"
+        assert LEFT_MENU_REGION[1] <= shifted_match.center[1] <= LEFT_MENU_REGION[1] + LEFT_MENU_REGION[3]
+
+    # 新账号整列上移：秘密商店入口必须落在旧位置之上，不能靠放大阈值蒙混过关。
+    shop = navigator._locate(shifted, "lobby_shop_entry", 0.82)
+    assert shop is not None
+    assert shop.center[1] < 520
+    assert shop.score >= 0.90  # 原样候选只到 0.64，命中来自白字文字候选
+
+
+def test_white_text_candidates_click_the_text_center_not_the_template_middle():
+    """白字候选的落点必须是**文字中心**，不是模板几何中心（2026-11-22）。
+
+    现场：``lobby_sanctuary_text_white`` 105x35，文字只占上面 0~18 行、下面空了
+    16 行 ⇒ 几何中心比文字中心低 8px。13:28 实跑据此点了 (82,372)，而「圣域」
+    二字在 y=353~373（中心 363）—— 落在文字底边的缝上，连点 4 次都没进圣域。
+    同帧原样模板给 (84,364) 是对的，但只有 0.7396 没过阈（大厅换成浅色主题）。
+    """
+    templates = build_navigation_templates(TEMPLATES)
+
+    # ① 校正表与模板必须对得上：模板被重裁后这条会红，提示重算
+    #    （重裁后偏差应为 0，届时整张表删掉）。
+    for name, fix in _WHITE_TEXT_CENTER_FIX.items():
+        template = getattr(templates, name)
+        height, width = template.shape[:2]
+        gray = cv2.cvtColor(template, cv2.COLOR_RGB2GRAY)
+        ys, xs = np.nonzero(gray > 200)
+        assert len(ys), f"{name}: 模板里一个白像素都没有"
+        text_center = ((xs.min() + xs.max()) // 2, (ys.min() + ys.max()) // 2)
+        assert (
+            width // 2 + fix[0] == text_center[0]
+            and height // 2 + fix[1] == text_center[1]
+        ), f"{name}: 校正值 {fix} 与模板 {width}x{height} 的偏差对不上（模板重裁过？）"
+
+    # ② 真机帧回归：同一帧上落点必须是文字中心 364，不是几何中心 372。
+    shifted = fixture("lobby_menu_items_missing_20261121")
+    navigator = Epic7Navigator(
+        build_navigation_templates(TEMPLATES),
+        Runtime(lambda: shifted, lambda _point: None),
+    )
+    sanctuary = navigator._locate(shifted, "lobby_sanctuary", 0.82)
+    assert sanctuary is not None
+    assert sanctuary.center[1] == 364, sanctuary.center

@@ -53,7 +53,7 @@ $env:Path = (Resolve-Path -LiteralPath .\.venv\Scripts).Path + ';' + $env:Path
 本地预览用 `--plan --files <仓库相对路径>`。已提交的改动可用 `--plan --since origin/main`。
 新增未跟踪的文件需显式列出或暂存。暂存区为空时默认读取整个已跟踪工作区，多任务并行时优先显式指定路径。
 本地提示未映射时，手工指定覆盖它的测试；PR 选择器对未知路径执行全量。维护者扩大定向范围前应核对直接消费者、
-跨路线契约及反例，并给分层选择增加回归测试。具体放行条件见[按玩家行为验收](docs/decisions/0011-behavior-based-regression.md)。路线实机与多账号验收仍按行为变化执行。
+跨路线契约及反例，并给分层选择增加回归测试。具体放行条件见[按玩家行为验收](docs/decisions/0011-behavior-based-regression.md)。路线按行为变化提交目标客户端实机闭环和风险回放。
 提交含需要复审的修改时，按钩子提示在提交消息加入 `Doc-reviewed:` 和实际复审结果。
 在仓库根目录可用 `python tools/doc_review.py --staged` 查看清单。
 
@@ -107,7 +107,7 @@ python packaging/build.py
 
 它会先校验源码侧清单 → PyInstaller 目录版打包 → 核对产物里的第三方文件**正好**是
 清单那一份（多一个文件、少一个文件、同名文件改一个字节都会停下）→ 跑一次
-`Epic7AutoAssistant.exe --self-check`（检查运行产物目录可写、模板在不在、全部路线
+`ArkyAssistant.exe --self-check`（检查运行产物目录可写、模板在不在、全部路线
 能不能加载、第三方模块与配置能不能加载）→ **打 ZIP 前再核对一次**，失败不产出新
 ZIP → 打免安装 ZIP 并写 `SHA256SUMS.txt`。`--no-build` 复用旧 dist 时没有源码可验，
 但压缩前同样过内容门禁。另有一条 `check_pruned_binaries` 守着 spec 剔掉的
@@ -123,16 +123,16 @@ videoio ffmpeg 二进制真没进产物。
 **验证冻结版的 worker 交接**（离线，不需要游戏、不发任何输入）：
 
 ```powershell
-python tools\verify_frozen_worker.py --exe packaging\dist\Epic7AutoAssistant\Epic7AutoAssistant.exe
+python tools\verify_frozen_worker.py --exe packaging\dist\ArkyAssistant\ArkyAssistant.exe
 ```
 
 它用桌面端同一条 `WorkerController.start()` 启动产物，子进程跑隐藏参数
 `--offline-probe`：只观察停止信号，**不装配路线、不截图、不点击**，即使游戏已经打开
 也不会碰它。期望两次结果：到点正常结束（退出码 0）；父进程写 `stop.signal` 后，
-子进程读到并退出 130。同时核对只有 `Epic7AutoAssistant.exe` 一个子进程、命令行带
+子进程读到并退出 130。同时核对只有 `ArkyAssistant.exe` 一个子进程、命令行带
 `--worker`、没有窗口、输出能回传父进程。
 
-**默认只出免安装版**（2026-10-20 起，用户拍板）：用户解压 ZIP、双击 `Epic7AutoAssistant.exe`
+**默认只出免安装版**（2026-10-20 起，用户拍板）：用户解压 ZIP、双击 `ArkyAssistant.exe`
 就能跑。想要安装包再加 `--installer`，那一步要 **Inno Setup 6**，没装就自动跳过。单独编也可以：
 
 ```powershell
@@ -144,7 +144,7 @@ python tools\verify_frozen_worker.py --exe packaging\dist\Epic7AutoAssistant\Epi
 
 四个容易踩的点：
 
-- 打包版的运行产物写在 `%LOCALAPPDATA%\Epic7AutoAssistant`，源码运行仍写在仓库目录 ——
+- 打包版的运行产物写在 `%LOCALAPPDATA%\ArkyAssistant`，源码运行仍写在仓库目录 ——
   规则在 `core/data_paths.py`，别在别处再写一份；
 - `modes.py` 的加载期自查要用 `inspect.getsource` 读源码，所以 spec 里
   `module_collection_mode={"auto_game_unified": "py"}` **不能改成压 pyc**，
@@ -157,9 +157,9 @@ python tools\verify_frozen_worker.py --exe packaging\dist\Epic7AutoAssistant\Epi
 安装版的行为（改 `installer.iss` 前先确认这几点仍然成立）：
 
 - **按用户安装、不提权**：`PrivilegesRequired=lowest` 时 `{autopf}` 自动展开成
-  `%LOCALAPPDATA%\Programs\Epic7AutoAssistant`，全程不弹 UAC，非管理员账户也能装。
+  `%LOCALAPPDATA%\Programs\ArkyAssistant`，全程不弹 UAC，非管理员账户也能装。
   想装到 `Program Files` 得显式传 `/ALLUSERS`；
-- **卸载保留用户数据**：`%LOCALAPPDATA%\Epic7AutoAssistant` 下的日志与诊断不删，
+- **卸载保留用户数据**：`%LOCALAPPDATA%\ArkyAssistant` 下的日志与诊断不删，
   那是用户自己的运行记录；
 - 打完包至少走一遍「装 → 跑 `--self-check` → 卸」，别只看 ISCC 返回 0 就当成能用。
 

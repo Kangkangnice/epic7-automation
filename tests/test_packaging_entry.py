@@ -43,7 +43,7 @@ def test_worker_flag_dispatches_to_the_cli_without_the_flag(monkeypatch):
         sys,
         "argv",
         [
-            "Epic7AutoAssistant.exe",
+            "ArkyAssistant.exe",
             "--worker",
             "--daily",
             "--daily-tasks",
@@ -64,7 +64,7 @@ def test_default_entry_still_launches_the_gui(monkeypatch):
 
     _stub(monkeypatch, "auto_game_unified.main", lambda argv=None: 99)
     _stub(monkeypatch, "auto_game_unified.desktop_qt.app", run_gui)
-    monkeypatch.setattr(sys, "argv", ["Epic7AutoAssistant.exe"])
+    monkeypatch.setattr(sys, "argv", ["ArkyAssistant.exe"])
 
     assert _load_entry()["main"]() == 0
     assert called == ["gui"]
@@ -89,7 +89,7 @@ def test_frozen_entry_switches_stdio_to_utf8(monkeypatch):
     monkeypatch.setattr(sys, "stderr", err)
     monkeypatch.setattr(sys, "frozen", True, raising=False)
     _stub(monkeypatch, "auto_game_unified.main", lambda argv=None: 0)
-    monkeypatch.setattr(sys, "argv", ["Epic7AutoAssistant.exe", "--worker", "--daily"])
+    monkeypatch.setattr(sys, "argv", ["ArkyAssistant.exe", "--worker", "--daily"])
 
     assert _load_entry()["main"]() == 0
     assert out.encodings == ["utf-8"]

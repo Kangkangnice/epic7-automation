@@ -37,7 +37,7 @@ class ConsentDialog(QDialog):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(24, 20, 24, 20)
         layout.setSpacing(10)
-        layout.addWidget(StrongBodyLabel("使用前须知", self))
+        layout.addWidget(StrongBodyLabel("使用须知", self))
 
         for point in RISK_POINTS:
             label = BodyLabel(point, self)

@@ -106,12 +106,19 @@ class RunProgress:
         if self._current >= 0:
             self._statuses[self._current] = DONE if self._current_observed else PENDING
 
-    def finish(self) -> None:
-        """缺少汇总时，只结束已观察到日志的当前路线。"""
+    def finish(self, *, complete_current: bool = True) -> None:
+        """缺少汇总时，只结束已观察到日志的当前路线。
+
+        ``complete_current=False``（手动停止或运行失败）时当前路线退回待执行，
+        已结束的路线不受影响 —— 悬浮便签据此把最后一项画成「待执行」而不是「已结束」。
+        """
         if self._finished:
             return
         self._finished = True
-        self._close_current()
+        if self._current < 0:
+            return
+        done = self._current_observed and complete_current
+        self._statuses[self._current] = DONE if done else PENDING
 
 
 def extract_run_result(

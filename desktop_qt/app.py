@@ -33,13 +33,14 @@ import threading
 import time
 
 from PySide6.QtCore import QObject, Qt, QTimer, Signal
-from PySide6.QtGui import QFont, QFontDatabase
+from PySide6.QtGui import QColor, QFont, QFontDatabase
 from PySide6.QtWidgets import (
     QApplication,
     QFrame,
     QHBoxLayout,
     QScrollArea,
     QSpinBox,
+    QStackedWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -47,6 +48,7 @@ from qfluentwidgets import (
     BodyLabel,
     CaptionLabel,
     CardWidget,
+    SubtitleLabel,
     CheckBox,
     ComboBox,
     FluentIcon,
@@ -56,6 +58,7 @@ from qfluentwidgets import (
     NavigationItemPosition,
     PrimaryPushButton,
     PushButton,
+    SegmentedWidget,
     StrongBodyLabel,
     SwitchButton,
     TextEdit,
@@ -74,7 +77,6 @@ from auto_game_unified.core.pc_window import (
 from auto_game_unified.desktop import session
 from auto_game_unified.desktop.catalog import (
     BACKEND_LABELS,
-    PRODUCT_NAME,
     PRODUCT_VERSION,
     STARTUP_HINTS,
     group_description,
@@ -101,6 +103,8 @@ from auto_game_unified.desktop.shutdown import (
 )
 from auto_game_unified.desktop.update_check import check_for_update
 from auto_game_unified.desktop.worker import WorkerController
+from auto_game_unified.desktop_qt import brand
+from auto_game_unified.desktop_qt.mascot import ArkyMascot
 from auto_game_unified.desktop_qt.route_options_dialog import RouteOptionsDialog
 from auto_game_unified.games.epic7.route_options import options_for
 from auto_game_unified.desktop_qt.autoclicker import AutoClickerPage
@@ -222,7 +226,19 @@ class QtDesktopWindow(FluentWindow):
                 previous.last_run.details,
             )
 
-        self.setWindowTitle(f"{PRODUCT_NAME}  {PRODUCT_VERSION}")
+        self.setWindowTitle(f"{brand.APP_NAME}  {PRODUCT_VERSION}")
+        self.setWindowIcon(brand.app_icon())
+        # 禁用原生透明效果后直接画底色，避免首次显示时标题栏还使用透明背景。
+        self.setMicaEffectEnabled(False)
+        window_color = QColor("#F1F8FC")
+        self.setCustomBackgroundColor(window_color, window_color)
+        self.backgroundColorAni.stop()
+        self.setBackgroundColor(window_color)
+        self.navigationInterface.setExpandWidth(145)
+        self.navigationInterface.setMinimumExpandWidth(960)
+        self.navigationInterface.setMenuButtonVisible(False)
+        self.navigationInterface.setReturnButtonVisible(False)
+        self.navigationInterface.panel.layout().setContentsMargins(0, 48, 0, 0)
         # 首屏默认只占可用屏幕的一半左右，用户自己拖大；不要一开就铺满。
         # ⚠️ 不能写死像素：4K 与 1080p 上「1180x800」的含义完全不同。
         self.setMinimumSize(860, 560)
@@ -247,7 +263,7 @@ class QtDesktopWindow(FluentWindow):
             except (KeyError, TypeError, ValueError):
                 ball_pos = None
         self.floating = FloatingRunner(
-            previous.todos if previous is not None else ("", "", ""),
+            previous.todos if previous is not None else ("",),
             ball_pos,
         )
         self.floating.todos_changed.connect(self._save_todos)
@@ -260,9 +276,14 @@ class QtDesktopWindow(FluentWindow):
         page = QWidget(self)
         page.setObjectName("taskView")
         outer = QVBoxLayout(page)
-        outer.setContentsMargins(24, 16, 24, 16)
-        outer.setSpacing(12)
+        outer.setContentsMargins(24, 12, 24, 12)
+        outer.setSpacing(8)
 
+        heading = QHBoxLayout()
+        heading.addWidget(SubtitleLabel("任务中心", page))
+        heading.addStretch(1)
+        heading.addWidget(CaptionLabel(brand.APP_SUBTITLE, page))
+        outer.addLayout(heading)
         outer.addWidget(self._build_status_card())
         middle = QHBoxLayout()
         middle.setSpacing(12)
@@ -270,13 +291,14 @@ class QtDesktopWindow(FluentWindow):
         middle.addWidget(self._build_detail_card(), 2)
         outer.addLayout(middle, 1)
         outer.addLayout(self._build_action_bar())
-        self.addSubInterface(page, FluentIcon.HOME, "每日任务")
+        self.addSubInterface(page, FluentIcon.HOME, "任务中心")
 
     def _build_status_card(self) -> CardWidget:
         card = CardWidget(self)
+        card.setBorderRadius(12)
         layout = QVBoxLayout(card)
-        layout.setContentsMargins(16, 12, 16, 12)
-        layout.setSpacing(8)
+        layout.setContentsMargins(16, 10, 16, 10)
+        layout.setSpacing(6)
         layout.addWidget(StrongBodyLabel("运行环境", card))
 
         self.status_label = BodyLabel("尚未执行环境检测。", card)
@@ -295,7 +317,7 @@ class QtDesktopWindow(FluentWindow):
 
         row = QHBoxLayout()
         row.setSpacing(12)
-        row.addWidget(BodyLabel("窗口后端", card))
+        row.addWidget(BodyLabel("游戏窗口", card))
         self.backend_combo = ComboBox(card)
         for backend in visible_backends():
             self.backend_combo.addItem(BACKEND_LABELS[backend], userData=backend)
@@ -305,6 +327,9 @@ class QtDesktopWindow(FluentWindow):
         row.addSpacing(16)
         row.addWidget(BodyLabel("不占用前台", card))
         self.background_switch = SwitchButton(card)
+        self.background_switch.setOnText("")
+        self.background_switch.setOffText("")
+        self.background_switch.setAccessibleName("不占用前台")
         self.background_switch.checkedChanged.connect(self._on_background_changed)
         row.addWidget(self.background_switch)
         row.addStretch(1)
@@ -315,18 +340,31 @@ class QtDesktopWindow(FluentWindow):
         layout.addLayout(row)
         return card
 
-    def _build_route_scroll(self) -> QScrollArea:
-        scroll = QScrollArea(self)
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QFrame.NoFrame)
-        holder = QWidget(scroll)
-        holder.setObjectName("routeHolder")
-        column = QVBoxLayout(holder)
-        column.setContentsMargins(4, 4, 12, 4)
-        column.setSpacing(12)
+    def _build_route_scroll(self) -> QWidget:
+        page = QWidget(self)
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(6)
+        layout.addWidget(StrongBodyLabel("任务清单", page))
 
-        for group, routes in grouped_routes():
+        tabs = SegmentedWidget(page)
+        layout.addWidget(tabs)
+        stack = QStackedWidget(page)
+        layout.addWidget(stack, 1)
+
+        groups = grouped_routes()
+        group_indexes = {group: index for index, (group, _) in enumerate(groups)}
+        for group, routes in groups:
+            scroll = QScrollArea(stack)
+            scroll.setWidgetResizable(True)
+            scroll.setFrameShape(QFrame.NoFrame)
+            scroll.setStyleSheet("QScrollArea { background: transparent; }")
+            scroll.viewport().setAutoFillBackground(False)
+            holder = QWidget(scroll)
+            column = QVBoxLayout(holder)
+            column.setContentsMargins(0, 0, 4, 4)
             card = CardWidget(holder)
+            card.setBorderRadius(10)
             card_layout = QVBoxLayout(card)
             card_layout.setContentsMargins(12, 8, 12, 8)
             card_layout.setSpacing(4)
@@ -341,6 +379,7 @@ class QtDesktopWindow(FluentWindow):
             for route in routes:
                 line = QHBoxLayout()
                 line.setSpacing(8)
+                line.addWidget(brand.route_emblem(route.mode, card))
                 box = CheckBox(route.label, card)
                 box.toggled.connect(
                     lambda checked, m=route.mode: self._on_route_toggled(m, checked)
@@ -353,7 +392,7 @@ class QtDesktopWindow(FluentWindow):
                 spin.setStyleSheet(SPIN_BOX_QSS)
                 # 上限给到三位数：刷书签这类路线一轮只扫一次，半天下来要上百轮。
                 spin.setRange(route.min_cycles, 999)
-                spin.setFixedWidth(112)
+                spin.setFixedWidth(88)
                 # 次数固定 = 标准「禁用」态。我们自己的 QSS 把禁用文字写成
                 # #5B5B5B on #F3F4F6（6.2:1），数字照样看得见；
                 # 不用 readOnly + NoButtons —— 那个组合在 Qt 6.12 下会让文字消失。
@@ -371,6 +410,8 @@ class QtDesktopWindow(FluentWindow):
                     )
                     self._route_option_buttons[route.mode] = settings
                     line.addWidget(settings)
+                else:
+                    line.addSpacing(72)
                 card_layout.addLayout(line)
 
                 box.clicked.connect(
@@ -378,15 +419,27 @@ class QtDesktopWindow(FluentWindow):
                 )
 
             column.addWidget(card)
-        column.addStretch(1)
-        scroll.setWidget(holder)
-        return scroll
+            column.addStretch(1)
+            scroll.setWidget(holder)
+            stack.addWidget(scroll)
+            tabs.addItem(group, group)
+            tabs.widget(group).setAccessibleName(group)
+
+        def show_group(group: str) -> None:
+            stack.setCurrentIndex(group_indexes[group])
+            self._show_group_detail(group)
+
+        tabs.setCurrentItem(groups[0][0])
+        tabs.currentItemChanged.connect(show_group)
+        return page
 
     def _build_detail_card(self) -> CardWidget:
         card = CardWidget(self)
+        card.setBorderRadius(12)
         layout = QVBoxLayout(card)
-        layout.setContentsMargins(16, 16, 16, 16)
-        layout.setSpacing(12)
+        layout.setContentsMargins(16, 12, 16, 12)
+        layout.setSpacing(8)
+        layout.addWidget(ArkyMascot(card, height=112))
         self.detail_title = StrongBodyLabel("", card)
         layout.addWidget(self.detail_title)
         # 「这条路线在当前后端跑不了」放在**标题正下方**，不放到卡片最底下 ——
@@ -396,26 +449,43 @@ class QtDesktopWindow(FluentWindow):
         self.pc_note.setWordWrap(True)
         self.pc_note.setVisible(False)
         layout.addWidget(self.pc_note)
-        self.detail_body = BodyLabel("", card)
+        scroller = QScrollArea(card)
+        scroller.setFrameShape(QFrame.NoFrame)
+        scroller.setWidgetResizable(True)
+        scroller.setStyleSheet("QScrollArea { background: transparent; }")
+        scroller.viewport().setAutoFillBackground(False)
+        self.detail_body = BodyLabel("", scroller)
+        self.detail_body.setAutoFillBackground(False)
+        self.detail_body.setStyleSheet("QLabel { background: transparent; color: #172F46; }")
         self.detail_body.setWordWrap(True)
         self.detail_body.setAlignment(Qt.AlignTop)
-        layout.addWidget(self.detail_body, 1)
+        scroller.setWidget(self.detail_body)
+        layout.addWidget(scroller, 1)
+        self.selection_summary = CaptionLabel("", card)
+        self.selection_summary.setWordWrap(True)
+        self.selection_summary.setStyleSheet(
+            "QLabel { background: #E9F5FC; color: #21577E; border-radius: 6px; padding: 6px; }"
+        )
+        layout.addWidget(self.selection_summary)
         return card
 
     def _build_action_bar(self) -> QHBoxLayout:
         bar = QHBoxLayout()
         bar.setSpacing(12)
-        self.run_state_label = CaptionLabel("准备就绪", self)
+        self.run_state_label = CaptionLabel("待执行", self)
         bar.addWidget(self.run_state_label)
         bar.addSpacing(16)
-        # 「跑完自动关机」是**本次运行之后做什么**，和「开始任务」放在一起，
+        # 「完成后关机」是本次运行之后做什么，和「开始任务」放在一起，
         # 点开始前一眼能看见；不放进上面的环境卡（那张卡说的是怎么连游戏）。
-        bar.addWidget(BodyLabel("跑完自动关机", self))
+        bar.addWidget(BodyLabel("完成后关机", self))
         self.shutdown_switch = SwitchButton(self)
+        self.shutdown_switch.setOnText("")
+        self.shutdown_switch.setOffText("")
+        self.shutdown_switch.setAccessibleName("完成后关机")
         self.shutdown_switch.setToolTip(
             "每日任务结束后执行自动关机（倒计时 "
             f"{SHUTDOWN_DELAY_SECONDS} 秒，期间可取消）。"
-            "关机前会先让雷电模拟器自己退出，退干净再关。"
+            "关机前会先让模拟器自己退出，退干净再关。"
             "主动执行「安全停止」时不触发。"
         )
         self.shutdown_switch.checkedChanged.connect(self._on_shutdown_toggled)
@@ -430,7 +500,7 @@ class QtDesktopWindow(FluentWindow):
         self.export_button = PushButton(FluentIcon.SAVE, "导出诊断包", self)
         self.export_button.clicked.connect(self._on_export_clicked)
         bar.addWidget(self.export_button)
-        self.stop_button = PushButton(FluentIcon.PAUSE, "安全停止", self)
+        self.stop_button = PushButton(FluentIcon.CLOSE, "安全停止", self)
         self.stop_button.clicked.connect(self._on_stop_clicked)
         bar.addWidget(self.stop_button)
         # 只在运行中出现：从主界面回到那颗球（球会保持拖动后的位置）。
@@ -452,14 +522,20 @@ class QtDesktopWindow(FluentWindow):
         layout.setSpacing(12)
         layout.addWidget(StrongBodyLabel("实时日志", page))
 
-        # 运行结果卡：跑完就停在这一页，抬头先看到结论，不用去翻日志。
-        # 只做只读展示，不放按钮、不做历史；没有结果时整张卡收起，不占地方。
+        # 没有结果时收起结果卡；成功完成后在此显示本轮庆祝。
         self.result_card = CardWidget(page)
+        self.result_card.setBorderRadius(12)
         result_layout = QVBoxLayout(self.result_card)
         result_layout.setContentsMargins(16, 12, 16, 12)
         result_layout.setSpacing(6)
+        result_header = QHBoxLayout()
         self.result_title = StrongBodyLabel("运行结果", self.result_card)
-        result_layout.addWidget(self.result_title)
+        result_header.addWidget(self.result_title, 1)
+        self.result_mascot = ArkyMascot(self.result_card, height=76)
+        self.result_mascot.setFixedWidth(104)
+        self.result_mascot.hide()
+        result_header.addWidget(self.result_mascot)
+        result_layout.addLayout(result_header)
         self.result_text = BodyLabel("", self.result_card)
         self.result_text.setWordWrap(True)
         result_layout.addWidget(self.result_text)
@@ -526,7 +602,8 @@ class QtDesktopWindow(FluentWindow):
         layout = QVBoxLayout(page)
         layout.setContentsMargins(32, 24, 32, 24)
         layout.setSpacing(12)
-        layout.addWidget(TitleLabel(PRODUCT_NAME, page))
+        layout.addWidget(TitleLabel(brand.APP_NAME, page))
+        layout.addWidget(BodyLabel(brand.APP_SUBTITLE, page))
         layout.addWidget(CaptionLabel(f"版本 {PRODUCT_VERSION}", page))
         about = BodyLabel(
             "本助手用于《第七史诗》单人 PVE 内容的自动化执行。"
@@ -538,12 +615,22 @@ class QtDesktopWindow(FluentWindow):
         about.setWordWrap(True)
         layout.addWidget(about)
         note = BodyLabel(
-            "「每日任务」按勾选顺序依次跑选中的路线；「实用工具」里是与路线无关的"
+            "「任务中心」按勾选顺序依次跑选中的路线；「实用工具」里是与路线无关的"
             "小工具（目前是固定点连点器）。两者不能同时开 —— 两套点击会互相干扰。",
             page,
         )
         note.setWordWrap(True)
         layout.addWidget(note)
+        art_credit = CaptionLabel(
+            '亚卡属于《第七史诗》。素材参考'
+            '<a href="https://www.bilibili.com/video/BV1WT421e7xG/">官方周年短片</a>和'
+            '<a href="https://czn.gg/event-notice-on-the-chaos-zero-nightmare-x-epic-seven-collaboration-event/">'
+            '联动贴纸</a>。本助手由社区维护。',
+            page,
+        )
+        art_credit.setWordWrap(True)
+        art_credit.setOpenExternalLinks(True)
+        layout.addWidget(art_credit)
         row = QHBoxLayout()
         self.consent_button = PushButton("重新查看使用须知", page)
         self.consent_button.clicked.connect(self._show_consent)
@@ -576,6 +663,12 @@ class QtDesktopWindow(FluentWindow):
                 box.setChecked(
                     bool(routes) and all(r.mode in selection for r in routes)
                 )
+            names = [route_by_name(mode).label for mode in selection]
+            preview = " → ".join(names[:3])
+            if len(names) > 3:
+                preview += f" 等 {len(names)} 项"
+            self.selection_summary.setText(f"执行顺序 · {preview}" if preview else "")
+            self.selection_summary.setVisible(bool(preview))
             for mode, spin in self._route_spins.items():
                 spin.setValue(self.controller.cycles[mode])
             backend = self.controller.selected_backend
@@ -608,7 +701,7 @@ class QtDesktopWindow(FluentWindow):
         self.background_switch.setEnabled(
             not running and self.controller.selected_backend == "pc"
         )
-        # 运行中不许改：点开始之后主窗口就收成球了，这时候改只会让人以为生效了。
+        # 运行期间锁定本次选择与次数。
         self.shutdown_switch.setEnabled(not running)
         for box in self._route_checks.values():
             box.setEnabled(not running)
@@ -617,7 +710,7 @@ class QtDesktopWindow(FluentWindow):
         for button in self._route_option_buttons.values():
             button.setEnabled(not running)
         self.run_state_label.setText(
-            "执行中" if running else
+            "进行中" if running else
             f"已选 {len(self.controller.selection)} 项 · "
             "按勾选顺序执行"
         )
@@ -834,7 +927,7 @@ class QtDesktopWindow(FluentWindow):
             self._notify("warning", "使用须知", "需先阅读并同意《使用须知》后方可执行。")
             return
         if not self.controller.can_start:
-            self._notify("warning", "尚未完成环境检测", "需先执行环境检测。")
+            self._notify("warning", "尚未执行环境检测", "需先执行环境检测。")
             return
         plan = self.controller.plan()
         if not plan:
@@ -1048,10 +1141,16 @@ class QtDesktopWindow(FluentWindow):
                 self._append_log("自动化已启动。")
             elif event.kind == "stopping":
                 self._append_log("正在安全停止……")
+                self.floating.stop_requested()
             elif event.kind == "finished":
                 self._append_log(f"运行结束（退出码 {event.exit_code}）。")
-                self.floating.finish()
+                exit_code = 130 if self._stop_requested_by_user else event.exit_code
+                self.floating.finish(exit_code)
                 self._save_last_run(event.exit_code)
+                show_completion = exit_code == 0 and self.result_card.isVisibleTo(self.log_page)
+                self.result_mascot.setVisible(show_completion)
+                if show_completion:
+                    self.result_mascot.set_phase("complete")
                 # 跑完就不留球了：收干净，主窗口回到日志页。
                 self.floating.hide_all()
                 self.switchTo(self.log_page)
@@ -1103,7 +1202,7 @@ class QtDesktopWindow(FluentWindow):
         self._show_run_result(at, summary, details)
 
     def _show_run_result(self, at: str, summary: str, details: str) -> None:
-        """结果卡只显示文字：有逐条明细就用明细，没有就回落成那一行老摘要。"""
+        """有逐条明细就用明细，没有就回落成摘要。"""
         text = details.strip() or summary.strip()
         if not text:
             return
@@ -1143,12 +1242,12 @@ class QtDesktopWindow(FluentWindow):
         # 次日开机 Windows 进「启动修复」。所以先请它自己退出，退干净再关。
         action = self.emulator_quit.begin()
         if action == "waiting":
-            self._append_log("关机前等待雷电模拟器自行退出，退出后进入关机倒计时。")
+            self._append_log("关机前等待模拟器自行退出，退出后进入关机倒计时。")
             self._start_shutdown_wait_timer()
             return
         if action == "quit_failed":
             self._append_log(
-                "未能请求模拟器退出（找不到雷电控制台或命令执行失败），按原流程关机。"
+                "未能请求模拟器退出（未找到模拟器或退出指令执行失败），按原流程关机。"
             )
         self._schedule_shutdown_now()
 
@@ -1344,14 +1443,6 @@ def _apply_cjk_font(app: QApplication) -> None:
             return
 
 
-# 参考项目「一条龙」的浅色口径，三处源码交叉确认：
-#   src/zzz_od/gui/app.py::main            —— 启动前设 HighDPI PassThrough、setTheme(配置主题)
-#   src/one_dragon_qt/services/theme_manager.py —— 默认主题色 (0, 120, 215) = #0078D7
-#   src/one_dragon_qt/windows/window.py::PhosWindow —— 浅色窗口底 QColor(248, 249, 252)
-# 默认主题是 AUTO（跟随系统）；用户明确要「通体白的、浅色模式」，这里钉死 LIGHT。
-THEME_COLOR = "#0078D7"
-
-
 def configure_qt() -> None:
     """必须在 QApplication 实例化**之前**调用（参考项目同位置）。"""
     QApplication.setHighDpiScaleFactorRoundingPolicy(
@@ -1360,18 +1451,14 @@ def configure_qt() -> None:
 
 
 def apply_theme(app: QApplication) -> None:
-    """统一浅色 Fluent 主题：真实界面和预览脚本**只能**走这里。
-
-    ⚠️ 不要再动 QPalette / app.setStyleSheet / 控件 lineEdit 的颜色：
-    之前为了离屏预览补过一层「深底白字」，真实 Windows 下 qfluentwidgets 的
-    QSS 与原生 Qt 控件默认配色打架，出现白字落在深色/浅色框里看不见。
-    浅色主题 + 零覆盖，让 qfluentwidgets 自己把每个控件画成白底黑字，才不会漂。
-    """
+    """设置亚卡的品牌色，保留 Fluent 的浅色控件样式和原生控件调色板。"""
     app.setAttribute(Qt.ApplicationAttribute.AA_DontCreateNativeWidgetSiblings)
+    app.setApplicationDisplayName(brand.APP_NAME)
+    app.setWindowIcon(brand.app_icon())
     _apply_cjk_font(app)
     setTheme(Theme.LIGHT)
     try:
-        setThemeColor(THEME_COLOR)
+        setThemeColor(brand.BLUE)
     except Exception:
         pass
 
@@ -1388,9 +1475,5 @@ def main() -> int:
         data_root=DATA_ROOT,
         template_root=TEMPLATE_ROOT,
     )
-    try:
-        window.setMicaEffectEnabled(False)
-    except Exception:
-        pass
     window.show()
     return app.exec()

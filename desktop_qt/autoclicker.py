@@ -104,7 +104,7 @@ class AutoClickerPage(QWidget):
         layout = QVBoxLayout(card)
         layout.setContentsMargins(16, 12, 16, 12)
         layout.setSpacing(8)
-        layout.addWidget(StrongBodyLabel("点哪里", card))
+        layout.addWidget(StrongBodyLabel("目标位置", card))
         hint = CaptionLabel(
             "将光标移至目标位置后执行「拾取位置」；倒计时结束时记录该坐标。",
             card,
@@ -140,7 +140,7 @@ class AutoClickerPage(QWidget):
         layout = QVBoxLayout(card)
         layout.setContentsMargins(16, 12, 16, 12)
         layout.setSpacing(8)
-        layout.addWidget(StrongBodyLabel("多久点一次", card))
+        layout.addWidget(StrongBodyLabel("点击间隔", card))
 
         row = QHBoxLayout()
         row.setSpacing(8)
@@ -256,7 +256,7 @@ class AutoClickerPage(QWidget):
         except Exception as error:  # noqa: BLE001 —— 报进状态行，别静默失败
             self._warn("无法启动连点", str(error))
             return
-        self.status_label.setText("连点执行中 · 已执行 0 次（按 P 停止）")
+        self.status_label.setText("连点进行中 · 已执行 0 次（按 P 停止）")
         self._refresh()
 
     def _stop(self) -> None:
@@ -277,7 +277,7 @@ class AutoClickerPage(QWidget):
             self.pick_button.setEnabled(not running)
         if running:
             self.status_label.setText(
-                f"连点执行中 · 已执行 {self._clicker.count} 次（按 P 停止）"
+                f"连点进行中 · 已执行 {self._clicker.count} 次（按 P 停止）"
             )
         elif self._clicker.last_error:
             self.status_label.setText(f"已停止：{self._clicker.last_error}")

@@ -93,12 +93,13 @@ ACTION_BEARING_MODULES = frozenset(
         "navigation.py",
         "home_return.py",
         "global_popups.py",
+        "unknown_screen.py",
     }
 )
-# ⚠️ 这里原来有 ``unknown_screen.py``（它会「点屏幕中央唤醒」）。2026-09-26
-# 那次改动把「点中央」整段删掉了（用户抓包的「眼睛瞎了一直点中间」：点中央没有判据、
-# 常常落在列表空白处）⇒ 它现在**不发任何动作**，只剩「等稳定 + 记诊断 + 交还上层」。
-# 反向护栏 ``assert_module_inventory_matches`` 会扫源码，所以它必须从这里划掉。
+# ⚠️ ``unknown_screen.py`` 曾因「点屏幕中央唤醒」被划掉（2026-09-26 用户抓包的
+# 「眼睛瞎了一直点中间」）。2026-11-22 新增 ``LobbySpectatorWake``：只在**等大厅**
+# 上下文、画面有判据地判定为「观赏模式」时才点安全区中央，且有次数上限；旧的
+# 无判据「认不出就点中间」没有回来。它有真实动作，所以重新登记并表态（见下表）。
 
 
 # ---- 表态清单 ----------------------------------------------------------------
@@ -133,7 +134,7 @@ PUBLIC_FLOW_VERIFICATION = {
             "验收；判「无效」时**不重复同一个动作**，改换路或报错。"
             "无 ``observe`` 时降级为整帧比对 ``_StableTwo``，**并记日志说明降级**。"
         ),
-        actions="return_home_v2: 305/329/343/357；_press_esc: 388",
+        actions="return_home_v2: 531/561/582/602/619/640（6 处 verifier.act）；_press_esc: 544/662",
     ),
     "global_popups.py": PublicFlowVerification(
         module="global_popups.py",
@@ -144,6 +145,18 @@ PUBLIC_FLOW_VERIFICATION = {
             "不是 navigation 的页面名 —— 对「关弹窗」这个用途足够（目标就是它消失）。"
         ),
         actions="509: __call__ 关闭各类全局弹窗",
+    ),
+    "unknown_screen.py": PublicFlowVerification(
+        module="unknown_screen.py",
+        mechanism=(
+            "``LobbySpectatorWake.handle`` 只在 context 为「等大厅」、且 "
+            "``is_lobby_spectator`` 以「有效帧 + 连续两帧在动 + 不是战斗」判出"
+            "观赏模式时才点安全区中央 (1000,600)；点前查 ``recovery_gate`` 与 "
+            "``dry_run``，点后交还调用方重新 ``observe`` 验收（认出大厅才算成功），"
+            "自己不另造判据；最多 ``MAX_ATTEMPTS=2`` 次，与远征唤醒一致。"
+            "⚠️ 旧的「认不出就点中间」没有回来 —— 那是无判据瞎猜（2026-09-26 删）。"
+        ),
+        actions="154: LobbySpectatorWake.handle 点安全区中央唤醒观赏模式",
     ),
 }
 

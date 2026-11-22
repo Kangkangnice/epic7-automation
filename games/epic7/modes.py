@@ -281,6 +281,7 @@ def _build_story(template_root: Path, state: str) -> StoryStateMachine:
         build_story_templates(template_root / "story"),
         initial_state=StoryState(state),
         pc_rules=is_pc(template_root),
+        story_cutscene=True,
     )
 
 
@@ -564,6 +565,7 @@ def _arena_runner_options(
         "max_gold_refreshes": values["max_gold_refreshes"],
         "ticket_mode": values["ticket_mode"],
         "max_skystone_purchases": values["max_skystone_purchases"],
+        "opponent_source": values["opponent_source"],
         "opponent_preference": values["opponent_preference"],
         "hero_blacklist": values["hero_blacklist"],
         "hero_whitelist": values["hero_whitelist"],
@@ -594,8 +596,6 @@ def _stamina_runner_options(mode: str) -> Callable[..., dict[str, Any]]:
             "stamina_enabled": values["stamina_enabled"] == "yes",
             "stamina_limit": values["stamina_limit"] or None,
         }
-        if mode == "story":
-            options["repeat_after_last"] = values["repeat_after_last"] == "yes"
         return options
 
     return translate
@@ -1542,29 +1542,32 @@ MODE_SPECS = {
                         "lobby_activity",
                         "进入活动",
                     ),
-                    # ⚠️⚠️ **2026-10-30：删掉了「选中『更多精彩活动』」这一步。**
+                    # ⚠️⚠️ **2026-11-22：把「选中更多精彩活动」这一步加回来。**
                     #
-                    # 那一步的锚点 ``activity_more`` 是**旧版活动页**上那一行（米黄底 + 灰字）。
-                    # 活动页 10-18 换版之后，同一行在新版页面上只有 **0.4024**（阈 0.82）
-                    # ⇒ 根本认不出 ⇒ 上下扫满 9 屏全是白扫。用户看到的就是
-                    # 「一进去就往上滑一下、然后一直往下滑」，明明那一行就在画面里。
+                    # 10-30 删它的理由是「新版那一行只有 0.4024、认不出，上下扫满 9 屏
+                    # 全是白扫」，当时成立；替代方案是「不管左边选中哪个，右侧按钮都在
+                    # 同一位置」。而 11-22 活动页第三次换版后这个前提失效：右下角那块
+                    # 变成了「D-18 灰烬的默示 / 开启 5-1」的锁卡，固定坐标点 4 次全空。
                     #
-                    # 而**右侧那颗「前往活动页」按钮根本不需要先选中什么**：
-                    # 新版两个页面（活动列表首页 / 某个活动的详情页）上它都在
-                    # **同一位置**，实测 ``web_activity_gate`` 两张帧都是
-                    # **0.9673 @ (1722, 985)** —— 它说的是右侧那块固定的网页活动宣传位，
-                    # 与左侧选中了哪个活动无关。
+                    # 现在能加回来：**新版那一行的白字有模板了**
+                    # （``activity_more_text_white``，10-30 列表页 1.0000）。
+                    # 选中态走白字口径；未选中态（浅底灰字）认不出时，由
+                    # ``_ACTIVITY_ROW_FALLBACKS`` 退到「网页活动入口」分组标题、
+                    # 点标题下方第一行 —— 分组结构（标题 + 首行）比文字颜色稳定。
                     #
-                    # ⇒ 进活动页直接点它。左侧列表怎么变、选中哪个、滚到哪儿，一律不影响。
-                    # 这也正是用户 2026-10-30 的要求「只留不会变的东西」：
-                    # **那颗按钮的位置不会变，而左列的那一行会变**。
+                    # 用户 2026-11-22 的原话：「进到活动页之后先滑到顶，找两个东西：
+                    # 网页活动入口、以及下面的更多精彩活动；点击更多精彩活动，
+                    # 再点右下角那个『前往活动页』」。滑到顶由 ``_scan_activity_column``
+                    # 的第一阶段（回列表头方向）负责，位置一律不写死。
                     NavigationStep(
                         "activity_menu",
-                        ("web_activity_list",),
-                        "web_activity_gate",
-                        "打开网页活动列表",
-                        skip_if_observed=("web_activity_list",),
-                        fixed_point=(1722, 985),
+                        ("activity_web_promo",),
+                        "activity_more",
+                        "选中更多精彩活动",
+                        # 已经停在推广态（那一行是选中态）⇒ 不要再点：
+                        # 再点一下会把选中**取消**掉。
+                        skip_if_observed=("activity_web_promo",),
+                        scroll_before_retry="activity_column",
                     ),
                     NavigationStep(
                         "activity_web_promo",
@@ -1572,10 +1575,9 @@ MODE_SPECS = {
                         "web_activity_gate",
                         "打开网页活动列表",
                         skip_if_observed=("web_activity_list",),
-                    # ⚠️ 2026-10-30：这一步现在**只在旧版活动页上走到** ——
-                    # 那一版会被判成 ``activity_web_promo``（靠 ``activity_more_selected``
-                    # 那行白字），于是走这里；新版页面一律判 ``activity_menu``，
-                    # 由上一步直接点同一颗按钮。两步的 source 不同、动作一模一样。
+                    # ⚠️ 2026-11-22：这一步现在**两版活动页都会走到** ——
+                    # 上一步把「更多精彩活动」选中之后，页面身份变成
+                    # ``activity_web_promo``，进来点右侧那颗按钮。
                     # ⚠️ 2026-10-18：**这一行原来的 ``scroll_before_retry`` 删掉了**。
                     # 它当年是为了「选中态那一行被挤出视野 ⇒ 点了也白点」而加的，
                     # 但这一步**不找那一行了**（用固定坐标点右侧的按钮）。

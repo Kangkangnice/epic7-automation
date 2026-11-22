@@ -8,6 +8,8 @@ from typing import Callable, Optional
 import numpy as np
 
 from auto_game_unified.core.matcher import (
+    MATCH_MODE_RAW,
+    MATCH_MODE_WHITE_MASK,
     Match,
     load_template,
     locate_with_fallback,
@@ -78,6 +80,8 @@ from auto_game_unified.games.epic7.evidence.tower import (
 from auto_game_unified.games.epic7.modes import MODE_LABELS, MODE_SPECS
 from auto_game_unified.games.epic7.navigation_plan import NavigationPlan
 from auto_game_unified.games.epic7.unknown_screen import (
+    LobbySpectatorWake,
+    SpectatorWakeResult,
     UnknownScreenWake,
     UnknownWakeResult,
 )
@@ -89,6 +93,110 @@ REFERENCE_SIZE = (1982, 1132)
 # （PC 0.85 / 模拟器 0.90），分叉的原因是拿模拟器的图去认 PC 的按钮；
 # 现在差异收敛到图片，阈值只剩模拟器基线这一套。
 ARENA_RANK_CONFIRM_THRESHOLD = 0.90
+
+# 左侧竖排菜单的**统一扫描带**（1982x1132 画布）。菜单项会随账号进度增减而整体上移/下移，
+# 例如没有「光辉里程碑」时，下面三项比有该项的账号高约 93px。按单项写死 y 区间
+# 会漏掉少菜单项的账号；整条菜单带一次扫完，命中哪里就点哪里。
+# 只覆盖左侧 240px 宽、y=250~950 的有限区域，不放大到整屏，避免把别的页面混进来。
+LEFT_MENU_REGION = (0, 250, 240, 700)
+
+# 白字文字候选的固定阈值（与 ``lobby_story_tight_white`` 同把尺子）。
+WHITE_TEXT_THRESHOLD = 0.90
+
+# **整颗锚点**改走白掩膜口径的登记表：锚点 -> 该口径下的门槛。
+#
+# ⚠️ 口径与阈值**必须成对登记**：白掩膜比的是「哪些像素是白的」，
+# 与原样 RGB 的分数不在同一量纲。沿用原样那条 0.82 等于把判据换成另一个东西
+# （项目红线，见 docs/decisions/0013 与 matcher.py 顶部注释）。
+#
+# ⚠️ 这张表的值**优先于调用点传的 threshold**：口径既然在这里定，线也必须在这里定，
+# 否则同一个锚点会有两个出处，改一处漏一处。
+WHITE_MASK_ANCHORS = {
+    # 大厅「故事」入口的第二种长相（白字压任意底图）。
+    "lobby_story_tight_white": 0.90,
+}
+
+# ⚠️ 反面教材（2026-11-22）：右上角那颗四格方块**不能**走白掩膜。
+# 它是**纯色块**（蓝色 R=68/G=135/B=235），白色像素占比 **0.000** ⇒ 白掩膜后模板
+# 整块全黑，`TM_CCOEFF_NORMED` 拿全黑去比全黑窗口会退化成"处处 1.0000"，
+# 落点漂到区域左上角（1821,75）而不是图标中心（1862,106），点击直接点空。
+# **判据看起来"修好了"，其实变成了永真**。是导航测试断言点击坐标时才暴露的。
+#
+# 立规矩：给任何锚点登记白掩膜之前，先量模板的白像素占比；占比接近 0 就是纯色图标，
+# 白掩膜对它无意义。
+#
+# ⚠️ 同一次事故的第二层教训：当时把它的掉分（0.4685）归因成「换号换了配色」，
+# 还据此裁了一张橙版模板 —— 真因是**抓图通道错乱**（`core/window.py` 的 ADB 通道
+# 拿到 BGR 却原样当 RGB 用，R/B 互换，蓝于是显示成橙）。修复抓图后同一帧蓝版
+# 就是 0.9979。⇒ **任何"某处外观变了"的结论，先排除抓图口径**：同一模板在同批帧
+# 上做一次通道互换对照，能过就说明是图的问题，不是游戏的问题。
+
+# 原样口径候选全部不过阈时才试的白字候选。口径与阈值各自独立，
+# 不拿白字分去和原样分比高低（见 docs/decisions/0012）。
+#
+# 登记的条件只有一条：**控件上确实有稳定中文标签，而原样模板裁的是图标**。
+# 图标会挂未读角标、会换配色、会随主题变暗，文字都不会。
+EXTRA_WHITE_CANDIDATES = {
+    # 主线故事入口「Episode」（2026-11-22 补）。原模板 lobby_story 310x60 同时裁了
+    # 左侧的橙色 "New Story" 角标 —— 那是**会变的状态**，没有新篇章时它消失，原模板
+    # 在真机帧 20261122_114740 上只剩 0.7630（阈 0.80）⇒ 导航认得出大厅、却点不进
+    # 主线（observe 早就在用 tight_white 认页，只有点击锚点漏了兜底）。登记白字候选
+    # 后，原样不过阈时用它自己的 0.90 口径补一次：同帧 0.9974，历史大厅夹具上原样
+    # 仍是 1.0000 ⇒ 老路径逐字节不变。模板白像素占比 0.1661（非纯色图标，白掩膜安全）。
+    "lobby_story": ("lobby_story_tight_white",),
+    # 活动页「更多精彩活动」**选中态**：新版蓝底页那一行只认白字笔画
+    # （旧版橙底模板 0.6242）。⚠️ 它属于**选中态**，绝不能挂到 ``activity_more``
+    # 头上 —— 那一行两种态的文字内容一样，挂错就等于「选中态也认成未选中态」，
+    # 扫描会把它当"找到了"点一下，反而把选中取消掉。
+    "activity_more_selected": ("activity_more_text_white",),
+    "lobby_shop_entry": ("lobby_shop_entry_text_white",),
+    "lobby_side_story": ("lobby_side_story_text_white",),
+    "lobby_sanctuary": ("lobby_sanctuary_text_white",),
+    # 大厅底部那排入口（钢铁工坊 / 骑士团 / 欧勒毕斯指南）同样是「图标 + 中文名」。
+    "lobby_knights": ("lobby_knights_text_white",),
+    # 快捷菜单里同样是「图标 + 中文名」，原模板只裁了图标。
+    "quick_menu_hero": ("quick_menu_hero_text_white",),
+    "quick_menu_knights": ("quick_menu_knights_text_white",),
+    "pet_house_entry": ("pet_house_entry_text_white",),
+}
+
+# 白字候选的「几何中心 → 文字中心」校正（2026-11-22）。
+#
+# **为什么需要**：白字模板裁的是文字，但裁的时候文字没放在正中 —— 下面或右边
+# 留了空白。匹配报告的 ``Match.center`` 是**模板几何中心**，点击点照它走，就会
+# 系统性偏离文字中心。
+#
+# 现场（2026-11-22 13:28 实跑）：``lobby_sanctuary`` 走白字候选命中 0.9291、
+# 报告 center=(82,372)，而「圣域」二字实际在 y=353~373（中心 363）⇒ 点击落在
+# **文字底边的缝上**，连点 4 次都没进圣域。同帧原样模板给 (84,364)（正是文字
+# 中心）却只有 0.7396 没过阈 —— 大厅背景当天换成了浅色主题。
+#
+# **为什么不写进 ``_CLICK_OFFSETS``**：那张表按**锚点**登记，raw 与白字两条路径
+# 共用，而两条路径的偏差不一样（raw 模板内容居中、白字模板不居中）。主线
+# ``lobby_story`` 就是现成的反例：它的 (45,-14) 是给 raw 模板（310x60、左侧还
+# 裁进了 New Story 角标）算的，白字紧模板再叠加就成 (41,-22)，落点偏右 41px。
+# 主线本次不动（实跑能进，用户未报问题），只修「裁歪且没有任何补偿」的两处。
+#
+# 值 = **文字 bbox 中心 − 模板几何中心**，直接加到 ``Match.center`` 上
+# （即「几何中心 + 本值 = 文字中心」）。⚠️ 模板一旦重裁，这张表要跟着重算
+# （重裁后偏差应接近 0，届时整条删掉）；
+# ``tests/test_navigation.py`` 那条白字居中测试会把过期钉出来。
+_WHITE_TEXT_CENTER_FIX = {
+    # 105x35，文字只占上面 0~18 行、下面空了 16 行 ⇒ 几何中心比文字中心低 8px。
+    "lobby_sanctuary_text_white": (1, -8),
+    # 92x35，文字偏右 8、偏下 3（左右留白不对称）。
+    "lobby_shop_entry_text_white": (8, 3),
+}
+
+# `lobby_side_story` 的白字候选沿革（2026-11-22 两次实跑，别再反复横跳）：
+# ① 当天早些时候曾加过一次，理由是「新账号帧只有 0.7261 认不出」；当晚查出那帧
+#    是抓图通道错乱（BGR 当 RGB 用），按正确通道重存后原样模板 0.8945 本来就过阈
+#    ⇒ 属于被错图误导，整条撤回（模板/字段/装配/登记全删）。
+# ② 当天 16:08 又撞出真·不过阈：大厅入口整块改画（多了 New Substory 蓝字 + 绿色
+#    New 角标），原样只剩 0.7048。这次先做了通道互换对照（互换后 0.7040，几乎不变
+#    ⇒ 排除通道错乱），白字掩膜口径 0.8987 ⇒ 确认是真的换皮，恢复白字候选。
+# 教训：加候选前先做「原样 vs 通道互换」对照，确认是换皮而非抓图问题；两次外观
+#     变化的区分就靠这一步，不要凭「某一张帧不过阈」就加或删。
 
 # 「回家」那套模板（v2 要用，其中六个直接复用迷宫那条路的模板文件）。
 TEMPLATE_ROOT = Path(__file__).resolve().parent / "templates"
@@ -203,6 +311,11 @@ class NavigationTemplates:
     friendship_points_title: np.ndarray
     friendship_points_close: np.ndarray
     lobby_story: np.ndarray
+    # 抗背景第二形态：只裁「Episode」四字的紧模板 + 白字掩膜口径。
+    # 2026-11-21：换大厅背景后原模板从 0.93 掉到 0.84（阈 0.80），余量只剩 0.04。
+    # 这张紧模板在新紫黑 / 旧木桌 / 旧动画三种背景上白字口径 1.00 / 1.00 / 0.93，
+    # 全库 18 张过 0.90 全是真大厅页；原模板不动，二者「任一命中」即认大厅。
+    lobby_story_tight_white: np.ndarray
     lobby_arena: np.ndarray
     lobby_battle: np.ndarray
     lobby_hero: np.ndarray
@@ -215,11 +328,22 @@ class NavigationTemplates:
     # 改走**右上角蓝色四格 → 快捷菜单 → 菜单里的入口**。用户确认菜单是**固定布局**
     # （真机三张不同底页/不同时间的菜单帧实测：两个图标命中在**逐像素相同的中心**）。
     #
-    # ``lobby_quick_menu_button`` —— 大厅右上那颗蓝四格（开菜单的按钮）。
+    # ``lobby_quick_menu_button`` —— 大厅右上那颗四格方块（开菜单的按钮）。
     # ⚠️ 它**不能**直接照抄迷宫那张 ``quick_menu_button``：那是另一个长相，
     # 在大厅上只有 0.4834。而且大厅这颗左上角会挂**橙色未读角标**（角标里还可能带
     # 数字，如「2」）⇒ 角标是**可变内容**，绝不能裁进模板。裁法：**从角标下方起裁**
-    # （只取四格的下 3/4），实测干净帧 1.0000 / 带角标帧 0.9983 ⇒ 角标免疫，一张模板够。
+    # （只取四格的下 3/4），实测干净帧 1.0000 / 带角标帧 0.9983 ⇒ 角标免疫。
+    #
+    # ⚠️ 2026-11-22：一度以为「换号会把整颗图标换成另一种配色」（蓝四格 → 橙四格，
+    # 实测 0.4685），并据此加了橙版候选、把字段改成多候选 tuple。**那是误判**：根因是
+    # 抓图通道错乱（ADB 给 BGR 被当 RGB 用，R/B 互换 ⇒ 蓝显示成橙）。修复抓图后同一帧
+    # 蓝版就是 0.9979。⇒ 橙版模板、多候选结构**都已还原**，退回单模板。
+    #
+    # 教训：被错图误导的改动一律还原，不做「结构留着将来用」这类优化式保留
+    # （用户 2026-11-22 明确）。
+    #
+    # ⚠️ 这颗是**纯色块**（白像素占比 0.000）⇒ 走白掩膜会退化成永真且落点漂到
+    # 区域左上角，**不许**把它登记进 ``WHITE_MASK_ANCHORS``。
     lobby_quick_menu_button: np.ndarray
     # 快捷菜单第 1 行最右那颗「英雄」（进英雄列表）。
     #
@@ -229,9 +353,12 @@ class NavigationTemplates:
     # 最后那张（`pet_gift`，菜单区上盖着一份节日礼物装饰）掉到 0.82 门槛之下。
     # 两颗图标在同样三帧上分别有 0.997+ / 0.997，且**菜单专属**（全库次高仅 0.41/0.44）。
     quick_menu_hero: np.ndarray
+    # 那一格下方的「英雄」二字（白字候选，原样图标不过阈时才试）。
+    quick_menu_hero_text_white: np.ndarray
     # 快捷菜单第 3 行中间那颗「骑士团」（进骑士团主页）。
     # ⚠️ 它左上角也有个**蓝点**（未读角标）。模板从盾牌本体起裁，**零蓝点像素**。
     quick_menu_knights: np.ndarray
+    quick_menu_knights_text_white: np.ndarray
     # 快捷菜单第 4 行第 1 个「成就」（进成就页，2026-11-08）。
     #
     # ⚠️ 这个入口左上角常挂一颗**橙红角标 + 数字**（未领成就数，天天在变：13 / 7 / 2…）。
@@ -255,6 +382,8 @@ class NavigationTemplates:
     # 与第 4 行中间「英雄休息室」的城堡图标**不是同一形状**：全库扫下来
     # 本页 1.0000、那个图标 0.5610 ⇒ 0.80 门槛能证伪，不靠顺序蒙。
     pet_house_entry: np.ndarray
+    # 那一格下方的「宠物小屋」四字（白字候选）。
+    pet_house_entry_text_white: np.ndarray
     # 宠物小屋左上「宠物小屋」标题，给 observe() 认「现在是宠物小屋」。
     # 复用 templates/pet_adoption/house_title.png（不另存第二份）。
     pet_house_page_title: np.ndarray
@@ -357,6 +486,9 @@ class NavigationTemplates:
     expedition_home: np.ndarray
     lobby_story_click_offset: tuple[int, int]
     lobby_side_story: np.ndarray
+    # 大厅「支线故事」四字的白字紧模板：入口整块（含 New Substory 角标）换皮时
+    # 原样不过阈，用它自己的白字口径补一次。只裁文字、不含会变的角标。
+    lobby_side_story_text_white: np.ndarray
     # 「特别的时间之书」按钮；PC 两套渲染互为候选，见 _load_navigation_candidates。
     side_story_special_book: tuple[np.ndarray, ...]
     special_book_episode: np.ndarray
@@ -366,7 +498,12 @@ class NavigationTemplates:
     # 「秘密商店」入口是唯一会挂通知角标的大厅入口，故它的候选模板**不止一张**
     # （干净版 + 带角标版），任一过阈即可命中。其余锚点仍是单张 ndarray。
     lobby_shop_entry: tuple[np.ndarray, ...]
+    # 抗菜单项增减：只含「秘密商店」四字的白字候选，原样图标候选不过阈时才试。
+    lobby_shop_entry_text_white: np.ndarray
     lobby_knights: np.ndarray
+    # 大厅底部那排入口下方的「骑士团」三字（白字候选）。盾牌图标跨主题会变暗
+    # （紫黑主题实测 0.7140 < 0.82），文字仍是 1.0000。
+    lobby_knights_text_white: np.ndarray
     worldboss_entry: np.ndarray
     # 首领战主页右下角按钮有两种长相：可打时「选择队伍」，未开放/次数用完时换成
     # 「管理辅助队伍」（2026-11-09 实跑帧，旧图只有 0.5107）。任一过阈即认作该页。
@@ -376,6 +513,8 @@ class NavigationTemplates:
     # 截到一片渐变色块；文字是唯一「只此一处」的稳定特征。代价见
     # ``docs/maintenance/sanctuary.md``「已知缺口」：没有「带红点角标」的第二张候选图。
     lobby_sanctuary: np.ndarray
+    # 抗菜单项增减：只含「圣域」二字的白字候选，原样候选不过阈时才试。
+    lobby_sanctuary_text_white: np.ndarray
     # 圣域主页右侧第一行「精灵之森」的文字。**只为 ``observe()`` 判页而存在** ——
     # 导航把画面送到圣域主页后，``_transition`` 要靠 ``observe()`` 认出
     # ``sanctuary_home`` 才算转场成功（没有它这条转场永远验收不通过、只会超时）。
@@ -493,6 +632,27 @@ class NavigationTemplates:
     # 选中态 0.8924~1.0000（跨两天两帧都过阈，含转场动画中那帧 0.8924），
     # **未选中态只有 0.2482 / 0.3435，全库次高 0.3732** ⇒ 空档 0.37→0.89 极宽。
     activity_more_selected: np.ndarray
+    # 「更多精彩活动」在**新版蓝底页**上的白字（2026-11-22）。
+    #
+    # 为什么要补：新版活动页那一行是**蓝底白字**，上面那张旧模板（米黄底灰字）
+    # 在 10-30 的新版帧上只有 **0.4024**，`activity_more_selected` 也只有 0.6242
+    # ⇒ 两态都认不出 ⇒ 「选中更多精彩活动」这一步在 10-30 被整步删掉，改成
+    # 直接点右侧固定坐标。而 11-22 活动页第三次换版后，那个固定坐标落在了
+    # 「D-18 灰烬的默示 / 开启 5-1」的锁卡上，社区签到点 4 次全空。
+    #
+    # 白字口径：只认**白色笔画**，与底色（蓝/浅蓝/换皮）无关。模板 338x43，
+    # 白像素占比 0.1487（非纯色块，白掩膜安全）。实测（2026-11-22）：
+    #   10-30 列表页（选中态）1.0000；10-30 详情页 0.3782；今日新版 0.3414。
+    activity_more_text_white: np.ndarray
+    # 「网页活动入口」那个**分组标题**（新版左列，蓝字 + 虚线 + ◇）。
+    #
+    # 只在 ``_ACTIVITY_ROW_FALLBACKS`` 里当**兜底定位**用：当「更多精彩活动」
+    # 那一行是**未选中态（灰字）**、原样与白字都认不出时，退一步认出它所在分组
+    # 的标题，再点标题下方第一行。分组结构（标题 + 首行）比文字颜色稳定。
+    #
+    # ⚠️ 它**不是判据**，也不参与 ``observe``：只有网页活动那一组有这个标题，
+    # 普通活动页没有（实测 10-30 详情页 0.3954、11-22 新版 0.6659，都低于 0.82）。
+    activity_web_entry: np.ndarray
     # 「前往活动页」按钮 —— **只当点击目标**（第 3 步要按它），**不当判据**
     # （光球会滑动，见上）。⚠️ 正是这一点让它在 10-07 掉到 0.7282。
     # 只裁了光晕盖不到的右段（65x34），整钮是半透明的、背后横幅会呼吸发光。
@@ -511,11 +671,20 @@ def _load_optional_template(path) -> Optional[np.ndarray]:
 
 
 def _load_navigation_candidates(directory, basename: str) -> tuple[np.ndarray, ...]:
-    """主图必载；``<basename>_alt.png`` 只放在 ``pc/`` 里，存在才追加为第二候选。
+    """主图必载；``<basename>_alt.png`` 存在才追加为第二候选（缺失不报错）。
 
-    PC 客户端把同一颗控件画成过两套外观，单图必在其中一批帧上掉到阈值以下
-    （2026-11-04 实测「特别的时间之书」两套互比 0.7720、「准备战斗」0.8515）。
-    模拟器解析到的是共享目录下不存在的同名文件 ⇒ 只有一张主图，行为零改动。
+    两种用途，机制同一条：
+
+    * **PC 同一控件有两套画法**（alt 放在 ``pc/`` 下，模拟器解析到的是不存在
+      的同名文件 ⇒ 只有一张主图，行为零改动）。2026-11-04 实测「特别的时间之书」
+      两套互比 0.7720、「准备战斗」0.8515。
+    * **同一控件真有第二种外观**（alt 与主图并列放在共享目录）。⚠️ 2026-11-22
+      那次「大厅四格方块换配色」的经验**不能照抄**：它是抓图通道错乱造成的假象，
+      不是第二长相。加 alt 之前先排除抓图口径（见 ``WHITE_MASK_ANCHORS`` 上方的
+      第二层教训）。
+
+    ⚠️ 这里**不做存在性 fail-closed**：alt 是「另一种长相」，不是判据本体，
+    缺了顶多少一档长相，主图照旧工作。主图缺失仍由 ``load_template`` 抛错。
     """
     primary = load_template(str(directory / f"{basename}.png"))
     alt = directory / f"{basename}_alt.png"
@@ -547,6 +716,9 @@ def build_navigation_templates(template_root: Path) -> NavigationTemplates:
             str(global_templates / "friendship_points_close.png")
         ),
         lobby_story=load_template(str(navigation / "lobby_story.png")),
+        lobby_story_tight_white=load_template(
+            str(navigation / "lobby_story_tight_white.png")
+        ),
         lobby_arena=load_template(str(navigation / "lobby_arena.png")),
         lobby_battle=load_template(str(navigation / "lobby_battle.png")),
         lobby_hero=load_template(str(navigation / "lobby_hero.png")),
@@ -556,12 +728,21 @@ def build_navigation_templates(template_root: Path) -> NavigationTemplates:
             str(navigation / "lobby_quick_menu_button.png")
         ),
         quick_menu_hero=load_template(str(navigation / "quick_menu_hero.png")),
+        quick_menu_hero_text_white=load_template(
+            str(navigation / "quick_menu_hero_text_white.png")
+        ),
         quick_menu_knights=load_template(str(navigation / "quick_menu_knights.png")),
+        quick_menu_knights_text_white=load_template(
+            str(navigation / "quick_menu_knights_text_white.png")
+        ),
         achievement_entry=load_template(str(navigation / "achievement_entry.png")),
         achievement_page_title=load_template(
             str(template_root / "achievement" / "page_title.png")
         ),
         pet_house_entry=load_template(str(navigation / "pet_house_entry.png")),
+        pet_house_entry_text_white=load_template(
+            str(navigation / "pet_house_entry_text_white.png")
+        ),
         pet_house_page_title=load_template(
             str(template_root / "pet_adoption" / "house_title.png")
         ),
@@ -631,6 +812,9 @@ def build_navigation_templates(template_root: Path) -> NavigationTemplates:
         # 使**点击点保持原来的 (1790,326) 不动**，改动对真机点击零影响。
         lobby_story_click_offset=(45, -14),
         lobby_side_story=load_template(str(navigation / "lobby_side_story.png")),
+        lobby_side_story_text_white=load_template(
+            str(navigation / "lobby_side_story_text_white.png")
+        ),
         side_story_special_book=_load_navigation_candidates(
             navigation, "side_story_special_book"
         ),
@@ -646,7 +830,13 @@ def build_navigation_templates(template_root: Path) -> NavigationTemplates:
             load_template(str(template_root / path))
             for path in (shop_entry.template_path, *shop_entry.alt_template_paths)
         ),
+        lobby_shop_entry_text_white=load_template(
+            str(template_root / "shop_refresh" / "lobby_shop_entry_text_white.png")
+        ),
         lobby_knights=load_template(str(navigation / "lobby_knights.png")),
+        lobby_knights_text_white=load_template(
+            str(navigation / "lobby_knights_text_white.png")
+        ),
         worldboss_entry=load_template(str(navigation / "worldboss_entry.png")),
         lobby_worldboss_select_team=(
             load_template(
@@ -655,6 +845,9 @@ def build_navigation_templates(template_root: Path) -> NavigationTemplates:
             load_template(str(template_root / "world_boss" / "manage_support_team.png")),
         ),
         lobby_sanctuary=load_template(str(navigation / "lobby_sanctuary.png")),
+        lobby_sanctuary_text_white=load_template(
+            str(navigation / "lobby_sanctuary_text_white.png")
+        ),
         sanctuary_forest_row=load_template(
             str(template_root / "sanctuary" / sanctuary_forest_row.template_path)
         ),
@@ -699,6 +892,9 @@ def build_navigation_templates(template_root: Path) -> NavigationTemplates:
         lobby_activity=(
             load_template(str(navigation / "lobby_activity.png")),
             load_template(str(navigation / "lobby_activity_label.png")),
+            # 少「光辉里程碑」的账号整列上移，前两张在 2026-11-21 失败帧上只有
+            # 0.31 / 0.39；这张按当前真机帧重裁，旧账号仍由前两张命中。
+            load_template(str(navigation / "lobby_activity_alt.png")),
         ),
         activity_more=load_template(str(navigation / "activity_more.png")),
         # 两版活动页骨架（旧版米黄横幅 / 新版蓝底标题栏），任一过阈即命中。
@@ -710,6 +906,12 @@ def build_navigation_templates(template_root: Path) -> NavigationTemplates:
         ),
         activity_more_selected=load_template(
             str(navigation / "activity_more_selected.png")
+        ),
+        activity_more_text_white=load_template(
+            str(navigation / "activity_more_text_white.png")
+        ),
+        activity_web_entry=load_template(
+            str(navigation / "activity_web_entry.png")
         ),
         web_activity_gate=load_template(str(navigation / "web_activity_gate.png")),
         web_community=load_template(str(navigation / "web_community.png")),
@@ -732,6 +934,20 @@ _ACTIVITY_ROW_SIBLINGS = {
 _ACTIVITY_ROW_STATE = {
     "activity_more": "activity_menu",
     "activity_more_selected": "activity_web_promo",
+}
+# 「主锚点认不出 ⇒ 退到它所在分组的标题，点标题下方第一行」（2026-11-22）。
+#
+# 为什么需要：新版活动页那一行有**两种态** —— 选中是蓝底白字（白字模板能认），
+# 未选中是**浅底灰字**：白掩膜不认灰字，原样模板又是旧版米黄底 ⇒ 两态都认不出。
+# 而用户的要求是「不管进去停在哪一项，都要能找到更多精彩活动」。
+# 灰字没有可靠的跨背景口径，所以换一个稳定的锚：**分组结构**。
+# 「网页活动入口」是那一组的分组标题（蓝字），它下方第一行永远是「更多精彩活动」。
+# 实测 10-30 列表页：标题中心 y=172、那一行白字中心 y=280 ⇒ 偏移 +108。
+#
+# ⚠️ 兜底只在**扫完两个方向仍没找到**时用（见 ``_scan_activity_column``），
+# 正常帧不会走到；走错也只是切换了左列的选中项，不会打开别的东西。
+_ACTIVITY_ROW_FALLBACKS = {
+    "activity_more": ("activity_web_entry", (0, 108)),
 }
 # ⚠️ 「原样不过阈 → 再用两端低通补一次」的锚点名单**只有一份**，放在
 # ``core/matcher.SMOOTH_FALLBACK_ANCHORS``（导航 / 路线 / 诊断三层共用同一把尺子）。
@@ -775,6 +991,8 @@ class Epic7Navigator:
 
     _REGIONS = {
         "lobby_story": (1450, 220, 480, 200),
+        # 抗背景第二形态与原模板同区域，只是换了裁图和比对口径。
+        "lobby_story_tight_white": (1450, 220, 480, 200),
         "lobby_arena": (1600, 520, 330, 220),
         "lobby_battle": (1650, 430, 332, 220),
         "lobby_hero": (1400, 980, 180, 130),
@@ -847,15 +1065,20 @@ class Epic7Navigator:
         # 实测：菜单帧 0.9983~0.9987、全库次高 0.4097 ⇒ 余量 0.59。
         "quick_menu_hero": (1745, 200, 150, 130),
         # 菜单第 3 行中间「骑士团」。实测菜单帧 0.9970~0.9973、全库次高 0.4401 ⇒ 余量 0.56。
-        "quick_menu_knights": (1555, 550, 150, 120),
+        # ⚠️ 下沿从 670 放到 690：格子下方的「骑士团」三字（白字候选）落在 y 650~677，
+        # 原下沿把它切掉 7px，白字候选只能拿 0.125。放宽后原样分与落点**一字不变**
+        # （0.9970 @(1591,584)），因为只是多了下方一片空白。
+        "quick_menu_knights": (1555, 550, 150, 140),
         # 菜单第 4 行第 1 个「成就」。区域只罩那一格（模板 52x78 + 一圈余量），
         # 不蹭左边的大厅底图、也不去够右边「英雄休息室」。
         "achievement_entry": (1395, 750, 90, 100),
         # 成就页左上角「成就」标题。区域比两个字大一圈给抗锯齿留余量。
         "achievement_page_title": (55, 50, 210, 95),
-        # 快捷菜单第 2 行中间「宠物小屋」。区域只罩这一格（y 360~500），
+        # 快捷菜单第 2 行中间「宠物小屋」。区域只罩这一格（y 360~515），
         # 不碰第 4 行中间「英雄休息室」（y 750~850）。
-        "pet_house_entry": (1540, 360, 160, 140),
+        # ⚠️ 下沿从 500 放到 515：格子下方的「宠物小屋」四字落在 y 476~503，
+        # 原下沿切掉 3px，白字候选只能拿 0.119。放宽后原样分与落点不变（0.9993 @(1570,385)）。
+        "pet_house_entry": (1540, 360, 160, 155),
         # 宠物小屋左上「宠物小屋」四字，避开返回箭头与会变的 FPS 数字。
         "pet_house_page_title": (60, 45, 240, 100),
         # 快捷菜单第 3 行第 3 列「钢铁工坊」。这一格上方是「招募」、左边是「骑士团」，
@@ -873,7 +1096,8 @@ class Epic7Navigator:
         # 大厅左侧竖排菜单最上面那个「圣域」文字标签。区域只罩住那一行 ——
         # 实测真机点 (84, 318) 能进圣域主页，命中框中心落在 (84, 314) 附近。
         # ⚠️ 它同时也是**进入圣域**这个动作的点击目标（``_transition`` 用命中框中心点）。
-        "lobby_sanctuary": (20, 270, 140, 130),
+        # 左侧菜单整条扫描带：账号缺少「光辉里程碑」时这颗入口上移约 90px。
+        "lobby_sanctuary": LEFT_MENU_REGION,
         # 圣域主页右侧第一行「精灵之森」：**只给 ``observe()`` 判页用**，不是点击目标
         # （点它是 ``sanctuary.py`` 状态机的事）。复用 evidence 那边的区域定义。
         "sanctuary_forest_row": SANCTUARY_REGIONS["forest_row"],
@@ -885,7 +1109,7 @@ class Epic7Navigator:
         # 大厅左侧竖排最后一个「活动」入口。区域留得比控件大一圈（图标 y 754~812、
         # 「活动」二字 y 826~838 ⇒ 控件占 ~75..845），给大厅动画/节日装饰留余量。
         # ⚠️ 它**同时**是「进入活动」这个动作的点击目标（``_transition`` 用命中框中心）。
-        "lobby_activity": (10, 700, 220, 200),
+        "lobby_activity": LEFT_MENU_REGION,
         # **活动页的页面骨架**（2026-10-18 立）—— ``activity_menu`` / ``activity_web_promo``
         # 现在**只靠它**认页，与列表滚到哪儿完全无关。
         #
@@ -913,6 +1137,11 @@ class Epic7Navigator:
         # 诊断图/current/退出帧四份，0.9959 @ y=258）；其余 436 张**全在 0.20 以下**。
         # 点击点仍取**命中框中心**（`_locate`），所以位置随行浮动不影响点击。
         "activity_more": (0, 150, 420, 1000),
+        # 新版那一行的白字、以及「网页活动入口」分组标题 —— 都在同一条左列带里找。
+        # 白字模板属于**选中态**，所以与 ``activity_more_selected`` 同界；
+        # 分组标题只服务兜底定位，不是判据（见 ``NavigationTemplates`` 上的说明）。
+        "activity_more_text_white": (0, 150, 420, 1000),
+        "activity_web_entry": (0, 150, 470, 1000),
         # 「更多精彩活动」**选中态**那一行的白字。区域与 ``activity_more`` 共用同一块
         # 搜索带（两态必须同界，否则会造出「这一态判得出、那一态判不出」的裂缝）。
         #
@@ -952,6 +1181,11 @@ class Epic7Navigator:
         那条只管**危险动作**的关键模板，这里更严：**所有**判据锚点都不许缺。
         """
         missing = []
+        for extra_names in EXTRA_WHITE_CANDIDATES.values():
+            for extra_name in extra_names:
+                value = getattr(templates, extra_name, None)
+                if value is None or (isinstance(value, tuple) and not value):
+                    missing.append(extra_name)
         for anchor in cls._REGIONS:
             # PC 专属的第二维：模拟器不加载这张图，别让它触发 fail-closed。
             if anchor == "tower_home_title" and not templates.pc:
@@ -1001,6 +1235,9 @@ class Epic7Navigator:
         self.poll_seconds = poll_seconds
         self.transition_frames = transition_frames
         self.unknown_screen_wake = UnknownScreenWake(runtime)
+        # 大厅观赏模式唤醒：只在「等大厅」上下文启用，有界（2 次），点完由本层
+        # 正常的 observe 链路验收是否恢复 UI。与 unknown_screen_wake 分开持有状态。
+        self.lobby_spectator_wake = LobbySpectatorWake(runtime)
         # 上一次页内扫描实际滑了几下（只用来把失败文案写成人话：
         # 「已经在页内上下扫过 N 屏，仍不在画面里」）。
         self._scan_swipes_done = 0
@@ -1008,14 +1245,23 @@ class Epic7Navigator:
         self._home_return_templates: Optional[HomeReturnTemplates] = None
 
     def _locate(self, screen: np.ndarray, name: str, threshold: float = 0.82) -> Optional[Match]:
-        """在锚点区域内找到**最高分且过阈**的匹配。
+        """在锚点区域内找到过阈的匹配。
 
         一个锚点可以登记多个候选模板（``NavigationTemplates`` 里那类字段是
         ``tuple[np.ndarray, ...]``）—— 典型是大厅「秘密商店」入口：它有时会挂
         「未读新内容」的红 N 角标，和干净模板的相似度只有 ~0.81（门槛 0.82）。
-        多条候选之间**任一过阈即算命中**，命中取过阈候选里分数最高的那个，
-        所以「带角标」和「不带角标」两种长相都能进店，不必等角标消失。
+        多条候选之间任一过阈即算命中，命中取过阈候选里分数最高的那个。
+
+        原样候选全部不过阈时，才轮到 ``EXTRA_WHITE_CANDIDATES`` 里登记的白字文字候选。
+        两种口径各有自己的线（原样 0.82 / 白字 0.90），**不拿白字分去和原样分比高低**；
+        原样能认出来的画面继续走老路径，判定结果逐字节不变（见 decisions/0012）。
+
+        ``WHITE_MASK_ANCHORS`` 里登记的锚点**整颗**走白掩膜，且门槛以表里那条为准
+        （调用点传的 ``threshold`` 对它无效）—— 口径与阈值必须同一个出处。
         """
+        masked_threshold = WHITE_MASK_ANCHORS.get(name)
+        if masked_threshold is not None:
+            threshold = masked_threshold
         candidates = getattr(self.templates, name)
         if isinstance(candidates, np.ndarray):
             candidates = (candidates,)
@@ -1023,6 +1269,13 @@ class Epic7Navigator:
         for template in candidates:
             # 走 ``locate_with_fallback``：原样优先，不过阈才用低通补一次。
             # 与竞技场路线、视觉诊断**同一把尺子**，别在这里另写一套。
+            # ⚠️ 白字锚点必须走白字口径，且阈值要单定（0.90 而非 0.80）——
+            # 两种口径分数不在同一量纲，沿用旧线会把冒牌放进来（项目红线）。
+            mode = (
+                MATCH_MODE_WHITE_MASK
+                if name in WHITE_MASK_ANCHORS
+                else MATCH_MODE_RAW
+            )
             match = locate_with_fallback(
                 name,
                 screen,
@@ -1030,12 +1283,38 @@ class Epic7Navigator:
                 threshold,
                 region=self._REGIONS[name],
                 reference_size=REFERENCE_SIZE,
+                mode=mode,
             )
             if match is None or match.score < threshold:
                 continue
             if best is None or match.score > best.score:
                 best = match
-        return best
+        if best is not None:
+            return best
+
+        for extra_name in EXTRA_WHITE_CANDIDATES.get(name, ()):
+            template = getattr(self.templates, extra_name)
+            match = locate_with_fallback(
+                extra_name,
+                screen,
+                template,
+                WHITE_TEXT_THRESHOLD,
+                region=self._REGIONS[name],
+                reference_size=REFERENCE_SIZE,
+                mode=MATCH_MODE_WHITE_MASK,
+            )
+            if match is not None and match.score >= WHITE_TEXT_THRESHOLD:
+                # 白字模板的几何中心不等于文字中心（见 ``_WHITE_TEXT_CENTER_FIX``），
+                # 这里把 center 校到文字中心，点击点才不会落到字的边上。
+                fix = _WHITE_TEXT_CENTER_FIX.get(extra_name)
+                if fix is not None:
+                    match = Match(
+                        center=(match.center[0] + fix[0], match.center[1] + fix[1]),
+                        score=match.score,
+                        scale=match.scale,
+                    )
+                return match
+        return None
 
     def _click_offset(self, anchor: str) -> tuple[int, int]:
         if anchor == "lobby_story":
@@ -1246,7 +1525,14 @@ class Epic7Navigator:
         if sanctuary_home:
             return PageObservation("sanctuary_home", sanctuary_home.score)
 
-        lobby_story = self._locate(screen, "lobby_story", 0.80)
+        # 两张**不同**模板各带各的阈值，任一过阈即认大厅：
+        #   原模板 lobby_story 310×60 / 原样口径 / 0.80（模拟器与旧背景一直走它，结果不变）
+        #   紧模板 tight_white 60×170 / 白字口径 / 0.90（只认「Episode」四字，不受底图影响）
+        # 不做「取两张的最高分、按一条线判」：两种口径的分数不在同一量纲，
+        # 并到一条线上就等于让其中一张按别人的尺子判（项目红线：换口径必须重定阈值）。
+        lobby_story = self._locate(screen, "lobby_story", 0.80) or self._locate(
+            screen, "lobby_story_tight_white", 0.90
+        )
         lobby_arena = self._locate(screen, "lobby_arena")
         lobby_battle = self._locate(screen, "lobby_battle")
         lobby_secondary = max(
@@ -1575,6 +1861,7 @@ class Epic7Navigator:
                 self._template_root, self.templates
             )
         story_recovery = _StoryRecoveryAttempts()
+        self.lobby_spectator_wake.reset()
         return return_home_v2(
             templates=self._home_return_templates,
             runtime=self.runtime,
@@ -1585,6 +1872,7 @@ class Epic7Navigator:
             invalid_frame_limit=self.transition_frames,
             sleep=self.sleep,
             poll_seconds=self.poll_seconds,
+            spectator_wake=self.lobby_spectator_wake,
         )
 
     def _dismiss_roadblock(
@@ -2054,12 +2342,16 @@ class Epic7Navigator:
                 continue
             break
         diagnostic = self._diagnostic(f"navigation_{source}_to_{target_label}_failed")
+        note = getattr(self.runtime, "network_popup_note", None)
+        network_note = note() if callable(note) else ""
         raise RuntimeError(
-            f"导航转场 {page_label(source)} → {target_label} 失败；已保存诊断 {diagnostic}"
+            f"导航转场 {page_label(source)} → {target_label} 失败"
+            f"{network_note}；已保存诊断 {diagnostic}"
         )
 
     def _wait_for_page(self, expected: str) -> np.ndarray:
         self.unknown_screen_wake.reset()
+        self.lobby_spectator_wake.reset()
         stable = StableObservation(required=2)
         story_recovery = _StoryRecoveryAttempts()
         for _ in range(self.transition_frames):
@@ -2076,6 +2368,17 @@ class Epic7Navigator:
                 self.sleep(1.0)
                 continue
             if is_stable and observation.name == "unknown":
+                # 只在「等大厅」时试观赏模式兜底：观赏模式会让所有大厅锚点归零、
+                # observe 报 unknown，人点一下中心就恢复 UI。其他页的 unknown 不碰。
+                # 判据 + 有界次数在 LobbySpectatorWake 里；点完本帧交还，下一帧由
+                # 正常 observe 链路验收是否恢复成大厅，恢复失败才允许再点一次。
+                if expected == "lobby":
+                    spectator = self.lobby_spectator_wake.handle(
+                        screen, context="等大厅"
+                    )
+                    if spectator is SpectatorWakeResult.CLICKED:
+                        self.sleep(self.poll_seconds)
+                        continue
                 wake_result = self.unknown_screen_wake.handle(
                     screen,
                     context=f"导航:等待{page_label(expected)}",
@@ -2085,7 +2388,9 @@ class Epic7Navigator:
                     continue
             elif is_stable:
                 self.unknown_screen_wake.reset()
+                self.lobby_spectator_wake.reset()
             if is_stable and observation.name == expected:
+                self.lobby_spectator_wake.reset()
                 return screen
             self.sleep(self.poll_seconds)
         diagnostic = self._diagnostic(f"expected_{expected}")
@@ -2166,11 +2471,61 @@ class Epic7Navigator:
             return self.runtime.capture(), None, False
 
         sibling = _ACTIVITY_ROW_SIBLINGS.get(anchor)
+        fallback = _ACTIVITY_ROW_FALLBACKS.get(anchor)
+        fallback_logged = False
+
+        def _probe(frame: np.ndarray) -> tuple[Optional[Match], bool]:
+            """返回 ``(要点的 match, 目标态是否已经达成)``。
+
+            ⚠️ 顺序不能换，三个出口一个都不能少：
+            1. 先认 ``anchor``（未选中态）—— 认到就点它；
+            2. 再认 ``sibling``（选中态）—— 认到说明目标态**已经在了**，
+               绝不能点（再点一下会把选中取消掉）；
+            3. 最后才退到分组标题兜底（未选中态是灰字、前两步都认不出时）。
+               如果第 3 步排在前面，选中态会被它抢走 ⇒ 点一下反而取消选中。
+            """
+            nonlocal fallback_logged
+            found = self._locate(frame, anchor)
+            if found is not None:
+                return found, False
+            if sibling is not None:
+                sibling_match = self._locate(frame, sibling)
+                if sibling_match is not None:
+                    # 那一行已经是**另一个态**了 ⇒ 说明这一步要达成的目标态已成立。
+                    # 只有「那一态正是本步的目标」才认，否则仍然算没找到。
+                    return None, _ACTIVITY_ROW_STATE.get(sibling) in targets
+            if fallback is None:
+                return None, False
+            entry_anchor, (offset_x, offset_y) = fallback
+            entry = self._locate(frame, entry_anchor)
+            if entry is None:
+                return None, False
+            target_y = entry.center[1] + offset_y
+            # 标题贴在画面底部时，它下面那一行已经被裁掉了 —— 不蒙着点画面外。
+            if not 0 <= target_y < frame.shape[0] - 40:
+                return None, False
+            if not fallback_logged:
+                self.runtime.log(
+                    f"模式=导航 页面={page_label(source)} 动作={action} "
+                    f"锚点={anchor} 依据=分组标题兜底"
+                    f"（{entry_anchor} {entry.score:.4f} @ {entry.center}）"
+                )
+                fallback_logged = True
+            return (
+                Match(
+                    center=(entry.center[0] + offset_x, target_y),
+                    score=entry.score,
+                    scale=entry.scale,
+                ),
+                False,
+            )
 
         screen = self.runtime.capture()
-        match = self._locate(screen, anchor)
+        match, reached = _probe(screen)
         if match is not None:
             return screen, match, False
+        if reached:
+            return screen, None, True
 
         plan = [
             (ACTIVITY_SCROLL_START_Y, ACTIVITY_SCROLL_END_Y, "回列表头")
@@ -2193,21 +2548,24 @@ class Epic7Navigator:
             )
             self._scan_swipes_done = index
             screen = self.runtime.capture()
-            match = self._locate(screen, anchor)
+            match, reached = _probe(screen)
             if match is not None:
                 return screen, match, False
-            if sibling is not None:
-                sibling_match = self._locate(screen, sibling)
-                if sibling_match is not None:
-                    # 那一行已经是**另一个态**了 ⇒ 说明这一步要达成的目标态已成立。
-                    # 只有「那一态正是本步的目标」才认，否则仍然算没找到。
-                    reached = _ACTIVITY_ROW_STATE.get(sibling) in targets
-                    return screen, None, reached
+            if reached:
+                return screen, None, True
         # 两个方向都扫完了还是没有。⚠️ 先把当时的画面存下来：这种情况八成是
         # **这一页真的没有那个入口**（活动改版 / 入口搬家），事后只有诊断图
         # 能告诉我们「当时到底是什么样子」，日志里那句「扫了 9 屏」帮不上这个忙。
         if self.runtime.diagnostic_dir is not None:
             self.runtime.save_diagnostic("activity_entry_missing")
+        # 把「认不出」和「这一页根本没有」分开说 —— 两者的处置完全不同：
+        # 前者要补模板，后者是账号/版本没这个入口（社区签到该按路线跳过）。
+        if fallback is not None and self._locate(screen, fallback[0]) is None:
+            self.runtime.log(
+                f"模式=导航 页面={page_label(source)} 动作={action} "
+                f"锚点={anchor} 结论=整页没有「网页活动入口」分组"
+                "（这一版活动页没有该入口，或这个账号未开放网页活动）"
+            )
         return screen, None, False
 
     def _diagnostic(self, label: str):

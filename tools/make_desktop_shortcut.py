@@ -1,4 +1,4 @@
-"""在桌面生成「第七史诗自动助手」的无窗口启动图标。
+"""在桌面生成「亚卡助手」的无窗口启动图标。
 
 ## 为什么需要这个脚本
 
@@ -15,7 +15,7 @@
 ```
 python auto_game_unified\\tools\\make_desktop_shortcut.py            # 建/覆盖桌面图标
 python auto_game_unified\\tools\\make_desktop_shortcut.py --dir D:\\desktop
-python auto_game_unified\\tools\\make_desktop_shortcut.py --name 第七史诗助手
+python auto_game_unified\\tools\\make_desktop_shortcut.py --name 亚卡助手
 python auto_game_unified\\tools\\make_desktop_shortcut.py --icon D:\\某程序.exe,0
 python auto_game_unified\\tools\\make_desktop_shortcut.py --no-admin   # 不要提权
 python auto_game_unified\\tools\\make_desktop_shortcut.py --python D:\\AI\\codex\\auto_game\\.venv\\Scripts\\python.exe
@@ -30,8 +30,8 @@ Python 跑这里，建出来的图标双击会直接报 ModuleNotFoundError。
 想「用 A 环境的 pywin32 建图标、但让图标跑 B 环境」就传 ``--python B\\python.exe``
 （2026-11-09 起桌面图标指向工作区的正式 ``.venv``，不再依赖临时测量环境）。
 
-**图标**：不指定时会优先用**游戏本体** ``EpicSeven.exe`` 的图标（存在就用，见
-``GAME_ICON``）；用 Python 自带图标太丑，用户明确反馈过。想换就传 ``--icon 路径[,序号]``。
+**图标**：默认用仓库里的 ``desktop_qt/app.ico``（亚卡图标）；它不存在时才回落到
+游戏本体 ``EpicSeven.exe`` 的图标。想换就传 ``--icon 路径[,序号]``。
 
 **管理员**：默认勾上「以管理员身份运行」，因为 PC 客户端和游戏本体都以管理员运行，
 助手不提权就会被 UIPI 拦掉 ``SendInput``（详见项目记忆「PC 客户端」一节）。
@@ -48,16 +48,16 @@ import sys
 PACKAGE_DIR = Path(__file__).resolve().parents[1]
 LAUNCHER = PACKAGE_DIR / "desktop_qt" / "launch.py"
 WORKSPACE = PACKAGE_DIR.parent
-DEFAULT_NAME = "第七史诗助手"
-DESCRIPTION = "第七史诗自动助手（无终端窗口启动）"
+DEFAULT_NAME = "亚卡助手"
+DESCRIPTION = "亚卡助手（无终端窗口启动）"
 
-# 助手自己的图标（深色金边放大镜）。**放在仓库里**，不再引用别的项目目录 ——
+# 助手自己的图标（亚卡）。**放在仓库里**，不再引用别的项目目录 ——
 # 2026-11-09 之前桌面图标指向 `similar_auto_project/qt_ui/preview.ico`，
 # 那个目录一删图标就变白板。
 APP_ICON = PACKAGE_DIR / "desktop_qt" / "app.ico"
 
-# 游戏本体的可执行文件。用它当图标是因为「第七史诗」这个图标用户一眼就认得，
-# 而 Python 自带的图标太丑（用户 2026-09-23 明确反馈）。
+# 游戏本体的可执行文件。只在仓库图标缺失时兜底 —— 「第七史诗」这个图标用户
+# 一眼就认得，而 Python 自带的图标太丑（用户 2026-09-23 明确反馈）。
 GAME_ICON = Path(r"D:\AppData\Games\EpicSeven\EpicSeven.exe")
 
 

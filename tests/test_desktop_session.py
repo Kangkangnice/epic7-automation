@@ -202,40 +202,51 @@ def test_legacy_session_without_input_mode_defaults_to_background(tmp_path: Path
 
 
 def test_todos_round_trip(tmp_path: Path) -> None:
-    """改了三条便签，关掉助手再打开还在。"""
+    """改了那一条便签，关掉助手再打开还在。"""
     path = tmp_path / "session.json"
-    state = session.SessionState(todos=("给暗法刷速度套", "竞技场打到 1600 分", ""))
+    state = session.SessionState(todos=("给暗法刷速度套",))
     session.save(path, state)
     loaded = session.load(path)
     assert loaded == state
 
 
-def test_legacy_session_without_todos_has_three_empty_slots(tmp_path: Path) -> None:
+def test_legacy_session_without_todos_has_one_empty_slot(tmp_path: Path) -> None:
     path = _write(tmp_path / "session.json", {"selection": ["arena"]})
     loaded = session.load(path)
     assert loaded is not None
-    assert loaded.todos == ("", "", "")
+    assert loaded.todos == ("",)
+
+
+def test_legacy_three_todos_are_merged_not_dropped(tmp_path: Path) -> None:
+    """旧版三条便签升级后拼成一条，用户填过的内容不许丢。"""
+    path = _write(
+        tmp_path / "session.json",
+        {"todos": ["新增商店购买", "次元探查", "速度套打铁"]},
+    )
+    loaded = session.load(path)
+    assert loaded is not None
+    assert loaded.todos == ("新增商店购买、次元探查、速度套打铁",)
 
 
 def test_broken_todos_fall_back_to_empty(tmp_path: Path) -> None:
     """手改坏的存档不能让窄条面板打不开，也不能塞进非字符串。"""
-    for raw in ("一句话", 42, {"1": "a"}, ["第一", None, 3], None):
+    for raw in (42, {"1": "a"}, ["第一", None, 3], None):
         path = _write(tmp_path / "session.json", {"todos": raw})
         loaded = session.load(path)
         assert loaded is not None
         assert all(isinstance(item, str) for item in loaded.todos)
-        assert len(loaded.todos) == 3
+        assert len(loaded.todos) == 1
 
 
-def test_todos_are_truncated_and_padded(tmp_path: Path) -> None:
-    """只留三个槽位；超长文本截断，免得把窄条撑爆。"""
+def test_todos_are_truncated(tmp_path: Path) -> None:
+    """只留一条；超长文本截断，免得把窄条撑爆。"""
     path = _write(
         tmp_path / "session.json",
         {"todos": ["甲" * 200, "乙"]},
     )
     loaded = session.load(path)
     assert loaded is not None
-    assert loaded.todos == ("甲" * session.TODO_MAX_CHARS, "乙", "")
+    assert loaded.todos == ("甲" * session.TODO_MAX_CHARS,)
 
 
 def test_ball_pos_round_trip(tmp_path: Path) -> None:

@@ -1,5 +1,6 @@
 from dataclasses import asdict, dataclass
 from enum import Enum
+import hashlib
 from pathlib import Path
 from time import sleep as default_sleep
 from typing import Callable, Optional
@@ -18,6 +19,7 @@ from auto_game_unified.core.battle_supervisor import (
 from auto_game_unified.core.matcher import (
     MATCH_MODE_WHITE_MASK,
     Match,
+    find_all_templates,
     find_template,
     load_template,
     locate_with_fallback,
@@ -60,6 +62,8 @@ from auto_game_unified.games.epic7.evidence.story import (
     BATTLE_GUIDE_TITLE_REGION,
     REFERENCE_SIZE as STORY_REFERENCE_SIZE,
     REGIONS as STORY_REGIONS,
+    TEAM_RING_MIN_RATIO,
+    TEAM_RING_REGION,
     THRESHOLDS as STORY_THRESHOLDS,
     STORY_SKIP_CONFIRM_REGION,
     STORY_SKIP_REGION,
@@ -220,11 +224,33 @@ def find_start_mission_button(
     旧皮是橙底「进行任务」（`start_mission.png`），2026-09-17 起是绿底「战斗开始」
     （`start_mission_updated.png`）——旧模板在新画面上只有 0.36。两个模板**共用
     start_mission 的阈值**，不许给新模板单独放宽，否则等于偷偷降低判据。
+
+    2026-11-22 补第三套外观：**点「管理队伍」进编队后，按钮变成绿底「进行任务」**。
+    它既不是旧皮的橙金、也不是新皮的「战斗开始」文案，原样匹配只有 0.625~0.743。
+    这里不补第三张图，原因有二：
+      * 真正稳定的是**白字「进行任务」**：同一张 `start_mission.png` 走白掩膜，
+        橙底帧 0.919 / 编队绿底帧 0.897 / 满员帧 0.898，而关卡入口页只有 0.523；
+      * 以后游戏再换底色，白掩膜仍然认得出，补图则要一张一张追。
+    白掩膜是**兜底口径、不是放宽**：它用 0.85 的更高阈值，且只在原样两套都不过
+    时才启用。原样能过的帧，分数与改动前逐字节一致。
     """
     matches = []
     for template in (primary_template, updated_template):
         match = find_template(
             screen, template, threshold, region=region, reference_size=reference_size
+        )
+        if match is not None:
+            matches.append(match)
+    if matches:
+        return max(matches, key=lambda candidate: candidate.score)
+    for template in (primary_template, updated_template):
+        match = find_template(
+            screen,
+            template,
+            0.85,
+            region=region,
+            reference_size=reference_size,
+            mode=MATCH_MODE_WHITE_MASK,
         )
         if match is not None:
             matches.append(match)
@@ -284,6 +310,7 @@ class StoryState(Enum):
     STAGE = "stage"
     TEAM = "team"
     WAIT_SKIP_CONFIRM = "wait_skip_confirm"
+    STORY_CUTSCENE = "story_cutscene"
     WAIT_BATTLE = "wait_battle"
     ACTIVE = "active"
     WAIT_RESULTS = "wait_results"
@@ -308,6 +335,7 @@ STATE_LABELS = {
     StoryState.STAGE: "关卡入口",
     StoryState.TEAM: "队伍选择",
     StoryState.WAIT_SKIP_CONFIRM: "跳过确认",
+    StoryState.STORY_CUTSCENE: "剧情过场",
     StoryState.WAIT_BATTLE: "等待战斗",
     StoryState.ACTIVE: "战斗进行中",
     StoryState.WAIT_RESULTS: "等待结算",
@@ -350,6 +378,22 @@ class StoryTemplates:
     # 2026-09-17 游戏把这颗按钮换了皮（橙「进行任务」→ 绿「战斗开始」），
     # 旧模板在新画面上只有 0.36。两个都留着，命中哪个用哪个。
     start_mission_updated: np.ndarray
+    # ── 队伍页「有空位就补人」（2026-11-22，用户实跑口径）────────────────────
+    # 故事关卡会给一支**不满员**的预设队伍：1 个剧情角色 + 3 个黄色空位光圈。
+    # 这种页面上点「进行任务」游戏不给反应（实测连点 4 次画面不动），必须先补人。
+    #
+    # 判据链条（缺一不可，任何一环认不出就不动手）：
+    #   1. 阵型区黄色高亮像素占比 ≥ TEAM_RING_MIN_RATIO ⇒ 确实还有空位（黄圈在闪）；
+    #   2. 左下角「管理队伍」⇒ 进编队的入口；
+    #   3. 右侧列表顶端「蓝底黄十字」⇒ 进入「可放置」状态，空位才会浮出紫加号；
+    #   4. 空位上的「紫底黄十字」⇒ 点它是**唯一**把英雄放上去的动作。
+    #
+    # ⚠️ 只按次数循环、不看黄圈是错的：配满后黄圈全变蓝圈，再点加号只会得到
+    #    「已配置的英雄」（那句话的意思是"这个英雄已上阵"，不是"队伍满了"）。
+    # ⚠️ 对同一颗加号连点而不换英雄，紫加号不会重现 —— 每配一人必须把列表下移一格。
+    team_manage: np.ndarray
+    team_list_plus: np.ndarray
+    team_slot_plus: np.ndarray
     skip: np.ndarray
     skip_confirm: np.ndarray
     auto_off: np.ndarray
@@ -360,8 +404,6 @@ class StoryTemplates:
     complete: np.ndarray
     bonus_reward: np.ndarray
     next_stage: np.ndarray
-    # 「重复打同一关」那页的右下角按钮（「无法前往下一个关卡，请选择下方按钮」）。
-    retry_stage: np.ndarray
     # 2026-11-04 加：PC 端「完成故事」弹窗的底部「点击关闭」标签。**只作点击目标、
     # 不参与判据**（判据只看 ``complete`` 文案）。PC 端弹窗布局与模拟器不同，``complete``
     # 模板中心落在奖励图标上、点了没反应；改用这枚标签的真实位置才点得动。
@@ -444,6 +486,9 @@ def build_story_templates(template_dir: Path) -> StoryTemplates:
         start_mission_updated=load_template(
             str(template_dir / "start_mission_updated.png")
         ),
+        team_manage=load_template(str(template_dir / "team_manage.png")),
+        team_list_plus=load_template(str(template_dir / "team_list_plus.png")),
+        team_slot_plus=load_template(str(template_dir / "team_slot_plus.png")),
         skip=load_template(str(template_dir / "skip.png")),
         skip_confirm=load_template(str(template_dir / "skip_confirm.png")),
         auto_off=load_template(str(template_dir / "auto_off.png")),
@@ -454,7 +499,6 @@ def build_story_templates(template_dir: Path) -> StoryTemplates:
         complete=load_template(str(template_dir / "complete.png")),
         bonus_reward=load_template(str(template_dir / "bonus_reward.png")),
         next_stage=load_template(str(template_dir / "next_stage.png")),
-        retry_stage=load_template(str(template_dir / "retry_stage.png")),
         # 「点击关闭」标签：PC 覆盖图存在才载入，否则 ``None``（模拟器回落旧点）。
         complete_close=_load_complete_close(template_dir),
         # 战败结算页：PC 复用月塔的 FAILED 图；模拟器为 None，整条分支不启用。
@@ -489,9 +533,15 @@ class StoryStateMachine:
         initial_state: StoryState = StoryState.STAGE,
         *,
         pc_rules: bool = False,
+        story_cutscene: bool = False,
     ) -> None:
         self.templates = templates
         self.state = initial_state
+        # 主线专属：点完跳过确认之后、战斗出现之前的那段纯演出没有任何可点锚点，
+        # 认不出就停在 WAIT_SKIP_CONFIRM 干等到超时。开启后由 next_action 兜底拨到
+        # STORY_CUTSCENE，交给主循环的状态超时表接管。默认 False ⇒ 其余复用主线的
+        # 路线（补星 / 活动 / 支线）行为逐字节不变。
+        self.story_cutscene = story_cutscene
         # PC 专属规则开关：由装配点（``modes.py::_build_story``）按模板目录注入。
         #
         # 默认 **False** ⇒ 模拟器走 2026-11-07 之前的原代码路径，行为一个字节不变。
@@ -532,14 +582,27 @@ class StoryStateMachine:
         self.stamina_replenish_max: int | None = None
         # 体力预算由 Runner 按路线选项注入；默认「使用、不限」= 改动前行为。
         self.stamina_budget = StaminaBudget()
-        # 无后续关卡时是否执行「重新进行」；默认重复 = 改动前行为。
-        self.repeat_after_last = True
         self._stamina_material_clicked = False
         self._stamina_purchase_pending = False
         self._confirmed_page = ""
         # 「接力」进来的落点；None = 本轮是正常从关卡入口开始的。Runner 靠它判断
         # 「局内接力」要不要跳过状态机直接把这一局交给战斗监督。
         self.resumed_from: Optional[StoryState] = None
+        # ── 队伍页补人（2026-11-22）──────────────────────────────────────────
+        # 已经放上去的人数；只在「点完紫加号、紫加号确实消失」时 +1。
+        self._team_placements = 0
+        # 点过几次列表顶端加号（= 向游戏问过几次「还有没有空位」）。
+        self._team_asked = 0
+        # 连续几次「问了却没有紫加号」。换过英雄后仍是 0 出 ⇒ 判定满员。
+        self._team_empty_asks = 0
+        # 放行「进行任务」的依据。**必须写进日志**，不许静默放行。
+        self._team_release_reason = ""
+        # 滑动前记下的英雄列表指纹；滑完拿它确认列表到底动没动（照搬英雄合成口径）。
+        self._team_list_fp: Optional[str] = None
+        # 上一个真正发出去的动作名，用来判断"刚放完一个人，该换英雄了"。
+        self._team_last_action = ""
+        # 同名配队动作连续发了几次；连续 2 次说明这一支在这页上行不通，放弃配队。
+        self._team_same_count = 0
 
     def resume_from(self, state: StoryState) -> None:
         """拨到用户停下的那一步，原样接管进度继续往下跑。
@@ -598,6 +661,14 @@ class StoryStateMachine:
         elif action.name == "stamina_confirm":
             self._stamina_material_clicked = False
             self._stamina_purchase_pending = True
+        elif action.name.startswith("team_"):
+            # 配队是**多步点击**，每一步都要看上一脚踩在哪：同名连续出现说明
+            # 这一支在这页上行不通（加号点了不冒紫加号 / 管理队伍点了不进编队）。
+            if action.name == self._team_last_action:
+                self._team_same_count += 1
+            else:
+                self._team_same_count = 0
+            self._team_last_action = action.name
 
     def _locate(self, screen: np.ndarray, name: str):
         """Match only the expected local UI region; never the desktop."""
@@ -682,6 +753,225 @@ class StoryStateMachine:
             round(point[0] * screen.shape[1] / self._REFERENCE_SIZE[0]),
             round(point[1] * screen.shape[0] / self._REFERENCE_SIZE[1]),
         )
+
+    # ── 队伍页补人（2026-11-22）────────────────────────────────────────────
+    # 用户口径：故事关卡会给一支不满员的预设队伍（1 个剧情角色 + 若干**黄色空位光圈**）。
+    # 空位上是会闪的黄色光圈，满员后全部变蓝圈 —— 这是「还需要补人」的唯一外观依据。
+    # 页面上直接点「进行任务」不会推进（实测连点 4 次画面不动），必须先把空位补上。
+    _TEAM_MAX_PLACEMENTS = 4
+    _TEAM_SCROLL_POINT = (1550, 640)
+    # 英雄列表指纹区（参考画布坐标）。取列表主体，避开顶部滚动公告与底部按钮。
+    _TEAM_LIST_FP_ZONE = (1420, 220, 430, 560)
+    # 「问了没紫加号」连续几次就判定满员。第一次允许是判据抖动（加号点了画面还没刷），
+    # 换过英雄（滚动一格）之后再一次仍没有，才算真的没位置。
+    _TEAM_EMPTY_ASKS_TO_STOP = 2
+
+    def _team_ring_ratio(self, screen: np.ndarray) -> float:
+        """阵型区「黄色高亮」像素占比。
+
+        实测（1982×1132）：3 个空位 3.35% / 2 个 2.66% / 1 个 1.37% /
+        满员全蓝圈 0.18%。阈值 0.8% 卡在满员与最稀疏空位之间。
+        """
+        scale_x = screen.shape[1] / self._REFERENCE_SIZE[0]
+        scale_y = screen.shape[0] / self._REFERENCE_SIZE[1]
+        x, y, width, height = TEAM_RING_REGION
+        x, y = round(x * scale_x), round(y * scale_y)
+        width, height = round(width * scale_x), round(height * scale_y)
+        area = screen[y : y + height, x : x + width]
+        if area.size == 0:
+            return 0.0
+        r = area[:, :, 0].astype(np.int16)
+        g = area[:, :, 1].astype(np.int16)
+        b = area[:, :, 2].astype(np.int16)
+        mask = (r > 190) & (g > 160) & (b < 150) & (r - b > 70)
+        return float(mask.mean())
+
+    def _team_slot_point(self, screen: np.ndarray) -> Optional[tuple[int, int]]:
+        """空位上最早（最靠上）的那颗紫加号。用户口径：从上到下依次放人。"""
+        matches = find_all_templates(
+            screen,
+            self.templates.team_slot_plus,
+            self._THRESHOLDS.get("team_slot_plus", self.templates.threshold),
+            region=self._REGIONS["team_slot_plus"],
+            reference_size=self._REFERENCE_SIZE,
+            min_gap=80,
+        )
+        if not matches:
+            return None
+        top = min(matches, key=lambda m: m.center[1])
+        return top.center
+
+    def _team_guard_blocked(self, name: str) -> bool:
+        """同一个配队动作连续第 3 次被要求发出 ⇒ 这一支在这页上行不通。
+
+        正常节奏是「点一下 → 下一帧画面就变，动作名跟着变」，所以同名连续出现
+        只可能是：加号点了不出现紫加号（本关不允许配队）、管理队伍点了不进编队。
+        与其等满无进展看门狗，不如当场放弃补人、直接把「进行任务」原样发出去。
+        """
+        if name != self._team_last_action:
+            return False
+        return self._team_same_count >= 2
+
+    def _team_action(
+        self, name: str, point: tuple[int, int], reason: str
+    ) -> Optional[StoryAction]:
+        """配队动作统一走这里：不换页，出口仍是「队伍准备」。"""
+        if self._team_guard_blocked(name):
+            return None
+        return self._action(
+            name,
+            point,
+            source_page="队伍准备",
+            target_pages=("队伍准备",),
+            reason=reason,
+        )
+
+    def _team_list_fingerprint(self, screen: np.ndarray) -> str:
+        """英雄列表的灰度指纹：滑动之后用它确认列表**真的动了**。
+
+        口径照搬 ``hero_synthesis._detail_fingerprint`` —— 那里已经用「高斯模糊压掉
+        立绘动画与粒子噪点 + 缩略图量化 + sha1 前 8 位」稳定判断过「确实翻到了下一张」。
+        配队原来那版是**盲滑**：滑一下就当换人了，根本不知道列表动没动，于是滚到底之后
+        还在对着列表顶端那颗加号反复点。同一套问题，用同一套办法。
+        """
+        scale_x = screen.shape[1] / self._REFERENCE_SIZE[0]
+        scale_y = screen.shape[0] / self._REFERENCE_SIZE[1]
+        x, y, width, height = self._TEAM_LIST_FP_ZONE
+        x, y = round(x * scale_x), round(y * scale_y)
+        width, height = round(width * scale_x), round(height * scale_y)
+        zone = screen[y : y + height, x : x + width]
+        if zone.size == 0:
+            return ""
+        gray = cv2.cvtColor(zone, cv2.COLOR_RGB2GRAY)
+        gray = cv2.GaussianBlur(gray, (11, 11), 0)
+        small = cv2.resize(gray, (8, 12), interpolation=cv2.INTER_AREA)
+        return hashlib.sha1((small // 32).astype(np.uint8).tobytes()).hexdigest()[:8]
+
+    def _team_ready(self, reason: str) -> None:
+        """判定这一队可以开打：记下依据并清账，供下一关重新从零问起。"""
+        self._team_release_reason = reason
+        self._team_placements = 0
+        self._team_asked = 0
+        self._team_empty_asks = 0
+        self._team_last_action = ""
+        self._team_list_fp = None
+
+    def _team_scroll_action(
+        self, screen: np.ndarray, reason: str
+    ) -> Optional[StoryAction]:
+        """发一次「换下一个英雄」：动作发出前先记下列表指纹，滑完用它验收。"""
+        action = self._team_action("team_scroll", self._TEAM_SCROLL_POINT, reason)
+        if action is not None:
+            self._team_list_fp = self._team_list_fingerprint(screen)
+        return action
+
+    def _configure_team(self, screen: np.ndarray) -> Optional[StoryAction]:
+        """队伍页补人：**黄圈在场就不能开打**，配到游戏说「没位置了」为止。
+
+        返回 ``None`` 表示放行「进行任务」（调用方把 ``_team_release_reason`` 写进日志）。
+
+        判据优先级（用户 2026-11-22 口径）：
+          1. **紫加号 > 黄圈**。只要空位上浮出紫加号，就说明还有位置，必须放人，
+             不管黄圈占比算出来多少；
+          2. 黄圈只做「要不要进编队问一次」的前置。闪烁让占比在 1.3%~5.3% 之间跳，
+             拿它当满员证据会把"只配了 1 个人"当成满员放行（09:15 实跑就是这么错的）；
+          3. 真正的满员证据：**换过英雄之后，点顶端加号仍不出紫加号**；
+          4. 每放一个人必须先把列表下移一格换英雄 —— 对同一颗加号连点只会得到
+             「已配置的英雄」（那句话的意思是"这个英雄已上阵"，不是"队伍满了"）。
+        """
+        # PC 队伍页布局未实跑验证，这一支只在模拟器启用（模拟器行为新增，PC 零改动）。
+        if self._pc_rules:
+            return None
+        self._team_release_reason = ""
+
+        # ① 紫加号在：一定有位置，先放人（这一条压过黄圈占比）
+        slot = self._team_slot_point(screen)
+        if slot is not None:
+            self._team_empty_asks = 0
+            self._team_list_fp = None
+            ratio = self._team_ring_ratio(screen)
+            return self._team_action(
+                "team_slot_plus",
+                slot,
+                f"空位紫加号已出现（黄圈占比 {ratio:.2%}），放第 "
+                f"{self._team_placements + 1} 个英雄",
+            )
+
+        # ② 黄圈全部消失 = 满员终态，立刻放行，**不管问过几次加号**。
+        #
+        # ⚠️ 2026-11-22 10:15 实跑教训：这里原来多写了一个 `and self._team_asked == 0`，
+        # 本意是「只认进场那一眼」，结果补到第 3 个人时占比已经掉到 0.17%（全蓝），
+        # 却因为「已经问过 3 次加号」而不放行，继续去点第 4 次、第 5 次。
+        # 黄圈归零就是用户口径的满员终态，这一条必须无条件生效。
+        ratio = self._team_ring_ratio(screen)
+        if ratio < TEAM_RING_MIN_RATIO:
+            if self._team_asked == 0:
+                self._team_ready(f"进场时阵型区没有黄圈（占比 {ratio:.2%}）")
+            else:
+                self._team_ready(
+                    f"补完 {self._team_placements} 人后黄圈已全部消失"
+                    f"（占比 {ratio:.2%}）"
+                )
+            return None
+
+        # ①.5 刚跑完一次滑动：先确认列表**真的动了**（口径同英雄合成的翻卡确认）。
+        # 指纹没变 = 滚不动/已到底，换不出新英雄，再点加号也只是原地打转。
+        if self._team_list_fp is not None:
+            moved = self._team_list_fingerprint(screen) != self._team_list_fp
+            self._team_list_fp = None
+            if not moved:
+                self._team_ready(
+                    "滑动后列表指纹未变化（已到底），但阵型区仍有黄圈，"
+                    "没有更多英雄可换，拒绝开打"
+                )
+                return None
+
+        # ② 刚点完顶端加号却没有紫加号 ⇒ 这个英雄已经在队伍里，换人再问
+        if self._team_last_action == "team_list_plus":
+            self._team_empty_asks += 1
+            if self._team_empty_asks >= self._TEAM_EMPTY_ASKS_TO_STOP:
+                self._team_ready(
+                    f"换过英雄后顶端加号仍不出紫加号（连续 "
+                    f"{self._team_empty_asks} 次），判定没有空位"
+                )
+                return None
+            return self._team_scroll_action(
+                screen,
+                f"第 {self._team_empty_asks} 次问询没有紫加号，下移一格换下一个英雄",
+            )
+
+        # ③ 刚放上去一个：先换英雄，否则同一颗加号不会再出紫加号
+        if self._team_last_action == "team_slot_plus":
+            self._team_placements += 1
+            return self._team_scroll_action(
+                screen,
+                f"已补 {self._team_placements} 人，下移一格换下一个英雄",
+            )
+
+        if self._team_placements >= self._TEAM_MAX_PLACEMENTS:
+            self._team_ready(f"已补 {self._team_placements} 人，达到硬上限")
+            return None
+
+        plus = self._locate(screen, "team_list_plus")
+        if plus is not None:
+            self._team_asked += 1
+            return self._team_action(
+                "team_list_plus",
+                plus.center,
+                f"第 {self._team_asked} 次点顶端加号（黄圈占比 {ratio:.2%}），"
+                "确认还有没有空位",
+            )
+
+        manage = self._locate(screen, "team_manage")
+        if manage is not None:
+            return self._team_action(
+                "team_manage",
+                manage.center,
+                "左下角「管理队伍」已识别，进入编队",
+            )
+
+        self._team_ready("队伍页上没有可用的配队入口（管理队伍与顶端加号都不在）")
+        return None
 
     def observe_battle_controls(self, screen: np.ndarray) -> BattleControls:
         return observe_battle_controls(screen)
@@ -941,16 +1231,7 @@ class StoryStateMachine:
             (
                 "results_confirm",
                 "结算确认",
-                # ⚠️ 「无法前往下一关」是**第四种**落点（2026-10-18 21:14 实跑）。
-                #
-                # 结算确认点完，游戏可能直接给「无法前往下一关，请选择下方按钮」
-                # （重复打同一关时的常态）。漏声明的后果**不是「认不出这一页」那么简单**：
-                # 主循环发现「新页面不在转场目标里」，会判定这一下没点成功，
-                # 于是把状态机刚给出的 `retry_stage` 动作**整个丢掉**（runner_base 里
-                # 那个 `action = last_transition_action if confirmed_page == source_page else None`），
-                # 干等 45 秒后报「转场超时」。日志表现完全像「点了没反应」，
-                # 但根因是**契约漏了一个落点**。
-                ("剧情播放", "通关提示", "额外奖励", "下一关入口", "无法前往下一关"),
+                ("剧情播放", "通关提示", "额外奖励", "下一关入口"),
                 StoryState.WAIT_RESULTS,
                 (StoryState.WAIT_COMPLETE, StoryState.WAIT_NEXT_STAGE, StoryState.ACTIVE),
                 "结算确认按钮位于底部确认区",
@@ -1051,6 +1332,17 @@ class StoryStateMachine:
                 if name == "start_mission":
                     self.auto_click_attempted = False
                     self.battle_controls = BattleControls.TRANSITION
+                    # 进「进行任务」之前先确认队伍有没有空位：故事关卡会给一支
+                    # 不满员的预设队伍，空位上是会闪的黄色光圈；这种页面上直接点
+                    # 「进行任务」游戏不给反应（实测连点 4 次画面不动）。
+                    team_action = self._configure_team(screen)
+                    if team_action is not None:
+                        return team_action
+                    if self._team_release_reason:
+                        # 放行必须留痕：凭什么认定这一队可以开打，写进同一行日志。
+                        reason = (
+                            f"{reason}；队伍放行依据={self._team_release_reason}"
+                        )
                 return self._action(
                     name,
                     self._action_point(screen, name, match),
@@ -1171,44 +1463,13 @@ class StoryStateMachine:
                     target_states=(StoryState.TEAM,),
                 )
 
-        # ── 「重复打同一关」那一页（2026-10-18 立）─────────────────────────────
-        #
-        # 现场：10-18 19:50（第 3 章·白色悬崖森林）与 10-14 18:42（另一关）两次同形 ——
-        # 结算确认点完，游戏给的是「无法前往下一个关卡，请选择下方按钮」，
-        # 左下角「离开 / 大厅」、右下角「S 体力/上限 + 重新进行」。
-        # 这一页**原来一个锚点都没有** ⇒ 认不出 ⇒ 静默干等 45 秒 ⇒ 退出码 1。
-        #
-        # 放在**所有前进判据之后**，就是用户要的优先级：
-        # 能「进行下一个关卡」就先走它（`complete` / `next_stage` / `prepare_battle`
-        # 都在上面已经判过），只有都认不到时才重打同一关。
-        #
-        # 落点依据不是猜的：狗粮路线 2026-09-13 的实跑日志里，
-        # 点 `replay` 之后 4 秒落到「准备战斗」页（`select_team` 那一屏），
-        # 再选队、开战 —— 所以这里按「回到关卡入口 / 助手选择」声明契约。
-        match = self._locate(screen, "retry_stage")
-        if match is not None:
-            if not self.repeat_after_last:
-                raise StaminaExhausted(
-                    "本关没有下一关，按设置不重复同一关"
-                )
-            if self._confirmed_page != "无法前往下一关":
-                # 这一屏本身 = 一局刚打完。只记一次：点歪重试（尝试 2/4、3/4）
-                # 时同一屏还会再判一次，不许把一轮算成两轮。
-                self.completed_cycles += 1
-            return self._action(
-                "retry_stage",
-                match.center,
-                source_page="无法前往下一关",
-                # 落点：`助手选择`（实测狗粮 replay 后到的那一页）/ `队伍准备`（万一直接跳过选助手）。
-                # `关卡入口 / 剧情关卡入口` 保留 —— 有的关卡重打会先回地图。
-                # ⚠️ 这四个都是「下一轮开头」的页面，不是随便凑的；
-                # 多写一个错页面 = 转场验收形同虚设。
-                target_pages=("关卡入口", "剧情关卡入口", "助手选择", "队伍准备"),
-                reason="「重新进行」已识别（本关没有下一关可去，重打同一关）",
-                target_states=(StoryState.STAGE, StoryState.TEAM),
-            )
-
         self._confirmed_page = ""
+        if self.story_cutscene and self.state in (
+            StoryState.WAIT_SKIP_CONFIRM,
+            StoryState.STORY_CUTSCENE,
+        ):
+            self.state = StoryState.STORY_CUTSCENE
+            return None
         raise UnrecognizedScreen(
             f"主线画面[{state_label(self.state)}]未识别"
         )
@@ -1226,6 +1487,20 @@ class StoryStateMachine:
             self._stamina_material_clicked,
             self._stamina_purchase_pending,
             self._confirmed_page,
+            # ⚠️ 配队这几个计数**必须一起回滚**。2026-11-22 10:00 实跑：
+            # 预览先跑一遍 next_action（_configure_team 在这里推进了计数、
+            # 还可能调 _team_ready 把 _team_last_action 清空），而快照没盖住这几个
+            # 字段 ⇒ 副作用泄漏到正式那一遍：
+            #   * 「第 3 次点顶端加号」下一帧变「第 6 次」（每帧翻倍）；
+            #   * _team_last_action 被清成空串 ⇒ 永远走「点顶端加号」分支，
+            #     再也不会滚动换英雄，对着列表顶端那颗加号连点到 4 次未转场。
+            self._team_placements,
+            self._team_asked,
+            self._team_empty_asks,
+            self._team_last_action,
+            self._team_same_count,
+            self._team_release_reason,
+            self._team_list_fp,
         )
         try:
             action = self.next_action(screen)
@@ -1242,6 +1517,13 @@ class StoryStateMachine:
                 self._stamina_material_clicked,
                 self._stamina_purchase_pending,
                 self._confirmed_page,
+                self._team_placements,
+                self._team_asked,
+                self._team_empty_asks,
+                self._team_last_action,
+                self._team_same_count,
+                self._team_release_reason,
+                self._team_list_fp,
             ) = snapshot
 
 
@@ -1285,10 +1567,6 @@ _STORY_RESUME_ORDER: tuple[tuple[str, StoryState, str], ...] = (
     ("clear", StoryState.WAIT_RESULTS, "通关结算"),
     ("reward", StoryState.WAIT_RESULTS, "奖励结算"),
     ("next_stage", StoryState.WAIT_NEXT_STAGE, "下一关入口"),
-    # 「无法前往下一个关卡」那一页，**故意排最后**：它是「前进无路可走时的兜底」，
-    # 不是比 `next_stage` 更优先的落点。实测这一页上 `next_stage` 只有 0.1411，
-    # 排在前后都不影响结果；排最后只是把「优先级」写成可读的顺序。
-    ("retry_stage", StoryState.WAIT_RESULTS, "重新进行"),
 )
 
 
@@ -1339,6 +1617,7 @@ class StoryRunner(ModeRunnerBase):
         StoryState.STAGE: 45,
         StoryState.TEAM: 45,
         StoryState.WAIT_SKIP_CONFIRM: 45,
+        StoryState.STORY_CUTSCENE: 180,
         StoryState.WAIT_BATTLE: 60,
         StoryState.ACTIVE: 120,
         StoryState.WAIT_RESULTS: 45,
@@ -1359,7 +1638,6 @@ class StoryRunner(ModeRunnerBase):
         battle_supervisor: BattleSupervisor | None = None,
         stamina_enabled: bool = True,
         stamina_limit: int | None = None,
-        repeat_after_last: bool = True,
     ) -> None:
         super().__init__(
             machine,
@@ -1372,11 +1650,18 @@ class StoryRunner(ModeRunnerBase):
         machine.stamina_budget = StaminaBudget(
             enabled=stamina_enabled, limit=stamina_limit
         )
-        machine.repeat_after_last = repeat_after_last
         self.battle_supervisor = battle_supervisor or BattleSupervisor(
             runtime,
             self.recovery_gate,
-            BattleConfig(mode="story", mode_label="主线"),
+            BattleConfig(
+                mode="story",
+                mode_label="主线",
+                # 剧情过场（演出在播、无 HUD、无战前按钮、无可点动作）不许再被
+                # 当成「战斗画面无法识别」误杀。启用后：认不出但画面在动就继续等，
+                # 连续 180 秒一直在动仍认不出才报 scene_unrecognized。
+                # ⚠️ 只给主线开：其余路线保持 0（= 45 秒硬判，行为不变）。
+                unrecognized_motion_grace_seconds=180,
+            ),
             now=self.now,
             sleep=sleep,
         )
@@ -1413,6 +1698,26 @@ class StoryRunner(ModeRunnerBase):
 
     def _state_label(self, state: StoryState) -> str:
         return state_label(state)
+
+    def _perform_action(self, action: StoryAction) -> None:
+        """配队要「上滑换英雄」，这是主循环唯一的非点击动作。"""
+        if action.name == "team_scroll":
+            start = action.point
+            self.runtime.swipe(
+                start, (start[0], start[1] - 120), 400, action.name
+            )
+            return
+        self.runtime.click(action.point, action.name)
+
+    def _action_retry_seconds(self, action_name: str) -> float:
+        """配队是一串「点一下、看一帧」的短动作，不能按 45 秒重试。
+
+        45 秒是给「换页动作没反应」留的观察窗；配队动作不换页，按 45 秒重试
+        会让补一个人卡半分钟。1.5 秒足够让画面刷出紫加号/列表位移。
+        """
+        if action_name.startswith("team_"):
+            return 1.5
+        return super()._action_retry_seconds(action_name)
 
     def _after_action_click(self, action: StoryAction) -> None:
         record_click = getattr(self.machine, "action_clicked", None)

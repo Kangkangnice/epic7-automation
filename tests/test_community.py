@@ -1721,10 +1721,54 @@ class CommunityEntryAndCloseTests(unittest.TestCase):
         self.assertEqual(again.name, "enter_community")
 
     def test_a_portrait_frame_mid_entry_goes_back_to_page_decisions(self):
-        """转过去之后的帧照常按页面判：不能因为「还在 ENTERING」就发呆。"""
+        """转过去之后的帧照常按页面判：不能因为「还在 ENTERING」就发呆。
+
+        ⚠️ 2026-11-22：这一帧是「我的任务」。入口直接落在这里时，签到还没做，
+        所以第一下是**退回兑换中心补签到**（见 ``_on_tasks`` 开头）。
+        这条用例要钉的是「不许发呆」，不是某一个固定动作名。
+        """
         machine = self.machine(state=cm.CommunityState.ENTERING)
         action = machine.next_action(fixture("tasks_all_done_live_20261006"))
-        self.assertEqual(action.name, "goto_exchange")
+        self.assertIsNotNone(action, "进了已知的社区页就必须出手，不许发呆")
+        self.assertEqual(machine.state, cm.CommunityState.TASKS)
+        self.assertEqual(action.name, "back_to_feed_for_signin_from_tasks")
+
+    def test_entry_landing_on_the_exchange_center_goes_back_for_the_signin(self):
+        """进社区直接落在兑换中心（H5 记住上次页面）⇒ 先回信息流补签到。
+
+        ⚠️⚠️ 2026-11-22 实跑：点「游戏社区」后直接落在兑换中心。旧逻辑在这一页
+        「兑换清单已跑满」就收工，于是**签到和三条任务一次都没做**；更糟的是那一下
+        ``leave_exchange`` 被主循环丢掉（落点不在入口契约里 ⇒ 既不是来源也不是目标），
+        一次点击都没发出，干等 60 秒超时。
+
+        这条用例钉三件事：
+        1. 认出「这是入口落点」（``entry_page``），不是正常流程里路过的兑换中心；
+        2. 点的是**左上角 `<`**（``EXCHANGE_BACK``），不是右上角 ✕ ——
+           后者一下关掉整个社区，签到就彻底没机会了；
+        3. 出口写死 ``feed_home``，到了才算这一步走通。
+        """
+        machine = self.machine(state=cm.CommunityState.ENTERING)
+        action = machine.next_action(fixture("exchange_before_redeem_live_20261007"))
+        self.assertIn(machine.entry_page, ("exchange_center", "exchange_empty"))
+        self.assertIsNotNone(action)
+        self.assertEqual(action.name, "back_to_feed_for_signin")
+        self.assertEqual(action.point, cm.EXCHANGE_BACK)
+        self.assertNotEqual(action.point, cm.EXCHANGE_CLOSE)
+        self.assertEqual(("feed_home",), tuple(action.target_pages))
+
+    def test_a_normal_exchange_visit_still_goes_to_the_redeem_decision(self):
+        """正常流程里路过的兑换中心**不许**被「补签到」抢走（回归护栏）。
+
+        ``entry_page`` 是 ``feed_home``（或空）时，签到那一条不成立 ——
+        否则每次去兑换都会被退回信息流，原地打转。
+        """
+        machine = self.machine(state=cm.CommunityState.ENTERING)
+        machine.next_action(fixture("feed_list_live_20261006"))
+        self.assertEqual(machine.progress.signed_in is None, False)
+        machine.via_exchange = True
+        action = machine.next_action(fixture("exchange_before_redeem_live_20261007"))
+        self.assertIsNotNone(action)
+        self.assertEqual(action.name, "goto_tasks_card")
 
     def test_a_blank_portrait_frame_mid_entry_waits_instead_of_failing(self):
         """**转成竖屏了、但社区页面还没加载出来** ⇒ 只等，不判失败。
@@ -1749,17 +1793,23 @@ class CommunityEntryAndCloseTests(unittest.TestCase):
         self.assertEqual(machine.state, cm.CommunityState.ENTERING)
         self.assertEqual(machine.completed_cycles, 0)
 
-    def test_the_entry_only_counts_as_done_once_the_feed_is_recognised(self):
-        """入口的出口标志 = **方向 + 画幅 + feed_home**，少一样都不算走通。
+    def test_the_entry_counts_as_done_only_when_a_known_community_page_shows_up(self):
+        """入口的出口标志 = **方向 + 画幅 + 社区里的某一已知页**，认不出就不算走通。
 
-        断言的是「走到 feed_home 之后状态才推进」这条因果，而不是某个返回值 ——
-        因为出口标志是 ``target_pages=("feed_home",)`` 这个契约字段在起作用。
+        ⚠️ 2026-11-22 改：出口原来只认 ``feed_home``。但社区 H5 **会记住上次停留的
+        页面** —— 用户实跑点进来直接落在**兑换中心**，而 ``confirmed_page`` 既不是
+        来源页也不是目标页 ⇒ 主循环把状态机给的 ``leave_exchange`` 丢掉 ⇒
+        一次点击都没发出、干等 60 秒超时（日志只有「当前已确认页面=exchange_center」）。
+        现在出口改成「任一社区已知页」，落点不是信息流时由状态机退回信息流补签到
+        （``_on_exchange_center`` / ``_on_tasks`` 开头那两条）。
+
+        仍然**不认「方向变了」这种非页面证据**：``unknown`` 不在名单里。
         """
         machine = self.machine(state=cm.CommunityState.ENTERING)
         action = machine.next_action(fixture("feed_list_live_20261006"))
         self.assertEqual(machine.state, cm.CommunityState.FEED)
         self.assertIsNotNone(action)
-        # 契约字段本身也要钉住：出口只认 feed_home，不认「方向变了」这种非页面证据。
+        # 契约字段本身也要钉住：出口只认社区已知页。
         from auto_game_unified.games.epic7 import community as community_module
 
         entry_actions = []
@@ -1770,7 +1820,10 @@ class CommunityEntryAndCloseTests(unittest.TestCase):
                 entry_actions.append(got)
         self.assertTrue(entry_actions)
         for got in entry_actions:
-            self.assertEqual(("feed_home",), tuple(got.target_pages))
+            self.assertEqual(
+                community_module._COMMUNITY_ENTRY_PAGES, tuple(got.target_pages)
+            )
+            self.assertNotIn("unknown", tuple(got.target_pages))
         self.assertIs(community_module, cm)
 
     def test_closing_finishes_only_after_the_screen_turned_back(self):
@@ -2648,7 +2701,7 @@ class CommunityRunnerTests(unittest.TestCase):
         runner = cm.CommunityRunner(machine, runtime, sleep=lambda _: None)
         with self.assertRaises(RuntimeError) as ctx:
             runner._attach_channels()
-        self.assertIn("雷电", str(ctx.exception))
+        self.assertIn("模拟器后端", str(ctx.exception))
 
     def test_a_swipe_step_is_sent_through_the_swipe_channel_not_as_a_click(self):
         """脚本里的**滑动步**：不许被当成「在起点点一下」。

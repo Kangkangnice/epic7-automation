@@ -10,7 +10,7 @@
 
 用法（工作目录随意，用装了 psutil 的解释器）::
 
-    python tools/verify_frozen_worker.py --exe packaging/dist/Epic7AutoAssistant/Epic7AutoAssistant.exe
+    python tools/verify_frozen_worker.py --exe packaging/dist/ArkyAssistant/ArkyAssistant.exe
 """
 
 from __future__ import annotations

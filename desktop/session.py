@@ -67,8 +67,8 @@ class SessionState:
     params: Mapping[str, Mapping[str, Any]] = field(default_factory=dict)
     # 窗口位置与大小：``{"x", "y", "w", "h"}``。None = 还没记过，用默认摆放。
     window: Mapping[str, int] | None = None
-    # 今日游戏便签：固定三个槽位，空串 = 这一行还没填。
-    todos: tuple[str, str, str] = ("", "", "")
+    # 今日游戏便签：只留一条，空串 = 还没填。旧版三条存档会在读入时合并成这一条。
+    todos: tuple[str] = ("",)
     # 悬浮球最后停放的位置：``{"x", "y"}``（允许负坐标，多显示器）。None = 默认右上角。
     ball_pos: Mapping[str, int] | None = None
 
@@ -113,22 +113,26 @@ def _clean_params(raw: object, specs: Mapping[str, Any]) -> dict[str, dict[str, 
     return params
 
 
-TODO_SLOTS = 3
+TODO_SLOTS = 1
 TODO_MAX_CHARS = 60
 
 
-def clean_todos(raw: object) -> tuple[str, str, str]:
-    """三条便签：只认字符串、超长截断、不足补空 —— 坏数据一律回到空便签。
+def clean_todos(raw: object) -> tuple[str]:
+    """一条便签：只认字符串、超长截断 —— 坏数据一律回到空便签。
 
     与勾选同一条规矩（约定 1）：手改坏的存档不能让助手打不开，也不能让
     窄条面板被一段几千字的文本撑爆。
+
+    旧版存档是三条（``tuple[str, str, str]``）；升级后只显示一条，不能把
+    用户已填的内容丢掉，所以把旧的三条按「、」拼成一条再截断到上限。
     """
-    values: list[str] = []
-    if isinstance(raw, (list, tuple)):
-        for item in raw[:TODO_SLOTS]:
-            values.append(item[:TODO_MAX_CHARS] if isinstance(item, str) else "")
-    values.extend([""] * (TODO_SLOTS - len(values)))
-    return (values[0], values[1], values[2])
+    parts: list[str] = []
+    if isinstance(raw, str):
+        parts = [raw]
+    elif isinstance(raw, (list, tuple)):
+        parts = [item for item in raw if isinstance(item, str)]
+    merged = "、".join(part for part in parts if part)[:TODO_MAX_CHARS]
+    return (merged,)
 
 
 def load(path: Path) -> SessionState | None:

@@ -129,6 +129,35 @@ class ModeRunnerBase:
         # 基类这一帧**派发**给子类的结果（NOT_STABLE / None / 动作对象）。
         # 主循环用它核对子类有没有把「未稳定」改写成某个动作 —— 那会直接触发点击。
         self._dispatched_result: Any = _UNSET
+        # 卡死兜底「点掉没登记的点击关闭弹窗」一条路线只许用一次（2026-11-22）。
+        # 防止陌生弹窗关不掉时每帧乱点、也防止点掉一层又去点下一层的灰字控件。
+        self._unknown_popup_fallback_used = False
+
+    def _try_unknown_popup_fallback(self, screen: Any) -> bool:
+        """即将按超时判失败前，给一次「点掉没登记的模态弹窗」的机会。
+
+        一条路线最多一次。命中就点、记日志，返回 True 让调用方重置等待计时；
+        没装配守卫 / 没命中 / 已用过都返回 False，原有超时流程照常进行。
+        dry_run 也放行 —— 空跑时 Runtime.click 本来就只记日志不点屏幕，
+        这样诊断输出能如实反映「真跑会在这里尝试兜底」。
+        """
+        if self._unknown_popup_fallback_used:
+            return False
+        # 用 getattr 检查而不是 try/except AttributeError：后者会把守卫内部
+        # 匹配逻辑抛的 AttributeError 也一起吞掉，掩盖真 bug。
+        # FakeRuntime 没这个方法 ⇒ 保持改动前行为。
+        method = getattr(self.runtime, "try_dismiss_unknown_popup", None)
+        if not callable(method):
+            return False
+        clicked = method(screen)
+        if not clicked:
+            return False
+        self._unknown_popup_fallback_used = True
+        self.runtime.log(
+            f"模式={self._MODE_LABEL} 卡死兜底=已尝试点掉陌生弹窗 "
+            "动作=重新认页面 本次路线仅此一次"
+        )
+        return True
 
     # ---- 子类钩子（差异点） ----
 
@@ -743,6 +772,15 @@ class ModeRunnerBase:
                     # 静态画面唤醒耗尽（EXHAUSTED）等情形：落入下方状态超时处理
                 elapsed = self.now() - state_started
                 if elapsed >= self._timeout_for(self.machine.state):
+                    # 卡死兜底（2026-11-22）：认不出页、即将判失败前，先试一次
+                    # 「点掉没登记的点击关闭弹窗」。这类模态弹窗（如「圣域已解锁」）
+                    # 既不进守卫（没模板）、也不吃 ESC，此前只能等到超时 + 回首页失败。
+                    # 点掉后重置计时、给状态机一次重新认页的机会；用掉后不再尝试。
+                    if self._try_unknown_popup_fallback(screen):
+                        state_started = self.now()
+                        self._reset_observation(stable)
+                        self.sleep(self.poll_seconds)
+                        continue
                     # 认不出这一页、等到超时 ⇒ **结束这条路线**（回家由 main 收尾）。
                     #
                     # ⚠️ 2026-09-26：以前这里是「回大厅重新导航、然后接着跑」，
@@ -932,8 +970,11 @@ class ModeRunnerBase:
                         attempt=action_attempts,
                         conclusion="来源页面持续存在，点击四次仍未进入目标页面",
                     )
+                    note = getattr(self.runtime, "network_popup_note", None)
+                    network_note = note() if callable(note) else ""
                     raise RuntimeError(
-                        f"动作 {action.name} 点击4次后画面未推进；已保存诊断 {diagnostic}"
+                        f"动作 {action.name} 点击4次后画面未推进"
+                        f"{network_note}；已保存诊断 {diagnostic}"
                     )
 
                 self.runtime.log(
@@ -1029,6 +1070,12 @@ class ModeRunnerBase:
                 action is None
                 and self.now() - state_started >= self._timeout_for(self.machine.state)
             ):
+                # 卡死兜底（同上）：无动作等待超时前，先试一次点掉陌生弹窗。
+                if self._try_unknown_popup_fallback(screen):
+                    state_started = self.now()
+                    self._reset_observation(stable)
+                    self.sleep(self.poll_seconds)
+                    continue
                 timeout_label = (
                     f"transition_{last_transition_action.name}"
                     if last_transition_action is not None

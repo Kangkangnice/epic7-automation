@@ -50,11 +50,12 @@
 | `web_activity_list` | 网页活动列表 |
 | `fodder_episode_detail` | 支线详情 |
 
-## 二、竞技场（9 页）
+## 二、竞技场（10 页）
 
 | 页面 | 关键判据 | 优先 | 状态 |
 |---|---|---|---|
 | `arena.list` 对手列表（未选对手） | `list_ready` | P0 | ✅ 已有 |
+| `arena.npc_list` NPC 对战页签（标题「NPC交战对手」） | `arena_npc_title` | P0 | ❌ 缺（2026-11-21 登记：PC 无专属图，沿用模拟器图，能否过阈未验证；认不出时按玩家对战记账） |
 | `arena.selected` 已选中对手（挑战按钮亮） | `challenge` | P0 | ✅ 已有 |
 | `arena.team` 队伍选择（战斗开始） | `battle_start` | P0 | ✅ 已有 |
 | `arena.battle` 战斗中（自动开着） | `auto_off` | P2 | ❌ 缺 |
@@ -73,7 +74,6 @@
 | `story.results` 结算 | `results_confirm` | P2 |
 | `story.complete` 通关 | `complete` | P2 |
 | `story.next_stage` 下一关 | `next_stage` | P1 |
-| `story.retry` 重试 | `retry_stage` | P1 |
 | `story.skip_confirm` 跳过剧情确认 | `skip_confirm` | P1 |
 | `story.stamina` 体力弹窗 | `stamina_popup` | P1 |
 

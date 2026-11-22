@@ -1,10 +1,20 @@
+"""模拟器窗口层验收（统一 ADB 后端）。
+
+2026-11-21：后端从「雷电专属 ldconsole + PrintWindow」改为「统一 ADB，不认品牌」。
+本文件保留两类测试：
+1. 与后端无关的几何契约（WindowViewport / 画布合成 / 坐标换算）；
+2. 关键安全不变量（失败必须可见、坐标越界拒绝、通道自检显式报错）。
+
+被删掉的是「钉住雷电私有命令格式」的旧测试 —— 它们测的实现（ldconsole 命令、
+PrintWindow、reboot 实例、最小化真窗口还原）在统一后端里已不存在；这些实现的等价
+新测试在 test_emulator_adb.py。安全不变量一条不少地保留下来。
+"""
+
 import unittest
-from unittest.mock import MagicMock, patch
 from pathlib import Path
-import subprocess
+from unittest.mock import patch
 
 import numpy as np
-import pygetwindow
 
 from auto_game_unified.core.window import (
     Epic7Window,
@@ -13,250 +23,46 @@ from auto_game_unified.core.window import (
 )
 
 
-class WindowViewportTests(unittest.TestCase):
-    def test_updated_ldplayer_title_is_accepted_only_for_dnplayer(self):
-        game = Epic7Window()
-        window = MagicMock()
-        window.title = "雷电模拟器"
-        window.isMinimized = False
-        window._hWnd = 123
+def _client(adb_path="D:/epic7/adb.exe", serial="emulator-5554", pid=4321):
+    """造一个假 ADB client，让窗口层测试不碰真机。"""
+    from auto_game_unified.core.emulator_adb import AdbDeviceSpec, AdbEmulatorClient
 
-        with (
-            patch(
-                "auto_game_unified.core.window.pygetwindow.getAllWindows",
-                return_value=[window],
-            ),
-            patch.object(game, "_window_process_name", return_value="dnplayer.exe"),
-        ):
-            self.assertIs(window, game._window())
+    device = AdbDeviceSpec(serial=serial, game_pid=pid)
+    client = AdbEmulatorClient(
+        Path(adb_path), device,
+        runner=lambda *_a, **_kw: None,
+        sleep_fn=lambda _: None,
+    )
+    return client
 
-    def test_updated_ldplayer_title_rejects_a_non_ldplayer_process(self):
-        game = Epic7Window()
-        window = MagicMock()
-        window.title = "雷电模拟器"
-        window.isMinimized = False
-        window._hWnd = 123
 
-        with (
-            patch(
-                "auto_game_unified.core.window.pygetwindow.getAllWindows",
-                return_value=[window],
-            ),
-            patch.object(game, "_window_process_name", return_value="notepad.exe"),
-        ):
-            with self.assertRaisesRegex(RuntimeError, "应恰好找到一个支持的雷电模拟器窗口"):
-                game._window()
-
-    def test_multiple_supported_ldplayer_windows_are_rejected(self):
-        game = Epic7Window()
-        windows = []
-        for handle in (123, 456):
-            window = MagicMock()
-            window.title = "雷电模拟器"
-            window.isMinimized = False
-            window._hWnd = handle
-            windows.append(window)
-
-        with (
-            patch(
-                "auto_game_unified.core.window.pygetwindow.getAllWindows",
-                return_value=windows,
-            ),
-            patch.object(game, "_window_process_name", return_value="dnplayer.exe"),
-        ):
-            with self.assertRaisesRegex(RuntimeError, "应恰好找到一个支持的雷电模拟器窗口"):
-                game._window()
-
-    def test_activate_does_not_reactivate_an_already_active_game_window(self):
-        game = Epic7Window()
-        window = MagicMock()
-        window.isActive = True
-
-        with (
-            patch.object(game, "_window", return_value=window),
-            patch("auto_game_unified.core.window.sleep") as wait,
-        ):
-            game.activate()
-
-        window.activate.assert_not_called()
-        wait.assert_not_called()
-
-    def test_activate_accepts_pygetwindow_false_error_if_window_gained_focus(self):
-        game = Epic7Window()
-        window = MagicMock()
-        window.isActive = False
-        window._hWnd = 123
-        window.activate.side_effect = pygetwindow.PyGetWindowException(
-            "Error code from Windows: 0"
-        )
-
-        with (
-            patch.object(game, "_window", return_value=window),
-            patch(
-                "auto_game_unified.core.window.ctypes.windll.user32.GetForegroundWindow",
-                return_value=123,
-            ),
-            patch("auto_game_unified.core.window.sleep") as wait,
-        ):
-            game.activate()
-
-        window.activate.assert_called_once_with()
-        wait.assert_called_once_with(0.3)
-
-    def test_activate_waits_for_delayed_foreground_confirmation(self):
-        game = Epic7Window()
-        window = MagicMock()
-        window.isActive = False
-        window._hWnd = 123
-        window.activate.side_effect = pygetwindow.PyGetWindowException(
-            "Error code from Windows: 0"
-        )
-
-        with (
-            patch.object(game, "_window", return_value=window),
-            patch(
-                "auto_game_unified.core.window.ctypes.windll.user32.GetForegroundWindow",
-                side_effect=[999, 999, 123],
-            ),
-            patch("auto_game_unified.core.window.sleep") as wait,
-        ):
-            game.activate()
-
-        window.activate.assert_called_once_with()
-        self.assertEqual([0.05, 0.05, 0.3], [call.args[0] for call in wait.call_args_list])
+class WindowGeometryTests(unittest.TestCase):
+    """纯几何换算，与后端无关。"""
 
     def test_capture_crops_only_the_game_window(self):
         desktop = np.zeros((10, 16, 3), dtype=np.uint8)
         desktop[3:7, 4:9] = 127
         viewport = WindowViewport(lambda: WindowRect(4, 3, 5, 4))
-
         captured = viewport.crop(desktop)
-
         self.assertEqual((4, 5, 3), captured.shape)
         self.assertTrue(np.all(captured == 127))
 
     def test_click_coordinate_is_translated_back_to_desktop(self):
         viewport = WindowViewport(lambda: WindowRect(40, 30, 991, 566))
-
         self.assertEqual((140, 230), viewport.to_desktop((100, 200)))
 
     def test_scale_is_relative_to_the_template_capture_size(self):
         viewport = WindowViewport(lambda: WindowRect(40, 30, 991, 566))
-
         self.assertEqual((0.5, 0.5), viewport.scale_for((1982, 1132)))
 
     def test_rejects_a_window_with_a_different_aspect_ratio(self):
         viewport = WindowViewport(lambda: WindowRect(40, 30, 900, 900))
-
         with self.assertRaisesRegex(RuntimeError, "游戏窗口宽高比发生变化"):
             viewport.scale_for((1982, 1132))
 
-    def test_live_capture_prefers_window_level_print(self):
-        game = Epic7Window()
-        render = np.full((1080, 1920, 3), 127, dtype=np.uint8)
-
-        with (
-            patch.object(game, "activate") as activate,
-            patch.object(
-                game,
-                "_instance_channel",
-                return_value=(Path("D:/epic7/ldconsole.exe"), "0", 456),
-            ),
-            patch.object(game, "_print_window_render", return_value=render) as print_window,
-            patch("auto_game_unified.core.window.pyautogui.screenshot") as screenshot,
-        ):
-            captured = game.capture()
-
-        print_window.assert_called_once_with(456)
-        activate.assert_not_called()
-        screenshot.assert_not_called()
-        self.assertEqual((1132, 1982, 3), captured.shape)
-        self.assertTrue(np.all(captured[52:, :1920] == 127))
-
-    def test_live_capture_retries_after_a_failed_call(self):
-        """一次「调用失败」不代表这条路走不通：等一会儿再问一次。
-
-        2026-11-14 竞技场接力事故：旧的「一帧定生死」把一次取不到画面的瞬间判成
-        「窗口截图不可用」，于是退回屏幕截图，拍到了盖在模拟器上面的别的窗口。
-        """
-        game = Epic7Window()
-        render = np.full((1080, 1920, 3), 127, dtype=np.uint8)
-
-        with (
-            patch.object(
-                game,
-                "_instance_channel",
-                return_value=(Path("D:/epic7/ldconsole.exe"), "0", 456),
-            ),
-            patch.object(game, "_print_window_render", side_effect=[None, render]) as print_window,
-            patch("auto_game_unified.core.window.sleep") as wait,
-            patch("auto_game_unified.core.window.pyautogui.screenshot") as screenshot,
-        ):
-            captured = game.capture()
-
-        self.assertEqual(2, print_window.call_count)
-        wait.assert_called_once_with(Epic7Window._CAPTURE_RETRY_SECONDS)
-        screenshot.assert_not_called()
-        self.assertTrue(np.all(captured[52:, :1920] == 127))
-
-    def test_black_frame_is_returned_instead_of_treated_as_a_failure(self):
-        """**黑屏是正常画面，不是故障。**
-
-        游戏转场、加载本来就是黑的。这张图必须原样交给判据（判据会判「认不出」、
-        然后等下一帧），既不该重试也不该报错 —— 2026-11-14 的旧实现正是把一帧黑屏
-        当成「截图不可用」，才退到屏幕截图拍到了别人的窗口。
-        """
-        game = Epic7Window()
-        black = np.zeros((1080, 1920, 3), dtype=np.uint8)
-
-        with (
-            patch.object(
-                game,
-                "_instance_channel",
-                return_value=(Path("D:/epic7/ldconsole.exe"), "0", 456),
-            ),
-            patch.object(game, "_print_window_render", return_value=black) as print_window,
-            patch("auto_game_unified.core.window.sleep") as wait,
-            patch("auto_game_unified.core.window.pyautogui.screenshot") as screenshot,
-        ):
-            captured = game.capture()
-
-        print_window.assert_called_once_with(456)
-        wait.assert_not_called()
-        screenshot.assert_not_called()
-        self.assertEqual((1132, 1982, 3), captured.shape)
-        self.assertTrue(np.all(captured == 0))
-
-    def test_live_capture_fails_loudly_instead_of_capturing_another_window(self):
-        """调用失败就报错，**绝不退回屏幕截图**。
-
-        屏幕截图拍的是「屏幕上那块矩形」，模拟器被遮挡时就是别人的窗口。
-        它不抛异常、不留痕，判据会拿着错画面继续做决定 —— 2026-11-14 就是这么
-        把聊天界面判成「战斗中」的。宁可这一帧失败，也不能静默用错图。
-        """
-        game = Epic7Window()
-
-        with (
-            patch.object(
-                game,
-                "_instance_channel",
-                return_value=(Path("D:/epic7/ldconsole.exe"), "0", 456),
-            ),
-            patch.object(game, "_print_window_render", return_value=None) as print_window,
-            patch("auto_game_unified.core.window.sleep"),
-            patch("auto_game_unified.core.window.pyautogui.screenshot") as screenshot,
-            self.assertRaisesRegex(RuntimeError, "窗口截图调用失败"),
-        ):
-            game.capture()
-
-        self.assertEqual(Epic7Window._CAPTURE_ATTEMPTS, print_window.call_count)
-        screenshot.assert_not_called()
-
     def test_render_frame_is_embedded_in_the_legacy_canvas(self):
         render = np.full((1080, 1920, 3), 127, dtype=np.uint8)
-
         canvas = Epic7Window._legacy_canvas(render)
-
         self.assertEqual((1132, 1982, 3), canvas.shape)
         self.assertTrue(np.all(canvas[52:, :1920] == 127))
         self.assertTrue(np.all(canvas[:52] == 0))
@@ -266,766 +72,148 @@ class WindowViewportTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "1920x1080"):
             Epic7Window._legacy_canvas(np.zeros((720, 1280, 3), dtype=np.uint8))
 
-    def test_back_uses_instance_command_without_foreground_activation(self):
-        game = Epic7Window()
-        calls: list[str] = []
 
-        with (
-            patch.object(
-                game,
-                "activate",
-                side_effect=AssertionError("back must not wait for foreground focus"),
-            ),
-            patch.object(game, "_send_android_back", side_effect=lambda: calls.append("android-back")),
-        ):
-            game.back()
+class WindowInputSafetyTests(unittest.TestCase):
+    """坐标越界必须拒绝 —— 这条不变量与品牌无关，任何后端都要守住。"""
 
-        self.assertEqual(["android-back"], calls)
+    def setUp(self):
+        self.client = _client()
+        self.window = Epic7Window(client=self.client)
 
-    def test_back_activates_only_when_instance_command_fails(self):
-        game = Epic7Window()
-        calls: list[str] = []
+    def test_click_subtracts_the_52px_top_margin(self):
+        with patch.object(self.client, "tap") as tap:
+            self.window.click((1790, 326))
+        tap.assert_called_once_with(1790, 274)
 
-        def send_back() -> None:
-            if calls.count("back-attempt") == 0:
-                calls.append("back-attempt")
-                raise RuntimeError("back unavailable")
-            calls.append("android-back")
-
-        with (
-            patch.object(game, "activate", side_effect=lambda: calls.append("activate")),
-            patch.object(game, "_send_android_back", side_effect=send_back),
-        ):
-            game.back()
-
-        self.assertEqual(["back-attempt", "activate", "android-back"], calls)
-
-    def test_click_uses_instance_tap_without_foreground_activation(self):
-        game = Epic7Window()
-        calls: list[object] = []
-        with (
-            patch.object(
-                game,
-                "activate",
-                side_effect=AssertionError("click must not wait for foreground focus"),
-            ),
-            patch.object(game, "_click_legacy", side_effect=calls.append),
-        ):
-            game.click((1689, 1060))
-
-        self.assertEqual([(1689, 1060)], calls)
-
-    def test_click_activates_only_when_instance_tap_fails(self):
-        game = Epic7Window()
-        calls: list[object] = []
-
-        def click_legacy(point: tuple[int, int]) -> None:
-            if not calls or calls[-1] != "activate":
-                raise RuntimeError("tap unavailable")
-            calls.append(point)
-
-        with (
-            patch.object(game, "activate", side_effect=lambda: calls.append("activate")),
-            patch.object(game, "_click_legacy", side_effect=click_legacy),
-        ):
-            game.click((1689, 1060))
-
-        self.assertEqual(["activate", (1689, 1060)], calls)
-
-    def test_legacy_click_is_converted_to_render_coordinates(self):
-        game = Epic7Window()
-
-        with patch.object(game, "_send_render_tap") as tap:
-            game._click_legacy((1790, 326))
-
-        tap.assert_called_once_with((1790, 274))
-
-    def test_legacy_click_rejects_chrome_coordinates(self):
-        game = Epic7Window()
-
+    def test_click_rejects_coordinates_outside_render_area(self):
         for point in ((10, 20), (1950, 500)):
             with self.subTest(point=point):
                 with self.assertRaisesRegex(RuntimeError, "渲染区外点击"):
-                    game._click_legacy(point)
+                    self.window.click(point)
 
-    def test_render_tap_uses_indexed_adb_input(self):
-        game = Epic7Window()
-        with (
-            patch.object(
-                game,
-                "_instance_channel",
-                return_value=(Path("D:/epic7/ldconsole.exe"), "0", 456),
-            ),
-            patch("auto_game_unified.core.window.subprocess.run") as run,
-        ):
-            game._send_render_tap((1790, 274))
-
-        run.assert_called_once_with(
-            [
-                "D:\\epic7\\ldconsole.exe",
-                "adb",
-                "--index",
-                "0",
-                "--command",
-                "shell input tap 1790 274",
-            ],
-            check=True,
-            capture_output=True,
-            timeout=10,
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-        )
-
-    def test_render_tap_surfaces_a_dead_adb_channel(self):
-        """ldconsole 在设备离线时**退出码仍然是 0**，失败只写在输出里。
-
-        不检查输出的话，一次根本没送达的点击会被当成发送成功：上层只能看到
-        「点击验收无效」，白烧掉重试次数后报一个与真因无关的「导航转场失败」，
-        既不告警也不切通道（2026-09-24 实机就是这么静默失效的）。
-        """
-        for stream, payload in (
-            ("stdout", b"adb.exe: device offline\n"),
-            ("stderr", b"error: device not found\n"),
-        ):
-            with self.subTest(stream=stream):
-                game = Epic7Window()
-                result = subprocess.CompletedProcess(
-                    args=[], returncode=0, stdout=b"", stderr=b""
-                )
-                setattr(result, stream, payload)
-                with (
-                    patch.object(
-                        game,
-                        "_instance_channel",
-                        return_value=(Path("D:/epic7/ldconsole.exe"), "0", 456),
-                    ),
-                    patch(
-                        "auto_game_unified.core.window.subprocess.run",
-                        return_value=result,
-                    ),
-                    self.assertRaisesRegex(RuntimeError, "输入通道不可用"),
-                ):
-                    game._send_render_tap((1790, 274))
-
-    def test_render_tap_accepts_a_healthy_adb_channel(self):
-        """通道正常时输出为空，不能被上面的检查误伤。"""
-        game = Epic7Window()
-        result = subprocess.CompletedProcess(
-            args=[], returncode=0, stdout=b"", stderr=b""
-        )
-        with (
-            patch.object(
-                game,
-                "_instance_channel",
-                return_value=(Path("D:/epic7/ldconsole.exe"), "0", 456),
-            ),
-            patch("auto_game_unified.core.window.subprocess.run", return_value=result),
-        ):
-            game._send_render_tap((1790, 274))
-
-    def test_input_channel_probe_accepts_a_healthy_channel(self):
-        """通道本来就通时只探一次，绝不能顺手去 kill/start adb 服务。"""
-        game = Epic7Window()
-        calls: list[list[str]] = []
-
-        def run(args, **_kwargs):
-            calls.append(list(args))
-            return subprocess.CompletedProcess(
-                args=[], returncode=0, stdout=b"ping\n", stderr=b""
-            )
-
-        with (
-            patch.object(
-                game,
-                "_instance_channel",
-                return_value=(Path("D:/epic7/ldconsole.exe"), "0", 456),
-            ),
-            patch("auto_game_unified.core.window.subprocess.run", side_effect=run),
-            patch("auto_game_unified.core.window.sleep"),
-        ):
-            game.ensure_input_channel()
-
-        self.assertEqual(
-            [
-                [
-                    "D:\\epic7\\ldconsole.exe",
-                    "adb",
-                    "--index",
-                    "0",
-                    "--command",
-                    "shell echo ping",
-                ]
-            ],
-            calls,
-        )
-
-    def test_input_channel_rebuilds_adb_when_the_device_is_offline(self):
-        """设备 offline 时 `ldconsole` 的退出码仍是 0，失败只写在输出里。
-
-        自检必须①认得这种失败 ②用 `adb kill-server` → `start-server` 重建
-        ③**重建之后再探一次**，而不是修完就假定好了。
-        （2026-09-24、2026-09-28 两次实机都是这两条命令一步到位。）
-        """
-        game = Epic7Window()
-        calls: list[list[str]] = []
-        probes = [b"adb.exe: device offline\n", b"ping\n"]
-
-        def run(args, **_kwargs):
-            calls.append(list(args))
-            if "--command" in args:
-                return subprocess.CompletedProcess(
-                    args=[], returncode=0, stdout=probes.pop(0), stderr=b""
-                )
-            return subprocess.CompletedProcess(
-                args=[], returncode=0, stdout=b"", stderr=b""
-            )
-
-        with (
-            patch.object(
-                game,
-                "_instance_channel",
-                return_value=(Path("D:/epic7/ldconsole.exe"), "0", 456),
-            ),
-            patch.object(Path, "exists", return_value=True),
-            patch("auto_game_unified.core.window.subprocess.run", side_effect=run),
-            patch("auto_game_unified.core.window.sleep"),
-        ):
-            game.ensure_input_channel()
-
-        adb = str(Path("D:/epic7/adb.exe"))
-        self.assertIn([adb, "kill-server"], calls)
-        self.assertIn([adb, "start-server"], calls)
-        self.assertEqual([], probes, "重建后必须再探一次通道")
-        self.assertEqual(2, sum(1 for call in calls if "--command" in call))
-
-    def test_input_channel_falls_back_to_rebooting_the_emulator(self):
-        """`adb kill-server` → `start-server` 试满仍不通 ⇒ 必须去重启模拟器内部系统。
-
-        2026-10-04 实测：坏的是模拟器内部接收端时，端口还在监听、adb 连上去就是
-        `offline`，一级恢复做得再多也碰不到病根 —— 只重启 adb 等于什么都没做。
-        """
-        game = Epic7Window()
-        calls: list[list[str]] = []
-
-        def run(args, **_kwargs):
-            calls.append(list(args))
-            if "shell echo ping" in args:
-                return subprocess.CompletedProcess(
-                    args=[],
-                    returncode=0,
-                    stdout=b"adb.exe: device 'emulator-5554' not found\n",
-                    stderr=b"",
-                )
-            return subprocess.CompletedProcess(
-                args=[], returncode=0, stdout=b"", stderr=b""
-            )
-
-        with (
-            patch.object(
-                game,
-                "_instance_channel",
-                return_value=(Path("D:/epic7/ldconsole.exe"), "0", 456),
-            ),
-            patch.object(Path, "exists", return_value=True),
-            patch("auto_game_unified.core.window.subprocess.run", side_effect=run),
-            patch("auto_game_unified.core.window.sleep"),
-            self.assertRaisesRegex(RuntimeError, "重启模拟器内部系统后仍未恢复"),
-        ):
-            game.ensure_input_channel()
-
-        self.assertIn(["D:\\epic7\\ldconsole.exe", "reboot", "--index", "0"], calls)
-        adb = str(Path("D:/epic7/adb.exe"))
-        self.assertIn([adb, "kill-server"], calls)
-        self.assertIn([adb, "start-server"], calls)
-
-    def test_input_channel_fails_loudly_when_nothing_recovers(self):
-        """两级都救不回来时必须显式失败，而不是放行让第一条路线默默打挂。"""
-        game = Epic7Window()
-
-        def run(args, **_kwargs):
-            if "--command" in args:
-                return subprocess.CompletedProcess(
-                    args=[],
-                    returncode=0,
-                    stdout=b"adb.exe: device offline\n",
-                    stderr=b"",
-                )
-            return subprocess.CompletedProcess(
-                args=[], returncode=0, stdout=b"", stderr=b""
-            )
-
-        with (
-            patch.object(
-                game,
-                "_instance_channel",
-                return_value=(Path("D:/epic7/ldconsole.exe"), "0", 456),
-            ),
-            patch.object(Path, "exists", return_value=True),
-            patch("auto_game_unified.core.window.subprocess.run", side_effect=run),
-            patch("auto_game_unified.core.window.sleep"),
-            self.assertRaisesRegex(RuntimeError, "重启模拟器内部系统后仍未恢复"),
-        ):
-            game.ensure_input_channel()
-
-    def test_reboot_recovery_relanunches_the_game_and_stops_the_run(self):
-        """重启模拟器救回通道后：必须把游戏拉起来，且不能当作「可以继续跑」。
-
-        模拟器重启会把游戏一起关掉（2026-10-04 实测重启后前台是安卓桌面、
-        游戏进程为零），留一个空桌面给业务层等于换一种方式失败。
-        游戏停在大厅、原路线的现场已经没了 ⇒ 明确报错，让外部重跑整轮。
-        """
-        game = Epic7Window()
-        calls: list[list[str]] = []
-        probes = [
-            b"adb.exe: device offline\n",
-            b"adb.exe: device offline\n",
-            b"adb.exe: device offline\n",
-            b"ping\n",
-        ]
-
-        def run(args, **_kwargs):
-            calls.append(list(args))
-            if "shell echo ping" in args:
-                return subprocess.CompletedProcess(
-                    args=[], returncode=0, stdout=probes.pop(0), stderr=b""
-                )
-            if any("shell pidof" in item for item in args):
-                return subprocess.CompletedProcess(
-                    args=[], returncode=0, stdout=b"4321\n", stderr=b""
-                )
-            return subprocess.CompletedProcess(
-                args=[], returncode=0, stdout=b"", stderr=b""
-            )
-
-        with (
-            patch.object(
-                game,
-                "_instance_channel",
-                return_value=(Path("D:/epic7/ldconsole.exe"), "0", 456),
-            ),
-            patch.object(Path, "exists", return_value=True),
-            patch("auto_game_unified.core.window.subprocess.run", side_effect=run),
-            patch("auto_game_unified.core.window.sleep"),
-            self.assertRaisesRegex(RuntimeError, "本次运行不续跑"),
-        ):
-            game.ensure_input_channel()
-
-        self.assertEqual([], probes, "重启后必须再探一次通道")
-        self.assertIn(
-            [
-                "D:\\epic7\\ldconsole.exe",
-                "runapp",
-                "--index",
-                "0",
-                "--packagename",
-                game._GAME_PACKAGE,
-            ],
-            calls,
-        )
-
-    def test_reboot_rebuilds_the_connection_service_after_the_emulator_restarts(self):
-        """重启模拟器之后必须再重建一次连接服务，否则设备一直「查无此设备」。
-
-        2026-09-24 / 09-28 两次实机的根因都是「模拟器重启后连接服务没跟着重建」；
-        旧代码只在重启前重建，重启完直接干等，白等 90 秒。
-        """
-        game = Epic7Window()
-        calls: list[list[str]] = []
-
-        def run(args, **_kwargs):
-            calls.append(list(args))
-            if "shell echo ping" in args:
-                return subprocess.CompletedProcess(
-                    args=[],
-                    returncode=0,
-                    stdout=b"adb.exe: device 'emulator-5554' not found\n",
-                    stderr=b"",
-                )
-            return subprocess.CompletedProcess(
-                args=[], returncode=0, stdout=b"", stderr=b""
-            )
-
-        with (
-            patch.object(
-                game,
-                "_instance_channel",
-                return_value=(Path("D:/epic7/ldconsole.exe"), "0", 456),
-            ),
-            patch.object(Path, "exists", return_value=True),
-            patch("auto_game_unified.core.window.subprocess.run", side_effect=run),
-            patch("auto_game_unified.core.window.sleep"),
-            self.assertRaisesRegex(RuntimeError, "重启模拟器内部系统后仍未恢复"),
-        ):
-            game.ensure_input_channel()
-
-        reboot_at = next(
-            i for i, call in enumerate(calls) if "reboot" in call
-        )
-        after_reboot = calls[reboot_at + 1 :]
-        adb = str(Path("D:/epic7/adb.exe"))
-        self.assertIn([adb, "kill-server"], after_reboot, "重启后必须重建连接服务")
-        self.assertIn([adb, "start-server"], after_reboot, "重启后必须重建连接服务")
-
-    def test_repair_progress_is_visible_and_tells_the_user_not_to_stop(self):
-        """修复全程要有进度和明确指引，不能 90 秒一行字都不出。
-
-        今早实际现场：用户看到界面长时间静止、反复刷「不可用」，以为卡死就按停止，
-        把本来需要 30 秒以上的恢复流程打断，两次都这样。
-        """
-        game = Epic7Window()
-        messages: list[str] = []
-        game.set_event_sink(messages.append)
-        probes = [
-            b"adb.exe: device offline\n",
-            b"adb.exe: device offline\n",
-            b"adb.exe: device offline\n",
-            b"adb.exe: device offline\n",
-            b"adb.exe: device offline\n",
-            b"ping\n",
-        ]
-
-        def run(args, **_kwargs):
-            if "shell echo ping" in args:
-                return subprocess.CompletedProcess(
-                    args=[], returncode=0, stdout=probes.pop(0), stderr=b""
-                )
-            if any("shell pidof" in item for item in args):
-                return subprocess.CompletedProcess(
-                    args=[], returncode=0, stdout=b"4321\n", stderr=b""
-                )
-            return subprocess.CompletedProcess(
-                args=[], returncode=0, stdout=b"", stderr=b""
-            )
-
-        with (
-            patch.object(
-                game,
-                "_instance_channel",
-                return_value=(Path("D:/epic7/ldconsole.exe"), "0", 456),
-            ),
-            patch.object(Path, "exists", return_value=True),
-            patch("auto_game_unified.core.window.subprocess.run", side_effect=run),
-            patch("auto_game_unified.core.window.sleep"),
-            self.assertRaisesRegex(RuntimeError, "本次运行不续跑"),
-        ):
-            game.ensure_input_channel()
-
-        joined = "\n".join(messages)
-        self.assertIn("请勿点", joined, "必须明确告诉用户别在修复中途按停止")
-        self.assertIn("安全停止", joined)
-        progress = [line for line in messages if "进度=" in line]
-        self.assertGreaterEqual(
-            len(progress), 2, "等待模拟器恢复期间必须持续报进度，不能静默"
-        )
-        self.assertIn("已修好", joined, "修好必须明确报喜，不能只留一句技术日志")
-        self.assertIn("开始任务", joined, "修好后要告诉用户下一步做什么")
-
-    def test_failed_repair_tells_the_user_the_manual_next_step(self):
-        """自动修复确实没救回来时，要给一句用户能照做的操作，而不是只报失败。"""
-        game = Epic7Window()
-        messages: list[str] = []
-        game.set_event_sink(messages.append)
-
-        def run(args, **_kwargs):
-            if "shell echo ping" in args:
-                return subprocess.CompletedProcess(
-                    args=[],
-                    returncode=0,
-                    stdout=b"adb.exe: device offline\n",
-                    stderr=b"",
-                )
-            return subprocess.CompletedProcess(
-                args=[], returncode=0, stdout=b"", stderr=b""
-            )
-
-        with (
-            patch.object(
-                game,
-                "_instance_channel",
-                return_value=(Path("D:/epic7/ldconsole.exe"), "0", 456),
-            ),
-            patch.object(Path, "exists", return_value=True),
-            patch("auto_game_unified.core.window.subprocess.run", side_effect=run),
-            patch("auto_game_unified.core.window.sleep"),
-            self.assertRaisesRegex(RuntimeError, "重启模拟器内部系统后仍未恢复"),
-        ):
-            game.ensure_input_channel()
-
-        joined = "\n".join(messages)
-        self.assertIn("关闭雷电模拟器", joined)
-        self.assertIn("重新打开", joined)
-
-    def test_legacy_swipe_is_converted_and_sent_through_indexed_adb(self):
-        game = Epic7Window()
-        with (
-            patch.object(
-                game,
-                "_instance_channel",
-                return_value=(Path("D:/epic7/ldconsole.exe"), "0", 456),
-            ),
-            patch("auto_game_unified.core.window.subprocess.run") as run,
-        ):
-            game.swipe((1300, 850), (1300, 220), 500)
-
-        run.assert_called_once_with(
-            [
-                "D:\\epic7\\ldconsole.exe",
-                "adb",
-                "--index",
-                "0",
-                "--command",
-                "shell input swipe 1300 798 1300 168 500",
-            ],
-            check=True,
-            capture_output=True,
-            timeout=10,
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-        )
-
-    def test_legacy_swipe_rejects_chrome_coordinates(self):
-        game = Epic7Window()
-
+    def test_swipe_is_converted_and_rejects_chrome_coordinates(self):
+        with patch.object(self.client, "swipe") as swipe:
+            self.window.swipe((1300, 850), (1300, 220), 500)
+        swipe.assert_called_once_with(1300, 798, 1300, 168, 500)
         with self.assertRaisesRegex(RuntimeError, "渲染区外滑动"):
-            game.swipe((1300, 20), (1300, 220), 500)
+            self.window.swipe((1300, 20), (1300, 220), 500)
 
-    def test_legacy_swipe_surfaces_a_dead_adb_channel(self):
-        """滑动和点击共用同一条 adb 通道，失败可见性必须一致。
+    def test_back_never_waits_for_foreground_focus(self):
+        # ADB 注入不依赖前台；activate 是空操作，返回键不受焦点影响。
+        with (
+            patch.object(self.window, "activate", side_effect=AssertionError("must not activate")),
+            patch.object(self.client, "back") as back,
+        ):
+            self.window.back()
+        back.assert_called_once_with()
 
-        两处是同一份 `subprocess.run(check=True, capture_output=True)` 的复制，
-        只修点击会让「右侧滑动」重复点击踩过的坑。
+    def test_click_does_not_activate_the_window(self):
+        with (
+            patch.object(self.window, "activate", side_effect=AssertionError("must not activate")),
+            patch.object(self.client, "tap"),
+        ):
+            self.window.click((1000, 600))
+
+    def test_wake_is_a_plain_click(self):
+        with patch.object(self.client, "tap") as tap:
+            self.window.wake((1000, 600))
+        tap.assert_called_once_with(1000, 548)
+
+
+class WindowCaptureTests(unittest.TestCase):
+    """抓图：黑屏是正常画面；调用失败重试后仍失败必须显式报错。"""
+
+    def setUp(self):
+        self.client = _client()
+        self.window = Epic7Window(client=self.client)
+
+    def test_black_frame_is_returned_not_treated_as_failure(self):
+        black = np.zeros((1080, 1920, 3), dtype=np.uint8)
+        with patch.object(self.client, "capture_render", return_value=black) as capture:
+            canvas = self.window.capture()
+        capture.assert_called_once_with()
+        self.assertEqual((1132, 1982, 3), canvas.shape)
+        self.assertTrue(np.all(canvas == 0))
+
+    def test_capture_returns_rgb_not_bgr(self):
+        """画布必须是 **RGB**，不是 ADB 解码出来的 BGR。
+
+        模板（`load_template` 转 RGB）、诊断存盘（`save_diagnostic` 按 RGB 转 BGR）
+        与全库模板都是 RGB 口径。2026-11-22 这次直接透传 BGR，代价是原样匹配整体掉分：
+        橙金「进行任务」0.7516 不过 0.80 阈值，主线在队伍页干等 45 秒后退出；
+        同时诊断图被写成反色，看上去像「游戏换了配色」——查了半天才发现是这里。
+        竖屏通道 `portrait.py` 早就有这一次转换，横屏这条与它对齐。
         """
-        for stream, payload in (
-            ("stdout", b"adb.exe: device offline\n"),
-            ("stderr", b"error: device not found\n"),
-        ):
-            with self.subTest(stream=stream):
-                game = Epic7Window()
-                result = subprocess.CompletedProcess(
-                    args=[], returncode=0, stdout=b"", stderr=b""
-                )
-                setattr(result, stream, payload)
-                with (
-                    patch.object(
-                        game,
-                        "_instance_channel",
-                        return_value=(Path("D:/epic7/ldconsole.exe"), "0", 456),
-                    ),
-                    patch(
-                        "auto_game_unified.core.window.subprocess.run",
-                        return_value=result,
-                    ),
-                    self.assertRaisesRegex(RuntimeError, "输入通道不可用"),
-                ):
-                    game._send_render_swipe((1300, 798), (1300, 168), 500)
+        render = np.zeros((1080, 1920, 3), dtype=np.uint8)
+        # 按 ADB 的 BGR 含义摆：B=10、G=20、R=30
+        render[:, :] = (10, 20, 30)
+        with patch.object(self.client, "capture_render", return_value=render):
+            canvas = self.window.capture()
+        # 换回 RGB 之后，画布上这一点的三元组应为 (R, G, B) = (30, 20, 10)
+        self.assertEqual((30, 20, 10), tuple(int(channel) for channel in canvas[100, 100]))
 
-    def test_instance_lookup_hides_ldconsole_window(self):
-        game = Epic7Window()
-        window = MagicMock()
-        window._hWnd = 123
-
-        def set_process_id(_handle, process_id):
-            process_id._obj.value = 789
-
-        process = MagicMock()
-        process.exe.return_value = "D:/epic7/dnplayer.exe"
-        completed = MagicMock(stdout="0,name,top,456,unused,789\n")
-        with (
-            patch.object(game, "_window", return_value=window),
-            patch(
-                "auto_game_unified.core.window.ctypes.windll.user32.GetWindowThreadProcessId",
-                side_effect=set_process_id,
-            ),
-            patch("auto_game_unified.core.window.psutil.Process", return_value=process),
-            patch("auto_game_unified.core.window.Path.exists", return_value=True),
-            patch(
-                "auto_game_unified.core.window.subprocess.run",
-                return_value=completed,
-            ) as run,
-        ):
-            result = game._instance_channel()
-
-        assert result == (Path("D:/epic7/ldconsole.exe"), "0", 456)
-        run.assert_called_once_with(
-            ["D:\\epic7\\ldconsole.exe", "list2"],
-            check=True,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=10,
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-        )
-
-    def test_android_back_hides_ldconsole_window(self):
-        game = Epic7Window()
+    def test_capture_surfaces_failure_instead_of_guessing(self):
         with (
             patch.object(
-                game,
-                "_instance_channel",
-                return_value=(Path("D:/epic7/ldconsole.exe"), "0", 456),
+                self.client,
+                "capture_render",
+                side_effect=RuntimeError("连续 3 次取不到画面"),
             ),
-            patch("auto_game_unified.core.window.subprocess.run") as run,
+            self.assertRaisesRegex(RuntimeError, "连续 3 次取不到画面"),
         ):
-            game._send_android_back()
+            self.window.capture()
 
-        run.assert_called_once_with(
-            [
-                "D:\\epic7\\ldconsole.exe",
-                "action",
-                "--index",
-                "0",
-                "--key",
-                "call.keyboard",
-                "--value",
-                "back",
-            ],
-            check=True,
-            capture_output=True,
-            timeout=10,
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-        )
 
-    def test_android_back_surfaces_a_dead_console(self):
-        """返回键走 ldconsole 实例通道（不是 adb），但它出错时**同样返回 0**。
+class InputChannelSelfCheckTests(unittest.TestCase):
+    """通道自检：正常只探一次；失败重建后必须再探；修不好显式报错并给指引。"""
 
-        2026-09-24 实机实测，四条都返回退出码 0：
-          `adb --index 9 ...`                  -> `adb.exe: device 'emulator-5572' not found`
-          `adb --index 0 ...`（设备离线）       -> `adb.exe: device offline`
-          `action --index 9 --key ... --value back` -> `player don't exist!`
-          `action --index 0`（漏参数）          -> 整篇 usage 文本
-        ⇒ 不检查输出的话，`back()` 的 activate-重试分支同样永不触发。
-        好在 navigation 层对返回另有**画面级验收**（`返回验收=无效`、
-        `受控返回8次后仍未回到大厅`），所以它的后果比点击轻；
-        但「出错却报成功」本身仍该修掉 —— 用户的要求是「所有按键都不能坏」。
-        """
-        for payload in (
-            b"player don't exist!",
-            b"adb.exe: device offline\n",
-            b"dnplayer v14.0.22.0\r\nUsage:\r\n\r\nldconsole <command>\r\n",
+    def setUp(self):
+        self.client = _client()
+
+    def test_healthy_channel_probes_once_without_rebuilding(self):
+        calls = []
+        with (
+            patch.object(self.client, "probe", side_effect=lambda: calls.append("probe")),
+            patch(
+                "auto_game_unified.core.window.subprocess_run",
+                side_effect=AssertionError("must not rebuild"),
+            ),
         ):
-            with self.subTest(payload=payload):
-                game = Epic7Window()
-                result = subprocess.CompletedProcess(
-                    args=[], returncode=0, stdout=payload, stderr=b""
-                )
-                with (
-                    patch.object(
-                        game,
-                        "_instance_channel",
-                        return_value=(Path("D:/epic7/ldconsole.exe"), "0", 456),
-                    ),
-                    patch(
-                        "auto_game_unified.core.window.subprocess.run",
-                        return_value=result,
-                    ),
-                    self.assertRaisesRegex(RuntimeError, "输入通道不可用"),
-                ):
-                    game._send_android_back()
+            Epic7Window(client=self.client).ensure_input_channel()
+        self.assertEqual(["probe"], calls)
 
-    def test_campfire_wake_uses_a_real_desktop_mouse_click(self):
-        game = Epic7Window()
+    def test_offline_channel_is_rebuilt_and_reprobed(self):
+        calls = []
+        probes = [RuntimeError("device offline"), None]
+
+        def probe():
+            result = probes.pop(0)
+            calls.append("probe")
+            if result is not None:
+                raise result
 
         with (
-            patch.object(game, "activate"),
-            patch.object(
-                game,
-                "_instance_channel",
-                return_value=(Path("D:/epic7/ldconsole.exe"), "0", 456),
+            patch.object(self.client, "probe", side_effect=probe),
+            patch(
+                "auto_game_unified.core.window.subprocess_run",
+                side_effect=lambda _adb, cmd: calls.append(" ".join(cmd)),
             ),
-            patch.object(
-                game,
-                "_window_rect_from_handle",
-                return_value=WindowRect(100, 200, 1920, 1080),
-            ),
-            patch("auto_game_unified.core.window.pyautogui.click") as click,
-            patch.object(game, "_send_render_tap") as render_tap,
         ):
-            game.wake((1000, 600))
+            Epic7Window(client=self.client).ensure_input_channel()
+        self.assertEqual(["probe", "kill-server", "start-server", "probe"], calls)
 
-        click.assert_called_once_with(1100, 748)
-        render_tap.assert_not_called()
-
-
-class MinimizedWindowRestoreTests(unittest.TestCase):
-    """窗口被最小化（含误触）时应当自动还原，而不是立刻报错终止整条路线。"""
-
-    def _minimized_game(self):
-        game = Epic7Window()
-        window = MagicMock()
-        window.title = "雷电模拟器"
-        window.isMinimized = True
-        window._hWnd = 123
-        return game, window
-
-    def test_minimized_window_is_restored_without_stealing_the_foreground(self):
-        game, window = self._minimized_game()
-        messages: list[str] = []
-        game.set_event_sink(messages.append)
-
+    def test_unrecoverable_channel_fails_loudly_with_next_step(self):
+        messages = []
+        window = Epic7Window(client=self.client)
+        window.set_event_sink(messages.append)
         with (
-            patch(
-                "auto_game_unified.core.window.pygetwindow.getAllWindows",
-                return_value=[window],
-            ),
-            patch.object(game, "_window_process_name", return_value="dnplayer.exe"),
-            patch(
-                "auto_game_unified.core.window.ctypes.windll.user32.ShowWindow"
-            ) as show_window,
-            patch(
-                "auto_game_unified.core.window.ctypes.windll.user32.IsIconic",
-                return_value=0,
-            ) as is_iconic,
-            patch("auto_game_unified.core.window.sleep") as wait,
+            patch.object(self.client, "probe", side_effect=RuntimeError("offline")),
+            patch("auto_game_unified.core.window.subprocess_run"),
+            self.assertRaisesRegex(RuntimeError, "重新打开"),
         ):
-            self.assertIs(window, game._window())
-
-        show_window.assert_called_once_with(123, Epic7Window._SW_SHOWNOACTIVATE)
-        is_iconic.assert_called_once_with(123)
-        wait.assert_called_once_with(Epic7Window._RESTORE_SETTLE_SECONDS)
-        self.assertTrue(any("最小化已自动还原" in message for message in messages))
-
-    def test_minimized_window_escalates_to_a_foreground_restore_when_needed(self):
-        game, window = self._minimized_game()
-
-        with (
-            patch(
-                "auto_game_unified.core.window.pygetwindow.getAllWindows",
-                return_value=[window],
-            ),
-            patch.object(game, "_window_process_name", return_value="dnplayer.exe"),
-            patch(
-                "auto_game_unified.core.window.ctypes.windll.user32.ShowWindow"
-            ) as show_window,
-            patch(
-                "auto_game_unified.core.window.ctypes.windll.user32.IsIconic",
-                side_effect=[1] * 21 + [0],
-            ),
-            patch("auto_game_unified.core.window.sleep"),
-        ):
-            game._window()
-
-        self.assertEqual(
-            [call.args for call in show_window.call_args_list],
-            [(123, Epic7Window._SW_SHOWNOACTIVATE), (123, Epic7Window._SW_RESTORE)],
-        )
-
-    def test_window_that_stays_minimized_still_fails_instead_of_running_blind(self):
-        game, window = self._minimized_game()
-
-        with (
-            patch(
-                "auto_game_unified.core.window.pygetwindow.getAllWindows",
-                return_value=[window],
-            ),
-            patch.object(game, "_window_process_name", return_value="dnplayer.exe"),
-            patch("auto_game_unified.core.window.ctypes.windll.user32.ShowWindow"),
-            patch(
-                "auto_game_unified.core.window.ctypes.windll.user32.IsIconic",
-                return_value=1,
-            ),
-            patch("auto_game_unified.core.window.sleep"),
-        ):
-            with self.assertRaisesRegex(RuntimeError, "自动还原未生效"):
-                game._window()
+            window.ensure_input_channel()
+        joined = "\n".join(messages)
+        self.assertIn("重建连接服务", joined)
 
 
 if __name__ == "__main__":

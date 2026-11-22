@@ -11,11 +11,19 @@ STORY_SKIP_REGION = (1700, 0, 240, 200)
 STORY_SKIP_CONFIRM_REGION = (850, 600, 600, 300)
 BATTLE_GUIDE_TITLE_REGION = (780, 250, 420, 180)
 BATTLE_GUIDE_DONT_SHOW_REGION = (1080, 760, 420, 190)
-# 「重新进行」按钮（打完一关后「无法前往下一个关卡，请选择下方按钮」那一页）。
-# 2026-10-18 立：这一页左下角是「离开 / 大厅」、右下角是「S 体力/上限 + 重新进行」。
-# 搜索框只框**右下角那一颗**：一是别让「离开 / 大厅」被含进来（语义完全不同），
-# 二是贴紧按钮可以把反例分差拉开（实测正例 1.0000 / 0.9870，全库最像的反例 0.5730）。
-RETRY_STAGE_REGION = (1680, 1000, 200, 90)
+# 队伍准备页「配队」三件套（2026-11-22，用户实跑口径）：
+#   team_manage      左下角「管理队伍」，进编队的入口
+#   team_list_plus   右侧英雄列表**最顶端**的蓝底黄十字，点它才进入「可放置」状态
+#   team_slot_plus   空位上的紫底黄十字，点它把当前选中的英雄放上去
+# 三个都是**判据型**：缺图必须当场报错，不许静默退化成「这一页认不出」。
+TEAM_MANAGE_REGION = (0, 960, 260, 120)
+TEAM_LIST_PLUS_REGION = (1300, 350, 400, 260)
+TEAM_SLOT_PLUS_REGION = (150, 150, 800, 800)
+# 黄圈判据的统计区：只看阵型区，避开按钮与列表。
+TEAM_RING_REGION = (150, 150, 800, 800)
+# 黄色高亮像素占比阈值（实测：3 空位 3.35% / 2 空位 2.66% / 1 空位 1.37% /
+# 满员全蓝圈 0.18%）。0.8% 卡在满员与最稀疏空位之间，两侧余量都超过 50%。
+TEAM_RING_MIN_RATIO = 0.008
 
 
 REGIONS = {
@@ -35,7 +43,6 @@ REGIONS = {
     "complete": (650, 150, 700, 700),
     "bonus_reward": (350, 150, 1200, 850),
     "next_stage": (1450, 930, 470, 202),
-    "retry_stage": RETRY_STAGE_REGION,
     "battle_guide_title": BATTLE_GUIDE_TITLE_REGION,
     "battle_guide_dont_show": BATTLE_GUIDE_DONT_SHOW_REGION,
     "stamina_popup": (400, 200, 1200, 700),
@@ -43,6 +50,9 @@ REGIONS = {
     # 与 `games/epic7/stamina.py` 的 STAMINA_REGIONS 必须一致：三按钮改版后
     # 购买按钮落到 x=807~1105，旧框 (850,...) 摆不下模板（见那里的注释）。
     "stamina_confirm": (760, 750, 740, 250),
+    "team_manage": TEAM_MANAGE_REGION,
+    "team_list_plus": TEAM_LIST_PLUS_REGION,
+    "team_slot_plus": TEAM_SLOT_PLUS_REGION,
 }
 
 THRESHOLDS = {
@@ -55,6 +65,11 @@ THRESHOLDS = {
     "auto_off": 0.80,
     "auto_on": 0.80,
     "select_team": 0.75,
+    # 配队三件套共用 0.80：实测正例 0.984~0.999，反例最高 0.53（紫加号）/
+    # 0.27（顶端加号），分离充分。
+    "team_manage": 0.80,
+    "team_list_plus": 0.80,
+    "team_slot_plus": 0.80,
 }
 
 DEFAULT_THRESHOLD = 0.80
@@ -78,12 +93,12 @@ _TEMPLATE_NAMES = (
     "complete",
     "bonus_reward",
     "next_stage",
-    # 2026-10-18：「重复打同一关」的闭环按钮。**判据型**（不在 _OPTIONAL_TEMPLATES），
-    # 缺图就必须当场报错，不许静默退化成「这一页认不出」。
-    "retry_stage",
     "stamina_popup",
     "stamina_material",
     "stamina_confirm",
+    "team_manage",
+    "team_list_plus",
+    "team_slot_plus",
 )
 
 _OPTIONAL_TEMPLATES = {"stamina_popup", "stamina_material", "stamina_confirm"}
@@ -119,9 +134,6 @@ def build_story_evidence(template_dir: Path) -> EvidenceProfile:
             PageEvidence("story.results", required=("results_confirm",)),
             PageEvidence("story.complete", required=("complete",)),
             PageEvidence("story.next_stage", required=("next_stage",)),
-            # 「无法前往下一个关卡」那一页（重复打同一关）：它是**终点页**，
-            # 不再往前推进，只认这一颗按钮。
-            PageEvidence("story.retry", required=("retry_stage",)),
             PageEvidence(
                 "story.stamina",
                 required=("stamina_popup",),

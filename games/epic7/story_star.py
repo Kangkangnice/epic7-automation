@@ -91,6 +91,7 @@ from auto_game_unified.games.epic7.stamina import (
     next_stamina_decision,
 )
 from auto_game_unified.games.epic7.story import (
+    StoryState,
     StoryStateMachine,
     build_story_templates,
 )
@@ -1011,6 +1012,8 @@ class StoryStarRunner(ModeRunnerBase):
         StoryStarState.EPISODE: 45,
         StoryStarState.STAGE_LIST: 45,
         StoryStarState.PREPARE: 60,
+        # 本路线不启用剧情过场开关，这条只为 _timeout_for() 查表兜底，避免缺键崩溃。
+        StoryState.STORY_CUTSCENE: 180,
         StoryStarState.RESULTS: 45,
     }
     _BATTLE_ENTRY_ACTION = "start-mission"

@@ -100,7 +100,7 @@ class DimensionProbePage(QWidget):
         buttons.addStretch(1)
         layout.addLayout(buttons)
 
-        self.status_label = BodyLabel("未运行", card)
+        self.status_label = BodyLabel("待执行", card)
         layout.addWidget(self.status_label)
 
         self.log_text = TextEdit(card)

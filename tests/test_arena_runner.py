@@ -539,6 +539,50 @@ class NpcTabTests(unittest.TestCase):
 
         self.assertEqual(set(), machine.battle_kinds)
 
+    def test_choosing_npc_switches_a_player_list_over_to_the_npc_tab(self):
+        """设置里选「NPC 对战」后，停在交战对手页要先点「NPC对战」页签。"""
+        machine = _npc_machine()
+        machine.opponent_source = "npc"
+        action = machine.next_action(fixture("list"))
+
+        self.assertEqual("switch-to-npc-tab", action.name)
+        # 右菜单「NPC对战」页签的落点（2026-11-21 从 npc_list.png 实测 1661,378）。
+        self.assertEqual((1661, 378), action.point)
+        self.assertEqual((ArenaState.LIST,), action.target_states)
+
+    def test_choosing_npc_leaves_an_already_npc_page_alone(self):
+        machine = _npc_machine()
+        machine.opponent_source = "npc"
+        action = machine.next_action(fixture("npc_list"))
+
+        self.assertEqual("select-opponent", action.name)
+
+    def test_the_tab_alignment_is_attempted_once_per_round(self):
+        """点一次切不过去就按当前页签打，不许每帧都点。"""
+        machine = _npc_machine()
+        machine.opponent_source = "npc"
+        machine.next_action(fixture("list"))
+        action = machine.next_action(fixture("list"))
+
+        self.assertEqual("select-opponent", action.name)
+
+    def test_the_tab_is_never_touched_after_the_list_is_left(self):
+        """队伍选择页上「不在 NPC 页」恒成立，不许因此去点右菜单。
+
+        2026-11-21 实跑：选完对手进队伍选择后又点「NPC对战」，
+        画面被点乱、转场超时，整条路线失败。
+        """
+        for source in ("npc", "player"):
+            with self.subTest(source=source):
+                machine = _npc_machine()
+                machine.opponent_source = source
+                machine.state = ArenaState.TEAM
+
+                action = machine.next_action(fixture("team"))
+
+                self.assertNotEqual("switch-to-npc-tab", action.name)
+                self.assertNotEqual("switch-to-challenge-tab", action.name)
+
     def test_missing_template_keeps_the_old_behaviour(self):
         """没采到 NPC 标题图时恒当「不在 NPC 页」，行为与旧版一致。"""
         templates = build_templates(TEMPLATES)
