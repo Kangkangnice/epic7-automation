@@ -73,6 +73,19 @@ class RouteContractWiringTests(unittest.TestCase):
                     with self.assertRaisesRegex(RuntimeError, field):
                         modes._assert_route_contract_declared()
 
+    def test_contract_mode_must_match_registration_name(self):
+        spec = replace(modes.MODE_SPECS["arena"], contract=valid_contract("story"))
+        backlog = {
+            name: reason
+            for name, reason in modes.CONTRACT_BACKLOG.items()
+            if name != "arena"
+        }
+        with mock.patch.dict(modes.MODE_SPECS, {"arena": spec}), mock.patch.dict(
+            modes.CONTRACT_BACKLOG, backlog, clear=True
+        ):
+            with self.assertRaisesRegex(RuntimeError, "contract.mode"):
+                modes._assert_route_contract_declared()
+
     def test_check_runs_on_import(self):
         tree = ast.parse(MODES_SOURCE)
         runner = next(

@@ -1960,6 +1960,11 @@ def _assert_route_contract_declared() -> None:
                 f"路线 {name} 既写了 contract、又躺在 CONTRACT_BACKLOG 里；"
                 "两边只能写一边（补了契约就把欠债那条划掉）。"
             )
+        if contract.mode != name:
+            raise RuntimeError(
+                f"路线 {name} 的 contract.mode 是 {contract.mode!r}，对不上注册名；"
+                "抄契约最容易漏改的就是它。"
+            )
         problems = validate_contract(contract, spec.states, transition_exempt=TRANSITION_EXEMPT)
         if problems:
             raise RuntimeError(
