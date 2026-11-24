@@ -764,11 +764,9 @@ _CONTRACT_BACKLOG_REASON = "待第二阶段逐条确认终点与覆盖层；五�
 CONTRACT_BACKLOG = {
     name: _CONTRACT_BACKLOG_REASON
     for name in (
-        "arena",
-        "story",
+        # 第一批已补：arena / story / hero_synthesis（2026-11-24，从本表移除）。
         "expedition",
         "fodder",
-        "hero_synthesis",
         "shop_refresh",
         "survivor",
         "world_boss",
@@ -823,6 +821,29 @@ MODE_SPECS = {
             resume_action="跳过回大厅与进入竞技场",
             resume_state_done="直接进竞技场",
         ),
+        # 终点见 docs/maintenance/route_finish_points.md 表第 1 行与注①：
+        # 结算回对手列表（购买旗帜弹窗先取消），不是 result / confirming。
+        # 覆盖层取全局守卫里竞技场自己会撞到的那几类，见 docs/maintenance/arena.md
+        # 页面链路与判据节（每周排名两层、段位奖励、战斗记录、断网）。
+        contract=RouteContract(
+            mode="arena",
+            terminal=ArenaState.LIST.value,
+            finish_at_home=True,
+            overlays=frozenset(
+                {
+                    "weekly_rank_start",
+                    "weekly_rank_select",
+                    "arena_rank_reward",
+                    "battle_record",
+                    "network",
+                }
+            ),
+            empty_states=(),
+            # 开关的读取点在 ModeRunnerBase.run()，竞技场继承的是
+            # TransactionalRunnerBase；动作仍带 source_state / target_states，
+            # 由基类 _execute_transition 连续两帧验收（见 TRANSITION_EXEMPT 理由）。
+            action_evidence="transition_contract",
+        ),
     ),
     "story": ModeSpec(
         name="story",
@@ -846,6 +867,30 @@ MODE_SPECS = {
             resume_entries=frozenset({STORY_ENTRY_PAGE}),
             resume_action="跳过回大厅与进入主线",
             resume_state_done="已在关卡入口",
+        ),
+        # 终点见 route_finish_points.md 表第 2 行：每轮结算后状态机回到 stage
+        # 再进下一关，跑满 max_cycles 就停在关卡入口（story.py 轮次记账处）。
+        # 覆盖层见 docs/maintenance/story.md：无法控制 / 教学解锁 / 给予协助的朋友
+        # / 支线故事通知 / 获得奖励，外加断网；行动力不足是路线自己的两段式判据，
+        # 不属全局弹窗类别，不在这里重复声明。
+        contract=RouteContract(
+            mode="story",
+            terminal=StoryState.STAGE.value,
+            finish_at_home=True,
+            overlays=frozenset(
+                {
+                    "uncontrollable",
+                    "tutorial_unlock",
+                    "friend_request",
+                    "side_story_notice",
+                    "reward_notice",
+                    "network",
+                }
+            ),
+            empty_states=(),
+            # 未开基类开关（理由见 TRANSITION_EXEMPT）；StoryAction 的
+            # source_page / target_pages 是必填参数，漏填在构造时就 TypeError。
+            action_evidence="transition_contract",
         ),
     ),
     "expedition": ModeSpec(
@@ -1097,6 +1142,20 @@ MODE_SPECS = {
                 ),
             ),
             ready_note="英雄信息页已就绪",
+        ),
+        # 终点见 route_finish_points.md 表第 5 行：跑完一遍回到英雄列表，
+        # 合成/传送不消耗门票类资源（周期不可改，见 cycles_editable=False）。
+        # 覆盖层只登记全局守卫里会压住英雄列表的类别：本路线关掉了奖励通知守卫
+        # 正是为了自己看到传送奖励层（reward_notice_guard=False 的理由见上）。
+        # 合成结果 / 传送结果 / SSS 警告是路线自己的状态与页内判据，不是守卫类别。
+        contract=RouteContract(
+            mode="hero_synthesis",
+            terminal=HeroSynthState.HERO_LIST.value,
+            finish_at_home=True,
+            overlays=frozenset({"reward_notice", "network"}),
+            empty_states=(),
+            # 本路线打开了 _REQUIRE_TRANSITION_CONTRACT，12 个同页动作也带契约。
+            action_evidence="transition_contract",
         ),
     ),
     "shop_refresh": ModeSpec(

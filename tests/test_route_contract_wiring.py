@@ -12,13 +12,21 @@ from auto_game_unified.games.epic7.route_contract import RouteContract
 MODES_SOURCE = (Path(modes.__file__)).read_text(encoding="utf-8")
 LEGACY_ROUTES = frozenset(
     {
-        "arena", "story", "expedition", "fodder", "hero_synthesis", "shop_refresh",
-        "survivor", "world_boss", "knights_donation", "labyrinth_stone", "sanctuary",
-        "community", "tower", "side_story", "moonlight_theater", "activity_story",
-        "achievement", "story_star", "pet_adoption", "penguin_purchase",
-        "craft_equipment",
+        "expedition", "fodder", "shop_refresh", "survivor", "world_boss",
+        "knights_donation", "labyrinth_stone", "sanctuary", "community", "tower",
+        "side_story", "moonlight_theater", "activity_story", "achievement",
+        "story_star", "pet_adoption", "penguin_purchase", "craft_equipment",
     }
 )
+# 第一批逐条声明的值；改了必须同时改声明依据（各路线手册与 route_finish_points）。
+FIRST_BATCH = {
+    "arena": ("list", frozenset({"weekly_rank_start", "weekly_rank_select",
+                                 "arena_rank_reward", "battle_record", "network"})),
+    "story": ("stage", frozenset({"uncontrollable", "tutorial_unlock",
+                                  "friend_request", "side_story_notice",
+                                  "reward_notice", "network"})),
+    "hero_synthesis": ("hero_list", frozenset({"reward_notice", "network"})),
+}
 
 
 def valid_contract(mode: str) -> RouteContract:
@@ -45,6 +53,19 @@ class RouteContractWiringTests(unittest.TestCase):
 
     def test_backlog_has_only_legacy_routes(self):
         self.assertEqual(LEGACY_ROUTES, set(modes.CONTRACT_BACKLOG))
+
+    def test_first_batch_contracts_are_declared(self):
+        for name, (terminal, overlays) in FIRST_BATCH.items():
+            with self.subTest(route=name):
+                contract = modes.MODE_SPECS[name].contract
+                self.assertIsNotNone(contract)
+                self.assertEqual(name, contract.mode)
+                self.assertEqual(terminal, contract.terminal)
+                self.assertEqual(overlays, contract.overlays)
+                self.assertTrue(contract.finish_at_home)
+                self.assertEqual((), contract.empty_states)
+                self.assertEqual("transition_contract", contract.action_evidence)
+                self.assertNotIn(name, modes.CONTRACT_BACKLOG)
 
     def test_route_without_contract_or_backlog_fails(self):
         fake = "fake_route_for_contract_test"
