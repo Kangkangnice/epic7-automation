@@ -6,7 +6,10 @@ from dataclasses import replace
 from unittest import mock
 
 from auto_game_unified.games.epic7 import modes
-from auto_game_unified.games.epic7.route_contract import RouteContract
+from auto_game_unified.games.epic7.route_contract import (
+    RouteContract,
+    validate_contract,
+)
 from auto_game_unified.tools import route_compliance as compliance
 
 
@@ -43,6 +46,23 @@ class RouteComplianceTests(unittest.TestCase):
         self.assertEqual("不一致", row["结论"])
         self.assertIn("NO_SUCH_STATE", row["终点"])
         self.assertEqual("1 类", row["覆盖层"])
+
+    def test_exempt_evidence_is_accepted_by_the_matrix(self):
+        """加载期与矩阵必须用同一份豁免名单，否则自有回执会被误判成不一致。"""
+        rows = {row["路线"]: row for row in compliance.build_rows()}
+        for mode, fragment in (
+            ("shop_refresh", "_wait_stable"),
+            ("fodder", "FodderAction"),
+            ("survivor", "_observe_stable"),
+        ):
+            row = next(row for label, row in rows.items() if f"`{mode}`" in label)
+            self.assertEqual("达标", row["结论"], row)
+            self.assertIn(fragment, row["回执"])
+            # 不传豁免名单时同一份声明确实会被拒，证明这张表不是摆设。
+            contract = modes.MODE_SPECS[mode].contract
+            self.assertTrue(
+                validate_contract(contract, modes.MODE_SPECS[mode].states)
+            )
 
     def test_strict_return_code_follows_declarations(self):
         rows = compliance.build_rows()

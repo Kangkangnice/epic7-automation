@@ -10,13 +10,9 @@ from auto_game_unified.games.epic7 import modes
 from auto_game_unified.games.epic7.route_contract import RouteContract
 
 MODES_SOURCE = (Path(modes.__file__)).read_text(encoding="utf-8")
-LEGACY_ROUTES = frozenset(
-    {
-        "fodder", "survivor", "sanctuary", "community", "activity_story",
-        "achievement", "story_star", "pet_adoption", "penguin_purchase",
-        "craft_equipment",
-    }
-)
+LEGACY_ROUTES = frozenset()
+# 收尾不回大厅的两条，必须写清合法终点理由。
+NOT_AT_HOME = frozenset({"survivor", "activity_story"})
 # 已落地的逐条声明值；改了必须同时改声明依据（各路线手册与 route_finish_points）。
 DECLARED_ROUTES = {
     # 第一批
@@ -42,6 +38,17 @@ DECLARED_ROUTES = {
     "tower": ("conquered", frozenset()),
     "side_story": ("stage", frozenset()),
     "moonlight_theater": ("list", frozenset({"reward_notice"})),
+    # 第四批
+    "fodder": ("assistant", frozenset()),
+    "survivor": ("card", frozenset()),
+    "activity_story": ("stage", frozenset()),
+    "sanctuary": ("forest", frozenset()),
+    "achievement": ("page", frozenset()),
+    "story_star": ("episode", frozenset()),
+    "pet_adoption": ("shop", frozenset()),
+    "penguin_purchase": ("成长祭坛", frozenset()),
+    "craft_equipment": ("制作结果页", frozenset({"equipment_bag_full"})),
+    "community": ("closing", frozenset({"web_network_error"})),
 }
 
 
@@ -78,7 +85,9 @@ class RouteContractWiringTests(unittest.TestCase):
                 self.assertEqual(name, contract.mode)
                 self.assertEqual(terminal, contract.terminal)
                 self.assertEqual(overlays, contract.overlays)
-                self.assertTrue(contract.finish_at_home)
+                self.assertEqual(name in NOT_AT_HOME, not contract.finish_at_home)
+                if name in NOT_AT_HOME:
+                    self.assertTrue(contract.finish_note.strip())
                 self.assertNotIn(name, modes.CONTRACT_BACKLOG)
         self.assertEqual(
             ("posters",), modes.MODE_SPECS["expedition"].contract.empty_states

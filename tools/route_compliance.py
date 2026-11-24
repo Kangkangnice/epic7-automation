@@ -22,6 +22,7 @@ from typing import Any
 from auto_game_unified.games.epic7.modes import (
     CONTRACT_BACKLOG,
     MODE_SPECS,
+    TRANSITION_EXEMPT,
 )
 from auto_game_unified.games.epic7.route_contract import validate_contract
 
@@ -68,8 +69,12 @@ def build_rows() -> list[dict[str, Any]]:
     for mode, spec in MODE_SPECS.items():
         contract = spec.contract
         owed = mode in CONTRACT_BACKLOG
+        # 与加载期断言同源：豁免名单里的路线可以写自己的回执机制，
+        # 不传这张表会把「在豁免名单里、用自己的机制验收」误判成不一致。
         problems = (
-            validate_contract(contract, spec.states)
+            validate_contract(
+                contract, spec.states, transition_exempt=TRANSITION_EXEMPT
+            )
             if contract is not None
             else []
         )
