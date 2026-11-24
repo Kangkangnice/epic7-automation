@@ -1,6 +1,9 @@
+import ast
 import unittest
 from dataclasses import FrozenInstanceError
+from pathlib import Path
 
+from auto_game_unified.games.epic7.global_popups import POPUP_KINDS
 from auto_game_unified.games.epic7.route_contract import (
     RouteContract,
     validate_contract,
@@ -64,3 +67,55 @@ class RouteContractValidationTests(unittest.TestCase):
             contract.terminal = "HOME"
         with self.assertRaises(TypeError):
             RouteContract()
+
+
+class RouteContractRejectionTests(unittest.TestCase):
+    """五条规则各一条反例：把校验删掉，这些用例必须变红。"""
+
+    def assert_rejected(self, fragment: str, **overrides) -> None:
+        problems = validate_contract(make_contract(**overrides), STATES, POPUPS, EXEMPT)
+        self.assertTrue(any(fragment in problem for problem in problems), problems)
+
+    def test_unknown_terminal_rejected(self):
+        self.assert_rejected("terminal", terminal="NO_SUCH_STATE")
+
+    def test_missing_finish_note_rejected(self):
+        self.assert_rejected("finish_note", finish_at_home=False, finish_note="   ")
+
+    def test_unregistered_overlay_rejected(self):
+        self.assert_rejected("overlays", overlays=frozenset({"not_a_popup"}))
+
+    def test_unknown_empty_state_rejected(self):
+        self.assert_rejected("empty_states", empty_states=("NO_SUCH_STATE",))
+
+    def test_evidence_outside_both_ways_rejected(self):
+        self.assert_rejected("TRANSITION_EXEMPT", action_evidence="自创回执")
+
+    def test_blank_evidence_in_exempt_list_rejected(self):
+        self.assert_rejected("action_evidence", mode="legacy_route", action_evidence="  ")
+
+
+class PopupKindRegistryTests(unittest.TestCase):
+    def test_registry_matches_guard_identifiers(self):
+        """守卫新增弹窗却忘了登记类别时，这里必须红。"""
+        source = (
+            Path(__file__).resolve().parents[1]
+            / "games"
+            / "epic7"
+            / "global_popups.py"
+        ).read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        finder = next(
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.FunctionDef) and node.name == "_find_popup"
+        )
+        identifiers = {
+            item.elts[1].value
+            for item in ast.walk(finder)
+            if isinstance(item, ast.Tuple)
+            and len(item.elts) >= 2
+            and isinstance(item.elts[1], ast.Constant)
+            and isinstance(item.elts[1].value, str)
+        }
+        self.assertEqual(POPUP_KINDS, identifiers)
