@@ -334,11 +334,28 @@ class HomeReturn:
         return f"<HomeReturn mode={self._mode} flow=v2>"
 
 
+def _exception_summary(error: BaseException, *, limit: int = 160) -> str:
+    """把异常摘要压成一行，避免带换行的异常把运行日志拆成多条记录。"""
+
+    text = " ".join(str(error).splitlines()).strip()
+    return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
+def _cause_fields(cause: BaseException | None) -> str:
+    if cause is None:
+        return ""
+    return (
+        f" 原异常类型={type(cause).__name__}"
+        f" 原异常摘要={_exception_summary(cause)}"
+    )
+
+
 def _try_return_home_after_failure(
     home_return: HomeReturn,
     runtime: Runtime,
     *,
     mode: str,
+    cause: BaseException | None = None,
 ) -> None:
     """异常退出前，尽力把游戏带回大厅。
 
@@ -346,19 +363,25 @@ def _try_return_home_after_failure(
     这里再抛一个只会把真正的错因盖掉，用户看到的还是「回不了家」而不是「为什么挂」。
 
     另外**不再问用户**、也不重试 —— 异常现场已经存档（diagnostic），回家只是顺手
-    收拾一下，不是纠错。
+    收拾一下，不是纠错。``cause`` 只写进日志，用来按首个故障归类；不在这里处理它。
     """
+    cause_fields = _cause_fields(cause)
     try:
         home_return()
     except ManualStop:
-        runtime.log(f"模式={mode} 异常收尾=回首页被手动停止 处理=放弃收尾")
+        runtime.log(
+            f"模式={mode} 异常收尾=回首页被手动停止 处理=放弃收尾{cause_fields}"
+        )
     except Exception as error:  # noqa: BLE001 —— 绝不能盖掉真正的错因
         runtime.log(
             f"模式={mode} 异常收尾=回首页失败 "
-            f"原因={type(error).__name__}: {error} 处理=已忽略（原异常照旧抛出）"
+            f"原因={type(error).__name__}: {_exception_summary(error)} "
+            f"处理=已忽略（原异常照旧抛出）{cause_fields}"
         )
     else:
-        runtime.log(f"模式={mode} 异常收尾=已回到首页 状态=可以衔接下一个任务")
+        runtime.log(
+            f"模式={mode} 异常收尾=已回到首页 状态=可以衔接下一个任务{cause_fields}"
+        )
 
 
 def _enter_mode(
@@ -735,14 +758,16 @@ def run_mode(
     except ManualStop:
         # 用户按 P 喊停 ⇒ 一个字都不动游戏（这是全线统一口径，见 runner_base._close_out）。
         raise
-    except BaseException:
+    except BaseException as error:
         # 异常也回家（**所有路线**，2026-09-26 起不再有白名单分叉）。
         # 用户 2026-09-25 拍板——「异常了也该走回大厅，包括战斗里，直接放弃这一局」。
         # 以前不回家的理由是「硬按 Back 可能把已承诺的战斗弄丢」，而 v2 处理这个问题
         # 的办法是**显式放弃**（暂停 → 放弃战斗 → 放弃确认），比撒手不管更干净。
         # ⚠️ 回家本身**绝不改退出码**：回到家也照旧往外抛，结论还是「运行失败」。
         if home_return is not None:
-            _try_return_home_after_failure(home_return, runtime, mode=spec.name)
+            _try_return_home_after_failure(
+                home_return, runtime, mode=spec.name, cause=error
+            )
         raise
     # 竞技场给胜负；每天会跑的那几条给「这条干成了什么」。没有这两个方法就留 None。
     summary = getattr(runner, "outcome_summary", None)
