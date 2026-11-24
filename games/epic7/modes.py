@@ -764,14 +764,12 @@ _CONTRACT_BACKLOG_REASON = "待第二阶段逐条确认终点与覆盖层；五�
 CONTRACT_BACKLOG = {
     name: _CONTRACT_BACKLOG_REASON
     for name in (
-        # 第一批已补：arena / story / hero_synthesis（2026-11-24，从本表移除）。
-        "expedition",
+        # 第一批已补：arena / story / hero_synthesis；第二批：商店 / 迷宫 / 远征
+        # （2026-11-24，均从本表移除）。
         "fodder",
-        "shop_refresh",
         "survivor",
         "world_boss",
         "knights_donation",
-        "labyrinth_stone",
         "sanctuary",
         "community",
         "tower",
@@ -937,6 +935,20 @@ MODE_SPECS = {
             resume_action="跳过回大厅与进入远征队",
             resume_action_middle="跳过回大厅与进入战斗菜单",
             resume_state_done="已在远征主页",
+        ),
+        # 终点见 docs/maintenance/route_finish_points.md 表第 3 行：跑满轮次回到
+        # 远征主页（expedition.py 只在 return-to-expedition-home 落到 HOME 时记一轮）。
+        # 空态是 posters：通缉传单耗尽即停列表页，退出码 2 不算失败。
+        contract=RouteContract(
+            mode="expedition",
+            terminal=ExpeditionState.HOME.value,
+            finish_at_home=True,
+            # 手册与代码没有登记会挡住本路线的全局守卫类别。
+            overlays=frozenset(),
+            empty_states=(ExpeditionState.POSTERS.value,),
+            # 未开基类开关（理由见 TRANSITION_EXEMPT），但动作仍带
+            # source_page / target_pages，由基类连续两帧验收，口径同竞技场。
+            action_evidence="transition_contract",
         ),
     ),
     "tower": ModeSpec(
@@ -1192,6 +1204,19 @@ MODE_SPECS = {
             ),
             ready_note="秘密商店顶部已就绪",
         ),
+        # route_finish_points.md 表第 6 行：一批扫完停在商店页；本路线状态集合
+        # 只有 scan_top（其余 phase 是页内阶段），金币/钻石不足也停在这一页。
+        contract=RouteContract(
+            mode="shop_refresh",
+            terminal=ShopPhase.SCAN_TOP.value,
+            finish_at_home=True,
+            # 没有登记会挡住本路线的全局守卫类别。
+            overlays=frozenset(),
+            empty_states=(),
+            # 未开基类开关：自带主循环，靠 _wait_stable / _open_and_wait
+            # 等目标页稳定，不经过基类转场账本（理由见 TRANSITION_EXEMPT）。
+            action_evidence="自有 _wait_stable/_open_with_retry",
+        ),
     ),
     "survivor": ModeSpec(
         name="survivor",
@@ -1388,6 +1413,18 @@ MODE_SPECS = {
                 ),
             ),
             ready_note="战斗菜单「一般」页已就绪",
+        ),
+        # route_finish_points.md 表第 10 行与第一节链路：放弃战斗后停在迷宫详情页，
+        # 再由 return home 接手；迷宫不消耗门票，没有资源耗尽出口。
+        contract=RouteContract(
+            mode="labyrinth_stone",
+            terminal=LabyrinthStoneState.LABYRINTH_DETAIL.value,
+            finish_at_home=True,
+            # docs/maintenance/labyrinth_stone.md：装备背包已满会盖住准备页，
+            # 模拟器缺模板时守卫整段跳过是历史故障原因。
+            overlays=frozenset({"equipment_bag_full"}),
+            empty_states=(),
+            action_evidence="transition_contract",
         ),
     ),
     "sanctuary": ModeSpec(
