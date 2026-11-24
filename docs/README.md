@@ -27,6 +27,7 @@
 | 更新图鉴数据或界面文案 | [英雄图鉴维护](maintenance/hero_roster.md)、[界面文案规范](UI_COPY_STYLE.md) |
 | 查看缺失的证据、未解决的缺陷或未评估的想法 | [待办](TODO.md)（含「未评估、未排期」） |
 | 查看版本变化与素材权利 | [变更日志](../CHANGELOG.md)、[素材声明](../NOTICE.md) |
+| 查各路线契约欠债与合规矩阵 | 命令 `python -m auto_game_unified.tools.route_compliance`，口径见[路线通用契约](ROUTE_CONTRACT.md) |
 
 ## 二、每条路线怎么维护
 

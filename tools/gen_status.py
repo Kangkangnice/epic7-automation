@@ -366,6 +366,8 @@ def render() -> str:
         "> `hero_synthesis` 的素材目录叫 `hero`；`arena` 的模板与全局共享图混放在模板根，",
         "> 无法按路线归属，标「共享根」而不是报一个假的 0 —— 别名见 `gen_status.py::ROUTE_DIR_ALIASES`。",
         "> 开局接力读 `MODE_SPECS.resume_probe` 与 `RESUME_EXEMPT`，PC 放行读 `PC_READY_ROUTES`。",
+        "> 契约五项与欠债见 [路线通用契约](ROUTE_CONTRACT.md)；合规矩阵由 "
+        "`python -m auto_game_unified.tools.route_compliance` 生成，不手抄。",
         "",
         *_route_fact_rows(tracked),
         "",

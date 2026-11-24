@@ -145,10 +145,17 @@ tests/test_hunt_runner.py
         resume_action="跳过回大厅与进入狩猎",
         resume_state_done="已在狩猎主页",
     ),
+    # 第 5 项必填：路线通用契约。新路线一次写全，不许进 CONTRACT_BACKLOG。
+    # 五项声明的字段与判据见 docs/ROUTE_CONTRACT.md，这里不重抄。
+    contract=RouteContract(...),
 ),
 ```
 
 构建器只负责载入模板和把字符串转换为该模式的 Enum。不要在 `main.py` 添加新的条件分支。
+
+⚠️ **契约是注册模式的第 5 项必填**：新路线没有 `contract` 会在加载期直接报错
+（`_assert_route_contract_declared`），也不能用空 `RouteContract()` 或欠债名单蒙混过关；
+五项声明写在哪、怎么查见 [路线通用契约](ROUTE_CONTRACT.md)。
 
 ⚠️ **路线专属的校验、路线专属的构造参数，走 `ModeSpec` 的两个可选钩子** ——
 2026-09-27 起 `main.run_mode` 只认「注册项上有没有钩子」，不认识任何具名路线；
