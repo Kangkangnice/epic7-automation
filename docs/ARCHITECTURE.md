@@ -24,7 +24,8 @@ auto_game_unified/
 ├─ games/epic7/
 │  ├─ navigation.py         # 从支持页面受控返回大厅并进入目标模式（导航链的**执行器**）
 │  ├─ navigation_plan.py    # 导航链的声明式数据（纯 dataclass，不含任何路线知识）
-│  ├─ global_popups.py      # 全局弹窗守卫（现行 20+ 类，清单见文件里的 _find_popup）
+│  ├─ global_popups.py      # 全局弹窗守卫（现行 20+ 类，清单见 POPUP_KINDS）
+│  ├─ route_contract.py     # 路线级最低声明（终点/覆盖层/空态/回执/危险动作）与纯校验
 │  ├─ unknown_screen.py     # 未知画面观察（只记诊断、交还上层）与大厅观赏模式的有界唤醒
 │  ├─ battle_controls.py    # 战斗内 Auto/加速按钮识别
 │  ├─ stamina.py            # 体力弹窗共享：区域、模板、补体力决策
