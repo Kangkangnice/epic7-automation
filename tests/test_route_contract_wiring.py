@@ -12,10 +12,9 @@ from auto_game_unified.games.epic7.route_contract import RouteContract
 MODES_SOURCE = (Path(modes.__file__)).read_text(encoding="utf-8")
 LEGACY_ROUTES = frozenset(
     {
-        "fodder", "survivor", "world_boss", "knights_donation", "sanctuary",
-        "community", "tower", "side_story", "moonlight_theater",
-        "activity_story", "achievement", "story_star", "pet_adoption",
-        "penguin_purchase", "craft_equipment",
+        "fodder", "survivor", "sanctuary", "community", "activity_story",
+        "achievement", "story_star", "pet_adoption", "penguin_purchase",
+        "craft_equipment",
     }
 )
 # 已落地的逐条声明值；改了必须同时改声明依据（各路线手册与 route_finish_points）。
@@ -31,6 +30,18 @@ DECLARED_ROUTES = {
     "shop_refresh": ("scan_top", frozenset()),
     "labyrinth_stone": ("labyrinth_detail", frozenset({"equipment_bag_full"})),
     "expedition": ("home", frozenset()),
+    # 第三批
+    "world_boss": ("home", frozenset({"worldboss_support_reward", "knights_signin",
+                                      "gift_support", "gift_claim",
+                                      "knights_weekly_reward",
+                                      "knights_growth_rank"})),
+    "knights_donation": ("weekly_tasks", frozenset({"reward_notice", "knights_signin",
+                                                    "gift_support", "gift_claim",
+                                                    "knights_weekly_reward",
+                                                    "knights_growth_rank"})),
+    "tower": ("conquered", frozenset()),
+    "side_story": ("stage", frozenset()),
+    "moonlight_theater": ("list", frozenset({"reward_notice"})),
 }
 
 

@@ -764,17 +764,12 @@ _CONTRACT_BACKLOG_REASON = "待第二阶段逐条确认终点与覆盖层；五�
 CONTRACT_BACKLOG = {
     name: _CONTRACT_BACKLOG_REASON
     for name in (
-        # 第一批已补：arena / story / hero_synthesis；第二批：商店 / 迷宫 / 远征
-        # （2026-11-24，均从本表移除）。
+        # 第一批：arena / story / hero_synthesis；第二批：商店 / 迷宫 / 远征；
+        # 第三批：世界首领 / 骑士团 / 月塔 / 支线 / 月光（2026-11-24，均已移除）。
         "fodder",
         "survivor",
-        "world_boss",
-        "knights_donation",
         "sanctuary",
         "community",
-        "tower",
-        "side_story",
-        "moonlight_theater",
         "activity_story",
         "achievement",
         "story_star",
@@ -1016,6 +1011,20 @@ MODE_SPECS = {
             resume_action_middle="跳过回大厅与进入战斗菜单",
             resume_state_done="已在月塔主页",
         ),
+        # docs/maintenance/tower.md 与 tower.py：认出「征服欧多马顿塔」即收工，
+        # 那是整条路线终点，一个按钮都不点。
+        contract=RouteContract(
+            mode="tower",
+            terminal=TowerState.CONQUERED.value,
+            finish_at_home=True,
+            # 战力差弹窗与体力弹窗都由路线自己的判据处理，
+            # 手册没有登记会挡住本路线的全局守卫类别。
+            overlays=frozenset(),
+            empty_states=(),
+            # 在 TRANSITION_EXEMPT 里，但 TowerAction 的 source_page /
+            # target_pages 必填，基类连续两帧验收，口径同竞技场。
+            action_evidence="transition_contract",
+        ),
     ),
     "fodder": ModeSpec(
         name="fodder",
@@ -1090,6 +1099,17 @@ MODE_SPECS = {
             ),
             ready_note="支线故事页已就绪",
         ),
+        # docs/maintenance/side_story.md：打通一期后点「离开」回关卡地图，
+        # 再由基类收尾回大厅；关卡地图在共享 StoryState 里就是 stage。
+        contract=RouteContract(
+            mode="side_story",
+            terminal=StoryState.STAGE.value,
+            finish_at_home=True,
+            # 手册与代码未登记会挡住本路线的全局守卫类别。
+            overlays=frozenset(),
+            empty_states=(),
+            action_evidence="transition_contract",
+        ),
     ),
     "moonlight_theater": ModeSpec(
         name="moonlight_theater",
@@ -1122,6 +1142,18 @@ MODE_SPECS = {
                 ),
             ),
             ready_note="支线故事页已就绪",
+        ),
+        # route_finish_points.md 表第 11 行与手册：停「剧场选择页」，
+        # 「往右换不动」即收工；内部 FINISHED 只是记账，不是页面。
+        contract=RouteContract(
+            mode="moonlight_theater",
+            terminal=MoonlightState.LIST.value,
+            finish_at_home=True,
+            # moonlight_theater.py 写明「获得奖励」被全局守卫在 capture 层关掉，
+            # 状态机一帧都看不到；观览指南 / 购票 / 用券是路线自己的状态。
+            overlays=frozenset({"reward_notice"}),
+            empty_states=(),
+            action_evidence="transition_contract",
         ),
     ),
     "hero_synthesis": ModeSpec(
@@ -1293,6 +1325,26 @@ MODE_SPECS = {
             resume_state_done="已在世界首领战主页",
             ready_note="世界首领战主页已就绪",
         ),
+        # route_finish_points.md 表第 8 行：跑满次数或今日次数用完都停主页。
+        # 导航链必经骑士团主页（lobby → quick_menu → knights_home → wb_home），
+        # 该页那五类全局弹窗都会把入口压住，另有进主页才弹的支援奖励层。
+        contract=RouteContract(
+            mode="world_boss",
+            terminal=WorldBossState.HOME.value,
+            finish_at_home=True,
+            overlays=frozenset(
+                {
+                    "worldboss_support_reward",
+                    "knights_signin",
+                    "gift_support",
+                    "gift_claim",
+                    "knights_weekly_reward",
+                    "knights_growth_rank",
+                }
+            ),
+            empty_states=(),
+            action_evidence="transition_contract",
+        ),
     ),
     "knights_donation": ModeSpec(
         name="knights_donation",
@@ -1348,6 +1400,26 @@ MODE_SPECS = {
             resume_action="跳过回大厅与进入骑士团",
             resume_state_done="已在骑士团主页",
             ready_note="骑士团主页已就绪",
+        ),
+        # route_finish_points.md 表第 9 行：每周任务无可领就停每周任务页。
+        # 手册写明本路线关掉了「获得奖励」守卫（支援奖励层必须自己看到），
+        # 骑士团主页另外四层由全局守卫处理，见 global_popups.py 各类注释。
+        contract=RouteContract(
+            mode="knights_donation",
+            terminal="weekly_tasks",
+            finish_at_home=True,
+            overlays=frozenset(
+                {
+                    "reward_notice",
+                    "knights_signin",
+                    "gift_support",
+                    "gift_claim",
+                    "knights_weekly_reward",
+                    "knights_growth_rank",
+                }
+            ),
+            empty_states=(),
+            action_evidence="transition_contract",
         ),
     ),
     "labyrinth_stone": ModeSpec(
