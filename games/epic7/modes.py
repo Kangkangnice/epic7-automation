@@ -173,6 +173,10 @@ from auto_game_unified.games.epic7.world_boss import (
     WorldBossStateMachine,
     detect_resume_point as detect_world_boss_resume_point,
 )
+from auto_game_unified.games.epic7.route_contract import (
+    RouteContract,
+    validate_contract,
+)
 
 
 MachineFactory = Callable[[Path, str], Any]
@@ -258,6 +262,10 @@ class ModeSpec:
     # 标题与「点击关闭」，守卫会把状态机等的那一页直接点掉 ⇒ 转场契约永远不成立。
     # ⚠️ 模拟器下这组模板本来就只有 pc/ 图、loader 返回 None，本字段对模拟器零影响。
     reward_notice_guard: bool = True
+    # 路线级最低声明（终点 / 覆盖层 / 空态 / 回执 / 危险动作）。
+    # ⚠️ 新路线必须写；老路线先统一进 ``CONTRACT_BACKLOG``，逐条落实是第二阶段。
+    # 漏了在 import 阶段就报错（``_assert_route_contract_declared``），不空着上线。
+    contract: Optional[RouteContract] = None
 
     def resolve_state(self, requested: str | None) -> str:
         state = requested or self.default_state
@@ -745,6 +753,39 @@ TRANSITION_EXEMPT = {
         "（在 `_action()` 内），而它的 `source_page` / `target_pages` 是**无默认值的必填参数**"
         "⇒ 漏填直接 `TypeError`，比开关更硬。开它属于冗余。"
     ),
+}
+
+
+# 「路线通用契约」欠债名单：只收下机制建立之前就已登记的 21 条老路线。
+# ⚠️ **只减不增**：新增路线必须一次写全 contract，想进这张表在 import 阶段就报错
+# （``_assert_route_contract_declared``）。路线补完契约后必须把这一行划掉。
+# 缺口统一为五项声明全缺；逐条确认终点与覆盖层属于第二阶段（见 docs/ROUTE_CONTRACT.md）。
+_CONTRACT_BACKLOG_REASON = "待第二阶段逐条确认终点与覆盖层；五项声明均未写入 contract"
+CONTRACT_BACKLOG = {
+    name: _CONTRACT_BACKLOG_REASON
+    for name in (
+        "arena",
+        "story",
+        "expedition",
+        "fodder",
+        "hero_synthesis",
+        "shop_refresh",
+        "survivor",
+        "world_boss",
+        "knights_donation",
+        "labyrinth_stone",
+        "sanctuary",
+        "community",
+        "tower",
+        "side_story",
+        "moonlight_theater",
+        "activity_story",
+        "achievement",
+        "story_star",
+        "pet_adoption",
+        "penguin_purchase",
+        "craft_equipment",
+    )
 }
 
 
@@ -1883,6 +1924,50 @@ def _assert_navigation_declared() -> None:
             )
 
 
+def _assert_route_contract_declared() -> None:
+    """加载期自查：每条路线都必须对「路线级最低声明」表态。
+
+    三种合法形态：
+
+    - 写了 ``contract``（五项声明齐备且与代码对得上）；
+    - 机制建立前就在 ``CONTRACT_BACKLOG`` 里的老路线（欠债公开可查）；
+    - 新路线**没有**第三种形态 —— 不写契约、想进欠债名单都会在 import 阶段报错。
+
+    ⚠️ 与另三套表态一样只查结构：终态、覆盖层、空态、回执的交叉校验交给
+    ``validate_contract``，判据准不准仍是第二阶段逐条实机的事。
+    """
+    for name in CONTRACT_BACKLOG:
+        if name not in MODE_SPECS:
+            raise RuntimeError(
+                f"CONTRACT_BACKLOG 里的 {name} 已经不在 MODE_SPECS 了；"
+                "名单只减不增，过期条目请直接删掉。"
+            )
+
+    for name, spec in MODE_SPECS.items():
+        contract = spec.contract
+        owed = name in CONTRACT_BACKLOG
+        if contract is None:
+            if owed:
+                continue
+            raise RuntimeError(
+                f"路线 {name} 既没有 contract，也不在 CONTRACT_BACKLOG 里。"
+                "在 MODE_SPECS 注册项补一份 RouteContract：terminal / finish_at_home / "
+                "overlays / empty_states / action_evidence（finish_at_home=False 时还要 "
+                "finish_note）；规矩见 docs/ROUTE_CONTRACT.md。"
+            )
+        if owed:
+            raise RuntimeError(
+                f"路线 {name} 既写了 contract、又躺在 CONTRACT_BACKLOG 里；"
+                "两边只能写一边（补了契约就把欠债那条划掉）。"
+            )
+        problems = validate_contract(contract, spec.states, transition_exempt=TRANSITION_EXEMPT)
+        if problems:
+            raise RuntimeError(
+                f"路线 {name} 的 contract 声明与代码对不上：{'；'.join(problems)}。"
+                "规矩见 docs/ROUTE_CONTRACT.md。"
+            )
+
+
 # 只有 PC 素材、**模拟器上跑必然缺图**的路线（2026-11-08 立）。
 #
 # 为什么不靠探测模板：探测要真去 build 一次状态机（会抛 ``FileNotFoundError``），
@@ -1912,6 +1997,7 @@ def _run_load_time_checks() -> None:
     _assert_resume_declared()
     _assert_transition_stance_declared()
     _assert_conclusion_gate_declared()
+    _assert_route_contract_declared()
 
 
 _run_load_time_checks()
