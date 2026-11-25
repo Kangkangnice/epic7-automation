@@ -263,25 +263,45 @@ def test_the_summary_drops_the_long_diagnostics_path():
     assert ".png" not in line
 
 
-def test_failure_hint_survives_the_48_char_truncation():
-    """失败文案里「本次到底有没有断过网」这个事实必须挺过 48 字截断。
+def test_network_outage_leads_the_failure_conclusion():
+    """断网事实要当结论主句，而不是被长前缀挤到截断线后面。
 
-    失败原因进结果卡/通知前会被 ``_human_reason`` 截到 48 字、去掉诊断长路径。
-    所以这句事实必须排在诊断路径**之前**：写错位置，用户永远看不到，又变回
-    「只说连续点击没反应、别人不知道为什么错」。
+    2026-11-24 竞技场实跑：点了 5 次断网重试，底层报错也写了「网络问题可确认」，
+    但结果卡只显示「导航转场 竞技场模式选择 → arena_ready 失败；本次已…」。
+    用户看不到断网，只看到看不懂的实现术语。回归夹具用**真实长度**的表象前缀，
+    短前缀用例挡不住这个回归。
     """
     detail = (
-        "动作 prepare_battle 点击4次后画面未推进"
-        "；本次已断网、自动重试 5 次（网络问题可确认，需恢复后重跑）；"
-        "已保存诊断 D:\\runtime_diagnostics\\epic7_story\\x.png"
+        "RuntimeError: 导航转场 竞技场模式选择 → arena_ready 失败"
+        "；本次已断网、自动重试 5 次（网络问题可确认，需恢复后重跑）"
+        "；已保存诊断 D:\\runtime_diagnostics\\epic7_arena\\x.png"
+    )
+    report = DailyReport(
+        outcomes=[DailyOutcome("arena", "竞技场", "failed", detail)]
+    )
+    # 结果卡用「 · 」分隔，通知用空格分隔；两者都以网络结论收尾
+    assert "网络连接中断，已自动重试 5 次，需恢复网络后重新运行" in report.result_lines()[1]
+    assert "网络连接中断，已自动重试 5 次，需恢复网络后重新运行" in report.brief_lines()[1]
+    for line in (report.result_lines()[1], report.brief_lines()[1]):
+        assert "arena_ready" not in line and "导航转场" not in line, line
+        assert "已保存诊断" not in line and ".png" not in line, line
+    # 日志汇总行：同样以网络结论定性，不再摆转场表象
+    summary = report.summary_line()
+    assert "网络连接中断，已自动重试 5 次" in summary, summary
+    assert "arena_ready" not in summary, summary
+
+
+def test_short_failure_keeps_the_plain_reason_without_network():
+    """没有断网事实时，沿用原来的表象文案，不臆造网络结论。"""
+    detail = (
+        "RuntimeError: 动作 prepare_battle 点击4次后画面未推进"
+        "；已保存诊断 D:\\runtime_diagnostics\\epic7_story\\x.png"
     )
     line = DailyReport(
         outcomes=[DailyOutcome("story", "主线", "failed", detail)]
-    ).summary_line()
-    assert "点击4次后画面未推进" in line, "表象事实仍要保留，供与现场对照"
-    assert "本次已断网" in line and "重试 5 次" in line, "断网事实必须排在诊断路径之前，才能挺过截断"
-    assert "已保存诊断" not in line
-    assert ".png" not in line
+    ).result_lines()[1]
+    assert "点击4次后画面未推进" in line
+    assert "断网" not in line
 
 
 # --------------------------------------------------------------------------
@@ -1469,7 +1489,16 @@ def test_countdown_inspect_reuses_the_side_story_spec_but_drops_resume(monkeypat
     assert isinstance(seen["machine"], SideStoryStateMachine)
     assert seen["machine_countdown_only"] is True, "装配时没打开只读开关"
 
-    assert payload == {"days": 13, "hours": 12, "raw": "剩余 13天 12小时"}
+    # ``account`` / ``rank`` 是 2026-11-23 加的两项：巡检开头顺手读一次「这次是谁」
+    # （那一帧必然在大厅）。这一例的探针没有画面，所以两项都必须是空串 ——
+    # 读不到就如实留空，绝不拿别的来源顶替。
+    assert payload == {
+        "days": 13,
+        "hours": 12,
+        "raw": "剩余 13天 12小时",
+        "account": "",
+        "rank": "",
+    }
     saved = countdown_module.load_countdown()
     assert (saved["days"], saved["hours"]) == (13, 12)
     assert saved["moonlight_free"] is True, "巡检读到的绿 F 没落盘"
@@ -1531,3 +1560,47 @@ def test_countdown_inspect_closeout_stop_preserves_prior_outcomes(monkeypatch):
     assert report.stopped_by_user is True
     assert report.countdown_note == "支线刷新倒计时：未读取（用户手动停止）"
     assert [outcome.status for outcome in report.outcomes] == ["completed"]
+
+
+# ── 汇总最前面的账号两行（2026-11-23 用户要求）───────────────────────────────
+
+
+def test_summary_starts_with_account_name_and_rank():
+    """账号名一行、等级一行，之后才是原来的总账与明细。"""
+
+    def inspect():
+        return {
+            "days": 13,
+            "hours": 12,
+            "raw": "剩余 13天 12小时",
+            "account": "康康626",
+            "rank": "S.Rank.20",
+        }
+
+    report = _run_with_inspect(inspect)
+
+    lines = report.result_lines()
+    assert lines[0] == "康康626"
+    assert lines[1] == "S.Rank.20"
+    assert lines[2].startswith("任务 1 项")
+    # 精简版（QQ 通知）用同一套开头，两处口径不能各写一份。
+    assert report.brief_lines()[:2] == ["康康626", "S.Rank.20"]
+
+
+def test_summary_says_unidentified_when_the_inspect_read_a_blank_account():
+    """这趟读过、但没认出昵称 ⇒ 如实写「未识别账号」，不冒用上一次的名字。"""
+
+    def inspect():
+        return {"days": 13, "hours": 12, "raw": "", "account": "", "rank": ""}
+
+    report = _run_with_inspect(inspect)
+
+    assert report.result_lines()[0] == "未识别账号"
+
+
+def test_summary_has_no_account_block_when_the_inspect_never_answered():
+    """巡检没回答这件事（旧版本 / 别的巡检项）⇒ 一个字都不加。"""
+
+    report = _run_with_inspect(lambda: {"days": 13, "hours": 12, "raw": ""})
+
+    assert report.result_lines()[0].startswith("任务 1 项")

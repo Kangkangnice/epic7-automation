@@ -614,3 +614,36 @@ def test_offline_probe_never_passes_live_or_daily(tmp_path: Path):
     assert command[command.index("--offline-probe") + 1] == "2"
     assert "--live" not in command
     assert "--daily" not in command
+
+
+def test_a_failed_run_exports_a_report_and_notifies_the_ui(tmp_path: Path):
+    """退出码 1 是唯一需要诊断包的一类结束。"""
+
+    worker = WorkerController(
+        repo_parent=tmp_path,
+        popen=lambda command, **kwargs: FakeProcess(exit_code=1),
+    )
+
+    worker.start(RunRequest(("story",), {"story": 1}, backend="pc"))
+    worker.join_reader()
+
+    reports = [event for event in worker.drain_events() if event.kind == "report"]
+    assert len(reports) == 1
+    assert reports[0].exit_code == 1
+    assert Path(reports[0].message).is_file()
+    assert Path(reports[0].message).parent.name == "reports"
+
+
+@pytest.mark.parametrize("exit_code", [0, 2, 130])
+def test_other_exit_codes_leave_no_report(tmp_path: Path, exit_code: int):
+    worker = WorkerController(
+        repo_parent=tmp_path,
+        popen=lambda command, **kwargs: FakeProcess(exit_code=exit_code),
+    )
+
+    worker.start(RunRequest(("story",), {"story": 1}))
+    worker.join_reader()
+
+    assert not [
+        event for event in worker.drain_events() if event.kind == "report"
+    ]

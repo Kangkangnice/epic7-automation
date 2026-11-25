@@ -103,10 +103,16 @@ REGIONS: dict[str, tuple[int, int, int, int]] = {
     # 0.2736、购买按钮 0.0000 ⇒ 认不出弹窗、卡到超时（退出码 1）。两个弹窗
     # 长得像但不是同一个：宠物商店是「购买商品 / 确定要购买该商品吗？」。
     # 已从真机诊断帧重裁，本页 1.0000 / 商店底部 ≤0.25。
-    "confirm_title": (780, 220, 420, 130),
-    "confirm_buy": (1140, 740, 180, 100),
+    # 2026-11-23 弹窗改版：标题上移到 y=242、问句到 y=337（旧版 y=287/392），
+    # 绿色「购买」从 y=801 下移到 y=921。三条搜索带都要同时罩住新旧两版：
+    # 旧窗口标题/问句区域从 y=220/340 起，会把新版那一行截掉上半截；
+    # 购买按钮旧窗口只到 y=840，新版按钮落在框外 ⇒ 点了却认不出，卡到超时。
+    # 全库 479 帧复扫：放宽后的「购买」过阈 12 张，全是各路线**共用同一颗按钮**
+    # 的购买确认弹窗 ⇒ 排他交给下面的 ``shop_title``（宠物商店底页独有）。
+    "confirm_title": (780, 180, 420, 190),
+    "confirm_buy": (1140, 740, 180, 230),
     # 「确定要购买该商品吗？」固定提示，与标题一起证伪「相似但不同」的弹窗。
-    "confirm_question": (750, 340, 400, 90),
+    "confirm_question": (720, 280, 460, 180),
 }
 
 THRESHOLDS = {key: DEFAULT_THRESHOLD for key in REGIONS}
@@ -118,6 +124,18 @@ _TEMPLATE_PATHS = {key: f"{key}.png" for key in REGIONS}
 # 三行冷却共用同一张模板；逐行检出用 ``cooldown_rows``，不走页面组合。
 _TEMPLATE_PATHS["shop_cooldown"] = "shop_cooldown.png"
 
+# 同一控件的第二长相（2026-11-23）。判定语义是「任一过阈即命中」，所以旧版帧
+# 仍由原模板负责、新版帧由 *_v2 接住，谁都不用调阈值：
+#   新版帧 旧模板 0.7897/0.6048（阈 0.80）→ v2 双 1.0000；
+#   旧版帧 原模板双 1.0000 → v2 0.7897/0.6048。
+# 新模板从当日失败帧裁；全库 479 帧里过阈的只有企鹅数量弹窗 / 月塔购买页
+# （共用同款弹窗皮肤），它们没有宠物商店底页标题 ⇒ 由 purchase 页的
+# ``shop_title`` 排他（宠物弹窗 0.9998，那两类最高 0.7514）。
+_ALT_TEMPLATES = {
+    "confirm_title": ("confirm_title_v2.png",),
+    "confirm_question": ("confirm_question_v2.png",),
+}
+
 _PAGES = (
     # 领养结果弹窗在最前：它盖在领养弹窗上，领养弹窗标题在这帧掉到 0.7815，
     # 顺序反了就会把结果页当成"还可以领"的弹窗。
@@ -127,7 +145,10 @@ _PAGES = (
     # 且商店标题在遮罩下不稳；改成自采三锚点后正例全 1.0000、反例全 ≤0.25。
     PageEvidence(
         "pet_adoption.purchase",
-        required=("confirm_title", "confirm_question", "confirm_buy"),
+        # shop_title 是排他锚点：宠物商店购买弹窗 0.9998，企鹅/月塔/迷宫/刷书签
+        # 那些同款弹窗最高只有 0.7514（阈 0.80），不会串到这条路线来。
+        # 它在 11-16 曾被摘掉（当时遮罩下不稳），现两版实测都满分，恢复它。
+        required=("confirm_title", "confirm_question", "confirm_buy", "shop_title"),
     ),
     # 弹窗在前：半透明遮罩下小屋标题仍是 0.9996（见模块 docstring）。
     PageEvidence("pet_adoption.adopt_popup", required=("adopt_modal_title",)),
@@ -163,6 +184,7 @@ def build_pet_adoption_evidence(template_dir: Path) -> EvidenceProfile:
             region=REGIONS[key],
             threshold=THRESHOLDS[key],
             reference_size=REFERENCE_SIZE,
+            alt_template_paths=_ALT_TEMPLATES.get(key, ()),
         )
         for key, relative_path in _TEMPLATE_PATHS.items()
     }

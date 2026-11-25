@@ -206,5 +206,43 @@ class PortraitInputTests(unittest.TestCase):
         self.assertEqual([], sent, "越界点击不该发出去")
 
 
+class _FakeAdbClient:
+    """只提供 ``screencap_bgr``：**故意不给** ``run_raw``。
+
+    回归用途（2026-11-24）：竖屏取图不许再回到
+    「``shell screencap -p <设备路径>`` + ``pull <设备路径> <本地路径>``」那条老路 ——
+    命令字符串由 ``run_raw`` 的 ``shlex.split`` 解析，反斜杠被当转义符吃掉
+    （``D:\\Cache\\Temp\\x.png`` → ``D:CacheTempx.png``），``pull`` 把图写到别处，
+    ``cv2.imread`` 读到的**永远是那份不再更新的旧文件**，且 adb 返回 0、一点错误都不报。
+    实测后果：整条社区签到路线每一帧都判成同一张旧图（判页 1.0000、点击全按旧页算）。
+
+    这里一旦有人改回老写法，本替身没有 ``run_raw`` ⇒ 当场 AttributeError。
+    """
+
+    def __init__(self, frame: np.ndarray) -> None:
+        self.frame = frame
+        self.calls = 0
+
+    def screencap_bgr(self) -> np.ndarray:
+        self.calls += 1
+        return self.frame
+
+
+class _FakeAdbWindow:
+    def __init__(self, client: _FakeAdbClient) -> None:
+        self.adb_client = client
+
+
+class PortraitScreencapSourceTests(unittest.TestCase):
+    """竖屏取图必须走 ``exec-out``，不许落设备文件。"""
+
+    def test_screencap_comes_from_the_live_channel(self):
+        frame = _bgr(*PORTRAIT_CANVAS)
+        client = _FakeAdbClient(frame)
+        channel = PortraitChannel(window=_FakeAdbWindow(client), sleep=lambda _: None)
+        self.assertIs(channel._screencap(), frame)
+        self.assertEqual(1, client.calls)
+
+
 if __name__ == "__main__":
     unittest.main()

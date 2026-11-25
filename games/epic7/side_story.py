@@ -2166,7 +2166,9 @@ def _ocr_engine() -> Any:
             from rapidocr_onnxruntime import RapidOCR
         except Exception:  # noqa: BLE001 - 可选依赖，缺了就退化成"读不到"
             return None
-        _OCR_ENGINE = RapidOCR()
+        # 已在调用方把 480×90 裁片放大两倍。宽裁片再按默认短边补到 736
+        # 会让检测张量膨胀数倍，而这里的字已经达到实拍回放验证过的尺寸。
+        _OCR_ENGINE = RapidOCR(det_limit_type="max")
     return _OCR_ENGINE
 
 

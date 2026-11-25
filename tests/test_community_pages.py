@@ -19,6 +19,7 @@ import numpy as np
 
 from auto_game_unified.games.epic7 import community as cm
 from auto_game_unified.games.epic7 import community_pages as cp
+from auto_game_unified.tests.fixture_images import png_fixtures_of_size
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -58,6 +59,10 @@ PAGE_FRAMES = {
     # 占 0.8370、中间只有一张图 ⇒ 所有模板都匹配不上（实测最高分 0.0000），
     # 所以帧名认的是**结构**而不是锚点分数。
     "image_viewer_live_20261008": "image_viewer",
+    # 2026-11-23 真机补的一张：**我的任务页·今日待签**（签到日历第 4 格有「领」角标）。
+    # 它同时喂两件事：① 页面判据仍判 ``tasks_page``；② ``locate_tasks_signin_claim``
+    # 的正向样本。已签状态的负样本用 ``tasks_all_done_live_20261006``（同一页、角标已消失）。
+    "tasks_signin_todo_live_20261123": "tasks_page",
 }
 
 
@@ -76,7 +81,8 @@ class CommunityPageTests(unittest.TestCase):
     # ---- 模板与区域 ----
 
     def test_every_anchor_has_a_template(self):
-        """三批锚点（页面判据 / 任务按钮 / 卡片 👍）里的每一个都要有模板。
+        """每一批锚点（页面判据 / 任务按钮 / 卡片 👍 / 兑换图标 / 签到「领」角标）
+        都要有模板。
 
         ⚠️ 卡片 👍 也算在里面：它是**判据型**模板（「这一颗还没点过」就是靠它成立的），
         少了它 ``locate_card_like`` 会抛 ``KeyError`` —— 而那是泄漏到主循环里的
@@ -89,11 +95,13 @@ class CommunityPageTests(unittest.TestCase):
                 *cp.TASK_BUTTON_ANCHORS,
                 *cp.CARD_LIKE_ANCHORS,
                 *cp.FEED_ICON_ANCHORS,
+                *cp.SIGNIN_CLAIM_ANCHORS,
             )
         )
         self.assertEqual(sorted(self.templates), expected)
         self.assertIn("card_like_off", self.templates)
         self.assertIn("feed_icon_exchange", self.templates)
+        self.assertIn("tasks_signin_claim", self.templates)
 
     def test_missing_page_template_fails_closed(self):
         """缺一张判据模板必须当场炸，不许「没有就当它没命中」式静默降级。"""
@@ -103,6 +111,36 @@ class CommunityPageTests(unittest.TestCase):
         self.assertIn("缺社区页面判据模板", message)
         # 报错要点名是哪一张，否则真机上只能靠猜
         self.assertIn("exchange_center", message)
+
+    def test_signin_claim_badge_finds_only_the_today_cell(self):
+        """「领」角标只在今日可领那一格上命中；签到完成后同一页不再命中。
+
+        分离度（全库 22 张竖屏夹具 + 现场帧）：正向 **1.0000**、
+        反向最高 **0.4768**（``feed_cards_all_todo``）、签到后同一页 **0.3865**。
+        """
+        today = cp.locate_tasks_signin_claim(
+            fixture("tasks_signin_todo_live_20261123"), self.templates
+        )
+        badge_x, badge_y = 494, 795
+        dx, dy = cp.SIGNIN_CLAIM_CELL_OFFSET
+        self.assertEqual(today, (badge_x + dx, badge_y + dy))
+        # 已签的同一页：角标消失 ⇒ 必须返回 None（调用方据此判「今天已经签过」）
+        self.assertIsNone(
+            cp.locate_tasks_signin_claim(
+                fixture("tasks_all_done_live_20261006"), self.templates
+            )
+        )
+        # 别的页面也不许命中（信息流 / 兑换中心）
+        self.assertIsNone(
+            cp.locate_tasks_signin_claim(
+                fixture("feed_before_signin_live_20261007"), self.templates
+            )
+        )
+        self.assertIsNone(
+            cp.locate_tasks_signin_claim(
+                fixture("exchange_before_redeem_live_20261007"), self.templates
+            )
+        )
 
     def test_anchor_regions_must_stay_inside_the_canvas(self):
         bad = cp.PageAnchor("bogus", (1000, 1900, 200, 200), "越界")
@@ -340,21 +378,14 @@ class CommunityPageTests(unittest.TestCase):
         深色页面（帖子详情长图、兑换中心暗色卡）就可能被误判成查看器，
         后果是**在那个页面上按返回键**（把用户正常的页面退掉）。
         """
-        from pathlib import Path as _Path
-
-        fixtures_root = _Path(__file__).resolve().parents[1] / "tests" / "fixtures"
         scanned = 0
-        for path in sorted(fixtures_root.rglob("*.png")):
-            image = cv2.imread(str(path))
-            if image is None or image.shape[:2] != (
-                cp.PORTRAIT_CANVAS[1],
-                cp.PORTRAIT_CANVAS[0],
-            ):
-                continue
+        for path in png_fixtures_of_size(FIXTURES.parent, cp.PORTRAIT_CANVAS):
             scanned += 1
             if path.stem == "image_viewer_live_20261008":
                 continue
             with self.subTest(frame=path.stem):
+                image = cv2.imread(str(path))
+                self.assertIsNotNone(image, f"读不到反例夹具 {path.name}")
                 self.assertIsNone(
                     cp.detect_image_viewer(image),
                     f"{path.stem} 被误判成图片查看器 —— 会在正常页面上按返回键",

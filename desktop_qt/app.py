@@ -32,8 +32,8 @@ import sys
 import threading
 import time
 
-from PySide6.QtCore import QObject, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QFont, QFontDatabase
+from PySide6.QtCore import QObject, Qt, QTimer, QUrl, Signal
+from PySide6.QtGui import QColor, QDesktopServices, QFont, QFontDatabase
 from PySide6.QtWidgets import (
     QApplication,
     QFrame,
@@ -89,6 +89,7 @@ from auto_game_unified.desktop.catalog import (
 from auto_game_unified.desktop.chaos_bridge import ChaosBridge
 from auto_game_unified.desktop.controller import DesktopController
 from auto_game_unified.desktop.diagnostics import export_diagnostics
+from auto_game_unified.desktop.report import short_code_of
 from auto_game_unified.desktop.graceful_exit import EmulatorQuitGate
 from auto_game_unified.desktop.onboarding import has_consent, record_consent
 from auto_game_unified.desktop.preflight import (
@@ -199,6 +200,8 @@ class QtDesktopWindow(FluentWindow):
         # 单独记标记而不是只看退出码：卡死被强杀时退出码是 1（与「运行失败」同码），
         # 光看退出码会把「我按了停止」误判成「它自己跑失败了」。
         self._stop_requested_by_user = False
+        # 本次失败生成的诊断包路径。失败卡片的两个动作都从这里取，避免再解析文本。
+        self._report_path: Path | None = None
         # 关机倒计时的收尾计时器（到点就把「取消关机」按钮收起来）。第一次排定才建。
         self._shutdown_timer: QTimer | None = None
         # 等模拟器退出的轮询计时器（每秒问一次）。第一次用到才建。
@@ -541,6 +544,39 @@ class QtDesktopWindow(FluentWindow):
         result_layout.addWidget(self.result_text)
         self.result_card.setVisible(False)
         layout.addWidget(self.result_card)
+
+        # 失败诊断包卡片：只在退出码 1 之后出现。两个动作是这条链路的关键 ——
+        # 目标用户不一定会找目录，也不一定能写清版本与短码。
+        self.report_card = CardWidget(page)
+        self.report_card.setBorderRadius(12)
+        report_layout = QVBoxLayout(self.report_card)
+        report_layout.setContentsMargins(16, 12, 16, 12)
+        report_layout.setSpacing(6)
+        report_header = QHBoxLayout()
+        self.report_title = StrongBodyLabel(
+            "本次运行失败，诊断包已生成", self.report_card
+        )
+        report_header.addWidget(self.report_title, 1)
+        report_close = PushButton("关闭", self.report_card)
+        report_close.clicked.connect(self._hide_report_card)
+        report_header.addWidget(report_close)
+        report_layout.addLayout(report_header)
+        self.report_text = BodyLabel("", self.report_card)
+        self.report_text.setWordWrap(True)
+        report_layout.addWidget(self.report_text)
+        report_actions = QHBoxLayout()
+        self.report_open_button = PushButton(
+            FluentIcon.FOLDER, "打开所在文件夹", self.report_card
+        )
+        self.report_open_button.clicked.connect(self._open_report_folder)
+        report_actions.addWidget(self.report_open_button)
+        self.report_copy_button = PushButton("复制提交说明", self.report_card)
+        self.report_copy_button.clicked.connect(self._copy_report_note)
+        report_actions.addWidget(self.report_copy_button)
+        report_actions.addStretch(1)
+        report_layout.addLayout(report_actions)
+        self.report_card.setVisible(False)
+        layout.addWidget(self.report_card)
 
         self.log_text = TextEdit(page)
         self.log_text.setReadOnly(True)
@@ -1073,6 +1109,45 @@ class QtDesktopWindow(FluentWindow):
         # 所以这里必须自己把按钮状态收回来，不能等 finished 事件。
         self._refresh_actions()
 
+    def _show_report_card(self, path: str) -> None:
+        """失败后展示诊断包。只陈述事实与提交条件。"""
+
+        self._report_path = Path(path)
+        code = short_code_of(self._report_path)
+        self.report_text.setText(
+            f"短码 {code}。提交时需附上压缩包，并说明失败前的操作与"
+            "界面最后显示的内容。"
+        )
+        self.report_card.setVisible(True)
+        self._append_log(f"诊断包已生成：{path}")
+
+    def _hide_report_card(self) -> None:
+        self.report_card.setVisible(False)
+        self._report_path = None
+
+    def _open_report_folder(self) -> None:
+        if self._report_path is None:
+            return
+        QDesktopServices.openUrl(
+            QUrl.fromLocalFile(str(self._report_path.parent))
+        )
+
+    def _copy_report_note(self) -> None:
+        path = self._report_path
+        if path is None:
+            return
+        QApplication.clipboard().setText(
+            "\n".join(
+                (
+                    f"诊断包：{path.name}",
+                    f"短码：{short_code_of(path)}",
+                    f"版本：{PRODUCT_VERSION}",
+                    "现象：",
+                )
+            )
+        )
+        self._notify("success", "提交说明已复制", "含包名、短码与版本。")
+
     def _on_export_clicked(self) -> None:
         selection = self.controller.selection
         if not selection:
@@ -1136,9 +1211,12 @@ class QtDesktopWindow(FluentWindow):
             elif event.kind == "started":
                 # 新一轮开跑：先把上一次的结果收起来，免得两轮结论叠在一起。
                 self.result_card.setVisible(False)
+                self._hide_report_card()
                 # 上一轮的「手动停止」标记不带到这一轮来。
                 self._stop_requested_by_user = False
                 self._append_log("自动化已启动。")
+            elif event.kind == "report":
+                self._show_report_card(event.message)
             elif event.kind == "stopping":
                 self._append_log("正在安全停止……")
                 self.floating.stop_requested()

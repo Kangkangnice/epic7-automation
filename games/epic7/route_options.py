@@ -105,10 +105,10 @@ ROUTE_OPTIONS: dict[str, tuple[RouteOption, ...]] = {
         ),
         RouteOption(
             key="hero_list_conflict",
-            label="两份名单命中数相同时",
+            label="两份名单都命中时",
             kind="choice",
             default="blacklist",
-            note="同一支队伍里避战名单与优先名单的命中数相同时如何处置；命中数不等时以多的一方为准。",
+            note="同一支队伍里避战名单与优先名单都命中时如何处置；只命中其中一份时，按该份名单处理。",
             choices=(
                 ("blacklist", "按避战名单处理（跳过）"),
                 ("whitelist", "按优先名单处理（优先开战）"),

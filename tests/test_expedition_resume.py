@@ -52,6 +52,7 @@ from auto_game_unified.games.epic7.navigation import (
     Epic7Navigator,
     build_navigation_templates,
 )
+from auto_game_unified.tests.fixture_images import named_frame_replay
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -518,20 +519,8 @@ class ExpeditionResumeNavigationTests(unittest.TestCase):
 
     def navigate_from(self, current: str, after: tuple[str, ...], page: str):
         """``current`` = 接力时**已经站在**的那一页；``after`` = 点击之后依次出现的帧。"""
-        frames = [navigation_fixture(current)] + [
-            navigation_fixture(name) for name in after
-        ]
+        starting_frame, capture = named_frame_replay(navigation_fixture, (current, *after))
         clicks: list[tuple[int, int]] = []
-        sequence = iter(frames)
-        last: list[np.ndarray] = []
-
-        def capture() -> np.ndarray:
-            try:
-                screen = next(sequence)
-            except StopIteration:
-                screen = last[-1]
-            last.append(screen)
-            return screen
 
         navigator = Epic7Navigator(
             build_navigation_templates(TEMPLATES),
@@ -541,7 +530,7 @@ class ExpeditionResumeNavigationTests(unittest.TestCase):
         )
         navigator.navigate(
             "expedition",
-            lobby_screen=frames[0],
+            lobby_screen=starting_frame,
             already_at=page,
         )
         return clicks

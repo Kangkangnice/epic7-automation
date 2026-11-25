@@ -67,6 +67,8 @@ def machine(templates, **kwargs) -> PetAdoptionStateMachine:
         # 2026-11-16 额度刷新后采到的亮态与购买确认框。
         ("shop_bottom_bright", PetAdoptionState.SHOP),
         ("purchase_modal", PetAdoptionState.PURCHASE),
+        # 2026-11-23 弹窗改版：标题/问句上移、绿色按钮下移 120px。
+        ("purchase_modal_v2", PetAdoptionState.PURCHASE),
         ("adopt_popup_free", PetAdoptionState.ADOPT_POPUP),
         ("adopt_result", PetAdoptionState.ADOPT_RESULT),
     ],
@@ -242,6 +244,43 @@ def test_purchase_dialog_confirms_on_the_green_button(templates):
     assert 1180 <= action.point[0] <= 1300 and 760 <= action.point[1] <= 850, action.point
     assert m.bought_rows == [("food", 587)]
     assert m.pending_buy is None
+
+
+def test_redesigned_purchase_dialog_confirms_on_the_moved_button(templates):
+    """2026-11-23 弹窗改版：标题/问句上移、绿色「购买」从 y=801 下移到 y=921。
+
+    那一帧上旧模板只有 0.7897 / 0.6048（阈 0.80），按钮又在旧搜索带
+    y 740~840 之外 ⇒ 弹窗明明开了却判 UNKNOWN，卡到超时退出码 1。
+    候选模板接住判页之后，点击落点也必须跟着按钮走，不能沿用旧坐标。
+    """
+    m = machine(templates, buy_food=True)
+    m.pending_buy = ("food", 587)
+    action = m.next_action(load("purchase_modal_v2"))
+    assert action.name == "confirm-purchase"
+    assert action.target_pages == ("宠物商店",)
+    assert 1180 <= action.point[0] <= 1300 and 890 <= action.point[1] <= 950, action.point
+
+
+def test_other_routes_purchase_dialog_is_not_a_pet_purchase(templates):
+    """企鹅数量弹窗与新版宠物购买弹窗是同款皮肤，不能串到这条路线来。
+
+    那一帧上 v2 标题/问句和绿「购买」都是 1.0000 —— 唯一能证伪的是底页
+    「宠物商店」标题：宠物弹窗 0.9998、企鹅 0.4741（阈 0.80）。
+    判据若把这个排他锚点摘掉，本路线就会在别人的弹窗上点绿色「购买」。
+    """
+    import cv2
+
+    path = (
+        ROOT
+        / "tests"
+        / "fixtures"
+        / "epic7_penguin_purchase"
+        / "quantity_initial.png"
+    )
+    data = path.read_bytes()
+    bgr = cv2.imdecode(np.frombuffer(data, np.uint8), cv2.IMREAD_COLOR)
+    frame = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)[:1132, :1982]
+    assert machine(templates).observe_page(frame) is None
 
 
 def test_purchase_dialog_without_a_pending_buy_stops(templates):

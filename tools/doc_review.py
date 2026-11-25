@@ -185,6 +185,8 @@ SCENARIOS: tuple[Scenario, ...] = (
         when="开工前先跑一次；改完代码、提交前再对照 update_after 逐项核",
         triggers=("games/epic7/modes.py", "desktop/catalog.py"),
         read_first=(
+            DocStep("docs/howto/route_change.md", "3. 三道强制门",
+                    "新增路线要走全部门：先按入口分流定顺序，再写变体矩阵、动作契约与反例"),
             DocStep("docs/STATUS.md", "一、路线总览", "现在有哪些路线、分组与放行状态；别撞名，也别把条数写死"),
             DocStep("docs/EXTENDING.md", "4. 注册模式", "注册要填哪些字段、两道准入关；复用优先，别重造轮子"),
             DocStep("docs/TRANSITION_CONTRACTS.md", "基本原则", "判据可证伪、转场两帧确认的最低要求"),
@@ -220,6 +222,8 @@ SCENARIOS: tuple[Scenario, ...] = (
         when="改代码前先看「当初为什么这么定」，别直接调阈值",
         triggers=("games/epic7/", "core/", "main.py"),
         read_first=(
+            DocStep("docs/howto/route_change.md", "3. 三道强制门",
+                    "本次改动要走哪几道门、门 A 动作契约与门 B 反例先行的过门证据，以及返工熔断条件"),
             DocStep("docs/maintenance/<route>.md", "判据为什么这么设计", "先搞清当初靠哪一维排除外观同类"),
             DocStep("docs/STATUS.md", "一、路线总览", "确认这条路线的放行范围"),
             DocStep("docs/howto/route_acceptance.md", "3. 一次启动只有一个结论",

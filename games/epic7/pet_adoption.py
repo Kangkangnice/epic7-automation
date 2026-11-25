@@ -214,6 +214,10 @@ class PetAdoptionTemplates:
     confirm_title: np.ndarray
     confirm_question: np.ndarray
     confirm_buy: np.ndarray
+    # 2026-11-23 弹窗改版的第二长相；由证据层的 alt_template_paths 声明，
+    # 这里只负责把图装上，判页/取坐标仍走同一个 `_locate`。
+    confirm_title_v2: np.ndarray
+    confirm_question_v2: np.ndarray
     evidence: object = None
     pc: bool = False
 
@@ -246,6 +250,8 @@ def build_pet_adoption_templates(template_root: Path) -> PetAdoptionTemplates:
         confirm_title=one("confirm_title"),
         confirm_question=one("confirm_question"),
         confirm_buy=one("confirm_buy"),
+        confirm_title_v2=one("confirm_title_v2"),
+        confirm_question_v2=one("confirm_question_v2"),
         evidence=build_pet_adoption_evidence(folder),
         pc=is_pc(template_root),
     )
@@ -300,15 +306,29 @@ class PetAdoptionStateMachine:
 
     def _locate(self, screen: np.ndarray, name: str) -> Optional[Match]:
         atom = self.templates.evidence.atom(name)
-        return locate_with_fallback(
-            name,
-            screen,
-            getattr(self.templates, name),
-            atom.threshold,
-            region=atom.region,
-            reference_size=atom.reference_size,
-            mode=atom.match_mode,
-        )
+
+        def probe(template: np.ndarray) -> Optional[Match]:
+            return locate_with_fallback(
+                name,
+                screen,
+                template,
+                atom.threshold,
+                region=atom.region,
+                reference_size=atom.reference_size,
+                mode=atom.match_mode,
+            )
+
+        match = probe(getattr(self.templates, name))
+        if match is not None:
+            return match
+        # 同一控件的第二长相（2026-11-23 弹窗改版）：声明在证据层、图装在模板层。
+        # 原样先走，没过阈才补候选 ⇒ 老帧判定逐字节不变；候选名取不到就当场炸，
+        # 不许静默降级成「认不出」。
+        for relative in atom.alt_template_paths:
+            candidate = probe(getattr(self.templates, Path(relative).stem))
+            if candidate is not None:
+                return candidate
+        return None
 
     def _required(self, screen: np.ndarray, name: str) -> Match:
         match = self._locate(screen, name)

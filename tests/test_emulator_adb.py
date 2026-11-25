@@ -13,6 +13,7 @@ from unittest.mock import patch
 import numpy as np
 
 from auto_game_unified.core.emulator_adb import (
+    GAME_PACKAGE,
     AdbDeviceSpec,
     AdbEmulatorClient,
     EmulatorNotFound,
@@ -106,12 +107,71 @@ class DiscoverGameDeviceTests(unittest.TestCase):
         with self.assertRaisesRegex(EmulatorNotFound, "未找到正在运行第七史诗"):
             discover_game_device(Path("adb.exe"), runner=lambda _a, _args, **_kw: _result(b"List of devices attached\n"))
 
+    def test_offline_device_is_repaired_automatically(self):
+        steps = [
+            (["devices"], _result(b"List of devices attached\nemulator-5554\toffline\n")),
+            (["reconnect", "offline"], _result()),
+            (["devices"], _result(b"List of devices attached\n")),
+            (["kill-server"], _result()),
+            (["start-server"], _result(stdout=b"* daemon started successfully\n")),
+            (["devices"], _result(b"List of devices attached\nemulator-5554\tdevice\n")),
+            (["-s", "emulator-5554", "shell", "pidof", GAME_PACKAGE], _result(b"2247\n")),
+        ]
+        calls: list[list[str]] = []
+
+        def runner(_adb, args, **_kwargs):
+            expected, result = steps.pop(0)
+            self.assertEqual(expected, args)
+            calls.append(args)
+            return result
+
+        device = discover_game_device(Path("adb.exe"), runner=runner)
+        self.assertEqual(AdbDeviceSpec(serial="emulator-5554", game_pid=2247), device)
+        self.assertEqual([], steps)
+        self.assertIn(["reconnect", "offline"], calls)
+        self.assertIn(["kill-server"], calls)
+        self.assertIn(["start-server"], calls)
+
+    def test_repaired_online_device_without_game_does_not_restart_adb_service(self):
+        calls: list[list[str]] = []
+
+        def runner(_adb, args, **_kwargs):
+            calls.append(args)
+            if args == ["devices"]:
+                offline = b"List of devices attached\nemulator-5554\toffline\n"
+                online = b"List of devices attached\nemulator-5554\tdevice\n"
+                return _result(offline if calls.count(["devices"]) == 1 else online)
+            return _result()
+
+        with self.assertRaisesRegex(EmulatorNotFound, "未找到正在运行第七史诗"):
+            discover_game_device(Path("adb.exe"), runner=runner)
+        self.assertIn(["reconnect", "offline"], calls)
+        self.assertNotIn(["kill-server"], calls)
+        self.assertNotIn(["start-server"], calls)
+
+    def test_empty_device_list_does_not_touch_adb_service(self):
+        calls: list[list[str]] = []
+
+        def runner(_adb, args, **_kwargs):
+            calls.append(args)
+            return _result(b"List of devices attached\n")
+
+        with self.assertRaisesRegex(EmulatorNotFound, "未找到正在运行第七史诗"):
+            discover_game_device(Path("adb.exe"), runner=runner)
+        self.assertEqual([["devices"]], calls)
+
     def test_offline_devices_get_specific_hint(self):
-        with self.assertRaisesRegex(EmulatorNotFound, "offline"):
-            discover_game_device(
-                Path("adb.exe"),
-                runner=lambda _a, _args, **_kw: _result(b"List of devices attached\nemulator-5554\toffline\n"),
-            )
+        calls: list[list[str]] = []
+
+        def runner(_adb, args, **_kwargs):
+            calls.append(args)
+            return _result(b"List of devices attached\nemulator-5554\toffline\n")
+
+        with self.assertRaisesRegex(EmulatorNotFound, "offline") as caught:
+            discover_game_device(Path("adb.exe"), runner=runner)
+        self.assertIn("自动修复 ADB 连接 2 次仍未恢复", str(caught.exception))
+        self.assertIn(["reconnect", "offline"], calls)
+        self.assertIn(["kill-server"], calls)
 
 
 class AdbEmulatorClientTests(unittest.TestCase):

@@ -168,6 +168,7 @@ class CommunityStateMachineTests(unittest.TestCase):
 
     def test_opens_the_card_that_still_has_room(self):
         machine = self.machine(state=cm.CommunityState.EXCHANGE)
+        machine.progress.signed_in = True  # 签到已有结论：正常路过兑换中心
         action = machine.next_action(fixture("exchange_after_redeem_live_20261006"))
         self.assertEqual(action.name, "open_item")
         self.assertEqual(action.point, cm.CARD_POINTS[1])
@@ -179,6 +180,9 @@ class CommunityStateMachineTests(unittest.TestCase):
         action = machine.next_action(fixture("exchange_center_live_20261006"))
         self.assertEqual(action.name, "leave_empty_exchange")
         self.assertEqual(action.point, cm.EXCHANGE_BACK)
+        # `<` 是 H5 历史返回，落点是上一页：正常流程从「我的任务 → 去兑换」进来，
+        # 退回去就是我的任务。只写 feed_home 会判成「转场超时」。
+        self.assertEqual(tuple(action.target_pages), ("tasks_page", "feed_home"))
 
     def test_item_detail_clicks_the_button_it_just_located(self):
         machine = self.machine(state=cm.CommunityState.EXCHANGE)
@@ -205,9 +209,10 @@ class CommunityStateMachineTests(unittest.TestCase):
         2026-11-15 起**不再读余额**：改成「兑到失败为止」，失败信号就是
         「按钮一进来就灰」——它和「点过之后变灰」（正常等结果）是两件事。
 
-        ⚠️ 这条用例钉的是**时序**：失败时人还停在社区竖屏页面里，当场抛出去，
-        收尾那步会拿横屏通道去取竖屏画面（直接抛「render size changed」），
-        模拟器也会被留在竖屏。正确次序是**先退出社区 → 转回横屏 → 才抛**。
+        ⚠️ 这条用例钉的是**失败被正确识别**：算「资源耗尽」家族、不提前置 CLOSING、
+        退场动作带出口标志。完整时序（先逐页退出社区 → 转回横屏 → 才抛退出码 2）
+        见 test_redeem_failure_retreats_page_by_page_then_exits：退场中途的横屏帧
+        不出手也不抛结论——那时还没点✕关社区，抛出去会让收尾拿横屏通道取竖屏画面而失败。
         """
         machine = self.machine(state=cm.CommunityState.ORDER_CONFIRM)
         frame = fixture("order_confirm_live_20261006").copy()
@@ -219,13 +224,62 @@ class CommunityStateMachineTests(unittest.TestCase):
         self.assertTrue(action.press_back, "退这一步走系统返回，不猜坐标")
         self.assertTrue(machine.redeem_failed)
         self.assertIn("灰", machine.stop_reason)
+        # 退场这一下必须有出口标志，否则被强制契约拦在发出之前
+        self.assertEqual(action.target_pages, ("item_detail",))
+        # ⚠️ 2026-11-23：失败这一刻**不能**提前标「已退出社区」——人还在竖屏，
+        # 后面两级退回还没走。提前标了，状态机会在竖屏帧一律返回 None 等横屏，
+        # 退场链就断在这儿，卡到超时。
+        self.assertNotEqual(machine.state, cm.CommunityState.CLOSING)
 
-        # ② 画面转回横屏那一帧：这时才抛，且必须是「资源耗尽」家族
+        # ② 退场中途（还在竖屏、尚未关社区）收到横屏帧：不出手也不抛结论，
+        #    等把退场链走完、真的关掉社区才收工（见下一条端到端用例）。
         landscape = np.zeros((1132, 1982, 3), np.uint8)
-        with self.assertRaises(cm.RedeemBudgetExhausted) as ctx:
-            machine.next_action(landscape)
-        self.assertIsInstance(ctx.exception, cm.ResourceExhausted)
+        self.assertIsNone(machine.next_action(landscape))
         self.assertEqual(cm.RedeemBudgetExhausted.stop_label, "积分不足")
+
+    def test_redeem_failure_retreats_page_by_page_then_exits(self):
+        """兑换失败后**逐页退场**：订单确认 → 商品详情 → 兑换中心 → 点✕ → 横屏抛退出码2。
+
+        2026-11-23 修复的回归用例。钉两件事：
+        - 退场的每一级都带「来源 + 目标」出口标志（契约关；缺了会被拦在发出前）；
+        - 中途状态**不**提前置 CLOSING（否则竖屏帧一律等待，退场链走不到头）。
+        """
+        machine = self.machine(state=cm.CommunityState.ORDER_CONFIRM)
+        machine.progress.signed_in = True  # 签到已有结论：正常路过兑换中心
+        order_frame = fixture("order_confirm_live_20261006").copy()
+        x, y, width, height = cm.GREEN_BUTTON_BAND
+        order_frame[y : y + height, x : x + width] = 0  # 一进来按钮就是灰的
+
+        # 真正过一遍发送层的准入关（社区开着 _REQUIRE_TRANSITION_CONTRACT）。
+        # ⚠️ 上一个版本就是只验动作名、没验这个 ⇒ 两个退场动作缺出口标志
+        # 却一路绿到生产，发出前被拦下（测试守住了 A、生产走的是 B）。
+        runner = cm.CommunityRunner.__new__(cm.CommunityRunner)
+
+        # ① 订单确认 → 商品详情
+        first = machine.next_action(order_frame)
+        self.assertEqual(first.name, "back_from_redeem_failed")
+        self.assertEqual(first.target_pages, ("item_detail",))
+        self.assertEqual(machine.state, cm.CommunityState.ORDER_CONFIRM)
+        runner._require_transition_contract(first)
+
+        # ② 商品详情 → 兑换中心
+        second = machine.next_action(fixture("item_detail_live_20261006"))
+        self.assertEqual(second.name, "back_from_item_failed")
+        self.assertEqual(second.target_pages, ("exchange_center", "exchange_empty"))
+        self.assertNotEqual(machine.state, cm.CommunityState.CLOSING)
+        runner._require_transition_contract(second)
+
+        # ③ 兑换中心 → 点✕关社区（这一步才置 CLOSING，且带目标横屏）
+        third = machine.next_action(fixture("exchange_after_redeem_live_20261006"))
+        self.assertEqual(third.name, "leave_exchange")
+        self.assertEqual(third.target_pages, ("web_activity_list",))
+        self.assertEqual(machine.state, cm.CommunityState.CLOSING)
+        runner._require_transition_contract(third)
+
+        # ④ 横屏那一帧才抛「积分不足」
+        landscape = np.zeros((1132, 1982, 3), np.uint8)
+        with self.assertRaises(cm.RedeemBudgetExhausted):
+            machine.next_action(landscape)
 
     def test_the_finished_exchange_closes_the_community_in_one_click(self):
         """兑换跑满 ⇒ 点兑换中心**右上角的 ✕**，社区**一步关掉**、直接回横屏。
@@ -251,6 +305,7 @@ class CommunityStateMachineTests(unittest.TestCase):
         常量被改坏时断言得跟着红才算护栏。
         """
         machine = self.machine(state=cm.CommunityState.EXCHANGE)
+        machine.progress.signed_in = True  # 签到已有结论：正常路过兑换中心
         # 三条任务的结论是前面几页读出来的；这里只关心**兑换之后**的收尾，
         # 所以直接摆好事实（``_finishing()`` 要它才肯收工）。
         machine.progress.tasks = {"browse": "done", "like": "done", "share": "done"}
@@ -283,22 +338,22 @@ class CommunityStateMachineTests(unittest.TestCase):
         self.assertEqual(machine.completed_cycles, 1)
 
     def test_the_tasks_page_back_arrow_lands_on_the_exchange_center(self):
-        """「我的任务」的 `<` 落到**兑换中心**（上一层），不是信息流。
+        """收工点的是「我的任务」右上角的 ✕（外壳控件），不是左上角 `<`。
 
-        钉这条是为了说明上面那个 ✕ 为什么省不掉：「我的任务」和「兑换中心」
-        互为历史上一页，从这一页靠返回键回不到信息流。
+        钉这条是因为 2026-11-23 定案：`<` 是 **H5 历史返回**，只在「从兑换中心点
+        获取积分进来」时才有兑换中心可退；入口直达我的任务时历史栈里没有那一页，
+        点了不动（与兑换中心那次连点 4 次同源）。✕ 是外壳的关闭钮，不依赖历史栈，
+        实测 (940,127) 点完 8 秒内转回横屏。
         """
         machine = self.machine(state=cm.CommunityState.TASKS)
         machine.progress.tasks = {"browse": "done", "like": "done", "share": "done"}
         machine.progress.redeemed = {1: 2, 2: 1, 4: 1}
         back = machine.next_action(fixture("tasks_all_done_live_20261006"))
         self.assertEqual(back.name, "leave_tasks")
-        self.assertEqual(back.point, (35, 130), "「我的任务」左上角的返回键")
-        self.assertEqual(
-            tuple(back.target_pages),
-            ("exchange_center",),
-            "这一页的 < 回到的是兑换中心；写成 feed_home 会让转场永远等不到（150 秒超时）",
-        )
+        self.assertEqual(back.point, (940, 127), "「我的任务」右上角的 ✕")
+        self.assertNotEqual(back.point, cm.TASKS_BACK, "不许退回 H5 历史上一页")
+        self.assertEqual(tuple(back.target_pages), ("web_activity_list",))
+        self.assertEqual(machine.state, cm.CommunityState.CLOSING)
 
     def test_points_running_out_does_not_bounce_back_to_the_exchange(self):
         """已经判定「积分不够、不再兑换」之后，「我的任务」**不许再往兑换中心跑**。
@@ -322,7 +377,7 @@ class CommunityStateMachineTests(unittest.TestCase):
             "leave_tasks",
             "积分够不够已经拍过板了，却还往兑换中心跑 —— 那是死循环",
         )
-        self.assertEqual(back.point, (35, 130))
+        self.assertEqual(back.point, (940, 127))
 
     # ---- 任务枢纽 ----
 
@@ -1163,14 +1218,49 @@ class CommunityStateMachineTests(unittest.TestCase):
         self.assertEqual(cm.feed_signin_state(popup[:50, :50]), "unknown")
 
     def test_feed_clicks_signin_when_the_icon_is_colourful(self):
-        """未签到 ⇒ 点「每日签到」图标；点完只等（弹窗实测最慢 74 秒才出）。"""
+        """未签到 ⇒ 点「每日签到」图标；点完先等，等够帧数还是彩色才重试（有界）。
+
+        ⚠️ 2026-11-23：旧写法是「点过一次就永不重试」—— 那一下要是点空，只能干等
+        150 秒超时，整条路线失败。现在等 ``SIGNIN_RETRY_FRAMES`` 帧仍读 todo
+        就再点一次，上限 ``SIGNIN_CLICK_LIMIT`` 次。签到图标**不是开关**，
+        重复点没有副作用（最多弹一次「已签到」）。
+        """
+        frame = fixture("feed_before_signin_live_20261007")
         machine = self.machine(state=cm.CommunityState.FEED)
-        action = machine.next_action(fixture("feed_before_signin_live_20261007"))
+        action = machine.next_action(frame)
         self.assertEqual(action.name, "tap_signin")
         self.assertEqual(action.point, cm.FEED_SIGNIN_CLICK)
         self.assertTrue(machine.signin_clicked)
-        # 点了之后还停在信息流（弹窗还没出）⇒ **不许再点一次**，只等
-        self.assertIsNone(machine.next_action(fixture("feed_before_signin_live_20261007")))
+        # 点完画面没变是正常的（弹窗最慢 74 秒才出）⇒ 先等，不重复点
+        for _ in range(cm.SIGNIN_RETRY_FRAMES):
+            self.assertIsNone(machine.next_action(frame))
+        # 等够了仍是彩色 ⇒ 认定那一下没点中，再点一次
+        retry = machine.next_action(frame)
+        self.assertIsNotNone(retry)
+        self.assertEqual(retry.name, "tap_signin")
+        self.assertEqual(machine.signin_attempts, 2)
+
+    def test_signin_stops_clicking_after_the_retry_limit_but_keeps_waiting(self):
+        """点满 ``SIGNIN_CLICK_LIMIT`` 次仍读 todo ⇒ 不再点击，但**继续等**，不提前判死。
+
+        为什么不再当场抛（2026-11-24 订正）：同一段注释自己写着「弹窗最慢 74 秒才出」，
+        而 8 帧 ≈ 16 秒 < 74 秒 ⇒ 「还是彩色」证明不了「点不动」。抛早了会把一次成功
+        变成失败（旧版能干等到 150 秒，正好罩住 74 秒那一档）。
+        「有界」仍然成立：不再重复点击，上限由 ``FEED`` 那档状态超时兜住，
+        到点如实报「签到没生效」并留诊断，不猜「已签」。
+        """
+        frame = fixture("feed_before_signin_live_20261007")
+        machine = self.machine(state=cm.CommunityState.FEED)
+        for _ in range(cm.SIGNIN_CLICK_LIMIT):
+            action = machine.next_action(frame)
+            self.assertIsNotNone(action)
+            self.assertEqual(action.name, "tap_signin")
+            for _ in range(cm.SIGNIN_RETRY_FRAMES):
+                self.assertIsNone(machine.next_action(frame))
+        # 次数用满之后：既不点击、也不抛，继续观察
+        for _ in range(20):
+            self.assertIsNone(machine.next_action(frame))
+        self.assertEqual(machine.signin_attempts, cm.SIGNIN_CLICK_LIMIT)
 
     def test_signin_popup_is_acknowledged_before_anything_else(self):
         """弹窗是模态的：不先关掉，后面点的每一处都会被它吃掉。"""
@@ -1723,38 +1813,65 @@ class CommunityEntryAndCloseTests(unittest.TestCase):
     def test_a_portrait_frame_mid_entry_goes_back_to_page_decisions(self):
         """转过去之后的帧照常按页面判：不能因为「还在 ENTERING」就发呆。
 
-        ⚠️ 2026-11-22：这一帧是「我的任务」。入口直接落在这里时，签到还没做，
-        所以第一下是**退回兑换中心补签到**（见 ``_on_tasks`` 开头）。
-        这条用例要钉的是「不许发呆」，不是某一个固定动作名。
+        ⚠️ 2026-11-23：入口落「我的任务」时**不再退回兑换中心**。
+        那条路依赖左上角 `<`（H5 历史返回），入口直达时无历史可退、真机点 4 次不动；
+        而且退回兑换中心后 ``entry_page`` 仍是 ``tasks_page``，那边的签到分支不成立
+        ⇒ 签到会被无声跳过。现在改成**就地签到**（见下一条用例）。
+        这一帧的签到已经签过（日历上没有「领」角标），所以直接进入任务/兑换决策。
         """
         machine = self.machine(state=cm.CommunityState.ENTERING)
         action = machine.next_action(fixture("tasks_all_done_live_20261006"))
         self.assertIsNotNone(action, "进了已知的社区页就必须出手，不许发呆")
         self.assertEqual(machine.state, cm.CommunityState.TASKS)
-        self.assertEqual(action.name, "back_to_feed_for_signin_from_tasks")
+        self.assertTrue(machine.progress.signed_in)
 
-    def test_entry_landing_on_the_exchange_center_goes_back_for_the_signin(self):
-        """进社区直接落在兑换中心（H5 记住上次页面）⇒ 先回信息流补签到。
+    def test_entry_landing_on_the_tasks_page_signs_in_right_here(self):
+        """入口落「我的任务」且今天还没签 ⇒ **就地**点签到格，不依赖历史返回。
 
-        ⚠️⚠️ 2026-11-22 实跑：点「游戏社区」后直接落在兑换中心。旧逻辑在这一页
-        「兑换清单已跑满」就收工，于是**签到和三条任务一次都没做**；更糟的是那一下
-        ``leave_exchange`` 被主循环丢掉（落点不在入口契约里 ⇒ 既不是来源也不是目标），
-        一次点击都没发出，干等 60 秒超时。
+        ⚠️ 这是 2026-11-22/23 两次失败的修复：那两次入口落在兑换中心，
+        旧实现点左上角 `<`（H5 历史返回）连点 4 次都不动，4×45 秒后整条路线失败。
+        「我的任务」页自带签到日历，今日可领那一格右上角有固定的「领」角标 ——
+        角标现找、格子中心现算，是**确定性**路径。
+        """
+        machine = self.machine(state=cm.CommunityState.ENTERING)
+        action = machine.next_action(fixture("tasks_signin_todo_live_20261123"))
+        self.assertIsNotNone(action)
+        self.assertEqual(action.name, "tap_signin_in_tasks")
+        self.assertEqual(machine.state, cm.CommunityState.TASKS)
+        # 落点必须是**格子中心**，不是角标中心（角标在格子右上角）。
+        badge_x, badge_y = 494, 795
+        dx, dy = cp.SIGNIN_CLAIM_CELL_OFFSET
+        self.assertEqual(action.point, (badge_x + dx, badge_y + dy))
+        self.assertEqual(("signin_done",), tuple(action.target_pages))
+        self.assertTrue(machine.signin_clicked)
 
-        这条用例钉三件事：
-        1. 认出「这是入口落点」（``entry_page``），不是正常流程里路过的兑换中心；
-        2. 点的是**左上角 `<`**（``EXCHANGE_BACK``），不是右上角 ✕ ——
-           后者一下关掉整个社区，签到就彻底没机会了；
-        3. 出口写死 ``feed_home``，到了才算这一步走通。
+    def test_the_signin_popup_can_close_back_to_the_tasks_page(self):
+        """从「我的任务」签的那一次，弹窗关闭后落回**我的任务**，不是信息流。
+
+        只写 ``feed_home`` 时，这一步会判「转场超时」—— 签到明明成功了，路线却失败。
+        """
+        machine = self.machine(state=cm.CommunityState.TASKS)
+        action = machine.next_action(fixture("signin_success_live_20261007"))
+        self.assertEqual(action.name, "ack_signin_done")
+        self.assertIn("feed_home", action.target_pages)
+        self.assertIn("tasks_page", action.target_pages)
+        self.assertTrue(machine.progress.signed_in)
+
+    def test_entry_landing_on_the_exchange_center_goes_to_my_tasks(self):
+        """进社区直接落在兑换中心、签到还没做 ⇒ 点「获取积分卡」去我的任务就地签。
+
+        ⚠️ 2026-11-24 订正。前一版这一支写的是「点 ✕ 退社区，点不动就报错」，
+        依据是「入口直达时 `<`／获取积分卡／✕ 全部不响应」—— 那个结论**是假的**：
+        竖屏取图当时一直在读 2026-11-21 15:23 的旧截图（`core/portrait.py::_screencap`），
+        判页和点击全按那张旧页面算。取图修好后的同一次实跑里，
+        「获取积分卡」一点就进我的任务（08:10:05 日志），签到也就在那页做完。
         """
         machine = self.machine(state=cm.CommunityState.ENTERING)
         action = machine.next_action(fixture("exchange_before_redeem_live_20261007"))
-        self.assertIn(machine.entry_page, ("exchange_center", "exchange_empty"))
         self.assertIsNotNone(action)
-        self.assertEqual(action.name, "back_to_feed_for_signin")
-        self.assertEqual(action.point, cm.EXCHANGE_BACK)
-        self.assertNotEqual(action.point, cm.EXCHANGE_CLOSE)
-        self.assertEqual(("feed_home",), tuple(action.target_pages))
+        self.assertEqual(action.name, "goto_tasks_card")
+        self.assertEqual(action.point, cm.EXCHANGE_GAIN_POINTS_CARD)
+        self.assertEqual(tuple(action.target_pages), ("tasks_page",))
 
     def test_a_normal_exchange_visit_still_goes_to_the_redeem_decision(self):
         """正常流程里路过的兑换中心**不许**被「补签到」抢走（回归护栏）。
@@ -1796,12 +1913,15 @@ class CommunityEntryAndCloseTests(unittest.TestCase):
     def test_the_entry_counts_as_done_only_when_a_known_community_page_shows_up(self):
         """入口的出口标志 = **方向 + 画幅 + 社区里的某一已知页**，认不出就不算走通。
 
-        ⚠️ 2026-11-22 改：出口原来只认 ``feed_home``。但社区 H5 **会记住上次停留的
-        页面** —— 用户实跑点进来直接落在**兑换中心**，而 ``confirmed_page`` 既不是
-        来源页也不是目标页 ⇒ 主循环把状态机给的 ``leave_exchange`` 丢掉 ⇒
-        一次点击都没发出、干等 60 秒超时（日志只有「当前已确认页面=exchange_center」）。
-        现在出口改成「任一社区已知页」，落点不是信息流时由状态机退回信息流补签到
-        （``_on_exchange_center`` / ``_on_tasks`` 开头那两条）。
+        ⚠️ 2026-11-22 改：出口原来只认 ``feed_home``。一旦 ``confirmed_page`` 既不是
+        来源页也不是目标页，主循环就把状态机给出的下一个动作丢掉 ⇒ 一次点击都发不出去、
+        干等超时。现在出口改成「任一社区已知页」，落点不是信息流时由状态机接住
+        （``_on_exchange_center`` / ``_on_tasks`` 开头那两条就地签到）。
+
+        ⚠️ 2026-11-24 订正：当时记录的那次「落在兑换中心」发生在竖屏取图坏掉期间
+        （每帧读 2026-11-21 15:23 的旧截图，见 ``core/portrait.py::_screencap``），
+        **不是真实现场**。但「入口只认一个页 ⇒ 其它落点被丢动作」这个结论与取图无关，
+        仍然成立，所以这条契约保留。
 
         仍然**不认「方向变了」这种非页面证据**：``unknown`` 不在名单里。
         """
@@ -1855,10 +1975,14 @@ class CommunityEntryAndCloseTests(unittest.TestCase):
         self.assertEqual(machine.state, cm.CommunityState.ORDER_CONFIRM)
 
     def test_finished_route_leaves_the_community_before_finishing(self):
-        """任务与兑换都做完 ⇒ 先退信息流、再关社区，**在竖屏段不许收官**。
+        """任务与兑换都做完 ⇒ 点 ✕ 一步关社区，**在竖屏段不许收官**。
 
         如果这一帧直接收官，主循环会在竖屏下执行「回大厅」，拿到的是横屏通道 ——
         直接抛「render size changed」。任务明明做完了，却报一个看不懂的失败。
+
+        ⚠️ 2026-11-23：``leave_tasks`` 从「点 `<` 退回兑换中心」改成「点 ✕ 一步关社区」，
+        所以它之后的状态就是 ``CLOSING``：再喂竖屏帧只等，不发第二个动作
+        （旧版会再点一次 ``close_community``，那一跳现在省掉了）。
         """
         machine = self.machine(state=cm.CommunityState.TASKS)
         machine.progress.tasks = {"browse": "done", "like": "done", "share": "done"}
@@ -1866,8 +1990,11 @@ class CommunityEntryAndCloseTests(unittest.TestCase):
         action = machine.next_action(fixture("tasks_all_done_live_20261006"))
         self.assertEqual(action.name, "leave_tasks")
         self.assertEqual(machine.completed_cycles, 0)
-        closing = machine.next_action(fixture("feed_list_live_20261006"))
-        self.assertEqual(closing.name, "close_community")
+        self.assertEqual(machine.state, cm.CommunityState.CLOSING)
+        self.assertIsNone(
+            machine.next_action(fixture("feed_list_live_20261006")),
+            "已经点过 ✕ 关社区，竖屏帧只等转横屏，不再发第二个动作",
+        )
         self.assertEqual(machine.completed_cycles, 0)
 
 
@@ -1998,6 +2125,24 @@ class ChannelSwitchTests(unittest.TestCase):
         self.assertEqual(fake.probes, 1)
         self.assertTrue(switch.use_portrait())
         self.assertEqual(fake.probes, 1, "锁定竖屏之后不该再问方向")
+        self.assertEqual(switch.state, cm.ChannelSwitch.PORTRAIT)
+
+    def test_expect_either_follows_the_real_direction(self):
+        """按返回键之后方向不确定（回信息流=竖屏 / 关社区=横屏）⇒ 按真实方向锁定。
+
+        ⚠️ 2026-11-24 00:02 实跑：返回键已经把社区关掉、窗口回到横屏，但开关还停在
+        ``PENDING_PORTRAIT`` ⇒ 竖屏通道白等 20 秒，最后判「社区未真正打开」。
+        """
+        fake = _FakePortrait(portrait=False)
+        switch = cm.ChannelSwitch(fake)
+        switch.expect_either()
+        self.assertFalse(switch.use_portrait())
+        self.assertEqual(switch.state, cm.ChannelSwitch.LANDSCAPE)
+
+        fake = _FakePortrait(portrait=True)
+        switch = cm.ChannelSwitch(fake)
+        switch.expect_either()
+        self.assertTrue(switch.use_portrait())
         self.assertEqual(switch.state, cm.ChannelSwitch.PORTRAIT)
 
     def test_landscape_record_with_a_portrait_window_switches_back(self):
@@ -2367,40 +2512,21 @@ class CommunityRunnerTests(unittest.TestCase):
             "查看器", runner._transition_success_detail(None, dismiss)
         )
 
-    def test_the_machine_and_judge_page_agree_on_every_frame(self):
-        """状态机的 ``observe`` 与 ``pages.judge_page`` **必须给出同一个结论**。
-
-        ⚠️ 这条是 2026-10-08 那次「测试全绿、真机照旧卡死」的防线。
-        ``observe`` 原先自己抄了一份判页逻辑（``observe_pages`` → ``top_page`` →
-        栈根兜底），于是往 ``judge_page`` 里新加的「图片查看器」判据**生产路径走不到**：
-        ``test_community_pages.py`` 调 ``judge_page`` 全绿，实跑照旧认不出查看器、
-        照旧干等 150 秒。**两份实现的代价就是「测试守住了 A，生产跑的是 B」。**
-
-        逐帧核过就不存在这个缝：任何一边改了拼装顺序，这里立刻红。
-        """
+    def test_the_machine_uses_the_shared_page_judgement(self):
+        """2026-10-08 曾绕开统一判页，导致新加的图片查看器判据进不了主循环。"""
         machine = cm.CommunityStateMachine(self.templates, self.glyphs)
-        checked = 0
-        # 扫**盘上全部** 1080x1920 夹具（比 PAGE_FRAMES 那张表更宽，
-        # 免得「表里漏了一页」把这条防线也带出个洞）。
-        for path in sorted(FIXTURES.parent.rglob("*.png")):
-            image = cv2.imread(str(path))
-            if image is None:
-                continue
-            if image.shape[:2] != (cp.PORTRAIT_CANVAS[1], cp.PORTRAIT_CANVAS[0]):
-                continue
-            screen = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-            expected = cp.judge_page(screen, self.templates)
-            actual = machine.observe(screen)
-            with self.subTest(frame=path.stem):
-                self.assertEqual(actual.name, expected.name)
-                self.assertEqual(actual.fallback, expected.fallback)
-                self.assertAlmostEqual(actual.confidence, expected.confidence, places=6)
-            checked += 1
-        self.assertGreaterEqual(checked, 18)
-        # 查看器那一帧必须真在扫过的集合里，否则这条用例可能只是「什么都没扫到」
-        self.assertIn("image_viewer_live_20261008", {
-            path.stem for path in FIXTURES.parent.rglob("*.png")
-        })
+        machine.state = cm.CommunityState.FEED
+        screen = np.zeros((1920, 1080, 3), dtype=np.uint8)
+        judgement = cp.PageJudgement("image_viewer", 1.0, ())
+
+        with unittest.mock.patch.object(cp, "judge_page", return_value=judgement) as judge:
+            action = machine.next_action(screen)
+
+        judge.assert_called_once_with(screen, machine.templates)
+        self.assertIs(machine.last_page, judgement)
+        self.assertIsNotNone(action)
+        self.assertEqual(action.name, "dismiss_image_viewer")
+        self.assertTrue(action.press_back)
 
     def test_the_machine_sees_the_image_viewer(self):
         """真机那一刻（查看器）走的是 ``next_action``，所以**必须从这里也认得出**。

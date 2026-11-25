@@ -1293,6 +1293,10 @@ class NavigationTests(unittest.TestCase):
             # 元凶。留着它当夹具，是为了让「光球滑动」这件事**有图可查**，
             # 而不是只活在注释里。
             ("activity_web_promo_glow_moved_live_20261007", "activity_web_promo"),
+            # 2026-11-23 真机：活动页第三次换版后的**蓝底选中态**。那一帧上
+            # 「前往活动页」已经出现，但旧米黄底模板原样只剩 0.6189 ⇒ 导航把
+            # 已选中当成没找到，连点 4 次把它取消，社区签到进不去。
+            ("activity_web_promo_blue_selected_live_20261123", "activity_web_promo"),
             ("web_activity_list_live_20261006", "web_activity_list"),
         ]
         for name, expected in cases:
@@ -1336,6 +1340,7 @@ class NavigationTests(unittest.TestCase):
             "activity_menu_raised_live_20261018": "activity_more",
             "activity_web_promo_live_20261006": "activity_more_selected",
             "activity_web_promo_shifted_live_20261007": "activity_more_selected",
+            "activity_web_promo_blue_selected_live_20261123": "activity_more_selected",
             "web_activity_list_live_20261006": "web_community",
         }
 
@@ -2077,6 +2082,50 @@ class NavigationTests(unittest.TestCase):
         self.assertFalse(
             reached_other, "目标里没有那个态，却报了「已达成」—— 会被当成成功跳过"
         )
+
+    def test_blue_selected_row_is_recognized_and_never_clicked_again(self):
+        """2026-11-23 真机：新版蓝底选中态认不出，社区签到连点 4 次进不去。
+
+        诊断帧上「更多精彩活动」已高亮、右侧「前往活动页」已出现；但旧米黄底
+        模板原样只有 0.6189、当时唯一的白字候选只有 0.8631，两样都过不了线。
+        导航于是判「未选中」，扫描退到分组标题兜底又点同一行，把选中取消了。
+
+        这条用例钉三件事：① 判页认 ``activity_web_promo``；② 命中确实来自新增的
+        白掩膜候选（原样在这一帧必须**仍不过阈**，否则本用例证明不了新候选的价值，
+        也不能偷偷把老帧的口径改掉）；③ 扫描报「目标态已达成」且**一击不发**。
+        """
+        frame = fixture("activity_web_promo_blue_selected_live_20261123")
+        navigator = self.navigator([frame] * 30)
+
+        self.assertEqual("activity_web_promo", navigator.observe(frame).name)
+        match = navigator._locate(frame, "activity_more_selected")
+        self.assertIsNotNone(match, "新版蓝底选中态仍认不出")
+        self.assertGreater(match.score, 0.90)
+
+        raw = matcher.locate_with_fallback(
+            "activity_more_selected",
+            frame,
+            navigator.templates.activity_more_selected,
+            0.0,
+            region=navigator._REGIONS["activity_more_selected"],
+            reference_size=REFERENCE_SIZE,
+            mode=matcher.MATCH_MODE_RAW,
+        )
+        self.assertIsNotNone(raw)
+        self.assertLess(
+            raw.score, 0.82, "原样本来就能过阈 —— 本用例没证明白掩膜候选的价值"
+        )
+
+        logs: list[str] = []
+        swipes: list[tuple] = []
+        clicks: list[tuple] = []
+        scan = self._scan_navigator([frame] * 30, swipes, clicks, logs)
+        _screen, found, reached = scan._scan_activity_column(
+            "activity_more", ("activity_web_promo",), "activity_menu", "选中"
+        )
+        self.assertTrue(reached, "已选中却没报「目标态已达成」")
+        self.assertIsNone(found, "已达成就别再给点击目标")
+        self.assertEqual([], clicks, "对已选中的行又点了一下，会把选中取消")
 
     def test_the_activity_scroll_gestures_stay_inside_the_column(self):
         """两个方向的滑动都必须落在**左列文字**上、且在列表可见区内。

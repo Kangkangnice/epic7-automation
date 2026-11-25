@@ -93,7 +93,7 @@
 | 月光剧场 `moonlight_theater` | ✅ `epic7_moonlight_theater` + `_pc` | ⚠️ | ✅ 11-03 第 1 幕 | ⚠️ | ✅ 无免费额度走门票 |
 | 支线故事 `side_story` | ✅ `epic7_side_story` + `_boss` | ⚠️ | ✅ 11-12 模拟器整条连打 | ⚠️ | ⚠️ PC 侧特殊链路仍未走到 |
 | 活动剧情 `activity_story` | ✅ `epic7_activity_story` | ⚠️ | ✅ 连看多段 + 战斗关 | ⚠️ | ⚠️ `ticket_free` 未采到样本 |
-| 社区签到 `community` | ✅ `epic7_community` | ⚠️ | ✅ 模拟器 | — 未在 PC 上做过 | ✅ 竖屏通道 |
+| 社区签到 `community` | ✅ `epic7_community` | ⚠️ | ✅ 11-24 08:09–08:14 完整闭环（退出码 0，签到 + 两条任务 + 4 件兑换） | — 未在 PC 上做过 | ✅ 竖屏通道；11-24 修复取图读到旧文件的问题，并补回归用例 |
 | 成就领取 `achievement` | ✅ `epic7_achievement` + `_pc` | ✅ 11-09 干跑 | ✅ 11-09 模拟器两轮 | ✅ 同左 | ✅ 奖励弹窗 / 空奖收工 |
 | 宠物领养 `pet_adoption` | ✅ `epic7_pet_adoption` | ⚠️ | ✅ 11-19 有免费领养、检查商店和回大厅记录（日志未标后端和提交）；PC 同素材试点见[接入指南](PC_TEMPLATE_MIGRATION.md) | — 每日免费额度，复验重新进入和同账号冷却 | ⚠️ 11-19 两次开购买框重试四次无转场。补冷却漏识别、已购灰态和可购买正向证据 |
 | 企鹅批量购买 `penguin_purchase` | ✅ `epic7_penguin_purchase`（含宠物商店与其它商品反例帧） | ⚠️ | ✅ 11-15 模拟器完整一轮（退出码 0，含半路接力） | ✅ 11-15 连续两轮（退出码 0，第二轮沿用 50/50） | ✅ 报价不符 / 数量补点超限 / 未登记页面安全停止均有离线用例；⚠️ 红叶不足提示无真机帧 |

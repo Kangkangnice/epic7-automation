@@ -146,3 +146,45 @@ def test_unknown_badge_state_does_not_invent_a_value(_isolated_data_dir):
     countdown.save_countdown(3, 4, moonlight_free=None)
 
     assert "月光剧场" not in countdown.countdown_text()
+
+
+# ── 按账号分开存（2026-11-23 用户要求）─────────────────────────────────────
+
+
+def test_two_accounts_do_not_overwrite_each_other(_isolated_data_dir):
+    """两个号交替跑时，谁先跑谁把读数盖掉 —— 那正是这次要消掉的问题。"""
+
+    countdown.save_countdown(11, 3, account="康康626", rank="S.Rank.20")
+    countdown.save_countdown(3, 1, account="另一个号")
+
+    assert countdown.load_countdown("康康626")["days"] == 11
+    assert countdown.load_countdown("另一个号")["days"] == 3
+    # 有账号时不该再往数据根写：否则界面读到的会是「最后跑的那个」。
+    assert not (_isolated_data_dir / countdown.FILENAME).exists()
+
+
+def test_text_starts_with_account_and_rank(_isolated_data_dir):
+    countdown.save_countdown(11, 3, account="康康626", rank="S.Rank.20")
+
+    assert countdown.countdown_text().startswith("康康626（S.Rank.20）｜")
+
+
+def test_text_has_no_prefix_for_users_who_never_had_an_account(_isolated_data_dir):
+    """从没用过账号的用户，升级后看到的必须是原来那一行。"""
+
+    countdown.save_countdown(11, 3)
+
+    assert countdown.countdown_text().startswith("支线刷新倒计时：剩余 11 天 3 小时")
+
+
+def test_text_says_unidentified_when_accounts_exist_but_this_run_missed_it(
+    _isolated_data_dir,
+):
+    """有过账号却这趟没读到昵称 ⇒ 如实写「未识别账号」，不能冒用上一个名字。"""
+
+    countdown.save_countdown(11, 3, account="康康626", rank="S.Rank.20")
+    countdown.save_countdown(5, 6)
+
+    text = countdown.countdown_text()
+    assert text.startswith("未识别账号｜"), text
+    assert "剩余 5 天 6 小时" in text

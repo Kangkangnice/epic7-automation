@@ -97,6 +97,17 @@ def white_mask(
     返回单通道（``uint8``）—— 与输入的三通道 RGB 形状不同，所以两种口径的
     缓存指纹天然不会撞。
     """
+    if (
+        type(image) is np.ndarray
+        and image.ndim == 3
+        and image.shape[2] == 3
+        and image.dtype == np.uint8
+        and image.size
+        and isinstance(threshold, int)
+        and 0 <= threshold <= 255
+    ):
+        # inRange 同时检查三通道并直接输出 0/255，省掉逐通道布尔数组。
+        return cv2.inRange(image, (threshold,) * 3, (255,) * 3)  # type: ignore[call-overload]
     if image.ndim == 2:
         bright = image >= threshold
     else:
@@ -373,17 +384,16 @@ _MATCH_CACHE: "OrderedDict[bytes, tuple[float, tuple[int, int]]]" = OrderedDict(
 def _match_key(search: np.ndarray, template: np.ndarray) -> bytes:
     """``(搜索区, 模板)`` 的内容指纹。
 
-    ⚠️ 形状与 dtype 必须一起进指纹：只喂 ``tobytes()`` 的话，2x3 与 3x2 会撞成同一个键。
-    ⚠️ 不要用 ``memoryview(...).cast()`` 这类只接受连续内存的写法 —— 搜索区往往是
-    ``screen[y:y+h, x:x+w]`` 这样的**视图**（未必连续），``tobytes()`` 才是通用的。
+    形状与 dtype 也参与指纹，字节相同的 2x3 与 3x2 画面仍是不同的键。
+    搜索区域常是非连续视图，只有这种情况才需要整理成连续缓冲区。
     """
-    digest = hashlib.blake2b(digest_size=16)
+    digest = hashlib.sha256()
     digest.update(
         f"{search.shape}|{search.dtype.str}|{template.shape}|{template.dtype.str}".encode()
     )
-    digest.update(search.tobytes())
-    digest.update(template.tobytes())
-    return digest.digest()
+    digest.update(np.ascontiguousarray(search).data)
+    digest.update(np.ascontiguousarray(template).data)
+    return digest.digest()[:16]
 
 
 def best_match(
@@ -417,7 +427,7 @@ def best_match(
         # 而 nan 会把 minMaxLoc 整个带偏。二值口径下这种窗口的语义很明确：
         # 「一块白都没有」= 负样本，压到 -1.0。
         # 只在非原始口径上加这一步：raw 路径保持与原实现逐字节一致。
-        result = np.nan_to_num(result, nan=-1.0, posinf=-1.0, neginf=-1.0)
+        np.nan_to_num(result, copy=False, nan=-1.0, posinf=-1.0, neginf=-1.0)
     _, score, _, location = cv2.minMaxLoc(result)
     value = (float(score), (int(location[0]), int(location[1])))
     if key is not None:
@@ -490,7 +500,7 @@ def find_best_template(
     # 一次重采样完成「基准换算 × 尺寸扫描」两个因子。
     # 分两步 resize 会把同一层插值糊两遍 —— 这几颗锚点全是细笔画文字，
     # 糊两遍正是它们最脆的地方。
-    if reference_size is not None or scale_x != 1.0 or scale_y != 1.0:
+    if scale_x != 1.0 or scale_y != 1.0 or (reference_size is not None and type(template) is not np.ndarray):
         target_width = max(1, round(template.shape[1] * scale_x))
         target_height = max(1, round(template.shape[0] * scale_y))
         interpolation = cv2.INTER_AREA if scale_x < 1 else cv2.INTER_CUBIC
@@ -561,14 +571,15 @@ def find_all_templates(
         scale_y = screen.shape[0] / reference_size[1]
         if abs(scale_x - scale_y) > 0.02:
             raise RuntimeError("画面宽高比与模板基准不一致")
-        template = cv2.resize(
-            template,
-            (
-                max(1, round(template.shape[1] * scale_x)),
-                max(1, round(template.shape[0] * scale_y)),
-            ),
-            interpolation=cv2.INTER_AREA if scale_x < 1 else cv2.INTER_CUBIC,
-        )
+        if scale_x != 1.0 or scale_y != 1.0 or type(template) is not np.ndarray:
+            template = cv2.resize(
+                template,
+                (
+                    max(1, round(template.shape[1] * scale_x)),
+                    max(1, round(template.shape[0] * scale_y)),
+                ),
+                interpolation=cv2.INTER_AREA if scale_x < 1 else cv2.INTER_CUBIC,
+            )
         if region is not None:
             region = (
                 round(region[0] * scale_x),
@@ -590,8 +601,7 @@ def find_all_templates(
     if search.shape[0] < height or search.shape[1] < width:
         return []
 
-    result = cv2.matchTemplate(search, template, cv2.TM_CCOEFF_NORMED)
-    work = result.copy()
+    work = cv2.matchTemplate(search, template, cv2.TM_CCOEFF_NORMED)
     found: list[Match] = []
     while True:
         _, score, _, location = cv2.minMaxLoc(work)

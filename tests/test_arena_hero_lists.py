@@ -3,7 +3,7 @@
 三层：
 
 1. **口径**（``hero_match.judge_row``）：纯函数，喂识别结果与两份名单，问「这一行留不留」。
-   默认黑名单优先；两边都命中时按 ``hero_list_conflict`` 处置。
+   默认黑名单优先；两边都命中时不比数量，按 ``hero_list_conflict`` 处置。
 2. **识别**（``HeroMatcher``）：真帧上必须认出该认的，并且**弱证据必须被拒**——
    同一页里有一行只拿到 good=15，它必须报「认不出」而不是猜一个名字。
 3. **有界收尾**：整页都被名单否掉时不允许无限刷新，连续若干页后按正常业务退出。
@@ -85,23 +85,24 @@ class JudgeRowTests(unittest.TestCase):
         self.assertEqual(TIER_NORMAL, verdict.tier)
         self.assertTrue(verdict.keep)
 
-    def test_more_white_than_black_goes_with_the_whitelist(self):
-        verdict = self.judge(["A", "B", "C"], black={"A"}, white={"B", "C"})
-        self.assertEqual(TIER_WHITE, verdict.tier)
-        self.assertIn("优先命中更多", verdict.reason)
-
-    def test_more_black_than_white_is_eliminated(self):
-        verdict = self.judge(["A", "B", "C"], black={"A", "C"}, white={"B"})
-        self.assertEqual(TIER_OUT, verdict.tier)
-        self.assertIn("避战命中更多", verdict.reason)
+    def test_both_lists_hit_follows_setting_not_counts(self):
+        """两边都命中时只按设置处置，不再比命中数量。"""
+        # 白名单命中更多，默认仍按避战名单跳过。
+        skipped = self.judge(["A", "B", "C"], black={"A"}, white={"B", "C"})
+        self.assertEqual(TIER_OUT, skipped.tier)
+        self.assertIn("两份名单都命中", skipped.reason)
+        # 黑名单命中更多，设置为优先名单时仍照打。
+        kept = self.judge(
+            ["A", "B", "C"], black={"A", "C"}, white={"B"}, conflict="whitelist"
+        )
+        self.assertEqual(TIER_WHITE, kept.tier)
+        self.assertIn("两份名单都命中", kept.reason)
 
     def test_equal_counts_follow_the_setting(self):
         skipped = self.judge(["A", "B"], black={"A"}, white={"B"})
         self.assertEqual(TIER_OUT, skipped.tier)
-        self.assertIn("按设置跳过", skipped.reason)
         kept = self.judge(["A", "B"], black={"A"}, white={"B"}, conflict="whitelist")
         self.assertEqual(TIER_WHITE, kept.tier)
-        self.assertIn("按设置照打", kept.reason)
 
     def test_unrecognised_team_falls_back_to_the_normal_group(self):
         """四个头像全认不出 = 两边都没命中，进普通组（白名单只是偏好）。"""

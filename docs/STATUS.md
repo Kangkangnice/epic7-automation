@@ -69,8 +69,8 @@
 
 ## 五、素材与测试规模
 
-- 识别模板 **585** 张，其中 PC 专用 **148** 张
-- 现场夹具 **521** 张（`tests/fixtures/`，跑测试用的真实截图）
+- 识别模板 **588** 张，其中 PC 专用 **148** 张
+- 现场夹具 **524** 张（`tests/fixtures/`，跑测试用的真实截图）
 
 注意：这两个数字**加一张图就要重生成一次**。这是有意的 —— 素材入库本来就要在
 `tests/test_template_paths.py` 登记，多跑一次生成器只是同一步的延续。
@@ -102,11 +102,11 @@
 | `knights_donation` | 12 | 34 | 16 | 有探针 | 已放行 |
 | `labyrinth_stone` | 14 | 50 | 30 | 有探针 | 已放行 |
 | `sanctuary` | 4 | 9 | 19 | 有探针 | 已放行 |
-| `community` | 0 | 33 | 22 | 豁免（见 modes.py） | 未放行 |
+| `community` | 0 | 34 | 23 | 豁免（见 modes.py） | 未放行 |
 | `moonlight_theater` | 4 | 23 | 26 | 豁免（见 modes.py） | 已放行 |
 | `achievement` | 6 | 12 | 11 | 有探针 | 已放行 |
 | `story_star` | 9 | 9 | 10 | 有探针 | 已放行 |
-| `pet_adoption` | 0 | 17 | 15 | 有探针 | 未放行 |
+| `pet_adoption` | 0 | 19 | 16 | 有探针 | 未放行 |
 | `penguin_purchase` | 0 | 14 | 10 | 有探针 | 未放行 |
 | `craft_equipment` | 0 | 23 | 22 | 有探针 | 未放行 |
 

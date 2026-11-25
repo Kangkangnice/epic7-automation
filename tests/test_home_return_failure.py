@@ -105,10 +105,23 @@ def _quick_menu_over_arena_frame() -> np.ndarray:
     return image[:1132, :1982]
 
 
-LOBBY_FRAME = _lobby_frame()
-INDOOR_FRAME = _indoor_frame()
-SHOP_FRAME = _shop_frame()
-QUICK_MENU_OVER_ARENA_FRAME = _quick_menu_over_arena_frame()
+LOBBY_FRAME: np.ndarray
+INDOOR_FRAME: np.ndarray
+SHOP_FRAME: np.ndarray
+QUICK_MENU_OVER_ARENA_FRAME: np.ndarray
+
+
+def setUpModule() -> None:
+    global LOBBY_FRAME, INDOOR_FRAME, SHOP_FRAME, QUICK_MENU_OVER_ARENA_FRAME
+    LOBBY_FRAME = _lobby_frame()
+    INDOOR_FRAME = _indoor_frame()
+    SHOP_FRAME = _shop_frame()
+    QUICK_MENU_OVER_ARENA_FRAME = _quick_menu_over_arena_frame()
+
+
+def tearDownModule() -> None:
+    global LOBBY_FRAME, INDOOR_FRAME, SHOP_FRAME, QUICK_MENU_OVER_ARENA_FRAME
+    del LOBBY_FRAME, INDOOR_FRAME, SHOP_FRAME, QUICK_MENU_OVER_ARENA_FRAME
 
 
 def _sequence_runtime(
@@ -736,6 +749,20 @@ def _real_navigator(
         sleep=sleep,
         transition_frames=1,
     )
+    observe = navigator.observe
+    observation = None
+
+    def observe_replayed_frame(screen: np.ndarray):
+        nonlocal observation
+        if screen is not frame:
+            return observe(screen)
+        if observation is None:
+            # This runtime returns the same fixture on every poll. Execute the
+            # real classifier once and replay its result while exercising retries.
+            observation = observe(frame)
+        return observation
+
+    navigator.observe = observe_replayed_frame  # type: ignore[method-assign]
     return navigator
 
 

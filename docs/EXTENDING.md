@@ -179,6 +179,41 @@ tests/test_hunt_runner.py
   同名键会被钩子覆盖 —— 别拿它改公共参数。
 - 没有专属需求的路线**不要挂钩子**（挂个空转的配置只会让读的人以为它有含义）。
 
+### 2.2 要记「这个号做过什么」时怎么落盘（2026-11-23）
+
+账号 = 玩家在大厅左上角的昵称，由 `games/epic7/account_profile.py` 自动读出
+（昵称行 + 账号等级行**两行都在**才采信，等级格式固定为 `X.Rank.NN`）。
+
+程序在两个时刻读它，都写进进程环境（`core/account.py` 的 `ACCOUNT_ENV`）：
+
+| 时刻 | 在哪 | 为什么 |
+|---|---|---|
+| 整轮开跑前 | `main._build_daily_probe_reading_account` | 用户刚点开始，游戏通常在大厅 —— 整轮第一个能看见昵称的时刻 |
+| 收尾巡检开头 | `main.inspect_side_story_countdown` | 巡检**只从大厅走进支线**，这一帧必然在大厅，兜住「半路开局」那次没读到的情形 |
+
+于是新增路线**不需要接收账号参数**，直接用：
+
+```python
+from auto_game_unified.core.account import account_file, current_account
+
+path = account_file(
+    current_account(),
+    "xxx.json",
+    fallback=root / "runtime_logs" / "xxx.json",   # 未识别时回退到老位置
+)
+```
+
+三条硬约束：
+
+- **未识别（空账号）必须回到加账号之前的老路径**，不许自己造一个「默认账号」目录 ——
+  单号用户不该因为多了这个功能就换一套存档。
+- **不许用「按本机日期记一笔，判断今天做过没有」**实现每日限次。国服/亚服/美服/欧服
+  的每日重置点不在本机零点，本地记账必然与游戏不同步；而且同一个号第二次去点，
+  游戏自己就会拒绝。正确做法是**看游戏的反应**：点完页面没推进就是游戏拒绝，按资源
+  耗尽收工（竞技场买旗就是这个模式，见 `ArenaRunner._transition_failure_message`）。
+- **读不到就留空，不沿用上一次**。换了号又识别失败时，沿用等于把数据静默记到别人账上；
+  写「未识别」虽然不精确，但看得见。
+
 ⚠️ **「导航链」也是注册模式的必填项**：有导航的路线必须挂 ``navigation_plan``
 （数据结构见 ``games/epic7/navigation_plan.py``），否则加载期直接报错
 （``_assert_navigation_declared``）。三个硬约束：
@@ -238,7 +273,9 @@ tests/test_hunt_runner.py
 
 ## 5. 安全验收顺序
 
-本节用于开发验收。已有模拟器路线的 PC 移植先走[一轮实机闭环](PC_TEMPLATE_MIGRATION.md#3-一句话移植到-pc)。
+本节用于开发验收。开工到收口的阶段划分、每道门的退回条件与返工熔断见
+[路线变更规范](howto/route_change.md)；本节只列命令顺序。
+已有模拟器路线的 PC 移植先走[一轮实机闭环](PC_TEMPLATE_MIGRATION.md#3-一句话移植到-pc)。
 开发通过后，按[路线稳定版验收](howto/route_acceptance.md)逐客户端复核真实回执、终点和受影响分支的回放反例，决定公开支持范围。
 
 1. 运行全量离线测试。

@@ -7,6 +7,7 @@ from typing import Callable, Optional
 
 import numpy as np
 
+from auto_game_unified.core.battle_supervisor import valid_game_frame
 from auto_game_unified.core.matcher import (
     MATCH_MODE_RAW,
     MATCH_MODE_WHITE_MASK,
@@ -151,7 +152,18 @@ EXTRA_WHITE_CANDIDATES = {
     # （旧版橙底模板 0.6242）。⚠️ 它属于**选中态**，绝不能挂到 ``activity_more``
     # 头上 —— 那一行两种态的文字内容一样，挂错就等于「选中态也认成未选中态」，
     # 扫描会把它当"找到了"点一下，反而把选中取消掉。
-    "activity_more_selected": ("activity_more_text_white",),
+    # 2026-11-23 真机：新版蓝底页选中态那一行的**原样**掉到 0.6189（旧版米黄底
+    # 模板 0.9884 ⇒ 底色换了），白字候选 activity_more_text_white 也只有 0.8631，
+    # 两样都过不了各自的线 ⇒ 导航把已选中的行当成找不到，连点 4 次把它取消，
+    # 社区签到从此进不去（诊断图 activity_web_promo_blue_selected_live_20261123）。
+    # 补一候选：**同一张旧模板改走白掩膜**（白像素占比 0.1648，非纯色块）：
+    # 今早帧 0.9217，跨 5 张选中态帧 0.8642~1.0000，未选中态最高只有 0.4972。
+    # ⚠️ 顺序不能换：原样仍排第一，转场帧靠它 0.8924 过阈；改成整颗锚点走白掩膜
+    # （0.90）反而会把那帧从 0.8924 压到 0.8642，等于用新帧换掉旧帧。
+    "activity_more_selected": (
+        "activity_more_selected_white",
+        "activity_more_text_white",
+    ),
     "lobby_shop_entry": ("lobby_shop_entry_text_white",),
     "lobby_side_story": ("lobby_side_story_text_white",),
     "lobby_sanctuary": ("lobby_sanctuary_text_white",),
@@ -652,6 +664,10 @@ class NavigationTemplates:
     # 选中态 0.8924~1.0000（跨两天两帧都过阈，含转场动画中那帧 0.8924），
     # **未选中态只有 0.2482 / 0.3435，全库次高 0.3732** ⇒ 空档 0.37→0.89 极宽。
     activity_more_selected: np.ndarray
+    # 与 ``activity_more_selected`` **同一张图、只换白掩膜口径**（2026-11-23）。
+    # 原样认的是「米黄底 + 白字」，新版行改成蓝底后只剩 0.6189；白掩膜只认那
+    # 一排白字笔画，跨底色稳定。它排在原样之后：原样过阈的帧结果逐字节不变。
+    activity_more_selected_white: np.ndarray
     # 「更多精彩活动」在**新版蓝底页**上的白字（2026-11-22）。
     #
     # 为什么要补：新版活动页那一行是**蓝底白字**，上面那张旧模板（米黄底灰字）
@@ -926,6 +942,9 @@ def build_navigation_templates(template_root: Path) -> NavigationTemplates:
             load_template(str(navigation / "activity_page_shell_updated.png")),
         ),
         activity_more_selected=load_template(
+            str(navigation / "activity_more_selected.png")
+        ),
+        activity_more_selected_white=load_template(
             str(navigation / "activity_more_selected.png")
         ),
         activity_more_text_white=load_template(
@@ -1349,8 +1368,7 @@ class Epic7Navigator:
         return self._CLICK_OFFSETS.get(anchor, (0, 0))
 
     def observe(self, screen: np.ndarray) -> PageObservation:
-        content = screen[round(screen.shape[0] * 0.05) :, : round(screen.shape[1] * 0.97)]
-        if float(np.mean(content)) < 3.0 or float(np.std(content)) < 5.0:
+        if not valid_game_frame(screen):
             return PageObservation("invalid", 0.0)
 
         popup_close = find_friendship_points_popup_close(

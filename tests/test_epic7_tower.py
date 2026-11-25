@@ -222,37 +222,37 @@ class TowerStateMachineTests(unittest.TestCase):
         状态机里的任何常量 —— 否则实现一改断言跟着改，注入违规纹丝不动。
         """
         real = build_tower_templates(TEMPLATES_DIR)
-        images = {
-            path.stem: cv2.cvtColor(cv2.imread(str(path)), cv2.COLOR_BGR2RGB)
-            for path in sorted(FIXTURES.glob("*.png"))
-        }
+        own_scores: dict[str, list[float]] = {judge: [] for judge in JUDGE_OWNERS}
+        other_scores: dict[str, list[float]] = {judge: [] for judge in JUDGE_OWNERS}
+        for path in sorted(FIXTURES.glob("*.png")):
+            image = cv2.cvtColor(cv2.imread(str(path)), cv2.COLOR_BGR2RGB)
+            for judge, owners in JUDGE_OWNERS.items():
+                if path.stem in owners:
+                    scores = own_scores[judge]
+                elif path.stem not in _SAME_PAGE_VARIANTS.get(judge, ()):
+                    scores = other_scores[judge]
+                else:
+                    continue
+                match = find_best_template(
+                    image, getattr(real, judge), region=TowerStateMachine._REGIONS[judge],
+                    reference_size=(1982, 1132),
+                )
+                scores.append(match.score)
 
         for judge, owners in sorted(JUDGE_OWNERS.items()):
-            template = getattr(real, judge)
-            region = TowerStateMachine._REGIONS[judge]
-            own_scores = [
-                find_best_template(
-                    images[name], template, region=region, reference_size=(1982, 1132)
-                ).score
-                for name in owners
-            ]
-            other_scores = [
-                find_best_template(
-                    image, template, region=region, reference_size=(1982, 1132)
-                ).score
-                for name, image in images.items()
-                if name not in owners and name not in _SAME_PAGE_VARIANTS.get(judge, ())
-            ]
             with self.subTest(judge=judge):
-                self.assertGreater(min(own_scores), 0.88)
-                self.assertLess(max(other_scores), 0.88)
+                self.assertEqual(len(own_scores[judge]), len(owners))
+                own_min = min(own_scores[judge])
+                other_max = max(other_scores[judge])
+                self.assertGreater(own_min, 0.88)
+                self.assertLess(other_max, 0.88)
                 # 余量门槛：实测最小 +0.41（floor_select_team / team_battle_start）。
                 # 留 0.30 做下限，既拦住「刚好擦线」的漂移，又不至于卡住小改动。
                 self.assertGreater(
-                    min(own_scores) - max(other_scores),
+                    own_min - other_max,
                     0.30,
-                    f"{judge} 分离度不足：本页最低 {min(own_scores):.4f} "
-                    f"他页最高 {max(other_scores):.4f}",
+                    f"{judge} 分离度不足：本页最低 {own_min:.4f} "
+                    f"他页最高 {other_max:.4f}",
                 )
 
     # ---- 页面唯一性 ----

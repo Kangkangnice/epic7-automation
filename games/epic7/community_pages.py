@@ -195,6 +195,82 @@ TASK_ROWS: tuple["TaskRow", ...] = (
     TaskRow("share", "分享帖子", (900, 1448, 180, 90)),
 )
 
+# ── 「我的任务」页·签到日历里的「领」角标（2026-11-23 立）────────────────────
+#
+# ## 为什么要它
+#
+# 入口落在兑换中心 / 我的任务时，原实现点左上角 `<` 回信息流。而 `<` 是 **H5 历史返回**：
+# 入口直达兑换中心时历史栈里根本没有信息流 ⇒ 真机连点 4 次都停在原页，4×45 秒后整条路线失败
+# （2026-11-22 15:44、2026-11-23 22:31 两次同形）。
+#
+# 「我的任务」页**自带每日签到日历**，今日可领那一格右上角有一个固定的蓝色「领」角标。
+# 这是**不依赖历史栈**的签到入口，也是入口落点异常时的确定性兜底。
+#
+# ## 实测分离度（全库 22 张竖屏夹具 + 本次现场帧）
+#
+# | 帧 | 最高分 |
+# | --- | --- |
+# | 今日待签（正向） | **1.0000** |
+# | 签到完成后的同一页 | 0.3865 ~ 0.4186 |
+# | 其余全部竖屏页（含信息流 / 兑换中心 / 其它任务帧） | ≤ **0.4768** |
+#
+# ⇒ 0.82 落在 0.4768 与 1.0000 之间的空档里。签完之后角标消失，所以
+# 「找到角标」本身就是「今天还没签」的证据，不需要再补一道颜色闸门。
+SIGNIN_CLAIM_ANCHORS: tuple[PageAnchor, ...] = (
+    PageAnchor(
+        "tasks_signin_claim",
+        (483, 784, 23, 23),
+        "我的任务·签到日历「领」角标（只在今日可领那一格右上角）",
+    ),
+)
+
+SIGNIN_CLAIM_NAMES = tuple(anchor.name for anchor in SIGNIN_CLAIM_ANCHORS)
+
+#: 找「领」角标的搜索带：整条签到日历行。上方是社区等级条、下方是「每日任务」标题，
+#: 都不会出现这种蓝色小角标。
+SIGNIN_CLAIM_STRIP = (0, 740, 1080, 200)
+
+#: 角标中心 → 格子中心的偏移。实测角标中心 (494, 795)、格子中心 (455, 837)。
+#: ⚠️ 不能钉格子坐标：日历是 8 天滚动窗，今天排在第几格会随日期变。
+SIGNIN_CLAIM_CELL_OFFSET = (-39, 42)
+
+
+def locate_tasks_signin_claim(
+    screen: np.ndarray,
+    templates: dict[str, np.ndarray],
+    *,
+    threshold: float = THRESHOLD,
+) -> Optional[tuple[int, int]]:
+    """在「我的任务」页找今日可领的签到格子 ⇒ 返回格子中心；没有可领的返回 ``None``。
+
+    ``None`` 的语义是「这一页没有『领』角标」= **今天已经签过**（签完角标会消失）。
+    调用方据此把签到判为已完成，继续跑任务；**不要**拿它当「没找到就点个默认位置」。
+
+    ⚠️ 只在这一页用。别页的同一坐标是别的内容（``feed_signin_state`` 那种整页固定框
+    的判据也同理，只在它自己那一页有效 —— 本次实测在任务页上调用会读到错的 ``done``）。
+    """
+    _assert_portrait(screen)
+    template = templates.get("tasks_signin_claim")
+    if template is None:
+        raise KeyError(
+            "签到「领」角标锚点 tasks_signin_claim 没有模板；"
+            "build_page_templates() 是 fail-closed 的"
+        )
+    x, y, w, h = SIGNIN_CLAIM_STRIP
+    patch = screen[y : y + h, x : x + w]
+    if patch.shape[0] != h or patch.shape[1] != w:
+        # 出界 ⇒ 不是标准竖屏画布，当「没有可领角标」处理（与 locate_card_like 同口径）。
+        return None
+    score, offset = best_match(patch.astype(np.float32), template.astype(np.float32))
+    if not np.isfinite(score) or float(score) < threshold:
+        return None
+    badge = (
+        x + offset[0] + template.shape[1] // 2,
+        y + offset[1] + template.shape[0] // 2,
+    )
+    dx, dy = SIGNIN_CLAIM_CELL_OFFSET
+    return (badge[0] + dx, badge[1] + dy)
+
 # ── 信息流卡片上那颗 👍 ───────────────────────────────────────────────────────
 #
 # ⚠️ 也是**不是页面判据**（同 ``TASK_BUTTON_ANCHORS`` 的理由）：一帧上同时有好几颗
@@ -449,7 +525,7 @@ class TemplateRoot:
 
 
 def build_page_templates(template_root: Union[str, Path]) -> dict[str, np.ndarray]:
-    """把 9 个页面判据 + 2 个任务按钮 + 1 颗卡片 👍 模板全部读出来（共 12 张）。
+    """把页面判据模板 + 各控件模板全部读出来（数量以锚点表为准，别在这里写死数字）。
 
     ⚠️ **fail closed**：任何一个缺失都当场抛 ``FileNotFoundError``，不做
     ``if exists() else None``。判据型模板静默降级过一次就走了整整一个月的弯路
@@ -463,6 +539,7 @@ def build_page_templates(template_root: Union[str, Path]) -> dict[str, np.ndarra
         *TASK_BUTTON_ANCHORS,
         *CARD_LIKE_ANCHORS,
         *FEED_ICON_ANCHORS,
+        *SIGNIN_CLAIM_ANCHORS,
     ):
         path = root.page_path(anchor.name)
         if not path.is_file():
@@ -677,7 +754,7 @@ def judge_page(
     ⚠️⚠️ **生产路径唯一入口就是这里。** 2026-10-08 踩到过：状态机里另抄了一份
     ``observe_pages → top_page → 栈根兜底``，于是这里新加的判据**真机根本走不到**
     —— 单元测试调本函数全绿、实跑照旧认不出查看器。现在 ``CommunityStateMachine.observe``
-    只委托本函数（``test_community.py`` 有一条用例逐帧核两边结论一致）。
+    只委托本函数（``test_community.py`` 验证接线，页面夹具在 ``test_community_pages.py`` 逐帧核验）。
 
     三步的顺序就是优先级：**查看器 → 正向判据（按叠层次序）→ 栈根兜底 → unknown**。
     """

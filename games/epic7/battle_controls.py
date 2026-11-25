@@ -77,7 +77,7 @@ def observe_battle_controls(screen: np.ndarray) -> BattleControls:
             )
         )
 
-    hsv = cv2.cvtColor(frame, cv2.COLOR_RGB2HSV)
+    hsv = cv2.cvtColor(roi, cv2.COLOR_RGB2HSV)
 
     def has_auto_layout(expected_xs: tuple[int, ...], expected_y: int) -> bool:
         """自动布局 = 底座排确实存在 + 至少 1 格底座是**蓝色（有活人）**。
@@ -105,7 +105,8 @@ def observe_battle_controls(screen: np.ndarray) -> BattleControls:
         """
         alive_bases, lit_bases = 0, 0
         for center_x in expected_xs:
-            slot = hsv[1060:1132, center_x - 50 : center_x + 50]
+            local_x = center_x - roi_x
+            slot = hsv[1060 - roi_y :, local_x - 50 : local_x + 50]
             blue = (
                 (slot[:, :, 0] >= 85)
                 & (slot[:, :, 0] <= 135)
@@ -133,24 +134,25 @@ def observe_battle_controls(screen: np.ndarray) -> BattleControls:
     if has_auto_layout(_AUTO_CONTROL_CENTERS, 1047):
         return BattleControls.AUTO_CONTROLS
 
-    yy, xx = np.ogrid[: frame.shape[0], : frame.shape[1]]
-
-    def manual_borders(expected_xs: tuple[int, ...]) -> list[bool]:
-        borders = []
-        for center_x in expected_xs:
-            distance_squared = (xx - center_x) ** 2 + (yy - 1040) ** 2
-            border = (distance_squared >= 55 ** 2) & (distance_squared <= 75 ** 2)
-            borders.append(float(np.mean(hsv[:, :, 2][border] > 120)) >= 0.35)
-        return borders
-
-    manual_border_hits = manual_borders(_MANUAL_CONTROL_CENTERS)
     manual_circle_count = aligned_count(
         _MANUAL_CONTROL_CENTERS, 1040, (55, 82), 38
     )
+    if manual_circle_count != len(_MANUAL_CONTROL_CENTERS):
+        return BattleControls.TRANSITION
+
+    # The original full-frame mask only included this annulus at each center.
+    yy, xx = np.ogrid[-75:76, -75:76]
+    distance_squared = xx**2 + yy**2
+    border = (distance_squared >= 55**2) & (distance_squared <= 75**2)
+    local_y = 1040 - roi_y
+    manual_border_hits = []
+    for center_x in _MANUAL_CONTROL_CENTERS:
+        local_x = center_x - roi_x
+        brightness = hsv[local_y - 75 : local_y + 76, local_x - 75 : local_x + 76, 2]
+        manual_border_hits.append(float(np.mean(brightness[border] > 120)) >= 0.35)
+
     legacy_canvas = not frame[:52].any() and not frame[:, 1920:].any()
-    if manual_circle_count == len(_MANUAL_CONTROL_CENTERS) and (
-        all(manual_border_hits) or legacy_canvas
-    ):
+    if all(manual_border_hits) or legacy_canvas:
         return BattleControls.MANUAL_CONTROLS
     return BattleControls.TRANSITION
 

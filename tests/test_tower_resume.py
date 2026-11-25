@@ -54,6 +54,7 @@ from auto_game_unified.games.epic7.tower import (
     TowerStateMachine,
     detect_resume_point,
 )
+from auto_game_unified.tests.fixture_images import named_frame_replay
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -520,20 +521,8 @@ class TowerResumeNavigationTests(unittest.TestCase):
 
     def navigate_from(self, current: str, after: tuple[str, ...], page: str):
         """`current` = 接力时**已经站在**的那一页；`after` = 点击之后依次出现的帧。"""
-        frames = [navigation_fixture(current)] + [
-            navigation_fixture(name) for name in after
-        ]
+        starting_frame, capture = named_frame_replay(navigation_fixture, (current, *after))
         clicks: list[tuple[int, int]] = []
-        sequence = iter(frames)
-        last: list[np.ndarray] = []
-
-        def capture() -> np.ndarray:
-            try:
-                screen = next(sequence)
-            except StopIteration:
-                screen = last[-1]
-            last.append(screen)
-            return screen
 
         navigator = Epic7Navigator(
             build_navigation_templates(TEMPLATES),
@@ -541,7 +530,7 @@ class TowerResumeNavigationTests(unittest.TestCase):
             sleep=lambda _seconds: None,
             transition_frames=8,
         )
-        navigator.navigate("tower", lobby_screen=frames[0], already_at=page)
+        navigator.navigate("tower", lobby_screen=starting_frame, already_at=page)
         return clicks
 
     def test_tower_home_needs_no_further_navigation(self):

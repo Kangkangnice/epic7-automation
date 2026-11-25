@@ -164,7 +164,7 @@ class StoryRunnerTests(unittest.TestCase):
         screens = iter(
             [fixture("stage")] * 6
             + [np.zeros((1132, 1982, 3), dtype=np.uint8)]
-            + [fixture(name) for name in names for _ in range(2)]
+            + [screen for screen in map(fixture, names) for _ in range(2)]
         )
         now = [0.0]
 

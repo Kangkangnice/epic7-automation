@@ -3,6 +3,8 @@ __pycache__/
 .pytest_cache/
 runtime_logs/
 runtime_diagnostics/
+# 失败诊断包：源码运行时落在包目录下，属于本机现场，不进版本库
+reports/
 .tools/
 .workbuddy/
 .worktrees/
@@ -37,3 +39,7 @@ docs/manual_review/arena/
 # 会话存档（勾选/次数/上次结果）。源码运行时落在包目录，别让它把工作区弄脏。
 /session.json
 /side_story_countdown.json
+# 分账号的本机运行状态：昵称、段位、各号的路线倒计时。按号分目录，每次运行都会改写，
+# 因人而异、不进版本库（分账号功能本身来自代码，不靠这些文件）。
+/accounts/
+/last_account.json

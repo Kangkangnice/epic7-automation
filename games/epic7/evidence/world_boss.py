@@ -4,7 +4,7 @@
 
 ## 页面互斥的实测依据（2026-09-21，全库 185 张 1982×1132 夹具扫描）
 
-六个锚点的「本路线最高 / 跨路线最高 / 倍数」：
+原六个锚点的「本路线最高 / 跨路线最高 / 倍数」：
 
 | 锚点 | 本路线最高 | 跨路线最高 | 倍数 | 跨路线最高出处 |
 |---|---|---|---|---|
@@ -29,8 +29,11 @@
 - ❌ ``worldboss_title`` **不能**判 ``world_boss.home``，否则队伍页 / 体力弹窗都会被判成主页，
   状态机就会在队伍页上点「选择队伍」，白等到超时。
 
-主页的排他锚点是 **``select_team_button``**（右下角「选择队伍」）：本路线只在该页命中
-（主页 1.0000 / 次数耗尽页 0.9161），其余 7 张本路线夹具最高 0.4192。
+主页的排他锚点是右下角按钮，且必须接受两种长相：**``select_team_button``**
+（可打时的「选择队伍」：主页 1.0000 / 次数耗尽页 0.9161，其余本路线夹具最高 0.4192）
+或 **``manage_support_team``**（次数用完/未开放时的「管理辅助队伍」：真帧 1.0000，
+其余本路线夹具最高 0.5253）。两者都是主页，但后者代表正常资源耗尽，
+具体收工口径由 ``games/epic7/world_boss.py`` 的 HOME 分支决定。
 
 ### 2. ``result_title`` 在「战斗级别奖励」弹窗上仍可见（背景被压暗）
 
@@ -39,6 +42,13 @@
 
 ⇒ ``world_boss.result`` 必须写 ``forbidden=("level_reward_title",)``，靠奖励弹窗自己的标题排他。
 实测该组合：battle_result 判 result、level_reward 判 level_reward，两页互不串。
+
+### 3. 「世界首领辅助队伍奖励」弹窗底下仍会露出主页按钮（2026-11-23）
+
+弹窗把主页压暗，但 ``TM_CCOEFF_NORMED`` 对亮度缩放不敏感：弹窗帧上
+``manage_support_team`` 得 **0.9997**。只按右下按钮判主页会把这层全局弹窗当成主页，
+在弹窗上点按钮。⇒ ``world_boss.home`` 必须写 ``forbidden=("support_reward_popup",)``，
+靠弹窗标题把这种叠层排除；弹窗应由全局弹窗守卫先关掉，不是路线落脚点。
 
 ## 体力弹窗：零改动复用 ``games/epic7/stamina.py``
 
@@ -63,6 +73,9 @@ REGIONS = {
     # 右下角「选择队伍」按钮。窗口要容得下 303x37 的模板滑动，
     # 又不能让搜索范围爬回队伍页的「组成战斗队伍」（中心 1631）那一带。
     "select_team_button": (1450, 990, 532, 130),
+    # 同一个右下角按钮的第二种长相：次数用完/未开放时显示「管理辅助队伍」。
+    # 沿用 select_team_button 的搜索区，真帧得分 1.0000，其他本路线夹具 ≤0.5253。
+    "manage_support_team": (1450, 990, 532, 130),
     # 「选择辅助队伍」页面标题，在标题栏下面一条。
     "team_select_title": (0, 140, 520, 140),
     # 配置队伍页左下角「自动配置」按钮。**注意**：体力弹窗是盖在这一页上的对话框，
@@ -75,6 +88,9 @@ REGIONS = {
     "result_title": (1400, 50, 400, 110),
     # 行动力不足弹窗（与 story 共用同一套模板，复用它的搜索区域）。
     "stamina_popup": (400, 200, 1200, 700),
+    # 「世界首领辅助队伍奖励」弹窗标题，用来把压暗的主页叠层排除在 home 之外。
+    # 区域与阈值沿用 global_popups 中该弹窗的双锚点判据（标题那一条）。
+    "support_reward_popup": (700, 262, 520, 80),
 }
 
 THRESHOLDS = {key: DEFAULT_THRESHOLD for key in REGIONS}
@@ -85,13 +101,25 @@ _TEMPLATE_PATHS = {
 # 体力弹窗的模板复用 story 那一份（实测 0.9989 命中，同一个控件），
 # 与 expedition 复用 story 的 ``auto_off`` 是同一种做法。
 _TEMPLATE_PATHS["stamina_popup"] = "../story/stamina_popup.png"
+# 与导航层/全局弹窗守卫复用同一张标题模板，不另裁一份。
+_TEMPLATE_PATHS["support_reward_popup"] = (
+    "../navigation/worldboss_support_reward_title.png"
+)
 
 _PAGES = (
     # 骑士团主页：标题栏 + 世界首领战入口图标都在。
     # 只用 ``knights_title`` 即可 —— 世界首领战主页用的是同一个标题栏位置，
     # 但那一页的 ``knights_title`` 实测只有 0.4888，进不了门槛。
     PageEvidence("world_boss.knights_home", required=("knights_title",)),
-    PageEvidence("world_boss.home", required=("select_team_button",)),
+    PageEvidence(
+        "world_boss.home",
+        # 同一个主页锚点的两种长相：任一命中都是主页。次数是否耗尽另由
+        # HOME 分支按「变体 + 按钮亮灰」决定，页面判据只回答「站在哪一页」。
+        any_of=(("select_team_button", "manage_support_team"),),
+        # 全局弹窗压暗主页时右下按钮仍会被模板命中（manage 0.9997），
+        # 必须由弹窗标题排除，交给全局弹窗守卫先关掉。
+        forbidden=("support_reward_popup",),
+    ),
     PageEvidence("world_boss.team_select", required=("team_select_title",)),
     PageEvidence(
         "world_boss.team_config",

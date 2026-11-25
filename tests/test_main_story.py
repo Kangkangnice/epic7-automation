@@ -537,7 +537,7 @@ class MainStoryTests(unittest.TestCase):
             runner_type=_SpyRunner,
             # 钩子拿到的必须是**主线的运行时产物根**，不是 modes 自己猜的一个。
             # 源码运行时它就是包目录；打包安装后是 %LOCALAPPDATA%\ArkyAssistant
-            # （竞技场的买票印记 ``arena_ticket_purchase.txt`` 落在它的 runtime_logs 下）。
+            # （账号目录 ``accounts/`` 就落在它下面）。
             runner_options=lambda root, dry_run, params: {
                 "收到的根": root,
                 "干跑": dry_run,

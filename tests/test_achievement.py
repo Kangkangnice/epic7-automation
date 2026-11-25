@@ -41,11 +41,7 @@ TEMPLATES = ROOT / "games" / "epic7" / "templates"
 def load(name: str) -> np.ndarray:
     """读一张整屏夹具。
 
-    ⚠️ 刻意走 ``cv2.imdecode`` 而不是 ``Image.open`` / ``cv2.imread``：
-    ``tests/conftest.py`` 把那两个函数换成了 40 张封顶的 lru_cache（每张 6.7MB，
-    两通道合计约 0.5GB）。这条路线有 7 张整屏帧，全占缓存位会把全量测试的内存
-    峰值往上顶一截 —— 实测 2026-11-08 单进程全量跑到 20%（多线程的 worker 用例）
-    时 GC 在子线程里崩过一次。``imdecode`` 不经过那层缓存，用完即可回收。
+    ``imdecode`` 直接解码文件内容，整屏像素不进入跨用例的夹具缓存。
     """
     import cv2
 

@@ -262,6 +262,18 @@ class MatchModeTests(unittest.TestCase):
         # 单通道输入（调用方自己先裁好的掩膜）也要能收。
         np.testing.assert_array_equal(mask, matcher.white_mask(mask))
 
+    def test_white_mask_uses_the_native_range_on_a_strided_rgb_region(self):
+        source = np.array([[[201, 200, 255], [0, 0, 0], [255, 199, 255]]], dtype=np.uint8)
+        region = source[:, ::2]
+        with mock.patch.object(matcher.cv2, "inRange", wraps=matcher.cv2.inRange) as native:
+            result = matcher.white_mask(region)
+        np.testing.assert_array_equal(result, [[255, 0]])
+        native.assert_called_once()
+
+    def test_white_mask_accepts_opencv_mat_with_default_channel_metadata(self):
+        image = cv2.Mat(np.array([[[201, 200, 255], [255, 199, 255]]], dtype=np.uint8))
+        np.testing.assert_array_equal(matcher.white_mask(image), [[255, 0]])
+
 
 class FindAllTemplatesTests(unittest.TestCase):
     """``find_all_templates``：同一个模板在一屏里出现多次时，**全部**都要拿到。
@@ -448,6 +460,17 @@ class MatchCacheTests(unittest.TestCase):
             matcher._match_key(wide, self.template),
             matcher._match_key(tall, self.template),
         )
+
+    def test_the_digest_hashes_pixels_without_serializing_an_array_to_bytes(self):
+        class ArrayWithoutBytes(np.ndarray):
+            def tobytes(self, *args, **kwargs):
+                raise AssertionError("The key should hash the array buffer directly")
+
+        for screen in (self.screen, self.screen[1:, ::2]):
+            with self.subTest(contiguous=screen.flags.c_contiguous):
+                expected = matcher._match_key(screen.copy(), self.template)
+                view = screen.view(ArrayWithoutBytes)
+                self.assertEqual(expected, matcher._match_key(view, self.template))
 
     def test_a_disabled_cache_still_answers_correctly(self):
         with self._spy_on_matcher() as spy:

@@ -79,6 +79,9 @@ _INPUT_FAILURE_MARKERS = (
     b"closed",
 )
 
+#: adb 服务冷启动时``devices``会夹带这两行提示，首批设备状态可能仍是 offline。
+_DAEMON_START_MARKERS = ("daemon not running", "daemon started successfully")
+
 
 class EmulatorNotFound(RuntimeError):
     """找不到正在运行第七史诗的安卓模拟器。"""
@@ -190,6 +193,52 @@ class AdbDeviceSpec:
     game_pid: int
 
 
+def _probe_devices(
+    adb: Path,
+    game_package: str,
+    runner: Callable[[Path, list[str]], subprocess.CompletedProcess],
+) -> tuple[dict[int, str], list[str], str, list[str]]:
+    """列一次设备，返回（游戏进程→设备号, offline设备, 原始输出, 在线设备）。"""
+    listed = runner(adb, ["devices"])
+    _raise_on_adb_error(listed, "设备发现")
+    output = _output_bytes(listed).decode("utf-8", "replace")
+
+    by_pid: dict[int, str] = {}
+    offline: list[str] = []
+    online: list[str] = []
+    for line in output.splitlines():
+        fields = line.split()
+        if len(fields) < 2:
+            continue
+        serial, state = fields[0], fields[1]
+        if state == "offline":
+            offline.append(serial)
+            continue
+        if state != "device":
+            continue
+        online.append(serial)
+        pid_result = runner(adb, ["-s", serial, "shell", "pidof", game_package])
+        pid_text = _output_bytes(pid_result).decode("utf-8", "replace").strip()
+        # pidof 可能返回多个 PID（多进程游戏），取第一个非数字过滤后的值。
+        pids = [int(token) for token in pid_text.split() if token.isdigit()]
+        if pids and pids[0] not in by_pid:
+            by_pid[pids[0]] = serial
+    return by_pid, offline, output, online
+
+
+def _repair_adb(
+    adb: Path,
+    runner: Callable[[Path, list[str]], subprocess.CompletedProcess],
+    commands: tuple[list[str], ...],
+) -> None:
+    """有界修复 ADB 连接；修没修好由随后那次``devices``复查判定，不在这里猜。"""
+    for command in commands:
+        try:
+            runner(adb, command)
+        except (OSError, subprocess.SubprocessError, RuntimeError):
+            pass
+
+
 def discover_game_device(
     adb: Path,
     *,
@@ -202,30 +251,24 @@ def discover_game_device(
     ``adb devices`` 因此列出多个设备号；它们指向同一个游戏进程（pidof 同 PID）。
     这里按游戏 PID 去重，只保留每个 PID 的第一个设备号。
 
-    只支持单开：去重后仍多于一个实例 ⇒ 明确报错，不猜用哪个。
+    设备 offline 或 adb 服务刚冷启动时，先有界自修连接（重连 → 重建服务）再判定；
+    两步都修不回来仍明确报错。只支持单开：去重后仍多于一个实例 ⇒ 明确报错，不猜用哪个。
     """
-    listed = runner(adb, ["devices"])
-    _raise_on_adbs_error = _raise_on_adb_error
-    _raise_on_adbs_error(listed, "设备发现")
-    output = _output_bytes(listed).decode("utf-8", "replace")
+    by_pid, offline, output, online = _probe_devices(adb, game_package, runner)
+    repairs = 0
 
-    by_pid: dict[int, str] = {}
-    offline: list[str] = []
-    for line in output.splitlines():
-        fields = line.split()
-        if len(fields) < 2:
-            continue
-        serial, state = fields[0], fields[1]
-        if state != "device":
-            if state == "offline":
-                offline.append(serial)
-            continue
-        pid_result = runner(adb, ["-s", serial, "shell", "pidof", game_package])
-        pid_text = _output_bytes(pid_result).decode("utf-8", "replace").strip()
-        # pidof 可能返回多个 PID（多进程游戏），取第一个非数字过滤后的值。
-        pids = [int(token) for token in pid_text.split() if token.isdigit()]
-        if pids and pids[0] not in by_pid:
-            by_pid[pids[0]] = serial
+    if not by_pid and (
+        offline or any(marker in output.lower() for marker in _DAEMON_START_MARKERS)
+    ):
+        _repair_adb(adb, runner, (["reconnect", "offline"],))
+        repairs = 1
+        by_pid, offline, output, online = _probe_devices(adb, game_package, runner)
+
+        # 重连后设备已在线却没游戏进程 ⇒ 是「游戏没开」，不是连接故障，不再折腾服务。
+        if not by_pid and (not online or offline):
+            _repair_adb(adb, runner, (["kill-server"], ["start-server"]))
+            repairs = 2
+            by_pid, offline, output, online = _probe_devices(adb, game_package, runner)
 
     if len(by_pid) > 1:
         devices = ", ".join(sorted(by_pid.values()))
@@ -237,9 +280,10 @@ def discover_game_device(
         hint = ""
         if offline:
             hint = f"（设备 {', '.join(offline)} 处于 offline，请重启模拟器）"
+        repaired = f"；已自动修复 ADB 连接 {repairs} 次仍未恢复" if repairs else ""
         raise EmulatorNotFound(
             "未找到正在运行第七史诗的安卓模拟器。"
-            "请先打开模拟器并让游戏停在大厅，再开始任务" + hint
+            "请先打开模拟器并让游戏停在大厅，再开始任务" + hint + repaired
         )
     pid, serial = next(iter(by_pid.items()))
     return AdbDeviceSpec(serial=serial, game_pid=pid)
@@ -269,8 +313,14 @@ class AdbEmulatorClient:
     def run_raw(self, command: str, *, timeout: float = _ADB_TIMEOUT) -> bytes:
         """执行一条原始 adb 命令（如 ``shell input tap 1 2`` / ``pull a b``）。
 
-        竖屏通道 ``PortraitChannel`` 的命令正是这种形式（``shell screencap -p …``、
-        ``pull …``），复用它就能让竖屏段不用再拼 ldconsole 私有格式。
+        竖屏通道 ``PortraitChannel`` 的命令正是这种形式（``shell input tap …``），
+        复用它就能让竖屏段不用再拼 ldconsole 私有格式。
+
+        ⚠️⚠️ **参数用 ``shlex.split`` 按 POSIX 规则切分：Windows 路径里的反斜杠会被
+        当转义符吃掉**（``D:\\Cache\\Temp\\x.png`` → ``D:CacheTempx.png``，落到当前目录）。
+        2026-11-24 的竖屏截图就是这么坏了整整三天：``pull`` 写到别处、读的却是旧文件，
+        adb 还返回 0。⇒ **带本地路径的命令一律别走这里**；要么用 ``screencap_bgr`` 这类
+        已经成形的方法，要么把路径写成 ``/`` 分隔（``C:/tmp/x.png``）。
         """
         args = shlex.split(command)
         result = self._runner(self.adb, [*self._base(), *args], timeout=timeout)

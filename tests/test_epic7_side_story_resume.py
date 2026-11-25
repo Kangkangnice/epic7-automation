@@ -16,7 +16,6 @@
 from pathlib import Path
 import unittest
 
-import cv2
 import numpy as np
 
 from auto_game_unified.games.epic7.battle_controls import battle_scene_visible
@@ -25,27 +24,12 @@ from auto_game_unified.games.epic7.side_story import detect_resume_point
 from auto_game_unified.games.epic7.story import StoryState
 from auto_game_unified.games.epic7.template_paths import resolve_template_dir
 from auto_game_unified.games.epic7.unknown_screen import UnrecognizedScreen
+from auto_game_unified.tests.fixture_images import read_rgb_fixture as _load
 
 
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURES = ROOT / "tests" / "fixtures"
 TEMPLATE_ROOT = ROOT / "games" / "epic7" / "templates"
-
-REFERENCE_WIDTH, REFERENCE_HEIGHT = 1982, 1132
-_CACHE: dict[str, np.ndarray] = {}
-
-
-def _load(path: Path) -> np.ndarray:
-    key = str(path)
-    if key not in _CACHE:
-        raw = cv2.imread(key, cv2.IMREAD_COLOR)
-        assert raw is not None, f"缺夹具 {path}"
-        # 夹具多是 3200×2000，必须裁到基准；匹配层会按宽高比直接拒绝别的尺寸。
-        _CACHE[key] = cv2.cvtColor(
-            raw[:REFERENCE_HEIGHT, :REFERENCE_WIDTH], cv2.COLOR_BGR2RGB
-        )
-    return _CACHE[key]
-
 
 def frame(name: str) -> np.ndarray:
     return _load(FIXTURES / "epic7_side_story" / f"{name}.png")
