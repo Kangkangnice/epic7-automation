@@ -251,5 +251,74 @@ class RegionSanityTests(unittest.TestCase):
                 self.assertLessEqual(y + h, 1132)
 
 
+class PurchaseRefusalTests(unittest.TestCase):
+    """购买被游戏拒绝时按正常退出收口 —— 不抛错，收口阶段不再发购买点击。
+
+    ⚠️ 现状：转场验收仍会在既有 4 次预算内重复点击购买按钮，「被拒」要等预算走完
+    才判得出来。本用例锁的是预算走完之后的收口：关弹窗一次、按资源耗尽退出、
+    不再补第 5 次。若要求不可逆购买一次都不重发，属于重试语义变更，需单独立项。
+    这条路径只在工作区改动里（「按本机日期记一笔」已被删除，待用户拍板）。
+    """
+
+    def test_refused_purchase_closes_the_popup_and_stops_without_another_purchase(self):
+        popup = canvas(ARENA_FIXTURES / "friendship_ticket_offer_live_20260826.png")
+        frames = _Frames([popup] * 30, max_captures=60)
+
+        class _TickingRecorder(_Recorder):
+            """``now()`` 按调用次数前进，让转场预算能在几步内走完。"""
+
+            def __init__(self, source: _Frames) -> None:
+                super().__init__(source)
+                self.ticks = 0
+
+            def now(self) -> float:
+                self.ticks += 1
+                return float(self.ticks)
+
+        machine = ArenaStateMachine(
+            build_templates(TEMPLATES), initial_state=ArenaState.BATTLE
+        )
+        recorder = _TickingRecorder(frames)
+        runner = ArenaRunner(machine, recorder, sleep=lambda seconds: None)
+        # 队伍页的转场预算 10 秒：正好走完既有「最多 4 次」的点击预算，不额外拖时间。
+        runner._TIMEOUT_SECONDS = {
+            **runner._TIMEOUT_SECONDS,
+            ArenaState.TEAM: 10,
+        }
+        homed: list[bool] = []
+        runner.finish_home = lambda: homed.append(True) or None
+
+        completed = runner.run(max_cycles=1)
+
+        self.assertEqual(0, completed)
+        actions = [action for _, action in recorder.clicks]
+        self.assertEqual(
+            4,
+            actions.count("purchase-friendship-ticket"),
+            f"购买点击应止于既有 4 次预算：{actions}",
+        )
+        self.assertEqual(
+            1,
+            actions.count("dismiss-purchase"),
+            f"被拒后必须点一次「取消」关弹窗：{actions}",
+        )
+        self.assertLess(
+            max(
+                index
+                for index, action in enumerate(actions)
+                if action == "purchase-friendship-ticket"
+            ),
+            actions.index("dismiss-purchase"),
+            f"关弹窗之后不许再发购买点击：{actions}",
+        )
+        self.assertEqual([True], homed, "关完弹窗要照常回家")
+        self.assertTrue(runner.resource_exhausted, "应按资源耗尽正常退出")
+        self.assertEqual("", runner._purchase_refused, "标记用完要清掉")
+        self.assertTrue(
+            any("游戏未接受旗帜购买" in line for line in recorder.lines),
+            f"没记下业务结论：{recorder.lines}",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

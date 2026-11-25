@@ -579,11 +579,9 @@ def _arena_runner_options(
         "hero_whitelist": values["hero_whitelist"],
         "hero_list_conflict": values["hero_list_conflict"],
     }
-    if not dry_run:
-        # 买票「今天买过没有」的记账文件（干跑一个盘都不写）。
-        options["purchase_stamp_path"] = (
-            root / "runtime_logs" / "arena_ticket_purchase.txt"
-        )
+    # ⚠️ 曾经在这里下发「买票日期戳」文件，2026-11-23 用户拍板删除：那个做法假设
+    # 「本机零点 = 游戏每日重置点」，跨服务器（国服/亚服/美服/欧服）必然错位，而且
+    # 它替游戏回答了「今天还能不能买」这个只有游戏知道的问题。
     return options
 
 
@@ -782,7 +780,8 @@ MODE_SPECS = {
         # 就直接从那一步接着跑；停在别的支线页面才退回原来的「一直返回」流程。
         # 判据要问导航器认出的页名 —— 接力点里有「竞技场模式选择页」这个导航链中间站。
         resume_probe=_resume_probe(detect_resume_point, use_navigator=True),
-        # 实跑要落一个盘（买票记账），路径只有主线装配层知道仓库根。
+        # 买票不再落盘记账：当天还能不能买由游戏判定，见
+        # ArenaRunner._transition_failure_message。路径只有主线装配层知道仓库根。
         runner_options=_arena_runner_options,
         navigation_plan=NavigationPlan(
             mode="arena",

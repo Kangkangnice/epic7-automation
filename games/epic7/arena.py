@@ -1,7 +1,6 @@
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from datetime import date
 import random
 from time import sleep as default_sleep
 from typing import Any, Callable, Optional, Sequence
@@ -323,6 +322,16 @@ _CHALLENGE_TAB_POINT = (1661, 228)
 # 实测：与「交战对手」同一列，行距 150px ⇒ 228 + 150 = 378）。
 _NPC_TAB_POINT = (1661, 378)
 
+
+def arena_tab_point(opponent_source: str) -> tuple[int, int]:
+    """按对手来源给出右菜单要切回的页签中心（画布坐标）。
+
+    ``player`` → 「交战对手」，``npc`` → 「NPC对战」。导航层在「进竞技场」
+    那一步发现站错页签时也调它 —— 坐标只有这一份定义，避免两处漂移。
+    """
+    return _NPC_TAB_POINT if opponent_source == "npc" else _CHALLENGE_TAB_POINT
+
+
 # VS 段位确认页（PC 独有）的搜索区与阈值。
 # 区取底部居中（x[700,1480] y[930,1132]），与结算页右下角的「确认」(x[1500,1920]) 不重叠；
 # 只裁绿色「确认」按钮本身，段位（铜牌/银牌…）文字一律不进模板，保证普适。
@@ -332,6 +341,11 @@ _VS_CONFIRM_THRESHOLD = 0.90
 
 class TicketExhausted(RuntimeError):
     """The game presented its ticket-purchase popup instead of entering battle."""
+
+
+# 「点下去就花资源」的两颗按钮。它们转场失败的含义与别的动作不同：不是故障，
+# 而是「游戏没接受这次购买」，见 ``ArenaRunner._transition_failure_message``。
+_PURCHASE_ACTIONS = ("purchase-friendship-ticket", "purchase-skystone-ticket")
 
 
 class NoEligibleOpponent(ResourceExhausted):
@@ -1636,7 +1650,6 @@ class ArenaRunner(TransactionalRunnerBase):
         poll_seconds: float = 1.0,
         recovery_gate: RecoveryGate | None = None,
         battle_supervisor: BattleSupervisor | None = None,
-        purchase_stamp_path: Path | None = None,
         refresh_mode: str = "free",
         max_gold_refreshes: int = 0,
         ticket_mode: str = "friendship",
@@ -1659,7 +1672,9 @@ class ArenaRunner(TransactionalRunnerBase):
             recovery_gate=recovery_gate,
             battle_supervisor=battle_supervisor,
         )
-        self.purchase_stamp_path = purchase_stamp_path
+        # 购买被游戏拒绝时的标记（空串 = 没有被拒）。由
+        # ``_transition_failure_message`` 置位，主循环据此关弹窗收工。
+        self._purchase_refused: str = ""
         # 可选项：同一份值交给 Runner 与状态机（动作由状态机生成，上限在这里守）。
         # 默认值与 route_options 的声明一致，未开启时所有分支都与改动前相同。
         self.refresh_mode = refresh_mode
@@ -1854,6 +1869,20 @@ class ArenaRunner(TransactionalRunnerBase):
     def _transition_failure_message(
         self, action: Action, attempts: int, diagnostic: Any
     ) -> Optional[str]:
+        if action.name in _PURCHASE_ACTIONS:
+            # 点了购买、弹窗却不关 ⇒ **游戏没接受这次购买**（当日那一次已经用掉，
+            # 或者资源不够）。这是业务结论，不是故障 ⇒ **不抛**，留一个标记让主循环
+            # 关掉弹窗、按「资源用完」收工（退出码不变）。
+            #
+            # ⚠️ 这里**不许**改回「按本机日期记一笔再判断」（2026-11-23 用户拍板删除）：
+            # 国服/亚服/美服/欧服的每日重置点不在本机零点，本地记账必然与游戏不同步；
+            # 而且同一个号第二次来买，游戏自己就会拒绝 —— 该由游戏说了算，不该由我们猜。
+            self._purchase_refused = action.name
+            self.runtime.log(
+                f"模式=竞技场 动作={action.name} 结果=购买后弹窗未关闭 "
+                f"判定=游戏未接受购买 诊断={diagnostic}"
+            )
+            return None
         del attempts
         return (
             f"点击 {action.name} 后画面未稳定进入"
@@ -2168,14 +2197,6 @@ class ArenaRunner(TransactionalRunnerBase):
                 )
                 self._close_out()
                 return self.machine.completed_cycles
-            if action.name == "purchase-friendship-ticket" and not self._purchase_allowed_today():
-                self.machine.state = ArenaState.BATTLE
-                self.resource_exhausted = True
-                self.runtime.log(
-                    f"模式=竞技场 停止=今日友情点旗帜已购买 已完成={self.machine.completed_cycles}"
-                )
-                self._close_out()
-                return self.machine.completed_cycles
             self.runtime.log(
                 f"模式=竞技场 轮次={self.machine.completed_cycles + 1}/{max_cycles or '?'} "
                 f"页面={state_label(state_before)} 动作候选={action.name} "
@@ -2245,8 +2266,20 @@ class ArenaRunner(TransactionalRunnerBase):
                 continue
 
             self._execute_transition(action)
-            if action.name == "purchase-friendship-ticket":
-                self._record_purchase_today()
+            if self._purchase_refused:
+                # 点了购买、弹窗却不关 ⇒ 游戏没接受这次购买（当日机会已用完或资源不足）。
+                # 这是**业务结论而不是故障**：关掉弹窗、按「资源用完」收工，退出码不变。
+                # ⚠️ 不能靠本地记日期提前判死 —— 跨服务器的每日重置点不在本机零点。
+                refused = self._purchase_refused
+                self._purchase_refused = ""
+                self.machine.state = ArenaState.BATTLE
+                self.resource_exhausted = True
+                self.runtime.log(
+                    f"模式=竞技场 停止=游戏未接受旗帜购买 动作={refused} "
+                    f"已完成={self.machine.completed_cycles}"
+                )
+                self._close_out()
+                return self.machine.completed_cycles
             if self.machine.completed_cycles > cycles_before:
                 self.runtime.log(
                     f"模式=竞技场 轮次={self.machine.completed_cycles} "
@@ -2410,16 +2443,3 @@ class ArenaRunner(TransactionalRunnerBase):
                 return False
             self.sleep(self.poll_seconds)
         return False
-
-    def _purchase_allowed_today(self) -> bool:
-        if self.purchase_stamp_path is None:
-            return False
-        if not self.purchase_stamp_path.exists():
-            return True
-        return self.purchase_stamp_path.read_text(encoding="utf-8").strip() != date.today().isoformat()
-
-    def _record_purchase_today(self) -> None:
-        if self.purchase_stamp_path is None:
-            raise RuntimeError("旗帜购买记录路径未配置")
-        self.purchase_stamp_path.parent.mkdir(parents=True, exist_ok=True)
-        self.purchase_stamp_path.write_text(date.today().isoformat(), encoding="utf-8")
