@@ -11,8 +11,12 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
+from auto_game_unified.core.runtime import Runtime
 from auto_game_unified.games.epic7.arena import (
+    Action,
     ArenaOutcome,
+    ArenaRunner,
+    ArenaState,
     ArenaStateMachine,
     build_templates,
 )
@@ -68,6 +72,47 @@ class ArenaEvidenceGuardTests(unittest.TestCase):
         )
         self.assertLess(
             weekly_reward_dot_pixels(claimed), WEEKLY_REWARD_DOT_MIN_PIXELS
+        )
+
+    def test_a_dimmed_frame_reads_as_already_claimed_known_defect(self):
+        """**已知缺陷的现状快照**：遮罩把红点压暗后，读数与「已领完」无法区分。
+
+        2026-11-18 08:43 真机踩中：点每周对战奖励后 3.5 秒弹出「与服务器的连接已中断」
+        全屏遮罩，红点像素读数变成 0，等待器据此置「本轮已检查」；实际奖励并未入账
+        （09:11 复测才真正领到）。遮罩帧整屏均亮约 14，同页正常列表 45~63。
+
+        这里没有那份遮罩真机帧（见 `.workbuddy/memory/竞技场收口交接_20261125.md`
+        的采集清单），所以按同一亮度档把 11-17 的可领帧压到 0.3 倍来表达机制：
+        HSV 的 V 掉到 140 以下，红点掩膜颗粒无收。**这是现状，不是期望行为**；
+        修复（加整屏亮度或遮罩第二维）后本测试必须同步改成「不得判已领完」。
+        """
+        claimable = fixture("weekly_reward_claimable_live_20261117")
+        self.assertGreaterEqual(
+            weekly_reward_dot_pixels(claimable), WEEKLY_REWARD_DOT_MIN_PIXELS
+        )
+
+        masked = np.clip(claimable.astype(np.float32) * 0.3, 0, 255).astype(np.uint8)
+        self.assertLess(
+            weekly_reward_dot_pixels(masked), WEEKLY_REWARD_DOT_MIN_PIXELS
+        )
+
+        # 危险的不是「读数 0」本身，而是同一帧仍满足列表判据 ⇒ 等待器直接收下
+        # 「已领完」。两件事同时成立才构成那次误判。
+        self.assertTrue(self.machine.is_in_state(masked, ArenaState.LIST))
+        runner = ArenaRunner(
+            self.machine,
+            Runtime(
+                lambda: masked,
+                lambda point: None,
+                emit=lambda line: None,
+            ),
+            sleep=lambda seconds: None,
+        )
+        self.assertTrue(
+            runner._wait_until_weekly_reward_claimed(
+                Action("claim-weekly-reward", (245, 696))
+            ),
+            "现状：压暗帧被等待器当成「红点已消失」",
         )
 
 
