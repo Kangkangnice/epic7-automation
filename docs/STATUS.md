@@ -69,8 +69,8 @@
 
 ## 五、素材与测试规模
 
-- 识别模板 **585** 张，其中 PC 专用 **148** 张
-- 现场夹具 **520** 张（`tests/fixtures/`，跑测试用的真实截图）
+- 识别模板 **588** 张，其中 PC 专用 **148** 张
+- 现场夹具 **524** 张（`tests/fixtures/`，跑测试用的真实截图）
 
 注意：这两个数字**加一张图就要重生成一次**。这是有意的 —— 素材入库本来就要在
 `tests/test_template_paths.py` 登记，多跑一次生成器只是同一步的延续。
@@ -84,12 +84,13 @@
 > `hero_synthesis` 的素材目录叫 `hero`；`arena` 的模板与全局共享图混放在模板根，
 > 无法按路线归属，标「共享根」而不是报一个假的 0 —— 别名见 `gen_status.py::ROUTE_DIR_ALIASES`。
 > 开局接力读 `MODE_SPECS.resume_probe` 与 `RESUME_EXEMPT`，PC 放行读 `PC_READY_ROUTES`。
+> 契约五项与欠债见 [路线通用契约](ROUTE_CONTRACT.md)；合规矩阵由 `python -m auto_game_unified.tools.route_compliance` 生成，不手抄。
 
 | 路线 | PC 专用图 | 模板合计 | 现场夹具 | 开局接力 | PC 放行 |
 |---|---:|---:|---:|---|---|
 | `hero_synthesis` | 11 | 28 | 34 | 豁免（见 modes.py） | 已放行 |
 | `story` | 9 | 37 | 44 | 有探针 | 已放行 |
-| `arena` | 共享根 | 共享根 | 31 | 有探针 | 已放行 |
+| `arena` | 共享根 | 共享根 | 32 | 有探针 | 已放行 |
 | `expedition` | 0 | 19 | 17 | 有探针 | 未放行 |
 | `tower` | 9 | 21 | 29 | 有探针 | 已放行 |
 | `fodder` | 0 | 6 | 11 | 豁免（见 modes.py） | 未放行 |
@@ -101,11 +102,11 @@
 | `knights_donation` | 12 | 34 | 16 | 有探针 | 已放行 |
 | `labyrinth_stone` | 14 | 50 | 30 | 有探针 | 已放行 |
 | `sanctuary` | 4 | 9 | 19 | 有探针 | 已放行 |
-| `community` | 0 | 33 | 22 | 豁免（见 modes.py） | 未放行 |
+| `community` | 0 | 34 | 23 | 豁免（见 modes.py） | 未放行 |
 | `moonlight_theater` | 4 | 23 | 26 | 豁免（见 modes.py） | 已放行 |
 | `achievement` | 6 | 12 | 11 | 有探针 | 已放行 |
 | `story_star` | 9 | 9 | 10 | 有探针 | 已放行 |
-| `pet_adoption` | 0 | 17 | 15 | 有探针 | 未放行 |
+| `pet_adoption` | 0 | 19 | 16 | 有探针 | 未放行 |
 | `penguin_purchase` | 0 | 14 | 10 | 有探针 | 未放行 |
 | `craft_equipment` | 0 | 23 | 22 | 有探针 | 未放行 |
 

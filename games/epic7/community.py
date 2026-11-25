@@ -162,6 +162,22 @@ SIGNIN_ICON_MIN_VALUE = 120.0
 # 用颜色连通域量出来的中心才是 (539,1212)。
 SIGNIN_POPUP_CLOSE = (539, 1212)
 
+# 签到点击的**有界重试**（2026-11-23 立）。
+#
+# 为什么要重试：旧写法 ``signin_clicked`` 一旦置位就**永不重试** —— 那一下要是没点中，
+# 后面只能干等 ``FEED`` 那档 150 秒超时，整条路线失败。而签到图标**不是开关**，
+# 重复点没有副作用（最多弹一次「已签到」），所以完全可以有界重试。
+#
+# 按**帧**计而不是按秒：状态机不碰时钟。竖屏一帧约 2 秒 ⇒ 8 帧 ≈ 16 秒，
+# 而弹窗实测最慢 74 秒才出。⚠️ 所以「等 8 帧还是彩色」只可能是**没点中**，
+# 不是「服务端慢」—— 这一条是重试的前提，别改成「等够 74 秒再说」。
+SIGNIN_CLICK_LIMIT = 3
+SIGNIN_RETRY_FRAMES = 8
+
+# 签到那块**连续**几帧读不出颜色才判失败。进信息流的第一两帧可能还在加载/被压暗，
+# 一帧 unknown 就抛会把「正常加载」判成故障（旧写法正是这样）。
+SIGNIN_UNKNOWN_FRAME_LIMIT = 4
+
 # ── 三条每日任务的执行段（2026-10-07 真机采到） ───────────────────────────────
 
 # 点完「去完成」之后落在**信息流首页顶部**（10-07 四次实测都是同一帧 b33079c5）。
@@ -395,10 +411,17 @@ EXCHANGE_CLOSE = (989, 123)
 #: （真机实测：点完 4 秒内 ``1023x1820`` → ``1920x1080``）。收尾扫地出门时要试到它。
 NETWORK_PAGE_CLOSE = (1000, 78)
 
-#: 收尾「扫地出门」时**按序试**的三颗 ⊗。⚠️ 只给 ``_leave_portrait_if_needed`` 用 ——
-#: 主流程**不许**这样试，必须按判页挑对的那一颗（三颗外径 33/44/48，不是同一颗挪位置）。
-_EXIT_CLOSE_POINTS = (FEED_CLOSE, EXCHANGE_CLOSE, NETWORK_PAGE_CLOSE)
-#: 收尾里**每一颗** ⊗ 的等转屏预算。三颗全试满也才 15 秒（原来的总预算 8 秒一个都不够试）；
+#: 「我的任务」页右上角的 ✕ —— **同样关掉整个社区**（2026-11-23 真机实测：
+#: 点 (940,127) 后客户区 8 秒内从 1080x1920 变回 1920x1080）。
+#:
+#: ⚠️ 它与兑换中心那颗 ✕ (989,123) **不是同一颗**：这一页的外环实测
+#: bbox (916,103,49,49)、中心 (940,127)。拿兑换中心那颗点这一页会落在环外空白上，
+#: 收尾扫地出门时就变成「每颗都试过还是出不去」（2026-11-15 09:19 日志的形状）。
+TASKS_CLOSE = (940, 127)
+#: 收尾「扫地出门」时**按序试**的四颗 ⊗。⚠️ 只给 ``_leave_portrait_if_needed`` 用 ——
+#: 主流程**不许**这样试，必须按判页挑对的那一颗（四颗外径各不相同，不是同一颗挪位置）。
+_EXIT_CLOSE_POINTS = (FEED_CLOSE, EXCHANGE_CLOSE, TASKS_CLOSE, NETWORK_PAGE_CLOSE)
+#: 收尾里**每一颗** ⊗ 的等转屏预算。四颗全试满才 20 秒（原来的总预算 8 秒一个都不够试）；
 #: 正常情况第一颗就该成功（转屏实测 1~3 秒），所以这个数只对「试错了」那一档有意义。
 _EXIT_CLOSE_ATTEMPT_SECONDS = 5.0
 EXCHANGE_GAIN_POINTS_CARD = (800, 270)
@@ -407,18 +430,21 @@ TASKS_BACK = (35, 130)
 TASKS_GOTO_EXCHANGE = (961, 554)
 TASKS_BUTTON_X = 988
 
-# 「点进社区之后可能落在哪一页」—— 社区的 H5 **会记住上次停留的页面**。
+# 「点进社区之后可能落在哪一页」—— 入口落点由网页决定，路线不假设一定是信息流。
 #
-# ⚠️⚠️ 2026-11-22 实跑：点完「游戏社区」直接落在**兑换中心**（上次停在那一页），
-# 而入口那一步只声明了 ``feed_home`` 一个目标 ⇒ 主循环判定「confirmed_page 既不是
-# 来源页也不是目标页」⇒ 把状态机给出的 ``leave_exchange`` **直接丢掉**
-# （见 ``CommunityRunner._transition_completed`` 上面那三段同形事故）。
-# 结果：一次点击都没发出，干等到 60 秒超时，日志只剩一句
+# ⚠️⚠️ 2026-11-24 订正：下面这段 11-22 的「实跑」记录发生在竖屏取图坏掉期间
+# （每帧读到 2026-11-21 15:23 的旧截图，见 ``core/portrait.py::_screencap``），
+# 所以「落在兑换中心」是**旧图里的页面**，不是真实现场。但由此得出的工程结论仍然成立：
+# 入口只认 ``feed_home`` 一个目标，会让任何非信息流的落点都被主循环丢掉动作、干等超时。
+#
+# 结果（当时）：一次点击都没发出，干等到 60 秒超时，日志只剩一句
 # 「转场超时 … 当前已确认页面=exchange_center」，收尾时人还卡在竖屏里。
 #
 # ⇒ 入口的验收标准不是「到了信息流」，而是「**社区确实打开了**」：竖屏 + 任一已知页。
-# 落点不是信息流时，由 ``_on_exchange_center`` / ``_on_tasks`` 开头那两条
-# 「签到还没做 ⇒ 先退回信息流」把流程掰回正轨。
+# 落点不是信息流时不需要赌历史返回（``<`` 的落点是 H5 历史栈，曾有双页互为上一页的记录）：
+# - 落兑换中心 ⇒ 点「获取积分」进我的任务，在签到日历上就地签到（见 ``_on_exchange_center``）；
+# - 落我的任务 ⇒ 直接就地签到（见 ``_on_tasks`` 开头）。
+# 2026-11-24 08:10 的实跑证明第一条路一点就通。
 _COMMUNITY_ENTRY_PAGES = ("feed_home", "exchange_center", "exchange_empty", "tasks_page")
 TASK_BUTTON_Y = {"browse": 1205, "like": 1349, "share": 1493}
 
@@ -608,8 +634,23 @@ _SHARE_ROUND: tuple[TaskStep, ...] = (
         "tap",
         "share_sheet",
         SHARE_COPY_LINK,
-        "点「复制链接」",
+        "点「复制链接」（分享面板**不会**自己收起）",
         enter="在分享面板",
+        # ⚠️⚠️ 2026-11-23：这里原来写 ``next_page="post_detail"``，而真机实测
+        # 点完「复制链接」**分享面板保持不动**（H5 只弹一下复制提示，不关浮层）。
+        # 后果是每次跑分享任务都白点 4 次 + 等约 45 秒，然后靠
+        # ``back_to_tasks_dismiss_sheet`` 兜底，日志里留下一句假的
+        # 「四次点击未转场」——11-04 起每一次运行都在重复这一段。
+        # 复制链接是**页内动作**，它的验收只能是「面板还在」，不能声明一个不会发生的换页。
+        evidence="分享面板仍然在（复制成功不会收起面板）",
+    ),
+    # 复制完必须**主动**点「取消」把面板收掉，下一步「返回」才点得到帖子详情。
+    TaskStep(
+        "tap",
+        "share_sheet",
+        SHARE_CANCEL,
+        "点「取消」收起分享面板",
+        enter="在分享面板（已经复制过链接）",
         next_page="post_detail",
     ),
     TaskStep(
@@ -1142,10 +1183,8 @@ class CommunityStateMachine:
         self.last_redeem: Optional[RedeemStep] = None
         self.last_page: Optional[pages.PageJudgement] = None
         # 点进社区后**第一眼**看到的是哪一页（``feed_home`` / ``exchange_center`` / …）。
-        #
-        # H5 会记住上次停留的页面 ⇒ 偶尔一进来不是信息流而是兑换中心/我的任务。
-        # 这两页上都没有「每日签到」，所以要用这个标记判断「是一次真正的入口落点」
-        # 还是「正常流程里路过」—— 后者 ``signed_in`` 早就有值了，绝不能退回。
+        # 由网页决定，路线不假设一定是信息流；四个已知页都能接上（见 ``_COMMUNITY_ENTRY_PAGES``）。
+        # 当前签到分支已改成只看 ``signed_in is None``，不再依赖这个标记；字段保留用于诊断。
         self.entry_page: str = ""
         # 上一帧「为什么没出手 / 为什么这么出手」。给主循环的等待心跳用：
         # 判据沉默时日志不能是空的（2026-10-04 那次的坑）。
@@ -1163,9 +1202,15 @@ class CommunityStateMachine:
         # 不是按帧 —— 按帧记的话计数器几秒就穿（旧写法实跑 21 秒涨了 3）。
         self._network_refreshes = 0
         self._confirmed_page = ""
-        # 「每日签到」那一下点过没有。点过就一直等弹窗（实测可能等到一分多钟），
-        # **不重复点** —— 重复点没有意义，只会把日志刷满。
+        # 「每日签到」那一下点过没有。点过就一直等弹窗（实测可能等到一分多钟）。
+        # ⚠️ 2026-11-23 起它只是「点过」的记录；**能不能不再点由下面三个计数决定** ——
+        # 旧写法把它当闸门，一次点空就永远不点了，只能等 150 秒超时。
         self.signin_clicked = False
+        #: 签到点过几次（上限 ``SIGNIN_CLICK_LIMIT``）与距上一次点已等了几帧。
+        self.signin_attempts = 0
+        self.signin_wait_frames = 0
+        #: 「签到那块读不出颜色」连续出现了几帧（见 ``SIGNIN_UNKNOWN_FRAME_LIMIT``）。
+        self.signin_unknown_frames = 0
         # 到兑换中心只是为了**路过**（去「我的任务」的必经之路：兑换中心 → 获取积分卡）。
         # 置位时 `_on_exchange_center` 只点「获取积分卡」，不做兑换决策。
         self.via_exchange = False
@@ -1236,8 +1281,8 @@ class CommunityStateMachine:
         照旧卡 150 秒。两份实现的代价就是这样：**测试守住了 A，生产跑的是 B**。
 
         判据只留一份（与「判据不许静默降级」是同一条道理）。
-        ``test_community.py::test_the_machine_and_judge_page_agree_on_every_frame``
-        逐帧核两边结论一致，防止再分家。
+        ``test_community.py::test_the_machine_uses_the_shared_page_judgement``
+        验证主循环使用统一判页的结果。
         """
         return pages.judge_page(screen, self.templates)
 
@@ -1679,13 +1724,17 @@ class CommunityStateMachine:
                 self.stop_reason = (
                     "兑换失败：订单确认页的「确认兑换」是灰的（多半积分不够）"
                 )
-                self.state = CommunityState.CLOSING
+                # ⚠️ 2026-11-23：这里**不能**置 CLOSING。CLOSING 语义是「已点过退出社区、
+                # 只等转回横屏」——next_action 开头对它的竖屏帧一律返回 None、不判页。
+                # 失败这一刻人还卡在竖屏的商品详情，后面两级退回还没走；提前置 CLOSING
+                # 会让退场链断在这一帧，干等到超时。保持 ORDER_CONFIRM，按页逐层退。
                 return CommunityAction(
                     "back_from_redeem_failed",
                     REDEEM_CONFIRM,
                     source_page=page.name,
+                    target_pages=("item_detail",),
                     press_back=True,
-                    reason="兑换点不动 —— 先退回上一页；失败现场已在发出前存图",
+                    reason="兑换点不动 —— 先退回商品详情；失败现场已在发出前存图",
                 )
             # ⚠️ 点过「确认兑换」之后按钮会变禁用暗绿（颜色定位找不到），而结果要
             # **>7 秒**（实测 3~40 秒）才弹。这**不是**故障，是正常的「等结果」——
@@ -1707,11 +1756,14 @@ class CommunityStateMachine:
         if self.redeem_failed:
             # 兑换失败后还要再退一级（订单确认 → 商品详情 → 兑换中心），
             # 由 ``_on_exchange_center`` 接着点 ✕ 关社区。
-            self.state = CommunityState.CLOSING
+            # ⚠️ 2026-11-23：同上，这里也**不能**置 CLOSING —— 人还在竖屏商品详情，
+            # 退回兑换中心这一步还没走完。按当前页记 ITEM_DETAIL 即可。
+            self.state = CommunityState.ITEM_DETAIL
             return CommunityAction(
                 "back_from_item_failed",
                 ITEM_BACK,
                 source_page=page.name,
+                target_pages=("exchange_center", "exchange_empty"),
                 press_back=True,
                 reason="兑换失败，从商品详情退回兑换中心",
             )
@@ -1737,13 +1789,17 @@ class CommunityStateMachine:
         「进出都要有标志」是这条路线立得住的前提，所以补上 ``feed_home`` 这道验收。
         """
         self.state = CommunityState.EXCHANGE
+        # ⚠️ 2026-11-23：`<` 是**H5 历史返回**，落点是「上一页」而不是写死的信息流：
+        # 正常流程是「我的任务 →「去兑换」→ 空列表」⇒ 退回的是**我的任务**；
+        # 入口直达时历史栈可能为空，也可能不为空 —— 不要替网页猜，两个落点都放行。
+        # 旧写法只写 ``feed_home`` ⇒ 退回「我的任务」时必判「转场超时」。
+        # 这里如实写两个可能落点，不猜是哪一种（两个都是合法上一层）。
         return CommunityAction(
             "leave_empty_exchange",
             EXCHANGE_BACK,
             source_page=page.name,
-            target_pages=("feed_home",),
-            in_page_evidence="退出空列表的兑换中心，回信息流后重新进入",
-            reason="兑换中心是空列表（偶发），退回去重进",
+            target_pages=("tasks_page", "feed_home"),
+            reason="兑换中心是空列表（偶发），点左上角 `<` 退回上一页（我的任务或信息流）",
         )
 
     def _on_exchange_center(self, screen: np.ndarray, page) -> CommunityAction:
@@ -1760,23 +1816,38 @@ class CommunityStateMachine:
                 target_pages=("tasks_page",),
                 reason="路过兑换中心，点「获取积分卡」进我的任务（这一帧不做兑换决策）",
             )
-        if self.entry_page in ("exchange_center", "exchange_empty") and (
-            self.progress.signed_in is None
+        if self.progress.signed_in is None and page.name in (
+            "exchange_center",
+            "exchange_empty",
         ):
-            # **入口落点**（不是从信息流走过来的）：H5 记住了上次那句话，点进社区
-            # 直接就是兑换中心 ⇒ 每日签到还没做。先点左上角 `<` 回信息流，
-            # 由 ``_on_feed`` 按正常流程读签到状态 —— 不在这儿猜签没签。
+            # 签到还没确认过，人却在兑换中心 ⇒ 这就是「进社区的第一步」。
             #
-            # ⚠️ 判据用 ``signed_in is None``（一次都没读过信息流），**不用**
-            # ``signin_clicked``：后者只说明"点过一下"，签到可能没成。
+            # ⚠️ 2026-11-24：**判据只看 ``signed_in is None``，不再看 ``entry_page``**。
+            # 抢点入口（``_enter_community_immediately``）绕过了状态机的入口动作，
+            # ``entry_page`` 是空的；旧条件因此不成立，兑换中心被当成「正常路过」，
+            # 直接走兑换决策（「清单已跑满」→ 点 ✕ 收工），签到被静默跳过 ——
+            # 01:16 那次实跑就是这个形状。
+            # 正常流程里路过兑换中心时 ``signed_in`` 早就有值（签过 / 已判定），
+            # 所以这条不会误触发。
+            #
+            # ⚠️⚠️ **2026-11-24 订正（重要）**：这一支一度写成
+            # 「点 ✕ 退社区、点不动就报错」，依据是「入口直达时 `<`／获取积分卡／✕
+            # 全部不响应」。那个结论**是取图坏了造成的假象** —— 竖屏取图当时一直在读
+            # 2026-11-21 15:23 的旧截图（见 ``core/portrait.py::_screencap``），
+            # 判页和点击全按那张旧页面算，真实页面早就变了。
+            # 取图修好后的同一次实跑里，「获取积分卡」一点就进我的任务
+            # （2026-11-24 08:10:05 日志），签到也在那一页就地做完。
+            #
+            # ⇒ 恢复原本的设计：路过兑换中心去「我的任务」，在签到日历上就地签。
+            # 不走「关掉社区再重进」：那要多赌一次入口落点，没有必要。
             return CommunityAction(
-                "back_to_feed_for_signin",
-                EXCHANGE_BACK,
+                "goto_tasks_card",
+                EXCHANGE_GAIN_POINTS_CARD,
                 source_page=page.name,
-                target_pages=("feed_home",),
+                target_pages=("tasks_page",),
                 reason=(
-                    "进社区直接落在兑换中心（H5 记住了上次页面），"
-                    "每日签到还没做 ⇒ 先点左上角 `<` 回信息流"
+                    f"进社区落在「{page.label}」、签到还没做 ⇒ 点「获取积分卡」"
+                    "进我的任务，在签到日历上就地签到"
                 ),
             )
         if self.redeem_failed:
@@ -1882,22 +1953,37 @@ class CommunityStateMachine:
         照「计数没动」的说法排错会被带偏（2026-10-07 修正）。
         """
         self.state = CommunityState.TASKS
-        if (
-            self.entry_page == "tasks_page"
-            and self.progress.signed_in is None
-            and self.active_task is None
-        ):
-            # 入口直接落在「我的任务」⇒ 先退回兑换中心（这一页的 `<` 只回上一层），
-            # 再由 ``_on_exchange_center`` 把签到那一步补上。
-            return CommunityAction(
-                "back_to_feed_for_signin_from_tasks",
-                TASKS_BACK,
-                source_page=page.name,
-                target_pages=("exchange_center", "exchange_empty"),
-                reason=(
-                    "进社区落在「我的任务」，每日签到还没做 ⇒ "
-                    "先退回兑换中心，再回信息流把签到补上"
-                ),
+        if self.progress.signed_in is None and self.active_task is None:
+            # 「我的任务」页自带每日签到日历：今日可领的那一格右上角有固定的
+            # 「领」角标。**就地签到**，不依赖 H5 历史返回。
+            #
+            # ⚠️ 旧写法是「退回兑换中心，再由兑换中心补签到」，而兑换中心那一步点的是
+            # 左上角 `<`（H5 历史返回）；当时记的「入口直达时无历史可退、连点 4 次不动」
+            # 属于 2026-11-24 那批**基于旧截图**的结论，现已作废（见本文件头与
+            # ``core/portrait.py::_screencap``）。无论旧写法为何失败，就地签到都不依赖
+            # H5 历史，保留这一支。
+            # 更糟的是：退回兑换中心后 ``entry_page`` 仍是 ``tasks_page``，
+            # 那边签到分支的条件（只认 exchange_center/exchange_empty）不成立
+            # ⇒ **签到被无声跳过**。这一条在 2026-11-23 复查时确认，是注释与实现不符。
+            claim = pages.locate_tasks_signin_claim(screen, self.templates)
+            if claim is not None:
+                self.signin_clicked = True
+                return CommunityAction(
+                    "tap_signin_in_tasks",
+                    claim,
+                    source_page=page.name,
+                    target_pages=("signin_done",),
+                    reason=(
+                        "我的任务页签到日历上有「领」角标（今天还没签）⇒ 点那一格签到"
+                        f"（角标现找、落点 {claim}；角标只在今日可领格出现，"
+                        "签到完成后会消失）"
+                    ),
+                )
+            # 没有「领」角标 ⇒ 今天这一格已经领过。这是**页面事实**，不是猜：
+            # 角标随签到消失，实测签到后同一页最高只到 0.42（阈 0.82）。
+            self.progress.signed_in = True
+            self.last_reason = (
+                "我的任务页签到日历上没有「领」角标 ⇒ 今天已经签过，接着跑任务"
             )
         rows = pages.observe_task_rows(screen, self.templates)
         self.progress.tasks = {row.key: row.state for row in rows}
@@ -1954,22 +2040,23 @@ class CommunityStateMachine:
                 target_pages=("exchange_center", "exchange_empty"),
                 reason="三条任务都有结论了，走「去兑换」进兑换中心",
             )
-        # 任务与兑换都完成 ⇒ 收工（先退回兑换中心，那里右上角的 ✕ 能**一步退出社区**）。
+        # 任务与兑换都完成 ⇒ 收工。
         # ⚠️ 不在这里直接 `_finish()`：收工前必须把社区页关掉、让模拟器转回横屏，
         # 否则收尾「回大厅」那一步拿着横屏通道去取竖屏画面，会直接抛
         # 「render size changed」——任务明明做完了，却报一个看不懂的失败。
         #
-        # ⚠️⚠️ 2026-10-09 真机：这一页的 `<` **回不到信息流**，它回到的是**兑换中心**
-        # （上一层）。原来这里写 ``("feed_home",)`` ⇒ 转场永远等不到 ⇒ 干等 150 秒超时
-        # （实跑日志 19:49:56 点 (35,130)，19:52:31「转场超时 … 当前已确认页面=exchange_center」，
-        # 诊断帧就是**兑换中心**那一屏）。所以这里如实写成**回兑换中心**，
-        # 到了那边点右上角 ✕ 就**一步退出社区**（见 ``EXCHANGE_CLOSE``）—— 收尾不再绕信息流。
+        # ⚠️⚠️ 2026-11-23：**不再点左上角 `<`**。它是 H5 历史返回，只在「从兑换中心
+        # 点「获取积分」进来」时才有兑换中心可退；其它入口下历史栈未必有那一页。
+        # 所以不拿 `<` 当收工动作（与「点不动就报错」那条旧结论无关，现已作废）。
+        # 这一页右上角有一颗**外壳**的 ✕（实测 (940,127)，点完 8 秒内转回横屏），
+        # 不依赖 H5 历史栈 ⇒ 一步关掉整个社区，收工少一跳、也少一个失效前提。
+        self.state = CommunityState.CLOSING
         return CommunityAction(
             "leave_tasks",
-            TASKS_BACK,
+            TASKS_CLOSE,
             source_page=page.name,
-            target_pages=("exchange_center",),
-            reason="任务与兑换都完成，退回兑换中心，再由那边点 ✕ 退出社区",
+            target_pages=("web_activity_list",),
+            reason="任务与兑换都完成，点我的任务右上角 ✕ 一步退出社区（不依赖 H5 历史返回）",
         )
 
     def _start_task(self, key: str, page) -> CommunityAction:
@@ -2521,30 +2608,71 @@ class CommunityStateMachine:
             )
         state = feed_signin_state(screen)
         self.progress.signed_in = state == "done"
+        if state == "done":
+            self.signin_attempts = 0
+            self.signin_wait_frames = 0
+            self.signin_unknown_frames = 0
         if state == "unknown":
+            # 连续几帧读不出颜色才判失败：进信息流的第一两帧可能还在加载、或者被
+            # 某个浮层压暗。旧写法一帧 unknown 就抛，把「正常加载」判成故障。
+            self.signin_unknown_frames += 1
+            if self.signin_unknown_frames < SIGNIN_UNKNOWN_FRAME_LIMIT:
+                self.last_reason = (
+                    "信息流上「每日签到」那块暂时读不出颜色"
+                    f"（{self.signin_unknown_frames}/{SIGNIN_UNKNOWN_FRAME_LIMIT} 帧，先等）"
+                )
+                return None
             self.last_reason = (
-                "信息流上「每日签到」那块读不出颜色（出界，或画面被弹窗压暗）"
+                "信息流上「每日签到」那块连续 "
+                f"{self.signin_unknown_frames} 帧读不出颜色（出界，或画面被弹窗压暗）"
             )
             raise CommunityDataMissing(
                 "信息流上「每日签到」图标那块读不出颜色，说不出今天签没签。"
                 "**不猜**：猜「已签」会漏签，猜「未签」会白点一下。"
             )
+        self.signin_unknown_frames = 0
         if state == "todo":
-            if not self.signin_clicked:
+            if self.signin_attempts < SIGNIN_CLICK_LIMIT and (
+                self.signin_attempts == 0
+                or self.signin_wait_frames >= SIGNIN_RETRY_FRAMES
+            ):
+                self.signin_attempts += 1
+                self.signin_wait_frames = 0
                 self.signin_clicked = True
                 return CommunityAction(
                     "tap_signin",
                     FEED_SIGNIN_CLICK,
                     source_page=page.name,
-                    target_pages=("signin_done", "feed_home"),
+                    # ⚠️ **不声明 target_pages**：点完画面很可能仍是信息流（弹窗最慢 74 秒
+                    # 才出）。把 ``feed_home`` 写进目标集合 = 「点空也判完成」——
+                    # 正是 ``TaskStep`` 文档里明令禁止的形状。这一步的验收交给下一帧
+                    # 的 ``feed_signin_state`` 真读：图标变灰、或弹窗出现，都算数。
+                    in_page_evidence="签到图标由彩色变灰，或出现「签到成功」弹窗",
                     reason=(
                         "「每日签到」图标是彩色的（今天还没签），点它签到；"
                         "点完弹窗可能要等一分多钟才出（2026-10-07 实测最慢 74 秒），"
                         "这期间画面不变，不是点空了"
+                        f"（第 {self.signin_attempts}/{SIGNIN_CLICK_LIMIT} 次）"
                     ),
                 )
+            if self.signin_attempts >= SIGNIN_CLICK_LIMIT:
+                # ⚠️ 2026-11-24 订正：这里原本**当场抛** CommunityDataMissing，
+                # 依据是「8 帧（≈16 秒）还是彩色 ⇒ 只可能是没点中」。那条假设站不住：
+                # 同一段注释自己写着「弹窗实测最慢 74 秒才出」，而 07:15 那次实跑
+                # 点后 9 秒画面仍无变化 —— 服务端慢的时候，16 秒根本不构成判据。
+                # 抛得早的代价是**把一次成功变成失败**（旧版能干等到 150 秒等到弹窗）。
+                # ⇒ 现在只停止重复点击，**继续等**；上限仍由 ``FEED`` 那档状态超时罩住，
+                # 到点如实报「签到没生效」并留诊断，不猜「已签」。
+                self.last_reason = (
+                    f"「每日签到」已点 {self.signin_attempts} 次、图标仍是彩色的；"
+                    "不再重复点击，继续等弹窗（旧记录：最慢 74 秒才出）"
+                )
+                return None
+            self.signin_wait_frames += 1
             self.last_reason = (
-                "已点过「每日签到」，等签到弹窗出现（2026-10-07 实测最慢 74 秒）"
+                f"已点过「每日签到」（第 {self.signin_attempts}/{SIGNIN_CLICK_LIMIT} 次），"
+                "等图标变灰或签到弹窗出现"
+                f"（已等 {self.signin_wait_frames}/{SIGNIN_RETRY_FRAMES} 帧）"
             )
             return None
         # 今天已经签过 ⇒ 去「我的任务」。⚠️ 底栏那个「我的」不是它（见 `_return_to_tasks`）。
@@ -2565,11 +2693,17 @@ class CommunityStateMachine:
         两下点击全部无反应，而日志里看不出为什么。
         """
         self.state = CommunityState.SIGNIN_DONE
+        # 弹窗出现就是「签到成功」这个事实本身 —— 无论入口是信息流图标还是
+        # 我的任务签到格，都该把进度记下来。
+        self.progress.signed_in = True
         return CommunityAction(
             "ack_signin_done",
             SIGNIN_POPUP_CLOSE,
             source_page=page.name,
-            target_pages=("feed_home",),
+            # ⚠️ 签到有**两个**入口：信息流的图标、我的任务的签到格。
+            # 关闭后回到发起签到的那个页面，所以两个落点都要接受 ——
+            # 只写 ``feed_home`` 时，从我的任务签的那一次会判「转场超时」。
+            target_pages=("feed_home", "tasks_page"),
             reason="签到成功弹窗，点「关闭」收起（坐标由颜色连通域量出，别照渲染图目测）",
         )
 
@@ -2729,6 +2863,12 @@ class ChannelSwitch:
     PORTRAIT = "portrait"
     PENDING_PORTRAIT = "pending_portrait"
     PENDING_LANDSCAPE = "pending_landscape"
+    #: 下一步方向**不确定**：按返回键退出兑换中心时，可能退回信息流（竖屏），
+    #: 也可能直接关掉社区（横屏）。这一档不猜，下一帧按真实方向锁定。
+    #: ⚠️ 没有它就会白等：返回键已经转回横屏，开关却还在 PENDING_PORTRAIT，
+    #: ``wait_for_portrait`` 会干等 20 秒然后判「社区未真正打开」
+    #: （2026-11-24 00:02 实跑就是这个形状）。
+    PENDING_EITHER = "pending_either"
 
     def __init__(
         self,
@@ -2749,6 +2889,10 @@ class ChannelSwitch:
             self.state = self.PENDING_PORTRAIT
         else:
             self.state = self.PENDING_LANDSCAPE
+
+    def expect_either(self) -> None:
+        """下一步方向不确定（按返回键退出兑换中心：可能回信息流，也可能回横屏）。"""
+        self.state = self.PENDING_EITHER
 
     def use_portrait(self) -> bool:
         """本帧该走竖屏通道吗（换向中会问一次窗口方向）。
@@ -2776,6 +2920,13 @@ class ChannelSwitch:
         """
         if self.state == self.PORTRAIT:
             return True
+        if self.state == self.PENDING_EITHER:
+            # 方向不确定：问一次窗口，按真实方向锁定。只在这一个动作之后用一次，
+            # 不会给主循环带来「每帧问方向」的开销。
+            self.probes += 1
+            portrait_now = self.portrait.is_portrait()
+            self.state = self.PORTRAIT if portrait_now else self.LANDSCAPE
+            return portrait_now
         if self.state == self.LANDSCAPE:
             # ⚠️ 已锁定横屏，但**先核对真实方向**（见上面 docstring 的「用户点 2」）。
             self.probes += 1
@@ -3039,6 +3190,11 @@ class CommunityRunner(ModeRunnerBase):
             "refresh_community_page",
             # 关图片查看器同理：返回键按下去，那一屏要么没了、要么还在。
             "dismiss_image_viewer",
+            # 签到：点完 4~6 秒内必出弹窗或图标变灰（实测 07:15:42→07:15:48）。
+            # 走默认 45 秒的话，「点空 → 等 8 帧 → 再点」这条自愈链会被节流拖死。
+            "tap_signin",
+            # 我的任务页签到格同理（实测点完 4 秒内出弹窗）。
+            "tap_signin_in_tasks",
             # 陌生页逃生门的两级动作：返回键按下去，要么退回上一层、要么没动。
             # 按默认 45 秒等，一轮逃生要拖成两分多钟，而它总共只有 3 级。
             "stranger_back",
@@ -3113,6 +3269,8 @@ class CommunityRunner(ModeRunnerBase):
 
     def run(self, max_cycles: Optional[int] = None) -> int:
         self._attach_channels()
+        self._collapse_status_bar()
+        self._enter_community_immediately()
         stopped = False
         try:
             # 主循环委托给基类：收尾（``_close_out``）与结论门槛都在那边。
@@ -3128,6 +3286,84 @@ class CommunityRunner(ModeRunnerBase):
             # 正常路径用不到它（状态机在横屏那一帧才收工），且它是幂等的。
             if not stopped:
                 self._leave_portrait_if_needed()
+
+    def _enter_community_immediately(self) -> None:
+        """导航刚验收完，**立刻**点一次社区入口，省掉主循环那两帧稳定确认的等待。
+
+        ## ⚠️ 2026-11-24 订正：原有的「必须抢点」依据全部作废
+
+        旧注释写的是「探针 1 秒内点落信息流、主循环 5 秒后点落兑换中心，十次对比全部如此」，
+        并据此断言「入口直达兑换中心时没有任何可靠出路」。这些都是**取图坏掉造成的假象**：
+        竖屏通道当时每帧都读到 2026-11-21 15:23 的旧截图（见 ``core/portrait.py::_screencap``），
+        探针走的是另一条取图路径、看到的是真画面，生产链路看的是旧图 —— 两边差在取图，
+        不在点击时机，也不在点击通道。取图修好后，同一次实跑从正常节奏进入社区，
+        落的就是信息流，整套流程一次跑通（08:09–08:14）。
+
+        ⇒ 这里保留「早一点点」只是为了少等几秒，**不再声称它会改变入口落点**。
+        落点由网页决定；无论落在哪个已知页，状态机都能接上（见 ``_COMMUNITY_ENTRY_PAGES``）。
+
+        ## 边界
+
+        - 只在「横屏 + 还没进社区」时动手；干跑不碰；
+        - 点完只等 3 秒，**不验收**：成功了后面状态机判页接上，失败了大不了状态机再点一次；
+        - 整个过程包在 try 里：这是加速，不是必经步骤，出错绝不挡主流程。
+        """
+        if self.runtime.dry_run:
+            return
+        try:
+            screen = self.runtime.capture()
+        except Exception as error:  # noqa: BLE001 —— 加速失败不挡主流程
+            self.runtime.log(
+                f"模式={self._MODE_LABEL} 入口=抢点前的取图失败（已忽略） "
+                f"原因={type(error).__name__}: {error}"
+            )
+            return
+        if is_portrait_frame(screen):
+            return
+        self.runtime.log(
+            f"模式={self._MODE_LABEL} 入口=导航已验收，提前点一次「游戏社区」（只为省几秒，不改变落点）"
+        )
+        try:
+            # ⚠️ 这里**绕开方向开关**，直接用横屏窗口点：``runtime.click`` 会先过
+            # ``ChannelSwitch.use_portrait()``，而它在这一刻还要再问一次窗口方向。
+            # 入口这一步只可能发生在横屏，直接用横屏窗口省一次方向探测。
+            #
+            # ⚠️ 2026-11-24 订正：旧注释说「走通道落兑换中心、直连落信息流，十次对比」，
+            # 那是取图读旧文件造成的假象（见本方法 docstring），**不是点击通道的差别**。
+            # 现在两种点击通道都不影响入口落点，选直连只因为这里少一次查询。
+            window = self._landscape_window()
+            clicker = getattr(window, "click", None)
+            if callable(clicker):
+                clicker(WEB_COMMUNITY_ENTRY)
+            else:
+                self.runtime.click(WEB_COMMUNITY_ENTRY, "enter_community")
+        except Exception as error:  # noqa: BLE001 —— 同上
+            self.runtime.log(
+                f"模式={self._MODE_LABEL} 入口=抢点失败（已忽略） "
+                f"原因={type(error).__name__}: {error}"
+            )
+            return
+        self.sleep(3.0)
+
+    def _collapse_status_bar(self) -> None:
+        """进社区前收起已拉下的通知面板 —— 它会盖住页面顶部标题，把判页变成 unknown。
+
+        ⚠️ 作用**有边界**：只收「已经拉下来/被点开」的通知面板，对刚弹出的
+        heads-up 横幅无效。那一档的规避办法是「别在失败通知刚到的几秒内立刻重跑」。
+        实测 2026-11-23：一次失败通知的横幅压在「我的任务」标题上，判页直接 unknown。
+        成本只有一次 shell 调用，失败也绝不打断主流程。
+        """
+        window = self._landscape_window()
+        client = getattr(window, "adb_client", None)
+        if client is None:
+            return
+        try:
+            client.run_shell("cmd statusbar collapse")
+        except Exception as error:  # noqa: BLE001 —— 清场是旁路，失败不影响主流程
+            self.runtime.log(
+                f"模式={self._MODE_LABEL} 运行前收起通知栏失败（已忽略） "
+                f"原因={type(error).__name__}: {error}"
+            )
 
     def _attach_channels(self) -> None:
         if self.runtime.dry_run:
@@ -3158,12 +3394,22 @@ class CommunityRunner(ModeRunnerBase):
         )
 
     def _landscape_window(self) -> Any:
-        """横屏那条通道用的窗口对象（从 runtime 的取图实现上取；取不到返回 None）。
+        """横屏那条通道用的窗口对象（取不到返回 None）。
 
-        ⚠️ 只读一次、取不到就放过：不把「读不到」升级成「跑不了」——测试与替身
-        本来就没有这个属性（例如传个 ``lambda`` 进去）。真跑时它一定是
-        ``Epic7Window.capture`` 这个**绑定方法**，于是 ``__self__`` 就是那个窗口。
+        ⚠️⚠️ 2026-11-24 修：**先问竖屏通道手里的窗口**。
+        原先只从 ``runtime._capture.__self__`` 上取，而 ``attach_dual_channel``
+        把 ``_capture`` 换成了一个闭包函数 —— 函数没有 ``__self__`` ⇒ 这里**恒返回 None**
+        ⇒ 依赖它的两处全部退化成「另建一个新窗口对象」：
+        ``PortraitChannel(window=None)``（多一次设备发现）与入口抢点（拿不到窗口，
+        只能退回通道点击）。这个 bug 本身是真的，但与入口落点无关 —— 旧注释把它当成
+        「探针落信息流、生产落兑换中心」那 10 次对比的最后一个差异，那批对比其实是
+        竖屏取图读旧文件造成的假象（见 ``core/portrait.py::_screencap``）。
         """
+        portrait = getattr(self, "_portrait", None)
+        if portrait is not None:
+            window = getattr(portrait, "_window", None)
+            if window is not None:
+                return window
         capture = getattr(self.runtime, "_capture", None)
         return getattr(capture, "__self__", None)
 
@@ -3319,7 +3565,14 @@ class CommunityRunner(ModeRunnerBase):
         name = getattr(action, "name", "")
         if name == "enter_community":
             self._switch.expect("portrait")
-        elif name in ("close_community", "logout_community", "leave_exchange"):
+        elif name in (
+            "close_community",
+            "logout_community",
+            "leave_exchange",
+            # 2026-11-23：我的任务收工改成点 ✕ 一步关社区（不再点 `<` 退兑换中心），
+            # 所以它现在也会转回横屏，必须拨通道预期。
+            "leave_tasks",
+        ):
             self._switch.expect("landscape")
 
     def _transition_completed(
@@ -3378,6 +3631,10 @@ class CommunityRunner(ModeRunnerBase):
                 "原因=落点上是个认不出的陌生页，先按返回把它退掉再重来"
             )
             return True
+        # ⚠️ 2026-11-24：这里的 `escape_exchange_with_x/_back`「换动作」分支已删除。
+        # 那一套动作建立在「入口直达兑换中心时这一页点不动」上，而那是竖屏取图读旧文件
+        # 造成的假象（见 ``core/portrait.py::_screencap``）。现在落兑换中心就直接点
+        # 「获取积分卡」去我的任务，不存在"换下一级动作"这回事。
         return super()._transition_completed(
             previous_action, current_action, confirmed_page
         )
@@ -3544,23 +3801,25 @@ class CommunityRunner(ModeRunnerBase):
             # 模拟器留在竖屏 ⇒ 紧接着基类回家取图报「画面宽高比与模板基准不一致」
             # （10-07 / 10-08 连撞多次的就是这条链）。
             #
-            # 这里**挨个试**，谁把窗口转回横屏就算谁赢。这是**收尾的扫地出门**，
-            # 与主流程的纪律相反 —— 主流程必须按判页挑对的那一颗（三颗外径 33/44/48
-            # 互不相等，不是同一颗挪了位置），**不许**这样试。
+            # ⚠️ 2026-11-24 修：以前这里写死了三颗（``FEED_CLOSE`` / ``EXCHANGE_CLOSE`` /
+            # ``NETWORK_PAGE_CLOSE``），而 ``_EXIT_CLOSE_POINTS`` 早就加到四颗 ——
+            # 「我的任务」那颗 ``TASKS_CLOSE`` **一次都没被点过**，于是那一页关不掉，
+            # 收尾只能退化到按返回键（2026-11-15 09:19「每颗都试过还是出不去」就是这个）。
+            # 连带 ``index == len(...)`` 恒为假（最大 3 对 4）⇒ 那句 ``raise`` 是死代码，
+            # 日志上的「第 x/4 颗」也没说过实话。现在**只认这一份常量**，不再抄第二份。
             portrait = switch.portrait
-            for index, point in enumerate(
-                (FEED_CLOSE, EXCHANGE_CLOSE, NETWORK_PAGE_CLOSE), 1
-            ):
+            points = _EXIT_CLOSE_POINTS
+            for index, point in enumerate(points, 1):
                 portrait.click(point)
                 try:
                     portrait.wait_for_landscape(timeout=_EXIT_CLOSE_ATTEMPT_SECONDS)
                     break
                 except OrientationError as error:
-                    if index == len(_EXIT_CLOSE_POINTS):
+                    if index == len(points):
                         raise
                     self.runtime.log(
                         f"模式={self._MODE_LABEL} 收尾=第 {index}/"
-                        f"{len(_EXIT_CLOSE_POINTS)} 颗 ⊗ {point} 没关掉这一屏，"
+                        f"{len(points)} 颗 ⊗ {point} 没关掉这一屏，"
                         f"换下一颗 原因={error}"
                     )
             for _ in range(2):

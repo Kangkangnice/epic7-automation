@@ -158,6 +158,27 @@ class WorldBossCountTests(unittest.TestCase):
         with self.assertRaises(AttemptsExhausted):
             machine.next_action(fixture("worldboss_home_exhausted"))
 
+    def test_manage_support_team_button_is_a_normal_exhausted_stop(self):
+        """右下角换成「管理辅助队伍」时也是正常次数耗尽，不是认不出页面。
+
+        2026-11-23 早上用户明确提出两者的区分：次数用完是正常终点，
+        认不出画面才是异常。这张帧的按钮高亮带相对亮度很高，颜色判据会误判成
+        「还有次数」，因此必须由按钮变体本身给出耗尽结论。
+        """
+
+        machine = WorldBossStateMachine(TEMPLATES)
+        screen = fixture("worldboss_home_manage_support_team")
+
+        self.assertTrue(
+            select_team_enabled(screen),
+            "这张帧的颜色判据确实会误判成可点，正因如此才需要按钮变体兜住",
+        )
+        self.assertIs(WorldBossState.HOME, machine.observe_page(screen))
+        with self.assertRaises(AttemptsExhausted) as caught:
+            machine.next_action(screen)
+        self.assertEqual("今日次数已用完", caught.exception.stop_label)
+        self.assertIn("管理辅助队伍", str(caught.exception))
+
     def test_faded_home_with_attempts_left_is_still_asked_for_the_team_button(self):
         """反向守门：淡入暗帧不能触发上面那条停止（否则会白白收摊）。"""
 
@@ -1075,6 +1096,7 @@ class WorldBossTeamConfigTwoStageTests(unittest.TestCase):
         diagnostics: str | None = None,
         supervisor_outcome: BattleOutcome = BattleOutcome.RESULT_REACHED,
         hold: dict[int, int] | None = None,
+        poll_seconds: float = 1.0,
     ) -> tuple[WorldBossRunner, MagicMock, _FakeClock]:
         """真状态机 + 真 Runner，按帧序列喂画面；监督由 MagicMock 记录其点击后放行。
 
@@ -1105,12 +1127,12 @@ class WorldBossTeamConfigTwoStageTests(unittest.TestCase):
                 monotonic=lambda: clock.now,
             ),
             sleep=clock.sleep,
+            poll_seconds=poll_seconds,
             battle_supervisor=supervisor,
         )
         # ⚠️ 重试窗口**不能**清零：被清零时「同页动作的重试间隔」恒为 0，
         # 4 次尝试会在 4 帧内烧光，等不到「画面第三次变蓝」——那正是本组要验的行为。
-        # 用真实窗口（45 秒）+ `poll_seconds=1.0`，等于「每 45 帧才允许重试一次」，
-        # 帧序列按这个节奏排即可（见各用例的注释）。
+        # 真实重试窗口保持 45 秒。用例按轮询间隔安排重复帧的数量。
         return runner, supervisor, clock
 
     @classmethod
@@ -1164,7 +1186,7 @@ class WorldBossTeamConfigTwoStageTests(unittest.TestCase):
         ]
         with TemporaryDirectory() as directory:
             runner, handoffs, _ = self._run_until_handoff(
-                frames, clicks, diagnostics=directory, hold={0: 60, 1: 4, 2: 2}
+                frames, clicks, diagnostics=directory, hold={0: 16, 1: 4, 2: 2}, poll_seconds=4.0
             )
 
         auto_point = CLICK_POINTS["auto-configure"]
@@ -1269,7 +1291,7 @@ class WorldBossTeamConfigTwoStageTests(unittest.TestCase):
         ]
         with TemporaryDirectory() as directory:
             runner, handoffs, clock = self._run_until_handoff(
-                frames, clicks, diagnostics=directory, hold={0: 60, 1: 4, 2: 2}
+                frames, clicks, diagnostics=directory, hold={0: 16, 1: 4, 2: 2}, poll_seconds=4.0
             )
 
         auto_point = CLICK_POINTS["auto-configure"]

@@ -39,6 +39,7 @@ from auto_game_unified.games.epic7.side_story import (
 )
 from auto_game_unified.games.epic7.story import StoryState
 from auto_game_unified.games.epic7.unknown_screen import UnrecognizedScreen
+from auto_game_unified.tests.fixture_images import read_rgb_fixture
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -135,9 +136,8 @@ SIDE_ACTIONS = frozenset(
 )
 
 # 模板加载（主线那 20 多张 + `quick_battle` 检测器）是整个文件最贵的一步，
-# 且与机器实例无关 ⇒ 只加载一次、每帧只解码一次。
+# 且与机器实例无关 ⇒ 模板只加载一次，截图由共享预算管理。
 _TEMPLATES = None
-_FRAMES: dict[str, np.ndarray] = {}
 
 
 def templates():
@@ -148,11 +148,7 @@ def templates():
 
 
 def fixture(name: str) -> np.ndarray:
-    if name not in _FRAMES:
-        raw = cv2.imread(str(FIXTURES / f"{name}.png"), cv2.IMREAD_COLOR)
-        assert raw is not None, f"缺夹具 {name}.png"
-        _FRAMES[name] = cv2.cvtColor(raw, cv2.COLOR_BGR2RGB)
-    return _FRAMES[name]
+    return read_rgb_fixture(FIXTURES / f"{name}.png", crop_to_reference=False)
 
 
 class SideStoryPeriodTests(unittest.TestCase):

@@ -1717,6 +1717,41 @@ def find_pet_gift_badge(
     )
 
 
+# 全局弹窗守卫认得出的**弹窗种类全集**（`_find_popup` 返回的第二项）。
+# 路线契约的「覆盖层」只许引用这里的类别，不按模板文件名反推 —— 模板会改名，
+# 类别不会。守卫新增一种弹窗时必须同时把它加进本集合（测试会比对源码里的返回值）。
+POPUP_KINDS: frozenset[str] = frozenset(
+    {
+        "network",
+        "equipment_bag_full",
+        "web_network_error",
+        "uncontrollable",
+        "tutorial_unlock",
+        "tutorial_skip",
+        "date_change",
+        "login_reward",
+        "intimacy",
+        "friendship_points",
+        "friend_request",
+        "side_story_notice",
+        "reward_notice",
+        "gift_claim",
+        "account_rank_up",
+        "account_level_up",
+        "knights_signin",
+        "gift_support",
+        "knights_weekly_reward",
+        "worldboss_support_reward",
+        "arena_rank_reward",
+        "battle_record",
+        "weekly_rank_start",
+        "weekly_rank_select",
+        "knights_growth_rank",
+        "pet_gift",
+    }
+)
+
+
 class Epic7GlobalPopupGuard:
     """Consume known system popups before business state machines see them."""
 

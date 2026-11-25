@@ -3,6 +3,7 @@ from enum import Enum
 from time import monotonic, sleep as default_sleep
 from typing import Callable, NoReturn
 
+import cv2
 import numpy as np
 
 from auto_game_unified.core.recovery import RecoveryGate
@@ -80,6 +81,25 @@ def valid_game_frame(screen: np.ndarray) -> bool:
         round(screen.shape[0] * 0.05) :,
         : round(screen.shape[1] * 0.97),
     ]
+    if (
+        type(content) is np.ndarray
+        and content.dtype == np.uint8
+        and content.ndim == 3
+        and content.shape[2] == 3
+    ):
+        count = content.size
+        if not count:
+            return False
+        total = int(sum(cv2.sumElems(content)))
+        if total < 3 * count:
+            return False
+        squares = int(cv2.norm(content, cv2.NORM_L2SQR))
+        variance_margin = squares * count - total**2 - 25 * count**2
+        # Well away from the cutoff the integer sums decide it directly.
+        # Near it, evaluate the original NumPy expression to preserve its rounding.
+        if abs(variance_margin) > 1e-10 * count**2:
+            return variance_margin > 0
+        return float(np.std(content)) >= 5.0
     return float(np.mean(content)) >= 3.0 and float(np.std(content)) >= 5.0
 
 

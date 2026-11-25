@@ -9,6 +9,7 @@ from typing import Any, Callable, Mapping, Optional
 
 import numpy as np
 
+from auto_game_unified.core.account import set_current
 from auto_game_unified.core.countdown import save_countdown
 from auto_game_unified.core.data_paths import data_root
 from auto_game_unified.core.matcher import find_template, load_template, set_active_backend
@@ -23,6 +24,7 @@ from auto_game_unified.core.pc_window import (
     PC_INPUT_MODES,
     Epic7PcWindow,
 )
+from auto_game_unified.games.epic7.account_profile import read_account
 from auto_game_unified.games.epic7.daily_tasks import (
     DAILY_TASKS,
     DailyReport,
@@ -334,11 +336,28 @@ class HomeReturn:
         return f"<HomeReturn mode={self._mode} flow=v2>"
 
 
+def _exception_summary(error: BaseException, *, limit: int = 160) -> str:
+    """把异常摘要压成一行，避免带换行的异常把运行日志拆成多条记录。"""
+
+    text = " ".join(str(error).splitlines()).strip()
+    return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
+def _cause_fields(cause: BaseException | None) -> str:
+    if cause is None:
+        return ""
+    return (
+        f" 原异常类型={type(cause).__name__}"
+        f" 原异常摘要={_exception_summary(cause)}"
+    )
+
+
 def _try_return_home_after_failure(
     home_return: HomeReturn,
     runtime: Runtime,
     *,
     mode: str,
+    cause: BaseException | None = None,
 ) -> None:
     """异常退出前，尽力把游戏带回大厅。
 
@@ -346,19 +365,25 @@ def _try_return_home_after_failure(
     这里再抛一个只会把真正的错因盖掉，用户看到的还是「回不了家」而不是「为什么挂」。
 
     另外**不再问用户**、也不重试 —— 异常现场已经存档（diagnostic），回家只是顺手
-    收拾一下，不是纠错。
+    收拾一下，不是纠错。``cause`` 只写进日志，用来按首个故障归类；不在这里处理它。
     """
+    cause_fields = _cause_fields(cause)
     try:
         home_return()
     except ManualStop:
-        runtime.log(f"模式={mode} 异常收尾=回首页被手动停止 处理=放弃收尾")
+        runtime.log(
+            f"模式={mode} 异常收尾=回首页被手动停止 处理=放弃收尾{cause_fields}"
+        )
     except Exception as error:  # noqa: BLE001 —— 绝不能盖掉真正的错因
         runtime.log(
             f"模式={mode} 异常收尾=回首页失败 "
-            f"原因={type(error).__name__}: {error} 处理=已忽略（原异常照旧抛出）"
+            f"原因={type(error).__name__}: {_exception_summary(error)} "
+            f"处理=已忽略（原异常照旧抛出）{cause_fields}"
         )
     else:
-        runtime.log(f"模式={mode} 异常收尾=已回到首页 状态=可以衔接下一个任务")
+        runtime.log(
+            f"模式={mode} 异常收尾=已回到首页 状态=可以衔接下一个任务{cause_fields}"
+        )
 
 
 def _enter_mode(
@@ -691,6 +716,11 @@ def run_mode(
                 build_navigation_templates(template_root),
                 runtime,
                 template_root=template_root,
+                # 「对手来源」同时决定进竞技场时站错页签要切回哪一个；
+                # 与 Runner 的同一份选项走同一套 clean，不会界面和执行各读一套。
+                arena_opponent_source=str(
+                    _popup_preference(spec.name, params, "opponent_source", "player")
+                ),
             )
             # 「回大厅」走新流程还是老流程，由这一个对象说了算（口径见 HomeReturn）。
             home_return = HomeReturn(navigator, runtime, mode=spec.name)
@@ -735,14 +765,16 @@ def run_mode(
     except ManualStop:
         # 用户按 P 喊停 ⇒ 一个字都不动游戏（这是全线统一口径，见 runner_base._close_out）。
         raise
-    except BaseException:
+    except BaseException as error:
         # 异常也回家（**所有路线**，2026-09-26 起不再有白名单分叉）。
         # 用户 2026-09-25 拍板——「异常了也该走回大厅，包括战斗里，直接放弃这一局」。
         # 以前不回家的理由是「硬按 Back 可能把已承诺的战斗弄丢」，而 v2 处理这个问题
         # 的办法是**显式放弃**（暂停 → 放弃战斗 → 放弃确认），比撒手不管更干净。
         # ⚠️ 回家本身**绝不改退出码**：回到家也照旧往外抛，结论还是「运行失败」。
         if home_return is not None:
-            _try_return_home_after_failure(home_return, runtime, mode=spec.name)
+            _try_return_home_after_failure(
+                home_return, runtime, mode=spec.name, cause=error
+            )
         raise
     # 竞技场给胜负；每天会跑的那几条给「这条干成了什么」。没有这两个方法就留 None。
     summary = getattr(runner, "outcome_summary", None)
@@ -898,6 +930,32 @@ def _build_daily_probe(
     return runtime, navigator
 
 
+def _build_daily_probe_reading_account(
+    *,
+    window_backend: str,
+    stop_file: Path | None,
+) -> tuple[Runtime, Epic7Navigator]:
+    """建整轮用的探针，并**顺手确认这次是谁登录的**（2026-11-23 加）。
+
+    为什么挂在这里：``run_daily_tasks`` 在跑第一条路线之前就建这个探针，那时用户
+    刚点开始、游戏通常停在大厅 —— 是整轮里第一个能看见昵称的时刻。读到就写进进程
+    环境（``core.account.set_current``），后续任何要记账的路线直接取，不必再逐层传参。
+
+    读不到（半路开局、停在别的页面）就留空 = 未识别，收尾巡检还会再读一次兜底。
+    **不沿用上一次的账号**：换了号又识别失败时，沿用等于把数据静默记到别人账上。
+    """
+
+    runtime, navigator = _build_daily_probe(
+        window_backend=window_backend, stop_file=stop_file
+    )
+    try:
+        owner = read_account(runtime.capture()) or {}
+    except Exception:  # noqa: BLE001 —— 读账号失败不该让整轮开不起来
+        owner = {}
+    set_current(owner.get("name", ""), owner.get("rank", ""))
+    return runtime, navigator
+
+
 # 「支线故事」入口右侧那把小锁：挂着它说明这个号的支线还没解锁。
 # 2026-11-22：新号跑到收尾巡检时，导航在这里报「页面[大厅]缺少导航锚点
 # lobby_side_story」，日志看着像故障，其实只是没解锁 —— 先看一眼锁，直接给一句
@@ -968,8 +1026,16 @@ def inspect_side_story_countdown(
     probe_runtime, _ = _build_daily_probe(
         window_backend=window_backend, stop_file=stop_file
     )
-    if _side_story_entry_locked(template_root, probe_runtime.capture()):
+    # 这一帧本来就是判「入口是否解锁」用的，而巡检只从大厅走进支线 ⇒ **此刻必然
+    # 在大厅**，顺手拿它读一次「这次登录的是谁」，不额外截图、不额外等待。
+    # 读不到就是 None，后面按「未识别账号」落共用账本（用户 2026-11-23 定：
+    # 不沿用上次，避免把读数静默记到别人账上）。
+    entry_frame = probe_runtime.capture()
+    if _side_story_entry_locked(template_root, entry_frame):
         raise RuntimeError("支线故事入口未解锁，已跳过")
+    owner = read_account(entry_frame) or {}
+    owner_name = str(owner.get("name", "") or "")
+    owner_rank = str(owner.get("rank", "") or "")
     # 状态机是 ``run_mode`` 内部建的，外面拿不到；用一个一格字典把它递出来。
     # （``countdown_read`` 记在状态机账本上，不在 ``RunResult`` 里 —— 那是路线结论，
     # 这里要的是「读到的数」，两者语义不同，硬塞会让 RunResult 长出一条只服务一次的字段。）
@@ -1004,14 +1070,21 @@ def inspect_side_story_countdown(
     payload = getattr(machine, "countdown_read", None)
     if not isinstance(payload, dict):
         return None
+    # ⚠️ 复制一份再交给上层：``machine.countdown_read`` 是状态机自己的账本，
+    # 就地加键会让人以为状态机也认识「账号」这个东西。
+    reported = dict(payload)
+    reported["account"] = owner_name
+    reported["rank"] = owner_rank
     save_countdown(
         int(payload["days"]),
         int(payload["hours"]),
         raw=str(payload.get("raw", "")),
         # 同一趟顺手登记的「月光剧场入口卡有没有绿 F」；没走到那页就是 None。
         moonlight_free=getattr(machine, "moonlight_free", None),
+        account=owner_name,
+        rank=owner_rank,
     )
-    return payload
+    return reported
 
 
 def _notify_daily(
@@ -1077,7 +1150,7 @@ def _run_daily(args: argparse.Namespace) -> int:
         stop_file=Path(args.stop_file) if args.stop_file else None,
         params=_load_params(args.params_file),
         run_mode=run_mode,
-        build_probe=lambda: _build_daily_probe(
+        build_probe=lambda: _build_daily_probe_reading_account(
             window_backend=args.window_backend,
             stop_file=Path(args.stop_file) if args.stop_file else None,
         ),

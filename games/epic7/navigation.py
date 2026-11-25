@@ -7,6 +7,7 @@ from typing import Callable, Optional
 
 import numpy as np
 
+from auto_game_unified.core.battle_supervisor import valid_game_frame
 from auto_game_unified.core.matcher import (
     MATCH_MODE_RAW,
     MATCH_MODE_WHITE_MASK,
@@ -19,7 +20,10 @@ from auto_game_unified.core.supervisor import (
     StableObservation,
     left_page,
 )
-from auto_game_unified.games.epic7.arena import find_rank_promotion_confirm
+from auto_game_unified.games.epic7.arena import (
+    arena_tab_point,
+    find_rank_promotion_confirm,
+)
 from auto_game_unified.games.epic7.activity_column import (
     ACTIVITY_SCROLL_END_Y,
     ACTIVITY_SCROLL_LIMIT_PER_DIRECTION,
@@ -148,7 +152,18 @@ EXTRA_WHITE_CANDIDATES = {
     # （旧版橙底模板 0.6242）。⚠️ 它属于**选中态**，绝不能挂到 ``activity_more``
     # 头上 —— 那一行两种态的文字内容一样，挂错就等于「选中态也认成未选中态」，
     # 扫描会把它当"找到了"点一下，反而把选中取消掉。
-    "activity_more_selected": ("activity_more_text_white",),
+    # 2026-11-23 真机：新版蓝底页选中态那一行的**原样**掉到 0.6189（旧版米黄底
+    # 模板 0.9884 ⇒ 底色换了），白字候选 activity_more_text_white 也只有 0.8631，
+    # 两样都过不了各自的线 ⇒ 导航把已选中的行当成找不到，连点 4 次把它取消，
+    # 社区签到从此进不去（诊断图 activity_web_promo_blue_selected_live_20261123）。
+    # 补一候选：**同一张旧模板改走白掩膜**（白像素占比 0.1648，非纯色块）：
+    # 今早帧 0.9217，跨 5 张选中态帧 0.8642~1.0000，未选中态最高只有 0.4972。
+    # ⚠️ 顺序不能换：原样仍排第一，转场帧靠它 0.8924 过阈；改成整颗锚点走白掩膜
+    # （0.90）反而会把那帧从 0.8924 压到 0.8642，等于用新帧换掉旧帧。
+    "activity_more_selected": (
+        "activity_more_selected_white",
+        "activity_more_text_white",
+    ),
     "lobby_shop_entry": ("lobby_shop_entry_text_white",),
     "lobby_side_story": ("lobby_side_story_text_white",),
     "lobby_sanctuary": ("lobby_sanctuary_text_white",),
@@ -304,6 +319,15 @@ class _StoryRecoveryAttempts:
     clicks: int = 0
 
 
+# 进竞技场时站错页签的回切上限：一次切页就够，两次仍没到对手列表即报明确错误。
+_ARENA_TAB_RECOVERY_LIMIT = 2
+
+
+@dataclass
+class _ArenaTabRecoveryAttempts:
+    clicks: int = 0
+
+
 @dataclass(frozen=True)
 class NavigationTemplates:
     arena_rank_promotion_arrow: np.ndarray
@@ -408,6 +432,14 @@ class NavigationTemplates:
     exit_title_updated: np.ndarray
     exit_cancel_updated: np.ndarray
     arena_mode_title: np.ndarray
+    # 「每周对战奖励」标题：竞技场**枢纽各页签共用**的左侧栏锚点（交战对手页 /
+    # NPC 页 / 战斗记录 / 排名 / 名誉殿堂 / 竞技场故事上都有）。2026-11-24 现场：
+    # 游戏记住上次页签，进竞技场直接落在「战斗记录」⇒ 没有 `arena_ready` 也没有
+    # `novice_arena`，整页 unknown ⇒ 只等 3 分钟后报「进入竞技场失败」。用这颗
+    # 锚点把「人在竞技场里、只是站错页签」和「根本不在竞技场」分开：真帧 1.0000，
+    # 全库 arena 夹具除枢纽页外最高 0.4428（每周排名弹窗），阈 0.90 有余量。
+    # 复用 arena 证据里的同名图，不另存第二份。
+    arena_hub_title: np.ndarray
     # 竞技场模式选择页底部四个入口里的**第二个**（「新手竞技场」/「竞技场」那个）。
     # ⚠️ 它**有两种长相**：入口名随账号状态变 —— 新手期叫「新手竞技场」，脱离新手期后
     # 叫「竞技场」（2026-10-05 用户实机确认）。旧模板在那一帧只有 **0.7301**、低于
@@ -632,6 +664,10 @@ class NavigationTemplates:
     # 选中态 0.8924~1.0000（跨两天两帧都过阈，含转场动画中那帧 0.8924），
     # **未选中态只有 0.2482 / 0.3435，全库次高 0.3732** ⇒ 空档 0.37→0.89 极宽。
     activity_more_selected: np.ndarray
+    # 与 ``activity_more_selected`` **同一张图、只换白掩膜口径**（2026-11-23）。
+    # 原样认的是「米黄底 + 白字」，新版行改成蓝底后只剩 0.6189；白掩膜只认那
+    # 一排白字笔画，跨底色稳定。它排在原样之后：原样过阈的帧结果逐字节不变。
+    activity_more_selected_white: np.ndarray
     # 「更多精彩活动」在**新版蓝底页**上的白字（2026-11-22）。
     #
     # 为什么要补：新版活动页那一行是**蓝底白字**，上面那张旧模板（米黄底灰字）
@@ -763,6 +799,7 @@ def build_navigation_templates(template_root: Path) -> NavigationTemplates:
         exit_title_updated=load_template(str(navigation / "exit_title_updated.png")),
         exit_cancel_updated=load_template(str(navigation / "exit_cancel_updated.png")),
         arena_mode_title=load_template(str(navigation / "arena_mode_title.png")),
+        arena_hub_title=load_template(str(template_root / "arena_weekly_reward_title.png")),
         # 两张候选：`novice_arena` = 新手期长相，`arena_entry` = 脱离新手期后的长相。
         # 顺序不影响结果（`_locate` 取过阈候选里的最高分，不看先后）。
         novice_arena=(
@@ -907,6 +944,9 @@ def build_navigation_templates(template_root: Path) -> NavigationTemplates:
         activity_more_selected=load_template(
             str(navigation / "activity_more_selected.png")
         ),
+        activity_more_selected_white=load_template(
+            str(navigation / "activity_more_selected.png")
+        ),
         activity_more_text_white=load_template(
             str(navigation / "activity_more_text_white.png")
         ),
@@ -1005,6 +1045,8 @@ class Epic7Navigator:
         "exit_title_updated": (650, 400, 700, 280),
         "exit_cancel_updated": (550, 620, 500, 260),
         "arena_mode_title": (0, 35, 350, 180),
+        # 竞技场枢纽左侧栏「每周对战奖励」标题；与 evidence/arena.py 同名锚点同区同阈。
+        "arena_hub_title": (10, 670, 220, 60),
         "novice_arena": (400, 780, 650, 352),
         "story_back": (0, 40, 120, 120),
         "story_watch": (1450, 930, 470, 202),
@@ -1208,8 +1250,12 @@ class Epic7Navigator:
         poll_seconds: float = 0.5,
         transition_frames: int = 90,
         template_root: Path | None = None,
+        arena_opponent_source: str = "player",
     ) -> None:
         self.templates = templates
+        # 进竞技场时若游戏记住了上次页签、落在非对战页上，按这个选项切回：
+        # ``player`` → 交战对手，``npc`` → NPC 对战。默认与路线选项默认值一致。
+        self.arena_opponent_source = arena_opponent_source
         # 「支线故事」入口的搜索框在 PC 上要放宽；模拟器保持原来的范围。
         if templates.pc:
             self._REGIONS = {
@@ -1322,8 +1368,7 @@ class Epic7Navigator:
         return self._CLICK_OFFSETS.get(anchor, (0, 0))
 
     def observe(self, screen: np.ndarray) -> PageObservation:
-        content = screen[round(screen.shape[0] * 0.05) :, : round(screen.shape[1] * 0.97)]
-        if float(np.mean(content)) < 3.0 or float(np.std(content)) < 5.0:
+        if not valid_game_frame(screen):
             return PageObservation("invalid", 0.0)
 
         popup_close = find_friendship_points_popup_close(
@@ -1964,6 +2009,55 @@ class Epic7Navigator:
             )
         self.runtime.log(resolved.ready_log(MODE_LABELS.get(mode, mode)))
 
+    def _recover_arena_wrong_tab(
+        self,
+        screen: np.ndarray,
+        observation: PageObservation,
+        targets: tuple[str, ...],
+        attempts: _ArenaTabRecoveryAttempts,
+    ) -> bool:
+        """进竞技场时游戏记住了上次的非对战页签 ⇒ 按对手来源切回对应页签。
+
+        2026-11-24 现场：从模式选择页点「竞技场」后落在「战斗记录」（右侧菜单
+        高亮第三项），没有 `list_ready` 也没有 `novice_arena` ⇒ observe 判 unknown
+        ⇒ 只等 3 分钟后报「进入竞技场失败」。这里在转场等待循环里认枢纽页签，
+        按路线选项点回「交战对手」或「NPC对战」，让原 `arena_ready` 判据接着验收。
+
+        ⚠️ 只处理「进竞技场」这一步（`arena_ready` 在 targets 里）：其它转场的
+        unknown 不许被这里接管。判据是**三者的合取**——枢纽锚点在、两个页签锚点
+        都不在；少任何一条都不点，避免对加载中/其它路线的画面乱点。
+        两次点不动即报错留诊断，不把失败拖成静默长等。
+        """
+        if observation.name != "unknown" or "arena_ready" not in targets:
+            return False
+        if self._locate(screen, "arena_ready", ARENA_THRESHOLDS["list_ready"]) is not None:
+            return False
+        if self._locate(screen, "novice_arena") is not None:
+            return False
+        hub = self._locate(
+            screen, "arena_hub_title", ARENA_THRESHOLDS["weekly_reward_title"]
+        )
+        if hub is None:
+            return False
+        if attempts.clicks >= _ARENA_TAB_RECOVERY_LIMIT:
+            diagnostic = self._diagnostic("arena_wrong_tab_recovery_failed")
+            raise RuntimeError(
+                "竞技场停在非对战页签，按对手来源切换页签两次后仍未回到对手列表；"
+                f"已保存诊断 {diagnostic}"
+            )
+        attempts.clicks += 1
+        point = arena_tab_point(self.arena_opponent_source)
+        action = "切回竞技场对手页签"
+        self.runtime.log(
+            f"模式=导航 页面=竞技场枢纽 目标=对手列表 "
+            f"状态=停在非对战页签 依据=左侧周奖励标题={hub.score:.4f} "
+            f"对手来源={self.arena_opponent_source} "
+            f"动作={action} 坐标={point} 尝试={attempts.clicks}/"
+            f"{_ARENA_TAB_RECOVERY_LIMIT}"
+        )
+        self.runtime.click(point, action)
+        return True
+
     def _transition(
         self,
         source: str,
@@ -2133,6 +2227,7 @@ class Epic7Navigator:
             verify_started = self.now()
             stable = StableObservation(required=2)
             story_recovery = _StoryRecoveryAttempts()
+            arena_tab_recovery = _ArenaTabRecoveryAttempts()
             hero_detail_tab_clicks = 0
             hero_detail_last_click_at: Optional[float] = None
             hero_detail_wait_logged = False
@@ -2153,6 +2248,12 @@ class Epic7Navigator:
                 ):
                     stable.reset()
                     self.sleep(1.0)
+                    continue
+                if is_stable and self._recover_arena_wrong_tab(
+                    screen, observation, targets, arena_tab_recovery
+                ):
+                    stable.reset()
+                    self.sleep(self.poll_seconds)
                     continue
                 if is_stable and observation.name == "unknown":
                     wake_result = self.unknown_screen_wake.handle(

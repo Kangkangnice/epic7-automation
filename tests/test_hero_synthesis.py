@@ -3155,10 +3155,11 @@ class RunnerFlowTests(unittest.TestCase):
         """
         clock = FakeClock()
         logs = []
+        screen = fixture("list_no_reddot")
         runner = HeroSynthRunner(
             machine(verify_filter=True),
             Runtime(
-                lambda: fixture("list_no_reddot"),
+                lambda: screen,
                 lambda _: None,
                 emit=logs.append,
                 monotonic=clock,
@@ -3184,10 +3185,12 @@ class RunnerFlowTests(unittest.TestCase):
 
         with patch.object(
             runner, "_stable_next_action", side_effect=previews
-        ), patch.object(runner, "_after_action_click", side_effect=confirm_motion):
+        ) as stable_next, patch.object(runner, "_after_action_click", side_effect=confirm_motion):
             with self.assertRaises(StopIteration):
                 runner.run(max_cycles=1)
 
+        # The mock retains its arguments. This fixed-screen replay needs one array.
+        self.assertEqual(1, len({id(call.args[0]) for call in stable_next.call_args_list}))
         self.assertNotIn("循环检测=", "\n".join(logs))
 
     def test_close_filter_uses_normal_stability_path(self):

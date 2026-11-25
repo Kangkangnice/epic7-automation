@@ -22,7 +22,6 @@
 from pathlib import Path
 import unittest
 
-import cv2
 import numpy as np
 
 from auto_game_unified.games.epic7.side_story import (
@@ -34,23 +33,12 @@ from auto_game_unified.games.epic7.side_story import (
     _SEG_OUTPOST_1,
     _SEG_OUTPOST_2,
 )
+from auto_game_unified.tests.fixture_images import read_rgb_fixture as _load
 
 
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURES = ROOT / "tests" / "fixtures"
 TEMPLATES = ROOT / "games" / "epic7" / "templates" / "side_story"
-_CACHE: dict[str, np.ndarray] = {}
-
-
-def _load(path: Path) -> np.ndarray:
-    key = str(path)
-    if key not in _CACHE:
-        raw = cv2.imread(key, cv2.IMREAD_COLOR)
-        assert raw is not None, f"缺夹具 {path}"
-        _CACHE[key] = cv2.cvtColor(raw[:1132, :1982], cv2.COLOR_BGR2RGB)
-    return _CACHE[key]
-
-
 def outpost_team() -> np.ndarray:
     # 哥布林据点队伍页（03_team_ready）：含「1/1 可完成1次。」白气泡 + 「战斗开始」。
     return _load(FIXTURES / "epic7_side_story" / "outpost_team.png")

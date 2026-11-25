@@ -28,8 +28,6 @@
 
 from __future__ import annotations
 
-import tempfile
-from pathlib import Path
 from time import sleep as default_sleep
 from typing import Callable, Optional
 
@@ -42,9 +40,6 @@ from auto_game_unified.core.window import Epic7Window
 # 取到的截图必须是这个尺寸；不是就说明「模拟器还没转过去」或「转回去了」，
 # 一律当场报错 —— 把错帧喂给状态机会判出莫名其妙的结果，比停下来难查得多。
 PORTRAIT_CANVAS = (1080, 1920)
-
-# 设备内的截图落点（每帧覆写，不留垃圾）。
-_DEVICE_SHOT = "/sdcard/_auto_game_portrait.png"
 
 # 方向切换后的**有界等待**：旋转是带动画的，点完「游戏社区」后窗口要一两秒才竖过来。
 # 每次轮询 0.25 秒；默认最多等 20 秒（实测切换在 3 秒内完成，留足余量）。
@@ -85,16 +80,11 @@ class PortraitChannel:
         sleep: Callable[[float], None] = default_sleep,
         adb_timeout: float = 20.0,
         orientation_timeout: float = _DEFAULT_ORIENTATION_TIMEOUT,
-        shot_path: Optional[Path] = None,
     ) -> None:
         self._window = window if window is not None else Epic7Window()
         self._sleep = sleep
         self._adb_timeout = adb_timeout
         self._orientation_timeout = orientation_timeout
-        # 拉回的本地文件。给测试留一个可注入的口子（免得真去写系统临时目录）。
-        self._shot_path = shot_path or (
-            Path(tempfile.gettempdir()) / "auto_game_portrait_shot.png"
-        )
         self._event_sink: Optional[Callable[[str], None]] = None
 
     # ── 日志出口（与 Epic7Window 同形：装在 runtime.log 上） ────────────────
@@ -207,13 +197,25 @@ class PortraitChannel:
         )
 
     def _screencap(self) -> np.ndarray:
-        """抓一张安卓原始截图（BGR，未校验尺寸）。"""
-        self._run_adb(f"shell screencap -p {_DEVICE_SHOT}")
-        self._run_adb(f"pull {_DEVICE_SHOT} {self._shot_path}")
-        image = cv2.imread(str(self._shot_path), cv2.IMREAD_COLOR)
-        if image is None:
-            raise RuntimeError(f"竖屏截图读不出来：{self._shot_path}")
-        return image
+        """抓一张安卓原始截图（BGR，未校验尺寸）。
+
+        ⚠️⚠️ **2026-11-24 修：不许再走「``shell screencap -p <设备路径>`` + ``pull``」。**
+
+        旧写法把本地路径拼进命令字符串，由 ``run_raw`` 里的 ``shlex.split`` 解析；
+        而 ``shlex`` 按 POSIX 规则**把反斜杠当转义符** ——
+        ``D:\\Cache\\Temp\\x.png`` 被解析成 ``D:CacheTempx.png``（相对当前目录），
+        于是 ``pull`` 把图写到别处、``cv2.imread`` 读的仍是那份**永不更新的旧文件**。
+        ``adb`` 还照常返回 0，错误一点都不冒出来。
+
+        后果：竖屏段每一帧都返回**同一张旧图**（本机是 2026-11-21 15:23 那张兑换中心），
+        判页永远判成兑换中心、点击全按旧页面算 —— 而真实页面早已是信息流。
+        整条路线从引入 ``shlex.split`` 那次提交起，**必然失败且现场帧张张相同**；
+        换成 ``exec-out`` 之后同一台机器同一时刻取到的就是信息流。
+
+        ⇒ 一律走 ``screencap_bgr``：``adb exec-out screencap -p``，不落设备文件、
+        不经 ``pull``、不拼路径，也就没有这类解析问题。
+        """
+        return self._window.adb_client.screencap_bgr()
 
     # ── 输入 ────────────────────────────────────────────────────────────────
 

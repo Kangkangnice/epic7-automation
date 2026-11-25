@@ -1,5 +1,6 @@
 from pathlib import Path
 import unittest
+from unittest.mock import patch
 
 import cv2
 import numpy as np
@@ -22,6 +23,18 @@ def load_fixture(group: str, name: str) -> np.ndarray:
 
 
 class SharedBattleControlsTests(unittest.TestCase):
+    def test_battle_control_colors_are_read_only_from_the_control_region(self):
+        screen = load_fixture("epic7_story", "battle_auto_on_live_20260809")
+        with patch.object(cv2, "cvtColor", wraps=cv2.cvtColor) as convert:
+            result = observe_battle_controls(screen)
+
+        self.assertEqual(BattleControls.AUTO_CONTROLS, result)
+        hsv_sizes = [
+            call.args[0].shape[:2] for call in convert.call_args_list
+            if call.args[1] == cv2.COLOR_RGB2HSV
+        ]
+        self.assertEqual([(192, 520)], hsv_sizes)
+
     def test_auto_battle_with_dark_turn_order_keeps_battle_scene_visible(self):
         """实跑回归：行动顺序栏在暗色特效下不应否定已识别的自动战斗。"""
         screen = load_fixture("epic7_story", "battle_auto_on_live_20260809").copy()

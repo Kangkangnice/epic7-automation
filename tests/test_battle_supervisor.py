@@ -10,9 +10,28 @@ from auto_game_unified.core.battle_supervisor import (
     BattleObservation,
     BattleOutcome,
     BattleSupervisor,
+    valid_game_frame,
 )
 from auto_game_unified.core.recovery import RecoveryGate
 from auto_game_unified.core.runtime import Runtime
+
+
+@pytest.mark.parametrize(("dark", "light", "expected"), [(2, 13, True), (3, 12, False), (0, 0, False)])
+def test_frame_statistics_keep_the_rgb_cutoffs_without_numpy_variance(monkeypatch, dark, light, expected):
+    frame = np.full((40, 50, 3), dark, dtype=np.uint8)
+    frame[1::2] = light
+
+    def reject_float_buffer(*args, **kwargs):
+        raise AssertionError("RGB frame checks should not build a float64 variance buffer")
+
+    monkeypatch.setattr(np, "std", reject_float_buffer)
+    assert valid_game_frame(frame) is expected
+
+
+def test_frame_statistics_keep_numpy_rounding_at_the_variance_cutoff():
+    frame = np.array([0] * 10 + [14] * 52 + [16] * 10, dtype=np.uint8).reshape(2, 12, 3)
+    expected = bool(np.std(frame) >= 5.0)
+    assert valid_game_frame(frame) is expected
 
 
 class FakeClock:

@@ -27,6 +27,7 @@
 
 from __future__ import annotations
 
+import re
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -145,13 +146,37 @@ class DailyOutcome:
         return self.status in {"completed", "resource", "not_supported"}
 
 
+# 运行期由 Runtime.network_popup_note() 拼进失败原因的断网事实句式。
+# 只在文案层读取它、把网络问题提升为结论，不参与任何验收或重试判据。
+_NETWORK_NOTE_RE = re.compile(r"本次已断网、自动重试\s*(\d+)\s*次")
+
+
+def _network_headline(detail: str) -> str:
+    """从失败原因里取出断网次数，写成给用户看的首要结论。
+
+    返回空串表示这次没有断网事实，沿用原有文案。有则返回一句完整结论，
+    直接作为结果卡/通知的失败说明，不会被字数截断切掉。
+    """
+    match = _NETWORK_NOTE_RE.search(detail)
+    if match is None:
+        return ""
+    return (
+        f"网络连接中断，已自动重试 {match.group(1)} 次，需恢复网络后重新运行"
+    )
+
+
 def _short_failure(detail: str, limit: int = 90) -> str:
     """把失败原因压成一句：去掉「已保存诊断 …」那串长路径，再截断。
 
     ⚠️ 诊断路径动辄 120+ 字符，原样塞进汇总行会把日志和手机通知都撑爆，
     而**路径本身对「为什么失败」没有信息量**（要找诊断，日志里那条
     ``已保存诊断 …`` 已经写全了）。
+    ⚠️ 断网事实优先：本次点过断网重试时，它才是用户能看懂的根因。
+    转场/导航失败只是表象，不能占住结论主句（2026-11-24 用户指出）。
     """
+    headline = _network_headline(detail)
+    if headline:
+        return headline
     text = detail.split("；已保存诊断")[0].split("; 已保存诊断")[0].strip()
     if not text:
         return "原因未记录"
@@ -160,6 +185,9 @@ def _short_failure(detail: str, limit: int = 90) -> str:
 
 def _human_reason(detail: str) -> str:
     """给人看的失败原因：``RuntimeError: xxx`` 里的异常类型不写给玩家看。"""
+    headline = _network_headline(detail)
+    if headline:
+        return headline
     text = _short_failure(detail, 48)
     prefix, sep, rest = text.partition(": ")
     return rest if sep and prefix.isidentifier() and rest else text
@@ -188,6 +216,21 @@ class DailyReport:
     # **不是一条路线**，所以不进 ``outcomes``：它既没有成功/失败之分，也不该让
     # 「今天的每日任务」因为「没读到一行字」变成有失败的一轮。
     countdown_note: Optional[str] = None
+    # 这一轮登录的是谁（2026-11-23 用户要求：汇总最前面两行分别是昵称与账号等级）。
+    # ``account_seen`` 区分「这轮做过识别但没读出来」和「根本没做识别」：
+    # 前者要如实写「未识别账号」，后者一个字都不加（还没升级的用户看到的仍是原样）。
+    account: str = ""
+    account_rank: str = ""
+    account_seen: bool = False
+
+    def _account_lines(self) -> list[str]:
+        """汇总最前面的账号两行；没做过识别就不占位置。"""
+
+        if not self.account_seen:
+            return []
+        if not self.account:
+            return ["未识别账号"]
+        return [self.account, self.account_rank] if self.account_rank else [self.account]
 
     @property
     def any_failed(self) -> bool:
@@ -263,8 +306,14 @@ class DailyReport:
         return " · ".join(parts)
 
     def result_lines(self) -> list[str]:
-        """界面结果卡 / 日志用的逐条明细。第一行是总账，后面一条任务一行。"""
-        lines = [self._headline()]
+        """界面结果卡 / 日志用的逐条明细。
+
+        最前面是「这轮是谁」的两行（用户 2026-11-23 定：账号名一行、等级一行，
+        后面接原来的输出），其余内容与加账号之前完全一致。
+        """
+
+        lines = self._account_lines()
+        lines.append(self._headline())
         lines.extend(self._outcome_line(outcome) for outcome in self.outcomes)
         if self.aborted_reason:
             lines.append(f"已中止：{self.aborted_reason}")
@@ -274,7 +323,9 @@ class DailyReport:
 
     def brief_lines(self) -> list[str]:
         """QQ 通知用的精简版：不带分项耗时，但失败原因和中止原因必须留着。"""
-        lines = [self._headline()]
+
+        lines = self._account_lines()
+        lines.append(self._headline())
         for outcome in self.outcomes:
             parts = [outcome.label, STATUS_WORDS.get(outcome.status, "状态不明")]
             if outcome.cycles is not None:
@@ -565,6 +616,14 @@ def _run_inspect(
         return "支线刷新倒计时：未读取（用户手动停止）"
     except Exception as error:  # noqa: BLE001 —— 巡检失败不许影响整轮结论
         return f"支线刷新倒计时：未读取（{_human_reason(f'{type(error).__name__}: {error}')}）"
+    if isinstance(payload, dict) and "account" in payload:
+        # 账号在巡检开头就读了（那一帧必然在大厅），所以哪怕倒计时没读出来，
+        # 「这轮是谁」也应当留在汇总里。
+        # ⚠️ 要求 payload **显式带这个键**才算「做过识别」：测试替身与将来的其它
+        # 巡检项不会回答这件事，那时不该平白多出一行「未识别账号」。
+        report.account_seen = True
+        report.account = str(payload.get("account", "") or "")
+        report.account_rank = str(payload.get("rank", "") or "")
     if (
         isinstance(payload, dict)
         and isinstance(payload.get("days"), int)

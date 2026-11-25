@@ -75,8 +75,10 @@ def test_worldboss_title_is_persistent_so_it_cannot_identify_the_home_page():
     profile = build_world_boss_evidence(TEMPLATES)
     home = profile.page("world_boss.home")
 
-    assert home.required == ("select_team_button",)
+    assert home.required == ()
+    assert home.any_of == (("select_team_button", "manage_support_team"),)
     assert "worldboss_title" not in home.required
+    assert all("worldboss_title" not in group for group in home.any_of)
 
     for name in ("team_select", "team_config", "stamina_popup"):
         observations = _observations(profile, _screen(name))
@@ -113,6 +115,8 @@ def test_every_route_fixture_maps_to_its_own_page_or_is_intentionally_unmapped()
         "worldboss_home": "world_boss.home",
         # 次数耗尽页与可打页是同一页，只有按钮亮度不同（模板匹配对亮度不敏感）。
         "worldboss_home_exhausted": "world_boss.home",
+        # 次数用完时右下按钮换成「管理辅助队伍」，同属主页，只是终点语义不同。
+        "worldboss_home_manage_support_team": "world_boss.home",
         "team_select": "world_boss.team_select",
         "team_config": "world_boss.team_config",
         "battle_result": "world_boss.result",
@@ -136,6 +140,46 @@ def test_every_route_fixture_maps_to_its_own_page_or_is_intentionally_unmapped()
         states = profile.evaluate_pages(_observations(profile, _screen(fixture)))
         safe = {key for key, state in states.items() if state is EvidenceState.SAFE}
         assert not safe, f"{fixture}: 不该有任何世界首领战页面成立，实际 {sorted(safe)}"
+
+
+def test_manage_support_team_variant_does_not_leak_to_other_pages():
+    """「管理辅助队伍」是主页按钮的另一种长相，不是队伍页的通用控件。"""
+
+    profile = build_world_boss_evidence(TEMPLATES)
+
+    positive = _observations(
+        profile, _screen("worldboss_home_manage_support_team")
+    )
+    assert positive["manage_support_team"].observed
+
+    for fixture in (
+        "worldboss_home",
+        "worldboss_home_exhausted",
+        "team_select",
+        "team_config",
+        "battle_result",
+        "level_reward",
+        "stamina_popup",
+    ):
+        observations = _observations(profile, _screen(fixture))
+        assert not observations["manage_support_team"].observed, (
+            f"{fixture}: 被误认成「管理辅助队伍」，会把别的页面判成主页"
+        )
+
+
+def test_support_reward_popup_is_excluded_from_home():
+    """压暗的弹窗帧上「管理辅助队伍」仍命中，必须由弹窗标题排除。"""
+
+    profile = build_world_boss_evidence(TEMPLATES)
+    page = profile.page("world_boss.home")
+
+    assert "support_reward_popup" in page.forbidden
+    observations = _observations(
+        profile, _screen("worldboss_support_reward_live_20261019")
+    )
+    assert observations["manage_support_team"].observed
+    assert observations["support_reward_popup"].observed
+    assert profile.evaluate_pages(observations)["world_boss.home"] is EvidenceState.UNSAFE
 
 
 def test_stamina_popup_is_excluded_from_team_config():

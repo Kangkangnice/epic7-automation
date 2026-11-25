@@ -55,6 +55,9 @@ RESUMABLE_FIXTURES: dict[str, tuple[str, WorldBossState]] = {
     # 页面身份不变，所以照样是主页。
     "worldboss_home_chest_claimed_dark": ("世界首领战主页", WorldBossState.HOME),
     "worldboss_home_exhausted": ("世界首领战主页", WorldBossState.HOME),
+    # 2026-11-23 用户明确：次数用完是正常资源耗尽，不是失败。右下按钮换成
+    # 「管理辅助队伍」时仍属于世界首领战主页，接力应落脚后按次数耗尽收工。
+    "worldboss_home_manage_support_team": ("世界首领战主页", WorldBossState.HOME),
     # 2026-09-25 实跑那帧：同一个主页、#1 已领（亮度比 1.011）、#2 还亮着（3.197）。
     # 落地宝箱 #2 那道判据的回归依据 —— 只认 #1 会把这一屏当成「没有可领」。
     "worldboss_home_chest2_claimable": ("世界首领战主页", WorldBossState.HOME),
@@ -106,11 +109,6 @@ REFUSED_FIXTURES = (
     # 它放进本目录是为了给 ``navigation/pc/knights_signin_*.png`` 当正例
     # （共享图在这帧只有 0.3796 / 0.6435），用例见 ``test_global_popups.py``。
     "knights_signin_popup_pc_live_20261108",
-    # 2026-11-09 模拟器：未开放 / 次数用完时的首领战主页，右下角换成
-    # 「管理辅助队伍」。这张只给**导航层**当回归正例（第二候选模板的真帧）；
-    # 路线状态机的主页判据仍只认「选择队伍」，在这帧判 UNKNOWN，所以接力**刻意不落脚**。
-    # 未开放态进路线后该怎么收工属于业务决定，按红线不擅自改判据，待真机复跑确认。
-    "worldboss_home_manage_support_team",
 )
 
 ALL_FIXTURES = tuple(RESUMABLE_FIXTURES) + KNIGHTS_HOME_FIXTURES + REFUSED_FIXTURES

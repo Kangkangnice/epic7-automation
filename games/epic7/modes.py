@@ -173,6 +173,10 @@ from auto_game_unified.games.epic7.world_boss import (
     WorldBossStateMachine,
     detect_resume_point as detect_world_boss_resume_point,
 )
+from auto_game_unified.games.epic7.route_contract import (
+    RouteContract,
+    validate_contract,
+)
 
 
 MachineFactory = Callable[[Path, str], Any]
@@ -258,6 +262,10 @@ class ModeSpec:
     # 标题与「点击关闭」，守卫会把状态机等的那一页直接点掉 ⇒ 转场契约永远不成立。
     # ⚠️ 模拟器下这组模板本来就只有 pc/ 图、loader 返回 None，本字段对模拟器零影响。
     reward_notice_guard: bool = True
+    # 路线级最低声明（终点 / 覆盖层 / 空态 / 回执 / 危险动作）。
+    # ⚠️ 新路线必须写；老路线先统一进 ``CONTRACT_BACKLOG``，逐条落实是第二阶段。
+    # 漏了在 import 阶段就报错（``_assert_route_contract_declared``），不空着上线。
+    contract: Optional[RouteContract] = None
 
     def resolve_state(self, requested: str | None) -> str:
         state = requested or self.default_state
@@ -571,11 +579,9 @@ def _arena_runner_options(
         "hero_whitelist": values["hero_whitelist"],
         "hero_list_conflict": values["hero_list_conflict"],
     }
-    if not dry_run:
-        # 买票「今天买过没有」的记账文件（干跑一个盘都不写）。
-        options["purchase_stamp_path"] = (
-            root / "runtime_logs" / "arena_ticket_purchase.txt"
-        )
+    # ⚠️ 曾经在这里下发「买票日期戳」文件，2026-11-23 用户拍板删除：那个做法假设
+    # 「本机零点 = 游戏每日重置点」，跨服务器（国服/亚服/美服/欧服）必然错位，而且
+    # 它替游戏回答了「今天还能不能买」这个只有游戏知道的问题。
     return options
 
 
@@ -748,6 +754,16 @@ TRANSITION_EXEMPT = {
 }
 
 
+# 「路线通用契约」欠债名单：只收下机制建立之前就已登记的 21 条老路线。
+# ⚠️ **只减不增**：新增路线必须一次写全 contract，想进这张表在 import 阶段就报错
+# （``_assert_route_contract_declared``）。路线补完契约后必须把这一行划掉。
+# 缺口统一为五项声明全缺；逐条确认终点与覆盖层属于第二阶段（见 docs/ROUTE_CONTRACT.md）。
+_CONTRACT_BACKLOG_REASON = "待第二阶段逐条确认终点与覆盖层；五项声明均未写入 contract"
+# 2026-11-24：21 条老路线分四批补完，本表清空。
+# 空表仍要保留：新路线漏契约想进这张表，加载期照样报错（只减不增的规矩不变）。
+CONTRACT_BACKLOG: dict[str, str] = {}
+
+
 MODE_SPECS = {
     "arena": ModeSpec(
         name="arena",
@@ -764,7 +780,8 @@ MODE_SPECS = {
         # 就直接从那一步接着跑；停在别的支线页面才退回原来的「一直返回」流程。
         # 判据要问导航器认出的页名 —— 接力点里有「竞技场模式选择页」这个导航链中间站。
         resume_probe=_resume_probe(detect_resume_point, use_navigator=True),
-        # 实跑要落一个盘（买票记账），路径只有主线装配层知道仓库根。
+        # 买票不再落盘记账：当天还能不能买由游戏判定，见
+        # ArenaRunner._transition_failure_message。路径只有主线装配层知道仓库根。
         runner_options=_arena_runner_options,
         navigation_plan=NavigationPlan(
             mode="arena",
@@ -781,6 +798,29 @@ MODE_SPECS = {
             resume_log_mode="竞技场",
             resume_action="跳过回大厅与进入竞技场",
             resume_state_done="直接进竞技场",
+        ),
+        # 终点见 docs/maintenance/route_finish_points.md 表第 1 行与注①：
+        # 结算回对手列表（购买旗帜弹窗先取消），不是 result / confirming。
+        # 覆盖层取全局守卫里竞技场自己会撞到的那几类，见 docs/maintenance/arena.md
+        # 页面链路与判据节（每周排名两层、段位奖励、战斗记录、断网）。
+        contract=RouteContract(
+            mode="arena",
+            terminal=ArenaState.LIST.value,
+            finish_at_home=True,
+            overlays=frozenset(
+                {
+                    "weekly_rank_start",
+                    "weekly_rank_select",
+                    "arena_rank_reward",
+                    "battle_record",
+                    "network",
+                }
+            ),
+            empty_states=(),
+            # 开关的读取点在 ModeRunnerBase.run()，竞技场继承的是
+            # TransactionalRunnerBase；动作仍带 source_state / target_states，
+            # 由基类 _execute_transition 连续两帧验收（见 TRANSITION_EXEMPT 理由）。
+            action_evidence="transition_contract",
         ),
     ),
     "story": ModeSpec(
@@ -805,6 +845,30 @@ MODE_SPECS = {
             resume_entries=frozenset({STORY_ENTRY_PAGE}),
             resume_action="跳过回大厅与进入主线",
             resume_state_done="已在关卡入口",
+        ),
+        # 终点见 route_finish_points.md 表第 2 行：每轮结算后状态机回到 stage
+        # 再进下一关，跑满 max_cycles 就停在关卡入口（story.py 轮次记账处）。
+        # 覆盖层见 docs/maintenance/story.md：无法控制 / 教学解锁 / 给予协助的朋友
+        # / 支线故事通知 / 获得奖励，外加断网；行动力不足是路线自己的两段式判据，
+        # 不属全局弹窗类别，不在这里重复声明。
+        contract=RouteContract(
+            mode="story",
+            terminal=StoryState.STAGE.value,
+            finish_at_home=True,
+            overlays=frozenset(
+                {
+                    "uncontrollable",
+                    "tutorial_unlock",
+                    "friend_request",
+                    "side_story_notice",
+                    "reward_notice",
+                    "network",
+                }
+            ),
+            empty_states=(),
+            # 未开基类开关（理由见 TRANSITION_EXEMPT）；StoryAction 的
+            # source_page / target_pages 是必填参数，漏填在构造时就 TypeError。
+            action_evidence="transition_contract",
         ),
     ),
     "expedition": ModeSpec(
@@ -851,6 +915,20 @@ MODE_SPECS = {
             resume_action="跳过回大厅与进入远征队",
             resume_action_middle="跳过回大厅与进入战斗菜单",
             resume_state_done="已在远征主页",
+        ),
+        # 终点见 docs/maintenance/route_finish_points.md 表第 3 行：跑满轮次回到
+        # 远征主页（expedition.py 只在 return-to-expedition-home 落到 HOME 时记一轮）。
+        # 空态是 posters：通缉传单耗尽即停列表页，退出码 2 不算失败。
+        contract=RouteContract(
+            mode="expedition",
+            terminal=ExpeditionState.HOME.value,
+            finish_at_home=True,
+            # 手册与代码没有登记会挡住本路线的全局守卫类别。
+            overlays=frozenset(),
+            empty_states=(ExpeditionState.POSTERS.value,),
+            # 未开基类开关（理由见 TRANSITION_EXEMPT），但动作仍带
+            # source_page / target_pages，由基类连续两帧验收，口径同竞技场。
+            action_evidence="transition_contract",
         ),
     ),
     "tower": ModeSpec(
@@ -918,6 +996,20 @@ MODE_SPECS = {
             resume_action_middle="跳过回大厅与进入战斗菜单",
             resume_state_done="已在月塔主页",
         ),
+        # docs/maintenance/tower.md 与 tower.py：认出「征服欧多马顿塔」即收工，
+        # 那是整条路线终点，一个按钮都不点。
+        contract=RouteContract(
+            mode="tower",
+            terminal=TowerState.CONQUERED.value,
+            finish_at_home=True,
+            # 战力差弹窗与体力弹窗都由路线自己的判据处理，
+            # 手册没有登记会挡住本路线的全局守卫类别。
+            overlays=frozenset(),
+            empty_states=(),
+            # 在 TRANSITION_EXEMPT 里，但 TowerAction 的 source_page /
+            # target_pages 必填，基类连续两帧验收，口径同竞技场。
+            action_evidence="transition_contract",
+        ),
     ),
     "fodder": ModeSpec(
         name="fodder",
@@ -952,6 +1044,17 @@ MODE_SPECS = {
                     "进入冒险地图",
                 ),
             ),
+        ),
+        # 每轮回到 replay 页时记一轮并把状态拨回 assistant，跑满轮次停在 assistant。
+        # 体力弹窗是共用 stamina 两段式判据，不属全局守卫类别。
+        contract=RouteContract(
+            mode="fodder",
+            terminal="assistant",
+            finish_at_home=True,
+            overlays=frozenset(),
+            empty_states=(),
+            # 已知欠债：FodderAction 只有 name/point，没有来源与目标页判据。
+            action_evidence="无：FodderAction 仅 name/point（已知欠债）",
         ),
     ),
     "side_story": ModeSpec(
@@ -992,6 +1095,17 @@ MODE_SPECS = {
             ),
             ready_note="支线故事页已就绪",
         ),
+        # docs/maintenance/side_story.md：打通一期后点「离开」回关卡地图，
+        # 再由基类收尾回大厅；关卡地图在共享 StoryState 里就是 stage。
+        contract=RouteContract(
+            mode="side_story",
+            terminal=StoryState.STAGE.value,
+            finish_at_home=True,
+            # 手册与代码未登记会挡住本路线的全局守卫类别。
+            overlays=frozenset(),
+            empty_states=(),
+            action_evidence="transition_contract",
+        ),
     ),
     "moonlight_theater": ModeSpec(
         name="moonlight_theater",
@@ -1025,6 +1139,18 @@ MODE_SPECS = {
             ),
             ready_note="支线故事页已就绪",
         ),
+        # route_finish_points.md 表第 11 行与手册：停「剧场选择页」，
+        # 「往右换不动」即收工；内部 FINISHED 只是记账，不是页面。
+        contract=RouteContract(
+            mode="moonlight_theater",
+            terminal=MoonlightState.LIST.value,
+            finish_at_home=True,
+            # moonlight_theater.py 写明「获得奖励」被全局守卫在 capture 层关掉，
+            # 状态机一帧都看不到；观览指南 / 购票 / 用券是路线自己的状态。
+            overlays=frozenset({"reward_notice"}),
+            empty_states=(),
+            action_evidence="transition_contract",
+        ),
     ),
     "hero_synthesis": ModeSpec(
         name="hero_synthesis",
@@ -1056,6 +1182,20 @@ MODE_SPECS = {
                 ),
             ),
             ready_note="英雄信息页已就绪",
+        ),
+        # 终点见 route_finish_points.md 表第 5 行：跑完一遍回到英雄列表，
+        # 合成/传送不消耗门票类资源（周期不可改，见 cycles_editable=False）。
+        # 覆盖层只登记全局守卫里会压住英雄列表的类别：本路线关掉了奖励通知守卫
+        # 正是为了自己看到传送奖励层（reward_notice_guard=False 的理由见上）。
+        # 合成结果 / 传送结果 / SSS 警告是路线自己的状态与页内判据，不是守卫类别。
+        contract=RouteContract(
+            mode="hero_synthesis",
+            terminal=HeroSynthState.HERO_LIST.value,
+            finish_at_home=True,
+            overlays=frozenset({"reward_notice", "network"}),
+            empty_states=(),
+            # 本路线打开了 _REQUIRE_TRANSITION_CONTRACT，12 个同页动作也带契约。
+            action_evidence="transition_contract",
         ),
     ),
     "shop_refresh": ModeSpec(
@@ -1092,6 +1232,19 @@ MODE_SPECS = {
             ),
             ready_note="秘密商店顶部已就绪",
         ),
+        # route_finish_points.md 表第 6 行：一批扫完停在商店页；本路线状态集合
+        # 只有 scan_top（其余 phase 是页内阶段），金币/钻石不足也停在这一页。
+        contract=RouteContract(
+            mode="shop_refresh",
+            terminal=ShopPhase.SCAN_TOP.value,
+            finish_at_home=True,
+            # 没有登记会挡住本路线的全局守卫类别。
+            overlays=frozenset(),
+            empty_states=(),
+            # 未开基类开关：自带主循环，靠 _wait_stable / _open_and_wait
+            # 等目标页稳定，不经过基类转场账本（理由见 TRANSITION_EXEMPT）。
+            action_evidence="自有 _wait_stable/_open_with_retry",
+        ),
     ),
     "survivor": ModeSpec(
         name="survivor",
@@ -1105,6 +1258,18 @@ MODE_SPECS = {
         # 起点是用户人工推进到的活动小游戏内部页面，不需要从大厅导航过来，
         # 出问题时也不做任何「回大厅」动作（Back 会退回活动主页那个未知状态）。
         needs_navigation=False,
+        # 状态集合只登记 card：虽然小游戏内有 battle / level_up / result，
+        # 但那几页归监督循环，不参与路线状态机（见 survivor.py 模块头）。
+        contract=RouteContract(
+            mode="survivor",
+            terminal=SurvivorState.CARD.value,
+            finish_at_home=False,
+            finish_note="起点由用户人工推进到小游戏内部；没有导航器，出错也不做回大厅动作",
+            overlays=frozenset(),
+            empty_states=(),
+            # 已知欠债：_observe_stable 点完不回头看，1800 秒超时是安全网不是判据。
+            action_evidence="无：_observe_stable 点完不回头看（已知欠债）",
+        ),
     ),
     "activity_story": ModeSpec(
         name="activity_story",
@@ -1123,6 +1288,17 @@ MODE_SPECS = {
         # 起点是用户人工停在「观看故事」页再启动：活动入口每期都会变，写死一条
         # 导航链反而是负担（与活动小游戏同一种用法）⇒ 只能单独跑，跑完也不回家。
         needs_navigation=False,
+        # 每帧现判「观看故事」页；全部看完抛 ActivityStoryCleared，停在 stage。
+        contract=RouteContract(
+            mode="activity_story",
+            terminal=StoryState.STAGE.value,
+            finish_at_home=False,
+            finish_note="needs_navigation=False，跑完不做回大厅动作，停在当前页",
+            overlays=frozenset(),
+            empty_states=(),
+            # 本路线打开了 _REQUIRE_TRANSITION_CONTRACT，动作带必填来源与目标页。
+            action_evidence="transition_contract",
+        ),
     ),
     "world_boss": ModeSpec(
         name="world_boss",
@@ -1167,6 +1343,26 @@ MODE_SPECS = {
             resume_action="跳过回大厅与进入骑士团",
             resume_state_done="已在世界首领战主页",
             ready_note="世界首领战主页已就绪",
+        ),
+        # route_finish_points.md 表第 8 行：跑满次数或今日次数用完都停主页。
+        # 导航链必经骑士团主页（lobby → quick_menu → knights_home → wb_home），
+        # 该页那五类全局弹窗都会把入口压住，另有进主页才弹的支援奖励层。
+        contract=RouteContract(
+            mode="world_boss",
+            terminal=WorldBossState.HOME.value,
+            finish_at_home=True,
+            overlays=frozenset(
+                {
+                    "worldboss_support_reward",
+                    "knights_signin",
+                    "gift_support",
+                    "gift_claim",
+                    "knights_weekly_reward",
+                    "knights_growth_rank",
+                }
+            ),
+            empty_states=(),
+            action_evidence="transition_contract",
         ),
     ),
     "knights_donation": ModeSpec(
@@ -1223,6 +1419,26 @@ MODE_SPECS = {
             resume_action="跳过回大厅与进入骑士团",
             resume_state_done="已在骑士团主页",
             ready_note="骑士团主页已就绪",
+        ),
+        # route_finish_points.md 表第 9 行：每周任务无可领就停每周任务页。
+        # 手册写明本路线关掉了「获得奖励」守卫（支援奖励层必须自己看到），
+        # 骑士团主页另外四层由全局守卫处理，见 global_popups.py 各类注释。
+        contract=RouteContract(
+            mode="knights_donation",
+            terminal="weekly_tasks",
+            finish_at_home=True,
+            overlays=frozenset(
+                {
+                    "reward_notice",
+                    "knights_signin",
+                    "gift_support",
+                    "gift_claim",
+                    "knights_weekly_reward",
+                    "knights_growth_rank",
+                }
+            ),
+            empty_states=(),
+            action_evidence="transition_contract",
         ),
     ),
     "labyrinth_stone": ModeSpec(
@@ -1289,6 +1505,18 @@ MODE_SPECS = {
             ),
             ready_note="战斗菜单「一般」页已就绪",
         ),
+        # route_finish_points.md 表第 10 行与第一节链路：放弃战斗后停在迷宫详情页，
+        # 再由 return home 接手；迷宫不消耗门票，没有资源耗尽出口。
+        contract=RouteContract(
+            mode="labyrinth_stone",
+            terminal=LabyrinthStoneState.LABYRINTH_DETAIL.value,
+            finish_at_home=True,
+            # docs/maintenance/labyrinth_stone.md：装备背包已满会盖住准备页，
+            # 模拟器缺模板时守卫整段跳过是历史故障原因。
+            overlays=frozenset({"equipment_bag_full"}),
+            empty_states=(),
+            action_evidence="transition_contract",
+        ),
     ),
     "sanctuary": ModeSpec(
         name="sanctuary",
@@ -1324,6 +1552,16 @@ MODE_SPECS = {
             resume_action="跳过回大厅与进入圣域",
             resume_state_done="已在圣域主页",
             ready_note="圣域主页已就绪",
+        ),
+        # docs/maintenance/sanctuary.md：无可领行且照料不亮时收工，状态机那一刻在 forest。
+        # 领奖弹窗是路线自己的 claim_popup 状态，不是全局守卫类别。
+        contract=RouteContract(
+            mode="sanctuary",
+            terminal="forest",
+            finish_at_home=True,
+            overlays=frozenset(),
+            empty_states=(),
+            action_evidence="transition_contract",
         ),
     ),
     # 2026-11-08：成就领取（**PC 端首条路线**，按用户口径先只放 PC 素材）。
@@ -1361,6 +1599,16 @@ MODE_SPECS = {
             resume_state_done="已在成就页",
             ready_note="成就页已就绪",
         ),
+        # 手册：每个分类确认「全部领取灰 + 没有升级按钮」后收工，停在成就页；
+        # 奖励与升级弹窗由状态机先于成就页判定，不属全局守卫类别。
+        contract=RouteContract(
+            mode="achievement",
+            terminal="page",
+            finish_at_home=True,
+            overlays=frozenset(),
+            empty_states=(),
+            action_evidence="transition_contract",
+        ),
     ),
     # 2026-11-15：宠物领养（模拟器实机走查；PC 未放行）。
     "pet_adoption": ModeSpec(
@@ -1396,6 +1644,16 @@ MODE_SPECS = {
             resume_state_done="已在宠物小屋",
             ready_note="宠物小屋已就绪",
         ),
+        # 手册：滑到底确认三件用品都在冷却或本周已购后收工，停在商店段；
+        # 今日已领完是 adopt_popup 内的判据分支，不是独立状态。
+        contract=RouteContract(
+            mode="pet_adoption",
+            terminal="shop",
+            finish_at_home=True,
+            overlays=frozenset(),
+            empty_states=(),
+            action_evidence="transition_contract",
+        ),
     ),
     # 2026-11-15：企鹅批量购买（模拟器实机闭环；PC 未放行）。
     "penguin_purchase": ModeSpec(
@@ -1427,6 +1685,16 @@ MODE_SPECS = {
             resume_action="跳过回大厅与进入圣域",
             resume_state_done="已在圣域主页",
             ready_note="圣域主页已就绪",
+        ),
+        # 每轮在「企鹅成长完成」弹窗关掉、画面回到成长祭坛后才提交；
+        # 红叶不足的 CURRENCY_SHORT 不是状态，收工由基类回大厅。
+        contract=RouteContract(
+            mode="penguin_purchase",
+            terminal="成长祭坛",
+            finish_at_home=True,
+            overlays=frozenset(),
+            empty_states=(),
+            action_evidence="transition_contract",
         ),
     ),
     # 2026-11-17：装备制作（模拟器实机走查；PC 未放行）。
@@ -1465,6 +1733,16 @@ MODE_SPECS = {
             resume_state_done="已在制作装备页",
             ready_note="制作装备页已就绪",
         ),
+        # 默认 tidy=none 时在制作结果页提交轮次并收工；整理模式落结果页整理态。
+        # 手册明确「装备背包已满」走全局守卫通道，属本路线的覆盖层。
+        contract=RouteContract(
+            mode="craft_equipment",
+            terminal=CraftPage.RESULT.value,
+            finish_at_home=True,
+            overlays=frozenset({"equipment_bag_full"}),
+            empty_states=(),
+            action_evidence="transition_contract",
+        ),
     ),
     # 2026-11-09：主线补星（PC 端；素材只有 PC，业务逻辑与模拟器共通）。
     "story_star": ModeSpec(
@@ -1497,6 +1775,16 @@ MODE_SPECS = {
             resume_action="跳过回大厅与进入主线",
             resume_state_done="已在关卡列表",
             ready_note="关卡列表已就绪",
+        ),
+        # 六章扫完时停在篇章面板（episode）；DONE 是收工记号，不是页面。
+        # 体力弹窗走共用的 stamina 两段式判据，不属全局守卫类别。
+        contract=RouteContract(
+            mode="story_star",
+            terminal="episode",
+            finish_at_home=True,
+            overlays=frozenset(),
+            empty_states=(),
+            action_evidence="transition_contract",
         ),
     ),
     "community": ModeSpec(
@@ -1604,6 +1892,18 @@ MODE_SPECS = {
                     "网页活动列表已就绪（点「游戏社区」进竖屏，之后横屏通道认不出这页）"
                 ),
             ),
+        # 状态机自己的最后一站是 CLOSING（已点退出、等转回横屏），
+        # 转回那一帧才 _finish；真正的「大厅首页」由基类收尾抵达，不在 states 里。
+        # 手册区分三种网络失败，其中 WebView 网络错误长条归全局守卫的 web_network_error。
+        contract=RouteContract(
+            mode="community",
+            terminal=CommunityState.CLOSING.value,
+            finish_at_home=True,
+            overlays=frozenset({"web_network_error"}),
+            # 积分不够是 RedeemBudgetExhausted 正常退出，不占状态。
+            empty_states=(),
+            action_evidence="transition_contract",
+        ),
     ),
 }
 
@@ -1883,6 +2183,55 @@ def _assert_navigation_declared() -> None:
             )
 
 
+def _assert_route_contract_declared() -> None:
+    """加载期自查：每条路线都必须对「路线级最低声明」表态。
+
+    三种合法形态：
+
+    - 写了 ``contract``（五项声明齐备且与代码对得上）；
+    - 机制建立前就在 ``CONTRACT_BACKLOG`` 里的老路线（欠债公开可查）；
+    - 新路线**没有**第三种形态 —— 不写契约、想进欠债名单都会在 import 阶段报错。
+
+    ⚠️ 与另三套表态一样只查结构：终态、覆盖层、空态、回执的交叉校验交给
+    ``validate_contract``，判据准不准仍是第二阶段逐条实机的事。
+    """
+    for name in CONTRACT_BACKLOG:
+        if name not in MODE_SPECS:
+            raise RuntimeError(
+                f"CONTRACT_BACKLOG 里的 {name} 已经不在 MODE_SPECS 了；"
+                "名单只减不增，过期条目请直接删掉。"
+            )
+
+    for name, spec in MODE_SPECS.items():
+        contract = spec.contract
+        owed = name in CONTRACT_BACKLOG
+        if contract is None:
+            if owed:
+                continue
+            raise RuntimeError(
+                f"路线 {name} 既没有 contract，也不在 CONTRACT_BACKLOG 里。"
+                "在 MODE_SPECS 注册项补一份 RouteContract：terminal / finish_at_home / "
+                "overlays / empty_states / action_evidence（finish_at_home=False 时还要 "
+                "finish_note）；规矩见 docs/ROUTE_CONTRACT.md。"
+            )
+        if owed:
+            raise RuntimeError(
+                f"路线 {name} 既写了 contract、又躺在 CONTRACT_BACKLOG 里；"
+                "两边只能写一边（补了契约就把欠债那条划掉）。"
+            )
+        if contract.mode != name:
+            raise RuntimeError(
+                f"路线 {name} 的 contract.mode 是 {contract.mode!r}，对不上注册名；"
+                "抄契约最容易漏改的就是它。"
+            )
+        problems = validate_contract(contract, spec.states, transition_exempt=TRANSITION_EXEMPT)
+        if problems:
+            raise RuntimeError(
+                f"路线 {name} 的 contract 声明与代码对不上：{'；'.join(problems)}。"
+                "规矩见 docs/ROUTE_CONTRACT.md。"
+            )
+
+
 # 只有 PC 素材、**模拟器上跑必然缺图**的路线（2026-11-08 立）。
 #
 # 为什么不靠探测模板：探测要真去 build 一次状态机（会抛 ``FileNotFoundError``），
@@ -1912,6 +2261,7 @@ def _run_load_time_checks() -> None:
     _assert_resume_declared()
     _assert_transition_stance_declared()
     _assert_conclusion_gate_declared()
+    _assert_route_contract_declared()
 
 
 _run_load_time_checks()

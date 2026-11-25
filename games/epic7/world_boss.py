@@ -104,6 +104,10 @@ HOME            回主页 → **先看「每周贡献度」宝箱**（发光=可
 而页面识别用的 `TM_CCOEFF_NORMED` 对亮度缩放不敏感，两边一凑会把「还有次数」误判成
 「次数用完」。实测表见 `docs/WORLD_BOSS_DESIGN.md` 第十二节。
 
+⚠️ 2026-11-23：次数用完/未开放时右下按钮会换成「管理辅助队伍」。这张帧的高亮带相对
+亮度很高，颜色判据会返回「可点」；所以它由按钮变体显式判为 `AttemptsExhausted`
+（正常退出码 2），不走「认不出页面」的异常通道。
+
 ## 每周贡献度宝箱（#1 = 2026-09-23、#2 = 2026-09-25 用户实拍补充）
 
 主页右上角「每周贡献度」进度条上有两档宝箱，按累计贡献解锁：
@@ -225,7 +229,7 @@ from auto_game_unified.games.epic7.template_paths import is_template_root
 
 
 class AttemptsExhausted(ResourceExhausted):
-    """今天的挑战次数打完了：主页「选择队伍」已经变灰。
+    """今天的挑战次数打完了：主页「选择队伍」已经变灰，或换成「管理辅助队伍」。
 
     ⚠️ **这条判据写好了很久、却一直没接上**（2026-09-23 实跑暴露）：
     ``select_team_enabled`` 只在单元测试和设计文档里出现过，``next_action`` 从来不问它，
@@ -607,6 +611,8 @@ class WorldBossTemplates:
     knights_title: np.ndarray
     worldboss_title: np.ndarray
     select_team_button: np.ndarray
+    # 次数用完/未开放时右下角按钮的变体：「管理辅助队伍」。
+    manage_support_team: np.ndarray
     team_select_title: np.ndarray
     team_config_auto: np.ndarray
     level_reward_title: np.ndarray
@@ -618,6 +624,8 @@ class WorldBossTemplates:
     # 宝箱 #2 的**可领（发光）**外观。与 #1 不是同一个形状（#2 对 #1 的模板只有
     # 0.5161），所以必须是各自一份模板与各自的搜索区。未到档时得分 0.2593。
     weekly_chest2: np.ndarray
+    # 「世界首领辅助队伍奖励」弹窗标题，用来把压暗的主页叠层排除在 home 之外。
+    support_reward_popup: np.ndarray
     stamina_popup: np.ndarray
     stamina_material: np.ndarray
     stamina_confirm: np.ndarray
@@ -635,6 +643,7 @@ def build_world_boss_templates(template_dir: Path) -> WorldBossTemplates:
         knights_title=load("knights_title"),
         worldboss_title=load("worldboss_title"),
         select_team_button=load("select_team_button"),
+        manage_support_team=load("manage_support_team"),
         team_select_title=load("team_select_title"),
         team_config_auto=load("team_config_auto"),
         level_reward_title=load("level_reward_title"),
@@ -642,6 +651,9 @@ def build_world_boss_templates(template_dir: Path) -> WorldBossTemplates:
         battle_skip=load("battle_skip"),
         weekly_chest=load("weekly_chest_lit"),
         weekly_chest2=load("weekly_chest2_lit"),
+        support_reward_popup=load_template(
+            str(template_root / "navigation" / "worldboss_support_reward_title.png")
+        ),
         **asdict(load_stamina_templates(template_root / "story")),
         evidence=build_world_boss_evidence(template_dir),
     )
@@ -660,7 +672,7 @@ _PAGE_STATES = (
 class WorldBossStateMachine:
     """世界首领战一轮循环的纯视觉决策。
 
-    页面识别统一走 ``evidence/world_boss.py`` 的页面组合（六个锚点已做过全库排他性
+    页面识别统一走 ``evidence/world_boss.py`` 的页面组合（锚点已做过全库排他性
     扫描），状态机不再自己写「靠上下文猜这是哪一页」的判据 —— 那种判据在
     「状态拨错」时不会自愈，只会卡到超时。
     """
@@ -671,10 +683,12 @@ class WorldBossStateMachine:
         "knights_title": (0, 30, 500, 180),
         "worldboss_title": (0, 30, 500, 180),
         "select_team_button": (1450, 990, 532, 130),
+        "manage_support_team": (1450, 990, 532, 130),
         "team_select_title": (0, 140, 520, 140),
         "team_config_auto": (100, 1000, 300, 110),
         "level_reward_title": (600, 120, 800, 160),
         "result_title": (1400, 50, 400, 110),
+        "support_reward_popup": (700, 262, 520, 80),
         **STAMINA_REGIONS,
     }
 
@@ -1127,6 +1141,14 @@ class WorldBossStateMachine:
             # 那正是 2026-09-25 23:01 那次实跑的路径，日志里一句宝箱的话都没有，
             # 事后无从判断「没领」是没得领还是判据漏了。
             note, self._chest_scan_note = self._chest_scan_note, ""
+            # 2026-11-23：按钮换成「管理辅助队伍」= 今日次数用完/未开放，是正常终点。
+            # 这张帧的按钮高亮带相对亮度很高，select_team_enabled 会误判成还有次数，
+            # 所以由按钮变体显式收工；颜色判据只继续负责「选择队伍」变灰那一版。
+            if self._locate(screen, "manage_support_team") is not None:
+                raise AttemptsExhausted(
+                    "主页按钮为「管理辅助队伍」（今日次数已用完或未开放）"
+                    + (f"；{note}" if note else "")
+                )
             if not select_team_enabled(screen):
                 raise AttemptsExhausted(
                     "主页「选择队伍」已变灰（今天次数已用完）"

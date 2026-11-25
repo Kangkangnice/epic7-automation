@@ -202,6 +202,10 @@ class ProjectLayoutTests(unittest.TestCase):
             # 同时是动作落点与「不连点」护栏的正反夹具。
             "weekly_reward_claimable_live_20261117.png",
             "weekly_reward_claimed_live_20261117.png",
+            # 2026-11-24 07:08 模拟器现场：游戏记住上次停在「战斗记录」页签，
+            # 从模式选择进竞技场直接落在这里 ⇒ 没有对手列表锚点 ⇒ 导航只等
+            # 3 分钟后报「进入竞技场失败」。正例帧供导航回切测试与枢纽锚点审计用。
+            "arena_other_tab_live_20261124.png",
         }
         fixture_dir = ROOT / "tests" / "fixtures" / "epic7_arena"
         self.assertEqual(expected, {path.name for path in fixture_dir.glob("*.png")})
@@ -626,6 +630,9 @@ class ProjectLayoutTests(unittest.TestCase):
             # 只匹配到 0.6969（阈值 0.70），整串因此弃权、兑换中心无法决策。
             # 它钉住「余额里的 5 必须读得出」这条：字模换回旧版就会变红（0.697）。
             "exchange_balance_950_live_20261115.png",
+            # 2026-11-23：我的任务页·今日待签（签到日历那一格右上角有「领」角标），
+            # 同时是 ``tasks_signin_claim`` 判据的正样本与「已签」态的反样本来源。
+            "tasks_signin_todo_live_20261123.png",
         }
         fixture_dir = ROOT / "tests" / "fixtures" / "epic7_community"
         self.assertEqual(expected, {path.name for path in fixture_dir.glob("*.png")})
@@ -657,6 +664,8 @@ class ProjectLayoutTests(unittest.TestCase):
                 "task_done.png",
                 "card_like_off.png",
                 "feed_icon_exchange.png",
+                # 2026-11-23：我的任务页「领」角标，判据型模板，缺了就 fail-closed。
+                "tasks_signin_claim.png",
             },
             {path.name for path in (templates / "pages").glob("*.png")},
         )

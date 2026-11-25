@@ -209,9 +209,9 @@ class RouteHookRegistryTests(unittest.TestCase):
             "max_skystone_purchases": 0,
         }
         self.assertEqual(expected, arena.runner_options(ROOT, True, {}))
-        live = dict(expected)
-        live["purchase_stamp_path"] = ROOT / "runtime_logs" / "arena_ticket_purchase.txt"
-        self.assertEqual(live, arena.runner_options(ROOT, False, {}))
+        # 实跑与干跑交给 Runner 的东西**完全一致**：2026-11-23 删掉「买票日期戳」之后，
+        # 竞技场不再有任何只在实跑时才下发的文件路径（那个做法跨服务器时区必错）。
+        self.assertEqual(expected, arena.runner_options(ROOT, False, {}))
 
         # 可选项生效：只把声明过的键交给 Runner，非法值与未满足依赖在 clean 里退回默认。
         chosen = arena.runner_options(

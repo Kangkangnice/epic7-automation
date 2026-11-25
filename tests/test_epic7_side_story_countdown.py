@@ -20,7 +20,6 @@ from __future__ import annotations
 import importlib.util
 from pathlib import Path
 
-import cv2
 import numpy as np
 import pytest
 
@@ -30,23 +29,12 @@ from auto_game_unified.games.epic7.side_story import (
     build_side_story_machine,
     read_period_countdown,
 )
+from auto_game_unified.tests.fixture_images import read_rgb_fixture as _load
 
 
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURES = ROOT / "tests" / "fixtures" / "epic7_side_story"
 TEMPLATES = ROOT / "games" / "epic7" / "templates" / "side_story"
-
-_CACHE: dict[str, np.ndarray] = {}
-
-
-def _load(path: Path) -> np.ndarray:
-    key = str(path)
-    if key not in _CACHE:
-        raw = cv2.imread(key, cv2.IMREAD_COLOR)
-        assert raw is not None, f"缺夹具 {path}"
-        _CACHE[key] = cv2.cvtColor(raw[:1132, :1982], cv2.COLOR_BGR2RGB)
-    return _CACHE[key]
-
 
 def list_page() -> np.ndarray:
     """「可进入的支线故事」列表（2026-11-12 真机）。
@@ -237,6 +225,25 @@ def test_ocr_returns_none_on_a_page_without_the_line():
     """列表页没有那行字 ⇒ 必须返回 None（判据不能"什么都能读出个东西"）。"""
 
     assert read_period_countdown(list_page()) is None
+
+
+@_NEEDS_OCR
+@pytest.mark.parametrize("name", ["side_story.png", "event_home.png", "outpost_team.png", "map.png"])
+def test_ocr_abstains_on_other_real_pages(name):
+    assert read_period_countdown(_load(FIXTURES / name)) is None
+
+
+@_NEEDS_OCR
+def test_countdown_detector_does_not_upscale_the_short_edge(monkeypatch):
+    import rapidocr_onnxruntime
+    from unittest.mock import Mock
+
+    constructor = Mock()
+    monkeypatch.setattr(rapidocr_onnxruntime, "RapidOCR", constructor)
+    monkeypatch.setattr(side_story_module, "_OCR_ENGINE", None)
+
+    assert side_story_module._ocr_engine() is constructor.return_value
+    constructor.assert_called_once_with(limit_type="max")
 
 
 # --------------------------------------------------------------------------

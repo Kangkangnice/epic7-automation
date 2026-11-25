@@ -299,41 +299,38 @@ def judge_row(
 ) -> RowVerdict:
     """单行结论。纯函数：只吃识别结果与两份名单，不看画面。
 
-    口径（2026-11-15 用户拍板）：
+    口径（2026-11-25 用户拍板，不再比命中数量）：
 
-    1. **避战名单命中就出局**，除非优先名单命中更多（下一行）。
-    2. **优先名单命中数量 > 避战名单命中数量 ⇒ 进「优先名单组」**。
-       用户原话（当时叫黑 / 白名单）：「一个黑名单、两个白名单，那就按白名单走」。
-    3. **数量相等且都 ≥1 ⇒ 按 ``conflict``**：``blacklist``（默认）出局、
-       ``whitelist`` 进优先名单组。用户原话：「相等的时候才优先走黑名单」。
-    4. **只命中优先名单 ⇒ 优先名单组**；**两边都没命中 ⇒ 普通组**（不是出局）。
-    5. 认不出的头像不计入任何一边；四个全认不出本身就是「两边都没命中」，
+    1. **两份名单都命中 ⇒ 只看 ``conflict`` 设置**：``blacklist``（默认）出局、
+       ``whitelist`` 进「优先名单组」。命中几名都不影响这个结论。
+       用户原话：「不用比黑白名单的数量，直接比你的规则」。
+    2. **只命中避战名单 ⇒ 出局**；**只命中优先名单 ⇒ 优先名单组**；
+       **两边都没命中 ⇒ 普通组**（不是出局）。
+    3. 认不出的头像不计入任何一边；四个全认不出本身就是「两边都没命中」，
        进普通组 —— 优先名单只是偏好，没有理由因为认不出就把它排除。
 
-    数量按**不同英雄名**计（``set`` 交集大小）：同一名英雄重复出现只算一次，
-    上限 4（一行只有四个槽位）。
+    ``white_hits`` 仍按**不同英雄名**计（``set`` 交集大小，上限 4），供优先名单组
+    内部排序用；它不参与本函数的去向判定。
     """
 
     heroes = set(team.heroes)
-    black = len(heroes & blacklist)
+    black_names = heroes & blacklist
     white = len(heroes & whitelist)
-    if black and white:
-        if white > black:
-            return RowVerdict(
-                TIER_WHITE, f"优先命中更多（优先{white}／避战{black}）", white
-            )
-        if white < black:
-            return RowVerdict(
-                TIER_OUT, f"避战命中更多（避战{black}／优先{white}）", white
-            )
+    if black_names and white:
         if conflict == "whitelist":
             return RowVerdict(
-                TIER_WHITE, f"命中数相等（{white}／{black}），按设置照打", white
+                TIER_WHITE,
+                f"两份名单都命中（优先{white}／避战{len(black_names)}），按设置照打",
+                white,
             )
-        return RowVerdict(TIER_OUT, f"命中数相等（{black}／{white}），按设置跳过", white)
-    if black:
         return RowVerdict(
-            TIER_OUT, "命中避战名单：" + "、".join(sorted(heroes & blacklist)), white
+            TIER_OUT,
+            f"两份名单都命中（避战{len(black_names)}／优先{white}），按设置跳过",
+            white,
+        )
+    if black_names:
+        return RowVerdict(
+            TIER_OUT, "命中避战名单：" + "、".join(sorted(black_names)), white
         )
     if white:
         return RowVerdict(

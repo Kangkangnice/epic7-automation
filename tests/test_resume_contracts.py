@@ -14,6 +14,7 @@
 它留在 `runtime_logs/_audit_*_cross_route.py`，结论写进 `docs/RESUME_COVERAGE.md`。
 """
 
+from collections.abc import Iterator
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -169,69 +170,187 @@ def test_every_route_is_registered_in_the_coverage_doc():
 # ---- ③ 判据必须真认得准 ----
 
 
-def _reference_frames(mode: str) -> list:
-    """这条路线自己的夹具，裁到基准尺寸。比基准小的跳过（匹配层会按宽高比拒绝）。"""
-    # ⚠️ 只有 PC 素材的路线（``modes.PC_ONLY_ROUTES``）夹具放在 ``*_pc`` 目录下，
-    # 与 ``tests/fixtures`` 的既有约定一致（PC 帧不混进模拟器基线目录）。
+# 每个注册探针在旧全库回放中识别出的不同 (状态, 页面)，各留一个真机见证。
+# 各路线的判据和反例仍由对应的路线测试验证。这里验接线和状态实际发生改变。
+RESUME_WITNESSES = {
+    'achievement': (
+        ('page_sim_live_20261109.png', None, '成就页'),
+        ('reward_popup_sim_live_20261109.png', None, '获得成就奖励'),
+    ),
+    'arena': (
+        ('battle.png', 'battle', '战斗中'),
+        ('failed_first_opponent.png', 'list', '对手列表'),
+        ('normal_battle_ready_live_20260826.png', 'team', '队伍选择'),
+        ('rank_confirm.png', 'confirming', '结果确认中'),
+        ('result.png', 'result', '战斗结果'),
+        ('selected.png', 'selected', '对手详情'),
+    ),
+    'craft_equipment': (
+        ('home.png', None, '制作页（未选部位）'),
+        ('qty_1.png', None, '制作页（已选部位）'),
+    ),
+    'expedition': (
+        ('battle.png', 'battle', '战斗中'),
+        ('campfire_idle.png', 'outcome', '公开招募结果'),
+        ('difficulty_3_selected.png', 'difficulty_confirm', '难度确认'),
+        ('empty_posters_live.png', 'posters', '通缉传单列表'),
+        ('expedition_list.png', 'returning', '返回主页'),
+        ('home.png', 'home', '远征主页'),
+        ('public_confirm.png', 'recruit_confirm', '招募确认'),
+        ('ready.png', 'ready', '准备战斗'),
+        ('result.png', 'result', '战斗结果'),
+        ('team.png', 'team', '队伍选择'),
+    ),
+    'knights_donation': (
+        ('guild_home_no_dot.png', None, '骑士团主页'),
+        ('support_limit_full.png', None, '骑士团活动·资源支援'),
+        ('weekly_tasks_claimable.png', None, '骑士团活动·每周任务'),
+    ),
+    'labyrinth_stone': (
+        ('battle.png', None, '迷宫内战斗（本路线不该出现）'),
+        ('battle_menu.png', None, '战斗菜单·一般页'),
+        ('detail_after_giveup.png', None, '迷宫详情页'),
+        ('giveup_confirm.png', None, '放弃战斗确认框'),
+        ('labyrinth_list.png', None, '迷宫列表'),
+        ('map.png', None, '地图页'),
+        ('merchant_room.png', None, '商人房'),
+        ('pause_menu.png', None, '暂停菜单'),
+        ('quick_menu.png', None, '右上角快捷菜单'),
+        ('room.png', None, '迷宫房间'),
+        ('shop.png', None, '商店页'),
+        ('story.png', None, '开场剧情'),
+        ('team_ready.png', None, '准备战斗页'),
+        ('teleport_confirm.png', None, '传送确认弹窗'),
+        ('unknown_dialog.png', None, '认不出标题的双按钮弹窗'),
+    ),
+    'penguin_purchase': (
+        ('altar_popup.png', None, '成长祭坛'),
+        ('forest_with_altar.png', None, '精灵之森'),
+        ('sanctuary_home.png', None, '圣域主页'),
+    ),
+    'pet_adoption': (
+        ('adopt_popup_free.png', None, '领养宠物'),
+        ('adopt_result.png', None, '领养结果'),
+        ('house.png', None, '宠物小屋'),
+        ('purchase_done.png', None, '宠物商店'),
+    ),
+    'sanctuary': (
+        ('forest_after_penguin.png', None, '精灵之森'),
+        ('home.png', None, '圣域主页'),
+    ),
+    'shop_refresh': (
+        ('covenant_purchased_row_live_20260831.png', None, '秘密商店'),
+    ),
+    'side_story': (
+        ('battle_clear.png', 'wait_results', '通关结算'),
+        ('boss_difficulty_list.png', 'team', '助手选择'),
+        ('complete_popup.png', 'wait_results', '完成故事'),
+        ('episode_countdown_live_20261112.png', 'stage', 'Episode详情'),
+        ('exhausted_prep.png', 'team', '队伍准备'),
+        ('map.png', 'stage', '关卡地图'),
+        ('outpost_scene.png', 'stage', '场景页'),
+        ('results.png', 'wait_results', '结算确认'),
+        ('side_story.png', 'stage', '支线故事'),
+        ('skip_confirm.png', 'wait_skip_confirm', '跳过确认'),
+        ('story_skip.png', 'active', '剧情播放'),
+    ),
+    'story': (
+        ('assistant.png', 'team', '助手选择'),
+        ('battle.png', 'wait_battle', '战斗中'),
+        ('bonus_reward.png', 'wait_next_stage', '额外奖励'),
+        ('clear.png', 'wait_results', '通关结算'),
+        ('complete.png', 'wait_complete', '通关提示'),
+        ('friend_request_pc_live_20261101.png', 'wait_results', '结算确认'),
+        ('next_stage.png', 'stage', '关卡入口'),
+        ('reward.png', 'wait_results', '奖励结算'),
+        ('skip_confirm.png', 'wait_skip_confirm', '跳过确认'),
+        ('stamina_popup_pc_live_20261101.png', 'team', '队伍准备'),
+        ('story.png', 'active', '剧情播放'),
+        ('story_watch_next_ep4.png', 'stage', '剧情关卡入口'),
+    ),
+    'story_star': (
+        ('03_timeline_open.png', None, '篇章面板'),
+        ('04_chapter3_stage_list.png', None, '小节列表'),
+    ),
+    'tower': (
+        ('battle_failed.png', 'card', '战斗失败'),
+        ('battle_guide.png', 'team', '准备战斗'),
+        ('battle_manual_auto_icon_dead_zone.png', 'battle', '战斗中'),
+        ('card.png', 'card_confirm', '选择装置确认'),
+        ('conquered.png', 'conquered', '月塔已征服'),
+        ('floor_list.png', 'floor_list', '楼层列表'),
+        ('home.png', 'home', '月塔主页'),
+        ('result.png', 'result', '月塔结算'),
+    ),
+    'world_boss': (
+        ('battle.png', 'battle', '战斗中'),
+        ('battle_result.png', 'result', '战斗结算'),
+        ('knights_home.png', None, '骑士团主页'),
+        ('level_reward.png', 'level_reward', '战斗级别奖励'),
+        ('team_config.png', 'team_config', '配置队伍'),
+        ('team_select.png', 'team_select', '选择辅助队伍'),
+        ('worldboss_home.png', 'home', '世界首领战主页'),
+    ),
+}
+
+
+def _reference_frames(mode: str, names: tuple[str, ...]) -> Iterator[np.ndarray]:
+    """Load only the nominated real frames, cropping to the existing reference canvas."""
     suffix = "_pc" if mode in PC_ONLY_ROUTES else ""
     group = FIXTURES / f"epic7_{mode}{suffix}"
-    frames = []
-    for path in sorted(group.glob("*.png")):
+    for name in names:
+        path = group / name
         raw = cv2.imread(str(path), cv2.IMREAD_COLOR)
-        if raw is None:
-            continue
+        assert raw is not None, f"无法读取接力夹具 {path}"
         height, width = raw.shape[:2]
-        if height < REFERENCE_HEIGHT or width < REFERENCE_WIDTH:
-            continue
-        frames.append(
-            cv2.cvtColor(
-                raw[:REFERENCE_HEIGHT, :REFERENCE_WIDTH], cv2.COLOR_BGR2RGB
-            )
-        )
-    return frames
+        assert height >= REFERENCE_HEIGHT and width >= REFERENCE_WIDTH, f"夹具小于基准画布 {path}"
+        frame = cv2.cvtColor(raw[:REFERENCE_HEIGHT, :REFERENCE_WIDTH], cv2.COLOR_BGR2RGB)
+        del raw
+        yield frame
+
+
+def test_reference_frames_only_decode_the_frame_being_tested(tmp_path, monkeypatch):
+    group = tmp_path / "epic7_stream"
+    group.mkdir()
+    for name in ("extra.png", "first.png", "second.png"):
+        (group / name).touch()
+    monkeypatch.setitem(_reference_frames.__globals__, "FIXTURES", tmp_path)
+    decoded = []
+
+    def read(path, flags):
+        decoded.append(Path(path).name)
+        return np.zeros((REFERENCE_HEIGHT, REFERENCE_WIDTH, 3), dtype=np.uint8)
+
+    monkeypatch.setattr(cv2, "imread", read)
+    frames = iter(_reference_frames("stream", ("first.png", "second.png")))
+    assert not decoded
+    next(frames)
+    assert decoded == ["first.png"]
+    next(frames)
+    assert decoded == ["first.png", "second.png"]
+    assert list(frames) == []
+
+
+def test_every_registered_probe_has_a_real_witness():
+    assert set(RESUME_WITNESSES) == set(PROBE_MODES)
 
 
 @pytest.mark.parametrize("name", PROBE_MODES)
-def test_the_probe_recognises_at_least_one_of_its_own_fixtures(name: str):
-    """「挂上了」不等于「认得出」。
-
-    判据写错、锚点写反、阈值抄错、名字拼错 —— 全都表现为**永远返回 None**，
-    而单看代码看不出来。拿这条路线自己的夹具跑一遍真的探针是唯一能现形的办法。
-
-    这里只要求「至少认出一页」（守住「探针不是死的」）；哪几页必须认得出，
-    由各路线自己的 ``tests/test_<路线>_resume.py`` 精确钉住。
-    """
-
+def test_the_registered_probe_adopts_each_witness_state(name: str):
     spec = MODE_SPECS[name]
-    # 「真实模板根」对只有 PC 素材的路线是 pc 视图，不是模拟器视图 —— 拿模拟器根
-    # 去构建它们必然缺图，那是在要求「一条还没做模拟器素材的路线凭空可用」。
     root = TemplateDir(TEMPLATE_ROOT, "pc") if name in PC_ONLY_ROUTES else TEMPLATE_ROOT
     machine = spec.build_machine(root, spec.default_state)
-    frames = _reference_frames(name)
+    witnesses = RESUME_WITNESSES[name]
+    assert witnesses
+    frames = _reference_frames(name, tuple(filename for filename, _, _ in witnesses))
 
-    assert frames, f"{name} 没有可用夹具，这条测试等于没跑"
-    recognised = []
-    for frame in frames:
+    for (filename, expected_state, expected_page), frame in zip(witnesses, frames, strict=True):
         point = spec.resume_probe(machine, frame, None)
-        if point is None:
-            continue
-        recognised.append(point)
-        assert point.page, f"{name} 的探针返回了空页面名，日志会看不出落在哪"
-        # ⚠️ 兜底断言（2026-09-27 批次 4 的 D2）：探针报「该拨到 X」时，状态机必须
-        # **真的已经是 X**。漏掉 ``machine.resume_from(found.state)`` 时接力看起来是
-        # 命中的（日志照打「开局=接力」），但状态机没拨过去，Runner 会原地干等到超时。
-        # 现在 ``modes._resume_probe`` 工厂把这一步写死了，这条断言是第二道 —— 万一
-        # 将来某条路线绕开工厂自带一套拨法，它会立刻现形。
-        #
-        # ⚠️ 必须**紧跟在那一次探针调用后面**断言：探针会改状态机，攒完再统一断言
-        # 比的是「最后一帧之后的状态」与「每一帧报的落点」，会误报。
-        if point.state is not None:
-            assert machine.state.value == point.state, (
-                f"{name} 的探针报了落点状态 {point.state}，但状态机还停在 "
+        assert point is not None, f"{name} 的探针认不出 {filename}"
+        assert (point.state, point.page) == (expected_state, expected_page), filename
+        if expected_state is not None:
+            # The factory must also update the machine, so the runner can continue.
+            assert machine.state.value == expected_state, (
+                f"{name} 的探针报了落点状态 {expected_state}，但状态机还停在 "
                 f"{machine.state.value} —— resume_from 没接上。"
             )
-
-    assert recognised, (
-        f"{name} 的探针在自己的 {len(frames)} 张夹具上一帧都认不出 —— "
-        "接线在、判据不在。"
-    )

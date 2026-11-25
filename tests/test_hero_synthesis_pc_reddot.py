@@ -152,17 +152,16 @@ class PcRedDotExclusivityTests(unittest.TestCase):
 
     def test_hero_route_negatives_do_not_fire(self):
         negatives = {
-            "PC 刻印页": pc_fixture(PC_NEGATIVE),
-            "PC 传送页": pc_fixture("transmit_select_pc_live_20261106"),
-            "PC 传送页(护栏后)": pc_fixture(
-                "transmit_select_after_guard_pc_live_20261106"
-            ),
-            "PC 刻印已满提示": pc_fixture("imprint_max_level_pc_live_20261108"),
-            "模拟器无红点": sim_fixture("list_no_reddot"),
+            "PC 刻印页": PC_NEGATIVE,
+            "PC 传送页": "transmit_select_pc_live_20261106",
+            "PC 传送页(护栏后)": "transmit_select_after_guard_pc_live_20261106",
+            "PC 刻印已满提示": "imprint_max_level_pc_live_20261108",
         }
-        for label, frame in negatives.items():
+        for label, name in negatives.items():
             with self.subTest(frame=label):
-                self.assertFalse(self.machine._red_dot_present(frame), label)
+                self.assertFalse(self.machine._red_dot_present(pc_fixture(name)), label)
+        with self.subTest(frame="模拟器无红点"):
+            self.assertFalse(self.machine._red_dot_present(sim_fixture("list_no_reddot")))
 
     def test_negative_scores_stay_well_below_threshold(self):
         tpl = load_pc_red_dot_template(TemplateDir(TEMPLATES, "pc"))
