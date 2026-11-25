@@ -53,7 +53,7 @@ class PointsReadingTests(unittest.TestCase):
             patch("rapidocr_onnxruntime.RapidOCR") as constructor,
         ):
             self.assertIs(arena_points._ocr_engine(), constructor.return_value)
-        constructor.assert_called_once_with(det_limit_type="max")
+        constructor.assert_called_once_with(limit_type="max")
 
     def test_reads_the_three_rows_on_a_recorded_list(self):
         from auto_game_unified.games.epic7.arena_points import read_opponent_points

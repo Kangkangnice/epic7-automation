@@ -243,7 +243,7 @@ def test_countdown_detector_does_not_upscale_the_short_edge(monkeypatch):
     monkeypatch.setattr(side_story_module, "_OCR_ENGINE", None)
 
     assert side_story_module._ocr_engine() is constructor.return_value
-    constructor.assert_called_once_with(det_limit_type="max")
+    constructor.assert_called_once_with(limit_type="max")
 
 
 # --------------------------------------------------------------------------

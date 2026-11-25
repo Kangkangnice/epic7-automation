@@ -2168,7 +2168,10 @@ def _ocr_engine() -> Any:
             return None
         # 已在调用方把 480×90 裁片放大两倍。宽裁片再按默认短边补到 736
         # 会让检测张量膨胀数倍，而这里的字已经达到实拍回放验证过的尺寸。
-        _OCR_ENGINE = RapidOCR(det_limit_type="max")
+        # rapidocr-onnxruntime 1.2.3 的参数名是 limit_type（无 det_ 前缀）。
+        # 传 det_limit_type 会让 UpdateParameters 剥前缀后访问 det_dict['model_path']
+        # 抛 KeyError —— 实测本地与 CI 都复现。保持 max，避免已放大的裁片再按短边补大。
+        _OCR_ENGINE = RapidOCR(limit_type="max")
     return _OCR_ENGINE
 
 
