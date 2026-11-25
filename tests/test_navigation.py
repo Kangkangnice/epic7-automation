@@ -303,6 +303,155 @@ class NavigationTests(unittest.TestCase):
         # 不能因为换裁剪把点击点带偏到「竞技场」那一条上去。
         self.assertTrue(1770 <= x <= 1885 and 512 <= y <= 575, f"落点跑出按钮：{clicks[0]}")
 
+    def test_arena_hub_anchor_is_present_on_every_hub_tab(self):
+        """枢纽锚点是「人还在竞技场里」的正面证据，对战页也有（1.0000）。
+
+        排他不靠这张图本身，而靠 `arena_ready` / `novice_arena` 同时缺席的合取。
+        谁把它换成只对某一页签命中的图，这条会红 —— 那样切到别的页签就认不出。
+        """
+        navigator = self.navigator([])
+        template = build_navigation_templates(TEMPLATES).arena_hub_title
+        region = navigator._REGIONS["arena_hub_title"]
+
+        def best(image) -> float:
+            return find_best_template(
+                image, template, region=region, reference_size=REFERENCE_SIZE
+            ).score
+
+        for name in (
+            "arena_other_tab_live_20261124",
+            "list",
+            "npc_list",
+            "selected",
+        ):
+            with self.subTest(page=name):
+                self.assertGreaterEqual(best(arena_fixture(name)), 0.90)
+
+    def test_arena_wrong_tab_detection_excludes_battle_and_popup_pages(self):
+        """合取判据排他：只有非对战页签会触发回切，对战页/弹窗一律不点。"""
+        navigator = self.navigator([])
+        unknown = type("Obs", (), {"name": "unknown", "confidence": 0.0})()
+        from auto_game_unified.games.epic7.navigation import _ArenaTabRecoveryAttempts
+
+        self.assertTrue(
+            navigator._recover_arena_wrong_tab(
+                arena_fixture("arena_other_tab_live_20261124"),
+                unknown,
+                ("arena_ready",),
+                _ArenaTabRecoveryAttempts(),
+            )
+        )
+        for name in ("list", "npc_list", "selected", "team", "weekly_rank_start_popup"):
+            with self.subTest(page=name):
+                attempts = _ArenaTabRecoveryAttempts()
+                self.assertFalse(
+                    navigator._recover_arena_wrong_tab(
+                        arena_fixture(name), unknown, ("arena_ready",), attempts
+                    ),
+                    f"{name} 不该被当成站错页签",
+                )
+
+    def test_arena_navigation_returns_to_the_tab_named_by_opponent_source(self):
+        """从「战斗记录」进竞技场：按路线选项切回交战对手 / NPC 对战。
+
+        两个来源都走完整的 ``navigate(arena)`` 两步链。改前会把这一帧判 unknown、
+        只等超时；改后第一步点进竞技场、第二步先切页签、再由原 `arena_ready`
+        判据验收。两来源落点必须不同，钉住「不能固定回交战对手」这条口径。
+        """
+        wrong_tab = arena_fixture("arena_other_tab_live_20261124")
+        listed = arena_fixture("list")
+
+        for source, expected in (("player", (1661, 228)), ("npc", (1661, 378))):
+            with self.subTest(source=source):
+                clicks: list[tuple[int, int]] = []
+                logs: list[str] = []
+                # 第 1 步（大厅 → 竞技场模式选择）先稳定两帧，
+                # 第 2 步才落进「战斗记录」这个上次记住的页签。
+                images = [
+                    fixture("arena_mode"),
+                    fixture("arena_mode"),
+                    wrong_tab,
+                    wrong_tab,
+                    listed,
+                    listed,
+                    listed,
+                ]
+
+                def capture(images=images):
+                    return images.pop(0) if len(images) > 1 else images[-1]
+
+                runtime = Runtime(
+                    capture,
+                    clicks.append,
+                    back=lambda: None,
+                    emit=logs.append,
+                )
+                navigator = Epic7Navigator(
+                    build_navigation_templates(TEMPLATES),
+                    runtime,
+                    sleep=lambda _: None,
+                    transition_frames=20,
+                    arena_opponent_source=source,
+                )
+                navigator.navigate("arena", lobby_screen=fixture("lobby"))
+
+                self.assertIn(expected, clicks, logs)
+                self.assertTrue(
+                    any("切回竞技场对手页签" in log for log in logs), logs
+                )
+                self.assertTrue(
+                    any("转场确认" in log for log in logs), logs
+                )
+
+    def test_arena_tab_recovery_is_bounded_and_does_not_touch_other_steps(self):
+        """站错页签时最多切两次；其它路线的 unknown 原样交还上层。
+
+        改前「认不出就一直等」；这条钉住有界逃生门，以及回切只在
+        `arena_ready` 这一步发生（别把主线/远征的加载帧也点掉）。
+        """
+        wrong_tab = arena_fixture("arena_other_tab_live_20261124")
+        mode = fixture("arena_mode")
+        clicks: list[tuple[int, int]] = []
+        logs: list[str] = []
+        images = [wrong_tab] * 12
+
+        def capture(images=images):
+            return images.pop(0) if images else wrong_tab
+
+        navigator = Epic7Navigator(
+            build_navigation_templates(TEMPLATES),
+            Runtime(capture, clicks.append, back=lambda: None, emit=logs.append),
+            sleep=lambda _: None,
+            transition_frames=12,
+        )
+        with self.assertRaisesRegex(RuntimeError, "非对战页签.*两次"):
+            navigator._transition(
+                "arena_mode", ("arena_ready",), "novice_arena", "进入竞技场",
+                source_screen=mode,
+            )
+        self.assertLessEqual(
+            len([point for point in clicks if point in ((1661, 228), (1661, 378))]),
+            2,
+        )
+
+        # 同样一帧交给别的转场目标：不许触发页签回切。
+        other_clicks: list[tuple[int, int]] = []
+        other = Epic7Navigator(
+            build_navigation_templates(TEMPLATES),
+            Runtime(lambda: wrong_tab, other_clicks.append, back=lambda: None),
+            sleep=lambda _: None,
+            transition_frames=4,
+        )
+        self.assertFalse(
+            other._recover_arena_wrong_tab(
+                wrong_tab,
+                type("Obs", (), {"name": "unknown", "confidence": 0.0})(),
+                ("story_ready",),
+                type("A", (), {"clicks": 0})(),
+            )
+        )
+        self.assertEqual([], other_clicks)
+
     def test_battle_entry_floor_stays_far_from_the_threshold(self):
         """全库地板：真大厅帧上「战斗」锚点最低多少分，和 0.82 的门槛隔多远。
 

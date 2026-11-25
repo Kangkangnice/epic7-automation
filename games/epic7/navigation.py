@@ -19,7 +19,10 @@ from auto_game_unified.core.supervisor import (
     StableObservation,
     left_page,
 )
-from auto_game_unified.games.epic7.arena import find_rank_promotion_confirm
+from auto_game_unified.games.epic7.arena import (
+    arena_tab_point,
+    find_rank_promotion_confirm,
+)
 from auto_game_unified.games.epic7.activity_column import (
     ACTIVITY_SCROLL_END_Y,
     ACTIVITY_SCROLL_LIMIT_PER_DIRECTION,
@@ -304,6 +307,15 @@ class _StoryRecoveryAttempts:
     clicks: int = 0
 
 
+# 进竞技场时站错页签的回切上限：一次切页就够，两次仍没到对手列表即报明确错误。
+_ARENA_TAB_RECOVERY_LIMIT = 2
+
+
+@dataclass
+class _ArenaTabRecoveryAttempts:
+    clicks: int = 0
+
+
 @dataclass(frozen=True)
 class NavigationTemplates:
     arena_rank_promotion_arrow: np.ndarray
@@ -408,6 +420,14 @@ class NavigationTemplates:
     exit_title_updated: np.ndarray
     exit_cancel_updated: np.ndarray
     arena_mode_title: np.ndarray
+    # 「每周对战奖励」标题：竞技场**枢纽各页签共用**的左侧栏锚点（交战对手页 /
+    # NPC 页 / 战斗记录 / 排名 / 名誉殿堂 / 竞技场故事上都有）。2026-11-24 现场：
+    # 游戏记住上次页签，进竞技场直接落在「战斗记录」⇒ 没有 `arena_ready` 也没有
+    # `novice_arena`，整页 unknown ⇒ 只等 3 分钟后报「进入竞技场失败」。用这颗
+    # 锚点把「人在竞技场里、只是站错页签」和「根本不在竞技场」分开：真帧 1.0000，
+    # 全库 arena 夹具除枢纽页外最高 0.4428（每周排名弹窗），阈 0.90 有余量。
+    # 复用 arena 证据里的同名图，不另存第二份。
+    arena_hub_title: np.ndarray
     # 竞技场模式选择页底部四个入口里的**第二个**（「新手竞技场」/「竞技场」那个）。
     # ⚠️ 它**有两种长相**：入口名随账号状态变 —— 新手期叫「新手竞技场」，脱离新手期后
     # 叫「竞技场」（2026-10-05 用户实机确认）。旧模板在那一帧只有 **0.7301**、低于
@@ -763,6 +783,7 @@ def build_navigation_templates(template_root: Path) -> NavigationTemplates:
         exit_title_updated=load_template(str(navigation / "exit_title_updated.png")),
         exit_cancel_updated=load_template(str(navigation / "exit_cancel_updated.png")),
         arena_mode_title=load_template(str(navigation / "arena_mode_title.png")),
+        arena_hub_title=load_template(str(template_root / "arena_weekly_reward_title.png")),
         # 两张候选：`novice_arena` = 新手期长相，`arena_entry` = 脱离新手期后的长相。
         # 顺序不影响结果（`_locate` 取过阈候选里的最高分，不看先后）。
         novice_arena=(
@@ -1005,6 +1026,8 @@ class Epic7Navigator:
         "exit_title_updated": (650, 400, 700, 280),
         "exit_cancel_updated": (550, 620, 500, 260),
         "arena_mode_title": (0, 35, 350, 180),
+        # 竞技场枢纽左侧栏「每周对战奖励」标题；与 evidence/arena.py 同名锚点同区同阈。
+        "arena_hub_title": (10, 670, 220, 60),
         "novice_arena": (400, 780, 650, 352),
         "story_back": (0, 40, 120, 120),
         "story_watch": (1450, 930, 470, 202),
@@ -1208,8 +1231,12 @@ class Epic7Navigator:
         poll_seconds: float = 0.5,
         transition_frames: int = 90,
         template_root: Path | None = None,
+        arena_opponent_source: str = "player",
     ) -> None:
         self.templates = templates
+        # 进竞技场时若游戏记住了上次页签、落在非对战页上，按这个选项切回：
+        # ``player`` → 交战对手，``npc`` → NPC 对战。默认与路线选项默认值一致。
+        self.arena_opponent_source = arena_opponent_source
         # 「支线故事」入口的搜索框在 PC 上要放宽；模拟器保持原来的范围。
         if templates.pc:
             self._REGIONS = {
@@ -1964,6 +1991,55 @@ class Epic7Navigator:
             )
         self.runtime.log(resolved.ready_log(MODE_LABELS.get(mode, mode)))
 
+    def _recover_arena_wrong_tab(
+        self,
+        screen: np.ndarray,
+        observation: PageObservation,
+        targets: tuple[str, ...],
+        attempts: _ArenaTabRecoveryAttempts,
+    ) -> bool:
+        """进竞技场时游戏记住了上次的非对战页签 ⇒ 按对手来源切回对应页签。
+
+        2026-11-24 现场：从模式选择页点「竞技场」后落在「战斗记录」（右侧菜单
+        高亮第三项），没有 `list_ready` 也没有 `novice_arena` ⇒ observe 判 unknown
+        ⇒ 只等 3 分钟后报「进入竞技场失败」。这里在转场等待循环里认枢纽页签，
+        按路线选项点回「交战对手」或「NPC对战」，让原 `arena_ready` 判据接着验收。
+
+        ⚠️ 只处理「进竞技场」这一步（`arena_ready` 在 targets 里）：其它转场的
+        unknown 不许被这里接管。判据是**三者的合取**——枢纽锚点在、两个页签锚点
+        都不在；少任何一条都不点，避免对加载中/其它路线的画面乱点。
+        两次点不动即报错留诊断，不把失败拖成静默长等。
+        """
+        if observation.name != "unknown" or "arena_ready" not in targets:
+            return False
+        if self._locate(screen, "arena_ready", ARENA_THRESHOLDS["list_ready"]) is not None:
+            return False
+        if self._locate(screen, "novice_arena") is not None:
+            return False
+        hub = self._locate(
+            screen, "arena_hub_title", ARENA_THRESHOLDS["weekly_reward_title"]
+        )
+        if hub is None:
+            return False
+        if attempts.clicks >= _ARENA_TAB_RECOVERY_LIMIT:
+            diagnostic = self._diagnostic("arena_wrong_tab_recovery_failed")
+            raise RuntimeError(
+                "竞技场停在非对战页签，按对手来源切换页签两次后仍未回到对手列表；"
+                f"已保存诊断 {diagnostic}"
+            )
+        attempts.clicks += 1
+        point = arena_tab_point(self.arena_opponent_source)
+        action = "切回竞技场对手页签"
+        self.runtime.log(
+            f"模式=导航 页面=竞技场枢纽 目标=对手列表 "
+            f"状态=停在非对战页签 依据=左侧周奖励标题={hub.score:.4f} "
+            f"对手来源={self.arena_opponent_source} "
+            f"动作={action} 坐标={point} 尝试={attempts.clicks}/"
+            f"{_ARENA_TAB_RECOVERY_LIMIT}"
+        )
+        self.runtime.click(point, action)
+        return True
+
     def _transition(
         self,
         source: str,
@@ -2133,6 +2209,7 @@ class Epic7Navigator:
             verify_started = self.now()
             stable = StableObservation(required=2)
             story_recovery = _StoryRecoveryAttempts()
+            arena_tab_recovery = _ArenaTabRecoveryAttempts()
             hero_detail_tab_clicks = 0
             hero_detail_last_click_at: Optional[float] = None
             hero_detail_wait_logged = False
@@ -2153,6 +2230,12 @@ class Epic7Navigator:
                 ):
                     stable.reset()
                     self.sleep(1.0)
+                    continue
+                if is_stable and self._recover_arena_wrong_tab(
+                    screen, observation, targets, arena_tab_recovery
+                ):
+                    stable.reset()
+                    self.sleep(self.poll_seconds)
                     continue
                 if is_stable and observation.name == "unknown":
                     wake_result = self.unknown_screen_wake.handle(
