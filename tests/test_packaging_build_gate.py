@@ -208,14 +208,18 @@ def test_run_pyinstaller_sets_and_clears_the_switch(tmp_path: Path, monkeypatch)
     build.BUILD = tmp_path / "build"
     seen: dict[str, str | None] = {}
 
-    def fake_run(command, cwd=None, check=None, env=None):
-        seen.clear()
-        seen.update(env or {})
-        exe = dist / build.APP_NAME / f"{build.APP_NAME}.exe"
-        exe.parent.mkdir(parents=True, exist_ok=True)
-        exe.write_bytes(b"exe")
+    class _FakeSubprocess:
+        """只替换 build 模块自己那个名字，不动真的 subprocess 模块。"""
 
-    monkeypatch.setattr(build.subprocess, "run", fake_run)
+        @staticmethod
+        def run(command, cwd=None, check=None, env=None):
+            seen.clear()
+            seen.update(env or {})
+            exe = dist / build.APP_NAME / f"{build.APP_NAME}.exe"
+            exe.parent.mkdir(parents=True, exist_ok=True)
+            exe.write_bytes(b"exe")
+
+    monkeypatch.setattr(build, "subprocess", _FakeSubprocess)
     monkeypatch.setenv("ARKY_WITHOUT_E7AUTO", "1")
 
     build.run_pyinstaller(False)
