@@ -8,7 +8,14 @@ from __future__ import annotations
 import threading
 from pathlib import Path
 
-from auto_game_unified.desktop.chaos_bridge import ChaosBridge, vendor_root
+from auto_game_unified.desktop.chaos_bridge import (
+    ABSENT_MARKER_NAME,
+    ChaosBridge,
+    absent_marker,
+    bundled,
+    vendor_root,
+    vendor_state,
+)
 
 
 class _FakeSnapshot:
@@ -54,6 +61,52 @@ def test_vendor_root_points_into_the_workspace():
     root = vendor_root()
     assert root.name == "e7auto"
     assert root.parent.name == "vendor"
+
+
+def _layout(tmp_path: Path, *, marker: bool, code: bool) -> Path:
+    """摆一个 ``<tmp>/vendor/e7auto`` 布局，返回 e7auto 根目录。"""
+    vendor_dir = tmp_path / "vendor"
+    root = vendor_dir / "e7auto"
+    root.mkdir(parents=True)
+    if code:
+        (root / "src" / "e7auto").mkdir(parents=True)
+    if marker:
+        (vendor_dir / ABSENT_MARKER_NAME).write_text("不含次元探查", encoding="utf-8")
+    return root
+
+
+def test_marker_sits_beside_the_vendor_directory():
+    """标记与本目录同级 —— 标记在 ``e7auto`` 里面就没法区分「漏拷」了。"""
+    marker = absent_marker(Path("C:/x/vendor/e7auto"))
+    assert marker.name == ABSENT_MARKER_NAME
+    assert marker.parent == Path("C:/x/vendor")
+
+
+def test_declared_absence_is_not_a_missing_directory(tmp_path: Path):
+    """有标记、没代码 ⇒ ``absent``：这是公开候选的正常形态，不该判成缺件。"""
+    root = _layout(tmp_path, marker=True, code=False)
+    assert vendor_state(root) == "absent"
+    assert bundled(root) is False
+
+
+def test_bundled_code_is_reported_as_present(tmp_path: Path):
+    root = _layout(tmp_path, marker=False, code=True)
+    assert vendor_state(root) == "present"
+    assert bundled(root) is True
+
+
+def test_missing_code_without_a_marker_is_missing(tmp_path: Path):
+    """该有却没有 ⇒ ``missing``：自检据此在打包版里判失败，不静默放过。"""
+    root = _layout(tmp_path, marker=False, code=False)
+    assert vendor_state(root) == "missing"
+    assert bundled(root) is False
+
+
+def test_marker_wins_over_leftover_code(tmp_path: Path):
+    """标记在位就按「声明不含」处理：漏拷的残留不能被当成随包分发。"""
+    root = _layout(tmp_path, marker=True, code=True)
+    assert vendor_state(root) == "absent"
+    assert bundled(root) is False
 
 
 def test_invalid_inputs_are_rejected_before_anything_runs(tmp_path: Path):

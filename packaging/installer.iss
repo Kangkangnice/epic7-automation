@@ -25,6 +25,12 @@
   #define MyAppVersion "0.0.0"
 #endif
 
+; 发行档后缀。公开候选（`build.py --without-e7auto`）传 "-无次元探查"，
+; 与含 E7auto 的那一份区分开 —— 两份同名会在 dist 里互相覆盖。
+#ifndef MyAppVariant
+  #define MyAppVariant ""
+#endif
+
 #define MyAppName "亚卡助手"
 #define MyAppExeName "ArkyAssistant.exe"
 #define MyAppPublisher "Kangkangnice"
@@ -45,7 +51,7 @@ PrivilegesRequiredOverridesAllowed=commandline
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 OutputDir=dist
-OutputBaseFilename=亚卡助手-安装版-{#MyAppVersion}
+OutputBaseFilename=亚卡助手-安装版-{#MyAppVersion}{#MyAppVariant}
 Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern

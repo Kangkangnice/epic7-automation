@@ -31,8 +31,11 @@ GitHub 的 tag 标记代码版本，带 ZIP 的 GitHub Release 提供用户可�
    第三方库与外部扩展分别核对授权与发布条件。检查 Fluent Widgets 等组件的上游许可及随包文件。
    当前构建不自动把 `LICENSE` / `NOTICE.md` 复制到可执行文件目录，也不过滤与系统同名的 ICU 库，
    这两项须在发布前人工确认；自动化方案登记在[待办](../TODO.md)的打包条目。
-   E7auto 按 `packaging/vendor_lock.json` 逐文件校验后，随工件分发 `src` / `config` /
-   `assets/templates` 三段。**维护者尚未确认该组件可公开分发**，确认前不得对外发布含它的工件；
+   E7auto 按 `packaging/vendor_lock.json` 逐文件校验后，随**完整版**工件分发 `src` / `config` /
+   `assets/templates` 三段。**维护者尚未确认该组件可公开分发**，因此对外发布一律改用
+   `--without-e7auto` 生成公开候选（见下一节）：该档不收集第三方代码，产物内 `vendor/e7auto`
+   成员数为 0，只带 `vendor/NO_E7AUTO.txt` 发行版标记，界面隐藏「次元探查」页，
+   自检记一行「本发行版不含次元探查」。完整版仍保留逐文件校验，供本地构建与已获授权的分发使用。
    是否继续随包分发由维护者决定，结论出来前三个位置（`NOTICE.md`、本手册、spec）按同一事实表述。
    本机诊断、个人数据、令牌、Git 元数据和未经核对的外部源码与工件隔离。
    [Windows ICU 文档](https://learn.microsoft.com/en-us/windows/win32/intl/international-components-for-unicode--icu-)
@@ -46,13 +49,17 @@ GitHub 的 tag 标记代码版本，带 ZIP 的 GitHub Release 提供用户可�
 ```powershell
 python -m pip install -r auto_game_unified/requirements-dev.txt
 python -m pip install PyInstaller
-python auto_game_unified/packaging/build.py
+python auto_game_unified/packaging/build.py --without-e7auto
 ```
 
+对外发布的工件由 `--without-e7auto` 生成，文件名带 `-无次元探查` 后缀。不带这个开关的同一条命令
+产出完整版（含第三方代码），只用于本地构建与已获授权的分发，不得作为公开附件。
+
 记下实际构建的提交、Python 与 PyInstaller 版本。确认默认产物的自检通过，解压 ZIP 核对顶层目录与
-`vendor/e7auto` 三段是否与本次分发决定一致，再验证界面启动，
-再按照 [实机验证](live_verification.md) 覆盖此次声明的路线。发布附件来自同一次验收的
-`packaging/dist/`，可选安装版由 `--installer` 生成。保留 `SHA256SUMS.txt`，核对文件与哈希一致。
+`vendor/e7auto` 成员数：公开候选须为 0 且带 `_internal/vendor/NO_E7AUTO.txt`，完整版须与本次分发
+决定一致。再验证界面启动，再按照 [实机验证](live_verification.md) 覆盖此次声明的路线。
+发布附件来自同一次验收的 `packaging/dist/`，可选安装版由 `--installer` 生成（公开候选的安装包
+文件名同样带后缀）。保留 `SHA256SUMS.txt`，核对文件与哈希一致。
 
 ## 发布和回退
 
@@ -67,3 +74,4 @@ python auto_game_unified/packaging/build.py
 | 日期 | 改了什么 | 依据 |
 | --- | --- | --- |
 | 2026-11-19 | 建立版本、打包、发行和回退流程 | 审计默认构建、GitHub 发行状态和仓库分支检查 |
+| 2026-11-26 | 对外发布改走 `--without-e7auto`，补公开候选的成员数核对 | E7auto 再分发未获维护者确认，公开工件须不含它 |

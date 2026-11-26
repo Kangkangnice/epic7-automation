@@ -1,0 +1,27 @@
+本发行版不含「次元探查」（E7auto）
+==================================
+
+说明
+----
+本文件是发行版标记，说明这一份打包产物**未随包分发**第三方代码 E7auto，
+因此界面不显示「次元探查」页，自检也会如实记录这一点。
+
+依据
+----
+E7auto 的著作权归其维护者所有。本项目对它的引用与再分发需取得维护者明确同意；
+在取得同意之前，公开候选一律按「不含」构建，不把它的源码、配置与模板放进产物。
+
+对应实现
+--------
+- 打包开关：``packaging/build.py --without-e7auto``
+  （向 PyInstaller 传 ``ARKY_WITHOUT_E7AUTO=1``）
+- 收集规则：``packaging/epic7_auto_assistant.spec`` 的 ``_VENDOR_DATAS``
+- 判定三态：``auto_game_unified/desktop/chaos_bridge.py::vendor_state``
+  —— ``absent``（本文件存在，声明不含）/ ``present``（随包分发）/
+  ``missing``（该有却没有，按缺件处理）
+- 界面：``desktop_qt/app.py::_build_dimension_page`` 在 ``absent`` 时整页不出现
+- 自检：``packaging/entry.py`` 在 ``absent`` 时记
+  「[通过] 发行版构成：本发行版不含次元探查（E7auto 未随包分发）」
+
+不含 E7auto 的产物中，``vendor/e7auto`` 目录下的成员数应为 0；
+``packaging/build.py`` 在打包后按此断言，缺标记或漏判都会中止构建。

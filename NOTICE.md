@@ -16,10 +16,13 @@
 
 ## 第三方组件
 
-- 第三方 E7auto 的次元探查以源码环境集成方式提供。标准构建（`packaging/build.py`）在按
+- 第三方 E7auto 的次元探查以源码环境集成方式提供。完整版构建（`packaging/build.py`）在按
   `packaging/vendor_lock.json` 逐文件校验后，会把 `src`、`config`、`assets/templates` 三段收进产物。
-  **维护者尚未确认该组件可公开分发**，确认前不得对外发布含它的工件。其代码、素材、配置与其他依赖
-  分别适用各自的权利和许可条件，状态见[待办](docs/TODO.md)的发布工件条目。
+  **维护者尚未确认该组件可公开分发**，确认前不得对外发布含它的工件；对外发布改用
+  `python auto_game_unified/packaging/build.py --without-e7auto` 生成公开候选——该档不收集第三方代码，
+  产物内 `vendor/e7auto` 成员数为 0，只带 `vendor/NO_E7AUTO.txt` 发行版标记，界面与自检如实显示
+  本发行版不含次元探查。其代码、素材、配置与其他依赖分别适用各自的权利和许可条件，
+  状态见[待办](docs/TODO.md)的发布工件条目。
 - 桌面界面的 Fluent Widgets 组件有独立许可。发行前须按[发布手册](docs/howto/release.md)核对实际版本和分发条件。
 
 - `packaging/languages/ChineseSimplified.isl` —— Inno Setup 安装界面的简体中文消息文件，

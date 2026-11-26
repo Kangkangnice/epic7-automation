@@ -7,15 +7,22 @@
     python packaging/build.py --skip-smoke  # 只打包，不跑自检（调试打包问题时用）
     python packaging/build.py --no-build    # 复用已有 dist，只重打 ZIP（改文件名/清单时用）
 
+``--without-e7auto`` 出**公开候选**：不收集次元探查的第三方代码，
+产物里 ``vendor/e7auto`` 成员数为 0，改收 ``vendor/NO_E7AUTO.txt`` 作为发行版
+标记（界面与自检据此如实显示「不含次元探查」）。E7auto 的再分发尚未取得其
+维护者同意，对外公开构建一律走这一档，见 ``NOTICE.md``。
+
 第三方代码（次元探查的 chaos 流程）不在 Git 里：先跑一次
 ``python tools/fetch_vendor.py``，本脚本按 ``packaging/vendor_lock.json`` 逐文件
 核对，缺文件/摘要不符/清单外文件都会在 PyInstaller 之前停下。
+``--without-e7auto`` 不校第三方清单（本就不收），改为在打包后断言它一个都没进。
 
 产物都在 ``packaging/dist/``：
 
-    ArkyAssistant/                            目录版（双击里面的 exe 即用）
-    亚卡助手-免安装版-<版本>.zip              整个目录打成压缩包
-    SHA256SUMS.txt                            上面那个 zip 的校验值
+    ArkyAssistant/                                  目录版（双击里面的 exe 即用）
+    亚卡助手-免安装版-<版本>.zip                    整个目录打成压缩包
+    亚卡助手-免安装版-<版本>-无次元探查.zip         公开候选（--without-e7auto）
+    SHA256SUMS.txt                                  上面这些 zip 的校验值
 
 每次构建成功后只保留最新一份 ZIP（和安装包）；上一次的版本会被清掉。
 这样 dist 里始终只有一个 ZIP，``verify_release.py`` 按缺省规则就能找到它。
@@ -70,13 +77,35 @@ def product_version() -> str:
 #: 源码由 ``tools/fetch_vendor.py`` 在构建前取到工作区，不随 Git 分发。
 VENDOR = REPO.parent / "vendor" / "e7auto"
 
+#: 产物里第三方代码与发行版标记所在的目录（PyInstaller onedir 的内部目录）。
+PAYLOAD_VENDOR = Path("_internal") / "vendor"
 
-def _vendor_module():
+#: ZIP 里 ``vendor/e7auto`` 的成员前缀 —— 「公开候选成员数为 0」按它数。
+ZIP_VENDOR_PREFIX = "_internal/vendor/e7auto/"
+
+#: 不含 E7auto 的产物文件名后缀。两份 ZIP 必须能区分开：同名会让
+#: ``prune_old_artifacts`` 把另一档的产物当旧版删掉，发布时也会认错包。
+WITHOUT_E7AUTO_SUFFIX = "-无次元探查"
+
+
+def _repo_on_path() -> None:
     if str(REPO.parent) not in sys.path:
         sys.path.insert(0, str(REPO.parent))
+
+
+def _vendor_module():
+    _repo_on_path()
     from auto_game_unified.tools import fetch_vendor
 
     return fetch_vendor
+
+
+def _absent_marker_name() -> str:
+    """发行版标记文件名 —— 唯一来源是 ``desktop/chaos_bridge.py``，这里只引用。"""
+    _repo_on_path()
+    from auto_game_unified.desktop import chaos_bridge
+
+    return chaos_bridge.ABSENT_MARKER_NAME
 
 
 def verify_vendor() -> dict:
@@ -98,13 +127,47 @@ def verify_vendor() -> dict:
     return lock
 
 
-def check_vendor_payload(lock: dict) -> None:
+def check_vendor_payload(lock: dict | None, *, without_e7auto: bool = False) -> None:
     """打完包再确认产物里的第三方文件**正好**是清单那一份。
 
     ⚠️ 这条不是形式主义：``.git``、``__pycache__``、测试与文档都可能被整目录
     收进来（审查看到的正是这种写法），而现象只是「包变大」，没有任何报错。
+
+    ``--without-e7auto`` 时判据反过来，但同样是「正好」：``vendor/e7auto`` 下
+    一个文件都不许有，``NO_E7AUTO.txt`` 必须到。两条合起来才算「声明不含」的
+    证据 —— 只看目录不在，打包漏拷会被当成「不含」而静默通过。
     """
-    root = DIST / APP_NAME / "_internal" / "vendor" / "e7auto"
+    vendor_dir = DIST / APP_NAME / PAYLOAD_VENDOR
+    root = vendor_dir / "e7auto"
+    if without_e7auto:
+        leaked = (
+            sorted(
+                item.relative_to(root).as_posix()
+                for item in root.rglob("*")
+                if item.is_file()
+            )
+            if root.is_dir()
+            else []
+        )
+        if leaked:
+            raise SystemExit(
+                f"本应不含次元探查，产物里却有 {len(leaked)} 个第三方文件：\n"
+                + "\n".join(f"  {name}" for name in leaked[:10])
+                + "\n检查 packaging/epic7_auto_assistant.spec 的 _VENDOR_DATAS。"
+            )
+        marker = vendor_dir / _absent_marker_name()
+        if not marker.is_file():
+            raise SystemExit(
+                f"产物里没有发行版标记：{marker}\n"
+                "不含次元探查的构建必须带上它，否则界面与自检分不出"
+                "「声明不含」和「该有却漏了」。"
+            )
+        print(
+            "[build] 已确认产物不含次元探查（vendor/e7auto 0 个文件，发行版标记在位）",
+            flush=True,
+        )
+        return
+
     if not root.is_dir():
         raise SystemExit(f"产物里找不到第三方代码：{root}")
     module = _vendor_module()
@@ -131,7 +194,7 @@ def check_vendor_payload(lock: dict) -> None:
     print(f"[build] 产物第三方文件与清单一致（{len(expected)} 个）", flush=True)
 
 
-def run_pyinstaller() -> Path:
+def run_pyinstaller(without_e7auto: bool = False) -> Path:
     for path in (DIST / APP_NAME, BUILD):
         if path.exists():
             shutil.rmtree(path)
@@ -147,8 +210,16 @@ def run_pyinstaller() -> Path:
         str(BUILD),
         str(SPEC),
     ]
+    # ⚠️ 开关走环境变量而不是 spec 的命令行：spec 里只能读 ``os.environ``。
+    # 完整版要**主动清掉**它 —— 父 shell 若残留这个变量，一次「完整构建」
+    # 会悄悄产出不含次元探查的包，而名字与校验都还是完整版那一套。
+    env = dict(os.environ)
+    if without_e7auto:
+        env["ARKY_WITHOUT_E7AUTO"] = "1"
+    else:
+        env.pop("ARKY_WITHOUT_E7AUTO", None)
     print("[build] " + " ".join(command), flush=True)
-    subprocess.run(command, cwd=REPO, check=True)
+    subprocess.run(command, cwd=REPO, check=True, env=env)
 
     exe = DIST / APP_NAME / f"{APP_NAME}.exe"
     if not exe.is_file():
@@ -214,7 +285,13 @@ def directory_size(path: Path) -> int:
     return sum(item.stat().st_size for item in path.rglob("*") if item.is_file())
 
 
-def make_zip(version: str, lock: dict) -> Path:
+def _zip_vendor_members(archive: Path) -> int:
+    """ZIP 里 ``vendor/e7auto`` 的成员数 —— 公开候选必须为 0。"""
+    with zipfile.ZipFile(archive) as bundle:
+        return sum(1 for name in bundle.namelist() if ZIP_VENDOR_PREFIX in name)
+
+
+def make_zip(version: str, lock: dict | None, *, without_e7auto: bool = False) -> Path:
     """打免安装版 ZIP。
 
     ⚠️ 用 **DEFLATE** 不是为了省事：换 ``ZIP_LZMA`` 能再小 18 MB（63 → 45），
@@ -223,12 +300,24 @@ def make_zip(version: str, lock: dict) -> Path:
     """
     # ⚠️ 先验内容再开压缩包：``--no-build`` 复用旧 dist 时也必须过这一关，
     # 否则往目录里塞一个清单外文件再重打包，它会照样进 ZIP。
-    check_vendor_payload(lock)
-    archive = DIST / f"亚卡助手-免安装版-{version}.zip"
+    check_vendor_payload(lock, without_e7auto=without_e7auto)
+    suffix = WITHOUT_E7AUTO_SUFFIX if without_e7auto else ""
+    archive = DIST / f"亚卡助手-免安装版-{version}{suffix}.zip"
     with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED) as bundle:
         for item in sorted((DIST / APP_NAME).rglob("*")):
             if item.is_file():
                 bundle.write(item, Path(APP_NAME) / item.relative_to(DIST / APP_NAME))
+    # 目录过了还要数一遍压缩包本身：发布出去的是 ZIP，不是目录。
+    members = _zip_vendor_members(archive)
+    if without_e7auto and members:
+        archive.unlink()
+        raise SystemExit(
+            f"公开候选的 ZIP 里仍有 {members} 个 vendor/e7auto 成员，已删除该包"
+        )
+    if not without_e7auto and not members:
+        archive.unlink()
+        raise SystemExit("完整版 ZIP 里没有 vendor/e7auto 成员，已删除该包")
+    print(f"[build] ZIP 内 vendor/e7auto 成员 {members} 个", flush=True)
     return archive
 
 
@@ -271,7 +360,7 @@ def find_iscc() -> Path | None:
     return None
 
 
-def build_installer(version: str) -> Path | None:
+def build_installer(version: str, *, without_e7auto: bool = False) -> Path | None:
     """出安装包。**只有显式传 ``--installer`` 才编**（2026-10-20 起默认不要）。
 
     没装 Inno Setup 6 就跳过 —— 免安装版本来就不依赖它。
@@ -280,14 +369,20 @@ def build_installer(version: str) -> Path | None:
     if iscc is None:
         print("[build] 没装 Inno Setup 6，跳过安装包（免安装版不受影响）", flush=True)
         return None
+    variant = WITHOUT_E7AUTO_SUFFIX if without_e7auto else ""
     print(f"[build] 安装包：{iscc}", flush=True)
     subprocess.run(
-        [str(iscc), f"/DMyAppVersion={version}", str(INSTALLER)],
+        [
+            str(iscc),
+            f"/DMyAppVersion={version}",
+            f"/DMyAppVariant={variant}",
+            str(INSTALLER),
+        ],
         cwd=REPO,
         check=True,
         stdout=subprocess.DEVNULL,
     )
-    archive = DIST / f"亚卡助手-安装版-{version}.exe"
+    archive = DIST / f"亚卡助手-安装版-{version}{variant}.exe"
     if not archive.is_file():
         raise SystemExit(f"ISCC 返回成功但找不到安装包：{archive}")
     return archive
@@ -302,19 +397,31 @@ def main() -> int:
         action="store_true",
         help="额外编 Inno Setup 安装包（默认不编，只出免安装版）",
     )
+    parser.add_argument(
+        "--without-e7auto",
+        action="store_true",
+        help="出不含次元探查（E7auto）的公开候选：不收第三方代码，改收发行版标记",
+    )
     args = parser.parse_args()
 
     version = product_version()
+    without_e7auto = args.without_e7auto
     print(f"[build] 版本 {version}", flush=True)
+    if without_e7auto:
+        print(
+            "[build] 公开候选：本发行版不含次元探查（E7auto 的再分发未取得维护者同意）",
+            flush=True,
+        )
 
     exe = DIST / APP_NAME / f"{APP_NAME}.exe"
     # --no-build 复用旧 dist 时没有源码目录可验，清单仍要从仓库读出来，
-    # 交给 make_zip 在压缩前核对产物。
-    vendor_lock = _vendor_module().load_lock()
+    # 交给 make_zip 在压缩前核对产物。不含次元探查的那一档不需要清单。
+    vendor_lock: dict | None = None if without_e7auto else _vendor_module().load_lock()
     if not args.no_build:
-        vendor_lock = verify_vendor()
-        exe = run_pyinstaller()
-        check_vendor_payload(vendor_lock)
+        if not without_e7auto:
+            vendor_lock = verify_vendor()
+        exe = run_pyinstaller(without_e7auto)
+        check_vendor_payload(vendor_lock, without_e7auto=without_e7auto)
         # 先确认剔掉的东西真没进产物，再花时间跑自检 —— 顺序反了会白跑一遍。
         check_pruned_binaries()
         if not args.skip_smoke:
@@ -323,8 +430,12 @@ def main() -> int:
     if not exe.is_file():
         raise SystemExit(f"没有可打包的产物：{exe}")
 
-    archive = make_zip(version, vendor_lock)
-    installer = build_installer(version) if args.installer else None
+    archive = make_zip(version, vendor_lock, without_e7auto=without_e7auto)
+    installer = (
+        build_installer(version, without_e7auto=without_e7auto)
+        if args.installer
+        else None
+    )
 
     # 新包都造出来了再清旧的：门禁失败时旧产物仍在，可回溯。
     prune_old_artifacts({archive, installer} if installer is not None else {archive})

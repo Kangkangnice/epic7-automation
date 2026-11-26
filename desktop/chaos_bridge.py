@@ -13,7 +13,16 @@ from collections import deque
 from pathlib import Path
 from typing import Callable
 
-__all__ = ["ChaosBridge", "STAGES", "LINEUPS", "vendor_root"]
+__all__ = [
+    "ABSENT_MARKER_NAME",
+    "ChaosBridge",
+    "STAGES",
+    "LINEUPS",
+    "absent_marker",
+    "bundled",
+    "vendor_root",
+    "vendor_state",
+]
 
 STAGES = (1, 2, 3, 4, 5)
 LINEUPS = (("dark_twins", "暗双子队（默认）"), ("budget", "平民替换队"))
@@ -27,6 +36,33 @@ def vendor_root() -> Path:
     if base:
         return Path(base) / "vendor" / "e7auto"
     return Path(__file__).resolve().parents[2] / "vendor" / "e7auto"
+
+
+#: 「本发行版不含次元探查」的标记文件名。放在 ``vendor/`` 下、与 ``e7auto/`` 同级。
+#:
+#: 为什么需要它：缺目录本身分不出「故意不含」和「该有却漏了」。公开候选按
+#: NOTICE 的约束不随包分发 E7auto，若只看目录在不在，打包漏拷会被当成「不含」
+#: 而静默通过；反过来，不含版又会被自检判成缺件失败。一个显式标记把两件事分开。
+ABSENT_MARKER_NAME = "NO_E7AUTO.txt"
+
+
+def absent_marker(vendor: Path | None = None) -> Path:
+    """标记文件路径（``<vendor 的父目录>/NO_E7AUTO.txt``）。"""
+    root = vendor if vendor is not None else vendor_root()
+    return root.parent / ABSENT_MARKER_NAME
+
+
+def vendor_state(vendor: Path | None = None) -> str:
+    """三态：``absent``（声明不含）/ ``present``（随包分发）/ ``missing``（该有却没有）。"""
+    if absent_marker(vendor).is_file():
+        return "absent"
+    root = vendor if vendor is not None else vendor_root()
+    return "present" if (root / "src" / "e7auto").is_dir() else "missing"
+
+
+def bundled(vendor: Path | None = None) -> bool:
+    """本发行版是否带次元探查 —— 界面据此决定显不显示那一页。"""
+    return vendor_state(vendor) == "present"
 
 
 class _Overlay:

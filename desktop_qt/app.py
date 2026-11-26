@@ -86,7 +86,7 @@ from auto_game_unified.desktop.catalog import (
     unavailable_note,
     visible_backends,
 )
-from auto_game_unified.desktop.chaos_bridge import ChaosBridge
+from auto_game_unified.desktop.chaos_bridge import ChaosBridge, bundled as e7auto_bundled
 from auto_game_unified.desktop.controller import DesktopController
 from auto_game_unified.desktop.diagnostics import export_diagnostics
 from auto_game_unified.desktop.report import short_code_of
@@ -615,7 +615,14 @@ class QtDesktopWindow(FluentWindow):
         return None
 
     def _build_dimension_page(self) -> None:
-        """「次元探查」：内置第三方 chaos 流程，不进路线名单（见 chaos_bridge.py）。"""
+        """「次元探查」：内置第三方 chaos 流程，不进路线名单（见 chaos_bridge.py）。
+
+        ⚠️ 公开候选按 NOTICE 的约束**不含** E7auto（``vendor/`` 下有
+        ``NO_E7AUTO.txt`` 标记）⇒ 这一页整页不出现。**不能**保留入口再靠点击时报错：
+        用户看不到入口才是「如实显示本发行版不含它」，而自检会单独记一行构成说明。
+        """
+        if not e7auto_bundled():
+            return
         page = DimensionProbePage(
             bridge=self.dimension,
             busy_reason=self._dimension_block_reason,
@@ -641,6 +648,14 @@ class QtDesktopWindow(FluentWindow):
         layout.addWidget(TitleLabel(brand.APP_NAME, page))
         layout.addWidget(BodyLabel(brand.APP_SUBTITLE, page))
         layout.addWidget(CaptionLabel(f"版本 {PRODUCT_VERSION}", page))
+        layout.addWidget(
+            CaptionLabel(
+                "发行版构成：含「次元探查」（E7auto）"
+                if e7auto_bundled()
+                else "发行版构成：不含「次元探查」（E7auto 未随包分发）",
+                page,
+            )
+        )
         about = BodyLabel(
             "本助手用于《第七史诗》单人 PVE 内容的自动化执行。"
             "仅在确认游戏处于预期环节时执行下一步；页面无法确认、画面被遮挡或"
