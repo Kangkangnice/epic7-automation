@@ -185,8 +185,8 @@ SCENARIOS: tuple[Scenario, ...] = (
         when="开工前先跑一次；改完代码、提交前再对照 update_after 逐项核",
         triggers=("games/epic7/modes.py", "desktop/catalog.py"),
         read_first=(
-            DocStep("docs/howto/route_change.md", "3. 三道强制门",
-                    "新增路线要走全部门：先按入口分流定顺序，再写变体矩阵、动作契约与反例"),
+            DocStep("docs/howto/route_change.md", "1. 先定义这次交付",
+                    "声明新增组合、入口和终点，再核对逐动作证据、变体和反例"),
             DocStep("docs/STATUS.md", "一、路线总览", "现在有哪些路线、分组与放行状态；别撞名，也别把条数写死"),
             DocStep("docs/EXTENDING.md", "4. 注册模式", "注册要填哪些字段、两道准入关；复用优先，别重造轮子"),
             DocStep("docs/TRANSITION_CONTRACTS.md", "基本原则", "判据可证伪、转场两帧确认的最低要求"),
@@ -222,8 +222,8 @@ SCENARIOS: tuple[Scenario, ...] = (
         when="改代码前先看「当初为什么这么定」，别直接调阈值",
         triggers=("games/epic7/", "core/", "main.py"),
         read_first=(
-            DocStep("docs/howto/route_change.md", "3. 三道强制门",
-                    "本次改动要走哪几道门、门 A 动作契约与门 B 反例先行的过门证据，以及返工熔断条件"),
+            DocStep("docs/howto/route_change.md", "3. 从现场到交付",
+                    "记录首个故障，先以现场反例让旧行为失败，再按受影响范围回归和验收"),
             DocStep("docs/maintenance/<route>.md", "判据为什么这么设计", "先搞清当初靠哪一维排除外观同类"),
             DocStep("docs/STATUS.md", "一、路线总览", "确认这条路线的放行范围"),
             DocStep("docs/howto/route_acceptance.md", "3. 一次启动只有一个结论",
@@ -252,6 +252,8 @@ SCENARIOS: tuple[Scenario, ...] = (
         triggers=("games/epic7/global_popups.py", "games/epic7/runner_base.py",
                   "games/epic7/transactional_runner_base.py", "core/recovery_gate.py"),
         read_first=(
+            DocStep("docs/howto/route_change.md", "1. 先定义这次交付",
+                    "按共享层变更列出实际消费者和受影响组合，回归覆盖这些行为的并集"),
             DocStep("docs/ARCHITECTURE.md", "分层边界", "新机制该落在哪一层，别塞进某条路线"),
             DocStep("docs/ARCHITECTURE.md", "全局弹窗守卫", "新弹窗的接触点清单（dataclass/loader/find/装配/测试）"),
             DocStep("docs/TRANSITION_CONTRACTS.md", "基本原则", "契约有没有受影响"),

@@ -6,7 +6,7 @@
 
 | 规矩属于哪一类 | 权威出处 |
 |---|---|
-| 一次变更按什么顺序做（新增 / 修故障 / 改共享层）、返工预算与熔断 | [路线变更规范](howto/route_change.md) |
+| 路线新增、更新、维护、修故障与共享变更的工作顺序、验收、返工与评分 | [路线开发、更新与维护规范](howto/route_change.md) |
 | 所有路线必须声明什么（终点 / 覆盖层 / 空态 / 回执 / 危险动作） | [路线通用契约](ROUTE_CONTRACT.md) |
 | 判据、动作、重试、转场与结论门槛 | [页面转场契约](TRANSITION_CONTRACTS.md) |
 | 路线页面链路、判据设计理由、危险边界 | 本页第二节「每条路线怎么维护」指向的 `docs/maintenance/*.md` |
@@ -20,7 +20,7 @@
 ## 按角色
 
 - **玩家**：安装与首次启动见[使用手册](USER_GUIDE.md)第 1、2 节；能跑哪条路线、哪些已放行看[现状速查](STATUS.md)；出问题先看[故障排查](TROUBLESHOOTING.md)。
-- **贡献者**：开发环境与测试范围见[贡献指南](../CONTRIBUTING.md)；动手前先按[路线变更规范](howto/route_change.md)判断这次属于新增、修故障还是改共享层；路线要声明哪五项见[路线通用契约](ROUTE_CONTRACT.md)；新增路线见[新增路线指南](EXTENDING.md)；改判据前读[页面转场契约](TRANSITION_CONTRACTS.md)；开工前写验收合同、收工后判结论看[路线稳定版验收](howto/route_acceptance.md)。
+- **贡献者**：开发环境与测试范围见[贡献指南](../CONTRIBUTING.md)；动手前按[路线开发、更新与维护规范](howto/route_change.md)确定受影响组合和验收范围；路线要声明哪五项见[路线通用契约](ROUTE_CONTRACT.md)；新增路线见[新增路线指南](EXTENDING.md)；改判据前读[页面转场契约](TRANSITION_CONTRACTS.md)；开工前写验收合同、收工后判结论看[路线稳定版验收](howto/route_acceptance.md)。
 - **发布维护者**：发版步骤与回退见[发布手册](howto/release.md)；能否公开声明稳定支持见[路线稳定版验收](howto/route_acceptance.md)；评审与放行职责见[项目治理](../GOVERNANCE.md)。
 
 ## 一、按你要做的事找
@@ -36,7 +36,7 @@
 | 维护 Issues、PR、分支和版本 | [项目治理](../GOVERNANCE.md)、[发布流程](howto/release.md) |
 | 游戏更新、批量兼容故障或版本回退 | [游戏更新与多人维护](howto/game_update.md) |
 | 看懂代码分层、运行时和诊断 | [架构说明](ARCHITECTURE.md)；按旧提交定位代码用[代码对照表（历史快照）](architecture/auto_game_unified.code-map.md) |
-| 动任何一条路线之前，判断这次该走哪几道门、修几次算超预算 | [路线变更规范](howto/route_change.md) |
+| 开发、更新或修复路线，确定动作证据、回归范围与交付条件 | [路线开发、更新与维护规范](howto/route_change.md) |
 | 新增路线或改路线契约，确认五项声明 | [路线通用契约](ROUTE_CONTRACT.md) |
 | 新增路线 | [新增路线指南](EXTENDING.md) |
 | 修改视觉判据、动作、重试或转场 | [页面转场契约](TRANSITION_CONTRACTS.md)、[截图与模板采集](TEMPLATE_CAPTURE.md) |
@@ -48,7 +48,7 @@
 | 查看缺失的证据、未解决的缺陷或未评估的想法 | [待办](TODO.md)（含「未评估、未排期」） |
 | 查看版本变化与素材权利 | [变更日志](../CHANGELOG.md)、[素材声明](../NOTICE.md) |
 | 查各路线契约欠债与合规矩阵 | 命令 `python -m auto_game_unified.tools.route_compliance`，口径见[路线通用契约](ROUTE_CONTRACT.md) |
-| 给全部路线做同口径规范体检、看每条还差什么、按风险高低排施工顺序 | [路线体检报告](ROUTE_HEALTH_CHECK.md) |
+| 给路线体检、逐组合评分、按缺口排整改 | [Agent 体检与评分](howto/route_change.md#5-agent-体检与评分)；历史线索见 [11 月 25 日体检](ROUTE_HEALTH_CHECK.md) |
 
 ## 二、每条路线怎么维护
 

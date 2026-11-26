@@ -22,12 +22,11 @@
 
 修改任何视觉识别、点击、导航、重试、事务或路线前，必须阅读（适用于全部路线、模拟器与 PC 迁移）：
 
-- `docs/TRANSITION_CONTRACTS.md`
+- [路线开发、更新与维护规范](docs/howto/route_change.md)与[页面转场契约](docs/TRANSITION_CONTRACTS.md)（验收合同、逐动作证据、变更验收和体检评分）
 - [贡献指南](CONTRIBUTING.md)（本地环境、证据、提交和评审）
 - **新增路线或新增动作**时读 `docs/EXTENDING.md`；**移植 PC / 改 PC 后端**时读 [PC 接入指南](docs/PC_TEMPLATE_MIGRATION.md)。收到「移植 PC」的请求从 [§3](docs/PC_TEMPLATE_MIGRATION.md#3-一句话移植到-pc) 开始
 - **要实机跑闭环**时，读 `docs/howto/live_verification.md`（权限 / 点不动 / 失败判定）
-- **要公开声明稳定支持**时，按[路线稳定版验收](docs/howto/route_acceptance.md)开工先写验收合同，
-  收工按五种结论归类，核对变更分支的回放反例、真实回执和终点。
+- **要公开声明稳定支持**时，按[路线稳定版验收](docs/howto/route_acceptance.md)先写合同，收工核对回放反例、真实回执和终点，按五种结论归类。
 - **游戏更新或维护已有路线**时，按[游戏更新手册](docs/howto/game_update.md)确定影响。修改前可用
   `python -m auto_game_unified.tools.check --plan --files <仓库相对路径>` 预查回归范围。
 - 目标路线测试和最新真实失败证据
