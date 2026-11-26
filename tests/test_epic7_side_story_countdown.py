@@ -209,8 +209,15 @@ _NEEDS_OCR = pytest.mark.skipif(
 )
 
 
+@pytest.fixture(scope="module")
+def countdown_ocr_model():
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(side_story_module, "_OCR_ENGINE", None)
+        yield
+
+
 @_NEEDS_OCR
-def test_real_ocr_reads_the_live_frame():
+def test_real_ocr_reads_the_live_frame(countdown_ocr_model):
     """真机帧上确实能读出「剩余 13天 12小时」（这一行字只有约 24px 高）。"""
 
     payload = read_period_countdown(episode_page())
@@ -221,7 +228,7 @@ def test_real_ocr_reads_the_live_frame():
 
 
 @_NEEDS_OCR
-def test_ocr_returns_none_on_a_page_without_the_line():
+def test_ocr_returns_none_on_a_page_without_the_line(countdown_ocr_model):
     """列表页没有那行字 ⇒ 必须返回 None（判据不能"什么都能读出个东西"）。"""
 
     assert read_period_countdown(list_page()) is None
@@ -229,7 +236,7 @@ def test_ocr_returns_none_on_a_page_without_the_line():
 
 @_NEEDS_OCR
 @pytest.mark.parametrize("name", ["side_story.png", "event_home.png", "outpost_team.png", "map.png"])
-def test_ocr_abstains_on_other_real_pages(name):
+def test_ocr_abstains_on_other_real_pages(name, countdown_ocr_model):
     assert read_period_countdown(_load(FIXTURES / name)) is None
 
 
@@ -243,7 +250,7 @@ def test_countdown_detector_does_not_upscale_the_short_edge(monkeypatch):
     monkeypatch.setattr(side_story_module, "_OCR_ENGINE", None)
 
     assert side_story_module._ocr_engine() is constructor.return_value
-    constructor.assert_called_once_with(limit_type="max")
+    constructor.assert_called_once_with(det_limit_type="max", det_model_path=None)
 
 
 # --------------------------------------------------------------------------
