@@ -479,6 +479,39 @@ def test_manual_stop_during_closeout_preserves_result_and_stops_daily_batch():
     assert "收尾待确认（用户手动停止）" in report.result_lines()[1]
 
 
+def test_purchase_receipt_unclear_stops_daily_batch_and_keeps_scene():
+    """购买回执未明：记失败、停整轮、不巡检、不动对账现场。
+
+    2026-11-26 二次验收退回：这条异常以前落进通用 `except Exception` 分支，
+    每日编排会 `continue` 跑下一条，段间再回大厅、整轮结束还做收尾巡检 ——
+    三处动作都会抹掉弹窗对账现场。
+    """
+    from auto_game_unified.core.runtime import PurchaseReceiptUnclear
+
+    called = []
+    home_calls = []
+
+    def run_mode(**kwargs):
+        called.append(kwargs["spec"].name)
+        raise PurchaseReceiptUnclear("购买已提交一次，回执未明")
+
+    def build_home_return(navigator, runtime, mode):
+        return lambda: home_calls.append(mode)
+
+    report = run_daily_tasks(
+        selected=("arena", "sanctuary"), dry_run=False, run_mode=run_mode,
+        build_home_return=build_home_return,
+        inspect=lambda: pytest.fail("回执未明不得做收尾巡检"),
+    )
+
+    assert called == ["arena"], f"不得继续跑下一条：{called}"
+    assert home_calls == [], f"不得回大厅抹掉对账现场：{home_calls}"
+    assert report.outcomes[0].status == "failed"
+    assert "PurchaseReceiptUnclear" in report.outcomes[0].detail
+    assert report.aborted_reason is not None and "对账现场" in report.aborted_reason
+    assert len(report.outcomes) == 1
+
+
 def test_run_daily_tasks_fills_cycles_time_and_outcome():
     class FakeResult:
         completed_cycles = 3

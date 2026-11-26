@@ -49,6 +49,15 @@ class ManualStop(RuntimeError):
     """Raised before the next action when the user presses the stop hotkey."""
 
 
+class PurchaseReceiptUnclear(RuntimeError):
+    """不可逆购买已提交一次，游戏回执未明 —— 保留现场、停下对账。
+
+    弹窗还在只说明回执未确认，不是游戏明确拒绝。所有正式入口（单路线、每日编排）
+    遇到这条异常都必须**不回大厅、不跑下一条、不做收尾巡检**，否则会移动对账现场。
+    退出码按运行失败处理，现场由故障诊断帧与这条例外共同保留。
+    """
+
+
 def _safe_label(label: str) -> str:
     """把标签里的路径分隔符换成下划线，保证它只当**文件名**用。
 
@@ -138,6 +147,15 @@ class Runtime:
         screen = self._capture()
         self._last_screen = screen
         return screen
+
+    def last_frame(self) -> np.ndarray | None:
+        """最近一次**成功**取到的画面；还没取过就是 ``None``。
+
+        ⚠️ 只读访问器，**不触发取图**。给「取图本身失败、但要留下最后可用证据」的
+        路径用 —— 那种时候再调 ``capture()``（或 ``save_diagnostic(..., screen=None)``，
+        它内部就是 ``self.capture()``）只会再失败一次，把真正的错因盖掉。
+        """
+        return self._last_screen
 
     def set_capture_guard(self, guard: CaptureGuard) -> None:
         self._capture_guard = guard

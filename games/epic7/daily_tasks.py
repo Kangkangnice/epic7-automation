@@ -34,7 +34,7 @@ from pathlib import Path
 from typing import Any, Callable, Mapping, Optional
 
 from auto_game_unified.core.countdown import moonlight_suffix
-from auto_game_unified.core.runtime import ManualStop
+from auto_game_unified.core.runtime import ManualStop, PurchaseReceiptUnclear
 from auto_game_unified.games.epic7.modes import (
     MODE_SPECS,
     PC_ONLY_ROUTES,
@@ -539,6 +539,22 @@ def run_daily_tasks(
                     elapsed_seconds=_elapsed_since(segment_started),
                 )
             )
+            break
+        except PurchaseReceiptUnclear as error:
+            # 不可逆购买回执未明：弹窗与当前页就是对账现场。段间回大厅、后续路线、
+            # 收尾巡检都必须停手，否则会把现场抹掉（2026-11-26 二次验收退回项）。
+            # 记 failed + aborted_reason：后者同时让 _should_inspect 跳过巡检。
+            detail = f"{type(error).__name__}: {error}"
+            report.outcomes.append(
+                DailyOutcome(
+                    mode=mode,
+                    label=label,
+                    status="failed",
+                    detail=detail,
+                    elapsed_seconds=_elapsed_since(segment_started),
+                )
+            )
+            report.aborted_reason = f"{label} 购买回执未明，保留对账现场，整轮到此为止"
             break
         except Exception as error:  # noqa: BLE001 —— 单条失败不该带崩整轮
             report.outcomes.append(

@@ -23,7 +23,12 @@ from auto_game_unified.core.matcher import (
     locate_with_fallback,
 )
 from auto_game_unified.core.recovery import RecoveryGate
-from auto_game_unified.core.runtime import ManualStop, ResourceExhausted, Runtime
+from auto_game_unified.core.runtime import (
+    ManualStop,
+    PurchaseReceiptUnclear,
+    ResourceExhausted,
+    Runtime,
+)
 from auto_game_unified.core.supervisor import (
     ConclusionGate,
     StableObservation,
@@ -59,6 +64,11 @@ from auto_game_unified.games.epic7.unknown_screen import (
     UnknownWakeResult,
 )
 from auto_game_unified.games.epic7.template_paths import is_pc
+from auto_game_unified.games.epic7.global_popups import (
+    NetworkReconnectTemplates,
+    find_network_retry,
+    load_network_reconnect_templates,
+)
 from auto_game_unified.games.epic7.evidence.arena import (
     FREE_REFRESH_CONFIRM_REGION,
     FREE_REFRESH_OFFER_REGION,
@@ -69,9 +79,11 @@ from auto_game_unified.games.epic7.evidence.arena import (
     REGIONS as ARENA_REGIONS,
     THRESHOLDS as ARENA_THRESHOLDS,
     WEEKLY_REWARD_DOT_MIN_PIXELS,
+    WEEKLY_REWARD_TITLE_MIN_BRIGHT_PIXELS,
     build_arena_evidence,
     classify_arena_selected_scores,
     weekly_reward_dot_pixels,
+    weekly_reward_title_bright_pixels,
 )
 from auto_game_unified.games.epic7.evidence.common import EvidenceProfile, EvidenceState
 
@@ -343,8 +355,8 @@ class TicketExhausted(RuntimeError):
     """The game presented its ticket-purchase popup instead of entering battle."""
 
 
-# 「点下去就花资源」的两颗按钮。它们转场失败的含义与别的动作不同：不是故障，
-# 而是「游戏没接受这次购买」，见 ``ArenaRunner._transition_failure_message``。
+# 「点下去就花资源」的两颗按钮。这两颗是不可逆动作：只提交一次，回执未明停下对账，
+# 见 ``ArenaRunner._retry_block_reason`` 与 ``_transition_failure_message``。
 _PURCHASE_ACTIONS = ("purchase-friendship-ticket", "purchase-skystone-ticket")
 
 
@@ -422,6 +434,31 @@ class ArenaTemplates:
     quick_battle: QuickBattleDetector | None = None
     evidence: EvidenceProfile | None = None
     pc: bool = False
+    # 全局断网文案模板：判奖等待器用它排除「遮罩压暗红点」的误判。
+    # 与全局守卫共用同一份 loader / 同一套模板根，PC 下自动挑 pc/ 字形图。
+    network_templates: "NetworkReconnectTemplates | None" = None
+
+
+def _required_network_templates_for_weekly_reward(
+    template_dir: Path,
+) -> NetworkReconnectTemplates:
+    """判奖护栏的断网模板：必须含「与服务器的连接已中断」那张变体。
+
+    全局守卫的 loader 把两张文案都当可选/多候选，缺一张仍能启动（它还有别的弹窗要管）。
+    判奖护栏不行：11-18 遮罩帧实测只有 ``network_disconnected_message.png`` 命中 0.9992，
+    ``network_message.png`` 完全不匹配 —— 少了这张变体，护栏就挡不住那次误判，等于
+    判据静默消失。因此这里在装配期强制它存在，缺了直接抛，路线起不来（fail closed）。
+
+    ⚠️ 不改共享 loader：全局守卫的语义是「能认几种认几种」，判奖的语义是
+    「少一种就会误判完成」，两者不能共用同一档可选性。
+    """
+    templates = load_network_reconnect_templates(template_dir / "global")
+    if templates.message_alt is None:
+        raise FileNotFoundError(
+            "竞技场判奖护栏缺少 network_disconnected_message.png："
+            "该断网变体是周奖红点误判的唯一排除证据，缺图不得带半套判据启动"
+        )
+    return templates
 
 
 def build_templates(template_dir: Path) -> ArenaTemplates:
@@ -493,6 +530,7 @@ def build_templates(template_dir: Path) -> ArenaTemplates:
         threshold=0.98,
         evidence=evidence,
         pc=is_pc(template_dir),
+        network_templates=_required_network_templates_for_weekly_reward(template_dir),
     )
 
 
@@ -931,7 +969,17 @@ class ArenaStateMachine:
                 self.templates.pc and self._visible(screen, "purchase_cancel")
             )
         if action.name == "purchase-friendship-ticket":
-            return (
+            # ⚠️ 来源仍在 = 购买事务未完成，不是「no_ticket + 报价 + 按钮」三者齐备。
+            # 2026-11-26 二次验收：PC 真机帧 `ticket_purchase_popup_pc_live_20261101`
+            # 上标题/取消/报价均 1.0，但 no_ticket=None —— 旧判据因此误判来源已退出，
+            # `action_target_state` 把弹窗后的队伍页(battle_start=0.9379)当购买回执，
+            # 下一轮再次发购买动作，12 帧内点 3 次。改用弹窗双锚点任一命中即挡：
+            # 这里只用来自堵「不要重复提交」，方向安全；点「取消」仍走双锚点同时命中的
+            # 严判据（见 _purchase_popup_visible），不会因放宽来源而误关别的弹窗。
+            popup_evidence = self._visible(screen, "purchase_title") or self._visible(
+                screen, "purchase_cancel"
+            )
+            return popup_evidence or (
                 self._visible(screen, "no_ticket")
                 and self._visible(screen, "friendship_ticket_offer")
                 and self._visible(screen, "ticket_purchase_button")
@@ -962,11 +1010,15 @@ class ArenaStateMachine:
         screen: np.ndarray,
         action: Action,
     ) -> ArenaState | None:
-        if (
-            action.name == "purchase-friendship-ticket"
-            and self.action_source_visible(screen, action)
-        ):
-            return None
+        if action.name in _PURCHASE_ACTIONS:
+            # 购买回执不是「队伍页出现」：弹窗还在时，后面那层队伍页照样能被
+            # battle_start 命中（PC 真机帧 0.9379），把它当回执就会再次提交购买。
+            # 两道独立判据：来源仍在，或弹窗标题/取消任一有正向证据 —— 任一成立
+            # 就返回 None（目标未达成），等回执明确或超时停下对账。
+            if self.action_source_visible(screen, action) or self._visible(
+                screen, "purchase_title"
+            ) or self._visible(screen, "purchase_cancel"):
+                return None
         if action.name == "claim-weekly-reward":
             return (
                 ArenaState.LIST
@@ -1672,9 +1724,9 @@ class ArenaRunner(TransactionalRunnerBase):
             recovery_gate=recovery_gate,
             battle_supervisor=battle_supervisor,
         )
-        # 购买被游戏拒绝时的标记（空串 = 没有被拒）。由
-        # ``_transition_failure_message`` 置位，主循环据此关弹窗收工。
-        self._purchase_refused: str = ""
+        # 当前正在执行的动作：``_retry_block_reason`` 靠它识别不可逆购买。
+        # 由主循环在 ``_execute_transition`` 前设置，基类不会自己传 action 进来。
+        self._current_action: Any = None
         # 可选项：同一份值交给 Runner 与状态机（动作由状态机生成，上限在这里守）。
         # 默认值与 route_options 的声明一致，未开启时所有分支都与改动前相同。
         self.refresh_mode = refresh_mode
@@ -1866,23 +1918,36 @@ class ArenaRunner(TransactionalRunnerBase):
             f"尝试={attempts}/4 诊断={diagnostic}"
         )
 
+    def _retry_block_reason(
+        self, screen: np.ndarray, frozen: bool
+    ) -> Optional[str]:
+        """不可逆购买只提交一次：来源仍在时等待，绝不重发同一坐标。
+
+        基类默认对「来源仍在」补点到 4 次；购票按钮一旦真的扣费，补点可能重复扣。
+        这里用 ``action.irreversible`` 拦住补点（只有竞技场购票两处带这个标记），
+        其余动作沿用基类口径。返回非 None ⇒ 基类记「不重试」原因并只等。
+        """
+        action = self._current_action
+        if action is not None and getattr(action, "irreversible", False):
+            return "不可逆动作已提交一次，回执未明前禁止重发同一坐标"
+        return super()._retry_block_reason(screen, frozen)
+
     def _transition_failure_message(
         self, action: Action, attempts: int, diagnostic: Any
     ) -> Optional[str]:
         if action.name in _PURCHASE_ACTIONS:
-            # 点了购买、弹窗却不关 ⇒ **游戏没接受这次购买**（当日那一次已经用掉，
-            # 或者资源不够）。这是业务结论，不是故障 ⇒ **不抛**，留一个标记让主循环
-            # 关掉弹窗、按「资源用完」收工（退出码不变）。
-            #
-            # ⚠️ 这里**不许**改回「按本机日期记一笔再判断」（2026-11-23 用户拍板删除）：
-            # 国服/亚服/美服/欧服的每日重置点不在本机零点，本地记账必然与游戏不同步；
-            # 而且同一个号第二次来买，游戏自己就会拒绝 —— 该由游戏说了算，不该由我们猜。
-            self._purchase_refused = action.name
+            # 弹窗没关只是「回执未明」，不是「游戏明确拒绝」—— 没有拒绝证据就不能
+            # 按资源耗尽收尾，更不能点取消抹掉现场。抛专用异常穿透主循环，停下对账。
+            # 该异常在主循环里单独捕获后直接 raise，不会被当成「页面超时」继续下一轮。
             self.runtime.log(
-                f"模式=竞技场 动作={action.name} 结果=购买后弹窗未关闭 "
-                f"判定=游戏未接受购买 诊断={diagnostic}"
+                f"模式=竞技场 动作={action.name} 结果=购买已提交一次 回执=未明 "
+                f"处理=停下对账 现场保留 诊断={diagnostic}"
             )
-            return None
+            raise PurchaseReceiptUnclear(
+                f"购买 {action.name} 已提交一次，但游戏回执未明（弹窗未关闭）；"
+                f"未拿到明确拒绝证据，禁止重发或点取消，请对账实际扣费。"
+                f"已保存诊断 {diagnostic}"
+            )
         del attempts
         return (
             f"点击 {action.name} 后画面未稳定进入"
@@ -2140,6 +2205,10 @@ class ArenaRunner(TransactionalRunnerBase):
                 action = self.machine.next_action(screen)
                 stable.reset()
                 conclusion_gate.reset()
+            except PurchaseReceiptUnclear:
+                # 购买已提交、回执未明：这是要人工对账的现场，绝不当成「页面超时」
+                # 继续下一轮（那会再次生成购票动作、重复提交）。直接穿透，保留弹窗。
+                raise
             except TicketExhausted as error:
                 diagnostic = None
                 if self.runtime.diagnostic_dir is not None:
@@ -2265,21 +2334,8 @@ class ArenaRunner(TransactionalRunnerBase):
                 conclusion_gate.reset()
                 continue
 
+            self._current_action = action
             self._execute_transition(action)
-            if self._purchase_refused:
-                # 点了购买、弹窗却不关 ⇒ 游戏没接受这次购买（当日机会已用完或资源不足）。
-                # 这是**业务结论而不是故障**：关掉弹窗、按「资源用完」收工，退出码不变。
-                # ⚠️ 不能靠本地记日期提前判死 —— 跨服务器的每日重置点不在本机零点。
-                refused = self._purchase_refused
-                self._purchase_refused = ""
-                self.machine.state = ArenaState.BATTLE
-                self.resource_exhausted = True
-                self.runtime.log(
-                    f"模式=竞技场 停止=游戏未接受旗帜购买 动作={refused} "
-                    f"已完成={self.machine.completed_cycles}"
-                )
-                self._close_out()
-                return self.machine.completed_cycles
             if self.machine.completed_cycles > cycles_before:
                 self.runtime.log(
                     f"模式=竞技场 轮次={self.machine.completed_cycles} "
@@ -2306,6 +2362,13 @@ class ArenaRunner(TransactionalRunnerBase):
         也是会变的内容，都不许当固定模板。这里要求「仍在列表页 + 红点像素低于阈值」
         连续两帧成立，避免领取动画中间那一帧误判成功。
 
+        ⚠️ 红点为 0 还可能是**画面被压暗**（2026-11-18 断网遮罩误判未领取为已领）：
+        整屏遮罩把红点 HSV 的 V 压到阈值下，红点与「已领完」字面同值，而列表页
+        `TM_CCOEFF_NORMED` 对均匀压暗不敏感照样成立。因此加一项页内参考 —— 同一行
+        「每周对战奖励」标题的白字像素：正常列表 131/161px，压暗与断网遮罩都是 0px。
+        红点读 0 但标题白字不在 ⇒ 判「画面被遮挡」，只等不记已领，不重试点击；
+        遮罩由全局守卫清障，清掉后重看红点。不动红点阈值，也不依赖守卫认得出遮罩。
+
         点击后不重试：这是即时领取，没有确认弹窗；连点第二下可能落到奖励图标
         淡出后的空白区域。超时就保存诊断并安全停止，由人工看帧修判据。
         """
@@ -2317,14 +2380,38 @@ class ArenaRunner(TransactionalRunnerBase):
             screen = self.runtime.capture()
             if self.runtime.diagnostic_dir is not None:
                 self.runtime.save_current_frame(screen)
-            claimed = (
-                self.machine.is_in_state(screen, ArenaState.LIST)
-                and weekly_reward_dot_pixels(screen) < WEEKLY_REWARD_DOT_MIN_PIXELS
+            in_list = self.machine.is_in_state(screen, ArenaState.LIST)
+            dot = weekly_reward_dot_pixels(screen)
+            title_bright = weekly_reward_title_bright_pixels(screen)
+            # 标题白字是「画面没被压暗」的正向证据；缺了它，红点 0 无法证伪遮罩。
+            page_readable = (
+                title_bright >= WEEKLY_REWARD_TITLE_MIN_BRIGHT_PIXELS
             )
+            # 局部遮罩（红点被压暗但标题仍在）靠断网文案排除：真机帧 0.9992，
+            # 正常列表 / 可领 / 已领帧全部 None（全库 218 张扫描见 global_popups）。
+            network_match = (
+                find_network_retry(screen, self.machine.templates.network_templates)
+                if self.machine.templates.network_templates is not None
+                else None
+            )
+            overlay_visible = network_match is not None
+            claimed = (
+                in_list
+                and dot < WEEKLY_REWARD_DOT_MIN_PIXELS
+                and page_readable
+                and not overlay_visible
+            )
+            if not in_list or not page_readable or overlay_visible:
+                self.runtime.log(
+                    "模式=竞技场 动作=claim-weekly-reward 结论待确认=画面不可读 "
+                    f"列表={in_list} 标题白像素={title_bright} 红点={dot} "
+                    f"断网遮罩={overlay_visible} 只等不记已领"
+                )
             if stable.update("claimed" if claimed else "other") and claimed:
                 self.runtime.log(
                     "模式=竞技场 转场确认 动作=claim-weekly-reward "
-                    "目标=每周奖励红点消失 目标连续=2"
+                    "目标=每周奖励红点消失 目标连续=2 "
+                    f"红点={dot} 标题白像素={title_bright}"
                 )
                 return True
             self.sleep(self.poll_seconds)

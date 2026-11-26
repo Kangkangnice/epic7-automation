@@ -119,10 +119,10 @@ ROUTE_OPTIONS: dict[str, tuple[RouteOption, ...]] = {
             label="刷新对手方式",
             kind="choice",
             default="free",
-            note="仅等待免费刷新，或允许使用金币刷新。刷新会中断连胜。",
+            note="仅等待免费刷新。金币刷新暂不支持：报价与确认回执素材缺失，开启后按证据不足安全停止。刷新会中断连胜。",
             choices=(
                 ("free", "仅等待免费刷新"),
-                ("gold", "允许金币刷新"),
+                ("gold", "允许金币刷新（暂不支持）"),
             ),
         ),
         RouteOption(
@@ -140,10 +140,10 @@ ROUTE_OPTIONS: dict[str, tuple[RouteOption, ...]] = {
             label="旗帜补充方式",
             kind="choice",
             default="friendship",
-            note="仅使用友情点购买，或允许使用天空石购买。友情点每日仅可购买一次。",
+            note="仅使用友情点购买。天空石购旗暂不支持：模拟器与 PC 的报价选中态素材均缺失，开启后按证据不足安全停止。友情点每日仅可购买一次。",
             choices=(
                 ("friendship", "仅友情点购买"),
-                ("skystone", "允许天空石购买"),
+                ("skystone", "允许天空石购买（暂不支持）"),
             ),
         ),
         RouteOption(

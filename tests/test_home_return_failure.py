@@ -36,7 +36,7 @@ from PIL import Image
 
 from auto_game_unified import main as main_module
 from auto_game_unified.core.matcher import find_template, load_template
-from auto_game_unified.core.runtime import ManualStop, Runtime
+from auto_game_unified.core.runtime import ManualStop, PurchaseReceiptUnclear, Runtime
 from auto_game_unified.games.epic7.modes import get_mode
 from auto_game_unified.games.epic7.navigation import (
     Epic7Navigator,
@@ -221,6 +221,17 @@ class FailureReturnHomeTests(unittest.TestCase):
     def test_manual_stop_does_not_touch_the_game(self):
         """用户按 P 停 ⇒ **一个动作都不许发**（这是「我要停了」，不是「出岔子」）。"""
         error = ManualStop("用户按下 P")
+        home_return = _run_mode_with_exception(mode="arena", raised=error)
+
+        home_return.assert_not_called()
+
+    def test_purchase_receipt_unclear_preserves_reconciliation_scene(self):
+        """购买回执未明 ⇒ 弹窗与当前页就是对账现场，一个动作都不许发。
+
+        2026-11-26 二次验收退回：这条异常以前落进通用 `BaseException` 分支，
+        `main.run_mode` 会走 `_try_return_home_after_failure` 把现场抹掉。
+        """
+        error = PurchaseReceiptUnclear("购买已提交一次，回执未明")
         home_return = _run_mode_with_exception(mode="arena", raised=error)
 
         home_return.assert_not_called()

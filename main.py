@@ -16,7 +16,7 @@ from auto_game_unified.core.matcher import find_template, load_template, set_act
 from auto_game_unified.core.hotkey import WindowsPStopHotkey
 from auto_game_unified.core.qqbot import send_qqbot_c2c
 from auto_game_unified.core.recovery import RecoveryGate
-from auto_game_unified.core.runtime import ManualStop, Runtime
+from auto_game_unified.core.runtime import ManualStop, PurchaseReceiptUnclear, Runtime
 from auto_game_unified.core.window import Epic7Window
 from auto_game_unified.core.pc_window import (
     PC_INPUT_ENV,
@@ -764,6 +764,14 @@ def run_mode(
         completed = runner.run(max_cycles=max_cycles)
     except ManualStop:
         # 用户按 P 喊停 ⇒ 一个字都不动游戏（这是全线统一口径，见 runner_base._close_out）。
+        raise
+    except PurchaseReceiptUnclear as error:
+        # 不可逆购买回执未明：弹窗与当前页面就是对账现场，一个字都不动游戏。
+        # 必须在通用 BaseException 分支之前，否则会走 _try_return_home_after_failure
+        # 把现场抹掉（2026-11-26 二次验收退回项）。
+        runtime.log(
+            f"模式={spec.name} 异常收尾=保留购买对账现场 原因={_exception_summary(error)} 处理=不回大厅直接结束"
+        )
         raise
     except BaseException as error:
         # 异常也回家（**所有路线**，2026-09-26 起不再有白名单分叉）。
