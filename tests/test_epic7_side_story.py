@@ -167,17 +167,15 @@ class SideStoryPeriodTests(unittest.TestCase):
         self.assertEqual(4, machine.completed_cycles)
         self.assertEqual(StoryState.WAIT_NEXT_STAGE, machine.state)
 
-    def test_the_arrow_click_lands_on_the_recorded_spot_in_every_scene(self):
-        machine = SideStoryStateMachine(templates())
-
-        points = []
-        for name in PERIOD:
-            action = machine.next_action(fixture(name))
-            if action is not None and action.name == "advance_stage":
-                points.append(action.point)
-
         # 实测四张场景页（16 / 25 / 33 / 41）的箭头都在同一带，点它的中心。
+        points = [action.point for action in actions if action.name == "advance_stage"]
         self.assertEqual([(1820, 750)] * 4, points)
+
+        side_actions = [action for action in actions if action.name in SIDE_ACTIONS]
+        self.assertEqual(set(SIDE_ACTIONS), {action.name for action in side_actions})
+        for action in side_actions:
+            self.assertTrue(action.source_page, f"{action.name} 缺 source_page")
+            self.assertTrue(action.target_pages, f"{action.name} 缺 target_pages")
 
     def test_the_stage_pick_uses_the_cursor_position_not_a_hardcoded_one(self):
         """地图布局每期都变 ⇒ 位置必须来自画面（青色菱形往下固定像素）。"""
@@ -835,24 +833,6 @@ class SideStoryJudgementTests(unittest.TestCase):
 
 class SideStoryContractTests(unittest.TestCase):
     """准入与契约：新建路线必须自己站住的那几道关。"""
-
-    def test_every_side_action_carries_a_transition_contract(self):
-        """这条路开了 `_REQUIRE_TRANSITION_CONTRACT` ⇒ 每个动作都要有出口验收。"""
-
-        machine = SideStoryStateMachine(templates())
-        seen = []
-        for name in PERIOD:
-            action = machine.next_action(fixture(name))
-            if action is not None and action.name in SIDE_ACTIONS:
-                seen.append(action)
-
-        self.assertTrue(seen, "一条本路线动作都没发出来，这条断言等于没跑")
-        self.assertEqual(
-            set(SIDE_ACTIONS), {action.name for action in seen}
-        )
-        for action in seen:
-            self.assertTrue(action.source_page, f"{action.name} 缺 source_page")
-            self.assertTrue(action.target_pages, f"{action.name} 缺 target_pages")
 
     def test_the_runner_opens_the_transition_contract_switch(self):
         self.assertTrue(SideStoryRunner._REQUIRE_TRANSITION_CONTRACT)

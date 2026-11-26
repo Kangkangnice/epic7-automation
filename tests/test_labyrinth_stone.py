@@ -16,6 +16,7 @@
 """
 
 import dataclasses
+from collections.abc import Iterable, Iterator
 from pathlib import Path
 
 import cv2
@@ -30,6 +31,7 @@ from auto_game_unified.games.epic7.labyrinth_stone import (
     detect_resume_point,
 )
 from auto_game_unified.games.epic7.unknown_screen import UnrecognizedScreen
+from auto_game_unified.tests.fixture_images import iter_named_frames
 
 ROOT = Path(__file__).resolve().parents[1]
 TEMPLATE_ROOT = ROOT / "games" / "epic7" / "templates"
@@ -600,9 +602,9 @@ class FakeRuntime:
     diagnostic_dir = None
     dry_run = False
 
-    def __init__(self, frames: list[np.ndarray], step: float = 10.0) -> None:
-        self._frames = frames
-        self._index = 0
+    def __init__(self, frames: Iterable[np.ndarray], step: float = 10.0) -> None:
+        self._frames = iter(frames)
+        self._last_frame: np.ndarray | None = None
         self._step = step
         self.now_value = 0.0
         self.clicks: list[tuple[tuple[int, int], str]] = []
@@ -614,10 +616,11 @@ class FakeRuntime:
 
     def capture(self) -> np.ndarray:
         # 取完就停在最后一帧：让主循环自己收尾，不要越界。
-        index = min(self._index, len(self._frames) - 1)
-        self._index += 1
+        self._last_frame = next(self._frames, self._last_frame)
         self.now_value += self._step
-        return self._frames[index]
+        if self._last_frame is None:
+            raise IndexError("replay has no frames")
+        return self._last_frame
 
     def click(self, point, name) -> None:
         self.clicks.append((point, name))
@@ -632,12 +635,9 @@ class FakeRuntime:
         return Path(label)
 
 
-def _script(*fixtures: str, repeat: int = 2) -> list[np.ndarray]:
+def _script(*fixtures: str, repeat: int = 2) -> Iterator[np.ndarray]:
     """每一帧重复 repeat 次：主循环要**两帧稳定**才肯发动作。"""
-    frames: list[np.ndarray] = []
-    for name in fixtures:
-        frames.extend([frame(name)] * repeat)
-    return frames
+    return iter_named_frames(frame, ((name, repeat) for name in fixtures))
 
 
 # 商店在脚本里出现 4 次：三次下滑 + 一次离开（每次 2 帧才凑够一次稳定动作）。

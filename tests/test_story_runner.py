@@ -11,6 +11,7 @@ from auto_game_unified.core.battle_supervisor import BattleOutcome
 from auto_game_unified.core.matcher import Match
 from auto_game_unified.core.runtime import Runtime
 from auto_game_unified.games.epic7.story import StoryAction, StoryRunner, StoryState, StoryStateMachine, build_story_templates
+from auto_game_unified.tests.fixture_images import iter_named_frames
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -125,15 +126,12 @@ class StoryRunnerTests(unittest.TestCase):
         self.assertEqual(StoryState.STAGE, machine.state)
 
     def test_delayed_stage_transition_does_not_repeat_the_click(self):
-        names = (
-            ["stage"] * 8
-            + [name for name in [
-                "assistant", "team", "story", "skip_confirm",
-                "battle_auto_off_live_20260809", "battle_auto_on_live_20260809",
-                "reward", "clear", "results", "complete", "next_stage",
-            ] for _ in range(2)]
+        after_stage = (
+            "assistant", "team", "story", "skip_confirm",
+            "battle_auto_off_live_20260809", "battle_auto_on_live_20260809",
+            "reward", "clear", "results", "complete", "next_stage",
         )
-        screens = iter(fixture(name) for name in names)
+        screens = iter_named_frames(fixture, (("stage", 8), *((name, 2) for name in after_stage)))
         logs: list[str] = []
         with TemporaryDirectory() as directory:
             runtime = Runtime(
@@ -214,10 +212,8 @@ class StoryRunnerTests(unittest.TestCase):
             "battle_auto_off_live_20260809", "battle_auto_on_live_20260809",
             "reward", "clear", "results", "complete", "bonus_reward", "story_watch_next_ep4",
         ]
-        screens = iter(
-            fixture(name)
-            for name in names
-            for _ in range(4 if name == "reward" else 2)
+        screens = iter_named_frames(
+            fixture, ((name, 4 if name == "reward" else 2) for name in names)
         )
         clicks: list[tuple[int, int]] = []
         logs: list[str] = []

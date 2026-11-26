@@ -4,6 +4,7 @@ import ast
 import inspect
 import unittest
 from dataclasses import replace
+from itertools import repeat
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
@@ -3456,26 +3457,25 @@ class RunnerFlowTests(unittest.TestCase):
         self.assertIn("连续性=1", output)
 
     def test_multi_card_sequence_completes_one_simulator_cycle(self):
-        grey = fixture("list_grey_3s")
-        no_reddot = fixture("list_no_reddot")
-        screens = iter(
-            [fixture("list_reddot")] * 2
-            + [fixture("filter_open")] * 2
-            + [grey] * 4
-            + [shifted_list(grey, -8), shifted_list(grey, -16)]
-            + [shifted_list(grey, -16)] * 3
-            + [no_reddot] * 2
-            + [shifted_list(no_reddot, -8), shifted_list(no_reddot, -16)]
-            + [shifted_list(no_reddot, -16)] * 3
-            + [fixture("list_reddot")] * 2
-            + [fixture("imprint_up_cards_no_sss")] * 2
-            + [imprint_one_remaining_after_add()] * 2
-            + [fixture("imprint_added")] * 4
-            + [fixture("synth_confirm")] * 2
-            + [fixture("imprint_result_popup")] * 2
-            + [fixture("imprint_after_synth")] * 2
-            + [fixture("list_end_of_cards")] * 4
-        )
+        def replay():
+            yield from repeat(fixture("list_reddot"), 2)
+            yield from repeat(fixture("filter_open"), 2)
+            for name, count in (("list_grey_3s", 4), ("list_no_reddot", 2)):
+                card = fixture(name)
+                yield from repeat(card, count)
+                yield shifted_list(card, -8)
+                yield from repeat(shifted_list(card, -16), 4)
+            del card
+            yield from repeat(fixture("list_reddot"), 2)
+            yield from repeat(fixture("imprint_up_cards_no_sss"), 2)
+            yield from repeat(imprint_one_remaining_after_add(), 2)
+            yield from repeat(fixture("imprint_added"), 4)
+            yield from repeat(fixture("synth_confirm"), 2)
+            yield from repeat(fixture("imprint_result_popup"), 2)
+            yield from repeat(fixture("imprint_after_synth"), 2)
+            yield from repeat(fixture("list_end_of_cards"), 4)
+
+        screens = replay()
         clicks: list[tuple[int, int]] = []
         logs: list[str] = []
         clock = FakeClock()

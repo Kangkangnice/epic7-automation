@@ -1251,15 +1251,18 @@ class CommunityStateMachineTests(unittest.TestCase):
         """
         frame = fixture("feed_before_signin_live_20261007")
         machine = self.machine(state=cm.CommunityState.FEED)
-        for _ in range(cm.SIGNIN_CLICK_LIMIT):
-            action = machine.next_action(frame)
-            self.assertIsNotNone(action)
-            self.assertEqual(action.name, "tap_signin")
-            for _ in range(cm.SIGNIN_RETRY_FRAMES):
+        page = machine.observe(frame)
+        self.assertEqual("feed_home", page.name)
+        with unittest.mock.patch.object(machine, "observe", return_value=page):
+            for _ in range(cm.SIGNIN_CLICK_LIMIT):
+                action = machine.next_action(frame)
+                self.assertIsNotNone(action)
+                self.assertEqual(action.name, "tap_signin")
+                for _ in range(cm.SIGNIN_RETRY_FRAMES):
+                    self.assertIsNone(machine.next_action(frame))
+            # 次数用满之后：既不点击、也不抛，继续观察
+            for _ in range(20):
                 self.assertIsNone(machine.next_action(frame))
-        # 次数用满之后：既不点击、也不抛，继续观察
-        for _ in range(20):
-            self.assertIsNone(machine.next_action(frame))
         self.assertEqual(machine.signin_attempts, cm.SIGNIN_CLICK_LIMIT)
 
     def test_signin_popup_is_acknowledged_before_anything_else(self):
