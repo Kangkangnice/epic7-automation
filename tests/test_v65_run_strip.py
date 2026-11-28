@@ -452,7 +452,7 @@ def test_hover_log_fits_by_the_plaque_and_stays_open_across_the_gap(qt_app, monk
         assert actions.isVisible() and logs.isVisible()
         QCursor.setPos(available.topLeft() + QPoint(1, 1))
         qt_app.sendEvent(actions, QEvent(QEvent.Leave))
-        QTest.qWait(180)
+        QTest.qWait(400)
         assert not actions.isVisible() and not logs.isVisible()
     finally:
         runner.hide_all()

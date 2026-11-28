@@ -702,7 +702,7 @@ class KnightsDonationStateMachine:
         if self.templates.pc:
             # ⚠️ PC 实测（2026-11-03）：读不出分两种，必须区别对待。
             # 现场帧 `runtime_diagnostics/_probe_knights/resource_support2.png` 显示，
-            # 列表第一行是**自己的行**（`kangkangnice Rank.50`），按钮写着「本人」——
+            # 列表第一行是**自己所在行**（Rank 行），按钮写着「本人」——
             # 它和「支援 N 个」是同一个绿色药丸形状，`support_one_button` 模板在 PC 上
             # 以 1.0000 命中它 ⇒ 程序挑中「本人」、点 4 次毫无反应 ⇒ 判定「连点 4 次没能
             # 推进」⇒ **整节支援收工**，排在它后面的、真正能支援的团员永远轮不到。

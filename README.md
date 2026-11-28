@@ -8,15 +8,16 @@
 
 让重复的日常交给亚卡，把游戏的乐趣留给自己。
 
-[![Windows](https://img.shields.io/badge/platform-Windows-blue)](https://github.com/Kangkangnice/epic7-automation/releases)
+[![Windows](https://img.shields.io/badge/platform-Windows-blue)](https://github.com/Kangkangnice/epic7-arky-assistant/releases)
 [![MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
-[![GitHub Stars](https://img.shields.io/github/stars/Kangkangnice/epic7-automation?style=social)](https://github.com/Kangkangnice/epic7-automation/stargazers)
+![QQ 交流群 173919378](https://img.shields.io/badge/QQ%20群-173919378-blue)
+[![GitHub Stars](https://img.shields.io/github/stars/Kangkangnice/epic7-arky-assistant?style=social)](https://github.com/Kangkangnice/epic7-arky-assistant/stargazers)
 
-[快速开始](#快速开始) · [项目特色](#项目特色) · [界面预览](#界面预览) · [使用手册](docs/USER_GUIDE.md)
+[项目特色](#项目特色) · [界面预览](#界面预览) · [快速开始](#快速开始) · [使用手册](docs/USER_GUIDE.md)
 
 </div>
 
-亚卡助手是一款免费开源的《第七史诗》国服自动化助手，支持 PC 客户端与安卓模拟器，帮助玩家轻松处理日常任务、资源获取、剧情推进及重复养成操作。
+亚卡助手是一款免费开源的《第七史诗》自动化助手，支持 PC 客户端与安卓模拟器，帮助玩家轻松处理日常任务、资源获取、剧情推进及重复养成操作。
 
 ## 项目特色
 
@@ -41,7 +42,7 @@
 ### 🖥️ 广泛兼容
 
 - **多端适配**：支持 PC 客户端及安卓模拟器，目前已适配雷电、MuMu 模拟器。
-- **非前台运行**：游戏窗口无需始终置顶，可在运行任务的同时使用电脑。游戏窗口需保持打开，不可最小化；PC 客户端部分操作仍需使用前台或鼠标。
+- **非前台运行**：游戏窗口无需始终置顶，可在运行任务的同时使用电脑。游戏窗口需保持打开，**不要最小化**；PC 客户端部分操作仍需使用前台或鼠标。
 
 ## 界面预览
 
@@ -60,7 +61,7 @@
 
 ### 下载与运行
 
-目前已公开源码，尚未发布 Windows 免安装包。正式发行后，可在 [GitHub Releases](https://github.com/Kangkangnice/epic7-automation/releases) 下载压缩包，解压后运行 `ArkyAssistant.exe`。
+在 [GitHub Releases](https://github.com/Kangkangnice/epic7-arky-assistant/releases) 下载免安装版，完整解压后运行 `ArkyAssistant.exe`。
 
 <details>
 <summary>从源码运行（适合有 Python 基础的用户）</summary>
@@ -68,7 +69,7 @@
 安装 Git 和 Python 3.13，在 PowerShell 中执行：
 
 ```powershell
-git clone https://github.com/Kangkangnice/epic7-automation.git auto_game_unified
+git clone https://github.com/Kangkangnice/epic7-arky-assistant.git auto_game_unified
 py -3.13 -m venv auto_game_unified\.venv
 .\auto_game_unified\.venv\Scripts\python.exe -m pip install -r auto_game_unified\requirements.txt
 .\auto_game_unified\.venv\Scripts\python.exe -u -m auto_game_unified.desktop
@@ -82,7 +83,7 @@ py -3.13 -m venv auto_game_unified\.venv
 
 1. 启动游戏并进入大厅，打开亚卡助手。
 2. 选择对应客户端，点击「检测环境」。
-3. 按希望的执行顺序勾选任务，检查右侧的执行计划、次数及资源设置。
+3. 勾选任务，按需调整执行顺序、次数及设置。
 4. 点击「开始任务」，即可自动执行。
 
 运行环境为 64 位 Windows，游戏使用简体中文。模拟器需启用 ADB、保持横屏 1920 × 1080 并单开游戏；PC 客户端按环境检测提示操作。特殊任务的启动页面及详细设置见[使用手册](docs/USER_GUIDE.md)。
@@ -90,14 +91,16 @@ py -3.13 -m venv auto_game_unified\.venv
 ## 使用须知
 
 - 开始前请确认任务设置及资源消耗上限，尤其是涉及购买、合成、装备整理等操作的任务。首次使用建议先小范围试跑。
-- 运行异常或发现操作不符合预期时，请点击「安全停止」或按 `P` 键，核对游戏状态后再继续。
+- 运行异常或发现操作不符合预期时，请点击「安全停止」或**长按 `P` 键**（约 0.8 秒触发，避免打字误触），核对游戏状态后再继续。
 
 刷书签的刷新次数默认是 0，仍会扫描当前货架并按设置使用金币购买目标商品。遇到扣费或回执不明时，先安全停止并核对游戏内余额和商品状态。详见[刷书签消费与对账](docs/USER_GUIDE.md#刷书签消费与对账)。
 
 ## 帮助与反馈
 
+欢迎加入亚卡助手 QQ 交流群：**173919378**，交流使用心得、反馈问题或提出功能建议。
+
 - 不清楚怎么使用？查看[使用手册](docs/USER_GUIDE.md)。
-- 遇到运行问题？查看[故障排查](docs/TROUBLESHOOTING.md)，或通过 [Issues](https://github.com/Kangkangnice/epic7-automation/issues) 反馈（建议附上日志或脱敏截图）。
+- 遇到运行问题？查看[故障排查](docs/TROUBLESHOOTING.md)，也可在 QQ 群或通过 [Issues](https://github.com/Kangkangnice/epic7-arky-assistant/issues) 反馈（建议附上日志或脱敏截图）。
 
 欢迎参与开发与贡献，详见[贡献指南](CONTRIBUTING.md)和[项目文档索引](docs/README.md)。
 

@@ -1,8 +1,8 @@
 name: package-smoke
 
-# Windows 打包冒烟：从「没有相邻 vendor」的干净检出开始，按锁定 commit 取回第三方
-# 输入，构建 ZIP，再从 ZIP 解压验证。只跑打包关键文件变更的 PR 与手动触发；
-# 文档改动不触发（全量测试在 tests.yml，别把两件事混在一起）。
+# Windows 打包冒烟：从干净检出开始构建 ZIP，再从 ZIP 解压验证。
+# 只跑打包关键文件变更的 PR 与手动触发；文档改动不触发
+# （全量测试在 tests.yml，别把两件事混在一起）。
 #
 # ⚠️ job 名不叫 pytest：main 的分支保护只认 tests.yml 的 pytest，不要动那个名字。
 on:
@@ -10,9 +10,7 @@ on:
   pull_request:
     paths:
       - "packaging/**"
-      - "tools/fetch_vendor.py"
       - "desktop/worker.py"
-      - "desktop/chaos_bridge.py"
       - "desktop_qt/**"
       - "core/data_paths.py"
       - "main.py"
@@ -24,14 +22,12 @@ jobs:
     # 打包会跑 PyInstaller + 真实 exe 探针，必须 Windows。
     runs-on: windows-latest
     timeout-minutes: 45
-    # Windows runner 的控制台编码是 cp1252，脚本里的中文输出会在 print 时抛
-    # UnicodeEncodeError（fetch_vendor 第一次运行就撞到）。统一按 UTF-8 输出。
+    # Windows runner 的控制台编码可能与脚本中文输出不一致，统一按 UTF-8 输出。
     env:
       PYTHONUTF8: "1"
       PYTHONIOENCODING: "utf-8"
     steps:
       # 检出到 auto_game_unified 子目录：与 tests.yml 一致，import 路径才对。
-      # 此时工作区**没有** vendor/ —— 下面的取回步骤从零开始。
       - uses: actions/checkout@v4
         with:
           path: auto_game_unified
@@ -52,11 +48,6 @@ jobs:
           python -m pip install pyinstaller==6.22.3
           New-Item -ItemType Directory -Force -Path ci-evidence | Out-Null
           python -m pip freeze | Out-File -Encoding utf8 ci-evidence/pip-freeze.txt
-
-      # 固定 commit + 逐文件摘要；失败就退出，不回退 latest、不跳过校验。
-      - name: Fetch and verify third-party input
-        working-directory: ${{ github.workspace }}
-        run: python auto_game_unified/tools/fetch_vendor.py
 
       - name: Build package
         working-directory: auto_game_unified

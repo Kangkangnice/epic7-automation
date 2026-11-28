@@ -70,6 +70,32 @@ def test_emergency_hotkey_stops_even_with_a_long_interval() -> None:
         clicker.stop()
 
 
+def test_default_hotkey_requires_a_hold(monkeypatch: pytest.MonkeyPatch) -> None:
+    """界面直接 AutoClicker() 时也必须走长按判据，不能退回轻按即停。"""
+
+    class FakeStopHotkey:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def pressed(self) -> bool:
+            self.calls += 1
+            return self.calls >= 3
+
+    made: list[FakeStopHotkey] = []
+
+    def factory() -> FakeStopHotkey:
+        instance = FakeStopHotkey()
+        made.append(instance)
+        return instance
+
+    monkeypatch.setattr(
+        "auto_game_unified.core.autoclicker.WindowsPStopHotkey", factory
+    )
+    clicker = AutoClicker()
+    assert [clicker._hotkey() for _ in range(3)] == [False, False, True]
+    assert len(made) == 1
+
+
 def test_second_start_is_rejected_while_running() -> None:
     clicker = AutoClicker(click=lambda x, y: None, hotkey=_never_pressed)
     clicker.start(ClickPlan(0, 0, 60_000))

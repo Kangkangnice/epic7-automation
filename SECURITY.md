@@ -16,8 +16,8 @@
 
 **敏感问题**（能导致误点、资源损失、越权执行、隐私泄露）请走私密渠道：
 
-- 若仓库显示 **Report a vulnerability**，请通过 [GitHub 的私密报告入口](https://github.com/Kangkangnice/epic7-automation/security/advisories/new) 提交。
-- 若没有私密报告入口，请用[公开表单请求私下联系](https://github.com/Kangkangnice/epic7-automation/issues/new?template=private_contact.yml)，在维护者提供私密渠道后再发送受影响的版本或提交号、影响、复现步骤以及最小化的脱敏证据。公开请求中只填联系原因类别。
+- 若仓库显示 **Report a vulnerability**，请通过 [GitHub 的私密报告入口](https://github.com/Kangkangnice/epic7-arky-assistant/security/advisories/new) 提交。
+- 若没有私密报告入口，请用[公开表单请求私下联系](https://github.com/Kangkangnice/epic7-arky-assistant/issues/new?template=private_contact.yml)，在维护者提供私密渠道后再发送受影响的版本或提交号、影响、复现步骤以及最小化的脱敏证据。公开请求中只填联系原因类别。
 
 **非敏感问题**（认不出页面、界面卡顿、文档错误）请走普通 Issue，并用 `Bug 报告` 模板。
 

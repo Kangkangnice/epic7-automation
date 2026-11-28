@@ -9,7 +9,7 @@
   一下就会开始在屏幕上乱点；而停止必须有键盘出口，因为运行期间鼠标被按在
   目标点上、点不到按钮。这条非对称是安全设计，不是漏做。
 * **没有「点多少次就停」**。用户的原话是「一直点」，加次数上限只是多一个要
-  解释的输入框；要停就按 P 或点停止。
+  解释的输入框；要停就长按 P 或点停止。
 """
 
 from __future__ import annotations
@@ -107,7 +107,7 @@ class AutoClickerPage(QWidget):
         outer.addLayout(settings)
         outer.addWidget(self._build_control_card())
         note = CaptionLabel(
-            "执行期间按 P 可立即停止，该方式不依赖鼠标操作。"
+            "执行期间长按 P 键可立即停止，该方式不依赖鼠标操作。"
             "连点将持续执行直至手动停止；执行前需确认目标位置。",
             self,
         )
@@ -296,7 +296,7 @@ class AutoClickerPage(QWidget):
         except Exception as error:  # noqa: BLE001 —— 报进状态行，别静默失败
             self._warn("无法启动连点", str(error))
             return
-        self.status_label.setText("连点进行中 · 已执行 0 次（按 P 停止）")
+        self.status_label.setText("连点进行中 · 已执行 0 次（长按 P 停止）")
         self._refresh()
 
     def _stop(self) -> None:
@@ -318,7 +318,7 @@ class AutoClickerPage(QWidget):
             self.pick_button.setEnabled(not running)
         if running:
             self.status_label.setText(
-                f"连点进行中 · 已执行 {self._clicker.count} 次（按 P 停止）"
+                f"连点进行中 · 已执行 {self._clicker.count} 次（长按 P 停止）"
             )
         elif self._clicker.last_error:
             self.status_label.setText(f"已停止：{self._clicker.last_error}")

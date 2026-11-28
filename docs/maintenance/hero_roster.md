@@ -57,5 +57,5 @@
 使用 `--library <目录>` 时，读取和写回该目录的 `meta.json`。批量重建先在独立目录复核，
 用 Git 比较本次有效变更，并在每次应用写回后重跑离线校验。查重或来源发生变化时，另开 PR 复核判据与正反例。
 
-首次建库需要的旧配对、取证和诊断依据见 [Git 中的原记录](https://github.com/Kangkangnice/epic7-automation/blob/c935fcd244c007eb5c9d9347c9596bbb962384e5/docs/maintenance/hero_roster.md)。
+首次建库需要的旧配对、取证和诊断依据见 [Git 中的原记录](https://github.com/Kangkangnice/epic7-arky-assistant/blob/c935fcd244c007eb5c9d9347c9596bbb962384e5/docs/maintenance/hero_roster.md)。
 维护工具的社区数据入口见 [Epic7DB 英雄目录](https://epic7db.com/heroes)与 [Epic Helper](https://epic7helper.com/)。
