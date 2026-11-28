@@ -28,15 +28,18 @@
 """
 
 import unittest
+from io import BytesIO
 from pathlib import Path
 from unittest import mock
+from zipfile import ZipFile
 
 import numpy as np
+import pytest
 from PIL import Image
 
 from auto_game_unified import main as main_module
 from auto_game_unified.core.matcher import find_template, load_template
-from auto_game_unified.core.runtime import ManualStop, Runtime
+from auto_game_unified.core.runtime import ManualStop, PurchaseReceiptUnclear, Runtime
 from auto_game_unified.games.epic7.modes import get_mode
 from auto_game_unified.games.epic7.navigation import (
     Epic7Navigator,
@@ -161,6 +164,36 @@ def _sequence_runtime(
     return runtime, sleep
 
 
+def test_route_failure_keeps_the_frames_from_before_the_return_home(tmp_path):
+    frames = iter(np.full((2, 3, 3), n, np.uint8) for n in range(16))
+    runtime = Runtime(lambda: next(frames), lambda _: None, diagnostic_dir=tmp_path)
+    spec = get_mode("story")
+
+    def collect_eight():
+        for _ in range(8):
+            runtime.capture_unguarded()
+
+    def fail(**kwargs):
+        collect_eight()
+        raise RuntimeError("页面未推进")
+
+    with (
+        mock.patch.object(main_module, "_build_runtime", return_value=runtime),
+        mock.patch.object(main_module, "_enter_mode"),
+        mock.patch.object(main_module, "HomeReturn", return_value=collect_eight),
+        mock.patch.object(spec.runner_type, "run", side_effect=fail),
+        pytest.raises(RuntimeError, match="页面未推进"),
+    ):
+        main_module.run_mode(spec=spec, dry_run=False, max_cycles=1, start_state=spec.default_state)
+    assert runtime.last_frame()[0, 0, 0] == 15
+    with ZipFile(tmp_path / "last_failure.zip") as window:
+        values = [
+            Image.open(BytesIO(window.read(name))).getpixel((0, 0))[0]
+            for name in sorted(window.namelist()) if name.startswith("frames/")
+        ]
+    assert values == [3, 4, 5, 6, 7]
+
+
 def _run_mode_with_exception(
     *,
     mode: str,
@@ -221,6 +254,17 @@ class FailureReturnHomeTests(unittest.TestCase):
     def test_manual_stop_does_not_touch_the_game(self):
         """用户按 P 停 ⇒ **一个动作都不许发**（这是「我要停了」，不是「出岔子」）。"""
         error = ManualStop("用户按下 P")
+        home_return = _run_mode_with_exception(mode="arena", raised=error)
+
+        home_return.assert_not_called()
+
+    def test_purchase_receipt_unclear_preserves_reconciliation_scene(self):
+        """购买回执未明 ⇒ 弹窗与当前页就是对账现场，一个动作都不许发。
+
+        2026-11-26 二次验收退回：这条异常以前落进通用 `BaseException` 分支，
+        `main.run_mode` 会走 `_try_return_home_after_failure` 把现场抹掉。
+        """
+        error = PurchaseReceiptUnclear("购买已提交一次，回执未明")
         home_return = _run_mode_with_exception(mode="arena", raised=error)
 
         home_return.assert_not_called()

@@ -76,6 +76,9 @@ def _render(report: dict) -> str:
     ]
     if failure.get("evidence_dir"):
         lines.append(f"证据目录 {failure['evidence_dir']}")
+    if report.get("first_error"):
+        lines.append(f"首个故障 {report['first_error']}")
+        lines.append(f"截帧时机 {report['window_reason']}")
     lines.append(f"最后输出 {_clip(report.get('last_output'), 160)}")
     lines.append("")
     lines.append("识别分数")

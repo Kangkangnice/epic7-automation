@@ -42,10 +42,10 @@ from urllib.request import Request, urlopen
 
 #: GitHub 的「最新正式发布」接口。跟着仓库走，不在别处再写一份。
 RELEASES_API = (
-    "https://api.github.com/repos/Kangkangnice/epic7-automation/releases/latest"
+    "https://api.github.com/repos/Kangkangnice/epic7-arky-assistant/releases/latest"
 )
 #: 用户点「查看」时打开的页面（比 API 地址更适合给人看）。
-RELEASES_PAGE = "https://github.com/Kangkangnice/epic7-automation/releases/latest"
+RELEASES_PAGE = "https://github.com/Kangkangnice/epic7-arky-assistant/releases/latest"
 
 DISABLE_ENV = "EPIC7_DISABLE_UPDATE_CHECK"
 STATE_FILENAME = "update_check.json"

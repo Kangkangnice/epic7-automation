@@ -6,7 +6,7 @@ body:
     attributes:
       value: |
         请先查找同一游戏更新的跟踪 Issue。单个常规故障请使用 Bug 报告。
-        可能有误点、重复提交、资源误扣或隐私泄露时，请先安全停止并通过[安全政策](https://github.com/Kangkangnice/epic7-automation/security/policy)私密联系维护者。
+        可能有误点、重复提交、资源误扣或隐私泄露时，请先安全停止并通过[安全政策](https://github.com/Kangkangnice/epic7-arky-assistant/security/policy)私密联系维护者。
         公开内容只放脱敏片段。完整诊断包、账号标识、凭据、余额和本机路径请留在本机。
   - type: input
     id: game_update

@@ -7,6 +7,7 @@ import cv2
 import numpy as np
 
 from auto_game_unified.core.matcher import Match, find_template, load_template
+from auto_game_unified.core.failure_history import freeze_before_retry, retry_recovered
 
 if TYPE_CHECKING:
     from auto_game_unified.core.runtime import Runtime
@@ -2210,6 +2211,8 @@ class Epic7GlobalPopupGuard:
         while True:
             match, popup, action, diagnostic_label, failure_message = self._find_popup(screen)
             if match is None:
+                if active_popup is not None:
+                    retry_recovered(runtime, f"弹窗处理 {active_popup}")
                 return screen, handled
             handled = True
             if popup == "equipment_bag_full":
@@ -2222,6 +2225,8 @@ class Epic7GlobalPopupGuard:
                 )
                 return screen, True
             if popup != active_popup:
+                if active_popup is not None:
+                    retry_recovered(runtime, f"弹窗处理 {active_popup}")
                 active_popup = popup
                 stable_frames = 1
                 clicks = 0
@@ -2239,6 +2244,7 @@ class Epic7GlobalPopupGuard:
                         and current - last_click_at >= self.retry_interval_seconds
                     )
                 ):
+                    freeze_before_retry(runtime, f"弹窗处理 {popup}")
                     runtime.click(match.center, action)
                     clicks += 1
                     last_click_at = current

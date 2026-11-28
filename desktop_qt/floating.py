@@ -1,612 +1,794 @@
-"""开始任务后收成右上角悬浮球；点开是半屏高的窄条便签。
-
-三段内容：一条今日目标（可改、自动存）· 本次运行进度（条数多时分两列）· 最近三条日志（自动折行显示全文）。
-
-⚠️ 这里只做展示，不改任何判据、阈值、业务规则。窗口定位走 Qt 的逻辑坐标
-（点击坐标才是 Win32 物理像素，两者别混）；两个窗口都不主动抢前台，
-避免和正在跑的自动化抢焦点。
-"""
+"""Native, non-activating companion for the current desktop run."""
 
 from __future__ import annotations
 
-from math import sin, pi
-from typing import Sequence
+import re
+from collections import deque
+from collections.abc import Iterable, Sequence
 
-from PySide6.QtCore import QObject, QPoint, QPointF, QRectF, QSize, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QFontMetrics, QPainter, QPen, QScreen
-from PySide6.QtWidgets import (
-    QApplication,
-    QFrame,
-    QGridLayout,
-    QHBoxLayout,
-    QLabel,
-    QLineEdit,
-    QPushButton,
-    QScrollArea,
-    QSizePolicy,
-    QVBoxLayout,
-    QWidget,
+from PySide6.QtCore import (
+    QObject, QPoint, QPointF, QRect, QRectF, QSize, Qt, QTime, QTimer, QVariantAnimation, Signal,
 )
+from PySide6.QtGui import QCursor, QPainter, QScreen
+from PySide6.QtSvg import QSvgRenderer
+from PySide6.QtWidgets import QApplication, QLabel, QProgressBar, QPushButton, QWidget
 
-from auto_game_unified.core.countdown import countdown_text
-from auto_game_unified.desktop.session import TODO_SLOTS
 from auto_game_unified.desktop.run_progress import (
-    DONE,
-    PENDING,
+    FAILURE,
+    IDLE,
+    OUTCOME_LABELS,
     RUNNING,
-    STATUS_LABELS,
+    STOPPED,
+    STOPPING,
+    SUCCESS,
     RunProgress,
-    RouteProgress,
 )
 from auto_game_unified.desktop_qt import brand
-from auto_game_unified.desktop_qt.mascot import ArkyMascot
+from auto_game_unified.desktop_qt.mascot import ArkyAnimation, ArkyMascot
 
-BALL_SIZE = 56
-PANEL_MIN_WIDTH = 280
-PANEL_MAX_WIDTH = 340
-PANEL_MAX_HEIGHT = 580
-PANEL_HEIGHT_RATIO = 0.5
-EDGE_GAP = 12
-PULSE_TICK_MS = 50
-PULSE_PERIOD_MS = 2000
-PROGRESS_COLUMN_THRESHOLD = 6
-LOG_LINES = 3
-# 日志折行后高度不固定，滚动区给上限。原来 96px 只够约 6 行，三条长日志折行后
-# 超过上限就滚到底，最上面那条被顶出可视区（用户报「三行只显示两行」）。
-# 便签从 3 条减到 1 条腾出了空间，这里加大到 180px（约 11 行），三条日志折行后
-# 通常都能完整显示；仍超长时保留滚动条兜底，不会挤没上方进度区。
-LOG_PANEL_MAX_HEIGHT = 180
-# 进度区 stretch=1 会抢高度；日志区保底这么高，三条折行日志才不会被压得只显示两条。
-LOG_PANEL_MIN_HEIGHT = 96
+STRIP_WIDTH = 126
+STRIP_HEIGHT = 128
+_RIGHT_GAP = 88
+_BOTTOM_GAP = 26
+_BUBBLE_WIDTH = 96
+_BUBBLE_HEIGHT = 76
+_LOG_WIDTH = 328
+# 最小高度：5 行各占一行时的高度（28 标题区 + 5×16 行 + 12 内边距 + 12 尖角）。
+# 日志换行后按实际内容增高，不再截断。
+_LOG_HEIGHT = 132
+_LOG_TAIL = 12
+_LOG_GAP = 6
+_LOG_ROWS = 5
+_LOG_TIMESTAMP = re.compile(r"^(?:\d{4}-\d{2}-\d{2}[ T])?(\d{2}:\d{2}:\d{2})\s+(.+)$")
+_ART_SIZE = 122
+_ART_TOP = -24
+_ART_LIFT = 6
+_ART_X = (STRIP_WIDTH - _ART_SIZE) // 2
+_WINDOW_FLAGS = (
+    Qt.Tool | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.WindowDoesNotAcceptFocus
+)
 
-BLUE = brand.BLUE
-MUTED = brand.MUTED
-TEXT = brand.INK
+_DEFAULT_PALETTE = ("#81a8d0", "#eac272", "#f3f6ff", "#e2b964", "#ffe4a1")
+_PALETTES = {
+    SUCCESS: ("#84b995", "#a8db9e", "#a4e3a4", "#79c77c", "#c6efb7"),
+    FAILURE: ("#b77c87", "#daa1a2", "#f4aaa4", "#bc6975", "#bc6975"),
+    STOPPED: ("#b2917b", "#e4b485", "#f0bd88", "#d4a569", "#ffe1aa"),
+}
 
-_PANEL_QSS = f"""
-QWidget#runPanel {{
-    background-color: #FFFFFF;
-    border: 1px solid #BDD8E8;
-    border-radius: 12px;
-}}
-QLabel {{ color: {TEXT}; font-size: 13px; }}
-QLabel#panelTitle {{ font-size: 14px; font-weight: 500; }}
-QLabel#countdownLine {{
-    color: {MUTED}; font-size: 11px; padding-left: 18px;
-}}
-QLabel#statePill {{
-    color: #FFFFFF; background-color: {BLUE};
-    border-radius: 10px; padding: 2px 10px; font-size: 12px;
-}}
-QLabel#statePillIdle {{ color: #FFFFFF; background-color: {MUTED};
-    border-radius: 10px; padding: 2px 10px; font-size: 12px; }}
-QLabel#divider {{ background-color: #E3E8EE; max-height: 1px; border: none; }}
-QLabel#slotNumber {{ color: {MUTED}; }}
-QLabel#legendText {{ color: {MUTED}; font-size: 12px; }}
-QLabel#logLine {{ color: {MUTED}; font-size: 12px; padding: 1px 0; }}
-QLabel#statusDone {{ color: {BLUE}; }}
-QLabel#statusRunning {{ color: {BLUE}; }}
-QLabel#statusPending {{ color: #8A8A8A; }}
-QLabel#dotDone {{ background-color: {BLUE}; color: #FFFFFF; font-size: 11px; border-radius: 7px; }}
-QLabel#dotRunning {{ background-color: #B5D4F4; border: 1px solid {BLUE}; border-radius: 6px; }}
-QLabel#dotPending {{ background-color: #FFFFFF; border: 1px solid #B4B2A9; border-radius: 6px; }}
-QLineEdit {{
-    color: {TEXT}; background-color: #F7F9FB; border: 1px solid #D8DEE6;
-    border-radius: 6px; padding: 3px 8px; font-size: 13px;
-}}
-QLineEdit:focus {{ border: 2px solid {BLUE}; }}
-QPushButton {{
-    color: {TEXT}; background-color: #F3F6F9; border: 1px solid #D8DEE6;
-    border-radius: 6px; padding: 4px 10px; font-size: 12px;
-}}
-QPushButton:hover {{ background-color: #E8EFF6; }}
-QScrollArea {{ border: none; background: transparent; }}
+# The embedded outlines use the approved prototype's coordinates and layered pixel edges.
+_PLAQUE_ART = """
+<path fill="#09172b" d="M29 3H97V7H105V12H113V18H119V26H124V71H119V79H113V85H105V90H97V93H29V90H21V85H13V79H7V71H2V26H7V18H13V12H21V7H29Z"/>
+<path fill="#09182f" d="M29 0H97V4H105V9H113V15H119V23H124V68H119V76H113V82H105V87H97V90H29V87H21V82H13V76H7V68H2V23H7V15H13V9H21V4H29Z"/>
+<path fill="{rim}" d="M29 2H97V6H105V11H112V17H117V25H122V66H117V74H112V80H104V85H97V88H29V85H22V80H14V74H9V66H4V25H9V17H14V11H22V6H29Z"/>
+<path fill="#375a84" d="M30 5H96V9H104V14H110V20H115V27H119V65H115V72H110V78H103V83H96V86H30V83H23V78H16V72H11V65H7V27H11V20H16V14H23V9H30Z"/>
+<path fill="#1a3052" d="M31 8H95V12H103V17H108V23H112V29H116V64H112V71H107V76H102V80H95V83H31V80H24V76H19V71H14V64H10V29H14V23H18V17H24V12H31Z"/>
+<path fill="{accent}" d="M9 23H13V30H9ZM113 23H117V30H113ZM9 64H13V70H17V75H23V78H17V76H13V72H9ZM113 64H117V72H113V76H109V78H103V75H109V70H113Z"/>
+<path fill="#ffdf9b" d="M10 24H12V28H10ZM114 24H116V28H114ZM10 65H12V70H10ZM114 65H116V70H114Z"/>
+"""
+_BUBBLE_ART = """
+<path fill="#0a192e" d="M29 0H70V3H79V7H85V13H90V21H94V50H90V58H85V64H79V69H70V72H29V69H22V65H16V59H12V48L0 37L12 27V15H16V9H22V4H29Z"/>
+<path fill="#91b4d4" d="M29 2H70V5H78V9H83V15H88V22H92V49H88V57H83V62H78V67H70V70H29V67H23V63H18V57H14V47L3 37L14 28V16H18V11H23V6H29Z"/>
+<path fill="#40658a" d="M30 5H69V8H77V12H81V17H85V24H89V48H85V55H81V60H76V64H69V67H30V64H24V61H21V55H17V46L7 37L17 29V18H21V13H24V9H30Z"/>
+<path fill="#213b60" d="M31 8H68V11H76V15H79V20H82V26H86V47H82V53H79V58H75V61H68V64H31V61H26V58H23V53H20V45L11 37L20 31V20H23V16H26V12H31Z"/>
+"""
+_BUBBLE_QSS = """
+QPushButton {
+    background: #e3b866; color: #182a45; border: 1px solid;
+    border-color: #ffe2a0 #9b7438 #9b7438 #ffe2a0;
+    border-radius: 6px; padding: 0; font-size: 10px; font-weight: 600;
+}
+QPushButton:hover { background: #ffe3a4; border-color: #fff0bf; }
+QPushButton#runStripStop {
+    background: #9a5a60; color: #fff0e6;
+    border-color: #e0a2a0 #6b3948 #6b3948 #e0a2a0;
+}
+QPushButton#runStripStop:hover:enabled { background: #bd6b70; }
+QPushButton#runStripStop:disabled {
+    background: #544354; color: #a38c94; border-color: #6c5769 #403548 #403548 #6c5769;
+}
 """
 
 
-def _window_flags() -> Qt.WindowFlags:
-    return Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool
+def _svg(view_box: str, paths: str) -> QSvgRenderer:
+    return QSvgRenderer(
+        f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="{view_box}">{paths}</svg>'.encode()
+    )
 
 
-class FloatingBall(QWidget):
-    """右上角一颗球：运行中慢呼吸 + 一圈淡蓝脉冲，跑完立刻静止。"""
+def _prepare_window(widget: QWidget) -> None:
+    widget.setAttribute(Qt.WA_TranslucentBackground)
+    widget.setAttribute(Qt.WA_ShowWithoutActivating)
+    widget.setFocusPolicy(Qt.NoFocus)
 
-    clicked = Signal()
-    drag_finished = Signal()
 
-    def __init__(self) -> None:
-        super().__init__()
-        self.setObjectName("floatingBall")
-        self.setFixedSize(BALL_SIZE, BALL_SIZE)
-        self.setWindowFlags(_window_flags())
-        self.setAttribute(Qt.WA_TranslucentBackground)
-        self.setAttribute(Qt.WA_ShowWithoutActivating)
-        self._running = False
-        self._caption = "待执行"
-        self.setAccessibleName("亚卡 · 待执行")
-        self._phase = 0.0
-        self._press_offset: QPoint | None = None
-        self._dragged = False
-        self._timer = QTimer(self)
-        self._timer.timeout.connect(self._tick)
+class _HoverBubble(QWidget):
+    """A transient tool window keeps the companion's position and hit area stable."""
 
-    def set_running(self, running: bool, *, outcome: str = "已完成") -> None:
-        self._running = running
-        self._caption = "进行中" if running else outcome
-        self.setAccessibleName(f"亚卡 · {self._caption}")
-        self.setToolTip(self._caption)
-        if running:
-            self._phase = 0.0
+    pointer_entered = Signal()
+    pointer_left = Signal()
+
+    def __init__(self, parent: QWidget) -> None:
+        super().__init__(parent, _WINDOW_FLAGS)
+        _prepare_window(self)
+        self._opening = False
+        self._frame = QRectF(1, 1, 0, 0)
+        self._settled = QRectF(0, 0, 1, 1)
+        self._animation = QVariantAnimation(self)
+        self._animation.valueChanged.connect(self._set_frame)
+        self._animation.finished.connect(self._finish_motion)
+
+    def open(self) -> bool:
+        if self._opening:
+            return False
+        start_frame = self._frame if self.isVisible() else None
+        self._opening = True
+        self.show()
+        self._play_motion(start_frame)
+        return True
+
+    def dismiss(self, *, immediate: bool = False) -> None:
+        if immediate:
+            self._opening = False
+            self._animation.stop()
+            self.hide()
+        elif self._opening:
+            self._opening = False
+            self._play_motion()
+
+    def _play_motion(self, start_frame: QRectF | None = None) -> None:
+        self._animation.stop()
+        if not brand.motion_enabled():
+            self._finish_motion()
+            return
+        self._animation.setDuration(370 if self._opening else 190)
+        self._show_content(0)
+        if self._opening:
+            frames = [
+                (0.0, start_frame if start_frame is not None else QRectF(0, 9, .10, .24)),
+                (.37, QRectF(0, -2, 1.10, .86)),
+                (.62, QRectF(0, 1, .96, 1.08)),
+                (.82, QRectF(0, 0, 1.025, .98)),
+                (1.0, self._settled),
+            ]
         else:
-            self._timer.stop()
-        self._sync_timer()
+            frames = [(0.0, self._frame), (1.0, QRectF(-8, 9, .15, .28))]
+        self._animation.setKeyValues(frames)
+        self._animation.setCurrentTime(0)
+        self._frame = frames[0][1]
+        self._animation.start()
+
+    def _set_frame(self, frame: QRectF) -> None:
+        self._frame = frame
+        if self._opening:
+            self._show_content(self._animation.currentTime())
         self.update()
 
-    def _sync_timer(self) -> None:
-        if self._running and self.isVisible() and brand.motion_enabled():
-            if not self._timer.isActive():
-                self._timer.start(PULSE_TICK_MS)
+    def _finish_motion(self) -> None:
+        if self._opening:
+            self._frame = self._settled
+            self._show_content(370)
+            self.update()
         else:
-            self._timer.stop()
+            self.hide()
 
-    def showEvent(self, event) -> None:  # noqa: N802
-        super().showEvent(event)
-        self._sync_timer()
+    def enterEvent(self, event) -> None:  # noqa: N802
+        self.pointer_entered.emit()
+        super().enterEvent(event)
 
-    def hideEvent(self, event) -> None:  # noqa: N802
-        self._timer.stop()
-        super().hideEvent(event)
+    def leaveEvent(self, event) -> None:  # noqa: N802
+        self.pointer_left.emit()
+        super().leaveEvent(event)
 
-    def hide_all(self) -> None:
-        self._timer.stop()
-        self._running = False
-        self.hide()
-
-    def _tick(self) -> None:
-        self._phase = (self._phase + PULSE_TICK_MS / PULSE_PERIOD_MS) % 1.0
-        self._sync_timer()
-        self.update()
-
-    def paintEvent(self, event) -> None:  # noqa: N802 —— Qt 回调名
-        center = QPointF(BALL_SIZE / 2, BALL_SIZE / 2)
+    def paintEvent(self, event) -> None:  # noqa: N802
         painter = QPainter(self)
-        painter.setRenderHints(QPainter.Antialiasing | QPainter.SmoothPixmapTransform)
-        breath = 0.0
-        if self._timer.isActive():
-            ring = 22 + 4 * self._phase
-            painter.setPen(QPen(QColor(68, 148, 187, int(140 * (1 - self._phase))), 2))
-            painter.setBrush(Qt.NoBrush)
-            painter.drawEllipse(center, ring, ring)
-            breath = 2 * sin(2 * pi * self._phase)
-        painter.setPen(QPen(QColor("#91C5E0"), 1))
-        painter.setBrush(QColor("#E0F4FF" if self._running else "#EDF6FB"))
-        painter.drawEllipse(center, 22, 22)
-        art = brand.artwork(brand.BADGE_ART)
-        painter.drawPixmap(QRectF(9, 9 - breath, 38, 38), art, QRectF(art.rect()))
+        if self._animation.state() == QVariantAnimation.Running:
+            elapsed = self._animation.currentTime()
+            opacity = min(1.0, elapsed / 120) if self._opening else max(0.0, 1 - elapsed / 140)
+            painter.setOpacity(opacity)
+        self._paint_frame(painter, self._frame)
 
-    def mousePressEvent(self, event) -> None:  # noqa: N802 —— Qt 回调名
-        if event.button() != Qt.LeftButton:
-            return
-        self._press_offset = event.globalPosition().toPoint() - self.pos()
-        self._dragged = False
-        event.accept()
+    @staticmethod
+    def _scale_frame(painter: QPainter, frame: QRectF, anchor: QPointF) -> None:
+        painter.translate(anchor + frame.topLeft())
+        painter.scale(frame.width(), frame.height())
+        painter.translate(-anchor)
 
-    def mouseMoveEvent(self, event) -> None:  # noqa: N802 —— Qt 回调名
-        if self._press_offset is None or not (event.buttons() & Qt.LeftButton):
-            return
-        target = event.globalPosition().toPoint() - self._press_offset
-        if (target - self.pos()).manhattanLength() > 3:
-            self._dragged = True
-            self.move(target)
-            event.accept()
 
-    def mouseReleaseEvent(self, event) -> None:  # noqa: N802 —— Qt 回调名
-        if event.button() != Qt.LeftButton:
+class _ActionBubble(_HoverBubble):
+    def __init__(self, parent: QWidget) -> None:
+        super().__init__(parent)
+        self.setObjectName("runStripBubble")
+        self.setFixedSize(_BUBBLE_WIDTH, _BUBBLE_HEIGHT)
+        self.setStyleSheet(_BUBBLE_QSS)
+        self._art = _svg("0 0 94 72", _BUBBLE_ART)
+        self._left = False
+        self.restore_button = self._button("runStripRestore", "回到主页", "nav-logs")
+        self.stop_button = self._button("runStripStop", "安全停止", "stop")
+
+    def _button(self, name: str, label: str, icon: str) -> QPushButton:
+        button = QPushButton(brand.icon(icon, 12), label, self)
+        button.setObjectName(name)
+        button.setFocusPolicy(Qt.NoFocus)
+        button.setCursor(Qt.PointingHandCursor)
+        button.setIconSize(QSize(12, 12))
+        return button
+
+    def open_at(self, plaque: QRect, area: QRect) -> bool:
+        left = plaque.x() + plaque.width() - 20
+        self._left = left + self.width() > area.right() + 1
+        if self._left:
+            left = plaque.x() - self.width() + 20
+        top = plaque.y() + (-18 if plaque.y() - area.top() >= 26 else 7)
+        self.move(
+            max(area.left(), min(left, area.right() - self.width() + 1)),
+            max(area.top(), min(top, area.bottom() - self.height() + 1)),
+        )
+        return self.open()
+
+    def _show_content(self, elapsed: int) -> None:
+        x = 10 if self._left else 18
+        self.restore_button.setGeometry(x, 11, 68, 25)
+        self.stop_button.setGeometry(x, 40, 68, 25)
+        self.restore_button.setVisible(elapsed >= 120)
+        self.stop_button.setVisible(elapsed >= 170)
+
+    def _paint_frame(self, painter: QPainter, frame: QRectF) -> None:
+        if self._left:
+            painter.translate(self.width(), 0)
+            painter.scale(-1, 1)
+        self._scale_frame(painter, frame, QPointF(8, self.height() * .48))
+        self._art.render(painter, QRectF(0, 0, self.width(), self.height()))
+
+
+def _log_outline(body: QRect, side: str, tail: int) -> str:
+    layers = []
+    for inset, color in ((0, "#0a192e"), (2, "#91b4d4"), (5, "#40658a"), (8, "#213b60")):
+        inner = body.adjusted(inset, inset, -inset, -inset)
+        left, top, right, bottom = inner.getCoords()
+        depth, half = _LOG_TAIL - inset, 15 - inset
+        tips = {
+            "top": ((tail - half, top), (tail, top - depth), (tail + half, top)),
+            "right": ((right, tail - half), (right + depth, tail), (right, tail + half)),
+            "bottom": ((tail + half, bottom), (tail, bottom + depth), (tail - half, bottom)),
+            "left": ((left, tail + half), (left - depth, tail), (left, tail - half)),
+        }
+        points = (
+            (left + 16, top), *(tips["top"] if side == "top" else ()),
+            (right - 16, top), (right - 16, top + 3), (right - 9, top + 3),
+            (right - 9, top + 7), (right - 4, top + 7), (right - 4, top + 13),
+            (right, top + 13),
+            *(tips["right"] if side == "right" else ()),
+            (right, bottom - 13), (right - 4, bottom - 13), (right - 4, bottom - 7),
+            (right - 9, bottom - 7), (right - 9, bottom - 3), (right - 16, bottom - 3),
+            (right - 16, bottom),
+            *(tips["bottom"] if side == "bottom" else ()),
+            (left + 16, bottom), (left + 16, bottom - 3), (left + 9, bottom - 3),
+            (left + 9, bottom - 7), (left + 4, bottom - 7), (left + 4, bottom - 13),
+            (left, bottom - 13),
+            *(tips["left"] if side == "left" else ()),
+            (left, top + 13), (left + 4, top + 13), (left + 4, top + 7),
+            (left + 9, top + 7), (left + 9, top + 3), (left + 16, top + 3),
+        )
+        outline = " ".join(f"{x},{y}" for x, y in points)
+        layers.append(f'<polygon fill="{color}" points="{outline}"/>')
+    return "".join(layers)
+
+
+class _LogBubble(_HoverBubble):
+    def __init__(self, parent: QWidget) -> None:
+        super().__init__(parent)
+        self.setObjectName("runStripLogBubble")
+        self.setAccessibleName("实时日志")
+        self._heading = QLabel("实时日志", self)
+        self._heading.setStyleSheet("color: #ffe2a0; font-size: 12px; font-weight: 700;")
+        self._rows = [
+            QLabel(self, objectName="runStripLogLine", textFormat=Qt.PlainText)
+            for _ in range(_LOG_ROWS)
+        ]
+        for label in (self._heading, *self._rows):
+            label.setAttribute(Qt.WA_TransparentForMouseEvents)
+        for label in self._rows:
+            label.setStyleSheet("color: #eef4ff; font-size: 11px;")
+            # 长日志按气泡宽度折行显示完整内容，不再用 elidedText 截成省略号。
+            label.setWordWrap(True)
+        self._lines: tuple[str, ...] = ()
+        self._shape: tuple[str, int, int, int] | None = None
+        self._placement: tuple[QRect, QRect, QRect, QRect] | None = None
+
+    def _row_heights(self, width: int) -> list[int]:
+        """每条日志折行后的像素高度；行不够五个时按空行补齐。"""
+        metrics = self._rows[0].fontMetrics()
+        # 两侧边框、尖角与内边距都占掉可用宽度，留得比 QLabel 实际稍窄一点，
+        # 保证测出来的行数不少于界面上的行数（宁可高一点，也不把字裁掉）。
+        text_width = max(1, width - 32 - _LOG_TAIL)
+        heights: list[int] = []
+        for index in range(_LOG_ROWS):
+            line = self._lines[index] if index < len(self._lines) else ""
+            parts = line.split("\n") or [""]
+            heights.append(
+                max(
+                    16,
+                    sum(
+                        metrics.boundingRect(0, 0, text_width, 0, Qt.TextWordWrap, part).height()
+                        for part in parts
+                    ),
+                )
+            )
+        return heights
+
+    def _height_for(self, width: int) -> int:
+        """标题区 + 全部折行后的行高 + 下内边距 + 尖角。"""
+        return _LOG_TAIL + 28 + sum(self._row_heights(width)) + 12
+
+    def open_at(self, plaque: QRect, overhang: QRect, action: QRect, area: QRect) -> None:
+        self._placement = (plaque, overhang, action, area)
+        width = min(_LOG_WIDTH, area.width())
+        x = max(area.left(), min(plaque.center().x() - width // 2, area.right() - width + 1))
+        above = overhang.top() if overhang.isValid() else plaque.top()
+        left = plaque.left() - _LOG_GAP
+        right = plaque.right() + _LOG_GAP + 1
+        left_width = min(width, left - area.left())
+        right_width = min(width, area.right() - right + 1)
+        top_height = self._height_for(width)
+        left_height = self._height_for(left_width)
+        right_height = self._height_for(right_width)
+        center_y = plaque.center().y()
+        candidates = (
+            ("top", QRect(x, plaque.bottom() + _LOG_GAP + 1, width, top_height)),
+            ("bottom", QRect(x, above - _LOG_GAP - top_height, width, top_height)),
+            ("right", QRect(left - left_width, center_y - left_height // 2, left_width, left_height)),
+            ("left", QRect(right, center_y - right_height // 2, right_width, right_height)),
+        )
+        for side, bounds in candidates:
+            if bounds.width() < 148 or not area.contains(bounds) or bounds.intersects(action):
+                continue
+            vertical = side in {"top", "bottom"}
+            if vertical:
+                tail = plaque.center().x() - bounds.x()
+            else:
+                tail = center_y - bounds.y()
+            tail = max(34, min(tail, (bounds.width() if vertical else bounds.height()) - 34))
+            self._place(bounds, side, tail)
+            self.open()
             return
-        # 拖过就不算点击：松手时只记住位置，不展开面板。
-        if self._dragged:
-            self.drag_finished.emit()
-        else:
-            self.clicked.emit()
-        self._press_offset = None
-        self._dragged = False
-        event.accept()
+        self.dismiss(immediate=True)
+
+    def _place(self, bounds: QRect, side: str, tail: int) -> None:
+        shape = (side, tail, bounds.width(), bounds.height())
+        changed = shape != self._shape
+        self.setGeometry(bounds)
+        self._shape = shape
+        if not changed:
+            return
+        body = self.rect().adjusted(
+            _LOG_TAIL if side == "left" else 0,
+            _LOG_TAIL if side == "top" else 0,
+            -_LOG_TAIL if side == "right" else 0,
+            -_LOG_TAIL if side == "bottom" else 0,
+        )
+        self._art = _svg(f"0 0 {self.width()} {self.height()}", _log_outline(body, side, tail))
+        self._anchor = {
+            "top": QPointF(tail, 5),
+            "bottom": QPointF(tail, self.height() - 6),
+            "left": QPointF(5, tail),
+            "right": QPointF(self.width() - 6, tail),
+        }[side]
+        self._heading.setGeometry(body.x() + 16, body.y() + 10, body.width() - 32, 17)
+        self._layout_rows()
+
+    def _layout_rows(self) -> None:
+        if self._shape is None:
+            return
+        side = self._shape[0]
+        body = self.rect().adjusted(
+            _LOG_TAIL if side == "left" else 0,
+            _LOG_TAIL if side == "top" else 0,
+            -_LOG_TAIL if side == "right" else 0,
+            -_LOG_TAIL if side == "bottom" else 0,
+        )
+        y = body.y() + 28
+        for row, height in zip(self._rows, self._row_heights(self.width()), strict=True):
+            row.setGeometry(body.x() + 16, y, body.width() - 32, height)
+            y += height
+
+    def set_lines(self, lines: Iterable[str]) -> None:
+        self._lines = tuple(lines)
+        for index, row in enumerate(self._rows):
+            line = self._lines[index] if index < len(self._lines) else ""
+            row.setAccessibleName(line)
+            row.setText(line)
+        if self._shape is None:
+            return
+        self._layout_rows()
+        side, tail, width, height = self._shape
+        wanted = self._height_for(width)
+        if wanted != height:
+            self.setGeometry(self.x(), self.y(), width, wanted)
+            if self.isVisible() and self._placement is not None:
+                self.open_at(*self._placement)
+
+    def _show_content(self, elapsed: int) -> None:
+        visible = elapsed >= 170
+        self._heading.setVisible(visible)
+        for row in self._rows:
+            row.setVisible(visible)
+
+    def _paint_frame(self, painter: QPainter, frame: QRectF) -> None:
+        self._scale_frame(painter, frame, self._anchor)
+        self._art.render(painter, QRectF(self.rect()))
+
+
+class _MascotOverhang(QWidget):
+    """Complete the sprite above the plaque while leaving desktop input untouched."""
+
+    def __init__(self, parent: QWidget, animation: ArkyAnimation) -> None:
+        super().__init__(parent, _WINDOW_FLAGS | Qt.WindowTransparentForInput)
+        _prepare_window(self)
+        self.setObjectName("runStripMascotOverhang")
+        self._animation = animation
+        self._sprite_top = _ART_TOP
+        animation.frame_changed.connect(self.update)
+
+    def set_sprite_top(self, top: int) -> None:
+        self._sprite_top = top
+        self.update()
+
+    def paintEvent(self, event) -> None:  # noqa: N802
+        art = self._animation.pixmap()
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.SmoothPixmapTransform)
+        target = QRectF(0, self.height() + self._sprite_top, _ART_SIZE, _ART_SIZE)
+        painter.drawPixmap(target, art, QRectF(art.rect()))
 
 
 class RunPanel(QWidget):
-    """半屏高的窄条：一条便签 + 两列进度 + 三行日志。"""
+    """Always-on-top plaque with a shared mascot, route progress and hover bubbles."""
 
-    todos_changed = Signal(object)
-    collapse_requested = Signal()
     open_main_requested = Signal()
+    stop_clicked = Signal()
+    drag_moved = Signal(QPoint, QPoint)
+    drag_finished = Signal()
 
-    def __init__(self, todos: Sequence[str]) -> None:
-        super().__init__()
-        self.setObjectName("runPanel")
-        self.setWindowFlags(_window_flags())
-        self.setAttribute(Qt.WA_ShowWithoutActivating)
-        self.setAttribute(Qt.WA_StyledBackground)
-        self.setStyleSheet(_PANEL_QSS)
+    def __init__(self, animation: ArkyAnimation) -> None:
+        super().__init__(None, _WINDOW_FLAGS)
+        _prepare_window(self)
+        self.setObjectName("runStrip")
+        self.setAccessibleName("任务运行浮窗")
+        self.setAccessibleDescription("悬停展开操作和实时日志，拖动调整位置")
+        self.setCursor(Qt.PointingHandCursor)
+        self.setMouseTracking(True)
+        self.setFixedSize(STRIP_WIDTH, STRIP_HEIGHT)
+        self._press: QPoint | None = None
+        self._offset = QPoint()
+        self._dragged = False
+        self._route_mode = "pending"
+        self._outcome = IDLE
+        self._palette = None
+        self._plaque = QSvgRenderer(self)
+        self._spark = _svg(
+            "0 0 12 12", '<path fill="#eac272" d="M1 1H3V5H1ZM6 2H8V4H6V6H4V4H6ZM8 8H12V10H8Z"/>'
+        )
+        self._hover_motion = QVariantAnimation(self, duration=550, startValue=0.0, endValue=1.0)
+        self._hover_motion.valueChanged.connect(self._animate_mascot)
+        self._close_timer = QTimer(self, interval=160, singleShot=True)
+        self._close_timer.timeout.connect(self._dismiss_when_clear)
 
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(14, 12, 14, 12)
-        layout.setSpacing(6)
+        self._mascot = ArkyMascot(self, height=_ART_SIZE, animation=animation)
+        self._mascot.setGeometry(_ART_X, _ART_TOP, _ART_SIZE, _ART_SIZE)
+        self._overhang = _MascotOverhang(self, animation)
+        self._icon = QLabel(self, objectName="runStripIcon")
+        self._icon.setFixedSize(22, 22)
+        self._title = QLabel(self, objectName="runStripTitle", textFormat=Qt.PlainText)
+        self._percent = QLabel(self, objectName="runStripPercent")
+        self._percent.setGeometry(81, 98, 27, 17)
+        self._percent.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        self._bar = QProgressBar(self, objectName="runStripProgress", textVisible=False)
+        self._bar.setGeometry(19, 103, 57, 10)
+        self._bar.setAccessibleName("路线处理进度")
+        for widget in (self._mascot, self._icon, self._title, self._percent, self._bar):
+            widget.setAttribute(Qt.WA_TransparentForMouseEvents)
 
-        header = QHBoxLayout()
-        badge = QLabel(self)
-        badge.setPixmap(brand.app_icon().pixmap(QSize(20, 20), self.devicePixelRatioF()))
-        header.addWidget(badge)
-        title = QLabel("今日游戏便签", self)
-        title.setObjectName("panelTitle")
-        self._state = QLabel("进行中", self)
-        self._state.setObjectName("statePill")
-        collapse = QPushButton("收起", self)
-        collapse.clicked.connect(self.collapse_requested.emit)
-        main_window = QPushButton("主界面", self)
-        main_window.clicked.connect(self.open_main_requested.emit)
-        header.addWidget(title)
-        header.addStretch(1)
-        header.addWidget(self._state)
-        header.addWidget(collapse)
-        header.addWidget(main_window)
-        layout.addLayout(header)
+        self._bubble = _ActionBubble(self)
+        self._bubble.pointer_entered.connect(self._show_actions)
+        self._bubble.pointer_left.connect(self._close_timer.start)
+        self._bubble.restore_button.clicked.connect(self.open_main_requested.emit)
+        self._bubble.stop_button.clicked.connect(self.stop_clicked.emit)
+        self._log_bubble = _LogBubble(self)
+        self._log_bubble.pointer_entered.connect(self._show_actions)
+        self._log_bubble.pointer_left.connect(self._close_timer.start)
 
-        self.mascot = ArkyMascot(self, height=73)
-        layout.addWidget(self.mascot)
-        self._active_route = QLabel(self)
-        self._active_route.setObjectName("legendText")
-        self._active_route.setAlignment(Qt.AlignCenter)
-        self._active_route.hide()
-        layout.addWidget(self._active_route)
-
-        self._todos: list[QLineEdit] = []
-        for index in range(TODO_SLOTS):
-            row = QHBoxLayout()
-            number = QLabel(str(index + 1), self)
-            number.setObjectName("slotNumber")
-            number.setFixedWidth(14)
-            editor = QLineEdit(self)
-            editor.setPlaceholderText("填写今日待办事项")
-            editor.setText(todos[index] if index < len(todos) else "")
-            editor.editingFinished.connect(self._on_todo_edited)
-            row.addWidget(number)
-            row.addWidget(editor, 1)
-            layout.addLayout(row)
-            self._todos.append(editor)
-
-        # 支线刷新倒计时：挂在待办下面（2026-11-12 用户指定位置）。
-        # 只读一次文件，读不到就显示「还没读过」——它是便签，不参与任何业务判断。
-        self._countdown = QLabel(countdown_text(), self)
-        self._countdown.setObjectName("countdownLine")
-        self._countdown.setWordWrap(True)
-        layout.addWidget(self._countdown)
-
-        layout.addWidget(_divider(self))
-        layout.addLayout(_legend(self))
-        layout.addWidget(_divider(self))
-
-        progress_title = QLabel("本次运行", self)
-        progress_title.setObjectName("panelTitle")
-        layout.addWidget(progress_title)
-        self._items: tuple[RouteProgress, ...] = ()
-        self._progress_host = QWidget(self)
-        self._progress_grid = QGridLayout(self._progress_host)
-        self._progress_grid.setContentsMargins(0, 0, 0, 0)
-        self._progress_grid.setSpacing(4)
-        self._progress_grid.setAlignment(Qt.AlignTop)
-        scroller = QScrollArea(self)
-        scroller.setWidgetResizable(True)
-        scroller.viewport().setAutoFillBackground(False)
-        scroller.setWidget(self._progress_host)
-        layout.addWidget(scroller, 1)
-
-        layout.addWidget(_divider(self))
-        # 窄条里日志按宽度折行，不再 elidedText 截断 —— 用户要能看清最新一条
-        # 在做什么、有没有问题。折行后高度不固定，放进滚动区并给上限，
-        # 避免三条长日志把进度区挤没；装不下时才滚动（见 set_log_lines）。
-        self._log_host = QWidget(self)
-        log_column = QVBoxLayout(self._log_host)
-        log_column.setContentsMargins(0, 0, 0, 0)
-        log_column.setSpacing(2)
-        log_column.setAlignment(Qt.AlignTop)
-        self._log_labels: list[QLabel] = []
-        for _ in range(LOG_LINES):
-            line = QLabel("", self._log_host)
-            line.setObjectName("logLine")
-            line.setWordWrap(True)
-            log_column.addWidget(line)
-            self._log_labels.append(line)
-        log_column.addStretch(1)
-        self._log_scroll = QScrollArea(self)
-        self._log_scroll.setFrameShape(QFrame.NoFrame)
-        self._log_scroll.setWidgetResizable(True)
-        self._log_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        self._log_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-        self._log_scroll.viewport().setAutoFillBackground(False)
-        self._log_host.setAutoFillBackground(False)
-        self._log_scroll.setWidget(self._log_host)
-        self._log_scroll.setMaximumHeight(LOG_PANEL_MAX_HEIGHT)
-        # ⚠️ 只设 maximumHeight 没用：进度区是 stretch=1，会把剩余高度全抢走，
-        # 日志区实际被压到约 55px（真机抓图量到），三条折行日志仍被顶掉一条。
-        # 给一个最小高度保底，三条常见折行日志（约 70px）能完整显示。
-        self._log_scroll.setMinimumHeight(LOG_PANEL_MIN_HEIGHT)
-        layout.addWidget(self._log_scroll)
-
-
-    def set_running(self, running: bool, *, outcome: str = "已完成") -> None:
-        self._state.setText("进行中" if running else outcome)
-        self._state.setObjectName("statePill" if running else "statePillIdle")
-        self.setStyleSheet(_PANEL_QSS)
-
-    def refresh_countdown(self) -> None:
-        """重读倒计时那一行（跑完一轮 / 用户展开面板时各刷一次）。
-
-        ⚠️ 只在创建时读一次是不够的：`countdown_text()` 读的是
-        ``side_story_countdown.json``，而那个文件是**这一轮跑完**才写的 —— 面板对象
-        却比它活得久（`FloatingRunner` 全程复用同一个面板）。不重读，用户看到的
-        永远是上一次启动时那行旧数。文件读不到时它自己返回「还没读过」，不抛错。
-        """
-
-        self._countdown.setText(countdown_text())
-
-    def set_progress(self, items: Sequence[RouteProgress]) -> None:
-        self._items = tuple(items)
-        active = next((item.label for item in self._items if item.status == RUNNING), "")
-        self._active_route.setText(active)
-        self._active_route.setVisible(bool(active))
-        self._rebuild_progress()
-
-    def _rebuild_progress(self) -> None:
-        while self._progress_grid.count():
-            child = self._progress_grid.takeAt(0)
-            widget = child.widget()
-            if widget is not None:
-                # ⚠️ 光 deleteLater 不够：它是**延迟**释放，旧行会原地继续绘制到事件
-                # 循环处理删除为止 —— 连续两次 set_progress（开始任务时先建一次、
-                # 展开后按真实宽度重建一次）就会看到新旧两行叠在一起（2026-11-14 抓图）。
-                # 用 hide() 立刻停画；**别用 setParent(None)**：那会触发父布局连锁重排，
-                # 实测把刚建好的新行一起挤没了（同一次抓图里进度区整个空白）。
-                widget.hide()
-                widget.deleteLater()
-        count = len(self._items)
-        columns = 2 if count > PROGRESS_COLUMN_THRESHOLD else 1
-        rows = max(1, (count + columns - 1) // columns)
-        # 窄条里两列各约 150px：路线名超长要省略，状态字留固定宽，
-        # 否则右列那几个「待跑」会被面板边缘裁掉（真机抓图抓到过）。
-        column_width = max(100, (max(120, self._progress_host.width()) - 8) // columns)
-        name_width = max(48, column_width - 78)
-        metrics = QFontMetrics(self.font())
-        for index, item in enumerate(self._items):
-            row = index % rows
-            column = index // rows
-            self._progress_grid.addWidget(
-                _progress_row(self._progress_host, item, name_width, metrics),
-                row,
-                column,
+    def set_presentation(self, progress: RunProgress, outcome: str, notice: str = "") -> None:
+        self._outcome = outcome
+        palette = _PALETTES.get(STOPPED if outcome == STOPPING else outcome, _DEFAULT_PALETTE)
+        rim, accent, title, bar, highlight = palette
+        if palette != self._palette:
+            self._palette = palette
+            paths = _PLAQUE_ART.format(rim=rim, accent=accent)
+            self._plaque = _svg("0 0 126 93", paths)
+            self._title.setStyleSheet(f"color: {title}; font-size: 12px; font-weight: 700;")
+            self._percent.setStyleSheet(f"color: {title}; font-size: 11px; font-weight: 700;")
+            self._bar.setStyleSheet(
+                "QProgressBar { background: #101e34; border: 1px solid #7199bc; "
+                "border-radius: 3px; padding: 1px; } "
+                f"QProgressBar::chunk {{ background: {bar}; border-top: 1px solid {highlight}; }}"
             )
 
-    def resizeEvent(self, event) -> None:  # noqa: N802 —— Qt 回调名
-        super().resizeEvent(event)
-        if self._items:
-            self._rebuild_progress()
+        if progress.active_mode:
+            self._route_mode = progress.active_mode
+        elif not progress.total_count:
+            self._route_mode = "pending"
+        self._icon.setProperty("routeMode", self._route_mode)
+        self._icon.setPixmap(
+            brand.icon_pixmap(self._route_mode, 22, device_pixel_ratio=self.devicePixelRatioF())
+        )
+        line = notice or (progress.active_label if outcome == RUNNING else "") or OUTCOME_LABELS[outcome]
+        self._title.setAccessibleName(line)
+        self._title.setToolTip(notice)
+        self._icon.setVisible(not notice)
+        icon_width = 0 if notice else 26
+        line = self._title.fontMetrics().elidedText(line, Qt.ElideLeft if notice else Qt.ElideRight, 108 - icon_width)
+        label_width = self._title.fontMetrics().horizontalAdvance(line)
+        x = (STRIP_WIDTH - icon_width - label_width) // 2
+        self._icon.move(x, 76)
+        self._title.setGeometry(x + icon_width, 76, label_width + 2, 22)
+        self._title.setText(line)
+        count, total = progress.processed_count, progress.total_count
+        percent = round(count * 100 / total) if total else 0
+        self._percent.setText(f"{percent}%")
+        self._bar.setValue(percent)
+        self._bubble.stop_button.setEnabled(outcome == RUNNING)
+        self.update()
 
-    def set_log_lines(self, lines: Sequence[str]) -> None:
-        recent = list(lines)[-LOG_LINES:]
-        recent.extend([""] * (LOG_LINES - len(recent)))
-        # 折行交给 QLabel.setWordWrap（在构建时已开启）：窄条宽度不够时换行显示全文，
-        # 不用 elidedText 截断 —— 否则最新一条只看到半句话，看不出在做什么、有没有问题。
-        for label, line in zip(self._log_labels, recent, strict=True):
-            label.setText(line)
-            label.setVisible(bool(line))
-        # 只有内容真的超出可视区时才滚到底。原来无条件滚到底，会把折行后
-        # 刚好超出 96px 的最上面那条顶出视口，看起来「三行只剩两行」。
-        # 日志区已加大；装得下时保持顶部，三条全文都能直接读到。
-        self._log_host.adjustSize()
-        scrollbar = self._log_scroll.verticalScrollBar()
-        if scrollbar.maximum() > 0:
-            scrollbar.setValue(scrollbar.maximum())
+    def set_log_lines(self, lines: Iterable[str]) -> None:
+        self._log_bubble.set_lines(lines)
 
-    def _on_todo_edited(self) -> None:
-        # 只有点「收起」才收：用户抱怨「还没写完就自己收起来」，
-        # 所以这里刻意不做任何定时收回。
-        self.todos_changed.emit(tuple(editor.text() for editor in self._todos))
+    def _show_actions(self) -> None:
+        if self._press is None and self.isVisible():
+            self._close_timer.stop()
+            plaque = self.frameGeometry()
+            screen = QApplication.screenAt(plaque.center()) or self.screen()
+            area = screen.availableGeometry()
+            opened = self._bubble.open_at(plaque, area)
+            overhang = self._overhang.frameGeometry() if self._overhang.isVisible() else QRect()
+            self._log_bubble.open_at(plaque, overhang, self._bubble.frameGeometry(), area)
+            if opened and brand.motion_enabled():
+                self._hover_motion.start()
 
+    def _dismiss_when_clear(self) -> None:
+        if not self._bubble.isVisible():
+            return
+        pointer = QCursor.pos()
+        # The expanded edges cover the gaps between the plaque and the tails.
+        if any(
+            widget.isVisible() and widget.frameGeometry().adjusted(-8, -8, 8, 8).contains(pointer)
+            for widget in (self, self._bubble, self._log_bubble, self._overhang)
+        ):
+            self._close_timer.start()
+        else:
+            self._dismiss_bubbles()
 
-def _divider(parent: QWidget) -> QLabel:
-    line = QLabel("", parent)
-    line.setObjectName("divider")
-    line.setFixedHeight(1)
-    return line
+    def _dismiss_bubbles(self, *, immediate: bool = False) -> None:
+        self._bubble.dismiss(immediate=immediate)
+        self._log_bubble.dismiss(immediate=immediate)
 
+    def _animate_mascot(self, value: float) -> None:
+        step = min(5, int(value * 550 / 68))
+        top = _ART_TOP + (0, -3, -_ART_LIFT, -2, 1, 0)[step]
+        self._mascot.move(_ART_X, top)
+        self._overhang.set_sprite_top(top)
+        self.update()
 
-def _legend(parent: QWidget) -> QHBoxLayout:
-    row = QHBoxLayout()
-    for status in (DONE, RUNNING, PENDING):
-        dot = QLabel("", parent)
-        dot.setObjectName(f"dot{status.title()}")
-        dot.setFixedSize(14, 14)
-        dot.setAlignment(Qt.AlignCenter)
-        text = QLabel(STATUS_LABELS[status], parent)
-        text.setObjectName("legendText")
-        row.addWidget(dot)
-        row.addWidget(text)
-        row.addSpacing(10)
-    row.addStretch(1)
-    return row
+    def _place_overhang(self) -> None:
+        bounds = self.frameGeometry()
+        screen = QApplication.screenAt(bounds.center()) or self.screen()
+        height = min(-_ART_TOP + _ART_LIFT, bounds.top() - screen.availableGeometry().top())
+        if height <= 0:
+            self._overhang.hide()
+            return
+        self._overhang.setGeometry(bounds.x() + _ART_X, bounds.y() - height, _ART_SIZE, height)
+        self._overhang.show()
 
+    def paintEvent(self, event) -> None:  # noqa: N802
+        painter = QPainter(self)
+        self._plaque.render(painter, QRectF(0, 32, self.width(), 99))
+        if self._outcome == RUNNING and self._hover_motion.state() == QVariantAnimation.Running:
+            phase = self._hover_motion.currentTime() / self._hover_motion.duration()
+            painter.setOpacity(min(phase / .35, 1, (1 - phase) / .25))
+            x = 11 if self._bubble._left else self.width() - 23
+            self._spark.render(painter, QRectF(x, 5 - phase * 3, 12, 12))
 
-def _progress_row(
-    parent: QWidget,
-    item: RouteProgress,
-    name_width: int,
-    metrics: QFontMetrics,
-) -> QWidget:
-    row = QWidget(parent)
-    row.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-    layout = QHBoxLayout(row)
-    layout.setContentsMargins(0, 0, 0, 0)
-    layout.setSpacing(6)
-    dot = QLabel("", row)
-    dot.setObjectName(
-        {"done": "dotDone", "running": "dotRunning", "pending": "dotPending"}[item.status]
-    )
-    dot.setFixedSize(14, 14)
-    dot.setAlignment(Qt.AlignCenter)
-    name = QLabel(metrics.elidedText(item.label, Qt.ElideRight, name_width), row)
-    state = QLabel(STATUS_LABELS[item.status], row)
-    state.setFixedWidth(40)
-    state.setObjectName(
-        {"done": "statusDone", "running": "statusRunning", "pending": "statusPending"}[
-            item.status
-        ]
-    )
-    layout.addWidget(dot)
-    layout.addWidget(name, 1)
-    layout.addWidget(state)
-    return row
+    def enterEvent(self, event) -> None:  # noqa: N802
+        self._show_actions()
+        super().enterEvent(event)
+
+    def leaveEvent(self, event) -> None:  # noqa: N802
+        if self._bubble.isVisible():
+            self._close_timer.start()
+        super().leaveEvent(event)
+
+    def showEvent(self, event) -> None:  # noqa: N802
+        self._place_overhang()
+        super().showEvent(event)
+
+    def moveEvent(self, event) -> None:  # noqa: N802
+        if self.isVisible():
+            self._place_overhang()
+        super().moveEvent(event)
+
+    def hideEvent(self, event) -> None:  # noqa: N802
+        self._dismiss_bubbles(immediate=True)
+        self._overhang.hide()
+        self._close_timer.stop()
+        self._hover_motion.stop()
+        self._animate_mascot(1.0)
+        super().hideEvent(event)
+
+    def mousePressEvent(self, event) -> None:  # noqa: N802
+        if event.button() != Qt.LeftButton:
+            super().mousePressEvent(event)
+            return
+        self._press = event.globalPosition().toPoint()
+        self._offset = self._press - self.pos()
+        self._dragged = False
+        event.accept()
+
+    def mouseMoveEvent(self, event) -> None:  # noqa: N802
+        if self._press is None:
+            self._show_actions()
+            super().mouseMoveEvent(event)
+            return
+        point = event.globalPosition().toPoint()
+        if not self._dragged and (point - self._press).manhattanLength() >= QApplication.startDragDistance():
+            self._dragged = True
+            self._dismiss_bubbles(immediate=True)
+            self._close_timer.stop()
+            self._hover_motion.stop()
+            self._animate_mascot(1.0)
+        if self._dragged:
+            self.drag_moved.emit(point - self._offset, point)
+        event.accept()
+
+    def mouseReleaseEvent(self, event) -> None:  # noqa: N802
+        if event.button() != Qt.LeftButton or self._press is None:
+            super().mouseReleaseEvent(event)
+            return
+        self._press = None
+        if self._dragged:
+            self.drag_finished.emit()
+        if self.rect().contains(event.position().toPoint()):
+            self._show_actions()
+        event.accept()
 
 
 class FloatingRunner(QObject):
-    """把球、窄条、进度状态机串起来；主窗口的显示/隐藏由调用方决定。"""
+    """Own the shared run presentation and companion placement."""
 
-    todos_changed = Signal(object)
+    presentation_changed = Signal()
+    stop_clicked = Signal()
     open_main_requested = Signal()
-    ball_moved = Signal(object)
+    position_changed = Signal(object)
 
     def __init__(
         self,
-        todos: Sequence[str],
-        ball_pos: tuple[int, int] | None = None,
-        parent: QObject | None = None,
+        position: tuple[int, int] | None = None,
+        *,
+        animation: ArkyAnimation | None = None,
     ) -> None:
-        super().__init__(parent)
-        self._progress = RunProgress(())
-        self._log_lines: list[str] = []
-        self._ball_pos = tuple(ball_pos) if ball_pos else None
-        self.ball = FloatingBall()
-        self.panel = RunPanel(todos)
-        self.ball.clicked.connect(self.expand)
-        self.ball.drag_finished.connect(self._remember_ball_pos)
-        self.panel.collapse_requested.connect(self.collapse)
+        super().__init__()
+        self.animation = animation if animation is not None else ArkyAnimation(self)
+        self.panel = RunPanel(self.animation)
         self.panel.open_main_requested.connect(self.open_main_requested.emit)
-        self.panel.todos_changed.connect(self.todos_changed.emit)
+        self.panel.stop_clicked.connect(self.stop_clicked.emit)
+        self.panel.drag_moved.connect(self._move_on_drag)
+        self.panel.drag_finished.connect(self._remember_position)
+        self._position = position
+        self._progress = RunProgress(())
+        self._log_lines: deque[str] = deque(maxlen=_LOG_ROWS)
+        self._outcome = IDLE
+        self._notice = ""
+        self._refresh()
+
+    @property
+    def progress(self) -> RunProgress:
+        return self._progress
+
+    @property
+    def outcome(self) -> str:
+        return self._outcome
+
+    @property
+    def status_text(self) -> str:
+        if self._notice:
+            return self._notice
+        if self.outcome == RUNNING:
+            if self.progress.active_label:
+                return f"执行中 · {self.progress.active_label}"
+            return "正在确认运行结果"
+        return OUTCOME_LABELS[self.outcome]
 
     def start_run(self, routes: Sequence[tuple[str, str]]) -> None:
         self._progress = RunProgress(routes)
-        self._log_lines = []
-        self.panel.set_running(True)
-        self.panel.mascot.set_phase("launch")
-        self.panel.set_progress(self._progress.items)
-        self.panel.set_log_lines(())
-        self.panel.hide()
-        self._place_ball()
-        self.ball.set_running(True)
-        self.ball.show()
-
-    def show_ball(self) -> None:
-        """从主界面回到球：球一直在原地，面板保持收起。"""
-        self.panel.hide()
-        self.ball.show()
-
-    def expand(self) -> None:
-        self.ball.hide()
-        self._place_panel_near_ball()
-        # 展开前先刷一遍倒计时：这一轮可能刚把它写新（面板比那个文件活得久）。
-        self.panel.refresh_countdown()
-        self.panel.show()
-        # 展开后才有真实宽度：按两列的实际列宽重排一次，名字该省略就省略。
-        self.panel.set_progress(self._progress.items)
+        self._log_lines.clear()
         self.panel.set_log_lines(self._log_lines)
-
-    def collapse(self) -> None:
-        self.panel.hide()
-        self.ball.show()
+        self._notice = ""
+        self.animation.set_state(IDLE)
+        self._outcome = RUNNING if routes else IDLE
+        self._refresh()
 
     def note_line(self, line: str) -> None:
-        before = self._progress.items
-        active_route = self._progress.active_label
         self._progress.note_line(line)
-        after = self._progress.items
-        if after != before:
-            self.panel.set_progress(after)
-        active_changed = self._progress.active_label != active_route
-        if (
-            active_changed
-            and self.panel.mascot.phase != "stopped"
-            and any(item.status == RUNNING for item in after)
-        ):
-            self.panel.mascot.set_phase("handoff")
-        self._log_lines.append(line)
-        self._log_lines = self._log_lines[-LOG_LINES:]
+        self._refresh()
+
+    def append_log(self, line: str) -> None:
+        for received in line.splitlines():
+            received = received.strip()
+            if not received:
+                continue
+            timestamped = _LOG_TIMESTAMP.match(received)
+            if timestamped:
+                stamp, message = timestamped.groups()
+            else:
+                stamp, message = QTime.currentTime().toString("HH:mm:ss"), received
+            self._log_lines.append(f"{stamp}  {message}")
         self.panel.set_log_lines(self._log_lines)
 
     def finish(self, exit_code: int | None = 0) -> None:
-        succeeded = exit_code == 0
-        self._progress.finish(complete_current=succeeded)
-        self.panel.set_progress(self._progress.items)
-        outcome = "已完成" if succeeded else "已停止" if exit_code == 130 else "失败"
-        self.panel.set_running(False, outcome=outcome)
-        self.panel.mascot.set_phase("complete" if succeeded else "stopped")
-        # 这一轮刚跑完：收尾巡检可能刚把倒计时写新，趁现在同步那一行。
-        self.panel.refresh_countdown()
-        self.ball.set_running(False, outcome=outcome)
+        stopped = self.outcome in {STOPPING, STOPPED} or exit_code == 130
+        self._progress.finish(complete_current=not stopped and exit_code == 0)
+        self._outcome = STOPPED if stopped else self._progress.outcome(exit_code)
+        self._refresh()
 
     def stop_requested(self) -> None:
-        self.panel.mascot.set_phase("stopped")
-        self.panel.set_running(False, outcome="正在安全停止")
-        self.ball.set_running(False, outcome="正在安全停止")
+        if self.outcome == RUNNING:
+            self._outcome = STOPPING
+            self._refresh()
+
+    def set_status_notice(self, text: str) -> None:
+        self._notice = text
+        self._refresh()
+
+    def show_strip(self) -> None:
+        position = QPoint(*self._position) if self._position is not None else None
+        screen = None
+        if position is not None:
+            center = position + QPoint(STRIP_WIDTH // 2, STRIP_HEIGHT // 2)
+            screen = QApplication.screenAt(center) or QApplication.screenAt(position)
+        self._place(position, screen or QApplication.primaryScreen())
+        if self._position is not None and self.panel.pos().toTuple() != self._position:
+            self._remember_position()
+        self.panel.show()
 
     def hide_all(self) -> None:
         self.panel.hide()
-        self.ball.hide_all()
 
-    def _remember_ball_pos(self) -> None:
-        pos = self.ball.pos()
-        self._ball_pos = (pos.x(), pos.y())
-        self.ball_moved.emit(self._ball_pos)
+    def _refresh(self) -> None:
+        animation_state = {
+            RUNNING: RUNNING,
+            SUCCESS: SUCCESS,
+            FAILURE: FAILURE,
+            STOPPING: STOPPED,
+            STOPPED: STOPPED,
+        }.get(self.outcome, IDLE)
+        self.animation.set_state(animation_state)
+        self.panel.set_presentation(self.progress, self.outcome, self._notice)
+        self.presentation_changed.emit()
 
-    def _available(self) -> QScreen | None:
-        """球落在哪块屏就用哪块屏的可用区域；找不到就退回主屏。"""
-        screen = QApplication.screenAt(self.ball.pos()) or QApplication.primaryScreen()
-        return screen
+    def _move_on_drag(self, position: QPoint, pointer: QPoint) -> None:
+        screen = QApplication.screenAt(pointer) or self.panel.screen()
+        self._place(position, screen)
 
-    def _place_ball(self) -> None:
-        """没拖过就放右上角；拖过就回到上次的位置。定位走 Qt 逻辑坐标。"""
-        available = self._available()
-        if self._ball_pos is not None:
-            self.ball.move(*self._ball_pos)
+    def _place(self, position: QPoint | None, screen: QScreen | None) -> None:
+        if screen is None:
             return
-        if available is None:
-            return
-        area = available.availableGeometry()
-        self.ball.move(
-            area.right() - BALL_SIZE - EDGE_GAP,
-            area.top() + EDGE_GAP,
-        )
-
-    def _place_panel_near_ball(self) -> None:
-        """贴着球展开，并**强制夹回屏幕内** —— 任何一边都不许露到屏幕外。
-
-        球在右半屏时面板向左展开（右边缘对齐球右缘），在左半屏时向右展开；
-        下面放不下就往上收。之前按「屏幕右上角」算，球被拖走后就会跑出屏幕。
-        """
-        anchor = self.ball.pos()
-        screen = self._available()
-        area = screen.availableGeometry() if screen is not None else None
-        width = PANEL_MIN_WIDTH
-        height = 400
-        if area is not None:
-            width = min(PANEL_MAX_WIDTH, max(PANEL_MIN_WIDTH, int(area.width() / 6)))
-            height = min(PANEL_MAX_HEIGHT, int(area.height() * PANEL_HEIGHT_RATIO))
-        self.panel.resize(width, height)
-        if area is None:
-            self.panel.move(anchor.x() + BALL_SIZE - width, anchor.y())
-            return
-        if anchor.x() > area.center().x():
-            x = anchor.x() + BALL_SIZE - width
-        else:
-            x = anchor.x()
-        y = anchor.y()
-        x = max(area.left() + EDGE_GAP, min(x, area.right() - width - EDGE_GAP))
-        y = max(area.top() + EDGE_GAP, min(y, area.bottom() - height - EDGE_GAP))
+        area = screen.availableGeometry()
+        max_x = max(area.left(), area.right() - self.panel.width() + 1)
+        max_y = max(area.top(), area.bottom() - self.panel.height() + 1)
+        if position is None:
+            position = QPoint(max_x - _RIGHT_GAP, max_y - _BOTTOM_GAP)
+        x = max(area.left(), min(position.x(), max_x))
+        y = max(area.top(), min(position.y(), max_y))
         self.panel.move(x, y)
+
+    def _remember_position(self) -> None:
+        self._position = self.panel.pos().toTuple()
+        self.position_changed.emit(self._position)

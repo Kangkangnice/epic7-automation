@@ -39,6 +39,7 @@ from auto_game_unified.games.epic7.unknown_screen import UnrecognizedScreen
 
 
 DEFAULT_CYCLES = 10
+ROUTE_LABEL = "企鹅购买"
 PENGUINS_PER_CYCLE = 50
 # 「最多」是幂等按钮，但补点后仍不到 50/50 不许无限重试。
 _MAX_RETRIES = 3
@@ -259,7 +260,7 @@ class PenguinPurchaseStateMachine(PenguinPurchaseMachine):
         match = self._locate(screen, name)
         if match is None:
             raise UnrecognizedScreen(
-                f"企鹅批量购买画面里找不到锚点 {name}；为避免点到不知名的位置，已安全停止"
+                f"{ROUTE_LABEL}画面里找不到锚点 {name}；为避免点到不知名的位置，已安全停止"
             )
         return match
 
@@ -316,7 +317,7 @@ class PenguinPurchaseStateMachine(PenguinPurchaseMachine):
             self.state = PenguinPage.UNKNOWN
             self._confirmed_page = ""
             raise UnrecognizedScreen(
-                "企鹅批量购买画面未识别；未登记页面已安全停止并留证，不猜测坐标"
+                f"{ROUTE_LABEL}画面未识别；未登记页面已安全停止并留证，不猜测坐标"
             )
         self.state = page
         self._confirmed_page = page.value
@@ -342,7 +343,7 @@ class PenguinPurchaseStateMachine(PenguinPurchaseMachine):
         name = decision.name
         if name.startswith("stop-"):
             self.mark_issued(name)
-            raise UnrecognizedScreen(f"企鹅批量购买已安全停止：{decision.reason}")
+            raise UnrecognizedScreen(f"{ROUTE_LABEL}已安全停止：{decision.reason}")
         if name == "navigate-sanctuary":
             raise UnrecognizedScreen(
                 "站在大厅，导航尚未把画面送到圣域主页；已安全停止并留证"
@@ -454,7 +455,7 @@ def detect_resume_point(
 class PenguinPurchaseRunner(ModeRunnerBase):
     """企鹅批量购买 Runner。主循环协议见 ``ModeRunnerBase``。"""
 
-    _MODE_LABEL = "企鹅批量购买"
+    _MODE_LABEL = ROUTE_LABEL
     _REQUIRE_TRANSITION_CONTRACT = True
     _TIMEOUT_SECONDS = {page: 45 for page in PenguinPage}
     _BATTLE_ENTRY_ACTION = None

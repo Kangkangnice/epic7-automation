@@ -3,6 +3,7 @@ import os
 import sys
 import threading
 from pathlib import Path
+from zipfile import ZipFile
 
 import pytest
 
@@ -632,6 +633,9 @@ def test_a_failed_run_exports_a_report_and_notifies_the_ui(tmp_path: Path):
     assert reports[0].exit_code == 1
     assert Path(reports[0].message).is_file()
     assert Path(reports[0].message).parent.name == "reports"
+    with ZipFile(reports[0].message) as archive:
+        name = next(name for name in archive.namelist() if name.endswith("/desktop_worker.log"))
+        assert "事件=结束 PID=4321 退出码=1" in archive.read(name).decode()
 
 
 @pytest.mark.parametrize("exit_code", [0, 2, 130])

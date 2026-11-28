@@ -30,6 +30,7 @@ from auto_game_unified.desktop import preflight
 class CheckResult:
     backend: str
     status: str
+    ok: bool
     message: str
 
 
@@ -50,8 +51,12 @@ def run_check(backend: str) -> CheckResult:
     try:
         report = preflight.run_preflight(window_backend=backend)
     except Exception as error:  # 窗口没开、游戏没启动，都会走到这里
-        return CheckResult(backend, "ERROR", f"{type(error).__name__}: {error}")
-    return CheckResult(backend, str(report.status), report.message)
+        return CheckResult(backend, "错误", False, f"{type(error).__name__}: {error}")
+    # ⚠️ 判定只认 ``report.can_start``，**不要**拿字符串前缀去猜：
+    # ``PreflightStatus`` 是 ``str, Enum``，``str(成员)`` 给的是
+    # ``"PreflightStatus.PASS"``，按「以 OK 开头」判会把通过的检查一律标成 FAIL ——
+    # 表现成「模拟器那一行写 FAIL 但状态是 PASS」「结论永远说两个后端都没就绪」。
+    return CheckResult(backend, report.status.value, report.can_start, report.message)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -72,13 +77,13 @@ def main(argv: list[str] | None = None) -> int:
     results = [run_check(name) for name in backends]
 
     for result in results:
-        mark = "OK  " if result.status.upper().startswith("OK") else "FAIL"
+        mark = "OK  " if result.ok else "FAIL"
         print(f"【{result.backend}】{mark} {result.status}: {result.message}")
 
     print()
-    usable = [r for r in results if r.status.upper().startswith("OK")]
+    usable = [r for r in results if r.ok]
     if not usable:
-        print("结论：两个后端都还没就绪。先把游戏/模拟器开到目标页面，再跑一次。")
+        print("结论：没有可用的后端。先把游戏/模拟器开到目标页面，再跑一次。")
         return 1
 
     names = "、".join(r.backend for r in usable)
@@ -90,7 +95,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 0
 
-    print(f"结论：{names} 就绪，可以跑实机了。具体命令见 docs/maintenance/live_verification.md")
+    print(f"结论：{names} 就绪，可以跑实机了。具体命令见 docs/howto/live_verification.md")
     return 0
 
 

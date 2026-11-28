@@ -29,6 +29,10 @@ class RouteOption:
     minimum: int = 0
     maximum: int = 0
     depends_on: tuple[str, str] | None = None
+    # 界面可见条件：只有另一个选项等于指定值时才显示这一行。
+    # 只影响界面呈现，不参与 clean() 的取值清洗 —— 隐藏时保留用户上次的选择，
+    # 切回去还是原来的设置。
+    visible_when: tuple[str, str] | None = None
 
 
 _STAMINA_OPTIONS = (
@@ -55,6 +59,50 @@ _STAMINA_OPTIONS = (
 
 ROUTE_OPTIONS: dict[str, tuple[RouteOption, ...]] = {
     "arena": (
+        # 2026-11-28 用户拍板：刷新/旗帜这四项移到最前，且 NPC 对战下也保留。
+        # 它们只影响开战前的准备，与选玩家/NPC 对手无关；后面四项才是玩家对战专属。
+        RouteOption(
+            key="refresh_mode",
+            label="刷新对手方式",
+            kind="choice",
+            default="free",
+            note="仅等待免费刷新。金币刷新暂不支持：报价与确认回执素材缺失，开启后按证据不足安全停止。刷新会中断连胜。",
+            choices=(
+                ("free", "仅等待免费刷新"),
+                ("gold", "允许金币刷新（暂不支持）"),
+            ),
+        ),
+        RouteOption(
+            key="max_gold_refreshes",
+            label="金币刷新次数上限",
+            kind="count",
+            default=0,
+            minimum=0,
+            maximum=30,
+            note="一次运行内使用金币刷新的次数。游戏每日另有 30 次上限。",
+            depends_on=("refresh_mode", "gold"),
+        ),
+        RouteOption(
+            key="ticket_mode",
+            label="旗帜补充方式",
+            kind="choice",
+            default="friendship",
+            note="仅使用友情点购买。天空石购旗暂不支持：模拟器与 PC 的报价选中态素材均缺失，开启后按证据不足安全停止。友情点每日仅可购买一次。",
+            choices=(
+                ("friendship", "仅友情点购买"),
+                ("skystone", "允许天空石购买（暂不支持）"),
+            ),
+        ),
+        RouteOption(
+            key="max_skystone_purchases",
+            label="天空石购旗次数上限",
+            kind="count",
+            default=0,
+            minimum=0,
+            maximum=10,
+            note="一次运行内使用天空石购买旗帜的次数。",
+            depends_on=("ticket_mode", "skystone"),
+        ),
         RouteOption(
             key="weekly_reward",
             label="周结算奖励",
@@ -83,6 +131,7 @@ ROUTE_OPTIONS: dict[str, tuple[RouteOption, ...]] = {
             kind="choice",
             default="none",
             note="按积分高低在可挑战的对手里挑选。积分读不出时不启用。",
+            visible_when=("opponent_source", "player"),
             choices=(
                 ("none", "不指定"),
                 ("highest", "优先积分最高"),
@@ -95,6 +144,7 @@ ROUTE_OPTIONS: dict[str, tuple[RouteOption, ...]] = {
             kind="roster",
             default=(),
             note="对手队伍里出现这些英雄时跳过该场。勾入这份名单的英雄会自动从另一份移出。",
+            visible_when=("opponent_source", "player"),
         ),
         RouteOption(
             key="hero_whitelist",
@@ -102,6 +152,7 @@ ROUTE_OPTIONS: dict[str, tuple[RouteOption, ...]] = {
             kind="roster",
             default=(),
             note="含这些英雄的对手优先开战；一个都没有出现时按常规挑选，不是只打这些。勾入这份名单的英雄会自动从另一份移出。",
+            visible_when=("opponent_source", "player"),
         ),
         RouteOption(
             key="hero_list_conflict",
@@ -109,52 +160,11 @@ ROUTE_OPTIONS: dict[str, tuple[RouteOption, ...]] = {
             kind="choice",
             default="blacklist",
             note="同一支队伍里避战名单与优先名单都命中时如何处置；只命中其中一份时，按该份名单处理。",
+            visible_when=("opponent_source", "player"),
             choices=(
                 ("blacklist", "按避战名单处理（跳过）"),
                 ("whitelist", "按优先名单处理（优先开战）"),
             ),
-        ),
-        RouteOption(
-            key="refresh_mode",
-            label="刷新对手方式",
-            kind="choice",
-            default="free",
-            note="仅等待免费刷新，或允许使用金币刷新。刷新会中断连胜。",
-            choices=(
-                ("free", "仅等待免费刷新"),
-                ("gold", "允许金币刷新"),
-            ),
-        ),
-        RouteOption(
-            key="max_gold_refreshes",
-            label="金币刷新次数上限",
-            kind="count",
-            default=0,
-            minimum=0,
-            maximum=30,
-            note="一次运行内使用金币刷新的次数。游戏每日另有 30 次上限。",
-            depends_on=("refresh_mode", "gold"),
-        ),
-        RouteOption(
-            key="ticket_mode",
-            label="旗帜补充方式",
-            kind="choice",
-            default="friendship",
-            note="仅使用友情点购买，或允许使用天空石购买。友情点每日仅可购买一次。",
-            choices=(
-                ("friendship", "仅友情点购买"),
-                ("skystone", "允许天空石购买"),
-            ),
-        ),
-        RouteOption(
-            key="max_skystone_purchases",
-            label="天空石购旗次数上限",
-            kind="count",
-            default=0,
-            minimum=0,
-            maximum=10,
-            note="一次运行内使用天空石购买旗帜的次数。",
-            depends_on=("ticket_mode", "skystone"),
         ),
     ),
     # 2026-11-22 用户拍板：删掉「无后续关卡时重复同一关」这个选项。

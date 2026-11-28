@@ -19,6 +19,7 @@ from auto_game_unified.core.pc_window import (
 )
 from auto_game_unified.desktop.catalog import route_by_name
 from auto_game_unified.desktop.controller import DesktopController
+from auto_game_unified.desktop.session import SessionState
 from auto_game_unified.desktop.worker import WorkerController
 
 
@@ -93,12 +94,15 @@ class DesktopControllerTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.controller.set_cycles("story", 0)
 
-    def test_pc_input_mode_switch_rejects_unknown_values(self) -> None:
-        c = self.controller
-        c.select_pc_input_mode(PC_INPUT_FOREGROUND)
-        self.assertEqual(c.pc_input_mode, PC_INPUT_FOREGROUND)
-        with self.assertRaises(ValueError):
-            c.select_pc_input_mode("whatever")
+    def test_pc_launch_uses_background_even_with_a_legacy_foreground_session(self) -> None:
+        worker = _RecordingWorker()
+        controller = DesktopController(worker=worker)
+        controller.apply_session(SessionState(
+            backend="pc", selection=("arena",), pc_input_mode=PC_INPUT_FOREGROUND,
+        ))
+        controller.preflight_report = SimpleNamespace(can_start=True)
+        controller.start()
+        self.assertEqual(worker.requests[0].pc_input_mode, PC_INPUT_BACKGROUND)
 
     def test_emulator_skips_only_pc_only_routes_and_runs_the_rest(self) -> None:
         """新路线只影响它自己：模拟器下补星缺图，老路线必须照常跑。"""
@@ -132,6 +136,21 @@ class DesktopControllerTest(unittest.TestCase):
 
         self.assertEqual(worker.requests[0].modes, ("story",))
         self.assertIn("远征", worker.notices[0])
+
+    def test_pc_cannot_restore_or_select_the_emulator_only_community_route(self) -> None:
+        c = self.controller
+        c.toggle("arena", True)
+        c.toggle("community", True)
+        c.select_backend("pc")
+        self.assertEqual(c.selection, ["arena"])
+        c.toggle("community", True)
+        c.select_group(route_by_name("community").group)
+        self.assertNotIn("community", c.selection)
+        c.apply_session(SessionState(backend="pc", selection=("community", "arena")))
+        self.assertEqual(c.plan(), (("arena", route_by_name("arena").default_cycles),))
+        c.select_backend("emulator")
+        c.toggle("community", True)
+        self.assertEqual(c.selection, ["arena", "community"])
 
     def test_all_unsupported_routes_still_raise_instead_of_silently_doing_nothing(self) -> None:
         worker = _RecordingWorker()

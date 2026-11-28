@@ -33,8 +33,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Mapping, Optional
 
-from auto_game_unified.core.countdown import moonlight_suffix
-from auto_game_unified.core.runtime import ManualStop
+from auto_game_unified.core.countdown import ENDED_NOTE, ENDED_PREFIX, moonlight_suffix
+from auto_game_unified.core.failure_history import freeze_before_retry, retry_recovered
+from auto_game_unified.core.runtime import ManualStop, PurchaseReceiptUnclear, Runtime
 from auto_game_unified.games.epic7.modes import (
     MODE_SPECS,
     PC_ONLY_ROUTES,
@@ -136,6 +137,12 @@ class DailyOutcome:
     outcome_summary: str | None = None
     note: str | None = None
     closeout_warning: str | None = None
+
+    def progress_line(self) -> str:
+        status = self.status
+        if self.closeout_warning and status in {"completed", "resource"}:
+            status = "awaiting_confirmation"
+        return f"每日任务进度：{self.mode} {status}"
 
     @property
     def ok(self) -> bool:
@@ -400,12 +407,16 @@ def ensure_at_lobby(
             runtime.log(f"模式={mode_label} 段间检查=已在首页 动作=跳过返回")
             return None
         runtime.log(f"模式={mode_label} 段间检查=不在首页 动作=受控返回大厅")
+        freeze_before_retry(runtime, "段间检查尝试返回大厅")
         if home_return is None:
             navigator.return_home()
         else:
             home_return()
+        retry_recovered(runtime, "段间检查尝试返回大厅")
         return None
     except Exception as error:  # noqa: BLE001 —— 契约要求绝不外抛
+        if isinstance(runtime, Runtime) and not isinstance(error, ManualStop):
+            runtime.record_failure(error)
         return f"{type(error).__name__}: {error}"
 
 
@@ -428,6 +439,7 @@ def run_daily_tasks(
     # 走一趟支线故事、把刷新倒计时读下来。**不跑游戏、不占次数的纯读**，
     # 失败绝不影响本轮结论（读不到就是"这次没读到"，不是"今天没做完"）。
     inspect: Optional[Callable[[], object]] = None,
+    on_outcome: Callable[[DailyOutcome], None] | None = None,
 ) -> DailyReport:
     """把 ``selected`` 里的路线**按它给的次序**逐条跑完，返回汇总。
 
@@ -449,6 +461,12 @@ def run_daily_tasks(
     """
     modes = normalize_selection(selected)
     report = DailyReport()
+
+    def record(outcome: DailyOutcome) -> None:
+        report.outcomes.append(outcome)
+        if on_outcome is not None:
+            on_outcome(outcome)
+
     # 段间检查只在实跑时才有意义（干跑不碰游戏、也没有 navigator）。
     probe_builder = build_probe if not dry_run else None
     probe: tuple[object, object] | None = None
@@ -479,7 +497,7 @@ def run_daily_tasks(
         # 直接跳过并记一笔，不让一条「素材还没做」的路线把整轮连打打断。
         # ⚠️ 记成 ``skipped`` 而不是失败：这不是故障，是素材边界（见 ``PC_ONLY_ROUTES``）。
         if window_backend != "pc" and mode in PC_ONLY_ROUTES:
-            report.outcomes.append(
+            record(
                 DailyOutcome(
                     mode=mode,
                     label=label,
@@ -505,7 +523,7 @@ def run_daily_tasks(
                 )
                 if failure is not None:
                     report.aborted_reason = f"{label} 之前无法回到首页（{failure}）"
-                    report.outcomes.append(
+                    record(
                         DailyOutcome(
                             mode=mode,
                             label=label,
@@ -530,7 +548,7 @@ def run_daily_tasks(
             # 用户按了 P：停下来的语义是「别跑了」，整轮到此为止，
             # 但**不改已经跑完那几条的结论**。
             report.stopped_by_user = True
-            report.outcomes.append(
+            record(
                 DailyOutcome(
                     mode=mode,
                     label=label,
@@ -540,8 +558,24 @@ def run_daily_tasks(
                 )
             )
             break
+        except PurchaseReceiptUnclear as error:
+            # 不可逆购买回执未明：弹窗与当前页就是对账现场。段间回大厅、后续路线、
+            # 收尾巡检都必须停手，否则会把现场抹掉（2026-11-26 二次验收退回项）。
+            # 记 failed + aborted_reason：后者同时让 _should_inspect 跳过巡检。
+            detail = f"{type(error).__name__}: {error}"
+            record(
+                DailyOutcome(
+                    mode=mode,
+                    label=label,
+                    status="failed",
+                    detail=detail,
+                    elapsed_seconds=_elapsed_since(segment_started),
+                )
+            )
+            report.aborted_reason = f"{label} 购买回执未明，保留对账现场，整轮到此为止"
+            break
         except Exception as error:  # noqa: BLE001 —— 单条失败不该带崩整轮
-            report.outcomes.append(
+            record(
                 DailyOutcome(
                     mode=mode,
                     label=label,
@@ -557,7 +591,7 @@ def run_daily_tasks(
         summary = getattr(result, "outcome_summary", None)
         note = getattr(result, "note", None)
         closeout_warning = getattr(result, "closeout_warning", None)
-        report.outcomes.append(
+        record(
             DailyOutcome(
                 mode=mode,
                 label=label,
@@ -624,6 +658,9 @@ def _run_inspect(
         report.account_seen = True
         report.account = str(payload.get("account", "") or "")
         report.account_rank = str(payload.get("rank", "") or "")
+    if isinstance(payload, dict) and payload.get("ended") is True:
+        # 本期已到期（左下角「开启其他支线故事」）：这是正常结果，不是没读到。
+        return f"{ENDED_PREFIX}{ENDED_NOTE}"
     if (
         isinstance(payload, dict)
         and isinstance(payload.get("days"), int)

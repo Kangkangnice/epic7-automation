@@ -405,6 +405,10 @@ class ProjectLayoutTests(unittest.TestCase):
             # 0.3796 / 0.6435 ⇒ 补了两张 `navigation/pc/knights_signin_*.png`。
             # 它借用本目录的 `_world_boss_screen` 读帧（同尺寸全屏帧，没必要再建一套）。
             "knights_signin_popup_pc_live_20261108.png",
+            # 2026-11-27：主页「可打 2/2」那一段（同页还有 0/2 与 1/2 两张）。
+            # 它给 `test_world_boss_runner` 的入场读数用：2/2 才允许进场，
+            # 0/2 必须判「今天打完了」。删掉它，那组用例会因为缺图直接变红。
+            "worldboss_home_2of2_live_20261127.png",
         }
         fixture_dir = ROOT / "tests" / "fixtures" / "epic7_world_boss"
         self.assertEqual(expected, {path.name for path in fixture_dir.glob("*.png")})
@@ -633,6 +637,15 @@ class ProjectLayoutTests(unittest.TestCase):
             # 2026-11-23：我的任务页·今日待签（签到日历那一格右上角有「领」角标），
             # 同时是 ``tasks_signin_claim`` 判据的正样本与「已签」态的反样本来源。
             "tasks_signin_todo_live_20261123.png",
+            # 2026-11-26：同一天实跑暴露的两张漂移现场帧。它们钉的是
+            # 「固定窗口没有位移容差 ⇒ 1~2px 偏移就把已知页判成陌生页」：
+            # 首页底栏图标偏 (1,2) 时 0.5659、帖子分享箭头偏 (1,2) 时 0.5123，
+            # 都低于阈 0.82；给这两颗锚点各加 4px 位移容差后分别是 0.9981 / 1.0000。
+            # 删掉它们，``test_shifted_feed_home_uses_anchor_padding_not_a_lower_threshold``
+            # 与 ``test_shifted_post_detail_and_redeem_receipt_keep_their_boundary``
+            # 会立刻变红（缺图即断言失败）。
+            "feed_home_shifted_live_20261126.png",
+            "post_detail_shifted_live_20261126.png",
         }
         fixture_dir = ROOT / "tests" / "fixtures" / "epic7_community"
         self.assertEqual(expected, {path.name for path in fixture_dir.glob("*.png")})

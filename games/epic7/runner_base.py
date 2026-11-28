@@ -22,9 +22,11 @@ from auto_game_unified.games.epic7.evidence.diagnostics import (
     save_runtime_evidence_diagnostic,
 )
 from auto_game_unified.core.recovery import RecoveryGate
+from auto_game_unified.core.failure_history import freeze_before_retry, retry_recovered
 from auto_game_unified.core.runtime import (
     EquipmentBagFull,
     ManualStop,
+    PurchaseReceiptUnclear,
     ResourceExhausted,
     Runtime,
 )
@@ -263,12 +265,17 @@ class ModeRunnerBase:
     def _transition_completed(
         self, previous_action: Any, current_action: Any, confirmed_page: str
     ) -> bool:
-        """判断上一个带目标契约的动作是否已看到目标证据。"""
-        if (
-            not confirmed_page
-            or confirmed_page not in getattr(previous_action, "target_pages", ())
-        ):
+        """判断上一个带目标契约的动作是否已看到目标证据。
+
+        ``advance_any``（推进型动作）只要求「认得出当前页面」：落到原页还是落到
+        下一阶段的页都算这一步结束。理由与代价见 ``RouteAction.advance_any`` ——
+        同一个点击在不同机器、不同角色站位下会落到不同页，固定名单必然有一边判不过。
+        """
+        if not confirmed_page:
             return False
+        if not getattr(previous_action, "advance_any", False):
+            if confirmed_page not in getattr(previous_action, "target_pages", ()):
+                return False
         return (
             current_action is None
             or current_action.name != previous_action.name
@@ -365,13 +372,41 @@ class ModeRunnerBase:
         self, action: Any, screen: Any, confirmed_page: str, diagnostic: Any
     ) -> None:
         """带目标契约的动作超时时，记录实际等待的页面而非内部旧状态。"""
-        targets = "/".join(getattr(action, "target_pages", ())) or "未声明"
+        target_list = tuple(getattr(action, "target_pages", ()) or ())
+        targets = "/".join(target_list) or "未声明"
+        if getattr(action, "advance_any", False):
+            # 推进型动作没有「期望名单」，超时只可能是两件事：一页都认不出，
+            # 或者画面反复变化、始终没稳定到能认的程度。别套用白名单那套说法。
+            targets = "任意已识别页（推进型）"
+            verdict = (
+                "推进型动作只要求认得出当前页面；这一帧认到了，但没有稳定下来"
+                if confirmed_page
+                else "画面始终没认出是哪一页（取图或识别失效）"
+            )
+        # 一句人话结论：光看「期望页面 / 当前已确认页面」两串名字，读日志的人得
+        # 自己在脑子里比对才知道死因。这里把比对结果直接写出来。
+        elif confirmed_page and target_list and confirmed_page not in target_list:
+            verdict = f"现在停的「{confirmed_page}」不在期望名单里，这一步永远等不到"
+        elif confirmed_page:
+            verdict = "画面回到过期望名单里的某一页，但没稳定住"
+        else:
+            verdict = "画面没认出是哪一页，所以谈不上到达"
         self.runtime.log(
             f"模式={self._MODE_LABEL} 转场超时 动作={action.name} "
             f"原页面={getattr(action, 'source_page', '') or '未声明'} "
             f"期望页面={targets} 当前已确认页面={confirmed_page or '无'} "
-            f"内部状态={self._state_label(self.machine.state)} 诊断={diagnostic}"
+            f"内部状态={self._state_label(self.machine.state)} "
+            f"结论={verdict} 诊断={diagnostic}"
         )
+
+    def _log_idle_wait(self, screen: Any, state_started: float) -> None:
+        """「认得出这一页、但这一帧没有动作」时，写一句在等什么。
+
+        默认不写。多数路线的空转没有明确语义，硬写只会刷屏；有明确等待语义的
+        路线在子类里覆写（例：支线故事在场景页等「下一关」箭头凑满既定帧数）。
+        这一段等待此前在日志里**一行都没有**，用户看到的现象是「卡在这页不动」，
+        事后也查不出它到底在等什么。
+        """
 
     def _reset_observation(self, stable: StableObservation) -> None:
         """换页 / 恢复 / 黑屏后同时清空「动作」与「结论」两本账。
@@ -739,6 +774,14 @@ class ModeRunnerBase:
                 )
                 self._close_out()
                 return self.machine.completed_cycles
+            except PurchaseReceiptUnclear:
+                # 不可逆购买已提交一次、回执未明 ⇒ **直接穿透**，绝不当成「页面超时」
+                # 再跑一轮。留在 ``except RuntimeError`` 里会被当成「这页认不出」，
+                # 于是原地再等 150 秒、下一轮又把同一个提交动作生成并发出去
+                # （2026-11-26 社区签到：商品直接到 2/2，日志却还写「已兑 0/2」）。
+                # 竞技场有自己的 ``run()``，早就单列了这一条；这里补上是为了让
+                # 委托基类主循环的路线（社区签到）也不会把它吞掉。
+                raise
             except ManualStop:
                 # ⚠️ 必须排在 `except RuntimeError` 前面。`ManualStop` 是 `RuntimeError`
                 # 的子类，掉进下面那条分支会被当成「页面没认出来」，只 sleep 一轮就
@@ -751,6 +794,7 @@ class ModeRunnerBase:
                 # 结构性问题：不是「这页认不出」，等超时没有意义，立刻判失败。
                 raise
             except RuntimeError as error:
+                freeze_before_retry(self.runtime, "页面识别异常", f"页面识别异常：{error}")
                 if (
                     isinstance(error, UnrecognizedScreen)
                     and self._ALLOW_UNKNOWN_SCREEN_WAKE
@@ -802,6 +846,9 @@ class ModeRunnerBase:
             if action is NOT_STABLE:
                 self.sleep(self.poll_seconds)
                 continue
+            retry_recovered(self.runtime, "页面识别异常")
+            if action is not None:
+                retry_recovered(self.runtime, "无动作超时，尝试关闭弹窗")
             consecutive_waiting = 0
             self._reset_observation(stable)
 
@@ -818,6 +865,7 @@ class ModeRunnerBase:
                     + (f" {detail}" if detail else "")
                 )
                 last_transition_action = None
+                retry_recovered(self.runtime, f"动作重试 {last_action_name}")
                 recent_actions.clear()
             elif last_transition_action is not None:
                 source_page = getattr(last_transition_action, "source_page", "")
@@ -903,11 +951,14 @@ class ModeRunnerBase:
                         if not retry_wait_logged:
                             remaining = retry_seconds - since_click
                             target_pages = getattr(action, "target_pages", ())
-                            target_text = (
-                                f" 目标页面={'/'.join(target_pages)}"
-                                if target_pages
-                                else ""
-                            )
+                            if getattr(action, "advance_any", False):
+                                target_text = " 目标画面=任意已识别页（推进型）"
+                            else:
+                                target_text = (
+                                    f" 目标页面={'/'.join(target_pages)}"
+                                    if target_pages
+                                    else ""
+                                )
                             self.runtime.log(
                                 f"模式={self._MODE_LABEL} "
                                 f"轮次={self.machine.completed_cycles + 1}/"
@@ -921,9 +972,12 @@ class ModeRunnerBase:
                     if action.name not in self._REPEATABLE_ACTIONS:
                         action_attempts += 1
                 else:
+                    retry_recovered(self.runtime, f"动作重试 {last_action_name}")
                     last_action_name = action.name
                     action_attempts = 1
 
+                if action_attempts > 1:
+                    freeze_before_retry(self.runtime, f"动作重试 {action.name}")
                 if action_attempts > 4:
                     if self._on_action_exhausted(action, screen):
                         self._close_out()
@@ -1061,16 +1115,21 @@ class ModeRunnerBase:
                 # 有目标契约的动作遇到短暂未知帧时保留同一重试账本；
                 # 只有目标已确认（上方已清空契约）或普通无动作状态才重置。
                 if last_transition_action is None:
+                    retry_recovered(self.runtime, f"动作重试 {last_action_name}")
                     last_action_name = None
                     last_action_clicked_at = None
                     retry_wait_logged = False
                     action_attempts = 0
+
+            if action is None:
+                self._log_idle_wait(screen, state_started)
 
             if (
                 action is None
                 and self.now() - state_started >= self._timeout_for(self.machine.state)
             ):
                 # 卡死兜底（同上）：无动作等待超时前，先试一次点掉陌生弹窗。
+                freeze_before_retry(self.runtime, "无动作超时，尝试关闭弹窗")
                 if self._try_unknown_popup_fallback(screen):
                     state_started = self.now()
                     self._reset_observation(stable)
@@ -1096,7 +1155,11 @@ class ModeRunnerBase:
                     ),
                 )
                 if last_transition_action is not None:
-                    targets = "/".join(last_transition_action.target_pages)
+                    targets = (
+                        "任意已识别画面"
+                        if getattr(last_transition_action, "advance_any", False)
+                        else "/".join(last_transition_action.target_pages)
+                    )
                     self._log_transition_timeout(
                         last_transition_action,
                         screen,

@@ -63,6 +63,13 @@ PAGE_FRAMES = {
     # 它同时喂两件事：① 页面判据仍判 ``tasks_page``；② ``locate_tasks_signin_claim``
     # 的正向样本。已签状态的负样本用 ``tasks_all_done_live_20261006``（同一页、角标已消失）。
     "tasks_signin_todo_live_20261123": "tasks_page",
+    # 2026-11-26 真机现场：社区首页已正常打开（可见每日签到红点与兑换入口），
+    # 但底栏「首页」图标相对 10-06/10-07 的模板偏了 (1,2) 像素 ⇒ 固定窗口
+    # 只拿到 0.5659（阈 0.82）⇒ 判 unknown ⇒ 走陌生页逃生按 ESC 退出社区。
+    "feed_home_shifted_live_20261126": "feed_home",
+    # 同一天实跑的第二处漂移：帖子详情的分享箭头偏 (1,2) 像素，固定窗口 0.5123 ⇒
+    # unknown ⇒ 逃生按返回，浏览/分享两条任务反复作废。
+    "post_detail_shifted_live_20261126": "post_detail",
 }
 
 
@@ -168,6 +175,102 @@ class CommunityPageTests(unittest.TestCase):
                 judgement = cp.judge_page(fixture(name), self.templates)
                 self.assertEqual(judgement.name, expected, judgement.describe())
 
+    def test_shifted_feed_home_uses_anchor_padding_not_a_lower_threshold(self):
+        """2026-11-26 现场：首页图标偏了 (1,2) 像素，固定窗口只有 0.5659。
+
+        ⚠️ 这条把修复形状钉死：**阈值不变、模板不变、只给这一颗锚点 4px 位移容差**。
+        否则下一次有人靠把 ``THRESHOLD`` 调低或给所有锚点加 ``pad`` 凑过现场帧，
+        帖子详情 / 网络提示 / 分享面板都会跟着冒牌过关。
+        """
+        self.assertEqual(cp.THRESHOLD, 0.82, "判据阈值被改了，现场帧是被降阈值凑过的")
+        pads = {anchor.name: anchor.pad for anchor in cp.ANCHORS}
+        # 只允许这三颗当天有现场证据的锚点带位移容差；其余必须保持老行为。
+        padded = {"feed_home", "post_detail", "redeem_done"}
+        for name, pad in pads.items():
+            expected = 4 if name in padded else 0
+            with self.subTest(anchor=name):
+                self.assertEqual(pad, expected, f"{name} 的位移容差不是已取证范围")
+
+        screen = fixture("feed_home_shifted_live_20261126")
+        judgement = cp.judge_page(screen, self.templates)
+        self.assertEqual(judgement.name, "feed_home", judgement.describe())
+        self.assertGreater(judgement.confidence, 0.99)
+        hit = [item for item in judgement.observations if item.name == "feed_home"]
+        self.assertEqual(len(hit), 1)
+        # 回读的是**真实命中位置**，不是名义区域；位移证据要能落到日志/测试里。
+        self.assertEqual(hit[0].region, (126, 1740, 65, 100))
+
+    def test_feed_home_padding_still_rejects_similar_and_loading_frames(self):
+        """位移容差只解决 1~2px 漂移，不许把「像首页」的叠层/异常/加载页也放进来。
+
+        反例取三类：帖子详情（底栏仍是青绿首页页签）、网络异常（H5 已死的整页提示）、
+        加载中白屏。三者的业务后果完全不同：前者会拦下帖子任务，后两者会按首页去签到。
+        """
+        for name in (
+            "post_detail_live_20261006",
+            "network_error_live_20261006",
+            "share_sheet_live_20261006",
+        ):
+            with self.subTest(frame=name):
+                screen = fixture(name)
+                judgement = cp.judge_page(screen, self.templates)
+                self.assertNotEqual(judgement.name, "feed_home", judgement.describe())
+                scores = cp.observe_pages(
+                    screen, self.templates, names=("feed_home",), collect_all=True
+                )
+                self.assertEqual(len(scores), 1)
+                self.assertLess(
+                    scores[0].confidence,
+                    cp.THRESHOLD,
+                    f"{name} 上 feed_home 拿到 {scores[0].confidence:.4f}，位移容差放太宽",
+                )
+
+        loading = np.full((1920, 1080, 3), 255, np.uint8)
+        judgement = cp.judge_page(loading, self.templates)
+        self.assertEqual(judgement.name, "unknown", "加载中白屏不许被当成首页")
+        scores = cp.observe_pages(
+            loading, self.templates, names=("feed_home",), collect_all=True
+        )
+        self.assertEqual(len(scores), 1)
+        self.assertLess(scores[0].confidence, cp.THRESHOLD)
+
+    def test_shifted_post_detail_and_redeem_receipt_keep_their_boundary(self):
+        """实跑暴露的另两处漂移：帖子详情与兑换成功回执。
+
+        帖子详情现场帧在日志里只拿到 0.5123 ⇒ 浏览/分享反复作废；兑换成功回执只拿到
+        0.6156 ⇒ 程序按返回当成没发生，随后重复点了「确认兑换」。两处都用 4px 位移
+        容差修，不降阈值；同时钉住它们与订单确认/分享面板的边界。
+        """
+        post = cp.judge_page(
+            fixture("post_detail_shifted_live_20261126"), self.templates
+        )
+        self.assertEqual(post.name, "post_detail", post.describe())
+        self.assertGreater(post.confidence, 0.99)
+        hit = [item for item in post.observations if item.name == "post_detail"]
+        self.assertEqual(len(hit), 1)
+        self.assertEqual(hit[0].region, (791, 1792, 110, 85))
+
+        receipt = cp.judge_page(fixture("redeem_success_live_20261006"), self.templates)
+        self.assertEqual(receipt.name, "redeem_done", receipt.describe())
+        self.assertGreater(receipt.confidence, 0.99)
+
+        for frame, anchor in (
+            ("order_confirm_live_20261006", "redeem_done"),
+            ("post_detail_shifted_live_20261126", "redeem_done"),
+            ("redeem_success_live_20261006", "post_detail"),
+            ("share_sheet_live_20261006", "redeem_done"),
+        ):
+            with self.subTest(frame=frame, anchor=anchor):
+                scores = cp.observe_pages(
+                    fixture(frame), self.templates, names=(anchor,), collect_all=True
+                )
+                self.assertEqual(len(scores), 1)
+                self.assertLess(
+                    scores[0].confidence,
+                    cp.THRESHOLD,
+                    f"{frame} 上 {anchor} 过阈，回执/页面边界被位移容差冲垮",
+                )
+
     def test_every_page_has_at_least_one_frame(self):
         """每个锚点都得有真机帧验过，否则「已验证」是空话。"""
         covered = set(PAGE_FRAMES.values())
@@ -262,7 +365,8 @@ class CommunityPageTests(unittest.TestCase):
 
         template = self.templates[anchor.name]
         x, y, w, h = anchor.region
-        patch = screen[y : y + h, x : x + w]
+        pad = anchor.pad
+        patch = screen[y - pad : y + pad + h, x - pad : x + pad + w]
         score, _ = best_match(patch.astype(np.float32), template.astype(np.float32))
         return float(score)
 

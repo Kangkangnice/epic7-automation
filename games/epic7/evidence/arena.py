@@ -281,3 +281,33 @@ def weekly_reward_dot_pixels(
     low, high = _WEEKLY_REWARD_DOT_HSV
     mask = cv2.inRange(hsv, np.array(low), np.array(high))
     return int(mask.sum()) // 255
+
+
+# 判奖等待器的「画面未被压暗」护栏。红点靠 HSV 的 V≥140 才能读到，整屏遮罩会把它
+# 一起压掉，于是「读不到红点」和「已领完」字面同值。这里读同一行「每周对战奖励」
+# 标题的白字（低饱和、V≥180）做页内参考：正常列表 131/161px，压暗帧与断网遮罩
+# 都是 0px，两个口径的分数不相交。判据取自标题区本身，不依赖断网弹窗模板，也不
+# 改红点阈值 —— 2026-11-18 那次误判时守卫未必认得出遮罩，只有画面本身可靠。
+WEEKLY_REWARD_TITLE_MIN_BRIGHT_PIXELS = 60
+_WEEKLY_REWARD_TITLE_BRIGHT_HSV = ((0, 0, 180), (180, 60, 255))
+
+
+def weekly_reward_title_bright_pixels(
+    screen: np.ndarray,
+    *,
+    reference_size: tuple[int, int] = REFERENCE_SIZE,
+) -> int:
+    """「每周对战奖励」标题里的白字像素数；整屏压暗 / 断网遮罩时为 0。"""
+    scale_x = screen.shape[1] / reference_size[0]
+    scale_y = screen.shape[0] / reference_size[1]
+    x, y, width, height = REGIONS["weekly_reward_title"]
+    patch = screen[
+        round(y * scale_y) : round((y + height) * scale_y),
+        round(x * scale_x) : round((x + width) * scale_x),
+    ]
+    if patch.size == 0:
+        return 0
+    hsv = cv2.cvtColor(patch, cv2.COLOR_RGB2HSV)
+    low, high = _WEEKLY_REWARD_TITLE_BRIGHT_HSV
+    mask = cv2.inRange(hsv, np.array(low), np.array(high))
+    return int(mask.sum()) // 255

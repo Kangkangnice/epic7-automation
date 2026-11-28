@@ -14,7 +14,7 @@
 现场帧 `runtime_diagnostics/epic7_arena/20260925_081722_997139_ticket_exhausted.png`），
 所以要把终点**下移一步**：先点「取消」退回对手列表，再从那里回家。
 
-详见 `docs/maintenance/route_finish_points.md` 注①。
+详见 `docs/maintenance/arena.md` 的危险边界。
 
 ## 守三件事
 
@@ -37,6 +37,7 @@ from auto_game_unified.games.epic7.arena import (
     build_templates,
 )
 from auto_game_unified.games.epic7.evidence.arena import REGIONS
+from auto_game_unified.games.epic7.template_paths import resolve_template_dir
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -252,15 +253,14 @@ class RegionSanityTests(unittest.TestCase):
 
 
 class PurchaseRefusalTests(unittest.TestCase):
-    """购买被游戏拒绝时按正常退出收口 —— 不抛错，收口阶段不再发购买点击。
+    """购买回执未明：只提交一次、不重发、不按资源耗尽收工，停下对账。
 
-    ⚠️ 现状：转场验收仍会在既有 4 次预算内重复点击购买按钮，「被拒」要等预算走完
-    才判得出来。本用例锁的是预算走完之后的收口：关弹窗一次、按资源耗尽退出、
-    不再补第 5 次。若要求不可逆购买一次都不重发，属于重试语义变更，需单独立项。
-    这条路径只在工作区改动里（「按本机日期记一笔」已被删除，待用户拍板）。
+    验收退回项（2026-11-26）：弹窗还在只证明回执未确认，**不是**游戏明确拒绝。
+    只有拿到游戏明确拒绝的证据才可按资源耗尽收尾；当前没有这种证据的判据，
+    因此回执未明一律抛错停下、保留弹窗现场与诊断，等待人工对账。
     """
 
-    def test_refused_purchase_closes_the_popup_and_stops_without_another_purchase(self):
+    def test_purchase_submitted_once_and_stops_for_reconciliation(self):
         popup = canvas(ARENA_FIXTURES / "friendship_ticket_offer_live_20260826.png")
         frames = _Frames([popup] * 30, max_captures=60)
 
@@ -280,7 +280,6 @@ class PurchaseRefusalTests(unittest.TestCase):
         )
         recorder = _TickingRecorder(frames)
         runner = ArenaRunner(machine, recorder, sleep=lambda seconds: None)
-        # 队伍页的转场预算 10 秒：正好走完既有「最多 4 次」的点击预算，不额外拖时间。
         runner._TIMEOUT_SECONDS = {
             **runner._TIMEOUT_SECONDS,
             ArenaState.TEAM: 10,
@@ -288,36 +287,94 @@ class PurchaseRefusalTests(unittest.TestCase):
         homed: list[bool] = []
         runner.finish_home = lambda: homed.append(True) or None
 
-        completed = runner.run(max_cycles=1)
+        with self.assertRaises(RuntimeError) as caught:
+            runner.run(max_cycles=1)
 
-        self.assertEqual(0, completed)
         actions = [action for _, action in recorder.clicks]
         self.assertEqual(
-            4,
+            1,
             actions.count("purchase-friendship-ticket"),
-            f"购买点击应止于既有 4 次预算：{actions}",
+            f"不可逆购买只能提交一次：{actions}",
         )
         self.assertEqual(
-            1,
+            0,
             actions.count("dismiss-purchase"),
-            f"被拒后必须点一次「取消」关弹窗：{actions}",
+            f"回执未明时不得点取消关掉对账现场：{actions}",
         )
-        self.assertLess(
-            max(
-                index
-                for index, action in enumerate(actions)
-                if action == "purchase-friendship-ticket"
-            ),
-            actions.index("dismiss-purchase"),
-            f"关弹窗之后不许再发购买点击：{actions}",
-        )
-        self.assertEqual([True], homed, "关完弹窗要照常回家")
-        self.assertTrue(runner.resource_exhausted, "应按资源耗尽正常退出")
-        self.assertEqual("", runner._purchase_refused, "标记用完要清掉")
+        self.assertEqual([], homed, "停下对账不执行正常收尾回家")
+        self.assertFalse(runner.resource_exhausted, "没有明确拒绝证据，不能记资源耗尽")
+        self.assertIn("对账", str(caught.exception), str(caught.exception))
         self.assertTrue(
-            any("游戏未接受旗帜购买" in line for line in recorder.lines),
-            f"没记下业务结论：{recorder.lines}",
+            any("不重试" in line and "不可逆动作" in line for line in recorder.lines),
+            f"没记下不重试的原因：{recorder.lines}",
         )
+    def test_pc_popup_never_becomes_team_receipt(self):
+        """两张 PC 真机帧：弹窗正向证据在场时不得把后面队伍页当购买回执。
+
+        验收退回项（2026-11-26 二次）：`ticket_purchase_popup_pc_live_20261101.png`
+        上 purchase_title=1.0 / purchase_cancel=1.0 / 报价=1.0，但 no_ticket=None。
+        旧来源判据要求 no_ticket 同时命中 ⇒ source_visible=False，于是
+        `action_target_state` 返回 TEAM（队伍页 battle_start=0.9379）⇒ 购买被当成功，
+        下一轮再次生成购买动作；12 帧序列内记录到 3 次购买点击。
+
+        修复后的判据：弹窗标题/取消任一在场均视为「购买事务未完成」，目标恒为 None。
+        """
+        from auto_game_unified.games.epic7.arena import Action
+
+        frame_a = canvas(ARENA_FIXTURES / "ticket_purchase_popup_pc_live_20261101.png")
+        frame_b = canvas(ARENA_FIXTURES / "arena_purchase_popup_team_pc_live_20261102.png")
+        frames = _Frames([frame_a, frame_b] * 6, max_captures=120)
+
+        class _TickingRecorder(_Recorder):
+            def __init__(self, source: _Frames) -> None:
+                super().__init__(source)
+                self.ticks = 0
+
+            def now(self) -> float:
+                self.ticks += 1
+                return float(self.ticks)
+
+        machine = ArenaStateMachine(
+            build_templates(resolve_template_dir(TEMPLATES, "pc")),
+            initial_state=ArenaState.BATTLE,
+        )
+        recorder = _TickingRecorder(frames)
+        runner = ArenaRunner(machine, recorder, sleep=lambda seconds: None)
+        runner._TIMEOUT_SECONDS = {
+            **runner._TIMEOUT_SECONDS,
+            ArenaState.TEAM: 120,
+            ArenaState.BATTLE: 120,
+        }
+        runner.finish_home = lambda: None
+
+        try:
+            runner.run(max_cycles=1)
+        except RuntimeError:
+            pass  # 回执未明停下对账是可接受结局；关键是不重复提交
+
+        clicks = [action for _, action in recorder.clicks]
+        self.assertLessEqual(
+            clicks.count("purchase-friendship-ticket"),
+            1,
+            f"12 帧内购买点击不得超过一次：{clicks}",
+        )
+
+        # 判据层同时锁住：两张帧上弹窗来源仍在、目标恒为 None。
+        action_obj = Action(
+            "purchase-friendship-ticket", (1126, 883),
+            source_state=ArenaState.BATTLE,
+            target_states=(ArenaState.TEAM,),
+            irreversible=True,
+        )
+        for name, screen in (("frame_a", frame_a), ("frame_b", frame_b)):
+            self.assertTrue(
+                machine.action_source_visible(screen, action_obj),
+                f"弹窗正向证据在场，来源必须仍在：{name}",
+            )
+            self.assertIsNone(
+                machine.action_target_state(screen, action_obj),
+                f"弹窗在场时不得把队伍页当购买回执：{name}",
+            )
 
 
 if __name__ == "__main__":

@@ -25,6 +25,7 @@ import pytest
 
 from auto_game_unified.games.epic7 import side_story as side_story_module
 from auto_game_unified.games.epic7.side_story import (
+    SideStoryCountdownEnded,
     SideStoryCountdownRead,
     build_side_story_machine,
     read_period_countdown,
@@ -58,12 +59,25 @@ def story_hub_page() -> np.ndarray:
     return _load(FIXTURES / "side_story.png")
 
 
+def countdown_ended_page() -> np.ndarray:
+    """倒计时结束态（2026-11-26 真机）：Episode 页左下角只剩「开启其他支线故事」，
+    没有「剩余 N天N小时」——本期已到期、可开启新一期。"""
+
+    return _load(FIXTURES / "episode_countdown_ended_live_20261126.png")
+
+
 # 只读巡检**允许**动手的三页（各自的断言在下面单独写）。
 _CHAIN_FIXTURES = frozenset(
     {
         "side_story.png",
         "sub_story_list_live_20261112.png",
+        # 2026-11-27 的列表实拍（「入场」右下角多了一颗小绿装饰），同属巡检链上的
+        # 合法页面：巡检本来就要在列表上点「入场」，不在这条"不许动手"的护栏里。
+        "sub_story_list_entry_decoration_20261127.png",
         "episode_countdown_live_20261112.png",
+        # 结束态也是巡检链上的合法终点（读不到数字但能正常收工），不是"其他页"。
+        # 它的断言单列在 ①b，不在这条"不许动手"的护栏里。
+        "episode_countdown_ended_live_20261126.png",
     }
 )
 
@@ -200,6 +214,53 @@ def test_countdown_mode_never_produces_a_click_on_any_other_page():
 
 
 # --------------------------------------------------------------------------
+# ①b 倒计时结束态：左下角变成「开启其他支线故事」（2026-11-26 用户要求）
+# --------------------------------------------------------------------------
+
+
+def test_countdown_ended_page_stops_cleanly_instead_of_waiting_forever():
+    """结束态帧必须**正常收工**，不是 return None 干等到页面超时。
+
+    这帧上 `adventure` 命中 0.9997（点「入场」其实成功了、已站在 Episode 页），
+    但左下角是循环箭头 + 一行「开启其他支线故事」，没有倒计时数字 ⇒ OCR 返回
+    None。旧代码在 adventure 分支里读不到就 `(True, None)`，主循环白等 900 秒
+    再报「页面无进展」。用户口径：这表示本期已结束、可以打新支线了。
+    """
+
+    machine = _machine()
+    with pytest.raises(SideStoryCountdownEnded) as caught:
+        machine.next_action(countdown_ended_page())
+
+    assert caught.value.payload["ended"] is True
+    assert caught.value.payload["raw"] == "开启其他支线故事"
+    assert machine.countdown_read is caught.value.payload
+
+
+def test_countdown_ended_does_not_fire_on_an_active_episode_page():
+    """反证：未结束的 Episode 页读到的是倒计时，不能被结束态判据抢走。"""
+
+    machine = _machine()
+    with _StubOCR({"days": 13, "hours": 12, "raw": "剩余 13天 12小时"}):
+        with pytest.raises(SideStoryCountdownRead) as caught:
+            machine.next_action(episode_page())
+    assert caught.value.payload.get("ended") is not True
+
+
+def test_countdown_ended_icon_abstains_on_every_other_fixture():
+    """反向验证：结束态图标除这一帧外不在任何夹具上命中（阈值 0.80 两头留空档）。"""
+
+    from auto_game_unified.games.epic7.side_story import _COUNTDOWN_ENDED_THRESHOLD
+
+    machine = _machine()
+    for path in sorted(FIXTURES.glob("*.png")):
+        if path.name == "episode_countdown_ended_live_20261126.png":
+            continue
+        assert machine._locate(_load(path), "countdown_ended", _COUNTDOWN_ENDED_THRESHOLD) is None, (
+            f"{path.name} 误命中结束态图标，阈值需要重扫"
+        )
+
+
+# --------------------------------------------------------------------------
 # ② OCR：真跑一次（缺可选依赖就跳过，不让它变成假绿灯）
 # --------------------------------------------------------------------------
 
@@ -209,8 +270,15 @@ _NEEDS_OCR = pytest.mark.skipif(
 )
 
 
+@pytest.fixture(scope="module")
+def countdown_ocr_model():
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(side_story_module, "_OCR_ENGINE", None)
+        yield
+
+
 @_NEEDS_OCR
-def test_real_ocr_reads_the_live_frame():
+def test_real_ocr_reads_the_live_frame(countdown_ocr_model):
     """真机帧上确实能读出「剩余 13天 12小时」（这一行字只有约 24px 高）。"""
 
     payload = read_period_countdown(episode_page())
@@ -221,7 +289,7 @@ def test_real_ocr_reads_the_live_frame():
 
 
 @_NEEDS_OCR
-def test_ocr_returns_none_on_a_page_without_the_line():
+def test_ocr_returns_none_on_a_page_without_the_line(countdown_ocr_model):
     """列表页没有那行字 ⇒ 必须返回 None（判据不能"什么都能读出个东西"）。"""
 
     assert read_period_countdown(list_page()) is None
@@ -229,7 +297,7 @@ def test_ocr_returns_none_on_a_page_without_the_line():
 
 @_NEEDS_OCR
 @pytest.mark.parametrize("name", ["side_story.png", "event_home.png", "outpost_team.png", "map.png"])
-def test_ocr_abstains_on_other_real_pages(name):
+def test_ocr_abstains_on_other_real_pages(name, countdown_ocr_model):
     assert read_period_countdown(_load(FIXTURES / name)) is None
 
 
@@ -243,7 +311,7 @@ def test_countdown_detector_does_not_upscale_the_short_edge(monkeypatch):
     monkeypatch.setattr(side_story_module, "_OCR_ENGINE", None)
 
     assert side_story_module._ocr_engine() is constructor.return_value
-    constructor.assert_called_once_with(limit_type="max")
+    constructor.assert_called_once_with(det_limit_type="max", det_model_path=None)
 
 
 # --------------------------------------------------------------------------
@@ -336,3 +404,35 @@ def test_moonlight_free_stays_unknown_when_the_card_was_never_seen():
     machine.next_action(list_page())
 
     assert machine.moonlight_free is None
+
+
+def test_normal_entry_point_ignores_the_small_decoration_on_the_button_edge():
+    """普通支线「入场」的点击点必须落在字上，不能取按钮右缘外的小装饰。
+
+    2026-11-27 实跑：这一版列表的「入场」右下角多了一个 10x13 的小绿块
+    （中心 1863,780，面积 43），而「入场」两个字是 22x23、面积 250、中心 1836。
+    原来按「最右」挑 + 右移 6，算出 (1869,767) —— 落在按钮外面，四次点击
+    全部无反应，整条路线卡在「来源页面=支线列表仍在」重试到失败。
+    改成按面积最大挑之后回到 (1842,767)，实测一击即入期次主页。
+    """
+
+    screen = _load(FIXTURES / "sub_story_list_entry_decoration_20261127.png")
+    point = _machine()._pick_normal_sub_story(screen)
+
+    assert point is not None
+    x, y = point
+    assert y == 767
+    assert 1825 <= x <= 1850, f"点击点 {point} 落在「入场」按钮之外"
+
+
+def test_normal_entry_point_still_picks_the_plain_entry_on_the_old_list():
+    """反向：旧列表（没有那颗小装饰）的点击点不许被这次改动带到别处。"""
+
+    point = _machine()._pick_normal_sub_story(
+        _load(FIXTURES / "sub_story_list_live_20261112.png")
+    )
+
+    assert point is not None
+    x, y = point
+    assert y == 767
+    assert 1825 <= x <= 1850

@@ -95,7 +95,7 @@ def validate_start_plan(
 
 
 def _probe_pc(window: Epic7PcWindow) -> PreflightReport:
-    """检查 PC 客户端：窗口尺寸校准、权限一致性、兼容画布和画面有效性。"""
+    """校准 PC 窗口并检测画面。校准入口会拦截目标权限高于助手的情况。"""
 
     try:
         calibration = window.ensure_render_size()
@@ -136,8 +136,6 @@ def run_preflight(
     if window_backend == "pc":
         return _probe_pc(pc_window_factory())
 
-    # PC 后端不查提权：它只用于采集模板与开发验证，而且 PC 客户端本身要求以管理员
-    # 身份运行助手（见 app.STARTUP_HINTS），提示「请以管理员重启」是废话。
     probe: Epic7Window | None = None
     try:
         probe = window_factory()

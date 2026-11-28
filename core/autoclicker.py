@@ -3,7 +3,7 @@
 ## 它不是什么
 
 它**不是**一条自动化路线：不认识画面、不判断点到了什么、不做事后校验。
-你给它一个屏幕坐标和一个间隔，它就在那里点，直到按 P 或者点界面上的「停止」。
+你给它一个屏幕坐标和一个间隔，它就在那里点，直到长按 P 或者点界面上的「停止」。
 所以「点错地方」这件事它自己防不住 —— 这是它和 ``games/epic7/`` 里那些路线的
 本质区别，也是它被放在「实用工具」而不是「每日任务」里的原因。
 
@@ -20,11 +20,11 @@
 
 ## 安全设计（改这个文件前必读）
 
-* **P 是急停，只在运行中有效**。连点一开，鼠标就被按在目标点上，用户点不到
+* **P 是急停，只在运行中有效，需长按约 0.8 秒触发**。连点一开，鼠标就被按在目标点上，用户点不到
   界面上的「停止」—— 所以必须有一个不依赖鼠标的出口。反过来，P **不能**用来
   启动：那样在别的页面误按一下就会开始在屏幕上乱点。
-* **停止必须在 50 毫秒内生效**。等待不是一整段 ``sleep(间隔)``，而是 50 毫秒
-  一片地等 —— 用户把间隔填成 30 秒时，按 P 也要立刻停。
+* **停止必须在 50 毫秒内响应**。等待不是一整段 ``sleep(间隔)``，而是 50 毫秒
+  一片地等 —— 用户把间隔填成 30 秒时，长按 P 也要在 0.8 秒内停。
 * **点击抛异常就让线程退出，并把原因留下来**。静默继续点比停下来更糟：
   界面会显示「正在连点」，而屏幕上其实什么都没发生。
 
@@ -32,8 +32,8 @@
 
 这里用 ``GetAsyncKeyState`` 轮询，**不注册**全局热键。注册会把 P 从系统层面
 吞掉（别处就按不到了），注册失败还得另设一条退路；轮询没有任何失败模式。
-代价有两个：运行中按 P，游戏也会收到这个键；而且 P 是普通字母键，连点期间
-你在别处打字打到 P 也会立刻停住 —— 后者其实正合急停的本意，不用管。
+代价有两个：运行中长按 P，游戏也会收到这个键；而且 P 是普通字母键，连点期间
+你在别处打字打到 P 也可能触发（需持续按住才生效）—— 急停设计如此，不用管。
 """
 
 from __future__ import annotations
@@ -44,7 +44,7 @@ import time
 from dataclasses import dataclass
 from typing import Callable
 
-from auto_game_unified.core.hotkey import STOP_KEY_VK
+from auto_game_unified.core.hotkey import WindowsPStopHotkey
 
 # 间隔的可用范围。下限 50 毫秒（每秒 20 次）是刻意留的：
 # 再快就轮到游戏掉帧、点击被消息队列合并，用户看到的是「点了但没生效」。
@@ -117,15 +117,6 @@ def click_at(x: int, y: int) -> None:
     user32.mouse_event(_MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
 
 
-def emergency_hotkey_pressed() -> bool:
-    """急停键（P）是否**正被按住**。只在连点线程里调用 —— 别接到常驻循环上。
-
-    键位与自动化的全局停止键是同一个（``core/hotkey.py::STOP_KEY_VK``）：
-    对用户就一句口诀「按 P 就停」，两种运行不会同时存在（界面互斥）。
-    """
-    return bool(_user32().GetAsyncKeyState(STOP_KEY_VK) & 0x8000)
-
-
 @dataclass(frozen=True)
 class ClickPlan:
     """一次连点任务的全部参数。校验放在这里：界面、脚本、测试都走同一个入口。"""
@@ -149,11 +140,11 @@ class AutoClicker:
         self,
         *,
         click: Callable[[int, int], None] = click_at,
-        hotkey: Callable[[], bool] = emergency_hotkey_pressed,
+        hotkey: Callable[[], bool] | None = None,
         clock: Callable[[], float] = time.perf_counter,
     ) -> None:
         self._click = click
-        self._hotkey = hotkey
+        self._hotkey = hotkey if hotkey is not None else WindowsPStopHotkey().pressed
         self._clock = clock
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None

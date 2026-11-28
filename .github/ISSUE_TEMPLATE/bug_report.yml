@@ -5,8 +5,8 @@ body:
   - type: markdown
     attributes:
       value: |
-        提交前请先看一遍 [故障排查](https://github.com/Kangkangnice/epic7-automation/blob/main/docs/TROUBLESHOOTING.md)。
-        涉及越权执行、误消耗资源或隐私泄露时，请按 [安全政策](https://github.com/Kangkangnice/epic7-automation/blob/main/SECURITY.md) 报告。
+        提交前请先看一遍 [故障排查](https://github.com/Kangkangnice/epic7-arky-assistant/blob/main/docs/TROUBLESHOOTING.md)。
+        涉及越权执行、误消耗资源或隐私泄露时，请按 [安全政策](https://github.com/Kangkangnice/epic7-arky-assistant/blob/main/SECURITY.md) 报告。
         本表单公开可见。请只提交脱敏的最小复现材料，完整诊断包留在本机。
 
   - type: input
@@ -14,7 +14,7 @@ body:
     attributes:
       label: 出问题的路线
       description: |
-        填写[现状速查](https://github.com/Kangkangnice/epic7-automation/blob/main/docs/STATUS.md)里的路线名称或标识。
+        填写[现状速查](https://github.com/Kangkangnice/epic7-arky-assistant/blob/main/docs/STATUS.md)里的路线名称或标识。
         桌面界面或独立工具的问题可以直接填对应页面名称。
       placeholder: 迷宫强化石（labyrinth_stone）
     validations:

@@ -487,3 +487,39 @@ def test_missing_row_fingerprints_fall_back_to_the_global_hash():
     """取不到逐行指纹 ⇒ 返回 (0, 0)，绝不许凭它单方面宣布「换了」。"""
     assert changed_shop_rows((), ()) == (0, 0)
     assert changed_shop_rows(("a", "b"), ("a",)) == (0, 0)
+
+
+def test_black_frame_is_not_treated_as_a_readable_shop():
+    """2026-11-26 21:34 的黑帧：页面照样认成商店，但一个字都看不见。
+
+    断网重连时 PC 端 BitBlt 抓到近乎全黑的帧（整屏均值 15.8、纯白像素 0 个）。
+    模板匹配对亮度不敏感 ⇒ 页面判据仍给 shop，于是「找不到购买按钮」被当成
+    「这一行没有按钮」，整轮以「目标商品缺少同行购买按钮」判死。
+    这条用例守的是「可读性判据必须先把这种帧拦下来」。
+    """
+    observer = build_shop_refresh_observer(resolve_template_dir(TEMPLATES, "pc"))
+    screen = _screen("shop_frame_blackout_pc_live_20261126")
+
+    # 前提：这张图确实是没画完的黑帧，否则用例会在别的意义上通过。
+    # 证据一：整屏极暗；证据二：右侧按钮带**一个白字都没有**（正常帧这里有 255 的白字），
+    # 这正是当时 `_buy_for_row` 得 0.0、随后被当成「这一行没有购买按钮」的直接原因。
+    gray = cv2.cvtColor(screen, cv2.COLOR_RGB2GRAY)
+    assert float(gray.mean()) < 25
+    assert int(screen[171:361, 1500:1920].max()) < 100
+
+    assert observer.observe(screen).page is ShopPage.SHOP, "页面判据本来就会中"
+    assert observer.frame_readable(screen) is False, "黑帧不许被当成可读画面"
+
+
+def test_readable_shop_frames_are_not_blocked():
+    """反向：正常商店帧（模拟器与 PC 各一张）必须仍然可读。"""
+    emulator = build_shop_refresh_observer(TEMPLATES)
+    assert emulator.frame_readable(_screen("shop_bottom_live")) is True
+
+    pc = build_shop_refresh_observer(resolve_template_dir(TEMPLATES, "pc"))
+    bgr = cv2.imread(
+        str(PC_FIXTURES / "secret_shop_page_pc_20261104_072013.png"),
+        cv2.IMREAD_COLOR,
+    )
+    assert bgr is not None
+    assert pc.frame_readable(cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)) is True

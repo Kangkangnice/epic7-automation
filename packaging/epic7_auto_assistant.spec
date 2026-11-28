@@ -21,10 +21,6 @@ from PyInstaller.utils.hooks import collect_data_files, collect_submodules
 
 REPO = Path(SPECPATH).resolve().parent
 WORKSPACE = REPO.parent
-#: 第三方 chaos 源码（不随 Git 分发，构建前由 tools/fetch_vendor.py 取回）。
-#: ⚠️ 校验在 packaging/build.py 里做，**构建请走那条入口**；直接调 PyInstaller
-#: 不会检查清单，缺文件时只会得到「产物里没有它不是报错」的假成功。
-VENDOR = WORKSPACE / "vendor" / "e7auto"
 
 # ⚠️ Qt / Fluent 界面（2026-11-09 起是**唯一**界面）自带一套字体图标与样式资源，
 # PyInstaller 不会自动收进包 —— 少了它们的表现是「窗口能开，但所有图标都是空白」。
@@ -50,19 +46,11 @@ a = Analysis(
             str(REPO / "desktop_qt" / "app.ico"),
             "auto_game_unified/desktop_qt",
         ),
-        # 次元探查：第三方 chaos 源码、配置与模板。只收会参与运行的三段 ——
-        # 整目录照收会把 .git（45 MB）、tests、docs、缓存一起塞进产物。
-        # 取回与校验走 ``tools/fetch_vendor.py``，``packaging/build.py`` 在打包前
-        # 会按 ``packaging/vendor_lock.json`` 逐文件核对，缺一个就停下。
-        (str(VENDOR / "src"), "vendor/e7auto/src"),
-        (str(VENDOR / "config"), "vendor/e7auto/config"),
-        (str(VENDOR / "assets" / "templates"), "vendor/e7auto/assets/templates"),
     ]
     + _QFLUENT_DATAS,
     hiddenimports=(
         list(_QFLUENT_MODULES)
-        + collect_submodules("winrt")
-        + ["yaml", "win32gui", "win32api", "win32con", "pywintypes"]
+        + ["win32gui", "win32api", "win32con", "pywintypes"]
     ),
     hookspath=[],
     runtime_hooks=[],

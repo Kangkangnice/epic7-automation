@@ -7,6 +7,8 @@ from typing import Callable, Protocol
 import cv2
 import numpy as np
 
+from auto_game_unified.core.failure_history import FailureHistory
+
 
 class CaptureGuard(Protocol):
     def __call__(
@@ -47,6 +49,15 @@ class EquipmentBagFull(ResourceExhausted):
 
 class ManualStop(RuntimeError):
     """Raised before the next action when the user presses the stop hotkey."""
+
+
+class PurchaseReceiptUnclear(RuntimeError):
+    """不可逆购买已提交一次，游戏回执未明 —— 保留现场、停下对账。
+
+    弹窗还在只说明回执未确认，不是游戏明确拒绝。所有正式入口（单路线、每日编排）
+    遇到这条异常都必须**不回大厅、不跑下一条、不做收尾巡检**，否则会移动对账现场。
+    退出码按运行失败处理，现场由故障诊断帧与这条例外共同保留。
+    """
 
 
 def _safe_label(label: str) -> str:
@@ -96,6 +107,7 @@ class Runtime:
         self._back = back
         self.dry_run = dry_run
         self.diagnostic_dir = diagnostic_dir
+        self.failure_history = FailureHistory() if diagnostic_dir is not None else None
         self.log_path = log_path
         self._emit = emit or (lambda message: print(message, flush=True))
         self._stop_requested = stop_requested
@@ -136,8 +148,19 @@ class Runtime:
     def capture_unguarded(self) -> np.ndarray:
         self._stop_if_requested()
         screen = self._capture()
+        if self.failure_history is not None:
+            self.failure_history.observe(screen)
         self._last_screen = screen
         return screen
+
+    def last_frame(self) -> np.ndarray | None:
+        """最近一次**成功**取到的画面；还没取过就是 ``None``。
+
+        ⚠️ 只读访问器，**不触发取图**。给「取图本身失败、但要留下最后可用证据」的
+        路径用 —— 那种时候再调 ``capture()``（或 ``save_diagnostic(..., screen=None)``，
+        它内部就是 ``self.capture()``）只会再失败一次，把真正的错因盖掉。
+        """
+        return self._last_screen
 
     def set_capture_guard(self, guard: CaptureGuard) -> None:
         self._capture_guard = guard
@@ -287,10 +310,24 @@ class Runtime:
         self.diagnostic_dir.mkdir(parents=True, exist_ok=True)
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
         path = self.diagnostic_dir / f"{timestamp}_{_safe_label(label)}.png"
-        self._write_image(path, self.capture() if screen is None else screen)
+        screen = self.capture() if screen is None else screen
+        self._write_image(path, screen)
+        if self.failure_history is not None and screen is self._last_screen:
+            self.failure_history.evidence_frame = path
         self._prune_diagnostics()
         self.log(f"已保存诊断 {path}")
         return path
+
+    def record_failure(self, error: BaseException) -> None:
+        if self.failure_history is None or self.diagnostic_dir is None:
+            return
+        try:
+            self.failure_history.save(
+                self.diagnostic_dir, f"{type(error).__name__}: {error}", self.log_path
+            )
+        except Exception as diagnostic_error:
+            # Even when the disk is full the original route exception must survive.
+            self._emit(f"故障截图留存失败：{diagnostic_error}")
 
     def save_current_frame(self, screen: np.ndarray | None = None) -> Path:
         if self.diagnostic_dir is None:

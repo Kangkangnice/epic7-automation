@@ -237,8 +237,7 @@ def assert_route_metadata_consistent() -> None:
         raise RuntimeError(
             "路线元数据不一致（同一事实抄在多处、只改了一部分）：\n  - "
             + "\n  - ".join(errors)
-            + "\n\n新增/改动路线时请把这些副本一起改。背景与后续的「单一事实源」"
-            "方案见 docs/maintenance/route_extensibility_review.md。"
+            + "\n\n核对路线注册表中的正式名称和各处引用。工程说明见 docs/ARCHITECTURE.md。"
         )
 
 

@@ -176,6 +176,7 @@ from auto_game_unified.core.matcher import (
     locate_with_fallback,
 )
 from auto_game_unified.core.runtime import Runtime
+from auto_game_unified.core.failure_history import freeze_before_retry, retry_recovered
 from auto_game_unified.core.supervisor import StableObservation
 from auto_game_unified.games.epic7.unknown_screen import (
     LobbySpectatorWake,
@@ -476,6 +477,7 @@ def return_home_v2(
             if stop_probe is not None:
                 stop_probe(screen)
             runtime.log("模式=导航 流程=v2 页面=大厅 状态=已确认")
+            retry_recovered(runtime, "回大厅动作无效")
             return screen
 
         # ①-补 **等画面稳定**（排在大厅判定之后）：页面身份还在变时先等，
@@ -501,6 +503,7 @@ def return_home_v2(
         # ③ 接力：命中就把这一帧交还调用方（口径与老流程一致）。
         if stop_probe is not None and stop_probe(screen):
             runtime.log("模式=导航 流程=v2 动作=接力点命中 状态=停止返回大厅")
+            retry_recovered(runtime, "回大厅动作无效")
             return screen
 
         # ③ 快捷菜单已展开 ⇒ 点酒馆（一步到家）。
@@ -749,9 +752,11 @@ class _ActionVerifier:
         （「未登记页必须有有界逃生门」）。
         """
         if changed:
+            retry_recovered(self._runtime, "回大厅动作无效")
             self._click_ineffective.pop(action, None)
             self._retired_clicks.pop(action, None)
             return
+        freeze_before_retry(self._runtime, "回大厅动作无效")
         count = self._click_ineffective.get(action, 0) + 1
         self._click_ineffective[action] = count
         if count < _MAX_INEFFECTIVE_CLICKS:
@@ -822,9 +827,11 @@ class _ActionVerifier:
         self._runtime.back("受控返回大厅")
         self._sleep(_ESC_SETTLE_SECONDS)
         if self._wait_for_change("按ESC", before, before_screen):
+            retry_recovered(self._runtime, "回大厅动作无效")
             self._esc_ineffective = 0
             return back_count
 
+        freeze_before_retry(self._runtime, "回大厅动作无效")
         self._esc_ineffective += 1
         self._runtime.log(
             f"模式=导航 流程=v2 动作=按ESC 原因={reason} 返回验收=无效 "

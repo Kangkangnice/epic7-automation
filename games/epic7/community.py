@@ -94,6 +94,7 @@
 
 from __future__ import annotations
 
+import subprocess
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
@@ -109,7 +110,12 @@ from auto_game_unified.core.portrait import (
     PortraitChannel,
 )
 from auto_game_unified.core.recovery import RecoveryGate
-from auto_game_unified.core.runtime import ManualStop, ResourceExhausted, Runtime
+from auto_game_unified.core.runtime import (
+    ManualStop,
+    PurchaseReceiptUnclear,
+    ResourceExhausted,
+    Runtime,
+)
 from auto_game_unified.core.window import Epic7Window
 from auto_game_unified.games.epic7 import community_pages as pages
 from auto_game_unified.games.epic7.community_numbers import Readout, read_pair
@@ -860,6 +866,38 @@ STRANGER_BACK_ARROW = (60, 95)
 STRANGER_ACTIONS = frozenset({"stranger_back", "stranger_back_arrow"})
 
 
+# ── 兑换事务：确认发出后先等这一笔的回执（2026-11-26 实跑重复提交后立）──────
+#
+# ## 现场（``runtime_logs/epic7_community.log`` 17:03~17:05）
+#
+# 17:03:48 第一次 ``confirm_redeem``；几秒后「兑换成功」弹窗的判据漂移
+# （0.6156 < 阈 0.82）⇒ 判 ``unknown`` ⇒ 陌生页逃生按返回 ⇒ 回兑换中心重新开单
+# ⇒ 17:04:20 **第二次** ``confirm_redeem``。实际业务已经扣了两次、商品
+# 「行动力*30」直接到 2/2，程序日志却还写着「已兑 0/2」。
+#
+# ## 规矩（用户 2026-11-26 明确）
+#
+# 确认兑换发出后**先等这一笔的结果**：
+#
+# - 只有**可信成功回执**（``redeem_done``）才继续后续兑换；
+# - 只有**明确失败证据**（订单确认页一进来「确认兑换」就是灰的）才走失败分支；
+# - 确认页没动 / 回到商品页 / 出现陌生页 / 截图超时**都不许**当成兑换失败，
+#   也不许按返回、重新开单、再次确认；
+# - 等到超时仍无法确认 ⇒ 记下商品与最后可用画面，**停在原地待人工对账**
+#   （见 ``CommunityRunner._hold_until_receipt`` 与 ``PurchaseReceiptUnclear``）。
+#
+# 这一档落在状态机的 ``redeem_pending`` 上：置位期间 ``next_action`` 只认
+# ``redeem_done``，其余页面（含 ``unknown``）一律**只等、不出手**。
+
+#: 「打开商品 → 陌生页 → 返回 → 再打开」这个循环的**硬上限**。
+#:
+#: 现场那次它转了几十圈（旧代码 400 帧里开了 25 次单），因为每圈都回到
+#: ``EXCHANGE`` 再把 ``state_started`` 重置一次 ⇒ 60 秒状态超时永远等不到。
+#: 正常流程里「点开商品」下一帧就该判出 ``item_detail``（判出即清零），
+#: 所以连开 5 次都没到商品详情 = 这一页根本认不出，收手留证据。
+REDEEM_OPEN_ATTEMPT_LIMIT = 5
+
+
 @dataclass(frozen=True)
 class CommunityAction(RouteAction):
     """社区路线的一次点击（或一次滑动）。
@@ -1198,6 +1236,23 @@ class CommunityStateMachine:
         # 本页**已经点过**「确认兑换」没有。用来区分两种「按钮是灰的」：
         # 一进来就灰 = 兑不了；点过之后变灰 = 正在等结果（实测 3~40 秒），必须等。
         self._confirm_clicked = False
+        # ── 兑换事务在途（2026-11-26）───────────────────────────────────────
+        #: 「确认兑换」这一下**已经发出去**、这一笔的回执还没拿到。
+        #:
+        #: 置位期间 ``next_action`` 只认可信回执 ``redeem_done``，其余任何一页
+        #: （订单确认没动 / 回到商品详情 / 陌生页 / 信息流）一律**只等、不出手** ——
+        #: 不重复提交、不按返回、不重新开单。为什么必须这样：见
+        #: ``REDEEM_OPEN_ATTEMPT_LIMIT`` 上方那段现场。
+        self.redeem_pending = False
+        #: 在途那一笔是清单里的哪张卡（对账日志要说清「哪件商品」，不能只说「一次兑换」）。
+        self.redeem_pending_card: Optional[int] = None
+        # 成功弹窗收起后，必须在兑换中心看到这一笔对应的限购计数。
+        self.redeem_expected_count: Optional[int] = None
+        #: 最近一次「点开商品」挑的是哪张卡（进订单确认时抄给 ``redeem_pending_card``）。
+        self.redeem_card: Optional[int] = None
+        #: 连着点开商品几次都**没走到商品详情**（陌生页逃生的循环账，见
+        #: ``REDEEM_OPEN_ATTEMPT_LIMIT``）。判出 ``item_detail`` 即清零。
+        self.redeem_open_attempts = 0
         # 这一次运行里**拉活 H5**（下加拉活）了几次。按「页面刚死」那一次记一笔，
         # 不是按帧 —— 按帧记的话计数器几秒就穿（旧写法实跑 21 秒涨了 3）。
         self._network_refreshes = 0
@@ -1331,6 +1386,24 @@ class CommunityStateMachine:
                 CommunityState.REFRESHING: "已发出下拉刷新、H5 还没画出来，只等不判失败",
                 CommunityState.IMAGE_VIEWER: "已按返回键关图片查看器、H5 还没画回来，只等不判失败",
             }.get(self.state, "转场中，只等不判失败")
+            return None
+        # ⚠️ 2026-11-26：**「确认兑换」已经发出、这一笔的回执还没拿到** ⇒ 只等，不出手。
+        #
+        # 这一条必须放在「陌生页逃生」**之前**：判据漂移的「兑换成功」弹窗会被判成
+        # ``unknown``，走逃生门就是按返回 —— 按返回等于放弃这一笔的回执，
+        # 紧接着回到兑换中心又会重新开单（现场 17:04:20 的第二次确认）。
+        # 也刻意**不**写在各个处理函数里：``order_confirm`` / ``item_detail`` /
+        # ``exchange_center`` 各写一遍必然漏一处，而漏一处就是一次重复提交。
+        if self.redeem_pending and page.name != "redeem_done":
+            self.last_reason = (
+                f"{self.redeem_item_label()}的「确认兑换」已发出，只等这一笔的回执"
+                f"（当前页面={page.label}）；不重复提交、不按返回、不重新开单"
+            )
+            return None
+        if self.redeem_expected_count is not None and page.name not in {
+            "redeem_done", "item_detail", "exchange_center",
+        }:
+            self.last_reason = "已收到兑换成功回执，等待返回兑换中心核对限购计数"
             return None
         # 认不出这一页 ⇒ **不再原地干等到超时**，走逃生门（见 ``STRANGER_RECOVER_STEPS``）。
         if page.name == "unknown":
@@ -1677,6 +1750,22 @@ class CommunityStateMachine:
             reason="整屏只剩一张帖子里的图（上下都是纯黑），按返回键关掉这个查看器",
         )
 
+    def redeem_item_label(self) -> str:
+        """在途那一笔是清单里的哪件商品（日志/对账文案用）。
+
+        ⚠️ 对账现场必须**说清是哪件商品**：现场那次只写「一次兑换」，
+        事后要对照「行动力*30 已 2/2」才知道扣的是哪一笔。
+        """
+        card = self.redeem_pending_card
+        if card is None:
+            card = self.redeem_card
+        if card is None:
+            return "这一笔兑换"
+        for target in self.plan:
+            if target.card == card:
+                return f"卡{card}「{target.name}」"
+        return f"卡{card}"
+
     def _on_redeem_done(self, screen: np.ndarray, page) -> CommunityAction:
         """「兑换成功！」弹窗 ⇒ 点「确认」收起。
 
@@ -1704,6 +1793,18 @@ class CommunityStateMachine:
         （状态机每帧重新判页，落在哪一页就走哪一页的处理）。
         """
         self.state = CommunityState.REDEEM_DONE
+        # 可信回执到了 ⇒ 这一笔事务结束。**只有这里**能清掉在途标记：
+        # 于是「同一笔只提交一次」不靠各页自觉，而靠这一个入口收口。
+        if self.redeem_pending:
+            card = self.redeem_pending_card
+            before = self.progress.redeemed.get(card) if card is not None else None
+            if before is not None:
+                self.redeem_expected_count = before + 1
+            self.redeem_pending = False
+            self.redeem_pending_card = None
+            self._confirm_clicked = False
+            # 走到回执 = 这一圈真的有业务结果，循环账清零。
+            self.redeem_open_attempts = 0
         return CommunityAction(
             "ack_redeem_done",
             REDEEM_CONFIRM,
@@ -1715,11 +1816,22 @@ class CommunityStateMachine:
     def _on_order_confirm(self, screen: np.ndarray, page) -> Optional[CommunityAction]:
         self.state = CommunityState.ORDER_CONFIRM
         point = locate_green_button(screen)
+        if self.redeem_pending:
+            # 常态下走不到这里（``next_action`` 的「事务在途」闸门已先一步返回 None）。
+            # 留着是为了「闸门被谁调换顺序也不会有第二次提交」—— 它守的是钱。
+            self.last_reason = (
+                f"{self.redeem_item_label()}的「确认兑换」已发出，只等这一笔的回执"
+            )
+            return None
         if point is None:
             if not self._confirm_clicked:
                 # ⚠️ 2026-11-15：**一进来按钮就是灰的** ⇒ 这次兑不了（多半积分不够）。
                 # 这与「点过之后变灰」是两件事，后者是正常的等结果。
                 # 不再读余额之后，「兑到失败为止」就靠这一条收口：置位 → 退社区 → 正常收工。
+                #
+                # ⚠️ 2026-11-26：这是**唯一**允许判「兑换失败」的证据。确认页没动、
+                # 回到商品页、陌生页、截图超时都不许往这里走（见 ``REDEEM_OPEN_ATTEMPT_LIMIT``
+                # 上方那段现场）。
                 self.redeem_failed = True
                 self.stop_reason = (
                     "兑换失败：订单确认页的「确认兑换」是灰的（多半积分不够）"
@@ -1744,15 +1856,27 @@ class CommunityStateMachine:
             self.last_reason = "订单确认页按钮已是禁用态，等兑换结果（实测 3~40 秒）"
             return None
         self._confirm_clicked = True
+        # 事务在途：从这里开始到 ``redeem_done`` 之间，**不再发任何输入**。
+        self.redeem_pending = True
+        self.redeem_pending_card = self.redeem_card
         return CommunityAction(
             "confirm_redeem",
             point,
             source_page=page.name,
             target_pages=("redeem_done", "item_detail"),
-            reason="订单确认页，点「确认兑换」（位置逐帧现量）",
+            reason="订单确认页，点「确认兑换」（位置逐帧现量；这一笔只提交一次）",
         )
 
     def _on_item_detail(self, screen: np.ndarray, page) -> CommunityAction:
+        if self.redeem_expected_count is not None:
+            return CommunityAction(
+                "back_to_check_redeem_count",
+                ITEM_BACK,
+                press_back=True,
+                source_page=page.name,
+                target_pages=("exchange_center",),
+                reason="上一笔已有成功回执，返回兑换中心核对限购计数",
+            )
         if self.redeem_failed:
             # 兑换失败后还要再退一级（订单确认 → 商品详情 → 兑换中心），
             # 由 ``_on_exchange_center`` 接着点 ✕ 关社区。
@@ -1768,6 +1892,16 @@ class CommunityStateMachine:
                 reason="兑换失败，从商品详情退回兑换中心",
             )
         self.state = CommunityState.ITEM_DETAIL
+        if self.redeem_pending:
+            # 上一笔已提交、回执还没确认 ⇒ **不重新开单**（现场那次就是从这里又走了一遍
+            # 「立即兑换 → 确认兑换」，把同一件商品提交了第二次）。
+            self.last_reason = (
+                f"{self.redeem_item_label()}的「确认兑换」已发出，回执未确认；"
+                "先不重新开单，等这一笔的结果"
+            )
+            return None
+        # 到了商品详情 ⇒ 「点开商品」这一圈算走通了，陌生页循环账清零。
+        self.redeem_open_attempts = 0
         # 即将进订单确认页：把「点过确认没有」清零，好让下一页区分
         # 「一进来就灰」（兑不了）和「点过之后变灰」（等结果）。
         self._confirm_clicked = False
@@ -1802,7 +1936,20 @@ class CommunityStateMachine:
             reason="兑换中心是空列表（偶发），点左上角 `<` 退回上一页（我的任务或信息流）",
         )
 
-    def _on_exchange_center(self, screen: np.ndarray, page) -> CommunityAction:
+    def _on_exchange_center(self, screen: np.ndarray, page) -> Optional[CommunityAction]:
+        readout = None
+        if self.redeem_expected_count is not None:
+            readout = read_exchange(screen, self.glyphs)
+            card = self.redeem_card
+            count = readout.limits.get(card) if card is not None else None
+            if count is None or count[0] != self.redeem_expected_count:
+                self.last_reason = (
+                    f"{self.redeem_item_label()}已有成功回执，等待限购计数更新至"
+                    f" {self.redeem_expected_count}（当前={count or '读不出'}）"
+                )
+                return None
+            self.redeem_expected_count = None
+            self.redeem_card = None
         self.state = CommunityState.EXCHANGE
         if self.via_exchange:
             # 只是路过：这条路线从信息流去「我的任务」的必经之路就是
@@ -1864,13 +2011,34 @@ class CommunityStateMachine:
                     "（真机实测：这一下关的是**整个社区**，一步回到横屏）"
                 ),
             )
-        readout = read_exchange(screen, self.glyphs)
+        if readout is None:
+            readout = read_exchange(screen, self.glyphs)
         for card, value in readout.limits.items():
             if value is not None:
                 self.progress.redeemed[card] = value[0]
         step = plan_redeem(readout, plan=self.plan)
         self.last_redeem = step
         if step.kind == "open_card" and step.point is not None:
+            # ⚠️ 2026-11-26：**有界恢复**。判页漂移时这一圈会转个没完 ——
+            # 「点开商品 → 判不出商品详情 → 陌生页按返回 → 回兑换中心 → 再点开」，
+            # 而每圈都把 ``state_started`` 重置一次 ⇒ 60 秒的 ``EXCHANGE`` 超时永远等不到
+            # （现场 400 帧里开了 25 次单）。走通一次商品详情就清零（见 ``_on_item_detail``），
+            # 所以连着 5 次都没到商品详情，就是这一页根本认不出 ⇒ 收手留证据。
+            self.redeem_open_attempts += 1
+            if self.redeem_open_attempts > REDEEM_OPEN_ATTEMPT_LIMIT:
+                # 先写一句 ``last_reason``：结论要经门槛两帧确认，主循环随后还会等
+                # 到 ``EXCHANGE`` 超时才收尾，这段静默期里心跳日志得说清在等什么。
+                self.last_reason = (
+                    f"兑换中心连点 {REDEEM_OPEN_ATTEMPT_LIMIT} 次都没判出商品详情，"
+                    "判定这一层反复认不出，准备停止并留证据"
+                )
+                raise UnrecognizedCommunityScreen(
+                    f"兑换中心连点 {REDEEM_OPEN_ATTEMPT_LIMIT} 次「商品卡」都没能判出商品详情"
+                    f"（这一圈最近落点={self.last_page.name if self.last_page else '未知'}，"
+                    f"判页依据={self.last_page.describe() if self.last_page else '无'}）；"
+                    "判定为「兑换中心这一层反复认不出」，停止并留诊断"
+                )
+            self.redeem_card = step.card
             return CommunityAction(
                 "open_item",
                 step.point,
@@ -3229,6 +3397,15 @@ class CommunityRunner(ModeRunnerBase):
     _CAPTURE_SETTLE_SECONDS = 30.0
     #: 这段等待里每隔多久说一句在等什么（否则日志又是一片空白）。
     _CAPTURE_SETTLE_LOG_SECONDS = 5.0
+    #: 「确认兑换已发出、这一笔的回执还没拿到」时的最长等待。
+    #:
+    #: ⚠️ 上界实测 3~40 秒（见 ``ORDER_CONFIRM`` 那一段），给 90 秒罩住慢回执；
+    #: 同时**必须小于** ``_TIMEOUT_SECONDS[ORDER_CONFIRM] = 150`` —— 否则先撞状态超时，
+    #: 报出来的是「画面没有动作」，而真正该说的是「这笔兑换要人工对账」。
+    _RECEIPT_WAIT_SECONDS = 90.0
+    # 收到回执后，给兑换中心回显计数留出时间，并在 REDEEM_DONE 的状态超时前停止。
+    _REDEEM_COUNT_WAIT_SECONDS = 30.0
+    _RECEIPT_SAFE_ACTIONS = frozenset({"ack_redeem_done", "back_to_check_redeem_count"})
 
     def __init__(
         self,
@@ -3264,6 +3441,12 @@ class CommunityRunner(ModeRunnerBase):
         self._switch: Optional[ChannelSwitch] = None
         self._wait_frame_saved = False
         self._last_wait_log_at: Optional[float] = None
+        # 开始向设备发送确认时记时。通道报错时设备仍可能已收到点击。
+        self._receipt_started: Optional[float] = None
+        self._redeem_count_started: Optional[float] = None
+        #: 回执未明 ⇒ **保留现场**：不再退出社区、不按返回、不回大厅。
+        #: 置位后 ``_leave_portrait_if_needed`` 与 ``_close_out`` 一律不动游戏。
+        self._hold_scene = False
 
     # ---- 装配 ----
 
@@ -3280,6 +3463,12 @@ class CommunityRunner(ModeRunnerBase):
             # 兜底收尾**不能**在这里跑。
             stopped = True
             raise
+        except PurchaseReceiptUnclear:
+            raise
+        except (RuntimeError, OSError, subprocess.SubprocessError) as error:
+            if self._receipt_started is None:
+                raise
+            self._stop_on_receipt_error(error, "确认兑换发送后对账中断")
         finally:
             # 失败路径的兜底：人可能还停在社区的竖屏页面里，而 ``main`` 的
             # 「异常也回家」要拿横屏通道取图，竖屏下会直接抛「render size changed」。
@@ -3448,6 +3637,15 @@ class CommunityRunner(ModeRunnerBase):
         - ``swipe_end`` —— 信息流里上下滑。
         - 其余 —— 照旧点击（``super()._perform_action``）。
         """
+        if action.name == "confirm_redeem":
+            if self._receipt_started is not None:
+                self._stop_on_receipt_unclear(
+                    self.runtime.last_frame(), self.now() - self._receipt_started
+                )
+            card = self.machine.redeem_pending_card
+            if card is None or card not in self.machine.progress.redeemed:
+                raise UnrecognizedCommunityScreen("订单确认页的商品来源未核实，停止兑换")
+            self._receipt_started = self.now()
         if getattr(action, "press_back", False):
             if action.name == "back_from_redeem_failed":
                 # 动作还没发出去，此刻的画面就是「兑不了」的现场 —— 用户点名要的
@@ -3501,6 +3699,23 @@ class CommunityRunner(ModeRunnerBase):
         self.runtime.log(f"模式={self._MODE_LABEL} 兑换失败现场={path}")
 
     def _capture_frame(self) -> np.ndarray:
+        """取一帧；**读过回执之前取图超时**按「回执未明」停机，其余照原样。
+
+        ⚠️ 2026-11-26：``subprocess.TimeoutExpired`` 是 ``SubprocessError``、
+        **不是** ``RuntimeError``，所以它不会进主循环的「页面超时」分支，
+        而会直接冒到 ``main`` 的通用异常收尾 ⇒ **回大厅**。确认兑换已经发出去时
+        这么干等于抹掉对账现场（与竞技场 2026-11-25 那次同形）。
+        """
+        try:
+            return self._capture_with_rotation_wait()
+        except subprocess.TimeoutExpired as error:
+            if self._receipt_started is None:
+                raise
+            self._stop_on_receipt_error(
+                error, "读取回执时截图超时", "community_receipt_capture_timeout"
+            )
+
+    def _capture_with_rotation_wait(self) -> np.ndarray:
         """取一帧；**换向那一两秒里取不到图属于转场中，不是失败**。
 
         ## 为什么这一条社区路线必须自己兜
@@ -3518,10 +3733,15 @@ class CommunityRunner(ModeRunnerBase):
         ⚠️ **只兜方向类异常**：``ManualStop`` / 截图命令真失败都不是 OrientationError，
         不会被这里吞掉。
         """
+        # 正式入口的全局弹窗守卫可能发出点击。兑换对账期间只读取画面。
+        capture = (
+            self.runtime.capture_unguarded if self._receipt_started is not None
+            else self.runtime.capture
+        )
         if self.runtime.dry_run or self._switch is None:
-            return self.runtime.capture()
+            return capture()
         try:
-            return self.runtime.capture()
+            return capture()
         except OrientationError as error:
             reason = str(error)
         started = self.now()
@@ -3544,7 +3764,7 @@ class CommunityRunner(ModeRunnerBase):
                 logged_at = elapsed
             self.sleep(self.poll_seconds)
             try:
-                return self.runtime.capture()
+                return capture()
             except OrientationError as error:
                 reason = str(error)
 
@@ -3560,9 +3780,9 @@ class CommunityRunner(ModeRunnerBase):
         竖屏 —— 19:58 那次实跑就是这么白等 20 秒「等待切换为竖屏」的：
         窗口明明已经横屏，代码却拿竖屏链路去取图。
         """
+        name = getattr(action, "name", "")
         if self._switch is None:
             return
-        name = getattr(action, "name", "")
         if name == "enter_community":
             self._switch.expect("portrait")
         elif name in (
@@ -3619,6 +3839,25 @@ class CommunityRunner(ModeRunnerBase):
                 f"原因=被「{confirmed_page}」这层盖住了落点，先收掉它再重来"
             )
             return True
+        # ⚠️⚠️ 2026-11-26：**「确认兑换」已发出、回执还没到 ⇒ 这个转场到此为止。**
+        #
+        # 不这么做的话，主循环会**自己**把 ``confirm_redeem`` 重发一遍 —— 它有一条规矩：
+        # 「``confirmed_page`` 仍等于来源页 ⇒ 把上一次那个动作原样再发一次」
+        # （``runner_base`` 里 `elif last_transition_action is not None` 那一段）。
+        # 订单确认页在回执到之前**本来就该停在原地**，于是这条规矩把「等结果」
+        # 变成「每 45 秒再点一次确认兑换」。状态机返回 None 拦不住它 —— 那一层
+        # 在上游，改写动作又会被结论门槛判成「绕过」。只能在这里宣布转场结束。
+        # 现场：17:03:48 与 17:04:20 两次 ``confirm_redeem``，商品直接到 2/2。
+        if (
+            previous_action is not None
+            and getattr(previous_action, "name", "") == "confirm_redeem"
+            and getattr(self.machine, "redeem_pending", False)
+        ):
+            self.runtime.log(
+                f"模式={self._MODE_LABEL} 转场作废=confirm_redeem "
+                "原因=这一笔已经提交，先等它的回执（不重发、不按返回）"
+            )
+            return True
         # ⚠️ 2026-10-18：**陌生页也要在这里放行**。
         # 场景：``task_browse_5``（点了「点开一篇帖子」，期望 post_detail）点歪进了作者主页
         # ⇒ 判页 ``unknown`` ⇒ 状态机给出 ``stranger_back``。此时 ``confirmed_page``
@@ -3642,6 +3881,13 @@ class CommunityRunner(ModeRunnerBase):
     def _transition_success_detail(
         self, previous_action: Any, current_action: Any
     ) -> str:
+        if getattr(previous_action, "name", "") == "confirm_redeem" and getattr(
+            self.machine, "redeem_pending", False
+        ):
+            return (
+                "（实为「确认兑换」已提交、回执还没到：本步**不算做成**，"
+                "只是不再重发，等这一笔的结果）"
+            )
         if getattr(current_action, "source_page", "") == "network_error":
             return "（实为 H5 报「网络连接异常」：这个转场作废，改走下加拉活）"
         if getattr(current_action, "source_page", "") == "image_viewer":
@@ -3662,6 +3908,11 @@ class CommunityRunner(ModeRunnerBase):
         判据沉默 10 秒内就能看出来。
         """
         result = super()._stable_next_action(screen, stable)
+        # ⚠️ 2026-11-26：确认兑换发出后，**先等这一笔的回执**。
+        # 放在 ``super()`` 之后是因为：结论门槛要先进基类（见 ``_stable_next_action_checked``），
+        # 在它之前抛的 ``PurchaseReceiptUnclear`` 会被包装成「结论门槛被绕过」，
+        # 真正的原因（这笔兑换要人工对账）就丢了。
+        result = self._hold_until_receipt(screen, result)
         # ⚠️ 2026-10-18：**恢复成功要有自己的一行日志**。
         # 状态机是纯决策（不认识 Runtime），它只能把这件事写进 ``last_reason``，
         # 而下一步的处理函数会立刻把 ``last_reason`` 覆盖成「任务第 N 步」之类的文案
@@ -3714,6 +3965,109 @@ class CommunityRunner(ModeRunnerBase):
             f"结论={getattr(self.machine, 'last_reason', '') or '已走完出口'}"
         )
 
+    # ---- 兑换事务：确认发出后先等这一笔的回执 ----
+    #
+    # 现场与规矩见 ``REDEEM_OPEN_ATTEMPT_LIMIT`` 上方那段。这里只落到执行层：
+    # ① 在途期间**拦下所有输入**（状态机已经把动作收敛成 None，这一层再兜一次，
+    #    因为「一次都不许发」比「尽量不发」贵不了多少，而漏一次就是多扣一笔）；
+    # ② 等满 ``_RECEIPT_WAIT_SECONDS`` 仍没回执 ⇒ 留现场 + ``PurchaseReceiptUnclear``，
+    #    与竞技场购票共用同一套停机语义（``main.run_mode`` 不回大厅、
+    #    ``run_daily_tasks`` 停整轮）。
+
+    def _hold_until_receipt(self, screen: np.ndarray, result: Any) -> Any:
+        """在途期间只放行「收起回执」；等不到就停手待对账。
+
+        ⚠️ 这里**不许把动作改写成 None 再返回**：那是「改写判定」，会被
+        ``_stable_next_action_checked`` 判成绕过结论门槛，整条路线按失败关闭。
+        真正让主循环停手的是两处：① 状态机在途期间只返回 None；
+        ② ``_transition_completed`` 把这一步的转场判成**已结束**，
+        于是主循环不会把 ``confirm_redeem`` 原样重发（它才是重复点击的源头）。
+        这一层只留最强的一条：**看到不许发的动作 ⇒ 直接对账停机**，不发那一下。
+        """
+        if self._receipt_started is None:
+            return result
+        pending = self.machine.redeem_pending
+        checking_count = self.machine.redeem_expected_count is not None
+        if not pending and not checking_count:
+            self._receipt_started = None
+            self._redeem_count_started = None
+            return result
+        if checking_count and self._redeem_count_started is None:
+            self._redeem_count_started = self.now()
+            self.runtime.log(
+                f"模式={self._MODE_LABEL} 兑换=收到成功回执 商品={self.machine.redeem_item_label()} "
+                f"下一步=核对限购计数 {self.machine.redeem_expected_count}"
+            )
+        started = self._receipt_started if pending else self._redeem_count_started
+        assert started is not None
+        waited = self.now() - started
+        allowed = result is None or result is NOT_STABLE or (
+            checking_count and result.name in self._RECEIPT_SAFE_ACTIONS
+        )
+        limit = self._RECEIPT_WAIT_SECONDS if pending else self._REDEEM_COUNT_WAIT_SECONDS
+        if not allowed or waited >= limit:
+            self._stop_on_receipt_unclear(screen, waited)
+        return result
+
+    def _stop_on_receipt_unclear(self, screen: Optional[np.ndarray], waited: float) -> None:
+        """等满仍拿不到回执 ⇒ 记商品 + 最后可用画面，**原地停手**待人工对账。
+
+        ⚠️ 三个「不许」是用户 2026-11-26 点名的：不按返回、不重新开单、不回大厅。
+        所以先置 ``_hold_scene`` 再抛 —— ``run()`` 的 ``finally`` 与 ``_close_out``
+        都会读它，从而**一个字都不发给游戏**。
+        """
+        self._hold_scene = True
+        page = getattr(self.machine, "last_page", None)
+        last_page = getattr(page, "label", "") or getattr(page, "name", "") or "未知"
+        item = self.machine.redeem_item_label()
+        reason = (
+            "已收到成功回执，但限购计数未对上"
+            if self.machine.redeem_expected_count is not None else "没拿到可信回执"
+        )
+        diagnostic = "（没有可用画面）"
+        if screen is not None:
+            try:
+                diagnostic = str(self.runtime.save_diagnostic("community_receipt_unclear", screen))
+            except Exception as error:  # noqa: BLE001 - 存图失败不该盖掉对账结论
+                diagnostic = f"（现场帧保存失败：{type(error).__name__}: {error}）"
+        self.runtime.log(
+            f"模式={self._MODE_LABEL} 停止=兑换回执未明 商品={item} "
+            f"原因={reason} 已等={waited:.0f}秒 最后页面={last_page} 现场={diagnostic} "
+            "处理=停在原地待人工对账（不按返回、不重新开单、不回大厅）"
+        )
+        raise PurchaseReceiptUnclear(
+            f"{item} 的「确认兑换」已提交一次，等待 {waited:.0f} 秒后{reason}"
+            f"（最后页面={last_page}）；已停止发送输入、保留现场待人工对账。"
+            f"最后可用画面={diagnostic}"
+        )
+
+    def _stop_on_receipt_error(
+        self, error: Exception, reason: str, label: str = "community_receipt_interrupted"
+    ) -> None:
+        """设备消息已送出或发送结果不明时，保留最后一次成功截图。"""
+        self._hold_scene = True
+        frame = self.runtime.last_frame()
+        diagnostic = "（没有可用画面）"
+        if frame is not None:
+            try:
+                diagnostic = str(
+                    self.runtime.save_diagnostic(label, frame)
+                )
+            except Exception as inner:  # noqa: BLE001 - 同上
+                diagnostic = f"（现场帧保存失败：{type(inner).__name__}: {inner}）"
+        item = self.machine.redeem_item_label()
+        summary = f"{type(error).__name__}: {error}"
+        self.runtime.log(
+            f"模式={self._MODE_LABEL} 停止=兑换回执未明 商品={item} "
+            f"原因={reason}（{summary}） 最后可用画面={diagnostic} "
+            "处理=停在原地待人工对账（不按返回、不重新开单、不回大厅）"
+        )
+        raise PurchaseReceiptUnclear(
+            f"{item} 的「确认兑换」已尝试发送一次，{reason}（{summary}）；"
+            "未能确认本笔对账结果，请核对实际扣费。"
+            f"最后可用证据={diagnostic}"
+        ) from error
+
     def _close_out(self) -> None:
         """收尾：先把社区页关掉、等模拟器转回横屏，再交给基类做「回首页」。
 
@@ -3743,6 +4097,15 @@ class CommunityRunner(ModeRunnerBase):
 
         契约与基类一致：**绝不抛异常** —— 关不掉就记一笔，让基类那步照常失败并留下原因。
         """
+        if self._hold_scene:
+            # 确认兑换已提交、回执未明 ⇒ 这一屏就是**对账现场**。
+            # 退社区 / 按返回 / 回大厅都会把它抹掉，所以这里一步都不走。
+            self.runtime.log(
+                f"模式={self._MODE_LABEL} 收尾=保留对账现场 "
+                "动作=不退出社区、不按返回、不回大厅 "
+                "原因=「确认兑换」已提交一次、回执未明"
+            )
+            return
         if self._finish_home is None and not self.runtime.dry_run:
             # ⚠️ 基类 ``_close_out`` 在钩子缺失时是**静默 return**（一行日志都没有）
             # ⇒「终点保证是首页」这条契约会**悄悄失效**，日志上看不出任何异常。
@@ -3782,6 +4145,14 @@ class CommunityRunner(ModeRunnerBase):
         """
         switch = self._switch
         if switch is None or self.runtime.dry_run:
+            return
+        if self._hold_scene:
+            # 同上：回执未明时这一屏是对账现场，**一个字都不发**。
+            # ``run()`` 的 ``finally`` 会调到这里，所以这道闸门必须在本方法里也有。
+            self.runtime.log(
+                f"模式={self._MODE_LABEL} 收尾=保留对账现场 动作=不尝试退出社区 "
+                "原因=「确认兑换」已提交一次、回执未明"
+            )
             return
         try:
             if not switch.portrait.is_portrait():

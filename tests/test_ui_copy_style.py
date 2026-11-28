@@ -204,11 +204,10 @@ def test_progress_labels_distinguish_ended_routes_from_successful_results():
 #:
 #: 为什么只挑这些：路线与窗口层的**运行日志**按规范是不受约束的（`提示=…` 那些，
 #: 排障时要写清「正在做什么、别按哪个键」），而这里列的是**会弹到用户眼前**的
-#: 异常与提示 —— 权限不足、截图失败、计划被筛空、次元探查的前置条件。
+#: 异常与提示 —— 权限不足、截图失败、计划被筛空。
 NOTICE_MODULES = (
     "desktop/controller.py",
     "desktop/catalog.py",
-    "desktop/chaos_bridge.py",
     "desktop/onboarding.py",
     "desktop/diagnostics.py",
     "core/elevation.py",

@@ -9,7 +9,7 @@
   一下就会开始在屏幕上乱点；而停止必须有键盘出口，因为运行期间鼠标被按在
   目标点上、点不到按钮。这条非对称是安全设计，不是漏做。
 * **没有「点多少次就停」**。用户的原话是「一直点」，加次数上限只是多一个要
-  解释的输入框；要停就按 P 或点停止。
+  解释的输入框；要停就长按 P 或点停止。
 """
 
 from __future__ import annotations
@@ -17,16 +17,16 @@ from __future__ import annotations
 from typing import Callable
 
 from PySide6.QtCore import QTimer
-from PySide6.QtWidgets import QHBoxLayout, QSpinBox, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QHBoxLayout, QLabel, QSpinBox, QVBoxLayout, QWidget
 from qfluentwidgets import (
     BodyLabel,
     CaptionLabel,
-    CardWidget,
     InfoBar,
     InfoBarPosition,
     PrimaryPushButton,
     PushButton,
     StrongBodyLabel,
+    TitleLabel,
 )
 
 from auto_game_unified.core.autoclicker import (
@@ -36,7 +36,9 @@ from auto_game_unified.core.autoclicker import (
     ClickPlan,
     cursor_position,
 )
-from auto_game_unified.desktop_qt.style import SPIN_BOX_QSS
+from auto_game_unified.desktop_qt import brand
+from auto_game_unified.desktop_qt.mascot import ArkyMascot
+from auto_game_unified.desktop_qt.style import HEADING, INK, MUTED, SPIN_BOX_QSS, PixelPanel
 
 # 取点倒计时：给用户时间把鼠标移到目标上。3 秒是「来得及、又不至于等烦」的值。
 PICK_COUNTDOWN_SECONDS = 3
@@ -72,12 +74,46 @@ class AutoClickerPage(QWidget):
         self._countdown = 0
 
         outer = QVBoxLayout(self)
-        outer.setContentsMargins(24, 16, 24, 16)
-        outer.setSpacing(12)
-        outer.addWidget(StrongBodyLabel("实用工具 · 连点器", self))
-        outer.addWidget(self._build_target_card())
-        outer.addWidget(self._build_interval_card())
+        outer.setContentsMargins(18, 12, 18, 12)
+        outer.setSpacing(10)
+        heading = QHBoxLayout()
+        emblem = QLabel(self)
+        emblem.setPixmap(brand.icon_pixmap("nav-tools", 24, device_pixel_ratio=self.devicePixelRatioF()))
+        heading.addWidget(emblem)
+        heading.addWidget(TitleLabel("实用工具", self), 1)
+        outer.addLayout(heading)
+
+        intro = PixelPanel(self)
+        intro_layout = QHBoxLayout(intro)
+        intro_layout.setContentsMargins(14, 12, 14, 12)
+        intro_text = QVBoxLayout()
+        intro_text.setSpacing(2)
+        title = StrongBodyLabel("固定点连点器", intro)
+        title.setStyleSheet(f"color: {HEADING}; font-size: 16px;")
+        intro_text.addWidget(title)
+        description = CaptionLabel("独立运行 · 与任务中心互斥", intro)
+        description.setStyleSheet(f"color: {MUTED};")
+        intro_text.addWidget(description)
+        intro_layout.addLayout(intro_text, 1)
+        mascot = ArkyMascot(intro, height=68, pose="tools")
+        mascot.setFixedWidth(68)
+        intro_layout.addWidget(mascot)
+        outer.addWidget(intro)
+
+        settings = QHBoxLayout()
+        settings.setSpacing(10)
+        settings.addWidget(self._build_target_card(), 1)
+        settings.addWidget(self._build_interval_card(), 1)
+        outer.addLayout(settings)
         outer.addWidget(self._build_control_card())
+        note = CaptionLabel(
+            "执行期间长按 P 键可立即停止，该方式不依赖鼠标操作。"
+            "连点将持续执行直至手动停止；执行前需确认目标位置。",
+            self,
+        )
+        note.setWordWrap(True)
+        note.setStyleSheet(f"color: {MUTED};")
+        outer.addWidget(note)
         outer.addStretch(1)
 
         self._refresh_timer = QTimer(self)
@@ -99,48 +135,53 @@ class AutoClickerPage(QWidget):
         spin.setFixedWidth(width)
         return spin
 
-    def _build_target_card(self) -> CardWidget:
-        card = CardWidget(self)
+    def _build_target_card(self) -> PixelPanel:
+        card = PixelPanel(self)
         layout = QVBoxLayout(card)
         layout.setContentsMargins(16, 12, 16, 12)
         layout.setSpacing(8)
-        layout.addWidget(StrongBodyLabel("目标位置", card))
+        title = StrongBodyLabel("目标位置", card)
+        title.setStyleSheet(f"color: {HEADING};")
+        layout.addWidget(title)
         hint = CaptionLabel(
             "将光标移至目标位置后执行「拾取位置」；倒计时结束时记录该坐标。",
             card,
         )
         hint.setWordWrap(True)
+        hint.setStyleSheet(f"color: {MUTED};")
         layout.addWidget(hint)
 
         row = QHBoxLayout()
         row.setSpacing(8)
         row.addWidget(BodyLabel("X", card))
-        self.x_spin = self._make_spin(-_COORD_LIMIT, _COORD_LIMIT, 0, width=110)
+        self.x_spin = self._make_spin(-_COORD_LIMIT, _COORD_LIMIT, 0, width=97)
         self.x_spin.valueChanged.connect(self._on_position_edited)
         row.addWidget(self.x_spin)
         row.addSpacing(8)
         row.addWidget(BodyLabel("Y", card))
-        self.y_spin = self._make_spin(-_COORD_LIMIT, _COORD_LIMIT, 0, width=110)
+        self.y_spin = self._make_spin(-_COORD_LIMIT, _COORD_LIMIT, 0, width=97)
         self.y_spin.valueChanged.connect(self._on_position_edited)
         row.addWidget(self.y_spin)
-        row.addSpacing(12)
-        self.pick_button = PushButton("拾取位置", card)
-        self.pick_button.clicked.connect(self._begin_pick)
-        row.addWidget(self.pick_button)
         row.addStretch(1)
         layout.addLayout(row)
+        self.pick_button = PushButton(brand.icon("crosshair"), "拾取位置（3 秒）", card)
+        self.pick_button.clicked.connect(self._begin_pick)
+        layout.addWidget(self.pick_button)
 
         self.position_note = CaptionLabel("尚未取点：需执行「拾取位置」或填写坐标。", card)
         self.position_note.setWordWrap(True)
+        self.position_note.setStyleSheet(f"color: {MUTED};")
         layout.addWidget(self.position_note)
         return card
 
-    def _build_interval_card(self) -> CardWidget:
-        card = CardWidget(self)
+    def _build_interval_card(self) -> PixelPanel:
+        card = PixelPanel(self)
         layout = QVBoxLayout(card)
         layout.setContentsMargins(16, 12, 16, 12)
         layout.setSpacing(8)
-        layout.addWidget(StrongBodyLabel("点击间隔", card))
+        title = StrongBodyLabel("点击间隔", card)
+        title.setStyleSheet(f"color: {HEADING};")
+        layout.addWidget(title)
 
         row = QHBoxLayout()
         row.setSpacing(8)
@@ -157,37 +198,36 @@ class AutoClickerPage(QWidget):
 
         self.interval_note = CaptionLabel("", card)
         self.interval_note.setWordWrap(True)
+        self.interval_note.setStyleSheet(f"color: {MUTED};")
         layout.addWidget(self.interval_note)
         self._on_interval_edited(self.interval_spin.value())
         return card
 
-    def _build_control_card(self) -> CardWidget:
-        card = CardWidget(self)
-        layout = QVBoxLayout(card)
-        layout.setContentsMargins(16, 12, 16, 12)
-        layout.setSpacing(8)
-
-        row = QHBoxLayout()
-        row.setSpacing(12)
-        self.start_button = PrimaryPushButton("开始连点", card)
+    def _build_control_card(self) -> PixelPanel:
+        card = PixelPanel(self)
+        stats = QHBoxLayout(card)
+        stats.setContentsMargins(16, 12, 16, 12)
+        stats.setSpacing(12)
+        self.count_label = StrongBodyLabel("0", card)
+        self.status_label = StrongBodyLabel("已停止", card)
+        self.count_label.setStyleSheet(f"color: {INK}; font-size: 25px; font-weight: 700;")
+        self.status_label.setStyleSheet(f"color: {HEADING};")
+        self.status_label.setWordWrap(True)
+        for title, value in (("累计点击", self.count_label), ("当前状态", self.status_label)):
+            column = QVBoxLayout()
+            column.setSpacing(2)
+            caption = CaptionLabel(title, card)
+            caption.setStyleSheet(f"color: {MUTED};")
+            column.addWidget(caption)
+            column.addWidget(value)
+            stats.addLayout(column, 1)
+        self.start_button = PrimaryPushButton(brand.icon("play"), "开始连点", card)
         self.start_button.clicked.connect(self._start)
-        row.addWidget(self.start_button)
-        self.stop_button = PushButton("停止", card)
+        stats.addWidget(self.start_button)
+        self.stop_button = PushButton(brand.icon("stop"), "停止", card)
+        self.stop_button.setProperty("pixelRole", "danger")
         self.stop_button.clicked.connect(self._stop)
-        row.addWidget(self.stop_button)
-        row.addStretch(1)
-        layout.addLayout(row)
-
-        self.status_label = BodyLabel("已停止", card)
-        layout.addWidget(self.status_label)
-
-        note = CaptionLabel(
-            "执行期间按 P 可立即停止，该方式不依赖鼠标操作。"
-            "连点将持续执行直至手动停止；执行前需确认目标位置。",
-            card,
-        )
-        note.setWordWrap(True)
-        layout.addWidget(note)
+        stats.addWidget(self.stop_button)
         return card
 
     # ── 取点 ────────────────────────────────────────────────────────────────
@@ -256,7 +296,7 @@ class AutoClickerPage(QWidget):
         except Exception as error:  # noqa: BLE001 —— 报进状态行，别静默失败
             self._warn("无法启动连点", str(error))
             return
-        self.status_label.setText("连点进行中 · 已执行 0 次（按 P 停止）")
+        self.status_label.setText("连点进行中 · 已执行 0 次（长按 P 停止）")
         self._refresh()
 
     def _stop(self) -> None:
@@ -267,6 +307,7 @@ class AutoClickerPage(QWidget):
 
     def _refresh(self) -> None:
         running = self._clicker.running
+        self.count_label.setText(str(self._clicker.count))
         self.x_spin.setEnabled(not running)
         self.y_spin.setEnabled(not running)
         self.interval_spin.setEnabled(not running)
@@ -277,7 +318,7 @@ class AutoClickerPage(QWidget):
             self.pick_button.setEnabled(not running)
         if running:
             self.status_label.setText(
-                f"连点进行中 · 已执行 {self._clicker.count} 次（按 P 停止）"
+                f"连点进行中 · 已执行 {self._clicker.count} 次（长按 P 停止）"
             )
         elif self._clicker.last_error:
             self.status_label.setText(f"已停止：{self._clicker.last_error}")

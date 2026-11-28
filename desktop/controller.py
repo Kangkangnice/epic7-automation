@@ -17,7 +17,6 @@ from typing import Mapping
 from auto_game_unified.core.pc_window import (
     PC_INPUT_BACKGROUND,
     PC_INPUT_FOREGROUND,
-    PC_INPUT_MODES,
 )
 from auto_game_unified.desktop import session
 from auto_game_unified.desktop.catalog import (
@@ -73,7 +72,12 @@ class DesktopController:
         """
         if self.worker.running:
             return
-        names = [mode for mode in state.selection if mode in MODE_SPECS]
+        if state.backend in BACKENDS:
+            self.selected_backend = state.backend
+        names = [
+            mode for mode in state.selection
+            if mode in MODE_SPECS and route_by_name(mode).visible_on(self.selected_backend)
+        ]
         standalone = [mode for mode in names if route_by_name(mode).standalone_only]
         self.selection = standalone[:1] if standalone else names
         for mode, cycles in state.cycles.items():
@@ -81,10 +85,6 @@ class DesktopController:
                 self.cycles[mode] = cycles
         for mode, values in clean_all(state.params).items():
             self.options[mode] = values
-        if state.backend in BACKENDS:
-            self.selected_backend = state.backend
-        if state.pc_input_mode in PC_INPUT_MODES:
-            self.pc_input_mode = state.pc_input_mode
 
     def set_options(self, mode: str, values: Mapping[str, object]) -> None:
         """改某条路线的可选项。非法值、越界值与未满足依赖按声明退回默认。"""
@@ -121,7 +121,7 @@ class DesktopController:
             if mode in self.selection:
                 self.selection.remove(mode)
             return
-        if mode in self.selection:
+        if mode in self.selection or not route.visible_on(self.selected_backend):
             return
         if route.standalone_only:
             self.selection.clear()
@@ -153,7 +153,7 @@ class DesktopController:
         """
         if self.worker.running:
             raise RuntimeError("运行期间不能修改任务")
-        routes = routes_in_group(group)
+        routes = routes_in_group(group, self.selected_backend)
         if not routes:
             return
         if any(route.standalone_only for route in routes):
@@ -227,7 +227,7 @@ class DesktopController:
         skipped = tuple(unsupported)
         runnable = tuple((mode, cycles) for mode, cycles in plan if mode not in skipped)
         if not runnable:
-            names = "、".join(route_by_name(mode).label for mode in skipped)
+            names = "、".join(route_by_name(mode).display_label for mode in skipped)
             raise RuntimeError(
                 f"所选路线在当前窗口后端都不可用：{names}（{reason}）；"
                 "需切换窗口后端，或改选其它路线。"
@@ -239,7 +239,7 @@ class DesktopController:
             raise RuntimeError("需先完成环境检测")
         plan, skipped = self.resolve_plan()
         if skipped:
-            names = "、".join(route_by_name(mode).label for mode in skipped)
+            names = "、".join(route_by_name(mode).display_label for mode in skipped)
             self.worker.notice(
                 f"已跳过 {len(skipped)} 条当前后端不可用的路线：{names}"
                 "（其余勾选照常运行；需切换窗口后端方可执行）。"
@@ -251,25 +251,13 @@ class DesktopController:
                 backend=self.selected_backend,
                 # 只有 PC 后端才有「输入通道」这回事；模拟器一律走原来的路径。
                 pc_input_mode=(
-                    self.pc_input_mode
+                    PC_INPUT_BACKGROUND
                     if self.selected_backend == "pc"
                     else PC_INPUT_FOREGROUND
                 ),
                 params={mode: dict(values) for mode, values in self.options.items()},
             )
         )
-
-    def select_pc_input_mode(self, mode: str) -> None:
-        """切换 PC 输入通道（界面上的「不占用前台」开关）。
-
-        和 ``select_backend`` 同一套规矩：运行期间不许切、非法值直接拒绝。
-        不因为切到模拟器就清掉选择 —— 用户切回 PC 时还想要它。
-        """
-        if self.worker.running:
-            raise RuntimeError("运行期间不能切换输入通道")
-        if mode not in PC_INPUT_MODES:
-            raise ValueError(f"未知 PC 输入通道：{mode!r}")
-        self.pc_input_mode = mode
 
     def select_backend(self, backend: str) -> None:
         if self.worker.running:
@@ -279,6 +267,7 @@ class DesktopController:
         if backend == self.selected_backend:
             return
         self.selected_backend = backend
+        self.selection = [mode for mode in self.selection if route_by_name(mode).visible_on(backend)]
         # 检测结果属于上一个后端，切换后必须重新检测。
         self.preflight_report = None
 

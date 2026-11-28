@@ -10,6 +10,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from auto_game_unified.tools import doc_review
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -22,6 +24,20 @@ def test_a_route_module_points_at_its_own_manual_and_the_status_page() -> None:
     docs = doc_review.affected_docs(["games/epic7/arena.py"])
     assert "docs/maintenance/arena.md" in docs, "改竞技场模块却没提醒去看竞技场手册"
     assert "docs/STATUS.md" in docs, "改路线模块不会影响放行名单吗？至少该看一眼 STATUS"
+
+
+@pytest.mark.parametrize(
+    ("changed_file", "manual"),
+    [
+        ("games/epic7/craft_equipment.py", "docs/maintenance/craft_equipment.md"),
+        ("games/epic7/penguin_purchase.py", "docs/maintenance/penguin_purchase.md"),
+        ("games/epic7/community_pages.py", "docs/maintenance/community_checkin.md"),
+        ("games/epic7/shop_refresh.py", "docs/maintenance/shop_refresh.md"),
+        ("games/epic7/evidence/shop_refresh.py", "docs/maintenance/shop_refresh.md"),
+    ],
+)
+def test_route_changes_include_their_specialized_manual(changed_file: str, manual: str) -> None:
+    assert manual in doc_review.affected_docs([changed_file])
 
 
 def test_only_tools_with_documented_contracts_require_review() -> None:
@@ -218,7 +234,7 @@ def test_every_scenario_section_anchor_still_exists() -> None:
             headings = [
                 line.lstrip("#").strip()
                 for line in path.read_text(encoding="utf-8").splitlines()
-                if line.startswith("## ")
+                if line.startswith(("## ", "### ", "#### "))
             ]
             if not any(h.startswith(step.section) for h in headings):
                 missing.append(f"{scenario.key}: {step.target} §{step.section}")

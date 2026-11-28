@@ -71,6 +71,15 @@ class BattleConfig:
     # 布局判据与图标判据各自都会在真假之间跳（见下面 auto_point is None 分支的注释），
     # 单帧判成手动且图标恰好没认出来，是**正常波动**，不该当场判死刑。
     auto_point_grace_seconds: float = 12.0
+    # 拨完自动开关后，**未确认自动开启前**不允许再拨下一次的最短等待窗口。
+    #
+    # ⚠️ 这不是「游戏自己想通」的宽容值，而是点击后观察目标（右下四格底座）
+    # 的时间。实跑统计见 runtime_logs/_auto_confirm_gaps.txt：1215 次点击后
+    # 确认自动开启最长 13 秒、P99 11 秒；旧代码只等 3 秒冷却，于是 11-26
+    # 12:58:05 → 12:58:10、11-11 08:00:17 → 08:00:22 都在目标未确认时又拨
+    # 一下，把可能已经拨开的自动战斗又拨回手动。15 秒覆盖全部成功样本。
+    # 超过窗口仍只见 MANUAL 才按「来源仍在、目标未到」的契约重试。
+    auto_confirm_wait_seconds: float = 15.0
 
 
 BattleObserver = Callable[[np.ndarray, np.ndarray | None], BattleObservation]
@@ -150,6 +159,9 @@ class BattleSupervisor:
         auto_clicks = 0
         auto_clicked_at: float | None = None
         auto_source_gone_logged = False
+        # 「已点击、目标自动战斗尚未连续两帧确认」的等待状态只记一次日志；
+        # 在这段窗口里，即便又读到 MANUAL 也不许重复拨开关。
+        auto_confirm_wait_logged = False
         auto_recoveries = 0
         auto_interference_stopped = False
         auto_interference_logged = False
@@ -435,13 +447,29 @@ class BattleSupervisor:
                             if auto_clicked_at is None
                             else current - auto_clicked_at
                         )
-                        should_click_auto = not auto_interference_stopped and (
-                            auto_clicked_at is None
-                            or (
-                                auto_clicks < 4
-                                and since_auto_click is not None
-                                and since_auto_click
-                                >= self.config.allowed_action_retry_seconds
+                        # 点击后到目标确认之间，MANUAL 再出现也不算「新一轮来源」：
+                        # 入场演出/敌人回合会把右下四格底座盖住，此时右上图标仍可能
+                        # 擦着阈值命中，旧代码据此再拨一下，把刚拨开的自动又拨回去。
+                        # 按 TRANSITION_CONTRACTS「来源已离开、目标未稳定 ⇒ 只等待」，
+                        # 先等满有界确认窗口；窗口内只记日志，不动手。
+                        confirm_waiting = (
+                            auto_clicked_at is not None
+                            and not auto_confirmed
+                            and since_auto_click is not None
+                            and since_auto_click
+                            < self.config.auto_confirm_wait_seconds
+                        )
+                        should_click_auto = (
+                            not auto_interference_stopped
+                            and not confirm_waiting
+                            and (
+                                auto_clicked_at is None
+                                or (
+                                    auto_clicks < 4
+                                    and since_auto_click is not None
+                                    and since_auto_click
+                                    >= self.config.allowed_action_retry_seconds
+                                )
                             )
                         )
                         if should_click_auto:
@@ -457,7 +485,25 @@ class BattleSupervisor:
                             )
                             auto_clicked_at = current
                             auto_source_gone_logged = False
+                            auto_confirm_wait_logged = False
                             auto_stable.reset()
+                        elif confirm_waiting:
+                            if not auto_confirm_wait_logged:
+                                auto_confirm_wait_logged = True
+                                source_state = (
+                                    "自动关闭已离开"
+                                    if auto_source_gone_logged
+                                    else "自动关闭仍在"
+                                )
+                                self.runtime.log(
+                                    f"模式={self.label} 轮次={cycle} 阶段=战斗 "
+                                    f"等待确认=自动战斗 来源={source_state} "
+                                    "目标=人物头像待确认 "
+                                    f"已等={since_auto_click:.0f}秒 "
+                                    f"上限={self.config.auto_confirm_wait_seconds:.0f}秒 "
+                                    "处理=不重复拨开关 "
+                                    f"证据={observation.auto_evidence or '未标注'}"
+                                )
                         elif (
                             auto_clicks >= 4
                             and since_auto_click is not None
@@ -492,6 +538,7 @@ class BattleSupervisor:
                     auto_clicks = 0
                     auto_clicked_at = None
                     auto_source_gone_logged = False
+                    auto_confirm_wait_logged = False
                     if not auto_confirmed:
                         auto_confirmed = True
                         self.runtime.log(

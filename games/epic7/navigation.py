@@ -16,6 +16,7 @@ from auto_game_unified.core.matcher import (
     locate_with_fallback,
 )
 from auto_game_unified.core.runtime import Runtime
+from auto_game_unified.core.failure_history import freeze_before_retry, retry_recovered
 from auto_game_unified.core.supervisor import (
     StableObservation,
     left_page,
@@ -2089,6 +2090,7 @@ class Epic7Navigator:
         )
         targets = (target,) if isinstance(target, str) else target
         target_label = "/".join(targets)
+        retry_reason = f"导航重试 {action}"
         # 「扫完仍找不到 ⇒ 先退一层再试」只做一次（见下面的分支）。
         backed_off = False
         for attempt in range(1, 5):
@@ -2112,6 +2114,7 @@ class Epic7Navigator:
                     # 而且这个 raise 发生在 ``_enter_mode`` 里、跑在 ``run_mode`` 的
                     # try 之外，连日志和诊断都不会留下，只剩每日任务里一个无声的 ``✗``。
                     # 这里先重新等一帧**稳定的**来源页再认一次（正常帧不会进这个分支）。
+                    freeze_before_retry(self.runtime, retry_reason)
                     self.runtime.log(
                         f"模式=导航 页面={page_label(source)} 目标={target_label} "
                         f"动作={action} 重试=重新等待稳定来源页（过渡帧锚点未过阈）"
@@ -2147,6 +2150,7 @@ class Epic7Navigator:
                                 f"目标={target_label} 动作={action} "
                                 f"跳过=目标态已经在了（不需要点）"
                             )
+                            retry_recovered(self.runtime, retry_reason)
                             return scanned
                         if match is not None:
                             source_screen = scanned
@@ -2396,6 +2400,7 @@ class Epic7Navigator:
                         )
                         verify_started = None
                     elif self.now() - verify_started >= self._CLICK_VERIFY_SECONDS:
+                        freeze_before_retry(self.runtime, retry_reason)
                         self.runtime.log(
                             f"模式=导航 点击验收=无效 "
                             f"页面={page_label(source)} 动作={action} "
@@ -2430,11 +2435,13 @@ class Epic7Navigator:
                         f"模式=导航 页面={page_label(observation.name)} "
                         f"置信度={observation.confidence:.3f} 状态=转场确认"
                     )
+                    retry_recovered(self.runtime, retry_reason)
                     return screen
                 if observation.name == source:
                     last_source = screen
                 self.sleep(self.poll_seconds)
             if last_source is not None:
+                freeze_before_retry(self.runtime, retry_reason)
                 source_screen = last_source
                 self.runtime.log(
                     f"模式=导航 页面={page_label(source)} 等待=无转场 "

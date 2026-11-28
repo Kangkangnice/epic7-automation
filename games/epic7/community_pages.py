@@ -89,11 +89,19 @@ class PageAnchor:
     ``region`` 是**竖屏标准画布坐标** ``(x, y, w, h)``；模板只从来源帧的这一块裁，
     匹配时也**只在同一块区域搜**（区域限定，与横屏那套一致：比全屏搜快一个数量级，
     也天然挡掉「别处也有个长得像的东西」）。
+
+    ``pad`` 是**在同一块区域四周额外搜几像素**（默认 0 = 老行为）。2026-11-26
+    同一类现场共三处：社区首页青绿「首页」图标偏 (1,2)px（0.5659）、帖子详情分享箭头
+    偏 (1,2)px（0.5123）、兑换成功弹窗回执漂移（0.6156）。固定窗口把它们全判成
+    unknown，分别造成按 ESC 退出社区、浏览/分享反复作废、兑换重复确认。给这三类锚点
+    4px 余量后，现场/历史帧回到 0.9981~1.0000，反例最高 0.2141（首页）/0.1192（回执）。
+    **这是位移容差，不是降阈值**：阈值与模板都一个字节不改，搜索范围仍限于锚点附近。
     """
 
     name: str
     region: tuple[int, int, int, int]
     note: str
+    pad: int = 0
 
 
 @dataclass(frozen=True)
@@ -141,7 +149,7 @@ class TaskRowState:
 #   ① 这块内容是**该页专有**的吗？（共享控件不行：底栏四格、左上角放大镜）
 #   ② 这块内容**会不会变**？（数值/名字/倒计时/轮播横幅不行）
 ANCHORS: tuple[PageAnchor, ...] = (
-    PageAnchor("feed_home", (125, 1738, 65, 100), "底栏「首页」页签激活态（青绿）"),
+    PageAnchor("feed_home", (125, 1738, 65, 100), "底栏「首页」页签激活态（青绿）", pad=4),
     PageAnchor("exchange_center", (410, 96, 260, 68), "居中标题「兑换中心」"),
     # 空列表态（偶发，记忆里点名的隐患）：认不出来就会对着空白页反复点商品卡。
     # 文案是浅灰细字，位置实测 x 375..666 / y 1237..1270。
@@ -149,14 +157,24 @@ ANCHORS: tuple[PageAnchor, ...] = (
     PageAnchor("tasks_page", (390, 96, 190, 68), "居中标题「我的任务」"),
     PageAnchor("item_detail", (140, 1730, 800, 110), "底部「立即兑换」（叠层，见模块头）"),
     PageAnchor("order_confirm", (270, 745, 540, 240), "订单确认页·固定免责提示"),
-    PageAnchor("redeem_done", (265, 736, 550, 256), "「兑换成功」弹窗本体"),
+    # 2026-11-26 实跑：兑换成功后弹窗相对旧模板漂了 1~2px，只拿到 0.6156 ⇒
+    # 被判 unknown，逃生按返回把「已兑换」当没发生，随后重复提交确认（已阻断）。
+    # 与 feed_home / post_detail 同一口径：给这颗锚点 4px 位移容差，阈值不动。
+    PageAnchor("redeem_done", (265, 736, 550, 256), "「兑换成功」弹窗本体", pad=4),
     PageAnchor("share_sheet", (330, 1570, 420, 220), "分享面板「复制链接」"),
     # ⚠️ 2026-10-07 改裁：原区域 (560,1790,440,90) 把**评论数**也罩进去了，
     # 而评论数逐帖不同（实测 10-06 那帖「221」、10-07 那帖「165」）⇒ 在今天的帧上
     # 只拿到 **0.7706**，落在死区里判不出「帖子详情」，于是整页读成 unknown。
     # 新区域只取右侧那颗**分享箭头**（↗）—— 字形固定、逐帖一模一样。
     # 全库 54 张唯一竖屏帧扫描：13 张帖子详情帧全是 1.0000，其余最高 0.3x，零误命中。
-    PageAnchor("post_detail", (790, 1790, 110, 85), "帖子底部操作栏·分享箭头（不含评论数）"),
+    PageAnchor(
+        "post_detail",
+        (790, 1790, 110, 85),
+        "帖子底部操作栏·分享箭头（不含评论数）",
+        # 2026-11-26 实跑：现场帖子详情的分享箭头偏 (1,2)px，固定窗口 0.5123 ⇒
+        # unknown ⇒ 逃生按返回，浏览/分享两条任务反复作废。pad=4 后 1.0000。
+        pad=4,
+    ),
     # 「签到成功！」弹窗的**表头**（✅ 图标 + 那行字）——弹窗本体里「获得 行动力*50 /
     # 同时经验+55」逐次不同，只有表头是固定的。实测在弹窗帧上 1.0000，
     # 全库次高分只有 0.1419，是一道很宽的空档。
@@ -644,14 +662,20 @@ def observe_pages(
         if template is None:
             raise KeyError(f"锚点 {anchor.name} 没有模板；build_page_templates() 是 fail-closed 的，不该走到这里")
         x, y, w, h = anchor.region
-        patch = screen[y : y + h, x : x + w]
-        if patch.shape[0] != h or patch.shape[1] != w:
+        # pad 只在锚点四周扩几像素搜模板；默认 0 ⇒ 与旧代码逐字节同形。
+        # 命中点回读成**画布绝对坐标**，让 Observation.region 始终指向真实位置，
+        # 而不是模板的名义位置（位移容差的可观测证据）。
+        pad = anchor.pad
+        left, top = x - pad, y - pad
+        patch = screen[top : top + h + 2 * pad, left : left + w + 2 * pad]
+        if patch.shape[0] < h or patch.shape[1] < w:
             continue
-        score, _ = best_match(patch.astype(np.float32), template.astype(np.float32))
+        score, offset = best_match(patch.astype(np.float32), template.astype(np.float32))
         if not np.isfinite(score):
             continue
+        hit_region = (left + offset[0], top + offset[1], w, h)
         if collect_all or score >= threshold:
-            found.append(Observation(anchor.name, float(score), (x, y, w, h)))
+            found.append(Observation(anchor.name, float(score), hit_region))
     found.sort(key=lambda item: (-item.confidence, LAYER_ORDER.get(item.name, 99)))
     return tuple(found)
 

@@ -25,13 +25,15 @@ def _text(relative: str) -> str:
 # ---------------------------------------------------------------- 现状页口径
 
 
-def test_the_status_page_counts_only_tracked_assets() -> None:
-    """不许再退回「数本机目录」—— 那会让本机绿、干净检出红。"""
-    src = _text("tools/gen_status.py")
-    assert "ls-files" in src, "生成器没有问 git 要入库清单"
-    assert "def _tracked_pngs" in src
-    assert "tracked = _tracked_pngs()" in src, "render() 没有走入库口径"
-    assert "def _count(pattern" not in src, "旧的 rglob 计数函数又回来了"
+def test_reader_pages_keep_developer_commands_out() -> None:
+    for page in (
+        "docs/STATUS.md", "docs/TODO.md", "docs/USER_GUIDE.md",
+        "docs/TROUBLESHOOTING.md", "docs/howto/route_change.md",
+    ):
+        content = _text(page)
+        assert "```" not in content, page
+        assert "python -m" not in content, page
+        assert "runtime_logs/" not in content, page
 
 
 # ---------------------------------------------------------------- 绕不过去

@@ -480,7 +480,7 @@ def test_runner_fails_loudly_when_the_claim_click_never_lands():
     """
     machine = build_machine()
     # 一直停在「两行可领」上：点下去毫无反应。
-    runtime = FakeRuntime(_script(*["forest_two_claimable_00"] * 20))
+    runtime = FakeRuntime([frame("forest_two_claimable_00")])
     runner = SanctuaryRunner(
         machine, runtime, sleep=lambda _: None, poll_seconds=0.0
     )

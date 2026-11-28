@@ -49,6 +49,9 @@ DEFAULTED_FIELDS = {
     "target_pages": (),
     "in_page_evidence": "",
     "reason": "",
+    # 推进型动作的开放出口（2026-11-28）：认得出当前是哪一页就算这一步结束。
+    # 适用条件与「不许拿它当挡箭牌」的边界见 docs/TRANSITION_CONTRACTS.md。
+    "advance_any": False,
 }
 
 

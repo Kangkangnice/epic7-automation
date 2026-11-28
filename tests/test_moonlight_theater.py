@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import unittest
+from collections.abc import Iterable, Iterator
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
@@ -28,6 +29,7 @@ from auto_game_unified.games.epic7.moonlight_theater import (
     build_moonlight_templates,
 )
 from auto_game_unified.games.epic7.template_paths import resolve_template_dir
+from auto_game_unified.tests.fixture_images import iter_named_frames
 
 FIXTURES = (
     Path(__file__).resolve().parent / "fixtures" / "epic7_moonlight_theater"
@@ -988,9 +990,9 @@ class FakeRuntime:
     diagnostic_dir = None
     dry_run = False
 
-    def __init__(self, frames: list[np.ndarray], step: float = 10.0) -> None:
-        self._frames = frames
-        self._index = 0
+    def __init__(self, frames: Iterable[np.ndarray], step: float = 10.0) -> None:
+        self._frames = iter(frames)
+        self._last_frame: np.ndarray | None = None
         self._step = step
         self.now_value = 0.0
         self.clicks: list[tuple[tuple[int, int], str]] = []
@@ -1000,10 +1002,11 @@ class FakeRuntime:
         return self.now_value
 
     def capture(self) -> np.ndarray:
-        index = min(self._index, len(self._frames) - 1)
-        self._index += 1
+        self._last_frame = next(self._frames, self._last_frame)
         self.now_value += self._step
-        return self._frames[index]
+        if self._last_frame is None:
+            raise IndexError("replay has no frames")
+        return self._last_frame
 
     def click(self, point, name) -> None:
         self.clicks.append((point, name))
@@ -1017,7 +1020,7 @@ class FakeRuntime:
         return _Path(label)
 
 
-def _script(*fixtures, repeat: int = 2) -> list[np.ndarray]:
+def _script(*fixtures, repeat: int = 2) -> Iterator[np.ndarray]:
     """每一帧重复 ``repeat`` 次：主循环要**两帧稳定**才肯发动作。
 
     某一项写成 ``("list_free", 3)`` 就是「这条帧给 3 倍时长」。从入口进剧场选择页
@@ -1025,11 +1028,23 @@ def _script(*fixtures, repeat: int = 2) -> list[np.ndarray]:
     「点左边」不会真的换海报，所以归位只花这么点时间 —— 需要额外帧时就靠这个写法，
     不必把同一张图抄两遍。
     """
-    frames: list[np.ndarray] = []
-    for item in fixtures:
-        name, times = item if isinstance(item, tuple) else (item, 1)
-        frames.extend([load(name)] * (repeat * times))
-    return frames
+    steps = (item if isinstance(item, tuple) else (item, 1) for item in fixtures)
+    return iter_named_frames(load, ((name, repeat * times) for name, times in steps))
+
+
+def test_replay_decodes_only_the_frame_it_needs_and_repeats_the_last():
+    first = np.zeros((2, 2, 3), dtype=np.uint8)
+    last = np.ones_like(first)
+    with mock.patch(f"{__name__}.load", side_effect=[first, last]) as decode:
+        runtime = FakeRuntime(_script("first", ("last", 2)), step=3.0)
+        decode.assert_not_called()
+
+        assert runtime.capture() is first
+        assert runtime.capture() is first
+        decode.assert_called_once_with("first")
+        assert [runtime.capture() is last for _ in range(5)] == [True] * 5
+        assert runtime.now() == 21.0
+        assert decode.call_args_list == [mock.call("first"), mock.call("last")]
 
 
 def _runner(

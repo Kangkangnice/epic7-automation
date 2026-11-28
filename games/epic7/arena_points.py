@@ -60,11 +60,8 @@ def _ocr_engine() -> Any:
         except Exception:  # noqa: BLE001 - 可选依赖，缺了就退化成「读不到」
             return None
         # 调用方已放大积分裁片。避免检测器按短边再次放大整块画面。
-        # rapidocr-onnxruntime 1.2.3 的参数名是 limit_type（无 det_ 前缀）。
-        # 传 det_limit_type 会让 UpdateParameters 剥前缀后访问 det_dict['model_path']
-        # 抛 KeyError —— 实测本地与 CI 都复现。默认 limit_type=min 会把已放大的裁片
-        # 再按短边补到 736，检测张量膨胀数倍；这里保持 max 不变。
-        _OCR_ENGINE = RapidOCR(limit_type="max")
+        # RapidOCR 1.2.3 要求检测器参数同时指定模型路径，None 表示用内置模型。
+        _OCR_ENGINE = RapidOCR(det_limit_type="max", det_model_path=None)
     return _OCR_ENGINE
 
 

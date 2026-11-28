@@ -181,6 +181,22 @@ class ShopObservation:
 # ⇒ 取 0.70：真阳性留 0.096 余量，假阳性留 0.70。
 ROW_BUY_WHITE_THRESHOLD = 0.70
 
+# 「这一帧到底画出来了没有」的判据：标题「秘密商店」在**白掩膜**口径下的得分下限。
+#
+# 为什么需要它（2026-11-26 21:34 实跑）：断网重连时 PC 端 BitBlt 抓到一张近乎全黑的帧
+# （整屏灰度中位数 8、均值 15.8、商品行按钮区最高亮度 77、纯白像素 0 个），而模板匹配
+# 对亮度缩放不敏感 —— 页面照样被判成「秘密商店」，接着在那一帧上找不到购买按钮，
+# 报「目标商品缺少同行购买按钮且并非本轮已购槽位」把整轮判死（诊断帧
+# runtime_diagnostics/epic7_shop_refresh/20261126_213419_297003_shop_refresh_unknown.png）。
+#
+# 白掩膜只看「亮字轮廓」，正好能回答「文字有没有真的画出来」（实测）：
+#   正常商店页（页面=shop 的 6 张夹具）：**0.843 ~ 1.000**
+#   模拟器商店夹具：**0.745**
+#   黑帧：**0.275**
+# ⇒ 取 0.60：下方余量 0.32、上方余量 0.15。
+# ⚠️ 只用来判「帧不可读」，不参与任何「有没有按钮 / 买没买成」的业务判断。
+READABLE_TITLE_SCORE = 0.60
+
 
 def _yellow_mask(image: np.ndarray) -> np.ndarray:
     """只留「黄色文字」的二值图：售罄标记 `0/1` 是黄字，可买的 `1/1` 是白字。
@@ -440,6 +456,22 @@ class ShopRefreshObserver:
         if match is None or match.score < self.profile.atom(key).threshold:
             return None
         return match
+
+    def frame_readable(self, screen: np.ndarray) -> bool:
+        """这一帧是不是真的画出来了（标题的白色字能看见）。
+
+        用途只有一个：别在**还没画出来的帧**上下业务结论。PC 端 BitBlt 有竞态，
+        断网重连 / 窗口未绘制时会拿到近乎全黑的帧，而页面判据对亮度不敏感 ⇒
+        黑帧照样被认成「秘密商店」，随后「找不到购买按钮」被当成「这一行没有按钮」。
+        实测数据见 ``READABLE_TITLE_SCORE`` 的注释。
+        """
+        match = find_best_template(
+            screen,
+            self.templates["shop_title"],
+            reference_size=REFERENCE_SIZE,
+            mode=MATCH_MODE_WHITE_MASK,
+        )
+        return bool(match is not None and match.score >= READABLE_TITLE_SCORE)
 
     @staticmethod
     def _fingerprint(screen: np.ndarray) -> str:

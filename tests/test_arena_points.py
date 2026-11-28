@@ -45,6 +45,12 @@ def build_machine(**kwargs) -> ArenaStateMachine:
 class PointsReadingTests(unittest.TestCase):
     """读数层：真帧上必须读对，空白帧必须说「不知道」。"""
 
+    @classmethod
+    def setUpClass(cls):
+        from auto_game_unified.games.epic7 import arena_points
+
+        cls.enterClassContext(patch.object(arena_points, "_OCR_ENGINE", None))
+
     def test_points_detector_does_not_upscale_the_short_edge(self):
         from auto_game_unified.games.epic7 import arena_points
 
@@ -53,7 +59,7 @@ class PointsReadingTests(unittest.TestCase):
             patch("rapidocr_onnxruntime.RapidOCR") as constructor,
         ):
             self.assertIs(arena_points._ocr_engine(), constructor.return_value)
-        constructor.assert_called_once_with(limit_type="max")
+        constructor.assert_called_once_with(det_limit_type="max", det_model_path=None)
 
     def test_reads_the_three_rows_on_a_recorded_list(self):
         from auto_game_unified.games.epic7.arena_points import read_opponent_points

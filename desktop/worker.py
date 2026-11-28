@@ -15,6 +15,7 @@ import threading
 from typing import Callable, Mapping
 
 from auto_game_unified.core.pc_window import PC_INPUT_ENV, PC_INPUT_MODES
+from auto_game_unified.core.failure_history import FAILURE_WINDOW_ENV
 from auto_game_unified.desktop.report import export_failure_report
 
 
@@ -118,6 +119,8 @@ class WorkerController:
     def start(self, request: RunRequest) -> None:
         if self.running:
             raise RuntimeError("已有自动化任务正在运行")
+        # The previous child can exit while its reader is still packaging the report.
+        self.join_reader()
         if not request.modes:
             raise ValueError("至少要勾选一条路线")
         # 输入通道要落到命令行参数里，非法值在这里挡掉，别等子进程 argparse
@@ -207,6 +210,7 @@ class WorkerController:
         # 冻结版子进程没有 ``-u``：不设这个，输出会攒在缓冲区里，界面看不到进度。
         environment["PYTHONUNBUFFERED"] = "1"
         environment[PC_INPUT_ENV] = request.pc_input_mode
+        environment[FAILURE_WINDOW_ENV] = str(self.stop_file.with_name("first_failure.zip"))
         try:
             self._process = self._popen(
                 command,
@@ -320,11 +324,13 @@ class WorkerController:
                     exit_code,
                     f"工作进程异常结束（退出码 {exit_code}）",
                 )
-            snapshot = self._snapshot_current_frame(exit_code)
+            try:
+                snapshot = self._snapshot_current_frame(exit_code) if exit_code != 1 else None
+            except OSError as error:
+                snapshot = None
+                self._write_evidence(f"事件=退出快照保存失败 原因={error}")
             # 只有运行失败才留诊断包。完成、资源耗尽、用户停止都不留：这三类
             # 每次都会发生，留包只会把真正失败的那次埋掉。
-            if exit_code == 1:
-                self._emit_failure_report(exit_code)
             if exit_code not in {0, 2, 130}:
                 for output in self._recent_output:
                     self._write_evidence(
@@ -339,6 +345,8 @@ class WorkerController:
                 f"最后输出={self._last_output} "
                 f"现场={snapshot if snapshot is not None else '-'}"
             )
+            if exit_code == 1 and not self._force_stopped:
+                self._emit_failure_report(exit_code)
             self._events.put(
                 WorkerEvent(
                     "finished",
@@ -394,6 +402,7 @@ class WorkerController:
                 exit_code=exit_code,
                 last_output=self._last_output,
                 recent_output=tuple(self._recent_output),
+                incident_path=self.stop_file.with_name("first_failure.zip") if self.stop_file else None,
             )
         except Exception as error:  # 成包失败不改写退出码与结束事件
             self._write_evidence(f"事件=诊断包生成失败 原因={error}")

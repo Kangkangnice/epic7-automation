@@ -37,7 +37,7 @@ PC 适配器负责把 `(x, y)` 换成客户区的 `(x, y - 52)`，再按输入�
 
 现行真机帧保留顶部和右侧补边。旧的 PC 帧曾把 `1920×1080` 内容非等比拉满画布，比例和背景都不同。
 排障先确认夹具口径。保全当前客户端完整帧和来源，使用仓库采集入口。详见[采图手册](TEMPLATE_CAPTURE.md)
-和[旧素材的技术记录](https://github.com/Kangkangnice/epic7-automation/blob/9308cdf9b3625e847e7736d1debfc4186bd153f7/docs/PC_TEMPLATE_MIGRATION.md)。
+和[旧素材的技术记录](https://github.com/Kangkangnice/epic7-arky-assistant/blob/9308cdf9b3625e847e7736d1debfc4186bd153f7/docs/PC_TEMPLATE_MIGRATION.md)。
 
 ### 1.3 三类证据不要混用
 
@@ -82,7 +82,7 @@ PC 默认后台点击。滑动、拖拽、滚轮和 ESC 走前台输入，动作
 
 世界首领战已有 PC 局部素材，历史上的补图记录可作为字体、描边和结构验证的测试来源。
 共享视觉试点用标题和控件共同验收页面，灰态控件可证明页面已经进入；点击要验证启用态。
-旧素材及原分数见 [既有迁移记录 §2.5](https://github.com/Kangkangnice/epic7-automation/blob/9308cdf9b3625e847e7736d1debfc4186bd153f7/docs/PC_TEMPLATE_MIGRATION.md)。
+旧素材及原分数见 [既有迁移记录 §2.5](https://github.com/Kangkangnice/epic7-arky-assistant/blob/9308cdf9b3625e847e7736d1debfc4186bd153f7/docs/PC_TEMPLATE_MIGRATION.md)。
 
 ### 2.6 定位失败发生在哪一层
 

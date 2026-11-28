@@ -32,6 +32,7 @@
 ``modes.CONCLUSION_GATE_DECLARATION`` 与 ``modes.TRANSITION_EXEMPT``。
 """
 
+import subprocess
 from time import sleep as default_sleep
 from typing import Any, Callable, Optional
 
@@ -47,7 +48,13 @@ from auto_game_unified.games.epic7.evidence.diagnostics import (
     save_runtime_evidence_diagnostic,
 )
 from auto_game_unified.core.recovery import RecoveryGate
-from auto_game_unified.core.runtime import ManualStop, ResourceExhausted, Runtime
+from auto_game_unified.core.failure_history import freeze_before_retry, retry_recovered
+from auto_game_unified.core.runtime import (
+    ManualStop,
+    PurchaseReceiptUnclear,
+    ResourceExhausted,
+    Runtime,
+)
 from auto_game_unified.core.supervisor import (
     ConclusionGate,
     StableObservation,
@@ -465,7 +472,16 @@ class TransactionalRunnerBase:
         # 上一帧可比，所以另开一个、**每拍都推进**（写在下面 ``capture()`` 之后）。
         last_screen: Optional[np.ndarray] = None
         while self.now() - started < absolute:
-            screen = self.runtime.capture()
+            try:
+                screen = self.runtime.capture()
+            except subprocess.TimeoutExpired as error:
+                # ⚠️ 只有**不可逆动作**才在这里转成「回执未明」。点击已经发出
+                # （能进这个循环就说明 ``runtime.click`` 已返回），回执还一帧没读到；
+                # 超时既不是游戏拒绝、也不是普通导航失败，处置见
+                # ``_stop_on_receipt_capture_timeout``。其余动作照原样抛。
+                if getattr(action, "irreversible", False):
+                    self._stop_on_receipt_capture_timeout(action, error, last_screen)
+                raise
             self._save_frame(screen)
             frozen = screens_are_identical(last_screen, screen)
             last_screen = screen
@@ -475,6 +491,7 @@ class TransactionalRunnerBase:
                 and target is not None
             ):
                 self.machine.commit(action, target)
+                retry_recovered(self.runtime, f"转场重试 {action.name}")
                 self.runtime.log(
                     f"模式={self._MODE_LABEL} 转场确认 动作={action.name} "
                     f"从={source_page} 到={self._state_label(target)} 目标连续=2"
@@ -506,6 +523,7 @@ class TransactionalRunnerBase:
                             )
                     elif attempts < 4:
                         attempts += 1
+                        freeze_before_retry(self.runtime, f"转场重试 {action.name}")
                         self.runtime.log(
                             f"模式={self._MODE_LABEL} 转场重试 动作={action.name} "
                             f"来源={source_page}仍在 尝试={attempts}/4 坐标={action.point}"
@@ -542,6 +560,68 @@ class TransactionalRunnerBase:
         message = self._transition_failure_message(action, attempts, diagnostic)
         if message is not None:
             raise RuntimeError(message)
+        retry_recovered(self.runtime, f"转场重试 {action.name}")
+
+    def _stop_on_receipt_capture_timeout(
+        self,
+        action: Any,
+        error: BaseException,
+        last_screen: Optional[np.ndarray],
+    ) -> None:
+        """不可逆动作已提交、读回执时取图超时：保留现场，停下对账。
+
+        ## 为什么必须接在这里（2026-11-25 竞技场实跑，第二轮）
+
+        购买点击已发出，随后 ``adb exec-out screencap`` 超时 ⇒ ``runtime.capture()``
+        抛 ``subprocess.TimeoutExpired``。它**不是** ``RuntimeError``：
+
+        * 进不了路线主循环的「页面超时 / 未识别」分支；
+        * 转场执行器原先只把 ``irreversible`` 用在**重试**上，没用在**读回执**上；
+        * 于是一路冒到 ``main.run_mode`` 的通用异常分支 ⇒ ``_try_return_home_after_failure``
+          ⇒ **回大厅**。日志只剩「异常收尾=回首页失败」，看不出购买已经发出去一次。
+
+        处置与「弹窗没关」完全一致（``PurchaseReceiptUnclear``）：不回大厅、不点取消、
+        不重发同一个坐标，交给人对账。两个正式入口的停机分支在
+        ``main.run_mode`` 与 ``daily_tasks.run_daily_tasks``。
+
+        ## 证据为什么只能用「上一帧」
+
+        ⚠️ **不能**调 ``save_diagnostic(..., screen=None)``：它内部会再调一次
+        ``capture()``，只会再抛一次超时、把真正的错因盖掉。所以证据取
+        ``last_screen``（本循环上一拍成功读到的帧）；它为空时退回
+        ``Runtime.last_frame()`` —— 那是点击前那一帧（购票弹窗），正是对账要看的东西。
+        """
+        evidence = last_screen
+        if evidence is None:
+            # ⚠️ 用 ``getattr`` 取而不是直接调：本族的测试替身只实现收尾真正会碰的
+            # 那几个方法（见 ``tests/test_arena_purchase_popup.py::_Recorder``），
+            # 没有这个访问器时应当安静退回「无证据」，不是在存证路上抛 AttributeError。
+            read_last = getattr(self.runtime, "last_frame", None)
+            evidence = read_last() if callable(read_last) else None
+        diagnostic = "not-available"
+        if self.runtime.diagnostic_dir is not None and evidence is not None:
+            # ⚠️ 存证失败**绝不能**盖掉对账结论：那条教训见
+            # ``core/runtime._safe_label`` 的 docstring（存诊断时抛错把真因盖掉）。
+            try:
+                diagnostic = str(
+                    self.runtime.save_diagnostic(
+                        f"receipt_timeout_{action.name}", evidence
+                    )
+                )
+            except Exception as save_error:  # noqa: BLE001
+                diagnostic = f"保存失败({type(save_error).__name__}: {save_error})"
+        summary = f"{type(error).__name__}: {error}"
+        self.runtime.log(
+            f"模式={self._MODE_LABEL} 动作={action.name} "
+            f"结果=不可逆动作已提交一次 回执=读取时截图超时 "
+            f"原异常={summary} 最后可用证据={diagnostic} "
+            "处理=停下对账 现场保留"
+        )
+        raise PurchaseReceiptUnclear(
+            f"不可逆动作 {action.name} 已提交一次，但读取回执时截图超时（{summary}）；"
+            "未拿到游戏回执，禁止重发或点取消，请对账实际扣费。"
+            f"最后可用证据={diagnostic}"
+        ) from error
 
     # ---- 主循环 ----
 
@@ -612,6 +692,7 @@ class TransactionalRunnerBase:
                 self._close_out()
                 return self.machine.completed_cycles
             except UnrecognizedScreen as error:
+                freeze_before_retry(self.runtime, "页面识别异常", f"页面识别异常：{error}")
                 wake = self.unknown_screen_wake.handle(
                     screen, context=f"{self._MODE_LABEL}:{self._state_label(state_before)}"
                 )
@@ -629,6 +710,7 @@ class TransactionalRunnerBase:
                 raise RuntimeError(
                     f"{self._MODE_LABEL}未知页面：{error}；已保存诊断 {diagnostic}"
                 ) from error
+            retry_recovered(self.runtime, "页面识别异常")
             if action is None:
                 if self.machine.state is self._SETTLED_BATTLE_STATE:
                     # 停在局内且状态机没有别的活要干 ⇒ 这一局交给战斗监督等结算。

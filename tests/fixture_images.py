@@ -2,7 +2,8 @@
 
 import os
 from collections import OrderedDict
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterable, Iterator
+from itertools import groupby, repeat
 from pathlib import Path
 from threading import Lock
 
@@ -26,6 +27,16 @@ def png_fixtures_of_size(root: Path, size: tuple[int, int]) -> Iterator[Path]:
             continue
         if dimensions == size:
             yield path
+
+
+def iter_named_frames(
+    load: Callable[[str], np.ndarray], steps: Iterable[tuple[str, int]]
+) -> Iterator[np.ndarray]:
+    """Decode each consecutive run of the same frame once, as it is consumed."""
+    for name, consecutive in groupby(steps, key=lambda step: step[0]):
+        frame = load(name)
+        for _, count in consecutive:
+            yield from repeat(frame, count)
 
 
 def named_frame_replay(

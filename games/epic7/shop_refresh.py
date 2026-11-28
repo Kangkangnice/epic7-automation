@@ -9,6 +9,7 @@ import cv2
 import numpy as np
 
 from auto_game_unified.core.runtime import ManualStop, Runtime
+from auto_game_unified.core.failure_history import freeze_before_retry, retry_recovered
 from auto_game_unified.core.supervisor import StableObservation
 
 from auto_game_unified.games.epic7.resume_probe import ResumePoint
@@ -503,7 +504,17 @@ class ShopRefreshRunner:
             observation = self.observer.observe(screen)
             last_observation = observation
             signature = self._observation_signature(observation)
-            if stable.update(signature) and observation.page is page:
+            # ⚠️ **画面画出来才算「稳定」**（2026-11-26 21:34 实跑的教训）：断网重连时抓到
+            # 一张近乎全黑的帧，页面判据对亮度不敏感、照样认成「秘密商店」，两帧签名也一致，
+            # 于是这张黑帧被当成有效观察交下去 —— 后面「找不到购买按钮」就被判成
+            # 「这一行没有按钮」，整轮以「目标商品缺少同行购买按钮」收场。
+            # 黑帧在这里一直等下去，最坏是 45 秒后报「等待页面超时」并带诊断帧，
+            # 这比在无效画面上编一个业务结论准确。
+            if (
+                stable.update(signature)
+                and observation.page is page
+                and self.observer.frame_readable(screen)
+            ):
                 return screen, observation
             self.sleep(self.poll_seconds)
         scores = dict(last_observation.scores or {}) if last_observation else {}
@@ -598,12 +609,14 @@ class ShopRefreshRunner:
                 seen_pages.append(observation.page.value)
             signature = self._observation_signature(observation)
             if stable.update(signature) and observation.page is target_page:
+                retry_recovered(self.runtime, f"商店重试 {action}")
                 return screen, observation
             if (
                 attempts < 3
                 and source_still(observation)
                 and self.now() - clicked_at >= self.open_retry_seconds
             ):
+                freeze_before_retry(self.runtime, f"商店重试 {action}")
                 attempts += 1
                 self.runtime.log(
                     f"模式=刷书签 来源仍在 动作={action} 尝试={attempts}/3"

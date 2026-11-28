@@ -1,394 +1,125 @@
-"""生成 ``docs/STATUS.md`` —— 项目现状的**唯一手可查**入口。
+"""从桌面路线声明与已复核的业务结论生成现状页。
 
-用法（在**工作区根**执行，不是包目录）：:
-
-    python -m auto_game_unified.tools.gen_status
-
-为什么要有这个东西
-------------------
-「文档说 16 条路线、代码已经是 17 条」这类漂移，靠人记是治不住的。这里把能算出来的
-事实**全部从代码算**：路线名单、分组、默认次数、PC 放行情况、每日任务顺序、素材规模。
-写进 ``docs/STATUS.md`` 之后，由 ``tests/test_status_doc.py`` 逐字比对 —— 谁忘了重生成，
-门禁直接红并告诉他跑哪条命令。
-
-维护纪律（重要）
-----------------
-1. **不要手改 ``docs/STATUS.md``**：它会在下次门禁时被打回。
-2. 加了一条路线 / 一张模板 / 一张夹具之后跑一次本脚本，把重生成结果一起提交。
-3. 本文件不写时间戳：写了就会每天自我失效，比对将永远失败。
-
-改了本脚本要做的事
-------------------
-``tests/test_status_doc.py`` 里有一组**反向用例**（桩掉数据源，断言生成结果会跟着变、
-且关键段落不会变成空的）。改完请连它一起跑：
-
-    python -m pytest -q auto_game_unified/tests/test_status_doc.py
+从仓库父目录运行 python -m auto_game_unified.tools.gen_status。
+路线的启动范围、次数和接力来自相应声明。验收结论须有业务证据，单独登记。
 """
 
 from __future__ import annotations
 
-import os
-import subprocess
 from pathlib import Path
 
 from auto_game_unified.desktop import catalog
-from auto_game_unified.games.epic7 import daily_tasks, modes
+from auto_game_unified.games.epic7 import modes
 
-#: 本文件所在包目录（``auto_game_unified``）。
-PACKAGE_ROOT = Path(__file__).resolve().parents[1]
-#: 仓库内 ``docs/STATUS.md`` 的落点。
-STATUS_PATH = PACKAGE_ROOT / "docs" / "STATUS.md"
-
-#: 生成物的标题行。测试用它确认「被比对的文件确实是本脚本生成的」。
+STATUS_PATH = Path(__file__).resolve().parents[1] / "docs" / "STATUS.md"
 TITLE = "# 现状速查"
 
-
-def _tracked_pngs() -> set[str]:
-    """git 已跟踪的 png（相对包目录，统一用 ``/``）。
-
-    ⚠️ 不能用 ``rglob`` 数本机文件：本机可能躺着被 ``.gitignore`` 忽略的临时抓帧
-    （2026-11-09 就有一张 2 MB 的 ``tests/fixtures/_tmpcheck/_now.png``）。
-    那样本机算出 440 张、干净检出只有 439 张 —— **本机和提交钩子全绿，别人 clone
-    下来必红**。现状页描述的是仓库现状，唯一可信的口径就是入库清单。
-
-    反过来，``_probe_wb_chest/`` 这种下划线开头的目录是**正式夹具**、确实入库了，
-    所以也不能简单「排除下划线目录」。只有问 git 才能分清。
-
-    打包产物不会调用本函数（现状页是开发期生成的静态文档），开发/CI 一定有 git；
-    万一没有就 fail-closed 报错，绝不悄悄给一个可能错的数字。
-    """
-    # ⚠️ 必须带 ``-z``：默认 ``core.quotepath=true`` 会把**非 ASCII 路径**写成
-    # 八进制转义并用双引号包起来（``"games/.../\344\270\200....png"``），
-    # 于是 ``endswith(".png")`` 全部落空 —— 2026-11-15 恢复图鉴头像库时实测：
-    # 381 张中文名头像只算进 4 张（只有 ASCII 名的那几个）。这是**静默少算**，
-    # 数字偏小却一切正常，没人会去查。``-z`` 用 NUL 分隔且不转义。
-    #
-    # ``-z`` 输出的是**原始路径字节**，不能再交给 ``text=True`` 按系统代码页解码：
-    # Windows CI runner 用 cp1252，中文路径里的 0x90 会直接让 subprocess 读线程
-    # 抛 UnicodeDecodeError，``stdout`` 变成 None（2026-11-15 PR 治理门禁实测）。
-    # 按字节收、再用 ``os.fsdecode`` 按文件系统编码还原，跟系统区域设置无关。
-    try:
-        result = subprocess.run(
-            ["git", "-C", str(PACKAGE_ROOT), "ls-files", "-z", "*.png"],
-            capture_output=True,
-            text=False,
-            check=True,
-        )
-    except (OSError, subprocess.CalledProcessError) as exc:
-        raise RuntimeError(
-            "生成现状页需要 git（要读已入库素材清单）。"
-            "打包产物不会调用本函数；开发/CI 环境一定有 git。原始错误：" + str(exc)
-        ) from exc
-    return {
-        os.fsdecode(raw).strip().replace("\\", "/")
-        for raw in result.stdout.split(b"\0")
-        if raw.strip()
-    }
+# 界面允许启动只代表入口开放。单轮、局部和离线证据各自按已验证范围记录。
+ACCEPTANCE = {
+    "hero_synthesis": ("历史摘要记有模拟器单轮闭环", "相似副本切换、传送后返回、PC 版当前闭环"),
+    "story": ("历史摘要记有 PC 主流程片段", "两端当前版本的连续刷图，战败、体力不足与章节解锁收尾"),
+    "arena": ("模拟器主流程实机通过，历史有玩家对战，本工作区每日入口有 NPC 10 场与购旗续打", "[竞技场证据](SAFETY_MATRIX.md#竞技场桌面实机复核)；[购旗对账、拒绝与版本](TODO.md#竞技场购旗)；周奖、结算日和 PC 组合"),
+    "expedition": ("有离线回放", "难度三从出战到公开招募的完整一轮，难度一、二仍待确认"),
+    "tower": ("历史摘要记有 PC 单层实机记录", "完整赛季通关、阶段选择、耗尽体力或战败时的收尾"),
+    "fodder": ("实机闭环待验", "从关卡入口到重复挑战，含结算与轮数核对"),
+    "side_story": ("历史摘要记有模拟器整期；本工作区已验证到期只读巡检与回大厅", "本期关卡与据点、BOSS 加难衔接、PC 特殊场景与场景页接力"),
+    "shop_refresh": ("模拟器工作区每日入口 50 次刷新、14 笔购买及回大厅；历史 PC 记录可追溯到部分进度", "[刷书签证据](maintenance/shop_refresh.md#验收证据)；[扣款、回执不明收尾与边界](TODO.md#刷书签)"),
+    "survivor": ("活动已过期", "若复刻，按实际入口、连续对局和结算重新验收"),
+    "activity_story": ("历史摘要记有多段剧情与战斗片段", "本期已看完的页面、完整收尾与 PC 当前闭环"),
+    "world_boss": ("历史摘要记有 PC 单轮；本工作区模拟器已验次数用完后回大厅", "当前版本实际出战和结算后领奖"),
+    "knights_donation": ("模拟器请求支援、支援成员、领取每周任务奖励和回大厅实机通过", "不同里程碑奖励、支援额度和读数变体、PC 选中确认"),
+    "labyrinth_stone": ("模拟器实机两次确认购买后返回商店，已验退出迷宫并回大厅", "逐笔核对购买商品、实际扣款和回执；补缺货和相似确认框边界"),
+    "sanctuary": ("模拟器实机见一次领取完成弹窗，随后确认三行倒计时并回大厅", "第二笔领取的独立回执、可照料分支、PC 领奖及其余圣域页面"),
+    "community": ("国服模拟器每日主流程实机通过一轮，含 4 笔兑换及回大厅", "[社区证据](maintenance/community_checkin.md#验收证据)；[积分余额、版本与竖屏接力](TODO.md#社区签到)"),
+    "moonlight_theater": ("历史摘要记有 PC 首幕实机记录", "多幕连续观览、免费及持有门票耗尽后的收尾"),
+    "achievement": ("模拟器已验逐分类巡检，无奖励时回大厅", "有奖励时逐分类领取、效果升级弹窗和 PC 当前闭环"),
+    "story_star": ("PC 已有多关衔接证据", "六章扫完、换章归位和体力不足收尾"),
+    "pet_adoption": ("模拟器免费领养、商店用品不可购买及回大厅实机通过", "用品可购买时的确认、回执与安全退出"),
+    "penguin_purchase": ("历史摘要记有模拟器连续购买记录", "红叶不足时的明确提示和停止；PC 接入待验"),
+    "craft_equipment": ("历史摘要记有模拟器制作、出售和萃取记录", "资源不足、整理与回大厅衔接；PC 接入待验"),
+}
 
 
-# 不计入「识别模板」张数的素材目录（按前缀）。
-#
-# 图鉴头像库是给「英雄名单」用的比对资产：385 张、按英雄名索引、与路线判据无关。
-# 混进路线模板数会把「这条路线有多少张判据图」这个指标冲掉，所以显式排除 ——
-# 排除要写在这里，别靠文件名或后缀去猜。
-_NOT_TEMPLATES = ("games/epic7/templates/arena/heroes_pokedex/",)
+def _pc_state(route: catalog.RouteInfo) -> str:
+    if route.cn_emulator_only:
+        return "无此功能（仅国服模拟器）"
+    if route.expired:
+        return "活动已过期"
+    return "可启动" if route.mode in catalog.PC_READY_ROUTES else "未放行"
 
 
-def _count_under(directory: str, tracked: set[str]) -> int:
-    prefix = directory.rstrip("/") + "/"
-    return sum(
-        1
-        for name in tracked
-        if name.startswith(prefix)
-        and name.endswith(".png")
-        and not name.startswith(_NOT_TEMPLATES)
-    )
-
-
-def _count_pc_templates(tracked: set[str]) -> int:
-    """PC 专用模板的张数。
-
-    注意有**两种**放法并存，不能用 ``**/pc/*.png`` 一个通配符：
-    ``templates/<路线>/pc/x.png``（多数）与 ``templates/pc/<路线>/x.png``（早期那批）。
-    漏掉后一种会让数字凭空少 9 张 —— 2026-11-08 第一次写就踩了。
-    统一按「路径里有名为 pc 的目录段」判。
-    """
-    prefix = "games/epic7/templates/"
-    return sum(
-        1
-        for name in tracked
-        if name.startswith(prefix)
-        and name.endswith(".png")
-        and "pc" in name[len(prefix) :].split("/")[:-1]
-    )
-
-
-def _frontmatter(text: str) -> dict[str, str]:
-    """解析极简 YAML frontmatter（只支持 ``key: value`` 单行）。"""
-    if not text.startswith("---\n"):
-        return {}
-    end = text.find("\n---", 4)
-    if end < 0:
-        return {}
-    fields: dict[str, str] = {}
-    for line in text[4:end].splitlines():
-        if ":" not in line:
-            continue
-        key, value = line.split(":", 1)
-        fields[key.strip()] = value.strip()
-    return fields
-
-
-def _cell(value: str) -> str:
-    """表格单元里不能出现裸竖线。"""
-    return value.replace("|", "/").strip() or "—"
-
-
-def _wip_rows(directory: Path | None = None) -> list[str]:
-    """在制品一节的内容。
-
-    只看 ``started`` 字段、**不看文件 mtime** —— 一次 ``git clone`` 或 ``checkout``
-    会把所有 mtime 刷成当下，那样生成结果就不可复现，比对会永远失败。
-
-    ``directory`` 只为测试留口（用临时目录验证「有条目 / 没条目」两种输出），
-    正常调用不传。
-    """
-    if directory is None:
-        directory = PACKAGE_ROOT / "docs" / "wip"
-    entries = []
-    for path in sorted(directory.glob("*.md")):
-        if path.name.startswith("_"):
-            continue
-        text = path.read_text(encoding="utf-8")
-        fields = _frontmatter(text)
-        title = next(
-            (line[2:].strip() for line in text.splitlines() if line.startswith("# ")),
-            path.stem,
-        )
-        entries.append((path, title, fields))
-    if not entries:
-        return ["（当前没有未完成的工作）"]
-    rows = [
-        "| 主题 | 状态 | 开始 | 下一步 |",
-        "|---|---|---|---|",
-    ]
-    for path, title, fields in entries:
-        link = f"[{_cell(title)}](wip/{path.name})"
-        rows.append(
-            f"| {link} | {_cell(fields.get('status', ''))} "
-            f"| {_cell(fields.get('started', ''))} "
-            f"| {_cell(fields.get('next_step', ''))} |"
-        )
-    return rows
-
-
-def _pc_state(mode: str) -> str:
-    if mode in catalog.PC_READY_ROUTES:
-        return "已放行"
-    return "未放行"
-
-
-def _emulator_state(mode: str) -> str:
-    if mode in modes.PC_ONLY_ROUTES:
+def _emulator_state(route: catalog.RouteInfo) -> str:
+    if route.expired:
+        return "活动已过期"
+    if route.mode in modes.PC_ONLY_ROUTES:
         return "不可用（仅 PC）"
-    return "可用"
+    return "可启动"
+
+
+def _resume_state(route: catalog.RouteInfo) -> str:
+    spec = modes.MODE_SPECS[route.mode]
+    if not spec.needs_navigation:
+        return "无，需停在指定页面"
+    if spec.resume_probe is not None:
+        return "支持部分页面"
+    return "无，从入口开始"
 
 
 def _route_table() -> list[str]:
     rows = [
-        "| # | 路线 | 界面名称 | 分组 | 默认次数 | 次数可改 | 有导航 | 模拟器 | PC 客户端 |",
-        "|---|------|---------|------|---------|---------|-------|-------|----------|",
-    ]
-    specs = modes.MODE_SPECS
-    for index, route in enumerate(catalog.ROUTES, start=1):
-        spec = specs[route.mode]
-        cycles = spec.default_cycles if spec.default_cycles is not None else "—"
-        editable = "是" if spec.cycles_editable else "否"
-        navigation = "是" if spec.needs_navigation else "否"
-        rows.append(
-            f"| {index} | `{route.mode}` | {spec.label} | {route.group} | {cycles} "
-            f"| {editable} | {navigation} | {_emulator_state(route.mode)} "
-            f"| {_pc_state(route.mode)} |"
-        )
-    return rows
-
-
-def _daily_lines() -> list[str]:
-    lines = []
-    for index, task in enumerate(daily_tasks.DAILY_TASKS, start=1):
-        label = modes.MODE_SPECS[task.mode].label
-        lines.append(f"{index}. {label}（`{task.mode}`）")
-    return lines
-
-
-def _pc_only_lines() -> list[str]:
-    if not modes.PC_ONLY_ROUTES:
-        return ["（目前没有仅 PC 的路线）"]
-    return [
-        f"- {modes.MODE_SPECS[mode].label}（`{mode}`）"
-        for mode in sorted(modes.PC_ONLY_ROUTES)
-    ]
-
-
-#: 模板根不统一（2026-11-08 实测）。按路线名猜目录会给出**误导性的 0**，
-#: 所以显式写清，并由 tests/test_status_doc.py 钉住「这两格不许退化成 0」。
-#: 值 = (模板目录名, 夹具目录前缀)
-ROUTE_DIR_ALIASES = {"hero_synthesis": ("hero", "epic7_hero")}
-#: 夹具目录名有前缀包含关系时，显式声明「这些目录属于另一条路线」。
-#: `epic7_story_star_pc/` 不能数进 `story`（2026-11-10 合并 main 时撞出：55 应为 45）；
-#: 但不能简单加目录边界 —— `epic7_side_story_boss/` 是 `side_story` 自己的变体夹具。
-ROUTE_FIXTURE_EXCLUDES: dict[str, tuple[str, ...]] = {
-    "story": ("epic7_story_star",),
-}
-#: 竞技场模板与全局共享图混放在 templates/ 根、templates/pc/ 根，
-#: 无法按路线归属 —— 宁可写「共享根」，也不要报一个假的 0。
-SHARED_TEMPLATE_ROOT_ROUTES = frozenset({"arena"})
-
-
-def _route_fact_rows(tracked: set[str]) -> list[str]:
-    """按路线的现行事实。
-
-    治理 V2：手册里凡「有几张 PC 图 / 几张模板 / 几张夹具」这类会漂移的数字，
-    一律链到本表，不再手抄 —— 素材一入库、重生成本页，数字自己跟上。
-    口径与 ``_count_pc_templates`` 一致：PC 图有两种放法
-    ``templates/<路线>/pc/`` 与 ``templates/pc/<路线>/``，漏一种就会凭空少几张。
-    """
-    tmpl = "games/epic7/templates/"
-    fixtures = "tests/fixtures/"
-    rows = [
-        "| 路线 | PC 专用图 | 模板合计 | 现场夹具 | 开局接力 | PC 放行 |",
-        "|---|---:|---:|---:|---|---|",
+        "| 路线 | 分组 | 次数设置 | 模拟器 | PC 客户端 | 开局接力 | 验收现状 | 还差什么 |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- |",
     ]
     for route in catalog.ROUTES:
-        mode = route.mode
-        directory, fixture_prefix = ROUTE_DIR_ALIASES.get(mode, (mode, f"epic7_{mode}"))
-        if mode in SHARED_TEMPLATE_ROOT_ROUTES:
-            pc_cell = template_cell = "共享根"
-        else:
-            in_route = [n for n in tracked if n.startswith(f"{tmpl}{directory}/") and n.endswith(".png")]
-            in_pc_root = [n for n in tracked if n.startswith(f"{tmpl}pc/{directory}/") and n.endswith(".png")]
-            pc_count = sum(1 for n in in_route if n.startswith(f"{tmpl}{directory}/pc/")) + len(in_pc_root)
-            pc_cell = str(pc_count)
-            template_cell = str(len(in_route) + len(in_pc_root))
-        # 裸前缀能覆盖同路线的变体目录（如 epic7_side_story_boss/），
-        # 但必须显式排除名字以它开头的**另一条路线**（story_star）。
-        excludes = ROUTE_FIXTURE_EXCLUDES.get(mode, ())
-        fixture_count = sum(
-            1 for n in tracked
-            if n.startswith(f"{fixtures}{fixture_prefix}")
-            and n.endswith(".png")
-            and not any(
-                n.startswith(f"{fixtures}{excluded}") for excluded in excludes
-            )
-        )
-        spec = modes.MODE_SPECS[mode]
-        if not spec.needs_navigation:
-            resume = "不适用（无导航）"
-        elif spec.resume_probe is not None:
-            resume = "有探针"
-        elif mode in modes.RESUME_EXEMPT:
-            resume = "豁免（见 modes.py）"
-        else:
-            resume = "**未表态**（加载期应拦下）"
+        count = route.count_text(route.default_cycles)
+        if route.cycles_editable:
+            count = f"可调 · 默认 {count}"
+        accepted, pending = ACCEPTANCE.get(route.mode, ("待验", "正常入口与业务收尾"))
         rows.append(
-            f"| `{mode}` | {pc_cell} | {template_cell} | {fixture_count} "
-            f"| {resume} | {_pc_state(mode)} |"
+            f"| {route.display_label} | {route.group} | {count} | {_emulator_state(route)} "
+            f"| {_pc_state(route)} | {_resume_state(route)} | {accepted} | {pending} |"
         )
     return rows
 
 
 def render() -> str:
-    """把当前代码的现状渲染成 Markdown 全文。
-
-    不读磁盘上的 ``STATUS.md``，只读代码、入库素材清单与在制品交接单，
-    所以可以反复调用比对，且与干净检出的结果一致。
-    """
-    tracked = _tracked_pngs()
-    templates = _count_under("games/epic7/templates", tracked)
-    pc_templates = _count_pc_templates(tracked)
-    fixtures = _count_under("tests/fixtures", tracked)
-
-    parts: list[str] = [
+    """生成面向使用者的当前业务现状。"""
+    return "\n".join([
         TITLE,
         "",
-        "> 本页由 `python -m auto_game_unified.tools.gen_status` 从代码生成，**不要手改**。",
-        "> 门禁 `tests/test_status_doc.py` 会逐字比对：与代码不一致就直接报红。",
-        "> 本页列出当前代码允许启动的组合。公开稳定支持还需通过[路线稳定版验收](howto/route_acceptance.md)。",
-        "",
-        f"**产品**：{catalog.PRODUCT_NAME} v{catalog.PRODUCT_VERSION}",
+        f"**{catalog.PRODUCT_NAME} v{catalog.PRODUCT_VERSION}**",
         "",
         f"## 一、路线总览（共 {len(catalog.ROUTES)} 条）",
         "",
         *_route_table(),
         "",
-        "图例与口径：",
+        "- **可启动**说明桌面允许选择。**开发检查通过**表示对应离线检查通过。**实机记录或通过**仅覆盖写明的场景。**公开稳定支持**需要用目标工件、游戏版本、设置与业务回执单独验收。[发布条件](howto/route_change.md#6-什么时候可以稳定发布)",
+        "- **开局接力**指启动时可从已确认的路线页面继续。部分页面支持接力，购买确认等关键步骤由各路线单独限制。",
+        "- **自动跑完**按游戏中的完成条件结束。刷书签默认只扫当前货架、按设置购买目标商品，付费刷新次数为零。",
         "",
-        "- **模拟器**：「不可用（仅 PC）」表示这条路线只有 PC 素材；界面勾选时只跳过它自己，",
-        "  每日任务连打里记 `not_supported`，都不算失败。",
-        "- **PC 客户端**：界面只放行 `desktop/catalog.PC_READY_ROUTES` 里的路线；",
-        "  勾到没放行的路线也只跳过那一条、其余照跑（日志会说明），全不可用才报错。",
-        "  命令行 `--window-backend pc` 不受这层限制。",
-        "- **默认次数**：界面上预填的值，`-` 表示该路线没有次数概念。",
+        "## 二、哪些能力共用",
         "",
-        "## 二、在制品（进行中）",
+        "| 共用能力 | 哪些路线共用 | 各路线仍需确认什么 |",
+        "| --- | --- | --- |",
+        "| 进入任务与回大厅 | 从大厅启动并按规则结束的路线 | 认准各自入口和终点，确认回到大厅后再接下一项 |",
+        "| 关卡和战斗流程 | 主线、主线补星共用关卡入口、队伍准备、战斗与结算 | 主线按轮结算，补星只处理未满星的小节 |",
+        "| 公共菜单 | 远征与月塔共用赛季菜单，圣域收菜与企鹅购买共用圣域入口 | 进入各自页面后再选择难度、楼层或商品 |",
+        "| 资源操作的安全规则 | 涉及购买、兑换、制作等资源操作的路线 | 各自核对项目、数量、价格及回执。社区兑换和竞技场购旗回执不明时原地停止整轮；刷书签请立即点「安全停止」结束整轮，再核对余额和货架。 |",
+        "| 模拟器和 PC 的共同业务规则 | 同时提供两个客户端的路线 | 目标、完成条件和异常处理可共用，页面差异与操作落点分别验证 |",
         "",
-        "> 这一节一旦有条目，说明**有工作没做完**。每份交接单在 [`docs/wip/`](wip/)，",
-        "> 合并进 main 之后要删掉。开工做到一半要停时，复制",
-        "> [`wip/_TEMPLATE.md`](wip/_TEMPLATE.md) 建一份 —— 见 `AGENTS.md`「做到一半要停」。",
+        "## 三、业务验收依据",
         "",
-        *_wip_rows(),
+        "- [社区签到](maintenance/community_checkin.md#验收证据)的工作区正常批次与历史异常分开记录。成功回执和限购变化可核，实际积分差额、游戏版本及候选工件待核。",
+        "- [竞技场](SAFETY_MATRIX.md#竞技场桌面实机复核)记录购旗后续打和回大厅，实际友情点与旗帜差额待核。",
+        "- [刷书签](maintenance/shop_refresh.md#验收证据)记录正数刷新与正常回大厅，并分别标明两笔历史扣款的证据缺口。",
+        "- [其他实机记录](howto/route_acceptance.md#现状页的实机依据)可按路线查工作区日志定位或 Git 中的历史摘要，并查看待追溯的字段。",
         "",
-        f"## 三、每日任务的执行顺序（共 {len(daily_tasks.DAILY_TASKS)} 条）",
-        "",
-        "界面上「每日」分组按下表从上到下执行；每段之间会先确认回到大厅再开下一条。",
-        "",
-        *_daily_lines(),
-        "",
-        "## 四、仅 PC 的路线",
-        "",
-        *_pc_only_lines(),
-        "",
-        "## 五、素材与测试规模",
-        "",
-        f"- 识别模板 **{templates}** 张，其中 PC 专用 **{pc_templates}** 张",
-        f"- 现场夹具 **{fixtures}** 张（`tests/fixtures/`，跑测试用的真实截图）",
-        "",
-        "注意：这两个数字**加一张图就要重生成一次**。这是有意的 —— 素材入库本来就要在",
-        "`tests/test_template_paths.py` 登记，多跑一次生成器只是同一步的延续。",
-        "测试文件个数刻意不写在这里：它每天都在变，写进来只会让这一页天天过期。",
-        "",
-        "### 按路线的现行事实（自动生成）",
-        "",
-        "> 路线手册里**不要再手抄**「有几张 PC 图 / 几张模板 / 几张夹具」，链到本表即可。",
-        "> 口径：模板只数 `games/epic7/templates/<路线>/` 与 `templates/pc/<路线>/`；",
-        "> 夹具数 `tests/fixtures/epic7_<路线>` 前缀（含 `epic7_<路线>_pc/` 等变体目录）；"
-        "若与另一条路线重名前缀，在 `ROUTE_FIXTURE_EXCLUDES` 显式排除。",
-        "> `hero_synthesis` 的素材目录叫 `hero`；`arena` 的模板与全局共享图混放在模板根，",
-        "> 无法按路线归属，标「共享根」而不是报一个假的 0 —— 别名见 `gen_status.py::ROUTE_DIR_ALIASES`。",
-        "> 开局接力读 `MODE_SPECS.resume_probe` 与 `RESUME_EXEMPT`，PC 放行读 `PC_READY_ROUTES`。",
-        "> 契约五项与欠债见 [路线通用契约](ROUTE_CONTRACT.md)；合规矩阵由 "
-        "`python -m auto_game_unified.tools.route_compliance` 生成，不手抄。",
-        "",
-        *_route_fact_rows(tracked),
-        "",
-        "## 六、这一页之外去哪找",
-        "",
-        "- 文档索引与「我该看哪一份」：[`docs/README.md`](README.md)",
-        "- 为什么当初这么定：[`docs/decisions/`](decisions/)",
-        "- 每条路线怎么维护：[`docs/maintenance/`](maintenance/)",
-        "- 改了什么：[`CHANGELOG.md`](../CHANGELOG.md)",
-        "",
-    ]
-    return "\n".join(parts)
+    ])
 
 
 def main() -> int:
-    text = render()
-    STATUS_PATH.parent.mkdir(parents=True, exist_ok=True)
-    # 统一用 LF 写盘：CRLF 会让「同一份内容」在不同机器上比对失败。
-    STATUS_PATH.write_text(text, encoding="utf-8", newline="\n")
+    STATUS_PATH.write_text(render(), encoding="utf-8", newline="\n")
     print(f"已生成 {STATUS_PATH}")
-    print(f"路线 {len(catalog.ROUTES)} 条，每日任务 {len(daily_tasks.DAILY_TASKS)} 条")
     return 0
 
 

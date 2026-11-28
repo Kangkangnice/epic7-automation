@@ -1,8 +1,6 @@
 """路线设置：按一处声明生成控件，值交给 controller 统一清洗与保存。
 
-视觉口径与主界面一致（2026-11-17 用户要求）：设置项逐条落在 ``CardWidget`` 里，
-标题用 ``StrongBodyLabel``、说明用 ``CaptionLabel``、底部右侧一颗主色按钮；
-不另造一套字号与描边。
+设置项使用与主界面一致的像素面板，标题用 ``StrongBodyLabel``、说明用 ``CaptionLabel``。
 """
 
 from __future__ import annotations
@@ -17,6 +15,8 @@ from PySide6.QtWidgets import (
     QGridLayout,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
+    QPushButton,
     QScrollArea,
     QSpinBox,
     QVBoxLayout,
@@ -24,16 +24,26 @@ from PySide6.QtWidgets import (
 )
 from qfluentwidgets import (
     CaptionLabel,
-    CardWidget,
-    ComboBox,
-    LineEdit,
     PillPushButton,
     PrimaryPushButton,
     PushButton,
     StrongBodyLabel,
+    ToolButton,
 )
 
-from auto_game_unified.desktop_qt.style import SPIN_BOX_QSS
+from auto_game_unified.desktop_qt import brand
+from auto_game_unified.desktop_qt.mascot import ArkyMascot
+from auto_game_unified.desktop_qt.style import (
+    GOLD,
+    HEADING,
+    INK,
+    LINE,
+    MUTED,
+    SPIN_BOX_QSS,
+    PixelComboBox,
+    PixelPanel,
+    apply_pixel_style,
+)
 from auto_game_unified.games.epic7.hero_catalog import (
     ELEMENTS,
     JOBS,
@@ -64,12 +74,14 @@ _ROSTER_WIDTH = (
 )
 
 # 头像按内切圆显示：源图是方形，四角带界面边框或截图底纹，直接摆出来边角很毛。
-_RING_NORMAL = "#E1E3E6"
-_RING_CHOSEN = "#0078D7"
+_RING_NORMAL = LINE
+_RING_CHOSEN = GOLD
 
-# 对话框底色。默认的 QDialog 是系统灰（#F3F3F3），与主界面的白色底不一致，
-# 摆在一起会明显像另一套界面。只作用于本对话框自身，不设全局样式。
-_DIALOG_QSS = "QDialog { background-color: #FFFFFF; }"
+_DIALOG_QSS = f"""
+QDialog {{ background-color: #192e4b; border: 2px solid {LINE}; border-color: #90afcd #34516e #34516e #90afcd; }}
+QFrame#routeOptionDivider {{ background: #3d5e80; border: 0; }}
+"""
+_ROSTER_QSS = 'QPushButton[pixelRole="nav"] { text-align: center; }'
 
 _PIXMAP_CACHE: dict[str, QPixmap | None] = {}
 
@@ -176,10 +188,10 @@ class _HeroTile(QWidget):
             self._avatar.setPixmap(pixmap)
         if chosen:
             self._caption.setStyleSheet(
-                "color: #0078D7; font-size: 12px; font-weight: 600;"
+                f"color: {GOLD}; font-size: 12px; font-weight: 600;"
             )
         else:
-            self._caption.setStyleSheet("color: #1A1A1A; font-size: 12px;")
+            self._caption.setStyleSheet(f"color: {INK}; font-size: 12px;")
 
     def paintEvent(self, event) -> None:  # noqa: N802 - Qt 接口
         """在头像位置画选中态圆环。
@@ -257,14 +269,16 @@ def _filter_row(
     title: str,
     values: tuple[object, ...],
     on_change,
-) -> tuple[QHBoxLayout, list[PillPushButton]]:
+) -> tuple[QHBoxLayout, list[QPushButton]]:
     """一行可多选的筛选按钮，行首是「全部」。"""
 
     row = QHBoxLayout()
     row.setSpacing(6)
     row.addWidget(CaptionLabel(title, parent))
-    buttons: list[PillPushButton] = []
-    all_button = PillPushButton("全部", parent)
+    buttons: list[QPushButton] = []
+    all_button = QPushButton("全部", parent)
+    all_button.setProperty("pixelRole", "nav")
+    all_button.setAutoDefault(False)
     all_button.setCheckable(True)
     all_button.setChecked(True)
     all_button.setProperty("value", None)
@@ -272,7 +286,9 @@ def _filter_row(
     buttons.append(all_button)
     for value in values:
         label = f"{value}星" if isinstance(value, int) else str(value)
-        button = PillPushButton(label, parent)
+        button = QPushButton(label, parent)
+        button.setProperty("pixelRole", "nav")
+        button.setAutoDefault(False)
         button.setCheckable(True)
         button.setProperty("value", value)
         row.addWidget(button)
@@ -285,7 +301,7 @@ def _filter_row(
     return row, buttons
 
 
-def _chosen_values(buttons: list[PillPushButton]) -> set[object]:
+def _chosen_values(buttons: list[QPushButton]) -> set[object]:
     """勾选集合；「全部」被勾选或一个都没勾，都表示不限制。"""
 
     if buttons[0].isChecked():
@@ -293,7 +309,7 @@ def _chosen_values(buttons: list[PillPushButton]) -> set[object]:
     return {button.property("value") for button in buttons[1:] if button.isChecked()}
 
 
-def _sync_all_button(clicked: PillPushButton, buttons: list[PillPushButton]) -> None:
+def _sync_all_button(clicked: QPushButton, buttons: list[QPushButton]) -> None:
     """「全部」与具体项互斥。
 
     ⚠️ 必须知道**点的是哪一个**：只看「全部是否勾着」无法区分「刚点了全部」
@@ -330,7 +346,7 @@ class HeroRosterDialog(QDialog):
     def __init__(self, parent, title: str, names: list[str], selected: list[str]):
         super().__init__(parent)
         self.setWindowTitle(title)
-        self.setStyleSheet(_DIALOG_QSS)
+        self.setStyleSheet(_DIALOG_QSS + _ROSTER_QSS)
         self.setMinimumWidth(_ROSTER_WIDTH)
         self.resize(_ROSTER_WIDTH, 760)
         self._names = list(names)
@@ -343,12 +359,13 @@ class HeroRosterDialog(QDialog):
 
         # 搜索与分类放在同一张卡片里：与主界面「一类内容一张卡」一致，
         # 也避免四行控件散在灰底上。
-        filters = CardWidget(self)
+        filters = PixelPanel(self)
         filters_layout = QVBoxLayout(filters)
         filters_layout.setContentsMargins(14, 12, 14, 12)
         filters_layout.setSpacing(8)
 
-        self._search = LineEdit(filters)
+        self._search = QLineEdit(filters)
+        self._search.setMinimumHeight(32)
         self._search.setPlaceholderText("搜索英雄名")
         self._search.textChanged.connect(self._refresh)
         filters_layout.addWidget(self._search)
@@ -367,7 +384,7 @@ class HeroRosterDialog(QDialog):
         filters_layout.addLayout(self._star_row)
         layout.addWidget(filters)
 
-        grid_card = CardWidget(self)
+        grid_card = PixelPanel(self)
         grid_layout = QVBoxLayout(grid_card)
         grid_layout.setContentsMargins(8, 8, 8, 8)
         grid_layout.setSpacing(0)
@@ -408,11 +425,12 @@ class HeroRosterDialog(QDialog):
         footer.addWidget(confirm)
         layout.addLayout(footer)
 
+        apply_pixel_style(self)
         self._refresh()
 
     # ---- 交互 ----
 
-    def _on_filter(self, clicked: PillPushButton, buttons: list[PillPushButton]) -> None:
+    def _on_filter(self, clicked: QPushButton, buttons: list[QPushButton]) -> None:
         _sync_all_button(clicked, buttons)
         self._refresh()
 
@@ -487,15 +505,24 @@ class HeroRosterDialog(QDialog):
         return [name for name in self._names if name in self._chosen]
 
 
+class _DragHeading(QWidget):
+    """无边框对话框的标题行：按住拖动整个窗口，系统移动逻辑交给 Qt。"""
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton and self.window().windowHandle():
+            self.window().windowHandle().startSystemMove()
+            return
+        super().mousePressEvent(event)
+
+
 class RouteOptionsDialog(QDialog):
     """声明驱动：下拉与数字框按 ``RouteOption`` 生成，依赖未满足时置灰。
 
-    每个选项一张卡片，卡片内是「标题 + 右侧控件 / 下一行说明」的读法 ——
-    与主界面「运行环境」那张卡的层级一致，不再用整页表单。
+    每行左侧显示标题和说明，右侧保留原有选项控件。
     """
 
     _CARD_WIDTH = 520
-    _CONTROL_WIDTH = 200
+    _CONTROL_WIDTH = 225
 
     def __init__(
         self,
@@ -506,32 +533,63 @@ class RouteOptionsDialog(QDialog):
         on_accept: Callable[[str, dict[str, object]], None],
     ) -> None:
         super().__init__(parent)
+        # 系统标题栏自带一个关闭叉，内容区标题行又有一个；去掉系统标题栏，
+        # 只留内容区那个。边框与拖拽由本类自己处理。
+        self.setWindowFlags(Qt.WindowType.Dialog | Qt.WindowType.FramelessWindowHint)
         self.setWindowTitle(f"{label} · 设置")
+        self.setWindowIcon(brand.app_icon())
         self.setStyleSheet(_DIALOG_QSS)
         self.setMinimumWidth(self._CARD_WIDTH)
-        self.resize(self._CARD_WIDTH, 720)
+        self.resize(680, 720)
         self._mode = mode
         self._on_accept = on_accept
         self._options = options_for(mode)
         self._controls: dict[str, object] = {}
+        self._rows: dict[str, QWidget] = {}
+        self._dividers: dict[str, QFrame] = {}
         self._roster_values: dict[str, list[str]] = {}
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(16, 16, 16, 16)
-        layout.setSpacing(12)
+        layout.setSpacing(10)
+
+        heading_widget = _DragHeading(self)
+        heading = QHBoxLayout(heading_widget)
+        heading.setContentsMargins(0, 0, 0, 0)
+        title = StrongBodyLabel(f"{label} · 路线设置", heading_widget)
+        title.setStyleSheet(f"color: {HEADING}; font-size: 16px;")
+        heading.addWidget(title)
+        mascot = ArkyMascot(heading_widget, height=42, pose="settings")
+        mascot.setFixedWidth(42)
+        heading.addWidget(mascot)
+        heading.addStretch(1)
+        close = ToolButton(brand.icon("close"), heading_widget)
+        close.setToolTip("关闭路线设置")
+        close.setAccessibleName("关闭路线设置")
+        close.clicked.connect(self.reject)
+        heading.addWidget(close)
+        layout.addWidget(heading_widget)
 
         area = QScrollArea(self)
         area.setWidgetResizable(True)
         area.setFrameShape(QFrame.Shape.NoFrame)
-        # 视口默认按系统窗口色（#F3F3F3）自绘，会在白底对话框里留一大块灰。
+        # 视口使用对话框底色。
         area.viewport().setAutoFillBackground(False)
         holder = QWidget(area)
         column = QVBoxLayout(holder)
         column.setContentsMargins(0, 0, 6, 0)
-        column.setSpacing(8)
+        column.setSpacing(0)
 
-        for option in self._options:
-            column.addWidget(self._build_card(option, values, holder))
+        for index, option in enumerate(self._options):
+            if index:
+                divider = QFrame(holder)
+                divider.setObjectName("routeOptionDivider")
+                divider.setFixedHeight(1)
+                column.addWidget(divider)
+                self._dividers[option.key] = divider
+            row = self._build_option_row(option, values, holder)
+            self._rows[option.key] = row
+            column.addWidget(row)
         column.addStretch(1)
         area.setWidget(holder)
         # ⚠️ setWidget() 会把内容的 autoFillBackground 重新打开，内容区因此按系统
@@ -541,27 +599,35 @@ class RouteOptionsDialog(QDialog):
 
         footer = QHBoxLayout()
         footer.addStretch(1)
-        confirm = PrimaryPushButton("保存", self)
-        confirm.setFixedWidth(120)
+        cancel = PushButton("取消", self)
+        cancel.clicked.connect(self.reject)
+        footer.addWidget(cancel)
+        confirm = PrimaryPushButton("保存设置", self)
         confirm.clicked.connect(self._accept)
         footer.addWidget(confirm)
         layout.addLayout(footer)
+        apply_pixel_style(self)
         self._sync_enabled()
 
-    def _build_card(
+    def _build_option_row(
         self, option, values: Mapping[str, object], parent: QWidget
-    ) -> CardWidget:
-        card = CardWidget(parent)
-        card_layout = QVBoxLayout(card)
-        card_layout.setContentsMargins(16, 12, 16, 14)
-        card_layout.setSpacing(6)
+    ) -> QWidget:
+        row = QWidget(parent)
+        row_layout = QHBoxLayout(row)
+        row_layout.setContentsMargins(4, 11, 4, 11)
+        row_layout.setSpacing(12)
 
-        head = QHBoxLayout()
-        head.setSpacing(12)
-        head.addWidget(StrongBodyLabel(option.label, card), 1)
+        copy = QVBoxLayout()
+        copy.setSpacing(4)
+        copy.addWidget(StrongBodyLabel(option.label, row))
+        note = CaptionLabel(option.note, row)
+        note.setWordWrap(True)
+        note.setStyleSheet(f"color: {MUTED};")
+        copy.addWidget(note)
+        row_layout.addLayout(copy, 1)
 
         if option.kind == "choice":
-            control = ComboBox(card)
+            control = PixelComboBox(row)
             for value, text in option.choices:
                 control.addItem(text, userData=value)
             index = control.findData(values.get(option.key, option.default))
@@ -569,7 +635,7 @@ class RouteOptionsDialog(QDialog):
             control.setFixedWidth(self._CONTROL_WIDTH)
             control.currentIndexChanged.connect(self._sync_enabled)
         elif option.kind == "roster":
-            control = PushButton("选择英雄", card)
+            control = PushButton("选择英雄", row)
             control.setFixedWidth(self._CONTROL_WIDTH)
             picked = list(values.get(option.key, ()) or ())
             control.clicked.connect(
@@ -580,22 +646,24 @@ class RouteOptionsDialog(QDialog):
             self._roster_values[option.key] = picked
             self._refresh_roster_label(option.key, control)
         else:
-            control = QSpinBox(card)
+            control = QSpinBox(row)
             control.setStyleSheet(SPIN_BOX_QSS)
             control.setRange(option.minimum, option.maximum)
             control.setValue(int(values.get(option.key, option.default) or 0))
             control.setFixedWidth(120)
         self._controls[option.key] = control
-        head.addWidget(control, 0, Qt.AlignmentFlag.AlignVCenter)
-        card_layout.addLayout(head)
-
-        note = CaptionLabel(option.note, card)
-        note.setWordWrap(True)
-        card_layout.addWidget(note)
-        return card
+        row_layout.addWidget(control, 0, Qt.AlignmentFlag.AlignVCenter)
+        return row
 
     def _sync_enabled(self) -> None:
         for option in self._options:
+            if option.visible_when is not None:
+                key, expected = option.visible_when
+                visible = self._controls[key].currentData() == expected
+                self._rows[option.key].setVisible(visible)
+                divider = self._dividers.get(option.key)
+                if divider is not None:
+                    divider.setVisible(visible)
             if option.depends_on is None:
                 continue
             key, expected = option.depends_on

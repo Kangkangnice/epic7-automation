@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import importlib.util
 import os
 from pathlib import Path
 import subprocess
@@ -15,6 +16,15 @@ import sys
 
 REPO = Path(__file__).resolve().parents[1]
 ENTRY = REPO / "packaging" / "entry.py"
+
+
+def _load_entry():
+    """进程内加载 ``packaging/entry.py``。"""
+    spec = importlib.util.spec_from_file_location("packaging_entry_under_test", ENTRY)
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+    return module
 
 
 def run_self_check(data_dir: Path) -> subprocess.CompletedProcess[str]:

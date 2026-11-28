@@ -72,24 +72,24 @@ def test_static_unknown_never_clicks_and_hands_back_to_the_caller():
 
 def test_animated_unknown_page_stops_waiting_after_frame_limit():
     """带动画的未知画面（如英雄详情立绘）不能无限等待唤醒。"""
-    base = static_game_screen()
-    frames = []
-    for i in range(20):
-        frame = base.copy()
-        frame[300:800, 300:1600] = 50 + i * 10
-        frames.append(frame)
+    screen = static_game_screen()
+    screen[300:800, 300:1600] = 50
+    frame_count = 20
     clicks: list[tuple[int, int]] = []
     logs: list[str] = []
     with TemporaryDirectory() as directory:
         runtime = Runtime(
-            lambda: frames[0],
+            lambda: screen,
             clicks.append,
             diagnostic_dir=Path(directory),
             emit=logs.append,
         )
         wake = UnknownScreenWake(runtime)
 
-        results = [wake.handle(frame, context="hero:英雄列表") for frame in frames]
+        results = []
+        for i in range(frame_count):
+            screen[300:800, 300:1600] = 50 + i * 10
+            results.append(wake.handle(screen, context="hero:英雄列表"))
 
         diagnostics = sorted(path.name for path in Path(directory).glob("*.png"))
 
@@ -99,7 +99,7 @@ def test_animated_unknown_page_stops_waiting_after_frame_limit():
     exhausted_count = sum(1 for r in results if r is UnknownWakeResult.EXHAUSTED)
     assert waiting_count == 14
     assert exhausted_count == 6
-    assert waiting_count + exhausted_count == len(frames)
+    assert waiting_count + exhausted_count == frame_count
     assert clicks == []
     assert any(name.endswith("_unknown_animated_page.png") for name in diagnostics)
     assert any("画面持续变化" in line for line in logs)
