@@ -40,6 +40,8 @@ from auto_game_unified.games.epic7.world_boss import (
     WorldBossStateMachine,
     find_world_boss_skip,
     find_weekly_chest,
+    load_select_team_digits,
+    read_select_team_attempts,
     team_configured,
     select_team_bar_relative_v,
     select_team_enabled,
@@ -187,6 +189,69 @@ class WorldBossCountTests(unittest.TestCase):
         action = machine.next_action(darkened(fixture("worldboss_home"), 0.5))
 
         self.assertEqual("open-team-select", action.name)
+
+
+class WorldBossAttemptsReadTests(unittest.TestCase):
+    """按钮上「x/2」的次数要**读出来**：1 和 2 都能打，只有 0 才算真的打完。
+
+    2026-11-27 用户口径（原话）：「2/2、1/2 都算，只有 0/2 才是真的打完了」。
+    这条用例守的是「读数字」，不是「按钮绿不绿」—— 颜色判据分不清「真变灰」
+    与「画面还没亮起来」，11-25 08:00、11-27 08:22 两次实跑都在暗帧上
+    把还有次数的主页判成 0/2，直接收摊。
+    """
+
+    def setUp(self):
+        self.digits = load_select_team_digits(TEMPLATES)
+
+    def test_reads_the_number_printed_on_the_button(self):
+        cases = {
+            "worldboss_home_exhausted": 0,
+            "worldboss_home_chest_claimable": 0,
+            "worldboss_home_chest2_claimable": 0,
+            "worldboss_home": 1,
+            "worldboss_home_2of2_live_20261127": 2,
+        }
+        for name, expected in cases.items():
+            with self.subTest(page=name):
+                self.assertEqual(
+                    expected, read_select_team_attempts(fixture(name), self.digits)
+                )
+
+    def test_two_of_two_survives_the_page_still_fading_in(self):
+        """整屏压暗不许把 2/2 读成 0 —— 这正是 2026-11-27 提前收工的根因。"""
+
+        screen = fixture("worldboss_home_2of2_live_20261127")
+
+        for scale in (0.5, 0.3, 0.2):
+            with self.subTest(scale=scale):
+                self.assertEqual(
+                    2,
+                    read_select_team_attempts(darkened(screen, scale), self.digits),
+                    "压暗只该影响「绿不绿」，不该影响「写的是几」",
+                )
+
+    def test_faded_two_of_two_still_asks_for_the_team_button(self):
+        """决策路径上的回归：暗帧的 2/2 必须去点「选择队伍」，不许当场收工。"""
+
+        machine = WorldBossStateMachine(TEMPLATES)
+
+        action = machine.next_action(
+            darkened(fixture("worldboss_home_2of2_live_20261127"), 0.3)
+        )
+
+        self.assertEqual("open-team-select", action.name)
+
+    def test_unreadable_count_falls_back_to_the_colour_check(self):
+        """读不出数字时退回颜色判据；这一帧绿条还在 ⇒ 仍然去点「选择队伍」。"""
+
+        screen = fixture("worldboss_home_2of2_live_20261127").copy()
+        patch = screen[1038:1082, 1555:1680]
+        # 把数字区抹成一片平色：切不出字形，但按钮本体（页面识别用的）没动。
+        screen[1038:1082, 1555:1680] = patch.reshape(-1, 3).mean(axis=0).astype(np.uint8)
+
+        self.assertIsNone(read_select_team_attempts(screen, self.digits))
+        machine = WorldBossStateMachine(TEMPLATES)
+        self.assertEqual("open-team-select", machine.next_action(screen).name)
 
 
 class WorldBossWeeklyChestTests(unittest.TestCase):

@@ -93,53 +93,6 @@ def _self_check() -> int:
         f"{len(ROUTES)} 条全部可加载" if not broken else "；".join(broken),
     )
 
-    # 次元探查的第三方代码按清单分发（不在 Git 里）。自检要证明「产物里的这一份
-    # 真能导入、配置真能解析」，否则文件缺了只会等到用户点「开始」才报错。
-    # ⚠️ 源码检出不是产物：干净 clone 里没有 vendor（构建前才取回），这时**明说
-    # 跳过**，不冒充通过；打包版（frozen）缺它仍然算失败。
-    #
-    # ⚠️ 三态判定，不能只看目录在不在：公开候选按 NOTICE 的约束**不含** E7auto，
-    # 产物里会有 ``vendor/NO_E7AUTO.txt`` 标记。只看目录会把「声明不含」判成缺件
-    # 失败（不含版永远自检不过），也会把「该含却漏拷」判成不含（漏件静默通过）。
-    from auto_game_unified.desktop.chaos_bridge import vendor_root, vendor_state
-
-    vendor_dir = vendor_root()
-    vendor_state_now = vendor_state()
-    if vendor_state_now == "absent":
-        lines.append(
-            "[通过] 发行版构成：本发行版不含次元探查（E7auto 未随包分发）"
-        )
-    elif vendor_state_now == "missing" and not getattr(sys, "frozen", False):
-        lines.append(
-            "[跳过] 第三方代码：源码检出未取回"
-            "（构建前运行 python tools/fetch_vendor.py）"
-        )
-    else:
-        def vendor_problem() -> str:
-            source = vendor_dir / "src"
-            config = vendor_dir / "config" / "internal.yaml"
-            if not (source / "e7auto").is_dir():
-                return f"缺少第三方源码：{source}"
-            if not config.is_file():
-                return f"缺少第三方配置：{config}"
-            if str(source) not in sys.path:
-                sys.path.insert(0, str(source))
-            from e7auto.configuration.loader import load_config
-            from e7auto.features.chaos.configuration import with_chaos_config
-
-            with_chaos_config(
-                load_config(config, template_profile="chaos"),
-                target_stage=1,
-                lineup_id="dark_twins",
-            )
-            return ""
-
-        try:
-            problem = vendor_problem()
-        except Exception as error:  # noqa: BLE001 —— 报清是哪一步加载不了
-            problem = f"{type(error).__name__}: {error}"
-        record(not problem, "第三方代码", problem or "e7auto 可导入，chaos 配置可加载")
-
     def render(fail_count: int) -> str:
         return "\n".join(
             lines + [f"结果：{'通过' if fail_count == 0 else f'{fail_count} 项失败'}"]

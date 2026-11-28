@@ -137,6 +137,7 @@ from auto_game_unified.games.epic7.pet_adoption import (
 )
 from auto_game_unified.games.epic7.penguin_purchase import (
     DEFAULT_CYCLES as PENGUIN_DEFAULT_CYCLES,
+    ROUTE_LABEL as PENGUIN_LABEL,
     PenguinPage,
     PenguinPurchaseRunner,
     PenguinPurchaseStateMachine,
@@ -944,8 +945,10 @@ MODE_SPECS = {
         # 体力不足时按路线选项补充（默认使用、不限），关闭或达到上限后走
         # `StaminaShortage`（退出码 2，正常业务退出）。
         default_cycles=25,
-        # 次数可改：用户想只打几层清个体力也合理。
-        cycles_editable=True,
+        # 2026-11-28 用户拍板改为自动执行：默认就是打满顶层，次数框去掉。
+        # 只读路线的次数由 session._clean_cycles 归回默认值 25，旧存档里的自定义
+        # 次数会被忽略（用户不再需要按层清体力）。
+        cycles_editable=False,
         # 开局不无脑回大厅：导航链四级（战斗菜单/赛季菜单/月塔主页）都开放接力，
         # 业务页从楼层列表一路到结算页也都接得住。
         # ⚠️ 落点必须拨状态：``next_action`` 是纯状态驱动的，拨错**不会自愈**。
@@ -1658,7 +1661,7 @@ MODE_SPECS = {
     # 2026-11-15：企鹅批量购买（模拟器实机闭环；PC 未放行）。
     "penguin_purchase": ModeSpec(
         name="penguin_purchase",
-        label="企鹅批量购买",
+        label=PENGUIN_LABEL,
         default_state=PenguinPage.HOME.value,
         states=frozenset(
             page.value
@@ -1681,7 +1684,7 @@ MODE_SPECS = {
                 ),
             ),
             resume_entries=frozenset({SANCTUARY_HOME_PAGE}),
-            resume_log_mode="企鹅批量购买",
+            resume_log_mode=PENGUIN_LABEL,
             resume_action="跳过回大厅与进入圣域",
             resume_state_done="已在圣域主页",
             ready_note="圣域主页已就绪",

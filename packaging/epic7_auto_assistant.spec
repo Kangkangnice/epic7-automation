@@ -15,36 +15,12 @@
 往上两级正好是 ``_internal/auto_game_unified``。改这里的 dest 之前先算一遍。
 """
 
-import os
 from pathlib import Path
 
 from PyInstaller.utils.hooks import collect_data_files, collect_submodules
 
 REPO = Path(SPECPATH).resolve().parent
 WORKSPACE = REPO.parent
-#: 第三方 chaos 源码（不随 Git 分发，构建前由 tools/fetch_vendor.py 取回）。
-#: ⚠️ 校验在 packaging/build.py 里做，**构建请走那条入口**；直接调 PyInstaller
-#: 不会检查清单，缺文件时只会得到「产物里没有它不是报错」的假成功。
-VENDOR = WORKSPACE / "vendor" / "e7auto"
-
-#: 不含 E7auto 的公开候选：由 ``build.py --without-e7auto`` 传
-#: ``ARKY_WITHOUT_E7AUTO=1``。此时不收集 vendor 三段，改收一个显式标记文件 ——
-#: 自检与界面靠它区分「本发行版声明不含」和「该有却漏了」。
-#:
-#: ⚠️ 标记文件的**文件名**不能改：``datas`` 只认 ``(源, 目标目录)``，产物里的
-#: 名字永远是源文件的 basename。``desktop/chaos_bridge.py::ABSENT_MARKER_NAME``
-#: 按 ``NO_E7AUTO.txt`` 找它，改成小写就再也找不到。
-WITH_E7AUTO = os.environ.get("ARKY_WITHOUT_E7AUTO") != "1"
-
-_VENDOR_DATAS = (
-    [
-        (str(VENDOR / "src"), "vendor/e7auto/src"),
-        (str(VENDOR / "config"), "vendor/e7auto/config"),
-        (str(VENDOR / "assets" / "templates"), "vendor/e7auto/assets/templates"),
-    ]
-    if WITH_E7AUTO
-    else [(str(REPO / "packaging" / "NO_E7AUTO.txt"), "vendor")]
-)
 
 # ⚠️ Qt / Fluent 界面（2026-11-09 起是**唯一**界面）自带一套字体图标与样式资源，
 # PyInstaller 不会自动收进包 —— 少了它们的表现是「窗口能开，但所有图标都是空白」。
@@ -71,17 +47,10 @@ a = Analysis(
             "auto_game_unified/desktop_qt",
         ),
     ]
-    # 次元探查：第三方 chaos 源码、配置与模板。只收会参与运行的三段 ——
-    # 整目录照收会把 .git（45 MB）、tests、docs、缓存一起塞进产物。
-    # 取回与校验走 ``tools/fetch_vendor.py``，``packaging/build.py`` 在打包前
-    # 会按 ``packaging/vendor_lock.json`` 逐文件核对，缺一个就停下。
-    # 不含 E7auto 的公开候选改收 ``packaging/no_e7auto.txt``（成员数必须为 0）。
-    + _VENDOR_DATAS
     + _QFLUENT_DATAS,
     hiddenimports=(
         list(_QFLUENT_MODULES)
-        + collect_submodules("winrt")
-        + ["yaml", "win32gui", "win32api", "win32con", "pywintypes"]
+        + ["win32gui", "win32api", "win32con", "pywintypes"]
     ),
     hookspath=[],
     runtime_hooks=[],

@@ -50,6 +50,11 @@ FILENAME = "side_story_countdown.json"
 MOONLIGHT_FREE_ON = "月光剧场免费已更新"
 MOONLIGHT_FREE_OFF = "月光剧场免费已用"
 
+# 本期到期、可开启新一期（2026-11-26 结束态）。便签汇总行和每日任务汇总行共用，
+# 文案只写这一处；读数是 ``{"ended": True, "raw": "开启其他支线故事"}``，没有数字。
+ENDED_NOTE = "本期已到期、可开启新支线"
+ENDED_PREFIX = "支线刷新倒计时："
+
 
 def countdown_path(account: str = "") -> Path:
     """倒计时文件的落点。

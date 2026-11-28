@@ -48,6 +48,7 @@ from auto_game_unified.games.epic7.evidence.diagnostics import (
     save_runtime_evidence_diagnostic,
 )
 from auto_game_unified.core.recovery import RecoveryGate
+from auto_game_unified.core.failure_history import freeze_before_retry, retry_recovered
 from auto_game_unified.core.runtime import (
     ManualStop,
     PurchaseReceiptUnclear,
@@ -490,6 +491,7 @@ class TransactionalRunnerBase:
                 and target is not None
             ):
                 self.machine.commit(action, target)
+                retry_recovered(self.runtime, f"转场重试 {action.name}")
                 self.runtime.log(
                     f"模式={self._MODE_LABEL} 转场确认 动作={action.name} "
                     f"从={source_page} 到={self._state_label(target)} 目标连续=2"
@@ -521,6 +523,7 @@ class TransactionalRunnerBase:
                             )
                     elif attempts < 4:
                         attempts += 1
+                        freeze_before_retry(self.runtime, f"转场重试 {action.name}")
                         self.runtime.log(
                             f"模式={self._MODE_LABEL} 转场重试 动作={action.name} "
                             f"来源={source_page}仍在 尝试={attempts}/4 坐标={action.point}"
@@ -557,6 +560,7 @@ class TransactionalRunnerBase:
         message = self._transition_failure_message(action, attempts, diagnostic)
         if message is not None:
             raise RuntimeError(message)
+        retry_recovered(self.runtime, f"转场重试 {action.name}")
 
     def _stop_on_receipt_capture_timeout(
         self,
@@ -688,6 +692,7 @@ class TransactionalRunnerBase:
                 self._close_out()
                 return self.machine.completed_cycles
             except UnrecognizedScreen as error:
+                freeze_before_retry(self.runtime, "页面识别异常", f"页面识别异常：{error}")
                 wake = self.unknown_screen_wake.handle(
                     screen, context=f"{self._MODE_LABEL}:{self._state_label(state_before)}"
                 )
@@ -705,6 +710,7 @@ class TransactionalRunnerBase:
                 raise RuntimeError(
                     f"{self._MODE_LABEL}未知页面：{error}；已保存诊断 {diagnostic}"
                 ) from error
+            retry_recovered(self.runtime, "页面识别异常")
             if action is None:
                 if self.machine.state is self._SETTLED_BATTLE_STATE:
                     # 停在局内且状态机没有别的活要干 ⇒ 这一局交给战斗监督等结算。

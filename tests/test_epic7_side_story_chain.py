@@ -25,14 +25,17 @@ import pytest
 
 from auto_game_unified.games.epic7.side_story import (
     SideStoryCleared,
+    SideStoryRunner,
     build_side_story_machine,
 )
 from auto_game_unified.games.epic7.side_story import (
+    _ARROW_MISS_LIMIT,
     _PAN_LIMIT,
     _PAN_SAFE,
     _PAN_START,
     _PAN_SWEEPS,
     _SEG_BOSS,
+    _SEG_NORMAL,
     _SEG_OUTPOST_1,
     _SEG_OUTPOST_2,
     _pan_endpoint,
@@ -51,6 +54,11 @@ def scene_without_arrow() -> np.ndarray:
 def map_default_view() -> np.ndarray:
     # 默认视角地图（14_map）：骷髅 (1020,579)、摩罗戈拉 (165,308 雾态)、哥布林被顶栏挡住。
     return _load(FIXTURES / "epic7_side_story" / "map_default_view.png")
+
+
+def map_none_done() -> np.ndarray:
+    # 一处据点都没打过的地图（map.png）：没有任何「入场限制 0/1」气泡。
+    return _load(FIXTURES / "epic7_side_story" / "map.png")
 
 
 def map_boss_selected() -> np.ndarray:
@@ -90,21 +98,45 @@ def boss_scene() -> np.ndarray:
     return _load(FIXTURES / "epic7_side_story_boss" / "boss_scene.png")
 
 
+class _Runtime:
+    """够 `SideStoryRunner` 构造用的最小替身。
+
+    本文件只在**转场判定**这一层用它（`_transition_completed` 不碰 runtime），
+    不跑主循环，所以不需要点击 / 抓帧 / 诊断那几件本事。
+    """
+
+    diagnostic_dir = None
+    dry_run = False
+
+    def now(self) -> float:
+        return 0.0
+
+
 class NormalToBossChainTests(unittest.TestCase):
     def test_normal_done_clicks_leave_and_switches_to_first_outpost(self):
-        """① 场景页连续 12 帧无箭头 ⇒ 点「离开」（不再抛收工），段落切 ②摩罗戈拉。
+        """① 这一层小地图打完 ⇒ 点「离开」；**回地图先查跨图门**，没有门才切 ②摩罗戈拉。
 
         ⚠️ 2026-11-12 顺序订正：②是摩罗戈拉据点（旧版是 BOSS 段）。
+        ⚠️ 2026-11-27 用户新增：大地图可能分好几张小地图，离开之后要先看地图上
+        有没有跨图传送门。所以**点完离开那一刻段落还不切**，等地图查完没有门才切。
         """
 
         machine = build_side_story_machine(TEMPLATES)
         action = None
-        for _ in range(12):
+        for _ in range(_ARROW_MISS_LIMIT):
             action = machine.next_action(scene_without_arrow())
         self.assertIsNotNone(action)
         self.assertEqual("scene_leave", action.name)
-        self.assertEqual(_SEG_OUTPOST_1, machine._segment)
         self.assertTrue(machine._leaving)
+        self.assertTrue(machine._pending_submap)
+        self.assertEqual(_SEG_NORMAL, machine._segment)
+
+        # 没有跨图传送门：先查两帧门，再按地图上的「入场限制 0/1」气泡判下一段
+        # （`map` 一个气泡都没有 ⇒ ②摩罗戈拉）。
+        for _ in range(4):
+            machine.next_action(map_none_done())
+        self.assertEqual(_SEG_OUTPOST_1, machine._segment)
+        self.assertFalse(machine._pending_submap)
 
     def test_map_after_normal_done_picks_boss_node(self):
         """② 段地图：定位骷髅节点 → 点它，置 `_node_clicked`（等走路）。"""
@@ -116,8 +148,15 @@ class NormalToBossChainTests(unittest.TestCase):
 
         self.assertIsNotNone(action)
         self.assertEqual("pick_node_boss_node", action.name)
-        self.assertEqual((1020, 579), action.point)
+        # 点的是**骷髅本体**的中心（模板 2026-11-27 收紧到 40x40 后的落点）。
+        self.assertEqual((1021, 586), action.point)
         self.assertTrue(machine._node_clicked)
+        # 点节点走**推进型的开放口径**（2026-11-28 订正）：不列落点名单。
+        # 理由 —— 同一个双击，角色站在节点上会直接弹「选择难度」，站在远处只瞬移、
+        # 仍留在关卡地图，模拟器卡不卡还会改变结果。名单只要漏了一边，那一拍算好的
+        # 下一步动作就会被主循环丢掉，最后干等到超时（2026-11-28 07:15 实跑形态）。
+        self.assertTrue(action.advance_any)
+        self.assertEqual(("关卡地图",), action.target_pages)
 
     def test_node_click_waits_for_settle_then_clicks_prepare(self):
         """点了节点之后：画面未稳定绝不点「准备战斗」；连续稳定 2 帧后才点。"""
@@ -134,6 +173,130 @@ class NormalToBossChainTests(unittest.TestCase):
         self.assertIsNotNone(action)
         self.assertEqual("enter_selected_node", action.name)
         self.assertFalse(machine._node_clicked)
+
+    def test_difficulty_list_after_the_node_tap_takes_over_and_clears_the_walk(self):
+        """双击节点瞬移进出场页 ⇒ 难度列表当场接管，地图上那笔「走过去」要清掉。
+
+        2026-11-28 07:15 实跑形态：`pick_node_boss_node` 双击骷髅，游戏直接进
+        「选择难度」。两件事必须成立 —— ① 认出难度列表并给出 `boss_pick_tier`
+        （否则主循环只能干等）；② `_node_clicked` 归零，否则下次回到地图会先按
+        「准备战斗」，把角色送进上一次选中的那一关（人根本没走到新节点）。
+        """
+
+        machine = build_side_story_machine(TEMPLATES)
+        machine._segment = _SEG_BOSS
+        machine.next_action(map_default_view())
+        self.assertTrue(machine._node_clicked)
+
+        action = machine.next_action(boss_difficulty_list())
+
+        self.assertIsNotNone(action)
+        self.assertEqual("boss_pick_tier", action.name)
+        self.assertEqual("选择难度", action.source_page)
+        self.assertFalse(machine._node_clicked)
+
+    def test_node_click_counts_as_done_on_either_landing(self):
+        """点节点走开放口径：落到难度页算完成，留在关卡地图也算完成。
+
+        2026-11-28 07:15 实跑的失败形态是「已经落到难度页、却判没完成」，于是这一拍
+        算好的 `boss_pick_tier` 被主循环丢掉、45 秒后报超时。反过来，角色离节点有
+        距离时双击只瞬移过去、画面仍是关卡地图 —— 那是正常中间态，不能判失败。
+        """
+
+        machine = build_side_story_machine(TEMPLATES)
+        machine._segment = _SEG_BOSS
+        pick = machine.next_action(map_default_view())
+        runner = SideStoryRunner(
+            machine, _Runtime(), sleep=lambda _: None, poll_seconds=0.0
+        )
+
+        # ① 站在节点上双击 ⇒ 游戏直接弹难度列表
+        tier = machine.next_action(boss_difficulty_list())
+        self.assertEqual("boss_pick_tier", tier.name)
+        self.assertEqual("选择难度", machine._confirmed_page)
+        self.assertTrue(
+            runner._transition_completed(pick, tier, machine._confirmed_page)
+        )
+
+        # ② 离节点有距离 ⇒ 只瞬移，画面仍是关卡地图（这一步还没走完，但不是失败）
+        self.assertTrue(runner._transition_completed(pick, None, "关卡地图"))
+
+        # ③ 一页都认不出来 ⇒ 仍然不算完成（开放口径不等于不验收）
+        self.assertFalse(runner._transition_completed(pick, None, ""))
+
+    def test_actions_without_the_open_exit_still_use_their_target_list(self):
+        """没开 `advance_any` 的动作，验收口径一个字都不变。"""
+
+        machine = build_side_story_machine(TEMPLATES)
+        machine._segment = _SEG_BOSS
+        machine.next_action(map_default_view())
+        machine.next_action(map_default_view())  # 稳定 1 帧，还差一帧
+        enter = machine.next_action(map_default_view())
+        self.assertEqual("enter_selected_node", enter.name)
+        self.assertFalse(enter.advance_any)
+
+        runner = SideStoryRunner(
+            machine, _Runtime(), sleep=lambda _: None, poll_seconds=0.0
+        )
+        self.assertFalse(runner._transition_completed(enter, None, "剧情播放"))
+        self.assertTrue(runner._transition_completed(enter, None, "队伍准备"))
+
+    def test_next_difficulty_lands_on_the_mainline_page_name(self):
+        """推档位之后落的是「助手选择」，名单必须写主线的名字（2026-11-28 09:34）。
+
+        同一页（标题「准备战斗」、左侧难度列、右下「选择队伍」）主线 `select_team`
+        报的是「助手选择」；支线曾经自造第二个名字「选择辅助英雄」写进名单，
+        验收就永远对不上 —— 实跑卡了 45 秒，报「现在停的「助手选择」不在期望名单里」。
+        """
+
+        machine = build_side_story_machine(TEMPLATES)
+        machine._segment = _SEG_BOSS
+        action = machine.next_action(boss_scene())
+
+        self.assertIsNotNone(action)
+        self.assertEqual("next_difficulty", action.name)
+        self.assertIn("助手选择", action.target_pages)
+        self.assertNotIn("选择辅助英雄", action.target_pages)
+
+        runner = SideStoryRunner(
+            machine, _Runtime(), sleep=lambda _: None, poll_seconds=0.0
+        )
+        self.assertTrue(runner._transition_completed(action, None, "助手选择"))
+
+    def test_the_self_invented_page_alias_never_comes_back(self):
+        """页面名只认主线那一份：「选择辅助英雄」不许再当页面名进契约。
+
+        同一页（标题「准备战斗」、左侧难度列、右下「选择队伍」）主线 `select_team`
+        报的是「助手选择」。支线自造第二个名字写进 source_page / target_pages，
+        落点验收就永远对不上 —— 实跑代价是两次 45 秒超时（2026-11-28 07:15、09:34）。
+        """
+
+        import ast
+
+        tree = ast.parse(
+            (ROOT / "games" / "epic7" / "side_story.py").read_text(encoding="utf-8")
+        )
+        offenders = []
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            for keyword in node.keywords:
+                if keyword.arg == "source_page" and isinstance(
+                    keyword.value, ast.Constant
+                ):
+                    if keyword.value.value == "选择辅助英雄":
+                        offenders.append("source_page")
+                if keyword.arg == "target_pages" and isinstance(
+                    keyword.value, ast.Tuple
+                ):
+                    for item in keyword.value.elts:
+                        if (
+                            isinstance(item, ast.Constant)
+                            and item.value == "选择辅助英雄"
+                        ):
+                            offenders.append("target_pages")
+
+        self.assertEqual([], offenders, "页面名要写主线的「助手选择」")
 
     def test_node_not_on_screen_pans_with_bounded_attempts(self):
         """目标节点不在视野 ⇒ 有界平移扫寻。
@@ -356,7 +519,7 @@ class LedgerHygieneTests(unittest.TestCase):
         self.assertIsNone(machine._prev_screen)
 
     def test_map_boss_selected_picks_boss_node_at_panned_position(self):
-        """平移后的地图帧（骷髅在 (1220,787)）同样能定位 —— 模板不依赖写死坐标。"""
+        """平移后的地图帧（骷髅在 (1221,794)）同样能定位 —— 模板不依赖写死坐标。"""
 
         machine = build_side_story_machine(TEMPLATES)
         machine._segment = _SEG_BOSS
@@ -365,7 +528,7 @@ class LedgerHygieneTests(unittest.TestCase):
 
         self.assertIsNotNone(action)
         self.assertEqual("pick_node_boss_node", action.name)
-        self.assertEqual((1220, 787), action.point)
+        self.assertEqual((1221, 794), action.point)
 
 
 class MapEntryWithoutCursorTests(unittest.TestCase):

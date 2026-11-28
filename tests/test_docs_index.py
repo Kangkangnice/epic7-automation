@@ -19,10 +19,7 @@ ROOT = Path(__file__).resolve().parents[1]
 DOCS = ROOT / "docs"
 INDEX = DOCS / "README.md"
 
-#: 索引里必须覆盖到的文档：``docs/`` 下所有 ``.md``，除了索引自己与 ``_`` 开头的模板。
-_SKIP_NAMES = {"README.md"}
-
-#: 交接单目录：不进索引白名单，改由 ``docs/STATUS.md`` 的「在制品」一节兜底。
+#: 临时交接单目录。开发者从索引的交接入口查看，单份任务不登记在文档索引中。
 WIP_DIR = DOCS / "wip"
 
 #: 「手法」类文档目录：怎么操作、失败了怎么判。必须带复核元数据。
@@ -61,19 +58,19 @@ def _indexed_paths(index_text: str) -> set[Path]:
 
 
 def _required_docs() -> list[Path]:
-    """需要登记在索引里的文档。
-
-    排除三类：索引自己、``_`` 开头的模板、以及 ``docs/wip/`` 下的交接单 ——
-    交接单是临时凭证，它的归宿是 `docs/STATUS.md` 的「在制品」一节（自动生成），
-    不该因为开一份活就要去改索引、干完再改回来。
-    """
-    return sorted(
-        path
-        for path in DOCS.rglob("*.md")
-        if path.name not in _SKIP_NAMES
-        and not path.name.startswith("_")
-        and WIP_DIR not in path.parents
-    )
+    """长期文档和模板逐份登记，临时交接单从索引进入目录查看。"""
+    github = ROOT / ".github"
+    docs = [path for path in DOCS.rglob("*.md") if path != INDEX and WIP_DIR not in path.parents]
+    return sorted([
+        *ROOT.glob("*.md"),
+        *docs,
+        *(ROOT / "games").rglob("*.md"),
+        *github.rglob("*.md"),
+        *(github / "ISSUE_TEMPLATE").glob("*.yml"),
+        ROOT / "LICENSE",
+        WIP_DIR / "_TEMPLATE.md",
+        WIP_DIR,
+    ])
 
 
 def _unindexed(files: list[Path], index_text: str) -> list[str]:
@@ -96,19 +93,13 @@ def _broken_links(source: Path) -> list[str]:
 
 
 def test_every_doc_is_reachable_from_the_index() -> None:
-    """``docs/`` 下每个文档都必须能在 ``docs/README.md`` 里点到。
-
-    这条就是「新增文档必须表态」的执行机构。红了的处理办法只有一个：
-    在索引里给它找一行，而找行的过程必然要回答「这是哪一类文档」。
-    """
+    """长期文档、模板和交接入口都能从分级阅读路线点到。"""
     missing = _unindexed(_required_docs(), INDEX.read_text(encoding="utf-8"))
     assert not missing, (
         "下面这些文档没有登记在 docs/README.md 里：\n  "
         + "\n  ".join(missing)
-        + "\n\n请打开 docs/README.md，判断它属于哪一类（现状 / 决策 / 过程 / 存档），"
-        "然后在对应表格里加一行链接。\n"
-        "如果它其实是一次性的交接说明或施工计划 —— 不要登记，直接删掉，"
-        "把信息拆进提交信息、CHANGELOG 或 docs/decisions/。"
+        + "\n\n请在 docs/README.md 的相应优先级登记长期文档或模板。"
+        "\n改动历史由 Git 保留，临时交接单放在 docs/wip/。"
     )
 
 
@@ -160,7 +151,7 @@ def test_howto_guides_follow_the_rules() -> None:
     """``docs/howto/`` 的每条规则都必须满足。
 
     这一类最容易**悄悄过期**：不是代码变了，是当初的判断变了（后来发现不必提权）。
-    没有 diff、没有报错、没有测试会变红 —— 只能靠元数据 + 唯一主题 + 更改记录提醒人。
+    用复核元数据和单一主题避免现行做法分散，改动历史由 Git 保留。
     """
     problems = _howto_problems(HOWTO_DIR)
     assert not problems, (
@@ -178,7 +169,7 @@ def test_a_second_guide_for_the_same_topic_is_caught(tmp_path: Path) -> None:
     for name in ("a.md", "b.md"):
         (tmp_path / name).write_text(
             "---\ntopic: same-thing\nlast_verified: 2026-11-08\n"
-            "review_when: 随便\n---\n\n## 更改记录\n",
+            "review_when: 随便\n---\n\n# 操作说明\n",
             encoding="utf-8",
         )
     problems = _howto_problems(tmp_path)
@@ -202,13 +193,7 @@ def _howto_files(directory: Path | None = None) -> list[Path]:
 
 
 def _howto_problems(directory: Path) -> list[str]:
-    """手法类文档的全部规则问题：元数据、topic 唯一、必须有更改记录。
-
-    三条对应「新做法怎么覆盖旧做法」：
-    - ``topic`` 唯一 ⇒ 一个主题只许一份文件，想到更好的就改旧的，不许并存；
-    - 必须有「更改记录」⇒ 覆盖留下痕迹，历史不丢；
-    - ``last_verified`` / ``review_when`` ⇒ 判断变了能被人看见。
-    """
+    """检查复核元数据与主题唯一性。"""
     problems: list[str] = []
     seen_topics: dict[str, str] = {}
     for path in _howto_files(directory):
@@ -236,8 +221,6 @@ def _howto_problems(directory: Path) -> list[str]:
             )
         else:
             seen_topics[topic] = path.name
-        if "更改记录" not in text:
-            problems.append(f"{path.name}: 没有「更改记录」小节（改过什么、依据是什么，要留痕）")
     return problems
 
 
@@ -433,9 +416,7 @@ def test_handover_file_names_start_with_a_date() -> None:
     )
 
 
-# ---------------------------------------------------------------- 存档状态
-# 「只供追溯」以前只是一句人话，Agent 照样会把它读一遍、照样被复审叫去看。
-# 改成机器可读的 status 之后，必须有人守着别让它重新混进现行文档集合。
+# ---------------------------------------------------------------- 文档状态
 
 ALLOWED_DOC_STATUS = {"active", "generated", "superseded"}
 
@@ -469,27 +450,13 @@ def test_document_status_values_are_legal() -> None:
     assert not bad, f"这些文档的 status 不在允许集合 {ALLOWED_DOC_STATUS} 里：{bad}"
 
 
-def test_superseded_docs_are_not_review_targets() -> None:
-    """存档文档不该进 doc_review 映射：改一次代码不必再读只供追溯的东西。"""
-    from auto_game_unified.tools import doc_review
-
-    superseded = {_relative(p) for p, status in _statused_docs().items()
-                  if status == "superseded"}
-    targets = {target for _prefix, group in doc_review.DOC_RULES for target in group}
-    overlap = sorted(targets & superseded)
-    assert not overlap, (
-        "这些存档文档仍被 doc_review.DOC_RULES 当成复审目标：\n  "
-        + "\n  ".join(overlap)
-        + "\n存档只供追溯，别让提交钩子再叫人去读它。"
-    )
-
-
-def test_superseded_docs_are_listed_in_the_archive_section() -> None:
-    """标了 superseded 就必须在 README 存档节登记，否则等于悄悄消失。"""
-    index_text = (DOCS / "README.md").read_text(encoding="utf-8")
-    archive = index_text.split("### 存档")[1].split("\n---")[0]
-    missing = [_relative(p) for p, status in _statused_docs().items()
-               if status == "superseded" and p.name not in archive]
-    assert not missing, (
-        "这些存档文档没在 README「存档」节里登记：\n  " + "\n  ".join(missing)
+def test_superseded_docs_live_in_git_history() -> None:
+    """已被替代的文档从现行目录移除。"""
+    superseded = [
+        _relative(path)
+        for path in DOCS.rglob("*.md")
+        if _frontmatter(path.read_text(encoding="utf-8")).get("status") == "superseded"
+    ]
+    assert not superseded, (
+        "这些已被替代的文档应移除，原文由 Git 保留：\n  " + "\n  ".join(superseded)
     )

@@ -19,6 +19,8 @@ from PySide6.QtWidgets import QDialog, QHBoxLayout, QVBoxLayout, QWidget
 from qfluentwidgets import BodyLabel, PrimaryPushButton, PushButton, StrongBodyLabel
 
 from auto_game_unified.desktop.onboarding import DIALOG_WIDTH, RISK_POINTS, SETUP_POINTS
+from auto_game_unified.desktop_qt import brand
+from auto_game_unified.desktop_qt.style import DEEP, HEADING, PixelPanel, apply_pixel_style
 
 # 宽度（**逻辑像素**）只有一处来源 —— 跟条款一起放在 desktop/onboarding.py，
 # 测试也照着那个数守「别再把窗口调宽」。
@@ -31,36 +33,47 @@ class ConsentDialog(QDialog):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setWindowTitle("使用须知")
+        self.setWindowIcon(brand.app_icon())
         self.setModal(True)
         self.setMinimumWidth(MIN_WIDTH)
+        self.setStyleSheet(f"QDialog {{ background-color: {DEEP}; }}")
 
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(24, 20, 24, 20)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(8, 8, 8, 8)
+        panel = PixelPanel(self)
+        outer.addWidget(panel)
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(16, 12, 16, 12)
         layout.setSpacing(10)
-        layout.addWidget(StrongBodyLabel("使用须知", self))
+        title = StrongBodyLabel("使用须知", panel)
+        title.setStyleSheet(f"color: {HEADING};")
+        layout.addWidget(title)
 
         for point in RISK_POINTS:
-            label = BodyLabel(point, self)
+            label = BodyLabel(point, panel)
             label.setWordWrap(True)
             layout.addWidget(label)
 
         layout.addSpacing(4)
-        layout.addWidget(StrongBodyLabel("运行条件", self))
+        setup = StrongBodyLabel("运行条件", panel)
+        setup.setStyleSheet(f"color: {HEADING};")
+        layout.addWidget(setup)
         for index, point in enumerate(SETUP_POINTS, start=1):
-            label = BodyLabel(f"{index}. {point}", self)
+            label = BodyLabel(f"{index}. {point}", panel)
             label.setWordWrap(True)
             layout.addWidget(label)
 
         layout.addSpacing(8)
         row = QHBoxLayout()
         row.addStretch(1)
-        self.decline_button = PushButton("暂不使用", self)
+        self.decline_button = PushButton("暂不使用", panel)
         self.decline_button.clicked.connect(self.reject)
         row.addWidget(self.decline_button)
-        self.accept_button = PrimaryPushButton("开始使用", self)
+        self.accept_button = PrimaryPushButton("开始使用", panel)
         self.accept_button.clicked.connect(self.accept)
         row.addWidget(self.accept_button)
         layout.addLayout(row)
+        apply_pixel_style(self)
 
 
 def prompt_consent(parent: QWidget | None = None) -> bool:

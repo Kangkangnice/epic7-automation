@@ -200,6 +200,60 @@ def test_manual_auto_state_clicks_once_and_requires_confirmation():
     assert clicks == [((900, 80), "enable-auto-battle")]
 
 
+def test_auto_toggle_waits_for_target_confirmation_before_another_click():
+    """点击后未确认自动开启时，MANUAL 复现也不能立刻再拨开关。
+
+    2026-11-26 竞技场第 7 场：12:58:05 点第 1 下，12:58:10 又点第 2 下，
+    两次都还看到自动关闭图标；第 7 场卡在 VS 入场帧 900 秒。
+    2026-11-11 同类现场在来源离开 5 秒后重复点击，随后图标再次出现。
+
+    实跑统计（runtime_logs/_auto_confirm_gaps.txt）：1215 次点击后确认自动开启
+    最长 13 秒，15 秒确认窗口足够覆盖成功路径；旧行为在 3 秒冷却后就重复点击，
+    本用例在旧行为下会点 4 次，必须变红。
+    """
+    manual = BattleObservation(
+        False, True, False, True, AutoBattleState.MANUAL, (1693, 93)
+    )
+    auto = replace(manual, auto_state=AutoBattleState.AUTO, auto_point=None)
+    result = replace(auto, battle_visible=False, result_visible=True)
+    supervisor, gate, observe, clicks, logs, diagnostics = make_supervisor(
+        [manual] * 10 + [auto, auto, result, result]
+    )
+
+    assert supervisor.run(observe, cycle=7) is BattleOutcome.RESULT_REACHED
+    assert clicks == [((1693, 93), "enable-auto-battle")], clicks
+    assert any(
+        "等待确认=自动战斗" in line and "来源=自动关闭仍在" in line for line in logs
+    ), logs
+    assert diagnostics == []
+
+
+def test_auto_toggle_does_not_repeat_after_source_leaves_without_target():
+    """来源消失后目标未稳定，中途又看到 MANUAL 也不许重复旧动作。
+
+    2026-11-11 08:00:17 点击后 5 秒重复点击；11-26 12:58:10 同样是来源
+    还在/刚离开时补的第二下。按转场契约，这段只能等目标连续两帧确认。
+    """
+    manual = BattleObservation(
+        False, True, False, True, AutoBattleState.MANUAL, (1693, 93)
+    )
+    unknown = replace(manual, auto_state=AutoBattleState.UNKNOWN, auto_point=None)
+    auto = replace(manual, auto_state=AutoBattleState.AUTO, auto_point=None)
+    result = replace(auto, battle_visible=False, result_visible=True)
+    supervisor, gate, observe, clicks, logs, diagnostics = make_supervisor(
+        [manual, manual]
+        + [unknown] * 6
+        + [manual] * 5
+        + [auto, auto, result, result],
+        config_overrides={"no_business_progress_seconds": 30},
+    )
+
+    assert supervisor.run(observe, cycle=2) is BattleOutcome.RESULT_REACHED
+    assert clicks == [((1693, 93), "enable-auto-battle")], clicks
+    assert any("来源=自动关闭已离开 目标=人物头像待确认" in line for line in logs)
+    assert diagnostics == []
+
+
 def test_manual_auto_state_retries_once_when_first_click_is_swallowed():
     manual = BattleObservation(
         False, True, False, True, AutoBattleState.MANUAL, (900, 80)
@@ -207,7 +261,8 @@ def test_manual_auto_state_retries_once_when_first_click_is_swallowed():
     auto = replace(manual, auto_state=AutoBattleState.AUTO, auto_point=None)
     result = replace(auto, battle_visible=False, result_visible=True)
     supervisor, gate, observe, clicks, logs, diagnostics = make_supervisor(
-        [manual] * 5 + [auto, auto, result, result]
+        [manual] * 5 + [auto, auto, result, result],
+        config_overrides={"auto_confirm_wait_seconds": 3},
     )
 
     assert supervisor.run(observe, cycle=2) is BattleOutcome.RESULT_REACHED
@@ -234,6 +289,7 @@ def test_four_failed_auto_clicks_stop_clicking_but_keep_supervising():
         config_overrides={
             "allowed_action_retry_seconds": 1,
             "allowed_action_failure_seconds": 2,
+            "auto_confirm_wait_seconds": 1,
         },
     )
 
@@ -252,6 +308,7 @@ def test_persisted_manual_state_is_still_bounded_by_the_watchdog():
         config_overrides={
             "allowed_action_retry_seconds": 1,
             "allowed_action_failure_seconds": 2,
+            "auto_confirm_wait_seconds": 1,
             "no_business_progress_seconds": 30,
         },
     )

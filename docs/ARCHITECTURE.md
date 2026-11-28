@@ -1,5 +1,35 @@
 # 架构说明
 
+## 桌面任务生命周期
+
+```mermaid
+flowchart TD
+    A["玩家选择任务、客户端与资源设置"] --> B{"桌面预检允许启动？"}
+    B -- "否" --> X["显示原因，等待调整"]
+    B -- "是" --> C["工作进程启动每日编排"]
+    C --> D["确认入口，交给路线判断并执行动作"]
+    D --> E{"路线返回哪种结果？"}
+    E -- "完成或有明确依据的提前停止" --> F["保留已完成量，按路线终点收尾"]
+    E -- "用户停止" --> S["停止输入，保留已有结果，结束整轮"]
+    E -- "抛出交易回执不明" --> U["保留对账现场，结束整轮，跳过巡检"]
+    E -- "其他故障" --> V["记录失败，允许安全退场时尝试回大厅"]
+    F --> G{"收尾确认？"}
+    G -- "确认" --> H{"还有下一项？"}
+    G -- "失败" --> K["保留业务量并记录收尾告警"]
+    G -- "用户停止" --> S
+    K --> H
+    V --> H
+    H -- "有" --> I{"段间检查能确认大厅？"}
+    I -- "已在大厅或恢复成功" --> D
+    I -- "恢复失败" --> P["下一项跳过，结束整轮"]
+    H -- "无" --> R["满足巡检条件时巡检，汇总结果"]
+```
+
+- [桌面控制器](../desktop/controller.py)负责预检和请求，[工作进程](../desktop/worker.py)启动选定计划并接收停止请求。[任务入口](../main.py)组装运行通道、导航和路线，调用[每日编排](../games/epic7/daily_tasks.py)。
+- [路线注册表](../games/epic7/modes.py)决定入口和接力范围，路线根据游戏画面决定动作与完成条件，共享执行器和 [Runtime](../core/runtime.py)负责输入、转场、停止和日志。[路线终点与回大厅](maintenance/route_finish_points.md)
+- [任务入口](../main.py)把业务量与收尾告警分别放进结果。收尾时收到停止请求，编排先登记已有完成量再结束整轮。常规收尾失败后，下一项只有在段间检查确认大厅时才能执行。社区兑换和竞技场购旗抛出交易回执不明时，编排停止整轮。刷书签当前把回执超时报作普通故障，走图中「其他故障」。[刷书签异常处置](maintenance/shop_refresh.md#异常与收尾)
+- 回归入口为[桌面启动与停止](../tests/test_desktop_controller.py)、[段间准入和结果保留](../tests/test_daily_tasks.py)、[收尾失败](../tests/test_home_return_failure.py)与[社区交易](../tests/test_community_redeem_receipt.py)。
+
 ## 目录职责
 
 ```text
@@ -73,6 +103,8 @@ auto_game_unified/
 `games/epic7/evidence/` 声明业务锚点；旧 `evidence/common.py` 保留已有导入路径。
 共享核心直接导入游戏和桌面模块会触发离线依赖门禁。
 
+路线的正式名称用于日志、验收和进度匹配，来源为模式注册表。桌面界面与现状页使用展示名称，可附「国服」和「已过期」等备注。
+
 ### 共享视觉的演进顺序
 
 1. 按[跨端共享视觉契约](decisions/0009-universal-vision-contract.md)统一截图口径、限定区域的文字证据、
@@ -129,7 +161,7 @@ auto_game_unified/
 
 业务计数和收尾分别记录。若回首页未确认，`RunResult.closeout_warning` 会传到命令行和每日结果，
 已完成的业务数量仍保留。收尾期间手动停止时，每日编排保留已完成的结果并结束本轮。
-发布验收还需核对真实回执和约定终点，见[路线稳定版验收](howto/route_acceptance.md)。
+发布验收还需核对真实回执和约定终点，见[路线开发与验收](howto/route_change.md)。
 
 ## 同构模式公共骨架
 
@@ -221,50 +253,11 @@ auto_game_unified/
 
 ## 开局接力
 
-`ModeSpec.resume_probe`（可选）给一条路线装上「开局接着往下跑」的能力。哪些路线接了探针，以
-[现状速查](STATUS.md) 的「开局接力」列为准（该列读 `MODE_SPECS.resume_probe`；逐环节覆盖矩阵见
-[RESUME_COVERAGE.md](RESUME_COVERAGE.md)）。没有探针的路线 `resume_probe is None`，
-调用签名与行为完全不变（仍是 `return_home()` + `navigate()`）。
+`ModeSpec.resume_probe` 定义能否在启动时接手现有进度。探针返回页面标签、需恢复的运行状态，以及已处于导航链上的节点。没有探针时按声明从入口开始。起点范围见[开局接力覆盖面](RESUME_COVERAGE.md)。
 
-契约：`ResumeProbe = (machine, screen, navigator) -> Optional[ResumePoint]`，其中
-`ResumePoint = (page: str, state: Optional[str], entry: Optional[str])` —— `page` 只给日志和诊断看，
-`state` 非空时由探针自己 `machine.resume_from(...)` 拨状态机，`entry` 非空表示当前画面已经在导航链的某一级上。
+`main._enter_mode` 在开局回大厅的过程中传入探针。稳定画面命中后立即保留现场。状态已确定时把控制交给路线，命中导航节点时用 `already_at` 从后续步骤继续。导航链和允许接手的节点由 `NavigationPlan.resume_entries` 及路线注册声明提供。
 
-`main._enter_mode` 在实跑开局把探针包成 `_ResumeWatch` 传给 `Epic7Navigator.return_home(stop_probe=...)`：
-
-- 钩子排在页面日志之后、`unknown` 唤醒之前。放在唤醒之后的话，一个没被页面识别命中的支线页面会先被「点屏幕中央」点掉。排在 `lobby` 判定之前是安全的（大厅上各接力锚点都不可见）。
-- 钩子只在连续两帧稳定后才被询问，命中就当场 `return`，不再按 `Back`，并把这一帧原样交还调用方。
-- 命中 → 跳过 `navigate()`，并把状态机拨到那一步；未命中 → 原样走 `navigate()`，且返回过程中每一页都会再问一次，中途扫到接力点就地接管。
-- ``entry`` 非空 → ``navigate(..., already_at=entry)``。**链条与白名单的唯一来源是 ``modes.MODE_SPECS[...].navigation_plan``**（``NavigationPlan.resume_entries``）；``navigation._RESUME_ENTRY_PAGES`` 只是由它派生的**只读视图**，别再往那里手抄页面名。传白名单之外的页面直接 ``ValueError``，不做静默降级。
-
-``navigate()`` 自 2026-09-30 起**不认识任何具名路线**：它以前是一张 ``if mode == "story" / elif mode == "arena" / ...`` 的分派链（约 250 行），每加一条路线都要回去改它。现在链条声明在注册表旁边、执行器只认数据，``tests/test_navigation_plans.py`` 用源码级断言钉住「分派链不许长回来」。
-
-**执行语义**（与原分派链逐字等价）：按 ``already_at`` 命中链条上哪一步，跳过它**以及它前面所有步**，从下一步接着走，并把调用方给的那一帧继续当作来源帧；命中末端就是「导航已完成，一次都不点」。多目标步骤（远征 ``lobby → battle_menu|season_menu``）按「由浅到深」写 ``targets``，顺序即优先级。
-
-**接力点顺序即优先级**，每条路线各有一张自带注释的常量表：
-
-- `arena`：判定顺序 **竞技场模式选择（`observed_page == arena_mode`）→ `SELECTED` → `TEAM` → `LIST` → `RESULT` → `CONFIRMING` → 战斗中（`battle_scene_visible`）**。`SELECTED` 必须排在 `LIST` 前面 —— 选中对手时列表锚点仍然可见，只有 `challenge` 反超 `list_ready` 才能区分出「已选中」。`TEAM` 那一步还会用 `no_ticket` 二次排除买票弹窗压住的假队伍页。
-  后两步（结果页 / 段位弹窗）没有放进 `_ARENA_RESUME_ORDER` 循环，而是走 `arena.result_arena` 与 `arena.rank_promotion` 两个证据页判定：`is_in_state(RESULT)` 用的是运行期的松判据（只要 `confirm` 可见），开局时屏幕上可能是任何路线，不能拿它当接力判据。顺序上追加在后面是安全的 —— 实测这两页上前三页的锚点全部远低于阈值（结果页上 `list_ready` 0.2722 / `challenge` 0.2624；段位弹窗上 0.6425 / 0.6857），不会互相遮蔽；两步之间也互斥（结果页 `confirm`=1.0000 而晋级箭头不可见，段位弹窗上箭头 0.9993 而 `confirm` 只有 0.1484）。
-- `story._STORY_RESUME_ORDER`：先判 `battle_scene_visible()`，再判关卡入口，然后按 `prepare_battle / watch_story / start_mission / select_team / skip_confirm / skip / complete / bonus_reward / results_confirm / clear / reward / next_stage` 逐页判。顺序上有三处硬约束：战斗必须排在所有锚点之前；`prepare_battle`/`watch_story` 必须排在 `next_stage` 之前（同页可见）；`complete` 必须排在 `next_stage` 之前（实测 `complete`=1.0000、`next_stage`=0.9780）。
-- `expedition._EXPEDITION_RESUME_ORDER`：先收战斗菜单/赛季菜单（只有导航器认得出来，靠 `observe().name`），再收局内，然后按 `HOME → RETURNING → POSTERS → DIFFICULTY_CONFIRM → DIFFICULTY → OUTCOME → RECRUIT_CONFIRM → READY → RECRUIT_RETURN → TEAM → RESULT → BATTLE` 逐状态判。`HOME` 必须排在 `RETURNING` 前（后者的第一判据就是主页可见）；`OUTCOME` 必须排在 `READY` 前（否则会丢掉还没领的招募）。
-
-**状态机必须拨准，不能指望第一帧自愈**：主线 `next_action` 里有两支依赖进来时的状态才肯点击（`prepare_battle` 在 `WAIT_COMPLETE`/`WAIT_NEXT_STAGE` 下只记轮次不点；战斗控件分支只在 `WAIT_SKIP_CONFIRM`/`WAIT_BATTLE`/`ACTIVE` 下跑），远征 `next_action` 则是纯状态驱动的，拨错会走到 `_required` 失败或点错按钮。
-`<Route>StateMachine.resume_from()` 只做一件事：把「保留当前进度」这一个语义记下来
-（2026-09-26 之前的另一半 `reset_after_recovery()`「退回重开一轮」已随恢复通道删除）。
-
-**局内接力**：三条路线都支持，且都不按 `Back`、不重新导航，而是把这一局直接交给战斗监督等结算。
-竞技场和主线各有一个 `_resume_into_committed_battle()`（由 Runner 在 `resumed_from is <BATTLE 态>` 时调用），原因是 `next_action(BATTLE)` 那条路靠 `auto_off` 图标定位，而**自动战斗开着时这个图标根本不可见**，硬走会抛未识别并在超时后安全停止 —— 等于在已经承诺的战斗里按 `Back`（2026-09-26 之前那次超时会去「回大厅重新导航」，现在不会了）。
-远征复用主循环既有的「无动作 + 状态是 `BATTLE` → 交战斗监督」分支
-（`TransactionalRunnerBase._SETTLED_BATTLE_STATE`；2026-09-26 之前这段在 `ExpeditionRunner.run()` 里），无需额外代码。
-
-**竞技场「战斗结果页」的排他判据**：结算页底部那条「战斗结果 / 确认」是竞技场和远征**共用**的通用结算条（实测竞技场 `result.png` 上 `confirm`=1.0000，远征 `result.png` 上也有 0.9448，都过了 0.90 阈值），光靠它分不出这是哪条路线的结算。所以加了三个竞技场专有内容锚点：`result_rating`（「积分」面板标题，**胜负都会出现**）、`result_victory`（「VICTORY」横幅，只有赢才有）、`result_defeat`（「DEFEAT」横幅，只有输才有）。它们在 `arena.result_arena` 页里与 `confirm` 组成合取判据，阈值 0.80。⚠️ 2026-09-25 真机复测修正了依据：`result_rating` 在真机帧上只有 0.38（只在旧基准夹具上有效），真正在干活的是两个横幅 —— victory 在赢帧 0.8761~0.8816、defeat 在输帧 0.9871~1.0000，而全库 227 张夹具里除结果页外 victory 最高 0.2724、defeat 最高 0.3828。
-两个模板是 `games/epic7/templates/arena_result_rating.png`（73×41 @922,657）与 `arena_result_victory.png`（558×83 @683,378），2026-09-16 从 `tests/fixtures/epic7_arena/result.png` 按证据档案里的矩形实裁。
-
-**不相容的画面不接力**：买票弹窗压住的队伍页（`no_ticket` 显式排除）。局内不在 `detect_resume_state` 里认，改由 `detect_resume_point` 用 `battle_scene_visible` 兜住（4 张局内实时帧只有 1 张能靠 `auto_off` 认出来，按锚点判会误触发「回大厅」）。
-**探针只挂在开局那一次「回大厅」上**：`_enter_mode` 用 `home_return(stop_probe=...)` 起步，
-「回家」途中每确认一帧稳定画面就问一次探针，人在那儿就**就地接管**。2026-09-26 之前另有一条
-「恢复导航」（退回已知起点重开），它**刻意不带探针**—— 半路接管会跟它打架；那条路已随用户
-「回家就是结束」的拍板整段删除。
+接力要辨认页面归属和状态优先级。通用的结算确认按钮可能在多条路线出现，买票弹窗底下也可能仍能认出队伍页。先识别可排除歧义的页面，再决定是否交给路线或战斗监督。实现和验证约束见[接力契约](TRANSITION_CONTRACTS.md#接力契约路线准入的另一半)。
 
 ## 模板和回归素材
 

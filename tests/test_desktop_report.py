@@ -169,7 +169,7 @@ def test_report_falls_back_to_the_route_evidence_beside_the_worker_snapshot(
     assert any(name.endswith("evidence.json") for name in _names(output))
 
 
-def test_report_keeps_at_most_three_frames(tmp_path):
+def test_report_keeps_at_most_five_frames(tmp_path):
     root, home = _root(tmp_path)
     directory = root / "runtime_diagnostics" / "epic7_story"
     for index in range(6):
@@ -190,7 +190,84 @@ def test_report_keeps_at_most_three_frames(tmp_path):
         for name in _names(output)
         if name.endswith(".png") and name.split("/")[-2] == "frames"
     ]
-    assert 1 <= len(frames) <= 3
+    assert len(frames) == 5
+
+
+def test_first_failure_window_survives_retries_recovery_and_later_route(tmp_path, monkeypatch):
+    from auto_game_unified.core.runtime import Runtime
+
+    root, home = _root(tmp_path)
+    incident = tmp_path / "first_failure.zip"
+    monkeypatch.setenv("EPIC7_FAILURE_WINDOW", str(incident))
+    pixels = np.zeros((8, 8, 3), dtype=np.uint8)
+    log_path = root / "runtime_logs" / "epic7_story.log"
+    runtime = Runtime(lambda: pixels, lambda _: None, log_path=log_path,
+                      diagnostic_dir=root / "runtime_diagnostics" / "epic7_story")
+    for value in range(8):
+        pixels.fill(value)
+        runtime.capture()
+    runtime.failure_history.freeze("点击后未转场")
+    for value in range(20, 30):
+        pixels.fill(value)
+        runtime.capture()
+    monkeypatch.setenv(ACCOUNT_ENV, "康康626")  # worker learned the account after launch
+    runtime.record_failure(RuntimeError("首次超时"))
+    monkeypatch.delenv(ACCOUNT_ENV)
+    log_path.write_text("后续运行已覆盖日志", encoding="utf-8")
+    other = Runtime(lambda: pixels, lambda _: None,
+                    diagnostic_dir=root / "runtime_diagnostics" / "epic7_arena")
+    other.capture()
+    other.record_failure(RuntimeError("另一条路线"))
+    output = export_failure_report(
+        root=root, modes=("story", "arena"), backend="pc", pc_input_mode="background",
+        exit_code=1, last_output="已回大厅", user_home=home, incident_path=incident,
+        max_bytes=1,
+    )
+    report = json.loads(_read(output, "report.json"))
+    assert report["failed_route"] == "story"
+    assert report["first_error"] == "RuntimeError: 首次超时"
+    assert report["window_reason"] == "点击后未转场"
+    assert report["failure"] == {}  # unrelated evidence from an older run
+    assert "logs/epic7_story.log" in report["logs"]
+    assert "诊断=" in _read(output, "logs/epic7_story.log").decode()
+    assert "康康626" not in _read(output, "logs/epic7_story.log").decode()
+    values = [cv2.imdecode(np.frombuffer(_read(output, name), np.uint8), 1)[0, 0, 0]
+              for name in report["frames"]]
+    assert values == [3, 4, 5, 6, 7]
+
+
+def test_missing_current_incident_does_not_import_previous_run(tmp_path):
+    root, home = _root(tmp_path)
+    output = export_failure_report(
+        root=root, modes=("story",), backend="pc", pc_input_mode="background",
+        exit_code=1, last_output="启动失败", user_home=home,
+        incident_path=tmp_path / "missing.zip",
+    )
+    report = json.loads(_read(output, "report.json"))
+    assert report["frames"] == []
+    assert report["failure"] == {}
+
+
+def test_new_fault_after_successful_retry_uses_last_five_captures(tmp_path):
+    from auto_game_unified.core.failure_history import freeze_before_retry, retry_recovered
+    from auto_game_unified.core.runtime import Runtime
+
+    frames = iter(np.full((3, 3, 3), n, np.uint8) for n in range(12))
+    runtime = Runtime(lambda: next(frames), lambda _: None, diagnostic_dir=tmp_path)
+    for _ in range(5):
+        runtime.capture()
+    freeze_before_retry(runtime, "导航重试")
+    for _ in range(7):
+        runtime.capture()
+    retry_recovered(runtime, "导航重试")
+    try:
+        runtime.capture()
+    except StopIteration as error:
+        runtime.record_failure(error)
+    with ZipFile(tmp_path / "last_failure.zip") as window:
+        values = [cv2.imdecode(np.frombuffer(window.read(name), np.uint8), 1)[0, 0, 0]
+                  for name in sorted(window.namelist()) if name.startswith("frames/")]
+    assert values == [7, 8, 9, 10, 11]
 
 
 def test_report_compresses_frames_when_over_the_limit(tmp_path):

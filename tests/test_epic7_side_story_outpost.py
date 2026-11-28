@@ -30,6 +30,7 @@ from auto_game_unified.games.epic7.side_story import (
 )
 from auto_game_unified.games.epic7.side_story import (
     _SEG_BOSS,
+    _SEG_NORMAL,
     _SEG_OUTPOST_1,
     _SEG_OUTPOST_2,
 )
@@ -57,6 +58,16 @@ def normal_team() -> np.ndarray:
 def map_page() -> np.ndarray:
     # 关卡地图（map.png）。
     return _load(FIXTURES / "epic7_side_story" / "map.png")
+
+
+def map_one_outpost_done() -> np.ndarray:
+    # 打完摩罗戈拉的地图（`map_default_view`）：只有一处「入场限制 0/1」。
+    return _load(FIXTURES / "epic7_side_story" / "map_default_view.png")
+
+
+def map_two_outposts_done() -> np.ndarray:
+    # 两处据点都打完的地图（`map_no_cursor`）：两个「入场限制 0/1」。
+    return _load(FIXTURES / "epic7_side_story" / "map_no_cursor.png")
 
 
 def exhausted_prep() -> np.ndarray:
@@ -223,6 +234,48 @@ class OutpostTests(unittest.TestCase):
         # 2026-11-12 21:43 实跑：打完上级落回「难度场景页」（有「下一个难度」的那一屏），
         # 前两版名单漏了它 ⇒ 同样干等 45 秒。三个自有场景页一个都不能少。
         self.assertIn("难度场景页", action.target_pages)
+        # ⚠️ 「助手选择」**不进**名单（用户 2026-11-27 否决）：那一页不是结算确认的
+        # 正常落点，出现它说明前面的补点按错了按钮。修前面，不在后面放行。
+        self.assertNotIn("助手选择", action.target_pages)
+
+
+class SegmentLedgerTests(unittest.TestCase):
+    """段落账本要能从「游戏自己画的进度」重建，不能只靠记一笔（2026-11-27 定）。
+
+    旧的账本只在「①段无箭头 → 离开」时写；一旦据点是从别处（中途接力、顺着蓝箭头）
+    进去的，那一笔就漏了，据点场景页会落入 else 分支、把哥布林整段跳过去。
+    现在：① 地图上的「入场限制 0/1」气泡就是进度真相；② 段落不可信时**不猜**，
+    退场后按气泡重判。
+    """
+
+    def test_map_bubbles_tell_which_segment_is_next(self):
+        machine = build_side_story_machine(TEMPLATES)
+
+        # 0 个 0/1 ⇒ 还没动过 ⇒ 先打摩罗戈拉
+        self.assertEqual(_SEG_OUTPOST_1, machine._segment_from_map(map_page()))
+        # 1 个 ⇒ 摩罗戈拉打完了 ⇒ 哥布林
+        self.assertEqual(_SEG_OUTPOST_2, machine._segment_from_map(map_one_outpost_done()))
+        # 2 个 ⇒ 两处都完了 ⇒ BOSS
+        self.assertEqual(_SEG_BOSS, machine._segment_from_map(map_two_outposts_done()))
+
+    def test_untrusted_ledger_does_not_guess_and_rebuilds_from_the_map(self):
+        machine = build_side_story_machine(TEMPLATES)
+        machine._in_outpost = True
+        self.assertEqual(_SEG_NORMAL, machine._segment)
+
+        action = machine.next_action(outpost_scene())
+
+        # 不猜下一段：只点「离开」，并挂上「回地图重判」。
+        self.assertEqual("outpost_leave", action.name)
+        self.assertTrue(machine._recheck_segment)
+        self.assertEqual(_SEG_NORMAL, machine._segment)
+
+        # 回地图：第一帧先等画面画出来，第二帧按气泡重判 ⇒ 1 个气泡 = 哥布林。
+        self.assertIsNone(machine.next_action(map_one_outpost_done()))
+        machine.next_action(map_one_outpost_done())
+
+        self.assertFalse(machine._recheck_segment)
+        self.assertEqual(_SEG_OUTPOST_2, machine._segment)
 
 
 class OutpostExhaustedTests(unittest.TestCase):

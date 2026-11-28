@@ -7,44 +7,36 @@ from functools import cache
 from pathlib import Path
 import sys
 
-from PySide6.QtCore import QSize
-from PySide6.QtGui import QColor, QIcon, QPixmap
+from PySide6.QtCore import QEvent, Qt
+from PySide6.QtGui import QIcon, QPixmap
 from PySide6.QtWidgets import QLabel, QWidget
-from qfluentwidgets import FluentIcon
 
 APP_NAME = "亚卡助手"
 APP_SUBTITLE = "《第七史诗》任务自动化"
 ASSETS = Path(__file__).with_name("assets")
-HERO_ART = ASSETS / "arky-ready.png"
-COMPLETE_ART = ASSETS / "arky-complete.png"
-BADGE_ART = ASSETS / "arky-badge.png"
+ICONS = ASSETS / "icons"
+MASCOT_ART = ASSETS / "mascot"
+HERO_ART = MASCOT_ART / "idle.png"
+COMPLETE_ART = MASCOT_ART / "success" / "03.png"
+BADGE_ART = HERO_ART
+LANDSCAPE_ART = ASSETS / "backgrounds" / "adventure-v67.png"
 APP_ICON = Path(__file__).with_name("app.ico")
+BRAND_ART = ASSETS / "brand"
+LOGO_256 = BRAND_ART / "arky-logo-256.png"
+LOGO_64 = BRAND_ART / "arky-logo-64.png"
 
-BLUE = "#21577E"
-INK = "#172F46"
-MUTED = "#516779"
+BLUE = "#3979b6"
+INK = "#f1f5ff"
+MUTED = "#adbed4"
 ROUTE_ICONS = {
-    "arena": FluentIcon.GAME,
-    "shop_refresh": FluentIcon.TAG,
-    "world_boss": FluentIcon.GLOBE,
-    "knights_donation": FluentIcon.SEND,
-    "labyrinth_stone": FluentIcon.IOT,
-    "sanctuary": FluentIcon.LEAF,
-    "community": FluentIcon.CALENDAR,
-    "achievement": FluentIcon.CERTIFICATE,
-    "pet_adoption": FluentIcon.HEART,
-    "hero_synthesis": FluentIcon.PEOPLE,
-    "story": FluentIcon.DICTIONARY,
-    "fodder": FluentIcon.SYNC,
-    "side_story": FluentIcon.LIBRARY,
-    "moonlight_theater": FluentIcon.QUIET_HOURS,
-    "story_star": FluentIcon.ASTERISK,
-    "penguin_purchase": FluentIcon.SHOPPING_CART,
-    "craft_equipment": FluentIcon.DEVELOPER_TOOLS,
-    "expedition": FluentIcon.FLAG,
-    "tower": FluentIcon.APPLICATION,
-    "survivor": FluentIcon.STOP_WATCH,
-    "activity_story": FluentIcon.SCROLL,
+    mode: ICONS / f"{mode}.png"
+    for mode in (
+        "arena", "shop_refresh", "world_boss", "knights_donation", "labyrinth_stone",
+        "sanctuary", "community", "achievement", "pet_adoption", "hero_synthesis",
+        "story", "fodder", "side_story", "moonlight_theater", "story_star",
+        "penguin_purchase", "craft_equipment", "expedition", "tower", "survivor",
+        "activity_story",
+    )
 }
 
 
@@ -57,6 +49,14 @@ def app_icon() -> QIcon:
     return QIcon(str(APP_ICON))
 
 
+@cache
+def logo_pixmap(size: int = 64) -> QPixmap:
+    """品牌 Logo 原样等比缩放，不裁切、不加边框或留白。"""
+    source = LOGO_64 if size <= 64 else LOGO_256
+    return artwork(source).scaled(size, size, Qt.AspectRatioMode.KeepAspectRatio,
+                                  Qt.TransformationMode.SmoothTransformation)
+
+
 def motion_enabled() -> bool:
     """Respect the current Windows system preference for UI animation."""
     if sys.platform != "win32":
@@ -67,14 +67,46 @@ def motion_enabled() -> bool:
 
 
 @cache
-def _route_pixmap(mode: str) -> QPixmap:
-    icon = ROUTE_ICONS.get(mode, FluentIcon.DOCUMENT)
-    return icon.icon(color=QColor(BLUE)).pixmap(QSize(17, 17), 2.0)
+def icon_pixmap(name: str, size: int = 24, *, device_pixel_ratio: float = 1.0) -> QPixmap:
+    """Scale approved pixel art into the control's device pixels."""
+    path = ICONS / f"{name}.png"
+    pixmap = artwork(path if path.is_file() else ICONS / "pending.png")
+    pixels = round(size * device_pixel_ratio)
+    scaled = pixmap.scaled(pixels, pixels, Qt.KeepAspectRatio, Qt.FastTransformation)
+    scaled.setDevicePixelRatio(device_pixel_ratio)
+    return scaled
 
 
-def route_emblem(mode: str, parent: QWidget) -> QLabel:
-    label = QLabel(parent)
-    label.setObjectName("routeEmblem")
-    label.setProperty("routeMode", mode)
-    label.setPixmap(_route_pixmap(mode))
-    return label
+@cache
+def icon(name: str, size: int = 24) -> QIcon:
+    result = QIcon()
+    for ratio in (1.0, 1.25, 1.5, 2.0):
+        result.addPixmap(icon_pixmap(name, size, device_pixel_ratio=ratio))
+    return result
+
+
+class _RouteEmblem(QLabel):
+    def __init__(self, mode: str, size: int, parent: QWidget) -> None:
+        super().__init__(parent)
+        self._mode = mode
+        self.setObjectName("routeEmblem")
+        self.setProperty("routeMode", mode)
+        self.setAlignment(Qt.AlignCenter)
+        self.set_icon_size(size)
+
+    def set_icon_size(self, size: int) -> None:
+        self._size = size
+        self.setFixedSize(size, size)
+        self._update_pixmap()
+
+    def event(self, event: QEvent) -> bool:
+        if event.type() == QEvent.Type.DevicePixelRatioChange:
+            self._update_pixmap()
+        return super().event(event)
+
+    def _update_pixmap(self) -> None:
+        self.setPixmap(icon_pixmap(self._mode, self._size, device_pixel_ratio=self.devicePixelRatioF()))
+
+
+def route_emblem(mode: str, parent: QWidget, *, size: int = 24) -> _RouteEmblem:
+    return _RouteEmblem(mode, size, parent)

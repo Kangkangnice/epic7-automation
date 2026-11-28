@@ -29,6 +29,10 @@ class RouteOption:
     minimum: int = 0
     maximum: int = 0
     depends_on: tuple[str, str] | None = None
+    # 界面可见条件：只有另一个选项等于指定值时才显示这一行。
+    # 只影响界面呈现，不参与 clean() 的取值清洗 —— 隐藏时保留用户上次的选择，
+    # 切回去还是原来的设置。
+    visible_when: tuple[str, str] | None = None
 
 
 _STAMINA_OPTIONS = (
@@ -55,65 +59,8 @@ _STAMINA_OPTIONS = (
 
 ROUTE_OPTIONS: dict[str, tuple[RouteOption, ...]] = {
     "arena": (
-        RouteOption(
-            key="weekly_reward",
-            label="周结算奖励",
-            kind="choice",
-            default="diamond",
-            note="每周结算后进入竞技场时弹出「每周排名选择奖励」，二选一。默认选择钻石，可改为神秘书签。",
-            choices=(
-                ("diamond", "钻石"),
-                ("mystic", "神秘书签"),
-            ),
-        ),
-        RouteOption(
-            key="opponent_source",
-            label="对手来源",
-            kind="choice",
-            default="player",
-            note="交战对手页签为玩家对战，NPC 对战页签为固定 NPC 阵容。玩家对战页签不可挑战时会改打 NPC。",
-            choices=(
-                ("player", "玩家对战"),
-                ("npc", "NPC 对战"),
-            ),
-        ),
-        RouteOption(
-            key="opponent_preference",
-            label="对手偏好",
-            kind="choice",
-            default="none",
-            note="按积分高低在可挑战的对手里挑选。积分读不出时不启用。",
-            choices=(
-                ("none", "不指定"),
-                ("highest", "优先积分最高"),
-                ("lowest", "优先积分最低"),
-            ),
-        ),
-        RouteOption(
-            key="hero_blacklist",
-            label="避战名单",
-            kind="roster",
-            default=(),
-            note="对手队伍里出现这些英雄时跳过该场。勾入这份名单的英雄会自动从另一份移出。",
-        ),
-        RouteOption(
-            key="hero_whitelist",
-            label="优先名单",
-            kind="roster",
-            default=(),
-            note="含这些英雄的对手优先开战；一个都没有出现时按常规挑选，不是只打这些。勾入这份名单的英雄会自动从另一份移出。",
-        ),
-        RouteOption(
-            key="hero_list_conflict",
-            label="两份名单都命中时",
-            kind="choice",
-            default="blacklist",
-            note="同一支队伍里避战名单与优先名单都命中时如何处置；只命中其中一份时，按该份名单处理。",
-            choices=(
-                ("blacklist", "按避战名单处理（跳过）"),
-                ("whitelist", "按优先名单处理（优先开战）"),
-            ),
-        ),
+        # 2026-11-28 用户拍板：刷新/旗帜这四项移到最前，且 NPC 对战下也保留。
+        # 它们只影响开战前的准备，与选玩家/NPC 对手无关；后面四项才是玩家对战专属。
         RouteOption(
             key="refresh_mode",
             label="刷新对手方式",
@@ -155,6 +102,69 @@ ROUTE_OPTIONS: dict[str, tuple[RouteOption, ...]] = {
             maximum=10,
             note="一次运行内使用天空石购买旗帜的次数。",
             depends_on=("ticket_mode", "skystone"),
+        ),
+        RouteOption(
+            key="weekly_reward",
+            label="周结算奖励",
+            kind="choice",
+            default="diamond",
+            note="每周结算后进入竞技场时弹出「每周排名选择奖励」，二选一。默认选择钻石，可改为神秘书签。",
+            choices=(
+                ("diamond", "钻石"),
+                ("mystic", "神秘书签"),
+            ),
+        ),
+        RouteOption(
+            key="opponent_source",
+            label="对手来源",
+            kind="choice",
+            default="player",
+            note="交战对手页签为玩家对战，NPC 对战页签为固定 NPC 阵容。玩家对战页签不可挑战时会改打 NPC。",
+            choices=(
+                ("player", "玩家对战"),
+                ("npc", "NPC 对战"),
+            ),
+        ),
+        RouteOption(
+            key="opponent_preference",
+            label="对手偏好",
+            kind="choice",
+            default="none",
+            note="按积分高低在可挑战的对手里挑选。积分读不出时不启用。",
+            visible_when=("opponent_source", "player"),
+            choices=(
+                ("none", "不指定"),
+                ("highest", "优先积分最高"),
+                ("lowest", "优先积分最低"),
+            ),
+        ),
+        RouteOption(
+            key="hero_blacklist",
+            label="避战名单",
+            kind="roster",
+            default=(),
+            note="对手队伍里出现这些英雄时跳过该场。勾入这份名单的英雄会自动从另一份移出。",
+            visible_when=("opponent_source", "player"),
+        ),
+        RouteOption(
+            key="hero_whitelist",
+            label="优先名单",
+            kind="roster",
+            default=(),
+            note="含这些英雄的对手优先开战；一个都没有出现时按常规挑选，不是只打这些。勾入这份名单的英雄会自动从另一份移出。",
+            visible_when=("opponent_source", "player"),
+        ),
+        RouteOption(
+            key="hero_list_conflict",
+            label="两份名单都命中时",
+            kind="choice",
+            default="blacklist",
+            note="同一支队伍里避战名单与优先名单都命中时如何处置；只命中其中一份时，按该份名单处理。",
+            visible_when=("opponent_source", "player"),
+            choices=(
+                ("blacklist", "按避战名单处理（跳过）"),
+                ("whitelist", "按优先名单处理（优先开战）"),
+            ),
         ),
     ),
     # 2026-11-22 用户拍板：删掉「无后续关卡时重复同一关」这个选项。

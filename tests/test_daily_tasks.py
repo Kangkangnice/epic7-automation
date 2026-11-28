@@ -663,6 +663,17 @@ def test_world_boss_note_reports_battles_not_cycles():
     assert runner.route_note() == "完成首领战 2 场"
 
 
+def test_world_boss_note_carries_the_stop_basis_when_nothing_was_fought():
+    """一场没打时必须写出收工依据。
+
+    2026-11-27 的误判就是这样藏住的：汇总里只有「次数已用尽」，
+    与「真的打完了」完全同形；写清「读到 0/2」之后，人才能复核。
+    """
+    runner = _note_runner("world_boss", completed_cycles=0, stop_basis="主页按钮读到 0/2")
+    runner.battles_done = 0
+    assert runner.route_note() == "主页按钮读到 0/2，今日未出战"
+
+
 def test_knights_note_reports_the_request():
     runner = _note_runner(
         "knights_donation", completed_cycles=1, request_done=True
@@ -1434,6 +1445,22 @@ def test_inspect_reporting_nothing_is_a_miss_not_a_zero():
     assert report.countdown_note == "支线刷新倒计时：未读取（页面未显示倒计时信息）"
 
 
+def test_inspect_countdown_ended_is_reported_as_ended_not_as_a_miss():
+    """结束态（左下角「开启其他支线故事」）⇒ 如实写「本期已到期，可开启新支线」。
+
+    不能落在「未读取」：那会让用户以为工具坏了；更不能写成「剩余 0 天 0 小时」：
+    结束态根本没有数字，写 0 是假读数。
+    """
+
+    report = _run_with_inspect(
+        lambda: {"ended": True, "raw": "开启其他支线故事", "account": "康康626"}
+    )
+
+    assert report.any_failed is False
+    assert report.countdown_note == "支线刷新倒计时：本期已到期、可开启新支线"
+    assert report.account == "康康626"
+
+
 def test_inspect_pressing_stop_is_recorded_as_a_manual_stop():
     """巡检途中按 P 也算整轮手动停止（游戏已经被他撂在那儿了）。"""
 
@@ -1565,6 +1592,41 @@ def test_countdown_inspect_returns_none_when_nothing_was_read(monkeypatch, tmp_p
         )
         is None
     )
+    assert countdown_module.load_countdown() is None
+
+
+def test_countdown_inspect_ended_does_not_write_a_zero_reading(monkeypatch, tmp_path):
+    """结束态：把「已到期」带回汇总，但**不覆盖**上次读到的倒计时文件。
+
+    结束态没有天数；写 0 天 0 小时会把便签变成假读数，覆掉上一份真实数据。
+    """
+
+    from auto_game_unified import main as main_module
+    from auto_game_unified.core import countdown as countdown_module
+
+    monkeypatch.setenv("EPIC7_DATA_DIR", str(tmp_path))
+
+    def fake_run_mode(*, spec, start_state, **kwargs):
+        machine = spec.build_machine(
+            main_module.ROOT / "games" / "epic7" / "templates", start_state
+        )
+        machine.countdown_read = {"ended": True, "raw": "开启其他支线故事"}
+
+        class _Result:
+            completed_cycles = 0
+            resource_exhausted = True
+
+        return _Result()
+
+    monkeypatch.setattr(main_module, "run_mode", fake_run_mode)
+    _stub_countdown_entry_lock(monkeypatch, main_module)
+
+    payload = main_module.inspect_side_story_countdown(
+        window_backend="emulator", stop_file=None
+    )
+
+    assert payload["ended"] is True
+    assert "days" not in payload and "hours" not in payload
     assert countdown_module.load_countdown() is None
 
 

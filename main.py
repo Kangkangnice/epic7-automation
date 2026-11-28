@@ -12,6 +12,7 @@ import numpy as np
 from auto_game_unified.core.account import set_current
 from auto_game_unified.core.countdown import save_countdown
 from auto_game_unified.core.data_paths import data_root
+from auto_game_unified.core.failure_history import FAILURE_WINDOW_ENV, FailureHistory
 from auto_game_unified.core.matcher import find_template, load_template, set_active_backend
 from auto_game_unified.core.hotkey import WindowsPStopHotkey
 from auto_game_unified.core.qqbot import send_qqbot_c2c
@@ -27,6 +28,7 @@ from auto_game_unified.core.pc_window import (
 from auto_game_unified.games.epic7.account_profile import read_account
 from auto_game_unified.games.epic7.daily_tasks import (
     DAILY_TASKS,
+    DailyOutcome,
     DailyReport,
     run_daily_tasks,
 )
@@ -726,6 +728,8 @@ def run_mode(
             home_return = HomeReturn(navigator, runtime, mode=spec.name)
             try:
                 _enter_mode(spec, machine, navigator, runtime, home_return)
+            except ManualStop:
+                raise
             except BaseException as error:
                 # ⚠️ ``_enter_mode``（含里面的 ``navigator.navigate``）跑在下面
                 # 「业务主循环」的 try 之外 —— 这里一旦炸，原本会直接逃出 ``run_mode``，
@@ -736,8 +740,7 @@ def run_mode(
                     f"模式={spec.name} 进入路线失败 "
                     f"原因={type(error).__name__}: {error}"
                 )
-                if runtime.diagnostic_dir is not None:
-                    runtime.save_diagnostic(f"enter_mode_failed_{spec.name}")
+                runtime.record_failure(error)
                 raise
     runner_options: dict[str, Any] = {}
     # ⚠️ 这里**只**给闸门，不给任何「恢复」回调：2026-09-26 用户拍板
@@ -766,6 +769,7 @@ def run_mode(
         # 用户按 P 喊停 ⇒ 一个字都不动游戏（这是全线统一口径，见 runner_base._close_out）。
         raise
     except PurchaseReceiptUnclear as error:
+        runtime.record_failure(error)
         # 不可逆购买回执未明：弹窗与当前页面就是对账现场，一个字都不动游戏。
         # 必须在通用 BaseException 分支之前，否则会走 _try_return_home_after_failure
         # 把现场抹掉（2026-11-26 二次验收退回项）。
@@ -779,6 +783,7 @@ def run_mode(
         # 以前不回家的理由是「硬按 Back 可能把已承诺的战斗弄丢」，而 v2 处理这个问题
         # 的办法是**显式放弃**（暂停 → 放弃战斗 → 放弃确认），比撒手不管更干净。
         # ⚠️ 回家本身**绝不改退出码**：回到家也照旧往外抛，结论还是「运行失败」。
+        runtime.record_failure(error)
         if home_return is not None:
             _try_return_home_after_failure(
                 home_return, runtime, mode=spec.name, cause=error
@@ -1083,6 +1088,10 @@ def inspect_side_story_countdown(
     reported = dict(payload)
     reported["account"] = owner_name
     reported["rank"] = owner_rank
+    if payload.get("ended") is True:
+        # 本期已到期（左下角「开启其他支线故事」）：没有天数可写，**不覆盖**
+        # 上次的倒计时文件 —— 写 0 天 0 小时便是假读数。只把结论带回汇总。
+        return reported
     save_countdown(
         int(payload["days"]),
         int(payload["hours"]),
@@ -1150,6 +1159,18 @@ def _load_params(path: str | None) -> dict[str, dict[str, Any]]:
 def _run_daily(args: argparse.Namespace) -> int:
     """跑「每日任务」编排。退出码沿用单路线那套：0 全成 / 1 有失败 / 130 手动停。"""
     started_at = time.monotonic()
+
+    def report_outcome(outcome: DailyOutcome) -> None:
+        # A preflight or constructor can fail before a Runtime has captured anything.
+        if outcome.status == "failed" and os.environ.get(FAILURE_WINDOW_ENV):
+            try:
+                FailureHistory().save(
+                    DATA_ROOT / "runtime_diagnostics" / f"epic7_{outcome.mode}", outcome.detail
+                )
+            except OSError as error:
+                print(f"故障信息留存失败：{error}", flush=True)
+        print(outcome.progress_line(), flush=True)
+
     report = run_daily_tasks(
         selected=_parse_daily_selection(args.daily_tasks),
         cycles_override=_parse_daily_cycles(args.daily_tasks),
@@ -1173,6 +1194,7 @@ def _run_daily(args: argparse.Namespace) -> int:
             window_backend=args.window_backend,
             stop_file=Path(args.stop_file) if args.stop_file else None,
         ),
+        on_outcome=report_outcome if args.stop_file else None,
     )
     elapsed = _elapsed_seconds(started_at)
     if report.elapsed_seconds <= 0:

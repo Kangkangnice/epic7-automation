@@ -26,10 +26,12 @@ from auto_game_unified.core.matcher import (
     find_best_template,
     find_template,
 )
+from auto_game_unified.core.runtime import Runtime
 from auto_game_unified.games.epic7.modes import MODE_SPECS
 from auto_game_unified.games.epic7.side_story import (
     _ARROW_MISS_LIMIT,
     _ARROW_PIXELS_MIN,
+    _SEG_NORMAL,
     _SEG_OUTPOST_1,
     _SIDE_MATCH_MODES,
     SideStoryRunner,
@@ -660,8 +662,16 @@ class SideStoryTerminalTests(unittest.TestCase):
 
         self.assertIsNotNone(action)
         self.assertEqual("scene_leave", action.name)
-        self.assertEqual(_SEG_OUTPOST_1, machine._segment)
         self.assertTrue(machine._leaving)
+        # 2026-11-27：离开之后先判「还有没有下一张小地图」，此刻段落还没切据点。
+        self.assertTrue(machine._pending_submap)
+        self.assertEqual(_SEG_NORMAL, machine._segment)
+
+        # 地图上没有跨图传送门 ⇒ ①段到此为止；下一段由地图上的「入场限制 0/1」
+        # 气泡判（`map` 一个都没有 ⇒ ②摩罗戈拉）。两帧查门 + 两帧重判。
+        for _ in range(4):
+            machine.next_action(fixture("map"))
+        self.assertEqual(_SEG_OUTPOST_1, machine._segment)
 
     def test_the_arrowless_scene_page_is_not_reported_as_an_unknown_screen(self):
         """这一页是**认出过的**场景页 ⇒ 不能掉进「认不出画面」那条路。
@@ -681,6 +691,63 @@ class SideStoryTerminalTests(unittest.TestCase):
 
         self.assertIsNone(action)
 
+    def test_the_arrowless_scene_page_reports_its_page_identity(self):
+        """认得这一页、但这一帧没有动作时，页面身份也必须报出去。
+
+        `_confirmed_page` 是主循环判断「上一个动作落没落地」的唯一依据。留在旧值上，
+        45 秒后的补点就会把上一个页面的坐标原样再点一次 —— 那个坐标在这张场景页上
+        正落在「重新进行」按钮里（2026-11-27 实跑，坐标 (1746,1043)）。
+        """
+
+        machine = SideStoryStateMachine(templates())
+        frame = self.terminal_frame()
+
+        self.assertIsNone(machine.next_action(frame))
+        self.assertEqual("下一关入口", machine._confirmed_page)
+
+    def test_the_waiting_scene_page_says_what_it_is_waiting_for(self):
+        """等箭头这段空转必须能说出「在等什么、还差几帧」。
+
+        2026-11-27 实跑：场景页连着 20 多秒没有动作、日志也一行不写，用户在旁边
+        看到的现象是「它认不出这个页面」。日志里必须读得出等待进度与下一步打算。
+        """
+
+        machine = SideStoryStateMachine(templates())
+        frame = self.terminal_frame()
+
+        # 还没开始等（不在场景页）⇒ 没有话要说。
+        self.assertEqual("", machine.wait_note())
+
+        for _ in range(3):
+            self.assertIsNone(machine.next_action(frame))
+
+        note = machine.wait_note()
+        self.assertIn(f"3/{_ARROW_MISS_LIMIT}", note)
+        self.assertIn("离开", note)
+
+        # 点完「离开」离开场景页 ⇒ 这段等待结束，不再有话说。
+        for _ in range(_ARROW_MISS_LIMIT - 3):
+            machine.next_action(frame)
+        self.assertEqual("", machine.wait_note())
+
+    def test_waiting_without_the_leave_button_says_so(self):
+        """帧数已经够了、但「离开」没认出来：日志必须说清在等按钮，而不是谎称在计数。
+
+        这时程序不会换别的位置瞎点（fail-closed），但对读日志的人来说，
+        「凑满帧数」和「等按钮出现」是两种完全不同的处境，必须分开写。
+        """
+
+        machine = SideStoryStateMachine(templates())
+        frame = self.terminal_frame().copy()
+        frame[960:1132, 0:400] = 0  # 抹掉左下角「离开」按钮
+
+        for _ in range(_ARROW_MISS_LIMIT):
+            self.assertIsNone(machine.next_action(frame))
+
+        note = machine.wait_note()
+        self.assertIn("没认出来", note)
+        self.assertIn("离开", note)
+
     def test_the_miss_counter_resets_as_soon_as_the_arrow_comes_back(self):
         machine = SideStoryStateMachine(templates())
         terminal = self.terminal_frame()
@@ -692,6 +759,53 @@ class SideStoryTerminalTests(unittest.TestCase):
 
         for _ in range(_ARROW_MISS_LIMIT - 1):
             self.assertIsNone(machine.next_action(terminal))
+
+
+class SideStoryIdleLogTests(unittest.TestCase):
+    """「认得出这一页、但这一帧没动作」必须在日志里说得出话。
+
+    2026-11-27 实跑：场景页连着 20 多秒没有动作，日志一行不写，用户在旁边看到
+    的现象是「它认不出这个页面」。这条日志的目的就是让读日志的人**不看画面**
+    也能知道程序停在哪个页面、在等什么、下一步打算点什么。
+    """
+
+    @staticmethod
+    def runner_with_clock(clock, lines):
+        runtime = Runtime(
+            lambda: np.zeros((60, 100, 3), dtype=np.uint8),
+            lambda point: None,
+            emit=lines.append,
+            monotonic=lambda: clock[0],
+        )
+        machine = SideStoryStateMachine(templates())
+        return machine, SideStoryRunner(machine, runtime, sleep=lambda seconds: None)
+
+    def test_idle_wait_on_the_arrowless_scene_page_is_explained(self):
+        clock = [100.0]
+        lines: list[str] = []
+        machine, runner = self.runner_with_clock(clock, lines)
+        screen = np.zeros((1132, 1982, 3), dtype=np.uint8)
+
+        machine._arrow_misses = 3
+        runner._log_idle_wait(screen, 95.0)
+
+        self.assertEqual(1, len(lines))
+        text = lines[-1]
+        self.assertIn("认得出这一页", text)
+        self.assertIn(f"连续 3/{_ARROW_MISS_LIMIT} 帧", text)
+        self.assertIn("离开", text)
+        self.assertIn("已等=5秒", text)
+
+        # 同一段等待里 5 秒才写一条，不刷屏。
+        clock[0] = 102.0
+        runner._log_idle_wait(screen, 95.0)
+        self.assertEqual(1, len(lines))
+
+        # 不在等待（机器没有话说）⇒ 一行都不写。
+        machine._arrow_misses = 0
+        clock[0] = 120.0
+        runner._log_idle_wait(screen, 95.0)
+        self.assertEqual(1, len(lines))
 
 
 class SideStoryBookingTests(unittest.TestCase):

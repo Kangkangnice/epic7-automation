@@ -1,8 +1,7 @@
 # 英雄合成 hero_synthesis · 业务契约
 
 > 本页只写**现行结论**：这条路线干什么、页面怎么走、判据为什么这么设计、危险边界在哪。
-> 模板尺寸、阈值、匹配分数、夹具张数、PC 图数量一律看 [STATUS.md](../STATUS.md)
-> 的「按路线的现行事实」与代码常量，**本页不写数字**。
+> 路线可用范围、接力和验收状态见[现状速查](../STATUS.md)。具体判据见本手册与实现。
 > 历史事故过程、实跑时间线、取证脚本留在 git 历史与 `.workbuddy/memory/`，不在本页维护。
 > 开工读什么、改完更新哪节：`python -m auto_game_unified.tools.doc_review --scenario fix-bug`。
 
@@ -77,8 +76,7 @@
 
 ## 现行事实（不写数字，链机器产出）
 
-- 路线名单 / 分组 / 默认次数 / PC 放行 / PC 图数 / 模板数 / 夹具数 / 接力状态
-  → [STATUS.md](../STATUS.md)「按路线的现行事实」（由 `gen_status.py` 生成）。
+- 路线可用范围、次数、接力和验收状态见[现状速查](../STATUS.md)。
 - 视觉证据与判据表：`games/epic7/evidence/hero_synthesis.py`；业务状态机：`games/epic7/hero_synthesis.py`；
   PC 视觉：`games/epic7/hero_vision_pc.py`；转场契约与豁免：`games/epic7/modes.py`。
 - UI 改版怎么改（取证 → 换模板 → 区域 → 阈值 → 反例）见 [EXTENDING.md](../EXTENDING.md) §0

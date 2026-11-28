@@ -2,7 +2,7 @@
 
 只做发布验证，不连接游戏、不截图、不点击：
 
-- ``--self-check``：模板与第三方代码能加载，报告写进 ``EPIC7_DATA_DIR``；
+- ``--self-check``：模板能加载，报告写进 ``EPIC7_DATA_DIR``；
 - ``--worker --offline-probe``：走真实 CLI 的停止判定，正常结束退出 0；
 - 同一个探针加 ``--stop-file``：写入停止文件后退出 130。
 
@@ -53,7 +53,6 @@ DEPENDENCIES = (
     "Pillow",
     "PyAutoGUI",
     "psutil",
-    "PyYAML",
     "rapidocr-onnxruntime",
     "onnxruntime",
 )

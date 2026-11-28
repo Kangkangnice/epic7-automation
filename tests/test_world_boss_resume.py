@@ -61,6 +61,8 @@ RESUMABLE_FIXTURES: dict[str, tuple[str, WorldBossState]] = {
     # 2026-09-25 实跑那帧：同一个主页、#1 已领（亮度比 1.011）、#2 还亮着（3.197）。
     # 落地宝箱 #2 那道判据的回归依据 —— 只认 #1 会把这一屏当成「没有可领」。
     "worldboss_home_chest2_claimable": ("世界首领战主页", WorldBossState.HOME),
+    # 2026-11-27 实拍：2/2 次数还在的主页（与次耗尽态成对，接力同样落这一页）。
+    "worldboss_home_2of2_live_20261127": ("世界首领战主页", WorldBossState.HOME),
     "team_select": ("选择辅助队伍", WorldBossState.TEAM_SELECT),
     "team_config": ("配置队伍", WorldBossState.TEAM_CONFIG),
     "team_config_configured": ("配置队伍", WorldBossState.TEAM_CONFIG),

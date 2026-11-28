@@ -164,6 +164,106 @@ class CommunityStateMachineTests(unittest.TestCase):
         machine = self.machine(state=cm.CommunityState.FEED)
         self.assertIsNone(machine.next_action(landscape))
 
+    def test_live_shifted_feed_enters_the_signin_branch_from_the_real_entry(self):
+        """2026-11-26 首个入口故障的**状态机级回放**。
+
+        现场帧 ``feed_home_shifted_live_20261126.png`` 已经是竖屏社区首页（可见每日签到
+        红点与兑换入口），旧判据只拿到 0.5659 ⇒ ``unknown`` ⇒ 陌生页逃生按 ESC，把社区
+        整个退出去，最后等竖屏超时。这里从真实入口重放：横屏点入口 → 竖屏现场帧 →
+        首页被确认 → 直接走签到分支，**不发出任何陌生页返回动作**。
+        """
+        machine = self.machine()
+        landscape = np.zeros((1132, 1982, 3), np.uint8)
+        entry = machine.next_action(landscape)
+        self.assertIsNotNone(entry)
+        assert entry is not None
+        self.assertEqual(entry.name, "enter_community")
+        self.assertEqual(entry.point, cm.WEB_COMMUNITY_ENTRY)
+        self.assertEqual(machine.state, cm.CommunityState.ENTERING)
+
+        frame = fixture("feed_home_shifted_live_20261126")
+        page = machine.observe(frame)
+        self.assertEqual(page.name, "feed_home", page.describe())
+        self.assertGreater(page.confidence, 0.99)
+        hit = [item for item in page.observations if item.name == "feed_home"]
+        self.assertEqual(len(hit), 1)
+        self.assertEqual(hit[0].region, (126, 1740, 65, 100))
+
+        action = machine.next_action(frame)
+        self.assertIsNotNone(action, "首页已确认后必须进入签到分支，不许原地等")
+        assert action is not None
+        self.assertNotIn(action.name, cm.STRANGER_ACTIONS, "现场帧被误当陌生页")
+        self.assertEqual(action.name, "tap_signin")
+        self.assertEqual(action.point, cm.FEED_SIGNIN_CLICK)
+        self.assertEqual(action.source_page, "feed_home")
+        self.assertEqual(machine.state, cm.CommunityState.FEED)
+        self.assertTrue(machine.signin_clicked)
+
+    def test_live_shifted_feed_does_not_escape_when_already_in_feed_state(self):
+        """同一现场帧若落在 ``FEED`` 态：也必须是签到动作，不能按返回退出社区。
+
+        日志里的失败发生在 ``FEED`` 态（页面先被认出过、随后两像素漂移变成 unknown），
+        上一条从 ``WEB_ENTRY`` 走通证明入口链路，这条单独钉住失败那一帧的状态前提。
+        """
+        machine = self.machine(state=cm.CommunityState.FEED)
+        frame = fixture("feed_home_shifted_live_20261126")
+        page = machine.observe(frame)
+        self.assertEqual(page.name, "feed_home", page.describe())
+
+        action = machine.next_action(frame)
+        self.assertIsNotNone(action)
+        assert action is not None
+        self.assertNotIn(action.name, cm.STRANGER_ACTIONS)
+        self.assertEqual(action.name, "tap_signin")
+        self.assertEqual(machine.state, cm.CommunityState.FEED)
+        self.assertEqual(machine._stranger_attempts, 0, "陌生页逃生账本被误启动")
+
+    def test_live_shifted_post_detail_continues_the_task_instead_of_escaping(self):
+        """2026-11-26 实机第二个现场：帖子详情被判 unknown，浏览/分享反复作废。
+
+        现场帧 ``post_detail_shifted_live_20261126.png`` 肉眼是帖子详情页，分享箭头
+        只是偏了 (1,2) 像素；旧判据 0.5123 ⇒ 陌生页逃生按返回，那一步被作废重做。
+        现在两态都必须按任务脚本继续走，不发出任何逃生动作。
+        """
+        frame = fixture("post_detail_shifted_live_20261126")
+        for task, expected in (("browse", "task_browse_2"), ("share", "task_share_2")):
+            with self.subTest(task=task):
+                machine = self.machine(state=cm.CommunityState.FEED)
+                machine.active_task = task
+                machine.task_step = 1
+                page = machine.observe(frame)
+                self.assertEqual(page.name, "post_detail", page.describe())
+
+                action = machine.next_action(frame)
+                self.assertIsNotNone(action, "帖子详情已确认后必须继续任务脚本")
+                assert action is not None
+                self.assertNotIn(action.name, cm.STRANGER_ACTIONS)
+                self.assertEqual(action.name, expected)
+                self.assertEqual(machine.state, cm.CommunityState.POST_DETAIL)
+
+    def test_shifted_redeem_receipt_is_acknowledged_and_never_reconfirmed(self):
+        """兑换回执漂移时只收弹窗，绝不把已发生的兑换再提交一次。
+
+        实跑里回执只拿到 0.6156 ⇒ 被判 unknown ⇒ 按返回当成没发生 ⇒ 又点了一次
+        「确认兑换」。这里用等价的 2px 位移场景钉住：连续几帧都只给 ``ack_redeem_done``，
+        不回退到 ``order_confirm``、不产生 ``confirm_redeem``。
+        """
+        frame = np.roll(fixture("redeem_success_live_20261006"), shift=(2, 1), axis=(0, 1))
+        machine = self.machine(state=cm.CommunityState.EXCHANGE)
+        machine.progress.signed_in = True
+        page = machine.observe(frame)
+        self.assertEqual(page.name, "redeem_done", page.describe())
+
+        for index in range(5):
+            with self.subTest(frame=index):
+                action = machine.next_action(frame)
+                self.assertIsNotNone(action)
+                assert action is not None
+                self.assertEqual(action.name, "ack_redeem_done")
+                self.assertNotEqual(action.name, "confirm_redeem")
+                self.assertNotIn(action.name, cm.STRANGER_ACTIONS)
+                self.assertEqual(machine.state, cm.CommunityState.REDEEM_DONE)
+
     # ---- 兑换流程 ----
 
     def test_opens_the_card_that_still_has_room(self):

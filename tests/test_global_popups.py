@@ -1311,6 +1311,8 @@ def test_persistent_intimacy_popup_clicks_four_times_then_safely_stops(tmp_path)
 
 
 def test_global_guard_clicks_four_times_then_safely_stops_if_popup_persists(tmp_path):
+    from zipfile import ZipFile
+
     popup = load_screen()
     clock = FakeClock()
     clicks = []
@@ -1332,11 +1334,15 @@ def test_global_guard_clicks_four_times_then_safely_stops_if_popup_persists(tmp_
     with pytest.raises(
         RuntimeError,
         match=f"断网重连弹窗点击{popups_module._MAX_POPUP_CLICKS}次后仍未消失",
-    ):
+    ) as failure:
         runtime.capture()
 
     assert len(clicks) == popups_module._MAX_POPUP_CLICKS
     assert len(list(tmp_path.glob("*_network_retry_failed.png"))) == 1
+    runtime.record_failure(failure.value)
+    with ZipFile(tmp_path / "last_failure.zip") as window:
+        # The first click requires two observed frames. Subsequent retries must not displace them.
+        assert len([name for name in window.namelist() if name.startswith("frames/")]) == 2
 
 
 def test_global_guard_allowance_resets_after_popup_disappears():

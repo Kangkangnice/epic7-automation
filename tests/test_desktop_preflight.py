@@ -1,9 +1,12 @@
 from pathlib import Path
+import os
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
 
 from auto_game_unified.core.pc_window import (
+    Epic7PcWindow,
     WindowCalibration,
     WindowRect,
 )
@@ -113,6 +116,39 @@ def test_pc_preflight_blocks_when_game_runs_elevated_but_assistant_does_not():
     assert report.status is PreflightStatus.BLOCK
     assert report.can_start is False
     assert "管理员" in report.message
+
+
+@pytest.mark.parametrize(("client_elevated", "assistant_elevated", "allowed"), [
+    (False, False, True),
+    (False, True, True),
+    (True, False, False),
+    (True, True, True),
+])
+def test_pc_preflight_uses_the_real_permission_gate(
+    monkeypatch, client_elevated, assistant_elevated, allowed,
+):
+    from auto_game_unified.core import pc_window
+
+    target_pid = os.getpid() + 1
+
+    def get_window_pid(_hwnd, pid):
+        pid._obj.value = target_pid
+        return 1
+
+    window = Epic7PcWindow.__new__(Epic7PcWindow)
+    window._user32 = SimpleNamespace(GetWindowThreadProcessId=get_window_pid)
+    monkeypatch.setattr(window, "_find_window", lambda: 1)
+    monkeypatch.setattr(window, "_rect", lambda _hwnd: WindowRect(0, 0, 1920, 1080))
+    monkeypatch.setattr(window, "capture", FakePcWindow().capture)
+    monkeypatch.setattr(
+        pc_window, "_is_process_elevated",
+        lambda pid: client_elevated if pid == target_pid else assistant_elevated,
+    )
+
+    report = run_preflight(window_backend="pc", pc_window_factory=lambda: window, platform_name="Windows")
+    assert report.can_start is allowed
+    if not allowed:
+        assert "客户端以管理员权限运行" in report.message
 
 
 def test_pc_preflight_blocks_black_frames():

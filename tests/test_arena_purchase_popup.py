@@ -14,7 +14,7 @@
 现场帧 `runtime_diagnostics/epic7_arena/20260925_081722_997139_ticket_exhausted.png`），
 所以要把终点**下移一步**：先点「取消」退回对手列表，再从那里回家。
 
-详见 `docs/maintenance/route_finish_points.md` 注①。
+详见 `docs/maintenance/arena.md` 的危险边界。
 
 ## 守三件事
 

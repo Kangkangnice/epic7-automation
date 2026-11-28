@@ -46,38 +46,37 @@ GROUPS: tuple[str, ...] = (GROUP_DAILY, GROUP_ONDEMAND, GROUP_SEASON, GROUP_EVEN
 # 第 3 段说明勾选分组标题的效果。不使用第二人称与口语。
 GROUP_DESCRIPTIONS: Mapping[str, str] = {
     GROUP_DAILY: (
-        "每日执行的常驻内容：竞技场、刷书签、世界首领战、骑士团捐赠、迷宫强化石、"
-        "圣域收菜、社区签到、成就领取、宠物领养。\n"
-        "· 各项按游戏内当日次数或可领取内容执行\n"
-        "· 次数框置灰的项目由游戏规则决定，不支持调整\n"
-        "· 勾选分组标题可整组选中；再次点击取消整组选中"
+        "按日执行的常驻任务：{routes}。\n"
+        "· 按游戏内当日次数或可领取内容执行\n"
+        "· 有次数框的项目可调整\n"
+        "· 勾选「全选」可选择本组任务。取消勾选会清除此组选择。"
     ),
     GROUP_ONDEMAND: (
-        "内容常驻、按需要执行的项目：英雄合成、主线、狗粮、支线故事、月光剧场、"
-        "主线补星、企鹅批量购买、装备制作。\n"
+        "内容常驻、按需要执行的项目：{routes}。\n"
         "· 无固定每日次数，需要推进关卡、整理英雄或补齐星数时单独勾选\n"
-        "· 勾选分组标题可整组选中；再次点击取消整组选中"
+        "· 勾选「全选」可选择本组任务。取消勾选会清除此组选择。"
     ),
     GROUP_SEASON: (
-        "按赛季轮换内容的项目：远征、月塔。\n"
+        "按赛季轮换内容的项目：{routes}。\n"
         "· 赛季变更后关卡与层数随之更新，执行前需确认游戏内当前赛季\n"
-        "· 勾选分组标题可整组选中；再次点击取消整组选中"
+        "· 勾选「全选」可选择本组任务。取消勾选会清除此组选择。"
     ),
     GROUP_EVENT: (
-        "限时开放的两项内容：活动、活动剧情，活动结束后不再提供。\n"
-        "· 两项均需先将游戏停留在指定页面再启动\n"
+        "限时活动及历史入口：{routes}。\n"
+        "· 需先将游戏停留在对应的活动页面再启动\n"
         "· 每次仅可执行一项，不与其它路线同时勾选\n"
-        "· 勾选分组标题将选中本组首项，并清除其它已选项目"
+        "· 勾选「全选」会选中本组首项，并清除其它已选项目"
     ),
 }
 
 
-def group_description(group: str) -> str:
+def group_description(group: str, backend: str | None = None) -> str:
     """这一组的说明。分组名从 `GROUPS` 取，别在界面层写中文字面量。"""
     try:
-        return GROUP_DESCRIPTIONS[group]
+        description = GROUP_DESCRIPTIONS[group]
     except KeyError as error:
         raise ValueError(f"未知分组：{group}") from error
+    return description.format(routes="、".join(route.display_label for route in routes_in_group(group, backend)))
 
 # ── 界面上露不露面：窗口后端 ───────────────────────────────────────────────────
 #
@@ -107,9 +106,8 @@ STARTUP_ORDER_HINT = (
 STARTUP_HINTS: dict[str, str] = {
     "emulator": STARTUP_ORDER_HINT,
     "pc": (
-        "启动《第七史诗》PC 客户端并进入大厅后，以管理员身份启动本助手并执行环境检测。"
-        "PC 客户端仅放行已通过验收的路线；未放行的路线在运行计划中自动跳过，"
-        "并在日志中注明，其余已勾选项目照常执行。"
+        "进入 PC 客户端大厅后检测环境。客户端和助手均可用普通权限运行，"
+        "权限不匹配时检测会提示。不支持的路线会在计划中标为跳过。"
     ),
 }
 BACKEND_LABELS: dict[str, str] = {
@@ -272,6 +270,8 @@ def unavailable_note(mode: str, backend: str) -> str:
     否则会出现「界面说不跳过、跑起来却被跳过」。
     """
     if backend == "pc":
+        if not route_by_name(mode).visible_on(backend):
+            return "仅国服模拟器提供此路线。"
         return "" if mode in PC_READY_ROUTES else BACKEND_UNAVAILABLE_NOTES["pc"]
     if backend == "emulator":
         return (
@@ -302,10 +302,25 @@ class RouteInfo:
     # ⚠️ 这个字段是**界面分组**，不是路线本身的属性 —— 所以留在 catalog，
     # 不进 `ModeSpec`（模式名 / 次数 / 状态机那些才是路线的属性）。
     group: str = GROUP_DAILY
+    expired: bool = False
+    cn_emulator_only: bool = False
+    automatic_cycles: bool = False
 
     @property
     def label(self) -> str:
         return MODE_SPECS[self.mode].label
+
+    @property
+    def display_label(self) -> str:
+        label = self.label
+        if self.expired:
+            return f"{label}（已过期）"
+        if self.cn_emulator_only:
+            return f"{label}（国服）"
+        return label
+
+    def visible_on(self, backend: str) -> bool:
+        return backend != "pc" or not self.cn_emulator_only
 
     @property
     def default_cycles(self) -> int:
@@ -319,6 +334,15 @@ class RouteInfo:
     def min_cycles(self) -> int:
         """次数框允许的最小值（正常是 1；「刷书签」是 0 —— 只扫一遍、不付费刷新）。"""
         return MODE_SPECS[self.mode].min_cycles
+
+    def count_text(self, cycles: int) -> str:
+        if self.automatic_cycles:
+            return "自动跑完"
+        if self.mode == "shop_refresh":
+            return "只扫不刷新" if cycles == 0 else f"刷新 {cycles} 次"
+        if not self.cycles_editable:
+            return f"固定 {cycles} 次"
+        return f"{cycles} 次"
 
     @property
     def standalone_only(self) -> bool:
@@ -440,6 +464,7 @@ ROUTES = (
         "· 消耗体力；体力不足时默认使用生命之叶补充，可在路线设置里关闭或限制数量\n"
         "· 本期完成后即结束；游戏内更换期次后需重新执行",
         group=GROUP_ONDEMAND,
+        automatic_cycles=True,
     ),
     RouteInfo(
         "shop_refresh",
@@ -452,13 +477,15 @@ ROUTES = (
     ),
     RouteInfo(
         "survivor",
-        "执行限时活动小游戏：选卡、局内走位、升级三选一、失败后重新开始，持续循环。\n"
+        "该限时活动已过期，是否复刻尚未确认。\n"
+        "· 原玩法包括选卡、局内走位、升级三选一、失败后重新开始\n"
         "· 一轮为完成一局，默认 3 局，可调整\n"
         "注意：\n"
         "· 需先将游戏停留在「选第一张卡」页面后启动；本项不从大厅导航进入\n"
         "· 不可与其它路线同时勾选\n"
         "· 不执行任何消耗道具的「确认」或「重新抽取」操作",
         group=GROUP_EVENT,
+        expired=True,
     ),
     RouteInfo(
         "activity_story",
@@ -470,6 +497,7 @@ ROUTES = (
         "· 需先将游戏停留在「观看故事」页面后启动\n"
         "· 每段消耗活动票，票数用尽即结束，不购入活动票",
         group=GROUP_EVENT,
+        automatic_cycles=True,
     ),
     RouteInfo(
         "world_boss",
@@ -517,6 +545,7 @@ ROUTES = (
         "· 兑换各有上限，可在路线设置里关闭行动力或强化石；同日再次执行无可领取内容\n"
         "注意：\n"
         "· 需从游戏大厅启动，社区竖屏页面不作为启动位置",
+        cn_emulator_only=True,
     ),
     RouteInfo(
         "moonlight_theater",
@@ -528,6 +557,7 @@ ROUTES = (
         "注意：\n"
         "· 内容处理完毕后即结束",
         group=GROUP_ONDEMAND,
+        automatic_cycles=True,
     ),
     RouteInfo(
         "achievement",
@@ -600,7 +630,7 @@ def route_by_name(mode: str) -> RouteInfo:
         raise ValueError(f"未知路线：{mode}") from error
 
 
-def routes_in_group(group: str) -> tuple[RouteInfo, ...]:
+def routes_in_group(group: str, backend: str | None = None) -> tuple[RouteInfo, ...]:
     """按分组取路线，顺序沿用 `ROUTES` 的书写顺序（= 界面上的顺序）。
 
     ⚠️ 分组名从 `GROUPS` 里取，**不许在调用处写中文字面量** —— 界面与
@@ -608,7 +638,10 @@ def routes_in_group(group: str) -> tuple[RouteInfo, ...]:
     """
     if group not in GROUPS:
         raise ValueError(f"未知分组：{group}")
-    return tuple(route for route in ROUTES if route.group == group)
+    return tuple(
+        route for route in ROUTES
+        if route.group == group and (backend is None or route.visible_on(backend))
+    )
 
 
 def grouped_routes() -> tuple[tuple[str, tuple[RouteInfo, ...]], ...]:

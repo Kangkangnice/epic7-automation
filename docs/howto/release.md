@@ -7,71 +7,27 @@ review_when: 发布权限、桌面版本来源、打包入口、工件内容或�
 
 # 发布手册
 
-发布维护者从 `main` 上已通过 PR 检查的提交准备发行，并确认候选版本通过完整回归。源码安装和本地构建都可以独立验证。
-GitHub 的 tag 标记代码版本，带 ZIP 的 GitHub Release 提供用户可下载的文件。桌面检查更新读取后者。
+维护者从 `main` 上已通过 PR 检查的提交准备发行，并确认候选版本通过完整回归。GitHub tag 标记代码版本，GitHub Release 提供 ZIP 附件，桌面更新检查读取 Release。[项目治理](../../GOVERNANCE.md)
 
 ## 准备版本和内容
 
-1. 更新 [`desktop/catalog.py`](../../desktop/catalog.py) 中的 `PRODUCT_VERSION` 和
-   [`CHANGELOG.md`](../../CHANGELOG.md) 的版本说明。核对 [生成的现状页](../STATUS.md) 和用户手册。
-   每个公开版本使用唯一的 `v<版本>` tag。已存在的 tag 和工件保留原记录，修复以新版本发布。
-2. 从待发布提交独立检出，目录命名为 `auto_game_unified`。安装贡献指南里的依赖并通过全量检查。
-   PC 或模拟器的新增支持以对应实机证据为准。软件无窗口自检覆盖桌面依赖和模板加载，桌面启动和
-   游戏业务支持由各自的实机验收覆盖。
-   新增或行为受影响的稳定支持须按[路线稳定版验收](route_acceptance.md)提交目标客户端的一次实机闭环及受影响分支的回放证据，
-   并保存本地校验输出。尚在试用的组合在发布说明里注明范围。
-   游戏改版引起的变化按[维护手册](game_update.md)记录适用客户端版本、已验路线和待复核范围。
-   路线契约的声明层用 `python -m auto_game_unified.tools.route_compliance --strict` 复核：
-   当前 21 条老路线全在欠债名单，命令按设计返回非零并列出欠债，只作发布前登记与人工确认，
-   **不阻断发布**；是否把它设为硬门由用户拍板。
-   声明达到[共享视觉迁移目标](../decisions/0009-universal-vision-contract.md)时，在 PR 和发行说明列出
-   该版本发布范围内的模拟器路线、PC 完整通过数、使用默认策略数和已登记例外。默认策略占比按
-   默认策略通过数除以上述模拟器路线数计算。无实机闭环的路线不能从分母移除。
-3. 核对 [LICENSE](../../LICENSE)、[NOTICE](../../NOTICE.md) 和实际工件清单。游戏图像、截图、
-   第三方库与外部扩展分别核对授权与发布条件。检查 Fluent Widgets 等组件的上游许可及随包文件。
-   当前构建不自动把 `LICENSE` / `NOTICE.md` 复制到可执行文件目录，也不过滤与系统同名的 ICU 库，
-   这两项须在发布前人工确认；自动化方案登记在[待办](../TODO.md)的打包条目。
-   E7auto 按 `packaging/vendor_lock.json` 逐文件校验后，随**完整版**工件分发 `src` / `config` /
-   `assets/templates` 三段。**维护者尚未确认该组件可公开分发**，因此对外发布一律改用
-   `--without-e7auto` 生成公开候选（见下一节）：该档不收集第三方代码，产物内 `vendor/e7auto`
-   成员数为 0，只带 `vendor/NO_E7AUTO.txt` 发行版标记，界面隐藏「次元探查」页，
-   自检记一行「本发行版不含次元探查」。完整版仍保留逐文件校验，供本地构建与已获授权的分发使用。
-   是否继续随包分发由维护者决定，结论出来前三个位置（`NOTICE.md`、本手册、spec）按同一事实表述。
-   本机诊断、个人数据、令牌、Git 元数据和未经核对的外部源码与工件隔离。
-   [Windows ICU 文档](https://learn.microsoft.com/en-us/windows/win32/intl/international-components-for-unicode--icu-)
-   [GitHub 许可证说明](https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/licensing-a-repository) ·
-   [Fluent Widgets 上游许可](https://github.com/zhiyiYo/PyQt-Fluent-Widgets)
+1. 更新桌面版本号，核对现状页与用户手册。对照待发布提交与上一个发布标签之间的 Git 记录，在 GitHub Release 草稿汇总用户可见的变化、适用范围和升级须知。每个公开版本使用唯一的 `v<版本>` tag，首次发布以候选提交的实际功能和限制为准。[版本号](../../desktop/catalog.py) · [现状页](../STATUS.md) · [用户手册](../USER_GUIDE.md)
+2. 从待发布提交独立检出，目录命名为 `auto_game_unified`。安装开发依赖，执行全量检查。[本地开发](../../CONTRIBUTING.md#本地开发) · [手工全量测试](../../CONTRIBUTING.md#手工全量测试)
+3. 按候选版本逐项核对公开支持范围。稳定组合须满足业务验收标准，待验组合写明试用范围和限制，存在安全阻断的组合按业务标准暂停放行。保存脱敏验收汇总和原始证据索引。[路线开发与验收](route_change.md#6-什么时候可以稳定发布) · [路线验收记录](route_acceptance.md)
+4. 声明达到共享视觉迁移目标时，在 PR 和发行说明中列出发布范围内的模拟器路线、PC 完整通过数、使用默认策略通过数和已登记的例外。默认策略占比以发布范围内的全部模拟器路线作分母。[共享视觉迁移目标](../decisions/0009-universal-vision-contract.md)
+5. 对照实际工件，逐项核对游戏图像、截图、第三方库与外部扩展的授权和分发条件，包括 Fluent Widgets。人工核对许可文件已随包，以及随包 ICU 库有无与系统同名。本机诊断、个人数据、令牌、Git 元数据和未经核对的外部源码与工件分开。[项目许可](../../LICENSE) · [权利声明](../../NOTICE.md) · [Windows ICU 文档](https://learn.microsoft.com/en-us/windows/win32/intl/international-components-for-unicode--icu-) · [Fluent Widgets 上游许可](https://github.com/zhiyiYo/PyQt-Fluent-Widgets)
 
 ## 本地生成与验收
 
-从 `auto_game_unified` 的父目录执行。保持同一个 Windows Python 环境。
+在同一个 Windows Python 环境安装 PyInstaller，按贡献指南生成免安装版，按需加做安装版。记下构建的提交、Python 与 PyInstaller 版本。[打包命令与安装版](../../CONTRIBUTING.md#打包改动了打包配置才需要)
 
-```powershell
-python -m pip install -r auto_game_unified/requirements-dev.txt
-python -m pip install PyInstaller
-python auto_game_unified/packaging/build.py --without-e7auto
-```
+确认产物的无窗口自检通过，解压 ZIP 核对顶层目录并实际启动桌面界面。用候选工件验证本次变更影响的桌面入口和目标路线，按业务标准复用未受影响范围的已有证据。发布附件来自同一次验收的产物，保留随包的 SHA256 校验文件并核对哈希。[实机验证](live_verification.md)
 
-对外发布的工件由 `--without-e7auto` 生成，文件名带 `-无次元探查` 后缀。不带这个开关的同一条命令
-产出完整版（含第三方代码），只用于本地构建与已获授权的分发，不得作为公开附件。
-
-记下实际构建的提交、Python 与 PyInstaller 版本。确认默认产物的自检通过，解压 ZIP 核对顶层目录与
-`vendor/e7auto` 成员数：公开候选须为 0 且带 `_internal/vendor/NO_E7AUTO.txt`，完整版须与本次分发
-决定一致。再验证界面启动，再按照 [实机验证](live_verification.md) 覆盖此次声明的路线。
-发布附件来自同一次验收的 `packaging/dist/`，可选安装版由 `--installer` 生成（公开候选的安装包
-文件名同样带后缀）。保留 `SHA256SUMS.txt`，核对文件与哈希一致。
+工作区的运行只覆盖记录中能辨认的入口、设置与业务结果。候选放行时把游戏及客户端版本、输入通道、助手修订和工件校验值一并关联到验收记录。未知项继续待核。[台账适用范围及现有证据](route_acceptance.md#1-台账按适用范围填写)
 
 ## 发布和回退
 
-在 GitHub 创建 Release 草稿，使用目标提交和对应 tag，附版本说明、已验收的平台与限制、ZIP 和校验文件。
-复核下载后再公开发布。准备工作、推送评审分支和公开发行是不同的操作。
+维护者在 GitHub 创建 Release 草稿，使用目标提交和对应 tag，附版本说明、已验收的平台与限制、ZIP 和校验文件。复核下载的附件后再公开发布。
 
 发现回归时，在 Release 说明标注受影响范围。用小范围 PR 修复或回退后发布新的修订版本。
-涉及隐私或资源误操作时，先按[安全政策](../../SECURITY.md)处理，保留只供维护者审阅的现场证据。
-
-### 更改记录
-
-| 日期 | 改了什么 | 依据 |
-| --- | --- | --- |
-| 2026-11-19 | 建立版本、打包、发行和回退流程 | 审计默认构建、GitHub 发行状态和仓库分支检查 |
-| 2026-11-26 | 对外发布改走 `--without-e7auto`，补公开候选的成员数核对 | E7auto 再分发未获维护者确认，公开工件须不含它 |
+涉及隐私或资源误操作时，先按安全政策处理，保留只供维护者审阅的现场证据。[安全政策](../../SECURITY.md)

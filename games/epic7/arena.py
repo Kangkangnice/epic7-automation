@@ -23,6 +23,7 @@ from auto_game_unified.core.matcher import (
     locate_with_fallback,
 )
 from auto_game_unified.core.recovery import RecoveryGate
+from auto_game_unified.core.failure_history import freeze_before_retry, retry_recovered
 from auto_game_unified.core.runtime import (
     ManualStop,
     PurchaseReceiptUnclear,
@@ -2228,6 +2229,7 @@ class ArenaRunner(TransactionalRunnerBase):
                 # 恢复，用户看到的就是「按了停止它却一直在存图片」。
                 raise
             except RuntimeError as error:
+                freeze_before_retry(self.runtime, "页面识别异常", f"页面识别异常：{error}")
                 if isinstance(error, UnrecognizedScreen):
                     wake_result = self.unknown_screen_wake.handle(
                         screen,
@@ -2258,6 +2260,7 @@ class ArenaRunner(TransactionalRunnerBase):
                 self.sleep(self.poll_seconds)
                 continue
 
+            retry_recovered(self.runtime, "页面识别异常")
             self.unknown_screen_wake.reset()
             if max_cycles is not None and self.machine.completed_cycles >= max_cycles:
                 self.runtime.log(

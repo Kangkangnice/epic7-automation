@@ -221,11 +221,11 @@ def test_legacy_three_todos_are_merged_not_dropped(tmp_path: Path) -> None:
     """旧版三条便签升级后拼成一条，用户填过的内容不许丢。"""
     path = _write(
         tmp_path / "session.json",
-        {"todos": ["新增商店购买", "次元探查", "速度套打铁"]},
+        {"todos": ["新增商店购买", "查攻略", "速度套打铁"]},
     )
     loaded = session.load(path)
     assert loaded is not None
-    assert loaded.todos == ("新增商店购买、次元探查、速度套打铁",)
+    assert loaded.todos == ("新增商店购买、查攻略、速度套打铁",)
 
 
 def test_broken_todos_fall_back_to_empty(tmp_path: Path) -> None:

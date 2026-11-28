@@ -99,7 +99,14 @@ HOME            回主页 → **先看「每周贡献度」宝箱**（发光=可
 阈值 10% 落在两者之间，离两边都很远。口径仍是「看游戏给的次数」而不是「看进程跑了几轮」，
 且**不硬编码上限 2** —— 本判据只回答「按钮还亮不亮」。
 
-⚠️ 判据有两道、**取或**（见 `select_team_enabled`）：第二道是「绿条亮度 ÷ 整幅画面亮度」，
+⚠️ **2026-11-27 起，第一判据是「读按钮上的数字」**（``read_select_team_attempts``）：
+按钮写着 `0` 才是真的打完了，`1/2`、`2/2` 都算还能打（用户口径原话：「2/2、1/2 都算，
+只有 0/2 才是真的打完了」）。颜色判据 ``select_team_enabled`` 退居兜底，只在数字
+读不出时使用 —— 它分不清「真变灰」与「画面还没亮起来」：2026-11-25 08:00、11-27 08:22
+两次实跑都在暗帧上把还有次数的主页判成 0/2 提前收工。实测同一帧压到 20% 亮度，
+读数仍是 2（0.985），而绿占比从 0.6056 塌到 0.01。
+
+颜色判据本身有两道、**取或**（见 `select_team_enabled`）：第二道是「绿条亮度 ÷ 整幅画面亮度」，
 用来挡住**页面淡入的暗帧** —— 绝对亮度判据在整屏压暗到 50% 时会自己塌掉，
 而页面识别用的 `TM_CCOEFF_NORMED` 对亮度缩放不敏感，两边一凑会把「还有次数」误判成
 「次数用完」。实测表见 `docs/WORLD_BOSS_DESIGN.md` 第十二节。
@@ -215,6 +222,11 @@ from auto_game_unified.games.epic7.evidence.world_boss import (
     build_world_boss_evidence,
 )
 from auto_game_unified.games.epic7.knights_donation import KNIGHTS_GUILD_HOME_PAGE
+from auto_game_unified.games.epic7.knights_support_digits import (
+    glyph_boxes,
+    glyph_score,
+    normalize_glyph,
+)
 from auto_game_unified.games.epic7.resume_probe import ResumePoint
 from auto_game_unified.games.epic7.route_action import RouteAction
 from auto_game_unified.games.epic7.runner_base import ModeRunnerBase
@@ -473,8 +485,103 @@ def find_weekly_chest(
     )
 
 
+# 主页「选择队伍」按钮上「x/2」的次数区（基准画布坐标，左边界到右边界）。
+# 实测（2026-11-27）：数字字形高 24~28、宽 10~16；「选择队伍」四个字在 x>=1700，
+# 不在本区内 ⇒ 切出来的最左字形一定是次数本身。
+SELECT_TEAM_COUNT_REGION = (1555, 1038, 1680, 1082)
+
+# 次数读数的采信下限。
+# 2026-11-27 用本路线主页帧实测（3 张 0/2、1 张 1/2、1 张 2/2、1 张压暗帧）：
+# 正确数字 0.95~1.00；错配最高 0.30（2/2 帧上读「0」得 0.287、0/2 帧上读「1」得 0.047）。
+# ⇒ 0.80 两侧余量 0.15 / 0.50。
+SELECT_TEAM_COUNT_MIN_SCORE = 0.80
+
+# 「x/2」里会出现的次数字形。0 = 没得打，1/2 = 还能打。
+# 业务口径由用户 2026-11-27 明确：「2/2、1/2 都算，只有 0/2 才是真的打完了」。
+SELECT_TEAM_COUNT_DIGITS = (0, 1, 2)
+
+
+def select_team_count_glyph(
+    screen: np.ndarray, *, reference_size=WORLD_BOSS_REFERENCE_SIZE
+) -> Optional[np.ndarray]:
+    """切出「x/2」里**最左边那个数字**并归一化到统一画布；切不出返回 None。
+
+    这里只负责「切字形」，不认识数字 —— 字形模板由 ``load_select_team_digits`` 提供，
+    生成脚本 ``runtime_logs/_wb_digits_build.py`` 也调这个函数切样本，
+    保证「造模板」与「读画面」走同一条路。
+    """
+    x0, y0, x1, y1 = SELECT_TEAM_COUNT_REGION
+    scale_x = screen.shape[1] / reference_size[0]
+    scale_y = screen.shape[0] / reference_size[1]
+    patch = screen[
+        round(y0 * scale_y) : round(y1 * scale_y),
+        round(x0 * scale_x) : round(x1 * scale_x),
+    ]
+    if patch.size == 0:
+        return None
+    gray = cv2.cvtColor(patch, cv2.COLOR_RGB2GRAY)
+    # 自适应阈值（Otsu）跟着这一帧的明暗自己定分割线，所以整屏压暗不影响切字：
+    # 实测 2/2 帧压到 20% 亮度仍切出同一字形（读数 0.985）。
+    _, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    # ⚠️ 交给 ``normalize_glyph`` 的必须是 **0/1 掩膜**（它内部会再乘 255）：
+    # 传 0/255 会在 uint8 里 255*255 溢出回绕成 1，字模存下来就是一张几乎全黑的图。
+    mask = (binary > 0).astype(np.uint8)
+    boxes = glyph_boxes(mask)
+    if not boxes:
+        return None
+    return normalize_glyph(mask, boxes[0])
+
+
+def read_select_team_attempts(
+    screen: np.ndarray,
+    digits: dict[int, np.ndarray],
+    *,
+    reference_size=WORLD_BOSS_REFERENCE_SIZE,
+) -> Optional[int]:
+    """读「x/2」的次数；**读不出就返回 None，绝不猜**。
+
+    这是「还有没有次数」的第一判据（2026-11-27 用户要求）：按钮上写着 0 才是真的
+    打完了，1 和 2 都能打。颜色判据 ``select_team_enabled`` 退居兜底 —— 它分不清
+    「真变灰」与「画面还没亮起来」，11-25 / 11-27 两次实跑都在暗帧上误判成 0/2 收工。
+    """
+    glyph = select_team_count_glyph(screen, reference_size=reference_size)
+    if glyph is None:
+        return None
+    best_digit, best_score = None, -1.0
+    for digit, template in digits.items():
+        score = glyph_score(glyph, template)
+        if score > best_score:
+            best_digit, best_score = digit, score
+    if best_score < SELECT_TEAM_COUNT_MIN_SCORE:
+        return None
+    return best_digit
+
+
+def load_select_team_digits(template_dir) -> dict[int, np.ndarray]:
+    """读 ``<template_dir>/digits/{0,1,2}.png`` 的次数字模。
+
+    缺一个就抛：字模是判据的一部分，缺了会让「读数字」安静失效、退回那条会误判的
+    颜色判据（「判据不许静默降级」）。
+    """
+    directory = template_dir / "digits"
+    glyphs: dict[int, np.ndarray] = {}
+    for digit in SELECT_TEAM_COUNT_DIGITS:
+        path = directory / f"{digit}.png"
+        if not path.exists():
+            raise FileNotFoundError(
+                f"缺世界首领战次数字模 {path}；「x/2 读到 0 才收工」这条判据依赖它，"
+                "请用 runtime_logs/_wb_digits_build.py 重新生成"
+            )
+        image = load_template(str(path))
+        glyphs[digit] = (image[:, :, 0] >= 128).astype(np.uint8) * 255
+    return glyphs
+
+
 def select_team_enabled(screen: np.ndarray) -> bool:
     """主页「选择队伍」按钮是否还可点（= 今天还有次数）。
+
+    ⚠️ **2026-11-27 起这只是兜底判据**：`HOME` 分支先调 ``read_select_team_attempts``
+    读按钮上的数字，只有读不出时才回落到这里（理由见模块 docstring）。
 
     ⚠️ **必须是「或」，不能改成「且」**：两道判据分别对付两种情形 ——
     ① 绿得明显（含轻微压暗）⇒ 第一道直接放行，省掉整幅 HSV 的开销；
@@ -629,6 +736,8 @@ class WorldBossTemplates:
     stamina_popup: np.ndarray
     stamina_material: np.ndarray
     stamina_confirm: np.ndarray
+    # 「选择队伍」按钮上「x/2」的次数字模（0/1/2）：读到 0 才算次数用完。
+    digits: dict
     threshold: float = 0.80
     evidence: object = None
 
@@ -655,6 +764,7 @@ def build_world_boss_templates(template_dir: Path) -> WorldBossTemplates:
             str(template_root / "navigation" / "worldboss_support_reward_title.png")
         ),
         **asdict(load_stamina_templates(template_root / "story")),
+        digits=load_select_team_digits(template_dir),
         evidence=build_world_boss_evidence(template_dir),
     )
 
@@ -713,6 +823,11 @@ class WorldBossStateMachine:
                 atom.threshold for atom in self.templates.evidence.atoms.values()
             )
         self.completed_cycles = 0
+        # 收工依据（给人复核用）：例如「主页按钮读到 0/2」。由 HOME 分支在抛
+        # ``AttemptsExhausted`` 之前写下，``route_note`` 把它带进每日任务汇总 ——
+        # 只写「次数已用尽」等于让判据自证，事后分不清「真打完了」和「判据看错了」
+        # （2026-11-27 那次误判就是这么藏了一周）。
+        self.stop_basis = ""
         self.stamina_replenished = 0
         # 体力预算由 Runner 按路线选项注入；默认「使用、不限」= 改动前行为。
         self.stamina_budget = StaminaBudget()
@@ -1145,20 +1260,38 @@ class WorldBossStateMachine:
             # 这张帧的按钮高亮带相对亮度很高，select_team_enabled 会误判成还有次数，
             # 所以由按钮变体显式收工；颜色判据只继续负责「选择队伍」变灰那一版。
             if self._locate(screen, "manage_support_team") is not None:
+                self.stop_basis = "主页按钮为「管理辅助队伍」"
                 raise AttemptsExhausted(
                     "主页按钮为「管理辅助队伍」（今日次数已用完或未开放）"
                     + (f"；{note}" if note else "")
                 )
-            if not select_team_enabled(screen):
+            # 2026-11-27：先读按钮上的「x/2」。用户口径 —— **1/2、2/2 都算能打，
+            # 只有 0/2 才是真的打完了**。颜色判据退居兜底：它分不清「真变灰」与
+            # 「画面还没亮起来」，11-25 / 11-27 两次实跑都在暗帧上误判成 0/2 收工。
+            attempts = read_select_team_attempts(screen, self.templates.digits)
+            if attempts is not None:
+                if attempts <= 0:
+                    self.stop_basis = f"主页按钮读到 {attempts}/2"
+                    raise AttemptsExhausted(
+                        f"主页按钮读到 {attempts}/2（今天次数已用完）"
+                        + (f"；{note}" if note else "")
+                    )
+            elif not select_team_enabled(screen):
+                self.stop_basis = "主页「选择队伍」已变灰（次数读不出，按颜色判断）"
                 raise AttemptsExhausted(
-                    "主页「选择队伍」已变灰（今天次数已用完）"
+                    "主页「选择队伍」已变灰（按钮上的次数没读出来，按颜色判断）"
                     + (f"；{note}" if note else "")
                 )
             return self._action(
                 "open-team-select",
                 source_page=state_label(WorldBossState.HOME),
                 target_pages=(state_label(WorldBossState.TEAM_SELECT),),
-                reason="主页点「选择队伍」进辅助队伍页" + (f"；{note}" if note else ""),
+                reason=(
+                    f"主页读到 {attempts}/2，点「选择队伍」进辅助队伍页"
+                    if attempts is not None
+                    else "主页点「选择队伍」进辅助队伍页"
+                )
+                + (f"；{note}" if note else ""),
             )
 
         # 战斗演出/过场：画面既不匹配任何已知页面，也不该乱点，等下一帧。
@@ -1358,11 +1491,18 @@ class WorldBossRunner(ModeRunnerBase):
         self.battles_done = 0
 
     def route_note(self) -> str:
-        """给每日任务结算用的一句话收获：打了今天几次里的几场。"""
+        """给每日任务结算用的一句话收获：打了今天几次里的几场。
+
+        ⚠️ 一场都没打时**必须带上收工依据**（2026-11-27 用户要求「对账」）：
+        只写「次数已用尽」是判据自证 —— 2026-11-27 那次误判，界面上与「真的打完了」
+        一模一样，靠人打开游戏才发现还有 2 次。写清「读到 0/2」之后，
+        「0 场 + 依据」摆在汇总里，人和日志都能复核。
+        """
         if self.runtime.dry_run:
             return ""
         if not self.battles_done:
-            return "当日挑战次数已用尽"
+            basis = self.machine.stop_basis or "未记录收工依据"
+            return f"{basis}，今日未出战"
         return f"完成首领战 {self.battles_done} 场"
 
     def _state_label(self, state: WorldBossState) -> str:

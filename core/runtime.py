@@ -7,6 +7,8 @@ from typing import Callable, Protocol
 import cv2
 import numpy as np
 
+from auto_game_unified.core.failure_history import FailureHistory
+
 
 class CaptureGuard(Protocol):
     def __call__(
@@ -105,6 +107,7 @@ class Runtime:
         self._back = back
         self.dry_run = dry_run
         self.diagnostic_dir = diagnostic_dir
+        self.failure_history = FailureHistory() if diagnostic_dir is not None else None
         self.log_path = log_path
         self._emit = emit or (lambda message: print(message, flush=True))
         self._stop_requested = stop_requested
@@ -145,6 +148,8 @@ class Runtime:
     def capture_unguarded(self) -> np.ndarray:
         self._stop_if_requested()
         screen = self._capture()
+        if self.failure_history is not None:
+            self.failure_history.observe(screen)
         self._last_screen = screen
         return screen
 
@@ -305,10 +310,24 @@ class Runtime:
         self.diagnostic_dir.mkdir(parents=True, exist_ok=True)
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
         path = self.diagnostic_dir / f"{timestamp}_{_safe_label(label)}.png"
-        self._write_image(path, self.capture() if screen is None else screen)
+        screen = self.capture() if screen is None else screen
+        self._write_image(path, screen)
+        if self.failure_history is not None and screen is self._last_screen:
+            self.failure_history.evidence_frame = path
         self._prune_diagnostics()
         self.log(f"已保存诊断 {path}")
         return path
+
+    def record_failure(self, error: BaseException) -> None:
+        if self.failure_history is None or self.diagnostic_dir is None:
+            return
+        try:
+            self.failure_history.save(
+                self.diagnostic_dir, f"{type(error).__name__}: {error}", self.log_path
+            )
+        except Exception as diagnostic_error:
+            # Even when the disk is full the original route exception must survive.
+            self._emit(f"故障截图留存失败：{diagnostic_error}")
 
     def save_current_frame(self, screen: np.ndarray | None = None) -> Path:
         if self.diagnostic_dir is None:

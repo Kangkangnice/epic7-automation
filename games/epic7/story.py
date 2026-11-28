@@ -634,6 +634,7 @@ class StoryStateMachine:
         target_pages: tuple[str, ...],
         reason: str,
         target_states: tuple[StoryState, ...] = (),
+        advance_any: bool = False,
     ) -> StoryAction:
         self._confirm_page(source_page)
         return StoryAction(
@@ -641,6 +642,7 @@ class StoryStateMachine:
             point=point,
             source_page=source_page,
             target_pages=target_pages,
+            advance_any=advance_any,
             reason=reason,
             source_state=self.state,
             target_states=target_states,
@@ -1735,7 +1737,18 @@ class StoryRunner(ModeRunnerBase):
     def _transition_retry_reason(
         self, previous_action: StoryAction, current_action: StoryAction | None
     ) -> str:
-        return f"来源页面={previous_action.source_page}仍在，目标未稳定"
+        """这一行是**补点之前**写的，必须说清两件事：等了多久、要再点哪里。
+
+        旧文案是「来源页面=结算确认仍在，目标未稳定」—— 那句话把「以为还在」写成了
+        「仍然在」：页面身份是上一次动作留下的字段，这一刻并没有重新验过。2026-11-27
+        的支线事故里，它就是误导来源（人以为画面还停在结算页，实际已经被换掉了）。
+        """
+        wait_seconds = self._action_retry_seconds(previous_action.name)
+        return (
+            f"上一次点完「{previous_action.source_page}」后 {wait_seconds:.0f} 秒"
+            f"没等到下一页，把同一个位置再点一次（{previous_action.point}）；"
+            f"这一次补点不会先确认那颗按钮是否还在原位"
+        )
 
     def _run_committed_battle(self, *, cycle: int) -> None:
         outcome = self.battle_supervisor.run(

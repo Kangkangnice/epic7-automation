@@ -74,6 +74,7 @@ def test_community_warns_about_daily_limits():
     community = route_by_name("community")
 
     assert community.label == "社区签到"
+    assert community.display_label == "社区签到（国服）"
     assert community.cycles_editable is False
     assert "竖屏" in community.description
     assert "每日上限" in community.description
@@ -83,6 +84,7 @@ def test_survivor_explains_the_manual_entry_page():
     survivor = route_by_name("survivor")
 
     assert survivor.label == "活动"
+    assert survivor.display_label == "活动（已过期）"
     # 起点是用户人工停好的页面，必须写在界面上让人看得见。
     assert "选第一张卡" in survivor.description
     # 平台限制**不逐条写进路线说明**：放行范围由 ``PC_READY_ROUTES`` 决定、
@@ -254,9 +256,7 @@ def test_every_group_explains_what_ticking_it_does():
 
         assert text, f"{where}是空的"
         assert text.count("\n") >= 2, f"{where}没分段"
-        # 2026-11-13 改说明体：原文「点这个框 = …」属口语加法号，改成陈述句
-        # 「勾选分组标题可整组选中」。断言跟着换成新的表述。
-        assert "勾选分组标题" in text, f"{where}没写清勾选分组标题会做什么"
+        assert "勾选「全选」" in text, f"{where}没写清分组的全选操作"
         assert "**" not in text, f"{where}里混进了 Markdown 星号"
         assert len(text) <= 160, f"{where}有 {len(text)} 字，太长了"
 

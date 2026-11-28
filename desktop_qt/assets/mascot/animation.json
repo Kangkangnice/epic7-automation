@@ -1,0 +1,75 @@
+{
+  "canvas": [
+    384,
+    384
+  ],
+  "scale": "smooth",
+  "states": {
+    "running": {
+      "frames": [
+        "running/00.png",
+        "running/01.png",
+        "running/02.png",
+        "running/03.png",
+        "running/04.png",
+        "running/05.png"
+      ],
+      "duration_ms": [
+        180,
+        180,
+        180,
+        180,
+        180,
+        180
+      ],
+      "loop": true,
+      "preview_gif": "running.gif"
+    },
+    "success": {
+      "frames": [
+        "success/00.png",
+        "success/01.png",
+        "success/02.png",
+        "success/03.png",
+        "success/04.png",
+        "success/05.png"
+      ],
+      "duration_ms": [
+        160,
+        160,
+        160,
+        160,
+        160,
+        160
+      ],
+      "loop": false,
+      "preview_gif": "success.gif",
+      "hold_frame": 3
+    },
+    "failure": {
+      "frames": [
+        "failure/00.png",
+        "failure/01.png",
+        "failure/02.png",
+        "failure/03.png",
+        "failure/04.png",
+        "failure/05.png"
+      ],
+      "duration_ms": [
+        150,
+        180,
+        220,
+        250,
+        300,
+        650
+      ],
+      "loop": false,
+      "preview_gif": "failure.gif",
+      "hold_frame": 5
+    }
+  },
+  "idle": "idle.png",
+  "stopped": "idle.png",
+  "note": "V6.9 原版素材基线；运行、成功及待机与交接包逐字节相同；失败只对耳部做局部像素形变、整体轻微下沉，保留原旋涡和原始眼睛。",
+  "master": "master.original.png"
+}

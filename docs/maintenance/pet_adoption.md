@@ -1,7 +1,6 @@
 # 宠物领养维护手册
 
-> 本页只回答「为什么、有什么作用、流程怎么走」。素材张数、夹具数、放行名单等
-> **现行事实一律看 [`STATUS.md`](../STATUS.md)**，缺口看 [`TODO.md`](../TODO.md)。
+从大厅进入宠物屋，确认免费领养后再看用品商店。完成领养与商店检查后回大厅。用品只按设置购买。[现状速查](../STATUS.md) · [待办与缺口](../TODO.md)
 
 ## 这条路线在游戏里干什么
 
@@ -113,7 +112,7 @@
 ## 现行事实（不写数字，链机器产出）
 
 * 路线名、界面名、分组、默认次数、PC 放行状态：看 [`STATUS.md`](../STATUS.md)。
-* 素材与夹具规模：看 `STATUS.md` 的「按路线的现行事实」。
+* 路线可用范围、接力和验收状态见[现状速查](../STATUS.md)。
 * 模板清单：`games/epic7/templates/pet_adoption/`；快捷菜单入口在
   `games/epic7/templates/navigation/pet_house_entry.png`，另有一张只含「宠物小屋」
   四字的白字候选 `pet_house_entry_text_white.png`（原样候选不过阈时才试，见

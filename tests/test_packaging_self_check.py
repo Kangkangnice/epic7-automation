@@ -19,7 +19,7 @@ ENTRY = REPO / "packaging" / "entry.py"
 
 
 def _load_entry():
-    """进程内加载 ``packaging/entry.py``，好让用例替换掉发行版状态判定。"""
+    """进程内加载 ``packaging/entry.py``。"""
     spec = importlib.util.spec_from_file_location("packaging_entry_under_test", ENTRY)
     module = importlib.util.module_from_spec(spec)
     assert spec.loader is not None
@@ -67,24 +67,3 @@ def test_unwritable_report_path_returns_non_zero_with_reason(tmp_path: Path):
     assert result.returncode != 0
     assert "自检报告写入" in result.stdout
     assert "结果：通过" not in result.stdout
-
-
-def test_absent_marker_is_reported_as_a_release_fact(tmp_path: Path, monkeypatch):
-    """声明不含 E7auto 的发行版：自检记一行「通过」的构成说明，不当缺件失败。
-
-    回归点：三态判定之前只有「目录在不在」两态，不含 E7auto 的公开候选
-    会把「故意不含」判成缺件、自检永远不过；反过来漏拷也会被当成不含而放过。
-    """
-    from auto_game_unified.desktop import chaos_bridge
-
-    entry = _load_entry()
-    monkeypatch.setenv("EPIC7_DATA_DIR", str(tmp_path))
-    monkeypatch.setattr(chaos_bridge, "vendor_state", lambda vendor=None: "absent")
-
-    assert entry._self_check() == 0
-
-    text = (tmp_path / "runtime_logs" / "self_check.txt").read_text(encoding="utf-8")
-    assert "发行版构成：本发行版不含次元探查" in text
-    assert "结果：通过" in text
-    # 构成说明与「第三方代码可用」互斥，不能同时出现。
-    assert "e7auto 可导入" not in text

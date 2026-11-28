@@ -4,8 +4,7 @@
 
 ## 文档与现状（先看这两页，别靠数代码猜）
 
-- **现状**：`docs/STATUS.md` —— 路线名单 / PC 放行 / 每日任务顺序，**由代码生成**。
-  想知道「现在支持哪些」看它，别数 `catalog.py`、也别信旧文档里的数字。
+- **现状**：`docs/STATUS.md` 由路线声明和业务验收结论生成，汇总启动范围、接力、已验与待验。
 - **索引**：`docs/README.md` —— 「我要做 X 该看哪份」+ 文档各通道 + 写文档的规矩。
 - **协作**：[`GOVERNANCE.md`](GOVERNANCE.md) —— 评审职责、架构决策、交接和放行。
 
@@ -15,18 +14,17 @@
    报错里写着该跑哪条命令（`python -m auto_game_unified.tools.gen_status`）。
 2. **新增任何 `.md` 必须登记在 `docs/README.md`**。`tests/test_docs_index.py` 检查
    `docs/` 下每个文档都能从索引点到 —— 没登记的文档等于不存在。
-3. **「交接说明」「施工计划」「设计稿」不进仓库**。信息当场拆进提交信息 /
-   `CHANGELOG.md` / `docs/decisions/`。理由见 `docs/decisions/0004-four-channels-for-docs.md`。
+3. **历史过程用 Git 追溯**。进行中的交接看开发者交接目录，完工结论写回相应现行文档。
 
 ## 修改前必须阅读
 
 修改任何视觉识别、点击、导航、重试、事务或路线前，必须阅读（适用于全部路线、模拟器与 PC 迁移）：
 
-- [路线开发、更新与维护规范](docs/howto/route_change.md)与[页面转场契约](docs/TRANSITION_CONTRACTS.md)（验收合同、逐动作证据、变更验收和体检评分）
+- [路线开发与验收](docs/howto/route_change.md)确定业务合同、变更验收和放行；[架构说明](docs/ARCHITECTURE.md)与[页面转场契约](docs/TRANSITION_CONTRACTS.md)负责工程实现。
 - [贡献指南](CONTRIBUTING.md)（本地环境、证据、提交和评审）
 - **新增路线或新增动作**时读 `docs/EXTENDING.md`；**移植 PC / 改 PC 后端**时读 [PC 接入指南](docs/PC_TEMPLATE_MIGRATION.md)。收到「移植 PC」的请求从 [§3](docs/PC_TEMPLATE_MIGRATION.md#3-一句话移植到-pc) 开始
 - **要实机跑闭环**时，读 `docs/howto/live_verification.md`（权限 / 点不动 / 失败判定）
-- **要公开声明稳定支持**时，按[路线稳定版验收](docs/howto/route_acceptance.md)先写合同，收工核对回放反例、真实回执和终点，按五种结论归类。
+- **要公开声明稳定支持**时，按[业务标准](docs/howto/route_change.md#6-什么时候可以稳定发布)复核，并提交[验收记录](docs/howto/route_acceptance.md)。
 - **游戏更新或维护已有路线**时，按[游戏更新手册](docs/howto/game_update.md)确定影响。修改前可用
   `python -m auto_game_unified.tools.check --plan --files <仓库相对路径>` 预查回归范围。
 - 目标路线测试和最新真实失败证据
@@ -35,8 +33,8 @@
 
 **先建交接单：复制 `docs/wip/_TEMPLATE.md` 到 `docs/wip/<日期>-<主题>.md`，填完再停。**
 
-它自动出现在 `docs/STATUS.md` 的「在制品」一节，下一个人打开现状页就知道活没干完、做到哪、下一步做什么。
-**合并进 main 之后删掉它**，结论进提交信息 / `CHANGELOG.md` / `docs/decisions/` / `docs/maintenance/<路线>.md`。
+下一位开发者从 `docs/README.md` 的交接入口找到任务状态、证据和下一步。
+**合并进 main 之后删掉它**。实施过程写进提交信息或 PR，仍适用的结论写回决策或路线维护手册。
 
 ## 不可违反的视觉动作契约
 
@@ -47,12 +45,12 @@
 
 点击后：
 
-- 来源仍稳定存在：点击未生效，记录证据并在声明的额度内重试；
+- 来源仍稳定存在：仅允许契约明确可重试的可逆动作在预算内补发；
 - 来源消失但目标尚未稳定：正在转场，只等待，不点击旧坐标；
 - 目标稳定出现：转场确认；
 - 证据缺失或冲突：记为 `UNKNOWN`，保存诊断并失败关闭。
 
-来源仍被视觉确认时，禁止用一次性"已点击"标志阻止合理重试。不可逆动作的来源一旦消失，禁止再次执行。
+不可逆动作发出后，即使还停在来源页也要等真实回执。回执不清楚时保留现场对账。实现细则见[页面转场契约](docs/TRANSITION_CONTRACTS.md#点击后的观测决策)。
 
 ## 证据先于代码
 
@@ -94,6 +92,7 @@ python tools/compress_images.py --staged --apply && git add <刚压过的文件>
 
 **提交那一次由钩子跑（`tools/githooks/pre-commit` → `tools/check.py`），不要再手工跑一遍。**
 开发中途想看结果才手工跑：`python tools/check.py --files a.py b.py`（约 1~2 分钟）。
+需要手工跑全量时，用[全量测试命令](CONTRIBUTING.md#手工全量测试)，首次就传入新的 `--basetemp`，避免测试结束后触发 WorkBuddy 的批量删除保护。
 `--no-verify` **默认禁止**；按[测试分层](CONTRIBUTING.md#按改动选测试)验收 PR，已登记的独立行为走定向，共享或未登记的运行改动走全量，版本标签始终全量；
 改共享模块最费时间，这类改动**攒在一起一次提交**，别拆成几次各跑一遍。
 
